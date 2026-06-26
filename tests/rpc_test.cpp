@@ -7,6 +7,7 @@
 
 #include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
+#include "graphql/mutation.hpp"
 #include "graphql/sync_state.hpp"
 #include "network/rpc/Debug.h"
 #include "network/rpc/Taraxa.h"
@@ -282,6 +283,24 @@ TEST_F(RPCTest, test_coin_transaction_uses_transaction_api) {
   const auto result = test_rpc.send_coin_transaction(params);
   EXPECT_FALSE(result.asString().empty());
   ASSERT_TRUE(*nonce_called);
+  ASSERT_TRUE(*insert_called);
+}
+
+TEST_F(RPCTest, graphql_mutation_uses_transaction_api) {
+  const auto trx = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  auto insert_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::MutationTransactionApi transaction_api;
+  transaction_api.insert_transaction = [insert_called, trx](const SharedTransaction& submitted_trx) {
+    *insert_called = true;
+    EXPECT_EQ(trx->getHash(), submitted_trx->getHash());
+    return std::pair<bool, std::string>{true, ""};
+  };
+
+  graphql::taraxa::Mutation mutation(std::move(transaction_api));
+  auto result = mutation.applySendRawTransaction(graphql::response::Value(dev::toJS(trx->rlp())));
+
+  EXPECT_EQ(dev::toJS(trx->getHash()), result.get<std::string>());
   ASSERT_TRUE(*insert_called);
 }
 

@@ -569,6 +569,9 @@ Implemented first slice:
   transaction insertion. The default adapter is still backed by FinalChain and TransactionManager because this test/admin
   command crosses the external account-state and mempool boundary, but `send_coin_transaction` and
   `send_coin_transactions` no longer reach through those managers directly from the public RPC methods.
+- GraphQL `sendRawTransaction` mutation now uses a dedicated `MutationTransactionApi` callback bundle for transaction
+  insertion. The default adapter is still backed by TransactionManager because mempool admission is outside public query
+  formatting, but the GraphQL mutation method no longer reaches through the manager directly.
 
 ## Consensus Internal
 
