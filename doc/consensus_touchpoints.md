@@ -503,6 +503,8 @@ Implemented first slice:
   plus source classification for pending, finalized regular, and finalized system transaction materialization.
 - GraphQL top-level legacy `transaction(hash)` acquisition now uses a dedicated `QueryTransactionReader` callback bundle
   instead of reading `TransactionManager` directly from the public query method.
+- GraphQL top-level `gasPrice` now uses a dedicated `QueryGasPriceReader` callback bundle instead of reading `GasPricer`
+  directly from the public query method. The default reader remains the audited gas-pricer compatibility adapter.
 - GraphQL top-level `transaction(hash)` expanded receipt fields (`status`, `gasUsed`, `cumulativeGasUsed`,
   `createdContract`, and `logs`) now consume the `ConsensusQueryApi` transaction-receipt DTO in Rust mode instead of
   lazy-loading the transaction location and receipt through `FinalChain`.

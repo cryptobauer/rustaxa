@@ -112,6 +112,20 @@ void fillMissingQueryTransactionReaderCallbacks(
   }
 }
 
+QueryGasPriceReader makeQueryGasPriceReader(const std::shared_ptr<::taraxa::GasPricer>& gas_pricer) {
+  QueryGasPriceReader reader;
+  reader.bid = [gas_pricer] { return gas_pricer ? gas_pricer->bid() : dev::u256(0); };
+  return reader;
+}
+
+void fillMissingQueryGasPriceReaderCallbacks(QueryGasPriceReader& reader,
+                                             const std::shared_ptr<::taraxa::GasPricer>& gas_pricer) {
+  auto defaults = makeQueryGasPriceReader(gas_pricer);
+  if (!reader.bid) {
+    reader.bid = std::move(defaults.bid);
+  }
+}
+
 QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
                                             const std::shared_ptr<::taraxa::DagManager>& dag_manager,
                                             const std::shared_ptr<::taraxa::DbStorage>& db) {
@@ -266,6 +280,7 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
       block_reader_(makeQueryBlockReader(final_chain_, db_)),
       block_transaction_reader_(makeQueryBlockTransactionReader(final_chain_)),
       transaction_reader_(makeQueryTransactionReader(transaction_manager_)),
+      gas_price_reader_(makeQueryGasPriceReader(gas_pricer_)),
       dag_block_reader_(makeQueryDagBlockReader(final_chain_, dag_manager_, db_)),
       dag_block_transaction_reader_(makeQueryDagBlockTransactionReader(transaction_manager_)),
       dag_block_period_reader_(makeQueryDagBlockPeriodReader(pbft_manager_)) {
@@ -276,19 +291,22 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
 
 Query::Query(AccountStateReader account_reader, uint64_t chain_id, QueryBlockReader block_reader,
              BlockTransactionReader block_transaction_reader, QueryTransactionReader transaction_reader,
-             QueryDagBlockReader dag_block_reader, DagBlockTransactionReader dag_block_transaction_reader,
+             QueryGasPriceReader gas_price_reader, QueryDagBlockReader dag_block_reader,
+             DagBlockTransactionReader dag_block_transaction_reader,
              DagBlockPeriodReader dag_block_period_reader) noexcept
     : kChainId(chain_id),
       account_reader_(std::move(account_reader)),
       block_reader_(std::move(block_reader)),
       block_transaction_reader_(std::move(block_transaction_reader)),
       transaction_reader_(std::move(transaction_reader)),
+      gas_price_reader_(std::move(gas_price_reader)),
       dag_block_reader_(std::move(dag_block_reader)),
       dag_block_transaction_reader_(std::move(dag_block_transaction_reader)),
       dag_block_period_reader_(std::move(dag_block_period_reader)) {
   fillMissingQueryBlockReaderCallbacks(block_reader_, final_chain_, db_);
   fillMissingBlockTransactionReaderCallbacks(block_transaction_reader_, final_chain_);
   fillMissingQueryTransactionReaderCallbacks(transaction_reader_, transaction_manager_);
+  fillMissingQueryGasPriceReaderCallbacks(gas_price_reader_, gas_pricer_);
   fillMissingQueryDagBlockReaderCallbacks(dag_block_reader_, final_chain_, dag_manager_, db_);
   fillMissingDagBlockTransactionReaderCallbacks(dag_block_transaction_reader_, transaction_manager_);
   fillMissingDagBlockPeriodReaderCallbacks(dag_block_period_reader_, pbft_manager_);
@@ -462,7 +480,7 @@ std::shared_ptr<object::Account> Query::getAccount(response::Value&& addressArg,
   }
 }
 
-response::Value Query::getGasPrice() const { return response::Value(dev::toJS(gas_pricer_->bid())); }
+response::Value Query::getGasPrice() const { return response::Value(dev::toJS(gas_price_reader_.bid())); }
 
 std::shared_ptr<object::SyncState> Query::getSyncing() const {
 #ifdef RUSTAXA_ENABLE

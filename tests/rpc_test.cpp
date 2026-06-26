@@ -1275,6 +1275,31 @@ TEST_F(RPCTest, graphql_query_transaction_uses_query_transaction_reader) {
   ASSERT_TRUE(*transaction_called);
 }
 
+TEST_F(RPCTest, graphql_query_gas_price_uses_query_gas_price_reader) {
+  auto gas_price_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::AccountStateReader account_reader;
+  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::QueryGasPriceReader gas_price_reader;
+  gas_price_reader.bid = [gas_price_called] {
+    *gas_price_called = true;
+    return dev::u256(12345);
+  };
+
+  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, {}, std::move(gas_price_reader));
+
+  EXPECT_EQ(dev::toJS(dev::u256(12345)), query.getGasPrice().get<std::string>());
+  ASSERT_TRUE(*gas_price_called);
+}
+
 TEST_F(RPCTest, graphql_query_dag_blocks_use_query_dag_block_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();
@@ -1347,7 +1372,7 @@ TEST_F(RPCTest, graphql_query_dag_blocks_use_query_dag_block_reader) {
     return std::optional<uint64_t>(9);
   };
 
-  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, {}, std::move(dag_reader),
+  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, {}, {}, std::move(dag_reader),
                                std::move(transaction_reader), std::move(period_reader));
 
   ASSERT_NE(nullptr, query.getDagBlock(graphql::response::Value(level_four_hash.toString())));
