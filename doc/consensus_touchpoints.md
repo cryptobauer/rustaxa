@@ -593,6 +593,9 @@ Implemented first slice:
 - Test RPC `get_peer_count` and `get_all_nodes` now consume a dedicated `TestNetworkReader` for peer counts and typed
   node endpoint views instead of reading `Network` directly from public methods. The default adapter remains the audited
   compatibility point for live network state.
+- `net_version`, `net_peerCount`, and `net_listening` now consume a dedicated `NetReader` for chain id, peer count, and
+  listening state instead of reading `AppBase` or `Network` directly from public methods. The default adapter remains
+  the audited compatibility point for live network facts.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.

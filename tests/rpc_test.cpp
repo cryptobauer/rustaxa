@@ -17,6 +17,7 @@
 #include "graphql/types/current_state.hpp"
 #include "graphql/types/dag_block.hpp"
 #include "network/rpc/Debug.h"
+#include "network/rpc/Net.h"
 #include "network/rpc/Taraxa.h"
 #include "network/rpc/Test.h"
 #include "network/rpc/eth/Eth.h"
@@ -469,6 +470,35 @@ TEST_F(RPCTest, test_network_reads_use_network_reader) {
   EXPECT_EQ("127.0.0.2", all_nodes["nodes"][1]["address"].asString());
   EXPECT_EQ(Json::UInt64(10003), all_nodes["nodes"][1]["listen_port"].asUInt64());
   ASSERT_TRUE(*all_nodes_called);
+}
+
+TEST_F(RPCTest, net_rpc_uses_net_reader) {
+  auto chain_id_called = std::make_shared<bool>(false);
+  auto peer_count_called = std::make_shared<bool>(false);
+  auto listening_called = std::make_shared<bool>(false);
+
+  net::NetReader reader;
+  reader.chain_id = [chain_id_called] {
+    *chain_id_called = true;
+    return uint64_t(841);
+  };
+  reader.peer_count = [peer_count_called] {
+    *peer_count_called = true;
+    return uint64_t(9);
+  };
+  reader.listening = [listening_called] {
+    *listening_called = true;
+    return true;
+  };
+
+  net::Net net_rpc(nullptr, std::move(reader));
+
+  EXPECT_EQ("841", net_rpc.net_version());
+  EXPECT_EQ(dev::toJS(uint64_t(9)), net_rpc.net_peerCount());
+  EXPECT_TRUE(net_rpc.net_listening());
+  ASSERT_TRUE(*chain_id_called);
+  ASSERT_TRUE(*peer_count_called);
+  ASSERT_TRUE(*listening_called);
 }
 
 TEST_F(RPCTest, test_node_status_uses_status_reader) {
