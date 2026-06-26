@@ -190,6 +190,10 @@ Json::Value Taraxa::taraxa_getVersion() { return version; }
 string Taraxa::taraxa_dagBlockLevel() {
   try {
     auto app = tryGetApp();
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+    return toJS(query_api->consensus_query_status().latest_dag_level);
+#endif
     return toJS(app->getDagManager()->getMaxLevel());
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
@@ -199,6 +203,10 @@ string Taraxa::taraxa_dagBlockLevel() {
 string Taraxa::taraxa_dagBlockPeriod() {
   try {
     auto app = tryGetApp();
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+    return toJS(query_api->consensus_query_status().latest_dag_period);
+#endif
     return toJS(app->getDagManager()->getLatestPeriod());
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));

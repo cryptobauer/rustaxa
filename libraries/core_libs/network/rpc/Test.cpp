@@ -137,6 +137,7 @@ Json::Value Test::get_node_status() {
 #ifdef RUSTAXA_ENABLE
     const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
     const auto chain_stats = query_api->consensus_query_chain_stats();
+    const auto consensus_status = query_api->consensus_query_status();
 #endif
 
     res["synced"] = !node->getNetwork()->pbft_syncing();
@@ -154,7 +155,11 @@ Json::Value Test::get_node_status() {
     res["trx_executed"] = Json::UInt64(node->getDB()->getNumTransactionExecuted());  // RUSTAXA_QUERY_COMPAT_READ
     res["trx_count"] = Json::UInt64(node->getTransactionManager()->getTransactionCount());
 #endif
+#ifdef RUSTAXA_ENABLE
+    res["dag_level"] = Json::UInt64(consensus_status.latest_dag_level);
+#else
     res["dag_level"] = Json::UInt64(node->getDagManager()->getMaxLevel());
+#endif
     res["pbft_size"] = Json::UInt64(chain_size);
     res["pbft_sync_period"] = Json::UInt64(node->getPbftManager()->pbftSyncingPeriod());
     res["pbft_round"] = Json::UInt64(node->getPbftManager()->getPbftRound());
