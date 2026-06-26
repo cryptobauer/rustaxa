@@ -16,6 +16,13 @@
 
 namespace graphql::taraxa {
 
+// DagBlockTransactionReader is GraphQL's minimal DAG transaction boundary. It
+// resolves DAG transaction hashes to transaction payloads without exposing
+// TransactionManager to the DAG block field resolver.
+struct DagBlockTransactionReader {
+  std::function<std::shared_ptr<::taraxa::Transaction>(const ::taraxa::trx_hash_t&)> transaction_by_hash;
+};
+
 class DagBlock {
  public:
   explicit DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
@@ -25,6 +32,10 @@ class DagBlock {
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
   explicit DagBlock(AccountStateReader account_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
                     std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
+  explicit DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
+                    std::shared_ptr<::taraxa::DagBlock> dag_block, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                     std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
 #ifdef RUSTAXA_ENABLE
@@ -54,6 +65,7 @@ class DagBlock {
   std::optional<rustaxa::DagBlockPublicView> rust_dag_block_;
 #endif
   AccountStateReader account_reader_;
+  DagBlockTransactionReader transaction_reader_;
   std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
   std::shared_ptr<::taraxa::PbftManager> pbft_manager_;
   std::shared_ptr<::taraxa::TransactionManager> transaction_manager_;

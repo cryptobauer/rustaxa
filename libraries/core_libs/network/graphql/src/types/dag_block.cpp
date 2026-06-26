@@ -10,6 +10,17 @@
 
 namespace graphql::taraxa {
 
+namespace {
+DagBlockTransactionReader makeDagBlockTransactionReader(
+    const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+  DagBlockTransactionReader reader;
+  reader.transaction_by_hash = [transaction_manager](const ::taraxa::trx_hash_t& hash) {
+    return transaction_manager ? transaction_manager->getTransaction(hash) : nullptr;
+  };
+  return reader;
+}
+}  // namespace
+
 #ifdef RUSTAXA_ENABLE
 namespace {
 constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
@@ -57,6 +68,7 @@ DagBlock::DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
     : dag_block_(std::move(dag_block)),
       account_reader_(makeAccountStateReader(final_chain)),
+      transaction_reader_(makeDagBlockTransactionReader(transaction_manager)),
       final_chain_(std::move(final_chain)),
       pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
@@ -66,8 +78,16 @@ DagBlock::DagBlock(AccountStateReader account_reader, std::shared_ptr<::taraxa::
                    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
+    : DagBlock(std::move(account_reader), makeDagBlockTransactionReader(transaction_manager), std::move(dag_block),
+               std::move(pbft_manager), std::move(transaction_manager), std::move(get_block_by_num)) {}
+
+DagBlock::DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
+                   std::shared_ptr<::taraxa::DagBlock> dag_block, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+                   std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+                   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
     : dag_block_(std::move(dag_block)),
       account_reader_(std::move(account_reader)),
+      transaction_reader_(std::move(transaction_reader)),
       pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
       get_block_by_num_(std::move(get_block_by_num)) {}
@@ -236,8 +256,15 @@ std::optional<std::vector<std::shared_ptr<object::Transaction>>> DagBlock::getTr
   }
 #endif
   for (const auto& trx_hash : dag_block_->getTrxs()) {
-    transactions_result.push_back(std::make_shared<object::Transaction>(std::make_shared<Transaction>(
-        final_chain_, transaction_manager_, get_block_by_num_, transaction_manager_->getTransaction(trx_hash))));
+    if (!transaction_reader_.transaction_by_hash) {
+      return std::nullopt;
+    }
+    auto transaction = transaction_reader_.transaction_by_hash(trx_hash);
+    if (!transaction) {
+      return std::nullopt;
+    }
+    transactions_result.push_back(std::make_shared<object::Transaction>(
+        std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction))));
   }
 
   return transactions_result;

@@ -544,6 +544,9 @@ Implemented first slice:
 - GraphQL `Block.miner`, `Block.account`, and `DagBlock.author` now use the same `AccountStateReader` callback bundle
   instead of constructing account child objects from `FinalChain` directly. Existing block/DAG constructors remain
   compatibility adapters that build the reader from the FinalChain external-state boundary.
+- GraphQL `DagBlock.transactions` on the legacy DAG object path now uses a local `DagBlockTransactionReader` callback
+  bundle to resolve DAG transaction hashes instead of calling `TransactionManager` directly from the field resolver. The
+  existing manager-backed constructor remains an audited compatibility adapter.
 - GraphQL top-level `account(address, block)` now also uses `AccountStateReader` instead of constructing the account
   object from `FinalChain` directly. The default `Query` constructor keeps the same FinalChain-backed compatibility
   adapter for now.

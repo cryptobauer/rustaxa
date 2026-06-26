@@ -980,6 +980,42 @@ TEST_F(RPCTest, graphql_dag_block_author_uses_account_reader) {
   ASSERT_TRUE(*account_called);
 }
 
+TEST_F(RPCTest, graphql_dag_block_transactions_use_transaction_reader) {
+  auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  const auto transaction_hash = transaction->getHash();
+  auto transaction_called = std::make_shared<bool>(false);
+
+  auto dag_block = std::make_shared<DagBlock>(blk_hash_t(1), level_t(1), vec_blk_t{}, vec_trx_t{transaction_hash},
+                                              secret_t::random());
+
+  graphql::taraxa::AccountStateReader account_reader;
+  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::DagBlockTransactionReader transaction_reader;
+  transaction_reader.transaction_by_hash = [transaction_called, transaction,
+                                            transaction_hash](const trx_hash_t& requested_hash) {
+    *transaction_called = true;
+    EXPECT_EQ(transaction_hash, requested_hash);
+    return transaction;
+  };
+
+  graphql::taraxa::DagBlock graphql_dag_block(std::move(account_reader), std::move(transaction_reader),
+                                              std::move(dag_block), nullptr, nullptr,
+                                              [](EthBlockNumber) { return nullptr; });
+
+  const auto transactions = graphql_dag_block.getTransactions();
+  ASSERT_TRUE(transactions.has_value());
+  ASSERT_EQ(1, transactions->size());
+  ASSERT_TRUE(*transaction_called);
+}
+
 TEST_F(RPCTest, graphql_query_account_uses_account_reader) {
   const auto address = dev::KeyPair::create().address();
   auto account_called = std::make_shared<bool>(false);
