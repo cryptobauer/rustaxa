@@ -10,7 +10,6 @@
 #include "final_chain/final_chain.hpp"
 #include "graphql/account.hpp"
 #include "transaction/receipt.hpp"
-#include "transaction/transaction_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -36,7 +35,6 @@ struct TransactionReceiptReader {
 class Transaction final : public std::enable_shared_from_this<Transaction> {
  public:
   explicit Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                       std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
   explicit Transaction(TransactionReceiptReader receipt_reader,
@@ -47,7 +45,6 @@ class Transaction final : public std::enable_shared_from_this<Transaction> {
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
 #ifdef RUSTAXA_ENABLE
   explicit Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                       std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction,
                        const rustaxa::TransactionPublicView& transaction_view,

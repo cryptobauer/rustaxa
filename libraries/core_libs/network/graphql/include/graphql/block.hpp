@@ -7,7 +7,6 @@
 #include "BlockObject.h"
 #include "final_chain/final_chain.hpp"
 #include "graphql/account.hpp"
-#include "transaction/transaction_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -27,7 +26,6 @@ class Block {
  public:
   explicit Block(
       std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-      std::shared_ptr<::taraxa::TransactionManager> trx_manager,
       std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
       const ::taraxa::blk_hash_t& pbft_block_hash,
       std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header
@@ -38,7 +36,7 @@ class Block {
       std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query = {}
 #endif
       ) noexcept;
-  explicit Block(AccountStateReader account_reader, std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+  explicit Block(AccountStateReader account_reader,
                  std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
                  const ::taraxa::blk_hash_t& pbft_block_hash,
                  std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept;

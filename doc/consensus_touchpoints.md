@@ -578,13 +578,21 @@ Implemented first slice:
   default reader is still FinalChain-backed for compatibility, while Rust-mode block, DAG, and top-level transaction
   routes can supply receipt DTOs from `ConsensusQueryApi` without exposing FinalChain location/receipt reads to the
   GraphQL transaction object.
+- GraphQL `Transaction` compatibility constructors no longer accept `TransactionManager`; transaction payload lookup is
+  performed before object construction through `QueryTransactionReader`, DAG/block transaction readers, or
+  `ConsensusQueryApi`, and the transaction object only keeps receipt/account reader callbacks.
 - GraphQL `Log.account`, plus transaction child log materialization, now reuses the `AccountStateReader` callback
   bundle instead of storing or reading `FinalChain` inside the log object. The compatibility constructor still builds the
   reader from the existing FinalChain external-state adapter, while Rust-mode transaction objects can pass the same
   account reader through to logs.
+- GraphQL `Log` compatibility constructors no longer accept `TransactionManager`; logs now retain only the transaction
+  object reference and account-state reader needed by field formatting.
 - GraphQL `Block.miner`, `Block.account`, and `DagBlock.author` now use the same `AccountStateReader` callback bundle
   instead of constructing account child objects from `FinalChain` directly. Existing block/DAG constructors remain
   compatibility adapters that build the reader from the FinalChain external-state boundary.
+- GraphQL `Block` compatibility constructors no longer accept `TransactionManager`; finalized transaction expansion is
+  supplied by `BlockTransactionReader` or Rust-mode `ConsensusQueryApi` callbacks before transaction child objects are
+  materialized.
 - GraphQL `DagBlock.transactions` on the legacy DAG object path now uses a local `DagBlockTransactionReader` callback
   bundle to resolve DAG transaction hashes instead of calling `TransactionManager` directly from the field resolver. The
   existing manager-backed constructor remains an audited compatibility adapter.

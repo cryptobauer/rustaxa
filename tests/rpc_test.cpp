@@ -1539,8 +1539,7 @@ TEST_F(RPCTest, graphql_block_accounts_use_account_reader) {
   header->author = miner;
   header->number = 12;
 
-  graphql::taraxa::Block block(
-      std::move(reader), nullptr, [](EthBlockNumber) { return nullptr; }, blk_hash_t(1), header);
+  graphql::taraxa::Block block(std::move(reader), [](EthBlockNumber) { return nullptr; }, blk_hash_t(1), header);
 
   ASSERT_NE(nullptr, block.getMiner(std::nullopt));
   ASSERT_NE(nullptr, block.getAccount(graphql::response::Value(queried_address.toString())));
