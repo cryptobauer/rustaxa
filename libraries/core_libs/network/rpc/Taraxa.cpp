@@ -26,6 +26,57 @@ using namespace ::taraxa::final_chain;
 
 namespace taraxa::net {
 
+namespace {
+TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app) {
+  TaraxaDposReader reader;
+  reader.eligible_total_vote_count = [app](EthBlockNumber block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->dposEligibleTotalVoteCount(block_number);
+  };
+  reader.eligible_vote_count = [app](EthBlockNumber block_number, const addr_t& address) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->dposEligibleVoteCount(block_number, address);
+  };
+  reader.dpos_yield = [app](EthBlockNumber block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->dposYield(block_number);
+  };
+  reader.total_supply = [app](EthBlockNumber block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DPOS_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->dposTotalSupply(block_number);
+  };
+  return reader;
+}
+
+void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTaraxaDposReader(std::move(app));
+  if (!reader.eligible_total_vote_count) {
+    reader.eligible_total_vote_count = std::move(defaults.eligible_total_vote_count);
+  }
+  if (!reader.eligible_vote_count) {
+    reader.eligible_vote_count = std::move(defaults.eligible_vote_count);
+  }
+  if (!reader.dpos_yield) {
+    reader.dpos_yield = std::move(defaults.dpos_yield);
+  }
+  if (!reader.total_supply) {
+    reader.total_supply = std::move(defaults.total_supply);
+  }
+}
+}  // namespace
+
 #ifdef RUSTAXA_ENABLE
 namespace {
 constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
@@ -175,7 +226,10 @@ Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, 
 }  // namespace
 #endif
 
-Taraxa::Taraxa(std::shared_ptr<AppBase> app) : app_(app) {
+Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader)
+    : app_(app), dpos_reader_(std::move(dpos_reader)) {
+  fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
+
   Json::CharReaderBuilder builder;
   auto reader = std::unique_ptr<Json::CharReader>(builder.newCharReader());
 
@@ -312,13 +366,13 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
   try {
     auto app = tryGetApp();
     auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
-    auto period = app->getFinalChain()->lastBlockNumber();
     const uint64_t max_blocks_to_process = 6000;
     std::map<addr_t, std::string> node_version_map;
     std::multimap<std::string, std::pair<addr_t, uint64_t>> version_node_map;
     std::map<std::string, std::pair<uint32_t, uint32_t>> version_count;
 #ifdef RUSTAXA_ENABLE
     const auto query_api = rustaxa::create_consensus_query_api(db->rustStorage());
+    auto period = query_api->consensus_query_final_chain_last_block_number();
     for (uint64_t i = period; i > 0 && period - i < max_blocks_to_process; i--) {
       const auto version_view = query_api->consensus_query_pbft_node_version_by_period(i);
       if (!version_view.found) {
@@ -333,6 +387,7 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
     }
 #endif
 #ifndef RUSTAXA_ENABLE
+    auto period = app->getFinalChain()->lastBlockNumber();
     for (uint64_t i = period; i > 0 && period - i < max_blocks_to_process; i--) {
       auto blk = db->getPbftBlock(i);
       if (!blk.has_value()) {
@@ -346,9 +401,9 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
     }
 #endif
 
-    auto total_vote_count = app->getFinalChain()->dposEligibleTotalVoteCount(period);
+    auto total_vote_count = dpos_reader_.eligible_total_vote_count(period);
     for (auto nv : node_version_map) {
-      auto vote_count = app->getFinalChain()->dposEligibleVoteCount(period, nv.first);
+      auto vote_count = dpos_reader_.eligible_vote_count(period, nv.first);
       version_node_map.insert({nv.second, {nv.first, vote_count}});
       version_count[nv.second].first++;
       version_count[nv.second].second += vote_count;
@@ -448,13 +503,8 @@ Json::Value Taraxa::taraxa_getChainStats() {
 
 std::string Taraxa::taraxa_yield(const std::string& _period) {
   try {
-    auto app = app_.lock();
-    if (!app) {
-      BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
-    }
-
     auto period = dev::jsToInt(_period);
-    return toJS(app->getFinalChain()->dposYield(period));
+    return toJS(dpos_reader_.dpos_yield(period));
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }
@@ -462,13 +512,8 @@ std::string Taraxa::taraxa_yield(const std::string& _period) {
 
 std::string Taraxa::taraxa_totalSupply(const std::string& _period) {
   try {
-    auto app = app_.lock();
-    if (!app) {
-      BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
-    }
-
     auto period = dev::jsToInt(_period);
-    return toJS(app->getFinalChain()->dposTotalSupply(period));
+    return toJS(dpos_reader_.total_supply(period));
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }

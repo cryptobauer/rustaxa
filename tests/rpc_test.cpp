@@ -9,6 +9,7 @@
 #include "graphql/account.hpp"
 #include "graphql/sync_state.hpp"
 #include "network/rpc/Debug.h"
+#include "network/rpc/Taraxa.h"
 #include "network/subscriptions.hpp"
 #include "network/rpc/eth/Eth.h"
 #include "network/rpc/eth/LiveLogSubscription.hpp"
@@ -172,6 +173,32 @@ TEST_F(RPCTest, debug_dpos_reads_use_debug_dpos_reader) {
 
   EXPECT_EQ(dev::toJS(uint256_t(5678)), debug_rpc.debug_dposTotalAmountDelegated(dev::toJS(9)).asString());
   ASSERT_TRUE(*delegated_called);
+}
+
+TEST_F(RPCTest, taraxa_dpos_scalar_reads_use_taraxa_dpos_reader) {
+  auto yield_called = std::make_shared<bool>(false);
+  auto supply_called = std::make_shared<bool>(false);
+
+  net::TaraxaDposReader reader;
+  reader.dpos_yield = [yield_called](EthBlockNumber block_number) {
+    *yield_called = true;
+    EXPECT_EQ(12, block_number);
+    return uint64_t(34);
+  };
+  reader.total_supply = [supply_called](EthBlockNumber block_number) {
+    *supply_called = true;
+    EXPECT_EQ(12, block_number);
+    return u256(5600);
+  };
+  reader.eligible_total_vote_count = [](EthBlockNumber) { return 0; };
+  reader.eligible_vote_count = [](EthBlockNumber, const addr_t&) { return 0; };
+
+  net::Taraxa taraxa_rpc(nullptr, std::move(reader));
+
+  EXPECT_EQ(dev::toJS(uint64_t(34)), taraxa_rpc.taraxa_yield(dev::toJS(12)));
+  ASSERT_TRUE(*yield_called);
+  EXPECT_EQ(dev::toJS(u256(5600)), taraxa_rpc.taraxa_totalSupply(dev::toJS(12)));
+  ASSERT_TRUE(*supply_called);
 }
 
 TEST_F(RPCTest, eth_estimateGas) {

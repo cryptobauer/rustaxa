@@ -4,6 +4,7 @@
 #include <jsonrpccpp/server.h>
 #include <libdevcore/Common.h>
 
+#include <functional>
 #include <memory>
 
 #include "TaraxaFace.h"
@@ -12,9 +13,21 @@
 
 namespace taraxa::net {
 
+// TaraxaDposReader is the Taraxa RPC boundary for DPoS facts that still live
+// on the external FinalChain/StateAPI side of the rewrite. Inputs are finalized
+// block numbers and, when needed, validator addresses; outputs are scalar DPoS
+// values ready for public RPC JSON formatting. Missing callbacks are completed
+// from the app's FinalChain by the Taraxa constructor.
+struct TaraxaDposReader {
+  std::function<uint64_t(EthBlockNumber)> eligible_total_vote_count;
+  std::function<uint64_t(EthBlockNumber, const addr_t&)> eligible_vote_count;
+  std::function<uint64_t(EthBlockNumber)> dpos_yield;
+  std::function<u256(EthBlockNumber)> total_supply;
+};
+
 class Taraxa : public TaraxaFace {
  public:
-  explicit Taraxa(std::shared_ptr<taraxa::AppBase> app);
+  explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {});
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
 
@@ -37,6 +50,7 @@ class Taraxa : public TaraxaFace {
 
  protected:
   std::weak_ptr<taraxa::AppBase> app_;
+  TaraxaDposReader dpos_reader_;
 
  private:
   Json::Value version;

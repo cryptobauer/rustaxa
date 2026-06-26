@@ -558,6 +558,9 @@ Implemented first slice:
   stakes, and total delegated amount. The default production reader is still backed by the FinalChain external-state
   adapter because DPoS state lives on the external EVM/StateAPI boundary, but debug RPC methods no longer assemble those
   reads ad hoc from public `FinalChain` calls in Rust-mode query paths.
+- Taraxa RPC DPoS reads now use a dedicated `TaraxaDposReader` callback bundle for node-version vote aggregation,
+  per-period DPoS yield, and total supply. Rust-mode `taraxa_getNodeVersions` now combines `ConsensusQueryApi` PBFT
+  version facts with this external-state reader instead of reading DPoS vote counts through public `FinalChain` calls.
 
 ## Consensus Internal
 
