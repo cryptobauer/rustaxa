@@ -346,6 +346,19 @@ impl BridgeConsensusQueryApi {
             self.0.transaction_receipt_by_hash(*hash)?,
         ))
     }
+
+    /// Returns stable public transaction receipt views for one finalized block number.
+    pub fn consensus_query_transaction_receipts_by_block_number(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<rustaxa_ffi::TransactionReceiptPublicView>, anyhow::Error> {
+        Ok(self
+            .0
+            .transaction_receipts_by_block_number(block_number)?
+            .into_iter()
+            .map(transaction_receipt_view_to_ffi)
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -1086,6 +1099,21 @@ mod tests {
         assert!(!view.is_system);
         assert!(view.block_hash_found);
         assert_eq!(view.block_hash, block_hash.0);
+
+        let block_receipts = api
+            .consensus_query_transaction_receipts_by_block_number(12)
+            .unwrap();
+        assert_eq!(block_receipts.len(), 1);
+        assert_eq!(block_receipts[0].transaction_hash, keccak256(&trx_rlp).0);
+        assert_eq!(block_receipts[0].transaction_rlp, trx_rlp);
+        assert_eq!(block_receipts[0].receipt_rlp, receipt_rlp);
+        assert_eq!(block_receipts[0].block_number, 12);
+        assert_eq!(block_receipts[0].transaction_index, 0);
+        assert_eq!(block_receipts[0].block_hash, block_hash.0);
+        assert!(api
+            .consensus_query_transaction_receipts_by_block_number(99)
+            .unwrap()
+            .is_empty());
         assert!(
             !api.consensus_query_transaction_receipt_by_hash(&[0x99; 32])
                 .unwrap()

@@ -5103,6 +5103,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             hash: &[u8; 32],
         ) -> Result<TransactionReceiptPublicView>;
+        pub fn consensus_query_transaction_receipts_by_block_number(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+        ) -> Result<Vec<TransactionReceiptPublicView>>;
     }
 
     extern "Rust" {

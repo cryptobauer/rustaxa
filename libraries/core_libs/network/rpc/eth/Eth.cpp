@@ -355,6 +355,26 @@ class EthImpl : public Eth, EthParams {
 
   Json::Value eth_getBlockReceipts(const Json::Value& _blockNumber) override {
     auto blk_n = get_block_number_from_json(_blockNumber);
+#ifdef RUSTAXA_ENABLE
+    if (query_transaction_receipts_by_block_number) {
+      Json::Value result(Json::arrayValue);
+      const auto views = query_transaction_receipts_by_block_number(blk_n);
+      for (const auto& view : views) {
+        auto trx = materializeReceiptTransactionView(view);
+        if (!trx) {
+          throw std::runtime_error("CONSENSUS_QUERY_ETH_BLOCK_RECEIPT_TRANSACTION_MISSING");
+        }
+        auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
+        result.append(toJson(LocalisedTransactionReceipt{
+            util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)),
+            receiptLocationFromView(view),
+            trx->getSender(),
+            trx->getReceiver(),
+        }));
+      }
+      return result;
+    }
+#endif
     auto block_hash = final_chain->blockHash(blk_n);
     if (!block_hash) {
       return Json::Value(Json::arrayValue);

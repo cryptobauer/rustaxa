@@ -86,6 +86,9 @@ void Rpc::start() {
     eth_rpc_params.query_transaction_receipt = [query_api = eth_query_api](auto const &trx_hash) {
       return (*query_api)->consensus_query_transaction_receipt_by_hash(trx_hash.asArray());
     };
+    eth_rpc_params.query_transaction_receipts_by_block_number = [query_api = eth_query_api](auto block_number) {
+      return (*query_api)->consensus_query_transaction_receipts_by_block_number(block_number);
+    };
 #endif
     eth_rpc_params.send_trx = [trx_manager = app()->getTransactionManager()](auto const &trx) {
       if (auto [ok, err_msg] = trx_manager->insertTransaction(trx); !ok) {

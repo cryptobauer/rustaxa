@@ -132,12 +132,12 @@ pub struct TransactionView {
     pub transaction_rlp: Vec<u8>,
 }
 
-/// Stable public view of one transaction receipt resolved by transaction hash.
+/// Stable public view of one transaction receipt resolved by transaction lookup.
 ///
 /// The view is built from Rust-owned transaction location, FinalChain block
 /// hash, transaction payload, and receipt indexes. The receipt remains canonical
 /// RLP so C++ public adapters can keep existing JSON formatting while no longer
-/// reading `FinalChain` directly for single-receipt lookup.
+/// reading `FinalChain` directly for receipt lookup.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransactionReceiptView {
     pub found: bool,
@@ -728,6 +728,44 @@ impl ConsensusQueryApi {
         self.transaction_count_by_block_number(block_number)
     }
 
+    fn transaction_receipt_for_transaction(
+        &self,
+        transaction: TransactionView,
+    ) -> Result<TransactionReceiptView> {
+        if !transaction.found || !transaction.location_found {
+            return Ok(TransactionReceiptView::default());
+        }
+
+        let transaction_hash = H256::from(transaction.hash);
+        let receipt_rlp = match self
+            .receipt_by_period_position(transaction.block_number, transaction.transaction_index)
+            .context("CONSENSUS_QUERY_TRANSACTION_RECEIPT_BY_PERIOD")?
+        {
+            Some(receipt_rlp) => Some(receipt_rlp),
+            None => self
+                .storage
+                .final_chain()
+                .receipt_by_trx_hash(transaction_hash)
+                .context("CONSENSUS_QUERY_TRANSACTION_RECEIPT_BY_HASH")?,
+        };
+        let Some(receipt_rlp) = receipt_rlp else {
+            return Ok(TransactionReceiptView::default());
+        };
+
+        Ok(TransactionReceiptView {
+            found: true,
+            transaction_hash: transaction.hash,
+            transaction_source: transaction.source,
+            transaction_rlp: transaction.transaction_rlp,
+            receipt_rlp,
+            block_number: transaction.block_number,
+            transaction_index: transaction.transaction_index,
+            is_system: transaction.is_system,
+            block_hash_found: transaction.block_hash_found,
+            block_hash: transaction.block_hash,
+        })
+    }
+
     /// Returns a public transaction receipt view by transaction hash.
     ///
     /// Missing transaction location, transaction payload, or receipt bytes
@@ -738,38 +776,36 @@ impl ConsensusQueryApi {
     /// as errors with stable context labels.
     pub fn transaction_receipt_by_hash(&self, hash: [u8; 32]) -> Result<TransactionReceiptView> {
         let transaction = self.transaction_by_hash(hash)?;
-        if !transaction.found || !transaction.location_found {
-            return Ok(TransactionReceiptView::default());
+        self.transaction_receipt_for_transaction(transaction)
+    }
+
+    /// Returns all public regular-transaction receipt views for a finalized block number.
+    ///
+    /// Unknown blocks return an empty vector, matching `eth_getBlockReceipts`
+    /// empty-array behavior. For known finalized blocks, the query resolves the
+    /// Rust-owned transaction count, indexed transaction payloads, and receipt
+    /// rows inside the facade so public RPC code does not call `FinalChain`
+    /// directly for block receipt expansion. Missing transaction or receipt rows
+    /// in a known block are reported as storage-consistency errors.
+    pub fn transaction_receipts_by_block_number(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<TransactionReceiptView>> {
+        let count = self.transaction_count_by_block_number(block_number)?;
+        let mut receipts = Vec::with_capacity(count as usize);
+        for transaction_index in 0..count {
+            let transaction =
+                self.transaction_by_block_number_and_index(block_number, transaction_index)?;
+            if !transaction.found {
+                anyhow::bail!("CONSENSUS_QUERY_BLOCK_RECEIPT_TRANSACTION_MISSING");
+            }
+            let receipt = self.transaction_receipt_for_transaction(transaction)?;
+            if !receipt.found {
+                anyhow::bail!("CONSENSUS_QUERY_BLOCK_RECEIPT_MISSING");
+            }
+            receipts.push(receipt);
         }
-
-        let requested_hash = H256::from(hash);
-        let receipt_rlp = match self
-            .receipt_by_period_position(transaction.block_number, transaction.transaction_index)
-            .context("CONSENSUS_QUERY_TRANSACTION_RECEIPT_BY_PERIOD")?
-        {
-            Some(receipt_rlp) => Some(receipt_rlp),
-            None => self
-                .storage
-                .final_chain()
-                .receipt_by_trx_hash(requested_hash)
-                .context("CONSENSUS_QUERY_TRANSACTION_RECEIPT_BY_HASH")?,
-        };
-        let Some(receipt_rlp) = receipt_rlp else {
-            return Ok(TransactionReceiptView::default());
-        };
-
-        Ok(TransactionReceiptView {
-            found: true,
-            transaction_hash: hash,
-            transaction_source: transaction.source,
-            transaction_rlp: transaction.transaction_rlp,
-            receipt_rlp,
-            block_number: transaction.block_number,
-            transaction_index: transaction.transaction_index,
-            is_system: transaction.is_system,
-            block_hash_found: transaction.block_hash_found,
-            block_hash: transaction.block_hash,
-        })
+        Ok(receipts)
     }
 }
 
@@ -1808,6 +1844,20 @@ mod tests {
         assert!(fallback.found);
         assert_eq!(fallback.receipt_rlp, fallback_receipt_rlp);
         assert_eq!(fallback.block_hash, fallback_block_hash.0);
+
+        let block_receipts = api.transaction_receipts_by_block_number(12).unwrap();
+        assert_eq!(block_receipts.len(), 1);
+        assert_eq!(block_receipts[0].transaction_hash, keccak256(&trx_rlp).0);
+        assert_eq!(block_receipts[0].transaction_rlp, trx_rlp);
+        assert_eq!(block_receipts[0].receipt_rlp, receipt_rlp);
+        assert_eq!(block_receipts[0].block_number, 12);
+        assert_eq!(block_receipts[0].transaction_index, 0);
+        assert_eq!(block_receipts[0].block_hash, block_hash.0);
+        assert!(
+            api.transaction_receipts_by_block_number(99)
+                .unwrap()
+                .is_empty()
+        );
 
         assert!(
             !api.transaction_receipt_by_hash(missing_hash.0)

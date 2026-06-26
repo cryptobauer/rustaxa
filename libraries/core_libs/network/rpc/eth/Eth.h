@@ -26,6 +26,8 @@ struct EthParams {
   std::function<uint64_t(EthBlockNumber)> query_transaction_count_by_block_number;
   std::function<uint64_t(const h256&)> query_transaction_count_by_block_hash;
   std::function<rustaxa::TransactionReceiptPublicView(const h256&)> query_transaction_receipt;
+  std::function<rust::Vec<rustaxa::TransactionReceiptPublicView>(EthBlockNumber)>
+      query_transaction_receipts_by_block_number;
 #endif
   std::function<void(const std::shared_ptr<Transaction>& trx)> send_trx;
   std::function<u256()> gas_pricer = [] { return u256(0); };

@@ -432,6 +432,7 @@ Implemented first slice:
   - `consensus_query_transaction_count_by_block_number(block_number) -> u64`
   - `consensus_query_transaction_count_by_block_hash(block_hash) -> u64`
   - `consensus_query_transaction_receipt_by_hash(hash) -> TransactionReceiptPublicView`
+  - `consensus_query_transaction_receipts_by_block_number(block_number) -> Vec<TransactionReceiptPublicView>`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
   hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
@@ -462,11 +463,14 @@ Implemented first slice:
 - `eth_getBlockTransactionCountByNumber` and `eth_getBlockTransactionCountByHash` now use `ConsensusQueryApi` in Rust
   mode for finalized transaction counts instead of reading `FinalChain` transaction-count and block-number indexes
   directly.
+- `eth_getBlockReceipts` now uses `ConsensusQueryApi` in Rust mode for finalized regular-transaction receipt expansion
+  instead of reading `FinalChain` block hashes, transaction vectors, block receipt lists, and per-transaction receipts
+  directly. Debug receipt expansion and log filtering still remain on compatibility routes.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing account-state, expanded transaction, block receipt/log, and sync/status routes remain compatibility or
-  typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing account-state, expanded transaction, debug receipt/log, log filtering, and sync/status routes remain
+  compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal
 
