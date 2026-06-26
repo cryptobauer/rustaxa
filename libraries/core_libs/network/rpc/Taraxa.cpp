@@ -60,6 +60,25 @@ TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app) {
   return reader;
 }
 
+TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> app) {
+  TaraxaDagStatusReader reader;
+  reader.latest_level = [app] {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
+    }
+    return static_cast<uint64_t>(node->getDagManager()->getMaxLevel());
+  };
+  reader.latest_period = [app] {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
+    }
+    return static_cast<uint64_t>(node->getDagManager()->getLatestPeriod());
+  };
+  return reader;
+}
+
 void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_ptr<taraxa::AppBase> app) {
   auto defaults = makeTaraxaDposReader(std::move(app));
   if (!reader.eligible_total_vote_count) {
@@ -73,6 +92,16 @@ void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_pt
   }
   if (!reader.total_supply) {
     reader.total_supply = std::move(defaults.total_supply);
+  }
+}
+
+void fillMissingTaraxaDagStatusReaderCallbacks(TaraxaDagStatusReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTaraxaDagStatusReader(std::move(app));
+  if (!reader.latest_level) {
+    reader.latest_level = std::move(defaults.latest_level);
+  }
+  if (!reader.latest_period) {
+    reader.latest_period = std::move(defaults.latest_period);
   }
 }
 }  // namespace
@@ -226,9 +255,10 @@ Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, 
 }  // namespace
 #endif
 
-Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader)
-    : app_(app), dpos_reader_(std::move(dpos_reader)) {
+Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, TaraxaDagStatusReader dag_status_reader)
+    : app_(app), dpos_reader_(std::move(dpos_reader)), dag_status_reader_(std::move(dag_status_reader)) {
   fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
+  fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_);
 
   Json::CharReaderBuilder builder;
   auto reader = std::unique_ptr<Json::CharReader>(builder.newCharReader());
@@ -243,12 +273,13 @@ Json::Value Taraxa::taraxa_getVersion() { return version; }
 
 string Taraxa::taraxa_dagBlockLevel() {
   try {
-    auto app = tryGetApp();
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-    return toJS(query_api->consensus_query_status().latest_dag_level);
+    if (auto app = app_.lock()) {
+      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+      return toJS(query_api->consensus_query_status().latest_dag_level);
+    }
 #endif
-    return toJS(app->getDagManager()->getMaxLevel());
+    return toJS(dag_status_reader_.latest_level());
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }
@@ -256,12 +287,13 @@ string Taraxa::taraxa_dagBlockLevel() {
 
 string Taraxa::taraxa_dagBlockPeriod() {
   try {
-    auto app = tryGetApp();
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-    return toJS(query_api->consensus_query_status().latest_dag_period);
+    if (auto app = app_.lock()) {
+      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+      return toJS(query_api->consensus_query_status().latest_dag_period);
+    }
 #endif
-    return toJS(app->getDagManager()->getLatestPeriod());
+    return toJS(dag_status_reader_.latest_period());
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }

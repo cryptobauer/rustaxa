@@ -330,6 +330,28 @@ TEST_F(RPCTest, taraxa_dpos_scalar_reads_use_taraxa_dpos_reader) {
   ASSERT_TRUE(*supply_called);
 }
 
+TEST_F(RPCTest, taraxa_dag_status_reads_use_dag_status_reader) {
+  auto level_called = std::make_shared<bool>(false);
+  auto period_called = std::make_shared<bool>(false);
+
+  net::TaraxaDagStatusReader dag_status_reader;
+  dag_status_reader.latest_level = [level_called] {
+    *level_called = true;
+    return uint64_t(44);
+  };
+  dag_status_reader.latest_period = [period_called] {
+    *period_called = true;
+    return uint64_t(55);
+  };
+
+  net::Taraxa taraxa_rpc(nullptr, {}, std::move(dag_status_reader));
+
+  EXPECT_EQ(dev::toJS(uint64_t(44)), taraxa_rpc.taraxa_dagBlockLevel());
+  ASSERT_TRUE(*level_called);
+  EXPECT_EQ(dev::toJS(uint64_t(55)), taraxa_rpc.taraxa_dagBlockPeriod());
+  ASSERT_TRUE(*period_called);
+}
+
 TEST_F(RPCTest, test_coin_transaction_uses_transaction_api) {
   constexpr uint64_t chain_id = 2999;
   const auto secret = secret_t::random();

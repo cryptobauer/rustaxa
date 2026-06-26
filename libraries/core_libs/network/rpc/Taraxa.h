@@ -25,9 +25,19 @@ struct TaraxaDposReader {
   std::function<u256(EthBlockNumber)> total_supply;
 };
 
+// TaraxaDagStatusReader is the Taraxa RPC boundary for live DAG status facts.
+// It supplies the latest DAG level and proposal period without exposing
+// DagManager to public RPC methods. Rust-mode production routes prefer
+// ConsensusQueryApi when an app/storage handle is available.
+struct TaraxaDagStatusReader {
+  std::function<uint64_t()> latest_level;
+  std::function<uint64_t()> latest_period;
+};
+
 class Taraxa : public TaraxaFace {
  public:
-  explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {});
+  explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {},
+                  TaraxaDagStatusReader dag_status_reader = {});
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
 
@@ -51,6 +61,7 @@ class Taraxa : public TaraxaFace {
  protected:
   std::weak_ptr<taraxa::AppBase> app_;
   TaraxaDposReader dpos_reader_;
+  TaraxaDagStatusReader dag_status_reader_;
 
  private:
   Json::Value version;

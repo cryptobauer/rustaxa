@@ -459,6 +459,9 @@ Implemented first slice:
 - `taraxa_dagBlockLevel`, `taraxa_dagBlockPeriod`, and Test RPC `get_node_status.dag_level` now use
   `ConsensusQueryApi::consensus_query_status` in Rust mode for storage-backed latest DAG level/proposal-period facts
   instead of reading the live `DagManager`.
+- Taraxa RPC `taraxa_dagBlockLevel` and `taraxa_dagBlockPeriod` now use a dedicated `TaraxaDagStatusReader` fallback
+  boundary for latest DAG level/proposal-period facts instead of reading `DagManager` directly from public methods.
+  Rust-mode production calls still prefer `ConsensusQueryApi::consensus_query_status` when app storage is available.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
 - `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of
