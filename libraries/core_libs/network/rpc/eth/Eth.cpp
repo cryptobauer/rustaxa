@@ -445,6 +445,11 @@ class EthImpl : public Eth, EthParams {
 
   Json::Value eth_getFilterLogs(const string& _filterId) override {
     if (auto filter = watches_.logs_.get_watch_params(jsToInt(_filterId))) {
+#ifdef RUSTAXA_ENABLE
+      if (auto rust_logs = get_logs_with_query(*filter)) {
+        return *rust_logs;
+      }
+#endif
       return toJsonArray(filter->match_all(*final_chain));
     }
     return Json::Value(Json::arrayValue);
@@ -452,19 +457,8 @@ class EthImpl : public Eth, EthParams {
 
   Json::Value eth_getLogs(const Json::Value& _json) override {
 #ifdef RUSTAXA_ENABLE
-    if (query_final_chain_last_block_number && query_blocks_with_bloom && query_transaction_receipts_by_block_number) {
-      auto filter = parse_log_filter(_json);
-      auto last_block_number = query_final_chain_last_block_number();
-      auto blocks_with_bloom = [this](const LogBloom& bloom, EthBlockNumber from, EthBlockNumber to) {
-        std::array<uint8_t, 256> bloom_bytes{};
-        std::memcpy(bloom_bytes.data(), bloom.data(), bloom_bytes.size());
-        auto rust_blocks = query_blocks_with_bloom(bloom_bytes, from, to);
-        return std::vector<EthBlockNumber>(rust_blocks.begin(), rust_blocks.end());
-      };
-      auto block_receipts = [this](EthBlockNumber block_number) {
-        return receiptViewsForLogFilter(query_transaction_receipts_by_block_number(block_number));
-      };
-      return toJsonArray(filter.match_all(last_block_number, blocks_with_bloom, block_receipts));
+    if (auto rust_logs = get_logs_with_query(parse_log_filter(_json))) {
+      return *rust_logs;
     }
 #endif
     return toJsonArray(parse_log_filter(_json).match_all(*final_chain));
@@ -623,6 +617,26 @@ class EthImpl : public Eth, EthParams {
     auto n = final_chain->blockNumber(block_hash);
     return n ? final_chain->transactionCount(n) : 0;
   }
+
+#ifdef RUSTAXA_ENABLE
+  std::optional<Json::Value> get_logs_with_query(const LogFilter& filter) const {
+    if (!query_final_chain_last_block_number || !query_blocks_with_bloom || !query_transaction_receipts_by_block_number) {
+      return std::nullopt;
+    }
+
+    auto last_block_number = query_final_chain_last_block_number();
+    auto blocks_with_bloom = [this](const LogBloom& bloom, EthBlockNumber from, EthBlockNumber to) {
+      std::array<uint8_t, 256> bloom_bytes{};
+      std::memcpy(bloom_bytes.data(), bloom.data(), bloom_bytes.size());
+      auto rust_blocks = query_blocks_with_bloom(bloom_bytes, from, to);
+      return std::vector<EthBlockNumber>(rust_blocks.begin(), rust_blocks.end());
+    };
+    auto block_receipts = [this](EthBlockNumber block_number) {
+      return receiptViewsForLogFilter(query_transaction_receipts_by_block_number(block_number));
+    };
+    return toJsonArray(filter.match_all(last_block_number, blocks_with_bloom, block_receipts));
+  }
+#endif
 
   trx_nonce_t transaction_count(EthBlockNumber n, const Address& addr) {
     return final_chain->getAccount(addr, n).value_or(ZeroAccount).nonce;

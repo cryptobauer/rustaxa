@@ -473,14 +473,15 @@ Implemented first slice:
   directly.
 - `debug_getPeriodTransactionsWithReceipts` now uses the same `ConsensusQueryApi` block-receipts DTO in Rust mode
   instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
-- `eth_getLogs` now uses `ConsensusQueryApi` in Rust mode for latest finalized block lookup, bloom-index candidate block
-  lookup, and block receipt expansion instead of asking `FinalChain` for bloom matches and receipt rows directly. Watch
-  filter replay and subscription backfill still remain on compatibility routes.
+- `eth_getLogs` and installed `eth_getFilterLogs` replay now use `ConsensusQueryApi` in Rust mode for latest finalized
+  block lookup, bloom-index candidate block lookup, and block receipt expansion instead of asking `FinalChain` for bloom
+  matches and receipt rows directly. Live subscription delivery still remains on the execution-event compatibility route.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing account-state, non-GraphQL expanded transaction routes, watch/debug log filtering, and sync/status routes
-  remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing account-state, non-GraphQL expanded transaction routes, live subscription log delivery, debug log filtering,
+  and sync/status routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in
+  later slices.
 
 ## Consensus Internal
 
