@@ -10,8 +10,19 @@
 #include "subscription.hpp"
 #include "transaction/gas_pricer.hpp"
 namespace taraxa::net {
+
+// GraphQlOperations is the external HTTP processor's minimal GraphQL boundary.
+// Callers provide already-wired operation roots, keeping app consensus managers
+// out of the primary HTTP processing API.
+struct GraphQlOperations {
+  std::shared_ptr<graphql::taraxa::Query> query;
+  std::shared_ptr<graphql::taraxa::Mutation> mutation;
+  std::shared_ptr<graphql::taraxa::Subscription> subscription;
+};
+
 class GraphQlHttpProcessor final : public HttpProcessor {
  public:
+  explicit GraphQlHttpProcessor(GraphQlOperations operations);
   GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                        std::shared_ptr<::taraxa::DagManager> dag_manager,
                        std::shared_ptr<::taraxa::PbftManager> pbft_manager,

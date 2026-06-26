@@ -1,5 +1,7 @@
 #include "graphql/http_processor.hpp"
 
+#include <stdexcept>
+
 #include "common/jsoncpp.hpp"
 #include "common/util.hpp"
 #include "graphqlservice/GraphQLService.h"
@@ -8,6 +10,37 @@
 namespace taraxa::net {
 
 using namespace graphql;
+
+namespace {
+std::shared_ptr<graphql::taraxa::Query> requireGraphQlQuery(std::shared_ptr<graphql::taraxa::Query> query) {
+  if (!query) {
+    throw std::invalid_argument("GRAPHQL_HTTP_PROCESSOR_MISSING_QUERY");
+  }
+  return query;
+}
+
+std::shared_ptr<graphql::taraxa::Mutation> requireGraphQlMutation(std::shared_ptr<graphql::taraxa::Mutation> mutation) {
+  if (!mutation) {
+    throw std::invalid_argument("GRAPHQL_HTTP_PROCESSOR_MISSING_MUTATION");
+  }
+  return mutation;
+}
+
+std::shared_ptr<graphql::taraxa::Subscription> defaultGraphQlSubscription(
+    std::shared_ptr<graphql::taraxa::Subscription> subscription) {
+  if (subscription) {
+    return subscription;
+  }
+  return std::make_shared<graphql::taraxa::Subscription>();
+}
+}  // namespace
+
+GraphQlHttpProcessor::GraphQlHttpProcessor(GraphQlOperations operations)
+    : HttpProcessor(),
+      query_(requireGraphQlQuery(std::move(operations.query))),
+      mutation_(requireGraphQlMutation(std::move(operations.mutation))),
+      subscription_(defaultGraphQlSubscription(std::move(operations.subscription))),
+      operations_(query_, mutation_, subscription_) {}
 
 GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                                            std::shared_ptr<::taraxa::DagManager> dag_manager,
@@ -18,13 +51,12 @@ GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain
                                            std::shared_ptr<::taraxa::GasPricer> gas_pricer,
                                            std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
                                            ::taraxa::net::LiveStatusReader live_status)
-    : HttpProcessor(),
-      query_(std::make_shared<graphql::taraxa::Query>(
-          std::move(final_chain), std::move(dag_manager), std::move(pbft_manager), transaction_manager, std::move(db),
-          std::move(gas_pricer), std::move(network), chain_id, std::move(live_status))),
-      mutation_(std::make_shared<graphql::taraxa::Mutation>(transaction_manager)),
-      subscription_(std::make_shared<graphql::taraxa::Subscription>()),
-      operations_(query_, mutation_, subscription_) {}
+    : GraphQlHttpProcessor(GraphQlOperations{
+          std::make_shared<graphql::taraxa::Query>(
+              std::move(final_chain), std::move(dag_manager), std::move(pbft_manager), transaction_manager,
+              std::move(db), std::move(gas_pricer), std::move(network), chain_id, std::move(live_status)),
+          std::make_shared<graphql::taraxa::Mutation>(std::move(transaction_manager)),
+          std::make_shared<graphql::taraxa::Subscription>()}) {}
 
 HttpProcessor::Response GraphQlHttpProcessor::process(const Request& request) {
   try {

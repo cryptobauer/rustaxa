@@ -224,7 +224,13 @@ dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
   return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
 }
 
+dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
+  return dev::Address(address.data(), dev::Address::ConstructFromPointer);
+}
+
 dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+dev::bytes bytesFromBridge(const std::array<uint8_t, 32>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
 std::shared_ptr<::taraxa::Transaction> materializeTransactionView(const rustaxa::TransactionPublicView& view) {
   if (!view.found) {
@@ -251,11 +257,20 @@ std::shared_ptr<::taraxa::final_chain::BlockHeader> blockHeaderFromView(const ru
   if (!view.found) {
     return nullptr;
   }
-  auto header_bytes = bytesFromBridge(view.stored_header_rlp);
-  auto header = ::taraxa::final_chain::BlockHeader::fromRLP(dev::RLP(header_bytes));
-  if (header->hash != hashFromBridge(view.hash)) {
-    throw std::runtime_error("CONSENSUS_QUERY_GRAPHQL_BLOCK_HASH_MISMATCH");
+  auto header = std::make_shared<::taraxa::final_chain::BlockHeader>();
+  header->hash = hashFromBridge(view.hash);
+  header->parent_hash = hashFromBridge(view.parent_hash);
+  header->author = addressFromBridge(view.author);
+  header->state_root = hashFromBridge(view.state_root);
+  header->transactions_root = hashFromBridge(view.transactions_root);
+  header->receipts_root = hashFromBridge(view.receipts_root);
+  if (view.log_bloom.size() != 256) {
+    throw std::runtime_error("CONSENSUS_QUERY_GRAPHQL_BLOCK_LOG_BLOOM_SIZE");
   }
+  header->log_bloom = ::taraxa::LogBloom(view.log_bloom.data(), ::taraxa::LogBloom::ConstructFromPointer);
+  header->gas_used = view.gas_used;
+  header->total_reward = dev::fromBigEndian<dev::u256>(bytesFromBridge(view.total_reward));
+  header->number = view.number;
   return header;
 }
 }  // namespace

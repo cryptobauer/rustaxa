@@ -9,6 +9,7 @@
 #include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
 #include "graphql/block.hpp"
+#include "graphql/http_processor.hpp"
 #include "graphql/log.hpp"
 #include "graphql/mutation.hpp"
 #include "graphql/query.hpp"
@@ -923,6 +924,45 @@ TEST_F(RPCTest, graphql_mutation_uses_transaction_api) {
 
   EXPECT_EQ(dev::toJS(trx->getHash()), result.get<std::string>());
   ASSERT_TRUE(*insert_called);
+}
+
+TEST_F(RPCTest, graphql_http_processor_uses_injected_operations) {
+  graphql::taraxa::MutationTransactionApi transaction_api;
+  transaction_api.insert_transaction = [](const SharedTransaction&) { return std::pair<bool, std::string>{false, ""}; };
+
+  net::GraphQlHttpProcessor processor(net::GraphQlOperations{
+      std::make_shared<graphql::taraxa::Query>(graphql::taraxa::AccountStateReader{}, uint64_t(77)),
+      std::make_shared<graphql::taraxa::Mutation>(std::move(transaction_api)),
+      {},
+  });
+
+  net::HttpProcessor::Request request;
+  request.set("Content-Type", "application/json");
+  request.body() = R"({"query":"{ chainID }"})";
+
+  const auto response = processor.process(request);
+  Json::Value json;
+  std::stringstream stream(response.body());
+  stream >> json;
+
+  EXPECT_EQ(boost::beast::http::status::ok, response.result());
+  EXPECT_EQ(dev::toJS(uint64_t(77)), json["data"]["chainID"].asString());
+}
+
+TEST_F(RPCTest, graphql_http_processor_requires_query_and_mutation_roots) {
+  EXPECT_THROW(net::GraphQlHttpProcessor(net::GraphQlOperations{
+                   nullptr,
+                   std::make_shared<graphql::taraxa::Mutation>(graphql::taraxa::MutationTransactionApi{}),
+                   {},
+               }),
+               std::invalid_argument);
+
+  EXPECT_THROW(net::GraphQlHttpProcessor(net::GraphQlOperations{
+                   std::make_shared<graphql::taraxa::Query>(graphql::taraxa::AccountStateReader{}, uint64_t(1)),
+                   nullptr,
+                   {},
+               }),
+               std::invalid_argument);
 }
 
 TEST_F(RPCTest, graphql_transaction_uses_receipt_reader) {

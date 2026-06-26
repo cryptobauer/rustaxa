@@ -254,14 +254,17 @@ void Rpc::start() {
     }
 
     if (conf.network.graphql->http_port) {
+      auto graphql_query = std::make_shared<graphql::taraxa::Query>(
+          app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
+          app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id,
+          live_status_reader);
+      auto graphql_mutation = std::make_shared<graphql::taraxa::Mutation>(app()->getTransactionManager());
       graphql_http_ = std::make_shared<net::HttpServer>(
           graphql_thread_pool_->unsafe_get_io_context(),
           boost::asio::ip::tcp::endpoint{conf.network.graphql->address, *conf.network.graphql->http_port},
           app()->getAddress(),
           std::make_shared<net::GraphQlHttpProcessor>(
-              app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
-              app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id,
-              live_status_reader),
+              net::GraphQlOperations{std::move(graphql_query), std::move(graphql_mutation), {}}),
           jsonrpc_metrics);
       graphql_http_->start();
     }

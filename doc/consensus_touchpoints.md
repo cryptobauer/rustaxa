@@ -656,6 +656,14 @@ Implemented first slice:
   `FinalChain`/`TransactionManager`/`PbftManager` pointers through Rust-mode query results. Legacy compatibility
   constructors still synthesize the same readers from managers for non-migrated call sites, but reader-backed child
   objects no longer store unused manager payloads as query authority.
+- GraphQL HTTP processing now has a primary `GraphQlOperations` constructor that accepts already-wired `Query`,
+  `Mutation`, and optional `Subscription` roots. The old manager-heavy `GraphQlHttpProcessor` constructor remains only as
+  a compatibility adapter that builds those roots, while RPC plugin HTTP wiring now hands the processor the operation
+  bundle instead of making broad consensus managers part of the processor-facing API.
+- GraphQL Rust-backed final-chain block objects now materialize legacy `BlockHeader` fields from typed
+  `FinalChainBlockView` DTO fields instead of decoding Rust stored-header compatibility RLP as a full legacy block
+  header. Stored-header bytes remain available on the query DTO for compatibility clients, but GraphQL block formatting
+  uses the minimal public query view.
 - The light-node plugin now consumes a dedicated `LightHistoryApi` for finalized-block cleanup triggers, DAG cleanup
   facts, proposal-period lookup, history range deletion, and state DB pruning. The default adapter remains the audited
   compatibility point for live `DagManager`, `DbStorage`, and `FinalChain` access, while the plugin workflow only owns
