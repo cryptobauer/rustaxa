@@ -6,10 +6,17 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "TaraxaFace.h"
 #include "common/app_base.hpp"
 #include "libweb3jsonrpc/ModularServer.h"
+
+namespace taraxa {
+class DagBlock;
+struct Transaction;
+}  // namespace taraxa
 
 namespace taraxa::net {
 
@@ -34,10 +41,21 @@ struct TaraxaDagStatusReader {
   std::function<uint64_t()> latest_period;
 };
 
+// TaraxaDagBlockReader is the Taraxa RPC boundary for legacy DAG block
+// materialization. It supplies block, finalized-period, and optional
+// transaction payload facts without exposing DAG, PBFT, or transaction managers
+// to public RPC methods. Rust-mode production routes prefer ConsensusQueryApi.
+struct TaraxaDagBlockReader {
+  std::function<std::shared_ptr<::taraxa::DagBlock>(const blk_hash_t&)> block_by_hash;
+  std::function<std::vector<std::shared_ptr<::taraxa::DagBlock>>(level_t)> blocks_by_level;
+  std::function<std::optional<uint64_t>(const blk_hash_t&)> period_by_hash;
+  std::function<std::shared_ptr<::taraxa::Transaction>(const trx_hash_t&)> transaction_by_hash;
+};
+
 class Taraxa : public TaraxaFace {
  public:
   explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {},
-                  TaraxaDagStatusReader dag_status_reader = {});
+                  TaraxaDagStatusReader dag_status_reader = {}, TaraxaDagBlockReader dag_block_reader = {});
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
 
@@ -62,6 +80,7 @@ class Taraxa : public TaraxaFace {
   std::weak_ptr<taraxa::AppBase> app_;
   TaraxaDposReader dpos_reader_;
   TaraxaDagStatusReader dag_status_reader_;
+  TaraxaDagBlockReader dag_block_reader_;
 
  private:
   Json::Value version;

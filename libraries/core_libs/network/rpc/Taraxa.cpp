@@ -79,6 +79,43 @@ TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> a
   return reader;
 }
 
+TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app) {
+  TaraxaDagBlockReader reader;
+  reader.block_by_hash = [app](const blk_hash_t& hash) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
+    }
+    return node->getDagManager()->getDagBlock(hash);
+  };
+  reader.blocks_by_level = [app](level_t level) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
+    }
+    return node->getDB()->getDagBlocksAtLevel(level, 1);  // RUSTAXA_QUERY_COMPAT_READ
+  };
+  reader.period_by_hash = [app](const blk_hash_t& hash) -> std::optional<uint64_t> {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
+    }
+    const auto period = node->getPbftManager()->getDagBlockPeriod(hash);
+    if (!period.first) {
+      return std::nullopt;
+    }
+    return period.second;
+  };
+  reader.transaction_by_hash = [app](const trx_hash_t& hash) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
+    }
+    return node->getTransactionManager()->getTransaction(hash);
+  };
+  return reader;
+}
+
 void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_ptr<taraxa::AppBase> app) {
   auto defaults = makeTaraxaDposReader(std::move(app));
   if (!reader.eligible_total_vote_count) {
@@ -102,6 +139,22 @@ void fillMissingTaraxaDagStatusReaderCallbacks(TaraxaDagStatusReader& reader, st
   }
   if (!reader.latest_period) {
     reader.latest_period = std::move(defaults.latest_period);
+  }
+}
+
+void fillMissingTaraxaDagBlockReaderCallbacks(TaraxaDagBlockReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTaraxaDagBlockReader(std::move(app));
+  if (!reader.block_by_hash) {
+    reader.block_by_hash = std::move(defaults.block_by_hash);
+  }
+  if (!reader.blocks_by_level) {
+    reader.blocks_by_level = std::move(defaults.blocks_by_level);
+  }
+  if (!reader.period_by_hash) {
+    reader.period_by_hash = std::move(defaults.period_by_hash);
+  }
+  if (!reader.transaction_by_hash) {
+    reader.transaction_by_hash = std::move(defaults.transaction_by_hash);
   }
 }
 }  // namespace
@@ -255,10 +308,15 @@ Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, 
 }  // namespace
 #endif
 
-Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, TaraxaDagStatusReader dag_status_reader)
-    : app_(app), dpos_reader_(std::move(dpos_reader)), dag_status_reader_(std::move(dag_status_reader)) {
+Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, TaraxaDagStatusReader dag_status_reader,
+               TaraxaDagBlockReader dag_block_reader)
+    : app_(app),
+      dpos_reader_(std::move(dpos_reader)),
+      dag_status_reader_(std::move(dag_status_reader)),
+      dag_block_reader_(std::move(dag_block_reader)) {
   fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
   fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_);
+  fillMissingTaraxaDagBlockReaderCallbacks(dag_block_reader_, app_);
 
   Json::CharReaderBuilder builder;
   auto reader = std::unique_ptr<Json::CharReader>(builder.newCharReader());
@@ -308,37 +366,42 @@ std::shared_ptr<AppBase> Taraxa::tryGetApp() {
 
 Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _includeTransactions) {
   try {
-    auto app = tryGetApp();
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-    const auto rust_block = query_api->consensus_query_dag_block_by_hash(blk_hash_t(_blockHash).asArray());
-    if (rust_block.found) {
-      auto block_json = dagBlockPublicViewToJson(rust_block);
-      if (rust_block.finalized_period_found) {
-        block_json["period"] = toJS(rust_block.finalized_period);
-      } else {
-        block_json["period"] = "-0x1";
+    if (auto app = app_.lock()) {
+      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+      const auto rust_block = query_api->consensus_query_dag_block_by_hash(blk_hash_t(_blockHash).asArray());
+      if (rust_block.found) {
+        auto block_json = dagBlockPublicViewToJson(rust_block);
+        if (rust_block.finalized_period_found) {
+          block_json["period"] = toJS(rust_block.finalized_period);
+        } else {
+          block_json["period"] = "-0x1";
+        }
+        if (_includeTransactions) {
+          appendDagBlockTransactionsFromQuery(block_json, rust_block.transactions, query_api);
+        }
+        return block_json;
       }
-      if (_includeTransactions) {
-        appendDagBlockTransactionsFromQuery(block_json, rust_block.transactions, query_api);
-      }
-      return block_json;
+      return Json::Value();
     }
-    return Json::Value();
 #endif
-    auto block = app->getDagManager()->getDagBlock(blk_hash_t(_blockHash));
+    auto block = dag_block_reader_.block_by_hash(blk_hash_t(_blockHash));
     if (block) {
       auto block_json = block->getJson();
-      auto period = app->getPbftManager()->getDagBlockPeriod(block->getHash());
-      if (period.first) {
-        block_json["period"] = toJS(period.second);
+      const auto period = dag_block_reader_.period_by_hash(block->getHash());
+      if (period) {
+        block_json["period"] = toJS(*period);
       } else {
         block_json["period"] = "-0x1";
       }
       if (_includeTransactions) {
         block_json["transactions"] = Json::Value(Json::arrayValue);
         for (auto const& t : block->getTrxs()) {
-          block_json["transactions"].append(app->getTransactionManager()->getTransaction(t)->toJSON());
+          auto transaction = dag_block_reader_.transaction_by_hash(t);
+          if (!transaction) {
+            throw std::runtime_error("TARAXA_DAG_BLOCK_TRANSACTION_MISSING");
+          }
+          block_json["transactions"].append(transaction->toJSON());
         }
       }
       return block_json;
@@ -466,39 +529,44 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
 
 Json::Value Taraxa::taraxa_getDagBlockByLevel(const string& _blockLevel, bool _includeTransactions) {
   try {
-    auto app = tryGetApp();
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-    const auto rust_blocks = query_api->consensus_query_dag_blocks_by_level(dev::jsToInt(_blockLevel), 1);
-    auto rust_res = Json::Value(Json::arrayValue);
-    for (auto const& block : rust_blocks) {
-      auto block_json = dagBlockPublicViewToJson(block);
-      if (block.finalized_period_found) {
-        block_json["period"] = toJS(block.finalized_period);
-      } else {
-        block_json["period"] = "-0x1";
+    if (auto app = app_.lock()) {
+      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+      const auto rust_blocks = query_api->consensus_query_dag_blocks_by_level(dev::jsToInt(_blockLevel), 1);
+      auto rust_res = Json::Value(Json::arrayValue);
+      for (auto const& block : rust_blocks) {
+        auto block_json = dagBlockPublicViewToJson(block);
+        if (block.finalized_period_found) {
+          block_json["period"] = toJS(block.finalized_period);
+        } else {
+          block_json["period"] = "-0x1";
+        }
+        if (_includeTransactions) {
+          appendDagBlockTransactionsFromQuery(block_json, block.transactions, query_api);
+        }
+        rust_res.append(block_json);
       }
-      if (_includeTransactions) {
-        appendDagBlockTransactionsFromQuery(block_json, block.transactions, query_api);
-      }
-      rust_res.append(block_json);
+      return rust_res;
     }
-    return rust_res;
 #endif
-    auto blocks = app->getDB()->getDagBlocksAtLevel(dev::jsToInt(_blockLevel), 1);  // RUSTAXA_QUERY_COMPAT_READ
+    auto blocks = dag_block_reader_.blocks_by_level(dev::jsToInt(_blockLevel));
     auto res = Json::Value(Json::arrayValue);
     for (auto const& b : blocks) {
       auto block_json = b->getJson();
-      auto period = app->getPbftManager()->getDagBlockPeriod(b->getHash());
-      if (period.first) {
-        block_json["period"] = toJS(period.second);
+      const auto period = dag_block_reader_.period_by_hash(b->getHash());
+      if (period) {
+        block_json["period"] = toJS(*period);
       } else {
         block_json["period"] = "-0x1";
       }
       if (_includeTransactions) {
         block_json["transactions"] = Json::Value(Json::arrayValue);
         for (auto const& t : b->getTrxs()) {
-          block_json["transactions"].append(app->getTransactionManager()->getTransaction(t)->toJSON());
+          auto transaction = dag_block_reader_.transaction_by_hash(t);
+          if (!transaction) {
+            throw std::runtime_error("TARAXA_DAG_BLOCK_TRANSACTION_MISSING");
+          }
+          block_json["transactions"].append(transaction->toJSON());
         }
       }
       res.append(block_json);

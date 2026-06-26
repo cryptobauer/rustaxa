@@ -479,6 +479,10 @@ Implemented first slice:
   finalized period/position lookup in Rust mode instead of creating endpoint-local DAG query handles and asking the live
   `PbftManager` for block period. Their optional transaction expansion now also resolves each DAG transaction hash
   through `ConsensusQueryApi::consensus_query_transaction_by_hash` instead of asking `TransactionManager` directly.
+- Taraxa RPC legacy fallback DAG block materialization now uses a dedicated `TaraxaDagBlockReader` callback bundle for
+  DAG block lookup, finalized-period lookup, and optional transaction expansion instead of reading `DagManager`,
+  `PbftManager`, `DbStorage`, and `TransactionManager` directly from `taraxa_getDagBlockByHash` and
+  `taraxa_getDagBlockByLevel`.
 - `debug_getPeriodDagBlocks` and GraphQL `periodDagBlocks` now use `ConsensusQueryApi` for finalized DAG block facts by
   PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. Rust-backed GraphQL DAG
   objects use the finalized-period facts carried by Rust DTOs and no longer fall back to live `PbftManager` period

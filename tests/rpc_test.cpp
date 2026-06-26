@@ -352,6 +352,57 @@ TEST_F(RPCTest, taraxa_dag_status_reads_use_dag_status_reader) {
   ASSERT_TRUE(*period_called);
 }
 
+TEST_F(RPCTest, taraxa_dag_block_reads_use_dag_block_reader) {
+  auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  const auto transaction_hash = transaction->getHash();
+  auto dag_block = std::make_shared<DagBlock>(blk_hash_t(9), level_t(4), vec_blk_t{}, vec_trx_t{transaction_hash},
+                                              secret_t::random());
+  const auto dag_hash = dag_block->getHash();
+
+  auto by_hash_called = std::make_shared<bool>(false);
+  auto by_level_called = std::make_shared<bool>(false);
+  auto period_called = std::make_shared<int>(0);
+  auto transaction_called = std::make_shared<int>(0);
+
+  net::TaraxaDagBlockReader dag_block_reader;
+  dag_block_reader.block_by_hash = [by_hash_called, dag_block, dag_hash](const blk_hash_t& requested_hash) {
+    *by_hash_called = true;
+    EXPECT_EQ(dag_hash, requested_hash);
+    return dag_block;
+  };
+  dag_block_reader.blocks_by_level = [by_level_called, dag_block](level_t requested_level) {
+    *by_level_called = true;
+    EXPECT_EQ(level_t(4), requested_level);
+    return std::vector<std::shared_ptr<DagBlock>>{dag_block};
+  };
+  dag_block_reader.period_by_hash = [period_called, dag_hash](const blk_hash_t& requested_hash) {
+    ++*period_called;
+    EXPECT_EQ(dag_hash, requested_hash);
+    return std::optional<uint64_t>(33);
+  };
+  dag_block_reader.transaction_by_hash = [transaction_called, transaction,
+                                          transaction_hash](const trx_hash_t& requested_hash) {
+    ++*transaction_called;
+    EXPECT_EQ(transaction_hash, requested_hash);
+    return transaction;
+  };
+
+  net::Taraxa taraxa_rpc(nullptr, {}, {}, std::move(dag_block_reader));
+
+  const auto by_hash = taraxa_rpc.taraxa_getDagBlockByHash(dag_hash.toString(), true);
+  EXPECT_EQ(dev::toJS(uint64_t(33)), by_hash["period"].asString());
+  ASSERT_EQ(Json::ArrayIndex(1), by_hash["transactions"].size());
+  ASSERT_TRUE(*by_hash_called);
+
+  const auto by_level = taraxa_rpc.taraxa_getDagBlockByLevel(dev::toJS(uint64_t(4)), true);
+  ASSERT_EQ(Json::ArrayIndex(1), by_level.size());
+  EXPECT_EQ(dev::toJS(uint64_t(33)), by_level[0]["period"].asString());
+  ASSERT_EQ(Json::ArrayIndex(1), by_level[0]["transactions"].size());
+  ASSERT_TRUE(*by_level_called);
+  EXPECT_EQ(2, *period_called);
+  EXPECT_EQ(2, *transaction_called);
+}
+
 TEST_F(RPCTest, test_coin_transaction_uses_transaction_api) {
   constexpr uint64_t chain_id = 2999;
   const auto secret = secret_t::random();
