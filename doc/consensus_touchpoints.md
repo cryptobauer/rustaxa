@@ -470,14 +470,18 @@ Implemented first slice:
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
 - Taraxa RPC legacy `taraxa_getScheduleBlockByPeriod` now uses a dedicated `TaraxaScheduleReader` callback bundle for
-  PBFT schedule block materialization instead of reading `DbStorage` directly from the public method.
+  PBFT schedule block materialization instead of reading `DbStorage` directly from the public method. The default reader
+  uses `ConsensusQueryApi` in Rust mode and keeps direct `DbStorage` materialization only as the non-Rust compatibility
+  fallback.
 - `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of
   creating an endpoint-local period-storage query handle. The route intentionally leaves scan policy, version string
   formatting, and DPoS vote-count aggregation in the public RPC layer until live FinalChain/state reads move behind a
   dedicated query view.
 - Taraxa RPC legacy fallback `taraxa_getNodeVersions` now uses a dedicated `TaraxaNodeVersionReader` callback bundle for
   latest finalized period lookup and per-period PBFT author/version facts instead of reading `FinalChain` or `DbStorage`
-  directly from the public method. DPoS vote aggregation still uses `TaraxaDposReader`.
+  directly from the public method. The default reader uses `ConsensusQueryApi` in Rust mode and keeps direct
+  `FinalChain`/`DbStorage` reads only as the non-Rust compatibility fallback. DPoS vote aggregation still uses
+  `TaraxaDposReader`.
 - `debug_getPreviousBlockCertVotes` now uses `ConsensusQueryApi` in Rust mode for storage-backed optimized cert-vote
   bundle lookup and canonical `PbftVote` RLP reconstruction instead of reading period data through `DbStorage` directly.
   The debug endpoint still owns legacy JSON materialization for the returned vote objects.
@@ -490,7 +494,8 @@ Implemented first slice:
 - Taraxa RPC legacy fallback `taraxa_getPillarBlockData` now uses a dedicated `TaraxaPillarBlockDataReader` callback
   bundle for pillar-period validation and pillar block data materialization instead of reading config and `DbStorage`
   directly from the public method. The default reader is the remaining audited compatibility adapter and uses
-  `ConsensusQueryApi` in Rust mode.
+  `ConsensusQueryApi` in Rust mode; direct `DbStorage` materialization is limited to the non-Rust compatibility
+  fallback.
 - `taraxa_getDagBlockByHash` and `taraxa_getDagBlockByLevel` now use `ConsensusQueryApi` for DAG block facts and
   finalized period/position lookup in Rust mode instead of creating endpoint-local DAG query handles and asking the live
   `PbftManager` for block period. Their optional transaction expansion now also resolves each DAG transaction hash

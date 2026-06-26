@@ -28,6 +28,10 @@ using namespace ::taraxa::final_chain;
 namespace taraxa::net {
 
 namespace {
+#ifdef RUSTAXA_ENABLE
+Json::Value pbftScheduleBlockViewToJson(const rustaxa::PbftScheduleBlockView& view);
+#endif
+
 TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app) {
   TaraxaDposReader reader;
   reader.eligible_total_vote_count = [app](EthBlockNumber block_number) {
@@ -188,7 +192,15 @@ TaraxaScheduleReader makeTaraxaScheduleReader(std::weak_ptr<taraxa::AppBase> app
     if (!node) {
       throw std::runtime_error("TARAXA_SCHEDULE_READER_APP_EXPIRED");
     }
-    auto db = node->getDB();  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto view = query_api->consensus_query_pbft_schedule_block_by_period(period);
+    if (!view.found) {
+      return std::nullopt;
+    }
+    return pbftScheduleBlockViewToJson(view);
+#endif
+    auto db = node->getDB();
     auto block = db->getPbftBlock(period);
     if (!block) {
       return std::nullopt;
@@ -227,7 +239,7 @@ TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBas
                                      std::to_string(version_view.minor_version) + "." +
                                      std::to_string(version_view.patch_version)};
 #endif
-    auto block = node->getDB()->getPbftBlock(period);  // RUSTAXA_QUERY_COMPAT_READ
+    auto block = node->getDB()->getPbftBlock(period);
     if (!block.has_value()) {
       return std::nullopt;
     }
@@ -490,12 +502,12 @@ TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa
     return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
 #endif
 
-    const auto pillar_block = node->getDB()->getPillarBlock(pbft_period);  // RUSTAXA_QUERY_COMPAT_READ
+    const auto pillar_block = node->getDB()->getPillarBlock(pbft_period);
     if (!pillar_block) {
       return std::nullopt;
     }
 
-    const auto& pillar_votes = node->getDB()->getPeriodPillarVotes(pbft_period + 1);  // RUSTAXA_QUERY_COMPAT_READ
+    const auto& pillar_votes = node->getDB()->getPeriodPillarVotes(pbft_period + 1);
     if (pillar_votes.empty()) {
       return std::nullopt;
     }
