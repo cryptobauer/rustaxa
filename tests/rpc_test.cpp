@@ -9,6 +9,7 @@
 #include "graphql/account.hpp"
 #include "graphql/mutation.hpp"
 #include "graphql/sync_state.hpp"
+#include "graphql/types/current_state.hpp"
 #include "network/rpc/Debug.h"
 #include "network/rpc/Taraxa.h"
 #include "network/rpc/Test.h"
@@ -53,6 +54,51 @@ TEST_F(RPCTest, graphql_syncing_uses_live_status_reader) {
   EXPECT_EQ(0, sync_state.getStartingBlock().get<int>());
   EXPECT_EQ(6, sync_state.getCurrentBlock().get<int>());
   EXPECT_EQ(12, sync_state.getHighestBlock().get<int>());
+}
+
+TEST_F(RPCTest, graphql_status_objects_use_reader_apis) {
+  auto final_block_called = std::make_shared<bool>(false);
+  auto dag_level_called = std::make_shared<bool>(false);
+  auto dag_period_called = std::make_shared<bool>(false);
+  graphql::taraxa::CurrentStateReader current_reader;
+  current_reader.final_block = [final_block_called] {
+    *final_block_called = true;
+    return uint64_t(10);
+  };
+  current_reader.dag_block_level = [dag_level_called] {
+    *dag_level_called = true;
+    return uint64_t(11);
+  };
+  current_reader.dag_block_period = [dag_period_called] {
+    *dag_period_called = true;
+    return uint64_t(12);
+  };
+
+  graphql::taraxa::CurrentState current_state(std::move(current_reader));
+  EXPECT_EQ(10, current_state.getFinalBlock().get<int>());
+  EXPECT_EQ(11, current_state.getDagBlockLevel().get<int>());
+  EXPECT_EQ(12, current_state.getDagBlockPeriod().get<int>());
+  ASSERT_TRUE(*final_block_called);
+  ASSERT_TRUE(*dag_level_called);
+  ASSERT_TRUE(*dag_period_called);
+
+  auto current_block_called = std::make_shared<bool>(false);
+  auto highest_block_called = std::make_shared<bool>(false);
+  graphql::taraxa::SyncStateReader sync_reader;
+  sync_reader.current_block = [current_block_called] {
+    *current_block_called = true;
+    return uint64_t(13);
+  };
+  sync_reader.highest_block = [highest_block_called] {
+    *highest_block_called = true;
+    return std::optional<uint64_t>(14);
+  };
+
+  graphql::taraxa::SyncState sync_state(std::move(sync_reader));
+  EXPECT_EQ(13, sync_state.getCurrentBlock().get<int>());
+  EXPECT_EQ(14, sync_state.getHighestBlock().get<int>());
+  ASSERT_TRUE(*current_block_called);
+  ASSERT_TRUE(*highest_block_called);
 }
 
 TEST_F(RPCTest, live_log_subscription_uses_subscription_api) {
