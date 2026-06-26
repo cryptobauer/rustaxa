@@ -1,5 +1,6 @@
 pub mod consensus_execution_api;
 pub mod consensus_pipeline;
+pub mod consensus_query_api;
 pub mod dag;
 pub mod gas_pricer;
 pub mod network_api;
@@ -40,6 +41,7 @@ pub use consensus_pipeline::{
     EventOrigin, Hash32, IngressPayloadRef, PbftSyncEvent, PbftVoteEvent, PbftVoteFacts,
     PeerStatusEvent, PillarVoteEvent, PipelineKind, TransactionEvent,
 };
+pub use consensus_query_api::{ConsensusQueryApi, FinalChainBlockView, QueryHashLookup};
 pub use final_chain::FinalChain;
 pub use final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED,

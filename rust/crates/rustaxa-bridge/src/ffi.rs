@@ -19,6 +19,7 @@ use crate::period_data_queue::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
+use crate::query::*;
 use crate::rewards_stats::*;
 use crate::slashing::*;
 use crate::sortition::*;
@@ -42,6 +43,7 @@ use rustaxa_consensus::transaction_manager::{
 use rustaxa_consensus::transaction_queue::{TransactionQueue, TransactionQueueEntry};
 use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusNetworkApi;
+use rustaxa_consensus::ConsensusQueryApi;
 use rustaxa_consensus::FinalChain;
 use rustaxa_consensus::PbftVoteAdmissionRuntime;
 use rustaxa_consensus::PillarVotes;
@@ -139,6 +141,13 @@ pub struct BridgeFinalChainExecutionSession {
 /// report validation, publication planning, storage publication, and audit
 /// decisions.
 pub struct BridgeConsensusExecutionApi(pub ConsensusExecutionApi);
+
+/// Rust-owned public consensus query facade.
+///
+/// The facade owns only a cloned Rust storage handle and returns stable read
+/// DTOs for public adapters. It does not expose consensus managers, storage
+/// iterators, or mutable sidecars.
+pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 
 pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>, pub Option<Arc<Storage>>);
 
@@ -3108,6 +3117,28 @@ pub mod rustaxa_ffi {
         signatures: Vec<PillarBlockViewSignature>,
     }
 
+    /// Public FinalChain block view returned by `ConsensusQueryApi`.
+    ///
+    /// The view is read-only and contains stable scalar/hash facts plus the
+    /// canonical stored header bytes for compatibility formatters. It does not
+    /// expose FinalChain, PBFT, storage, or manager objects.
+    struct FinalChainBlockView {
+        found: bool,
+        number: u64,
+        hash: [u8; 32],
+        parent_hash: [u8; 32],
+        author: [u8; 20],
+        state_root: [u8; 32],
+        transactions_root: [u8; 32],
+        receipts_root: [u8; 32],
+        log_bloom: Vec<u8>,
+        gas_used: u64,
+        total_reward: [u8; 32],
+        stored_header_rlp: Vec<u8>,
+        has_pbft_hash: bool,
+        pbft_block_hash: [u8; 32],
+    }
+
     /// Parent-linkage facts for one candidate pillar block.
     struct PillarBlockLinkageFact {
         pillar_block_period: u64,
@@ -4981,6 +5012,20 @@ pub mod rustaxa_ffi {
         difficulty: u16,
         vdf_proof: Vec<u8>,
         vdf_output: Vec<u8>,
+    }
+
+    extern "Rust" {
+        type BridgeConsensusQueryApi;
+
+        pub fn create_consensus_query_api(storage: &BridgeStorage) -> Box<BridgeConsensusQueryApi>;
+        pub fn consensus_query_pbft_block_hash_by_period(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+        ) -> Result<HashLookup>;
+        pub fn consensus_query_final_chain_block_by_number(
+            self: &BridgeConsensusQueryApi,
+            number: u64,
+        ) -> Result<FinalChainBlockView>;
     }
 
     extern "Rust" {

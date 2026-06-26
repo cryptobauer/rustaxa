@@ -218,8 +218,8 @@ std::string Taraxa::taraxa_pbftBlockHashByPeriod(const std::string& _period) {
   try {
     auto app = tryGetApp();
 #ifdef RUSTAXA_ENABLE
-    const auto period_queries = rustaxa::create_period_storage_queries(app->getDB()->rustStorage());
-    const auto lookup = period_queries->get_pbft_block_hash_by_period(dev::jsToInt(_period));
+    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+    const auto lookup = query_api->consensus_query_pbft_block_hash_by_period(dev::jsToInt(_period));
     if (!lookup.found) {
       return {};
     }

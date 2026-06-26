@@ -411,6 +411,23 @@ First useful routes:
 - Replace RPC/GraphQL direct `PbftManager`, `DagManager`, `TransactionManager`, `FinalChain`, and `DbStorage` reads.
 - Provide a single status/sync view for metrics, RPC, GraphQL, and debug surfaces.
 
+Implemented first slice:
+
+- Rust domain facade: `rust/crates/rustaxa-consensus/src/consensus_query_api.rs`
+- CXX bridge facade: `BridgeConsensusQueryApi` in `rust/crates/rustaxa-bridge/src/query.rs`
+- The facade is read-only and owns only a cloned Rust storage handle. Public adapters create it from `BridgeStorage` and
+  receive stable DTOs; they do not receive consensus manager pointers, storage iterators, batches, or mutable sidecars.
+- Implemented routes:
+  - `consensus_query_pbft_block_hash_by_period(period) -> HashLookup`
+  - `consensus_query_final_chain_block_by_number(number) -> FinalChainBlockView`
+- `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
+  hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
+- The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
+  canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
+  account state, DPoS snapshots, or external `StateAPI` reads.
+- Existing DAG public-view, PBFT schedule-block, pillar-block, transaction, receipt, account-state, and sync/status
+  routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+
 ## Consensus Internal
 
 Internal areas are consensus-owned or consensus-adjacent code that has already been rewritten in Rust, is actively

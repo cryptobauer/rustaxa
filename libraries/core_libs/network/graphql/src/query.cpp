@@ -72,8 +72,8 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
   }
 
 #ifdef RUSTAXA_ENABLE
-  const auto period_queries = rustaxa::create_period_storage_queries(db_->rustStorage());
-  const auto pbft_block_hash = period_queries->get_pbft_block_hash_by_period(block_header->number);
+  const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+  const auto pbft_block_hash = query_api->consensus_query_pbft_block_hash_by_period(block_header->number);
   if (!pbft_block_hash.found) {
     // shouldn't be possible
     return nullptr;

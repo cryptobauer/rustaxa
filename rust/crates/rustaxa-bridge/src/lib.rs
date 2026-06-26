@@ -20,6 +20,7 @@ mod period_data_queue;
 mod pillar_chain;
 mod pillar_votes;
 mod proposed_blocks;
+mod query;
 mod rewards_stats;
 mod slashing;
 mod sortition;
