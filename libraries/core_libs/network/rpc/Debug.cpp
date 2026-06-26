@@ -65,9 +65,8 @@ void fillMissingDebugDposReaderCallbacks(DebugDposReader& reader, std::weak_ptr<
 
 DebugTraceReader makeDebugTraceReader(std::weak_ptr<taraxa::AppBase> app) {
   DebugTraceReader reader;
-  reader.trace = [app](std::vector<state_api::EVMTransaction> state_trxs,
-                       std::vector<state_api::EVMTransaction> trxs, EthBlockNumber block_number,
-                       std::optional<state_api::Tracing> tracing) {
+  reader.trace = [app](std::vector<state_api::EVMTransaction> state_trxs, std::vector<state_api::EVMTransaction> trxs,
+                       EthBlockNumber block_number, std::optional<state_api::Tracing> tracing) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
@@ -106,13 +105,73 @@ void fillMissingDebugTraceReaderCallbacks(DebugTraceReader& reader, std::weak_pt
     reader.latest_finalized_block_number = std::move(defaults.latest_finalized_block_number);
   }
 }
+
+DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::weak_ptr<taraxa::AppBase> app) {
+  DebugPreviousBlockCertVotesReader reader;
+  reader.cert_votes_by_period = [app](uint64_t period) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_PREVIOUS_BLOCK_CERT_VOTES_READER_APP_EXPIRED");
+    }
+
+    DebugPreviousBlockCertVotesView view;
+    auto vote_manager = node->getVoteManager();
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto cert_vote_view = query_api->consensus_query_pbft_previous_block_cert_votes_by_period(period);
+    if (!cert_vote_view.found) {
+      return view;
+    }
+
+    view.found = true;
+    view.total_votes_count = node->getFinalChain()->dposEligibleTotalVoteCount(cert_vote_view.certified_period - 1);
+    view.round = cert_vote_view.round;
+    view.votes.reserve(cert_vote_view.votes.size());
+    for (const auto& vote_view : cert_vote_view.votes) {
+      auto vote = std::make_shared<PbftVote>(bytes(vote_view.vote_rlp.begin(), vote_view.vote_rlp.end()));
+      vote_manager->validateVote(vote);
+      view.votes.emplace_back(std::move(vote));
+    }
+    return view;
+#endif
+    auto votes = node->getDB()->getPeriodCertVotes(period);  // RUSTAXA_QUERY_COMPAT_READ
+    if (votes.empty()) {
+      return view;
+    }
+
+    const auto& front_vote = votes.front();
+    view.found = true;
+    view.total_votes_count = node->getFinalChain()->dposEligibleTotalVoteCount(front_vote->getPeriod() - 1);
+    view.round = front_vote->getRound();
+    view.votes.reserve(votes.size());
+    for (auto& vote : votes) {
+      vote_manager->validateVote(vote);
+      view.votes.emplace_back(std::move(vote));
+    }
+    return view;
+  };
+  return reader;
+}
+
+void fillMissingDebugPreviousBlockCertVotesReaderCallbacks(DebugPreviousBlockCertVotesReader& reader,
+                                                           std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeDebugPreviousBlockCertVotesReader(std::move(app));
+  if (!reader.cert_votes_by_period) {
+    reader.cert_votes_by_period = std::move(defaults.cert_votes_by_period);
+  }
+}
 }  // namespace
 
 Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader,
-             DebugTraceReader trace_reader)
-    : app_(app), dpos_reader_(std::move(dpos_reader)), trace_reader_(std::move(trace_reader)), kGasLimit(gas_limit) {
+             DebugTraceReader trace_reader, DebugPreviousBlockCertVotesReader previous_cert_votes_reader)
+    : app_(app),
+      dpos_reader_(std::move(dpos_reader)),
+      trace_reader_(std::move(trace_reader)),
+      previous_cert_votes_reader_(std::move(previous_cert_votes_reader)),
+      kGasLimit(gas_limit) {
   fillMissingDebugDposReaderCallbacks(dpos_reader_, app_);
   fillMissingDebugTraceReaderCallbacks(trace_reader_, app_);
+  fillMissingDebugPreviousBlockCertVotesReaderCallbacks(previous_cert_votes_reader_, app_);
 }
 
 #ifdef RUSTAXA_ENABLE
@@ -348,8 +407,8 @@ Json::Value Debug::debug_getPeriodTransactionsWithReceipts(const std::string& _p
       auto location = receiptLocationFromView(view);
       auto transaction = rpc::eth::LocalisedTransaction{trx, location};
       auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
-      auto receipt = rpc::eth::LocalisedTransactionReceipt{
-          util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)), location, trx->getSender(), trx->getReceiver()};
+      auto receipt = rpc::eth::LocalisedTransactionReceipt{util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)),
+                                                           location, trx->getSender(), trx->getReceiver()};
       auto receipt_json = rpc::eth::toJson(receipt);
       receipt_json.removeMember("transactionHash");
       result.append(util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json)));
@@ -420,55 +479,15 @@ Json::Value Debug::debug_getPeriodDagBlocks(const std::string& _period) {
 
 Json::Value Debug::debug_getPreviousBlockCertVotes(const std::string& _period) {
   try {
-    auto node = app_.lock();
-    if (!node) {
-      BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
-    }
-
-    auto vote_manager = node->getVoteManager();
-
     Json::Value res(Json::objectValue);
-
-    auto period = dev::jsToInt(_period);
-#ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto cert_vote_view = query_api->consensus_query_pbft_previous_block_cert_votes_by_period(period);
-    if (!cert_vote_view.found) {
+    const auto view = previous_cert_votes_reader_.cert_votes_by_period(dev::jsToInt(_period));
+    if (!view.found) {
       return res;
     }
 
-    std::vector<std::shared_ptr<PbftVote>> rust_votes;
-    rust_votes.reserve(cert_vote_view.votes.size());
-    for (const auto& vote_view : cert_vote_view.votes) {
-      rust_votes.emplace_back(std::make_shared<PbftVote>(bytesFromBridge(vote_view.vote_rlp)));
-    }
-
-    const uint64_t rust_total_dpos_votes_count =
-        dpos_reader_.eligible_total_vote_count(cert_vote_view.certified_period - 1);
-    res["total_votes_count"] = rust_total_dpos_votes_count;
-    res["round"] = cert_vote_view.round;
-    res["votes"] = util::transformToJsonParallel(rust_votes, [&](const auto& vote, auto) {
-      vote_manager->validateVote(vote);
-      return vote->toJSON();
-    });
-    return res;
-#endif
-    auto final_chain = node->getFinalChain();
-    auto votes = node->getDB()->getPeriodCertVotes(period);  // RUSTAXA_QUERY_COMPAT_READ
-    if (votes.empty()) {
-      return res;
-    }
-
-    const auto& front_vote = votes.front();
-    const auto votes_period = front_vote->getPeriod();
-    const auto round = front_vote->getRound();
-    const uint64_t total_dpos_votes_count = final_chain->dposEligibleTotalVoteCount(votes_period - 1);
-    res["total_votes_count"] = total_dpos_votes_count;
-    res["round"] = round;
-    res["votes"] = util::transformToJsonParallel(votes, [&](const auto& vote, auto) {
-      vote_manager->validateVote(vote);
-      return vote->toJSON();
-    });
+    res["total_votes_count"] = view.total_votes_count;
+    res["round"] = view.round;
+    res["votes"] = util::transformToJsonParallel(view.votes, [](const auto& vote, auto) { return vote->toJSON(); });
     return res;
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));

@@ -473,9 +473,10 @@ Implemented first slice:
   dedicated query view.
 - `debug_getPreviousBlockCertVotes` now uses `ConsensusQueryApi` in Rust mode for storage-backed optimized cert-vote
   bundle lookup and canonical `PbftVote` RLP reconstruction instead of reading period data through `DbStorage` directly.
-  The debug endpoint still owns legacy JSON materialization, live `VoteManager::validateVote`, and
-  `FinalChain::dposEligibleTotalVoteCount` until vote-validation and DPoS snapshot facts move behind a dedicated query
-  boundary.
+  The debug endpoint still owns legacy JSON materialization for the returned vote objects.
+- Debug RPC previous-block cert-vote lookup now uses a dedicated `DebugPreviousBlockCertVotesReader` callback bundle for
+  storage-backed vote lookup, temporary vote validation, and total eligible vote count. Public debug RPC formatting no
+  longer reaches through `DbStorage`, `VoteManager`, or `FinalChain` for this method.
 - `taraxa_getPillarBlockData` now uses `ConsensusQueryApi` for finalized pillar block facts and the following period's
   optimized pillar-vote bundle in Rust mode instead of creating an endpoint-local pillar storage query handle.
 - `taraxa_getDagBlockByHash` and `taraxa_getDagBlockByLevel` now use `ConsensusQueryApi` for DAG block facts and

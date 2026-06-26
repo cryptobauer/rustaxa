@@ -13,8 +13,9 @@
 #include "final_chain/state_api_data.hpp"
 
 namespace taraxa {
+class PbftVote;
 struct Transaction;
-}
+}  // namespace taraxa
 
 namespace taraxa::state_api {
 struct TransactionReceipt;
@@ -53,6 +54,24 @@ struct DebugTraceReader {
   std::function<EthBlockNumber()> latest_finalized_block_number;
 };
 
+// DebugPreviousBlockCertVotesView is the debug RPC view of the previous-block
+// cert-vote bundle. Votes have already passed the compatibility validation
+// step in the reader; the public RPC method only formats the values.
+struct DebugPreviousBlockCertVotesView {
+  bool found = false;
+  uint64_t total_votes_count = 0;
+  uint64_t round = 0;
+  std::vector<std::shared_ptr<PbftVote>> votes;
+};
+
+// DebugPreviousBlockCertVotesReader is the debug RPC boundary for
+// storage-backed previous-block cert-vote lookup and validation. The default
+// adapter owns the temporary DbStorage/VoteManager/FinalChain compatibility
+// reads while Rust-enabled nodes prefer ConsensusQueryApi inside that adapter.
+struct DebugPreviousBlockCertVotesReader {
+  std::function<DebugPreviousBlockCertVotesView(uint64_t)> cert_votes_by_period;
+};
+
 class InvalidAddress : public std::exception {
  public:
   virtual const char* what() const noexcept { return "Invalid account address"; }
@@ -66,7 +85,7 @@ class InvalidTracingParams : public std::exception {
 class Debug : public DebugFace {
  public:
   explicit Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader = {},
-                 DebugTraceReader trace_reader = {});
+                 DebugTraceReader trace_reader = {}, DebugPreviousBlockCertVotesReader previous_cert_votes_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"debug", "1.0"}}; }
 
   virtual Json::Value debug_traceTransaction(const std::string& param1) override;
@@ -94,6 +113,7 @@ class Debug : public DebugFace {
   std::weak_ptr<taraxa::AppBase> app_;
   DebugDposReader dpos_reader_;
   DebugTraceReader trace_reader_;
+  DebugPreviousBlockCertVotesReader previous_cert_votes_reader_;
   const uint64_t kGasLimit = ((uint64_t)1 << 53) - 1;
 };
 

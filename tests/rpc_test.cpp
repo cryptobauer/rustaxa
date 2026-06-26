@@ -262,6 +262,30 @@ TEST_F(RPCTest, debug_dpos_reads_use_debug_dpos_reader) {
   ASSERT_TRUE(*delegated_called);
 }
 
+TEST_F(RPCTest, debug_previous_block_cert_votes_use_reader) {
+  auto cert_votes_called = std::make_shared<bool>(false);
+
+  net::DebugPreviousBlockCertVotesReader cert_votes_reader;
+  cert_votes_reader.cert_votes_by_period = [cert_votes_called](uint64_t period) {
+    *cert_votes_called = true;
+    EXPECT_EQ(uint64_t(12), period);
+    net::DebugPreviousBlockCertVotesView view;
+    view.found = true;
+    view.total_votes_count = 34;
+    view.round = 5;
+    return view;
+  };
+
+  net::Debug debug_rpc(nullptr, 0, {}, {}, std::move(cert_votes_reader));
+
+  const auto result = debug_rpc.debug_getPreviousBlockCertVotes(dev::toJS(uint64_t(12)));
+  EXPECT_EQ(Json::UInt64(34), result["total_votes_count"].asUInt64());
+  EXPECT_EQ(Json::UInt64(5), result["round"].asUInt64());
+  ASSERT_TRUE(result["votes"].isArray());
+  EXPECT_TRUE(result["votes"].empty());
+  ASSERT_TRUE(*cert_votes_called);
+}
+
 TEST_F(RPCTest, debug_trace_call_uses_debug_trace_reader) {
   const auto caller = addr_t::random();
   auto latest_called = std::make_shared<bool>(false);
