@@ -23,6 +23,13 @@ fn query_number_lookup_to_ffi(
     }
 }
 
+fn period_lambda_to_ffi(lambda: rustaxa_consensus::QueryPeriodLambda) -> rustaxa_ffi::PeriodLambda {
+    rustaxa_ffi::PeriodLambda {
+        found: lambda.found,
+        value: lambda.value,
+    }
+}
+
 fn final_chain_block_view_to_ffi(
     view: rustaxa_consensus::FinalChainBlockView,
 ) -> rustaxa_ffi::FinalChainBlockView {
@@ -246,6 +253,16 @@ impl BridgeConsensusQueryApi {
     /// Returns the latest finalized FinalChain block number.
     pub fn consensus_query_final_chain_last_block_number(&self) -> Result<u64, anyhow::Error> {
         self.0.final_chain_last_block_number()
+    }
+
+    /// Returns the exact persisted dynamic lambda for a finalized period.
+    pub fn consensus_query_period_lambda_by_period(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::PeriodLambda, anyhow::Error> {
+        Ok(period_lambda_to_ffi(
+            self.0.period_lambda_by_period(period)?,
+        ))
     }
 
     /// Returns finalized block numbers whose Rust FinalChain bloom index contains the query bloom.
@@ -721,6 +738,15 @@ mod tests {
         assert_eq!(
             api.consensus_query_final_chain_last_block_number().unwrap(),
             15
+        );
+        storage.save_period_lambda(15, 1234).unwrap();
+        let period_lambda = api.consensus_query_period_lambda_by_period(15).unwrap();
+        assert!(period_lambda.found);
+        assert_eq!(period_lambda.value, 1234);
+        assert!(
+            !api.consensus_query_period_lambda_by_period(16)
+                .unwrap()
+                .found
         );
         assert_eq!(
             api.consensus_query_final_chain_blocks_with_bloom(&query_bloom, 1, 15)

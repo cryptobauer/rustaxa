@@ -69,6 +69,18 @@ pub struct QueryNumberLookup {
     pub value: u64,
 }
 
+/// Optional dynamic-lambda lookup returned by public query facade methods.
+///
+/// `found` is false when no exact period-lambda row exists. When `found` is
+/// true, `value` carries the persisted lambda in milliseconds. The query facade
+/// exposes this as a dedicated public read so RPC callers do not reach into
+/// generic metadata storage for consensus-owned dynamic-lambda facts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QueryPeriodLambda {
+    pub found: bool,
+    pub value: u32,
+}
+
 /// Stable public view of a finalized FinalChain block.
 ///
 /// The view combines Rust FinalChain lookup rows with the PBFT period-data hash
@@ -411,6 +423,21 @@ impl ConsensusQueryApi {
             return Ok(0);
         };
         decode_u64_le(&raw, "CONSENSUS_QUERY_FINAL_CHAIN_LAST_NUMBER")
+    }
+
+    /// Returns the exact persisted dynamic lambda for a finalized period.
+    ///
+    /// This is the public-query route for `taraxa_getPeriodLambda`. It
+    /// intentionally does not use closest-prior fallback because that RPC has
+    /// historically reported only rows explicitly saved for the requested
+    /// period.
+    pub fn period_lambda_by_period(&self, period: u64) -> Result<QueryPeriodLambda> {
+        Ok(
+            match self.storage.metadata().period_lambda(period, false)? {
+                Some(value) => QueryPeriodLambda { found: true, value },
+                None => QueryPeriodLambda::default(),
+            },
+        )
     }
 
     /// Returns finalized block numbers whose indexed bloom contains `bloom`.
@@ -1629,6 +1656,15 @@ mod tests {
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
         assert_eq!(api.final_chain_last_block_number().unwrap(), 9);
+        storage.metadata().write_period_lambda(9, 1234).unwrap();
+        assert_eq!(
+            api.period_lambda_by_period(9).unwrap(),
+            QueryPeriodLambda {
+                found: true,
+                value: 1234
+            }
+        );
+        assert!(!api.period_lambda_by_period(10).unwrap().found);
         assert_eq!(
             api.final_chain_block_number_by_hash(block_hash.into())
                 .unwrap(),

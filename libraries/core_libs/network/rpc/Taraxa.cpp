@@ -458,6 +458,16 @@ Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_pe
 std::string Taraxa::taraxa_getPeriodLambda(const std::string& period) {
   try {
     auto app = tryGetApp();
+#ifdef RUSTAXA_ENABLE
+    {
+      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+      const auto period_lambda = query_api->consensus_query_period_lambda_by_period(dev::jsToInt(period));
+      if (!period_lambda.found) {
+        return {};
+      }
+      return toJS(period_lambda.value);
+    }
+#endif
     auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     auto period_lambda = db->getPeriodLambda(dev::jsToInt(period), false);
     if (!period_lambda.has_value()) {

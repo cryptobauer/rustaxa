@@ -5059,6 +5059,10 @@ pub mod rustaxa_ffi {
         pub fn consensus_query_final_chain_last_block_number(
             self: &BridgeConsensusQueryApi,
         ) -> Result<u64>;
+        pub fn consensus_query_period_lambda_by_period(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+        ) -> Result<PeriodLambda>;
         pub fn consensus_query_final_chain_blocks_with_bloom(
             self: &BridgeConsensusQueryApi,
             bloom: &[u8; 256],
