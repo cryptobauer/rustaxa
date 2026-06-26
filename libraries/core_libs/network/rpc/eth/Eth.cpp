@@ -4,6 +4,7 @@
 #include <libdevcore/CommonData.h>
 #include <libdevcore/CommonJS.h>
 
+#include <cstring>
 #include <stdexcept>
 
 #include "common/encoding_rlp.hpp"
@@ -97,6 +98,20 @@ ExtendedTransactionLocation receiptLocationFromView(const rustaxa::TransactionRe
   location.blk_h = hashFromBridge(view.block_hash);
   location.trx_hash = hashFromBridge(view.transaction_hash);
   return location;
+}
+
+std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>> receiptViewsForLogFilter(
+    const rust::Vec<rustaxa::TransactionReceiptPublicView>& views) {
+  std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>> receipts;
+  receipts.reserve(views.size());
+  for (const auto& view : views) {
+    if (!view.found) {
+      continue;
+    }
+    auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
+    receipts.emplace_back(receiptLocationFromView(view), util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)));
+  }
+  return receipts;
 }
 }  // namespace
 #endif
@@ -436,6 +451,22 @@ class EthImpl : public Eth, EthParams {
   }
 
   Json::Value eth_getLogs(const Json::Value& _json) override {
+#ifdef RUSTAXA_ENABLE
+    if (query_final_chain_last_block_number && query_blocks_with_bloom && query_transaction_receipts_by_block_number) {
+      auto filter = parse_log_filter(_json);
+      auto last_block_number = query_final_chain_last_block_number();
+      auto blocks_with_bloom = [this](const LogBloom& bloom, EthBlockNumber from, EthBlockNumber to) {
+        std::array<uint8_t, 256> bloom_bytes{};
+        std::memcpy(bloom_bytes.data(), bloom.data(), bloom_bytes.size());
+        auto rust_blocks = query_blocks_with_bloom(bloom_bytes, from, to);
+        return std::vector<EthBlockNumber>(rust_blocks.begin(), rust_blocks.end());
+      };
+      auto block_receipts = [this](EthBlockNumber block_number) {
+        return receiptViewsForLogFilter(query_transaction_receipts_by_block_number(block_number));
+      };
+      return toJsonArray(filter.match_all(last_block_number, blocks_with_bloom, block_receipts));
+    }
+#endif
     return toJsonArray(parse_log_filter(_json).match_all(*final_chain));
   }
 

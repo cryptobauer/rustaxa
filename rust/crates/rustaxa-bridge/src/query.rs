@@ -224,6 +224,21 @@ impl BridgeConsensusQueryApi {
         ))
     }
 
+    /// Returns the latest finalized FinalChain block number.
+    pub fn consensus_query_final_chain_last_block_number(&self) -> Result<u64, anyhow::Error> {
+        self.0.final_chain_last_block_number()
+    }
+
+    /// Returns finalized block numbers whose Rust FinalChain bloom index contains the query bloom.
+    pub fn consensus_query_final_chain_blocks_with_bloom(
+        &self,
+        bloom: &[u8; 256],
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<u64>, anyhow::Error> {
+        self.0.final_chain_blocks_with_bloom(*bloom, from, to)
+    }
+
     /// Returns a stable PBFT schedule-block public view by finalized period.
     pub fn consensus_query_pbft_schedule_block_by_period(
         &self,
@@ -613,6 +628,15 @@ mod tests {
         let api = create_consensus_query_api(&storage);
         let block_hash = H256::from_low_u64_be(88);
         let pbft_block_rlp = vec![0xC2, 0x03, 0x04];
+        let query_bloom = {
+            let mut bloom = [0u8; 256];
+            bloom[255] = 0x80;
+            bloom
+        };
+        let mut root_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
+        root_chunk[0] = query_bloom;
+        let mut leaf_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
+        leaf_chunk[15] = query_bloom;
 
         storage
             .save_period_data(15, period_data_rlp(&pbft_block_rlp))
@@ -620,14 +644,33 @@ mod tests {
         storage
             .seed_final_chain_conformance_lookup_rows(
                 1,
-                vec![0x01],
+                15u64.to_le_bytes().to_vec(),
                 15,
                 &block_hash.0,
                 stored_header_rlp(),
                 &H256::from_low_u64_be(99).0,
                 vec![],
-                &H256::from_low_u64_be(100).0,
+                &rustaxa_storage::final_chain_log_bloom_chunk_id(1, 0)
+                    .unwrap()
+                    .0,
+                rustaxa_storage::encode_final_chain_log_bloom_chunk(&root_chunk),
+                15,
                 vec![],
+            )
+            .unwrap();
+        storage
+            .seed_final_chain_conformance_lookup_rows(
+                1,
+                15u64.to_le_bytes().to_vec(),
+                15,
+                &block_hash.0,
+                stored_header_rlp(),
+                &H256::from_low_u64_be(99).0,
+                vec![],
+                &rustaxa_storage::final_chain_log_bloom_chunk_id(0, 0)
+                    .unwrap()
+                    .0,
+                rustaxa_storage::encode_final_chain_log_bloom_chunk(&leaf_chunk),
                 15,
                 vec![],
             )
@@ -646,6 +689,19 @@ mod tests {
         let lookup = api.consensus_query_pbft_block_hash_by_period(15).unwrap();
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
+        assert_eq!(
+            api.consensus_query_final_chain_last_block_number().unwrap(),
+            15
+        );
+        assert_eq!(
+            api.consensus_query_final_chain_blocks_with_bloom(&query_bloom, 1, 15)
+                .unwrap(),
+            vec![15]
+        );
+        assert!(api
+            .consensus_query_final_chain_blocks_with_bloom(&[0x11; 256], 1, 15)
+            .unwrap()
+            .is_empty());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

@@ -89,6 +89,12 @@ void Rpc::start() {
     eth_rpc_params.query_transaction_receipts_by_block_number = [query_api = eth_query_api](auto block_number) {
       return (*query_api)->consensus_query_transaction_receipts_by_block_number(block_number);
     };
+    eth_rpc_params.query_final_chain_last_block_number = [query_api = eth_query_api]() {
+      return (*query_api)->consensus_query_final_chain_last_block_number();
+    };
+    eth_rpc_params.query_blocks_with_bloom = [query_api = eth_query_api](auto const &bloom, auto from, auto to) {
+      return (*query_api)->consensus_query_final_chain_blocks_with_bloom(bloom, from, to);
+    };
 #endif
     eth_rpc_params.send_trx = [trx_manager = app()->getTransactionManager()](auto const &trx) {
       if (auto [ok, err_msg] = trx_manager->insertTransaction(trx); !ok) {

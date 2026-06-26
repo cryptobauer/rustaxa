@@ -9,7 +9,10 @@
 use anyhow::{Context, Result};
 use ethereum_types::{H160, H256};
 use rlp::Rlp;
-use rustaxa_storage::Storage;
+use rustaxa_storage::{
+    FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainLogBloom, Storage,
+    decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
+};
 use rustaxa_types::PbftBlockMetadata;
 use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
@@ -36,6 +39,7 @@ const PBFT_SIGNATURE_WITHOUT_EXTRA_POS: usize = 7;
 const PBFT_EXTRA_DATA_FIELDS: usize = 6;
 const PBFT_EXTRA_DATA_MAX_SIZE: usize = 1024;
 const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
+const FINAL_CHAIN_META_LAST_NUMBER: u32 = 1;
 
 pub use crate::transaction_storage::{
     STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
@@ -357,6 +361,123 @@ impl ConsensusQueryApi {
             has_pbft_hash: pbft_hash.found,
             pbft_block_hash: pbft_hash.hash,
         })
+    }
+
+    /// Returns the latest finalized FinalChain block number.
+    ///
+    /// The value is read directly from Rust-owned FinalChain metadata. Missing
+    /// metadata returns zero, matching the Rust FinalChain runtime and legacy
+    /// genesis behavior.
+    pub fn final_chain_last_block_number(&self) -> Result<u64> {
+        let Some(raw) = self
+            .storage
+            .final_chain()
+            .meta_value(FINAL_CHAIN_META_LAST_NUMBER)?
+        else {
+            return Ok(0);
+        };
+        decode_u64_le(&raw, "CONSENSUS_QUERY_FINAL_CHAIN_LAST_NUMBER")
+    }
+
+    /// Returns finalized block numbers whose indexed bloom contains `bloom`.
+    ///
+    /// The query follows the Rust FinalChain bloom-index traversal but keeps the
+    /// public facade storage-only: missing chunks decode as zero chunks,
+    /// malformed chunks are errors, and the range is inclusive.
+    pub fn final_chain_blocks_with_bloom(
+        &self,
+        bloom: [u8; 256],
+        from: u64,
+        to: u64,
+    ) -> Result<Vec<u64>> {
+        if from > to {
+            return Ok(Vec::new());
+        }
+
+        let root_level = FINAL_CHAIN_BLOOM_INDEX_LEVELS - 1;
+        let root_units = final_chain_bloom_index_units(FINAL_CHAIN_BLOOM_INDEX_LEVELS)?;
+        let first_index = from / root_units;
+        let last_index = to / root_units + u64::from(!to.is_multiple_of(root_units));
+        let mut result = Vec::new();
+        for index in first_index..=last_index {
+            self.final_chain_blocks_with_bloom_at(
+                &bloom,
+                from,
+                to,
+                root_level,
+                index,
+                &mut result,
+            )?;
+        }
+        Ok(result)
+    }
+
+    fn final_chain_blocks_with_bloom_at(
+        &self,
+        bloom: &FinalChainLogBloom,
+        from: u64,
+        to: u64,
+        level: u64,
+        index: u64,
+        result: &mut Vec<u64>,
+    ) -> Result<()> {
+        let course_units = final_chain_bloom_index_units(level + 1)?;
+        let fine_units = final_chain_bloom_index_units(level)?;
+        let range_start = index
+            .checked_mul(course_units)
+            .ok_or_else(|| anyhow::anyhow!("CONSENSUS_QUERY_BLOOM_RANGE_OVERFLOW"))?;
+        let range_end = index
+            .checked_add(1)
+            .and_then(|value| value.checked_mul(course_units))
+            .and_then(|value| value.checked_sub(1))
+            .ok_or_else(|| anyhow::anyhow!("CONSENSUS_QUERY_BLOOM_RANGE_OVERFLOW"))?;
+        if range_end < from || range_start > to {
+            return Ok(());
+        }
+
+        let offset_begin = if from > range_start {
+            (from - range_start) / fine_units
+        } else {
+            0
+        };
+        let offset_end = if to < range_end {
+            (to - range_start) / fine_units + 1
+        } else {
+            FINAL_CHAIN_BLOOM_INDEX_SIZE as u64
+        };
+        let chunk_id = final_chain_log_bloom_chunk_id(level, index)
+            .context("CONSENSUS_QUERY_BLOOM_CHUNK_ID")?;
+        let raw = self.storage.final_chain().log_blooms_chunk_raw(chunk_id)?;
+        let chunk = decode_final_chain_log_bloom_chunk(raw.as_deref())
+            .context("CONSENSUS_QUERY_BLOOM_CHUNK")?;
+        for offset in offset_begin..offset_end {
+            let slot = usize::try_from(offset).context("CONSENSUS_QUERY_BLOOM_SLOT")?;
+            if !log_bloom_contains(&chunk[slot], bloom) {
+                continue;
+            }
+            let child_index = offset
+                .checked_add(
+                    index
+                        .checked_mul(FINAL_CHAIN_BLOOM_INDEX_SIZE as u64)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("CONSENSUS_QUERY_BLOOM_CHILD_INDEX_OVERFLOW")
+                        })?,
+                )
+                .ok_or_else(|| anyhow::anyhow!("CONSENSUS_QUERY_BLOOM_CHILD_INDEX_OVERFLOW"))?;
+            if level > 0 {
+                self.final_chain_blocks_with_bloom_at(
+                    bloom,
+                    from,
+                    to,
+                    level - 1,
+                    child_index,
+                    result,
+                )?;
+            } else if child_index >= from && child_index <= to {
+                result.push(child_index);
+            }
+        }
+        Ok(())
     }
 
     /// Returns stored pillar block data for a finalized pillar period.
@@ -821,6 +942,23 @@ fn decode_u64_le(bytes: &[u8], context: &'static str) -> Result<u64> {
         .try_into()
         .with_context(|| format!("{context}: expected 8 bytes, got {}", bytes.len()))?;
     Ok(u64::from_le_bytes(array))
+}
+
+fn final_chain_bloom_index_units(level_count: u64) -> Result<u64> {
+    let mut units = 1u64;
+    for _ in 0..level_count {
+        units = units
+            .checked_mul(FINAL_CHAIN_BLOOM_INDEX_SIZE as u64)
+            .ok_or_else(|| anyhow::anyhow!("CONSENSUS_QUERY_BLOOM_INDEX_UNIT_OVERFLOW"))?;
+    }
+    Ok(units)
+}
+
+fn log_bloom_contains(stored: &FinalChainLogBloom, query: &FinalChainLogBloom) -> bool {
+    stored
+        .iter()
+        .zip(query.iter())
+        .all(|(stored, query)| stored & query == *query)
 }
 
 fn keccak256(data: &[u8]) -> H256 {
@@ -1388,6 +1526,15 @@ mod tests {
         let api = ConsensusQueryApi::new(storage.clone());
         let block_hash = H256::from_low_u64_be(77);
         let pbft_block_rlp = vec![0xC2, 0x01, 0x02];
+        let query_bloom = {
+            let mut bloom = [0u8; 256];
+            bloom[255] = 0x80;
+            bloom
+        };
+        let mut root_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
+        root_chunk[0] = query_bloom;
+        let mut leaf_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
+        leaf_chunk[9] = query_bloom;
         storage
             .period()
             .write(9, &period_data_rlp(&pbft_block_rlp))
@@ -1395,6 +1542,38 @@ mod tests {
         storage
             .final_chain()
             .write_block_header(9, block_hash, &stored_header_rlp(), &[])
+            .unwrap();
+        storage
+            .final_chain()
+            .write_conformance_lookup_rows(
+                1,
+                &9u64.to_le_bytes(),
+                9,
+                block_hash,
+                &stored_header_rlp(),
+                H256::zero(),
+                &[0xC0],
+                rustaxa_storage::final_chain_log_bloom_chunk_id(1, 0).unwrap(),
+                &rustaxa_storage::encode_final_chain_log_bloom_chunk(&root_chunk),
+                9,
+                &[0xC0],
+            )
+            .unwrap();
+        storage
+            .final_chain()
+            .write_conformance_lookup_rows(
+                1,
+                &9u64.to_le_bytes(),
+                9,
+                block_hash,
+                &stored_header_rlp(),
+                H256::zero(),
+                &[0xC0],
+                rustaxa_storage::final_chain_log_bloom_chunk_id(0, 0).unwrap(),
+                &rustaxa_storage::encode_final_chain_log_bloom_chunk(&leaf_chunk),
+                9,
+                &[0xC0],
+            )
             .unwrap();
 
         let view = api.final_chain_block_by_number(9).unwrap();
@@ -1415,6 +1594,17 @@ mod tests {
         let lookup = api.pbft_block_hash_by_period(9).unwrap();
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
+        assert_eq!(api.final_chain_last_block_number().unwrap(), 9);
+        assert_eq!(
+            api.final_chain_blocks_with_bloom(query_bloom, 1, 9)
+                .unwrap(),
+            vec![9]
+        );
+        assert!(
+            api.final_chain_blocks_with_bloom([0x11; 256], 1, 9)
+                .unwrap()
+                .is_empty()
+        );
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

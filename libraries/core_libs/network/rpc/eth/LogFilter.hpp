@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "data.hpp"
 #include "final_chain/final_chain.hpp"
 
@@ -24,6 +26,12 @@ struct LogFilter {
   bool blk_number_matches(EthBlockNumber blk_n) const;
   void match_one(const ExtendedTransactionLocation& trx_loc, const TransactionReceipt& r,
                  const std::function<void(const LocalisedLogEntry&)>& cb) const;
+  std::vector<LocalisedLogEntry> match_all(
+      EthBlockNumber last_block_number,
+      const std::function<std::vector<EthBlockNumber>(const LogBloom&, EthBlockNumber, EthBlockNumber)>&
+          blocks_with_bloom,
+      const std::function<std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>>(EthBlockNumber)>&
+          block_receipts) const;
   std::vector<LocalisedLogEntry> match_all(const final_chain::FinalChain& final_chain) const;
 };
 

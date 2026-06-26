@@ -124,6 +124,42 @@ void LogFilter::match_one(const ExtendedTransactionLocation& trx_loc, const Tran
   }
 }
 
+std::vector<LocalisedLogEntry> LogFilter::match_all(
+    EthBlockNumber last_block_number,
+    const std::function<std::vector<EthBlockNumber>(const LogBloom&, EthBlockNumber, EthBlockNumber)>& blocks_with_bloom,
+    const std::function<std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>>(EthBlockNumber)>&
+        block_receipts) const {
+  std::vector<LocalisedLogEntry> ret;
+  auto action = [&, this](EthBlockNumber blk_n) {
+    for (const auto& [trx_loc, receipt] : block_receipts(blk_n)) {
+      match_one(trx_loc, receipt, [&](const auto& lle) { ret.push_back(lle); });
+    }
+  };
+
+  auto to_blk_n = to_block_ ? *to_block_ : last_block_number;
+  if (to_blk_n > last_block_number) {
+    to_blk_n = last_block_number;
+  }
+
+  if (is_range_only_) {
+    for (auto blk_n = from_block_; blk_n <= to_blk_n; ++blk_n) {
+      action(blk_n);
+    }
+    return ret;
+  }
+
+  std::set<EthBlockNumber> matchingBlocks;
+  for (const auto& bloom : bloomPossibilities()) {
+    for (auto blk_n : blocks_with_bloom(bloom, from_block_, to_blk_n)) {
+      matchingBlocks.insert(blk_n);
+    }
+  }
+  for (auto blk_n : matchingBlocks) {
+    action(blk_n);
+  }
+  return ret;
+}
+
 std::vector<LocalisedLogEntry> LogFilter::match_all(const final_chain::FinalChain& final_chain) const {
   std::vector<LocalisedLogEntry> ret;
   auto action = [&, this](EthBlockNumber blk_n) {

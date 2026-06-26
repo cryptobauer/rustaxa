@@ -433,6 +433,8 @@ Implemented first slice:
   - `consensus_query_transaction_count_by_block_hash(block_hash) -> u64`
   - `consensus_query_transaction_receipt_by_hash(hash) -> TransactionReceiptPublicView`
   - `consensus_query_transaction_receipts_by_block_number(block_number) -> Vec<TransactionReceiptPublicView>`
+  - `consensus_query_final_chain_last_block_number() -> u64`
+  - `consensus_query_final_chain_blocks_with_bloom(bloom, from, to) -> Vec<u64>`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
   hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
@@ -468,14 +470,17 @@ Implemented first slice:
   directly.
 - `eth_getBlockReceipts` now uses `ConsensusQueryApi` in Rust mode for finalized regular-transaction receipt expansion
   instead of reading `FinalChain` block hashes, transaction vectors, block receipt lists, and per-transaction receipts
-  directly. Log filtering still remains on compatibility routes.
+  directly.
 - `debug_getPeriodTransactionsWithReceipts` now uses the same `ConsensusQueryApi` block-receipts DTO in Rust mode
   instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
+- `eth_getLogs` now uses `ConsensusQueryApi` in Rust mode for latest finalized block lookup, bloom-index candidate block
+  lookup, and block receipt expansion instead of asking `FinalChain` for bloom matches and receipt rows directly. Watch
+  filter replay and subscription backfill still remain on compatibility routes.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing account-state, non-GraphQL expanded transaction routes, debug/log filtering, and sync/status routes remain
-  compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing account-state, non-GraphQL expanded transaction routes, watch/debug log filtering, and sync/status routes
+  remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal
 

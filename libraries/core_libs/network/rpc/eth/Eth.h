@@ -28,6 +28,9 @@ struct EthParams {
   std::function<rustaxa::TransactionReceiptPublicView(const h256&)> query_transaction_receipt;
   std::function<rust::Vec<rustaxa::TransactionReceiptPublicView>(EthBlockNumber)>
       query_transaction_receipts_by_block_number;
+  std::function<EthBlockNumber()> query_final_chain_last_block_number;
+  std::function<rust::Vec<uint64_t>(const std::array<uint8_t, 256>&, EthBlockNumber, EthBlockNumber)>
+      query_blocks_with_bloom;
 #endif
   std::function<void(const std::shared_ptr<Transaction>& trx)> send_trx;
   std::function<u256()> gas_pricer = [] { return u256(0); };
