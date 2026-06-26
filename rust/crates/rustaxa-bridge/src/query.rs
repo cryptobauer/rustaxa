@@ -33,6 +33,8 @@ fn period_lambda_to_ffi(lambda: rustaxa_consensus::QueryPeriodLambda) -> rustaxa
 fn chain_stats_view_to_ffi(view: rustaxa_consensus::ChainStatsView) -> rustaxa_ffi::ChainStatsView {
     rustaxa_ffi::ChainStatsView {
         pbft_period: view.pbft_period,
+        dag_blocks_count: view.dag_blocks_count,
+        transactions_count: view.transactions_count,
         dag_blocks_executed: view.dag_blocks_executed,
         transactions_executed: view.transactions_executed,
     }
@@ -792,6 +794,12 @@ mod tests {
         storage
             .save_status_field(rustaxa_storage::StatusField::ExecutedTrxCount as u8, 34)
             .unwrap();
+        storage
+            .save_status_field(rustaxa_storage::StatusField::DagBlkCount as u8, 55)
+            .unwrap();
+        storage
+            .save_status_field(rustaxa_storage::StatusField::TrxCount as u8, 89)
+            .unwrap();
         let period_lambda = api.consensus_query_period_lambda_by_period(15).unwrap();
         assert!(period_lambda.found);
         assert_eq!(period_lambda.value, 1234);
@@ -835,6 +843,8 @@ mod tests {
             .is_err());
         let chain_stats = api.consensus_query_chain_stats().unwrap();
         assert_eq!(chain_stats.pbft_period, 15);
+        assert_eq!(chain_stats.dag_blocks_count, 55);
+        assert_eq!(chain_stats.transactions_count, 89);
         assert_eq!(chain_stats.dag_blocks_executed, 21);
         assert_eq!(chain_stats.transactions_executed, 34);
         assert_eq!(

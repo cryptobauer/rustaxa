@@ -134,15 +134,26 @@ Json::Value Test::get_node_status() {
     const auto dpos_total_votes_opt = node->getPbftManager()->getCurrentDposTotalVotesCount();
     const auto dpos_node_votes_opt = node->getPbftManager()->getCurrentNodeVotesCount();
     const auto two_t_plus_one_opt = node->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto chain_stats = query_api->consensus_query_chain_stats();
+#endif
 
     res["synced"] = !node->getNetwork()->pbft_syncing();
     res["syncing_seconds"] = Json::UInt64(node->getNetwork()->syncTimeSeconds());
     res["peer_count"] = Json::UInt64(node->getNetwork()->getPeerCount());
     res["node_count"] = Json::UInt64(node->getNetwork()->getNodeCount());
+#ifdef RUSTAXA_ENABLE
+    res["blk_executed"] = Json::UInt64(chain_stats.dag_blocks_executed);
+    res["blk_count"] = Json::UInt64(chain_stats.dag_blocks_count);
+    res["trx_executed"] = Json::UInt64(chain_stats.transactions_executed);
+    res["trx_count"] = Json::UInt64(chain_stats.transactions_count);
+#else
     res["blk_executed"] = Json::UInt64(node->getDB()->getNumBlockExecuted());        // RUSTAXA_QUERY_COMPAT_READ
     res["blk_count"] = Json::UInt64(node->getDB()->getDagBlocksCount());             // RUSTAXA_QUERY_COMPAT_READ
     res["trx_executed"] = Json::UInt64(node->getDB()->getNumTransactionExecuted());  // RUSTAXA_QUERY_COMPAT_READ
     res["trx_count"] = Json::UInt64(node->getTransactionManager()->getTransactionCount());
+#endif
     res["dag_level"] = Json::UInt64(node->getDagManager()->getMaxLevel());
     res["pbft_size"] = Json::UInt64(chain_size);
     res["pbft_sync_period"] = Json::UInt64(node->getPbftManager()->pbftSyncingPeriod());

@@ -504,6 +504,11 @@ Implemented first slice:
   block/transaction counters instead of reading `FinalChain` and `DbStorage` directly.
 - Test RPC `get_sortition_change` now uses `ConsensusQueryApi` in Rust mode for the persisted sortition params-change
   active at or before the requested period instead of reading the metadata column through `DbStorage` directly.
+- Test RPC `get_node_status` now uses `ConsensusQueryApi::consensus_query_chain_stats` in Rust mode for persisted DAG
+  block count, persisted transaction count, and executed block/transaction counters instead of reading status counters
+  through `DbStorage` or `TransactionManager`. Live network status, DAG level, PBFT round/sync state, DPoS vote facts,
+  PBFT queue size, transaction pool size, and non-finalized transaction size remain live manager/network compatibility
+  reads until a dedicated status/sync DTO owns those boundaries.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.

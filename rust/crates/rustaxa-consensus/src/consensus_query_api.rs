@@ -85,12 +85,17 @@ pub struct QueryPeriodLambda {
 
 /// Storage-backed public chain statistics view.
 ///
-/// The view contains the three counters exposed by `taraxa_getChainStats`.
-/// Values default to zero when the corresponding storage row is absent,
-/// matching the Rust metadata repository and legacy genesis behavior.
+/// The view contains the finalized period and status counters exposed by
+/// public status/statistics endpoints. Values default to zero when the
+/// corresponding storage row is absent, matching the Rust metadata repository
+/// and legacy genesis behavior. `dag_blocks_count` and `transactions_count`
+/// are persisted DAG/transaction-manager counters for compatibility status
+/// routes; they are not live mempool, peer, or sync-progress facts.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChainStatsView {
     pub pbft_period: u64,
+    pub dag_blocks_count: u64,
+    pub transactions_count: u64,
     pub dag_blocks_executed: u64,
     pub transactions_executed: u64,
 }
@@ -479,6 +484,14 @@ impl ConsensusQueryApi {
     pub fn chain_stats(&self) -> Result<ChainStatsView> {
         Ok(ChainStatsView {
             pbft_period: self.final_chain_last_block_number()?,
+            dag_blocks_count: self
+                .storage
+                .metadata()
+                .status_field(StatusField::DagBlkCount as u8)?,
+            transactions_count: self
+                .storage
+                .metadata()
+                .status_field(StatusField::TrxCount as u8)?,
             dag_blocks_executed: self
                 .storage
                 .metadata()
@@ -1752,6 +1765,14 @@ mod tests {
             .metadata()
             .write_status_field(StatusField::ExecutedTrxCount as u8, 34)
             .unwrap();
+        storage
+            .metadata()
+            .write_status_field(StatusField::DagBlkCount as u8, 55)
+            .unwrap();
+        storage
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 89)
+            .unwrap();
         assert_eq!(
             api.period_lambda_by_period(9).unwrap(),
             QueryPeriodLambda {
@@ -1790,6 +1811,8 @@ mod tests {
             api.chain_stats().unwrap(),
             ChainStatsView {
                 pbft_period: 9,
+                dag_blocks_count: 55,
+                transactions_count: 89,
                 dag_blocks_executed: 21,
                 transactions_executed: 34
             }

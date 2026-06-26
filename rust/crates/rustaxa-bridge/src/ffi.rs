@@ -454,6 +454,8 @@ pub mod rustaxa_ffi {
     /// Storage-backed chain statistics for `taraxa_getChainStats`.
     struct ChainStatsView {
         pbft_period: u64,
+        dag_blocks_count: u64,
+        transactions_count: u64,
         dag_blocks_executed: u64,
         transactions_executed: u64,
     }
