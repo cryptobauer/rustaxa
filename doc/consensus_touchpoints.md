@@ -436,8 +436,9 @@ Implemented first slice:
   - `consensus_query_final_chain_block_number_by_hash(block_hash) -> FinalChainBlockNumberLookup`
   - `consensus_query_final_chain_last_block_number() -> u64`
   - `consensus_query_final_chain_blocks_with_bloom(bloom, from, to) -> Vec<u64>`
-- `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
-  hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
+- `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` in Rust mode for
+  PBFT hash-by-period lookup plus finalized block header, hash-to-number, and latest-block reads instead of creating
+  endpoint-local period-storage query handles or reading `FinalChain` directly for those facts.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
 - `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of

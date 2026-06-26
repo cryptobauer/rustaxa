@@ -54,6 +54,18 @@ std::shared_ptr<::taraxa::Transaction> materializeTransactionView(const rustaxa:
   }
   return transaction;
 }
+
+std::shared_ptr<::taraxa::final_chain::BlockHeader> blockHeaderFromView(const rustaxa::FinalChainBlockView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+  auto header_bytes = bytesFromBridge(view.stored_header_rlp);
+  auto header = ::taraxa::final_chain::BlockHeader::fromRLP(dev::RLP(header_bytes));
+  if (header->hash != hashFromBridge(view.hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_GRAPHQL_BLOCK_HASH_MISMATCH");
+  }
+  return header;
+}
 }  // namespace
 #endif
 
@@ -78,6 +90,46 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
 
 std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& number,
                                                std::optional<response::Value>&& hash) const {
+#ifdef RUSTAXA_ENABLE
+  {
+    const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+    uint64_t block_number = 0;
+    if (number) {
+      const auto parsed_number = number->get<int>();
+      if (parsed_number < 0) {
+        return nullptr;
+      }
+      block_number = static_cast<uint64_t>(parsed_number);
+    } else if (hash) {
+      const auto block_number_lookup =
+          query_api->consensus_query_final_chain_block_number_by_hash(dev::h256(hash->get<std::string>()).asArray());
+      if (!block_number_lookup.found) {
+        return nullptr;
+      }
+      block_number = block_number_lookup.value;
+    } else {
+      block_number = query_api->consensus_query_final_chain_last_block_number();
+    }
+
+    const auto block_view = query_api->consensus_query_final_chain_block_by_number(block_number);
+    auto block_header = blockHeaderFromView(block_view);
+    if (!block_header) {
+      return nullptr;
+    }
+
+    ::taraxa::blk_hash_t pbft_block_hash;
+    if (block_number != 0) {
+      if (!block_view.has_pbft_hash) {
+        return nullptr;
+      }
+      pbft_block_hash = hashFromBridge(block_view.pbft_block_hash);
+    }
+
+    return std::make_shared<object::Block>(
+        std::make_shared<Block>(final_chain_, transaction_manager_, get_block_by_num_, pbft_block_hash, block_header));
+  }
+#endif
+
   std::optional<::taraxa::EthBlockNumber> block_number;
   if (number) {
     block_number = number->get<int>();
@@ -101,17 +153,6 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
     return std::make_shared<object::Block>(std::make_shared<Block>(
         final_chain_, transaction_manager_, get_block_by_num_, ::taraxa::blk_hash_t(), block_header));
   }
-
-#ifdef RUSTAXA_ENABLE
-  const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
-  const auto pbft_block_hash = query_api->consensus_query_pbft_block_hash_by_period(block_header->number);
-  if (!pbft_block_hash.found) {
-    // shouldn't be possible
-    return nullptr;
-  }
-  return std::make_shared<object::Block>(std::make_shared<Block>(final_chain_, transaction_manager_, get_block_by_num_,
-                                                                 hashFromBridge(pbft_block_hash.hash), block_header));
-#endif
 
   auto pbft_block = db_->getPbftBlock(block_header->number);  // RUSTAXA_QUERY_COMPAT_READ
   if (!pbft_block) {
@@ -140,7 +181,15 @@ std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& f
     end_block_num = start_block_num + Query::kMaxPropagationLimit;
   }
 
-  const int last_block_number = final_chain_->lastBlockNumber();
+  int last_block_number = 0;
+#ifdef RUSTAXA_ENABLE
+  {
+    const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+    last_block_number = static_cast<int>(query_api->consensus_query_final_chain_last_block_number());
+  }
+#else
+  last_block_number = final_chain_->lastBlockNumber();
+#endif
   if (start_block_num > last_block_number) {
     return blocks;
   } else if (end_block_num > last_block_number) {
