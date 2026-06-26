@@ -501,6 +501,8 @@ Implemented first slice:
 - GraphQL top-level `transaction(hash)` now uses `ConsensusQueryApi` for storage-backed transaction payload lookup in
   Rust mode instead of asking the live `TransactionManager` to resolve the hash. The query view returns canonical RLP
   plus source classification for pending, finalized regular, and finalized system transaction materialization.
+- GraphQL top-level legacy `transaction(hash)` acquisition now uses a dedicated `QueryTransactionReader` callback bundle
+  instead of reading `TransactionManager` directly from the public query method.
 - GraphQL top-level `transaction(hash)` expanded receipt fields (`status`, `gasUsed`, `cumulativeGasUsed`,
   `createdContract`, and `logs`) now consume the `ConsensusQueryApi` transaction-receipt DTO in Rust mode instead of
   lazy-loading the transaction location and receipt through `FinalChain`.

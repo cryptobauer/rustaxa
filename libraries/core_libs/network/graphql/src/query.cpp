@@ -95,6 +95,23 @@ void fillMissingBlockTransactionReaderCallbacks(BlockTransactionReader& reader,
   }
 }
 
+QueryTransactionReader makeQueryTransactionReader(
+    const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+  QueryTransactionReader reader;
+  reader.transaction_by_hash = [transaction_manager](const ::taraxa::trx_hash_t& hash) {
+    return transaction_manager ? transaction_manager->getTransaction(hash) : nullptr;
+  };
+  return reader;
+}
+
+void fillMissingQueryTransactionReaderCallbacks(
+    QueryTransactionReader& reader, const std::shared_ptr<::taraxa::TransactionManager>& transaction_manager) {
+  auto defaults = makeQueryTransactionReader(transaction_manager);
+  if (!reader.transaction_by_hash) {
+    reader.transaction_by_hash = std::move(defaults.transaction_by_hash);
+  }
+}
+
 QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
                                             const std::shared_ptr<::taraxa::DagManager>& dag_manager,
                                             const std::shared_ptr<::taraxa::DbStorage>& db) {
@@ -248,6 +265,7 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
       account_reader_(makeAccountStateReader(final_chain_)),
       block_reader_(makeQueryBlockReader(final_chain_, db_)),
       block_transaction_reader_(makeQueryBlockTransactionReader(final_chain_)),
+      transaction_reader_(makeQueryTransactionReader(transaction_manager_)),
       dag_block_reader_(makeQueryDagBlockReader(final_chain_, dag_manager_, db_)),
       dag_block_transaction_reader_(makeQueryDagBlockTransactionReader(transaction_manager_)),
       dag_block_period_reader_(makeQueryDagBlockPeriodReader(pbft_manager_)) {
@@ -257,18 +275,20 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
 }
 
 Query::Query(AccountStateReader account_reader, uint64_t chain_id, QueryBlockReader block_reader,
-             BlockTransactionReader block_transaction_reader, QueryDagBlockReader dag_block_reader,
-             DagBlockTransactionReader dag_block_transaction_reader,
+             BlockTransactionReader block_transaction_reader, QueryTransactionReader transaction_reader,
+             QueryDagBlockReader dag_block_reader, DagBlockTransactionReader dag_block_transaction_reader,
              DagBlockPeriodReader dag_block_period_reader) noexcept
     : kChainId(chain_id),
       account_reader_(std::move(account_reader)),
       block_reader_(std::move(block_reader)),
       block_transaction_reader_(std::move(block_transaction_reader)),
+      transaction_reader_(std::move(transaction_reader)),
       dag_block_reader_(std::move(dag_block_reader)),
       dag_block_transaction_reader_(std::move(dag_block_transaction_reader)),
       dag_block_period_reader_(std::move(dag_block_period_reader)) {
   fillMissingQueryBlockReaderCallbacks(block_reader_, final_chain_, db_);
   fillMissingBlockTransactionReaderCallbacks(block_transaction_reader_, final_chain_);
+  fillMissingQueryTransactionReaderCallbacks(transaction_reader_, transaction_manager_);
   fillMissingQueryDagBlockReaderCallbacks(dag_block_reader_, final_chain_, dag_manager_, db_);
   fillMissingDagBlockTransactionReaderCallbacks(dag_block_transaction_reader_, transaction_manager_);
   fillMissingDagBlockPeriodReaderCallbacks(dag_block_period_reader_, pbft_manager_);
@@ -424,11 +444,8 @@ std::shared_ptr<object::Transaction> Query::getTransaction(response::Value&& has
     return nullptr;
   }
 #endif
-  if (transaction_manager_) {
-    auto legacy_transaction = transaction_manager_->getTransaction(::taraxa::trx_hash_t(hashArg.get<std::string>()));
-    if (!legacy_transaction) {
-      return nullptr;
-    }
+  auto legacy_transaction = transaction_reader_.transaction_by_hash(::taraxa::trx_hash_t(hashArg.get<std::string>()));
+  if (legacy_transaction) {
     return std::make_shared<object::Transaction>(std::make_shared<Transaction>(
         final_chain_, transaction_manager_, get_block_by_num_, std::move(legacy_transaction)));
   }

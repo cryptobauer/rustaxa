@@ -1246,6 +1246,35 @@ TEST_F(RPCTest, graphql_query_blocks_use_query_block_reader) {
   EXPECT_EQ((std::vector<EthBlockNumber>{7, 7, 7, 7, 8}), *pbft_requests);
 }
 
+TEST_F(RPCTest, graphql_query_transaction_uses_query_transaction_reader) {
+  auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  const auto transaction_hash = transaction->getHash();
+  auto transaction_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::AccountStateReader account_reader;
+  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::QueryTransactionReader transaction_reader;
+  transaction_reader.transaction_by_hash = [transaction_called, transaction,
+                                            transaction_hash](const trx_hash_t& requested_hash) {
+    *transaction_called = true;
+    EXPECT_EQ(transaction_hash, requested_hash);
+    return transaction;
+  };
+
+  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, std::move(transaction_reader));
+
+  ASSERT_NE(nullptr, query.getTransaction(graphql::response::Value(transaction_hash.toString())));
+  ASSERT_TRUE(*transaction_called);
+}
+
 TEST_F(RPCTest, graphql_query_dag_blocks_use_query_dag_block_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();
@@ -1318,7 +1347,7 @@ TEST_F(RPCTest, graphql_query_dag_blocks_use_query_dag_block_reader) {
     return std::optional<uint64_t>(9);
   };
 
-  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, std::move(dag_reader),
+  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, {}, std::move(dag_reader),
                                std::move(transaction_reader), std::move(period_reader));
 
   ASSERT_NE(nullptr, query.getDagBlock(graphql::response::Value(level_four_hash.toString())));

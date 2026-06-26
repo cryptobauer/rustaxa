@@ -26,6 +26,13 @@ struct QueryBlockReader {
   std::function<std::optional<::taraxa::blk_hash_t>(::taraxa::EthBlockNumber)> pbft_hash_by_period;
 };
 
+// QueryTransactionReader is GraphQL Query's top-level transaction acquisition
+// boundary. It resolves transaction hashes to payloads without exposing
+// TransactionManager to public GraphQL query methods.
+struct QueryTransactionReader {
+  std::function<std::shared_ptr<::taraxa::Transaction>(const ::taraxa::trx_hash_t&)> transaction_by_hash;
+};
+
 // QueryDagBlockReader is GraphQL Query's DAG block acquisition boundary. It
 // supplies the top-level DAG block lists and default levels needed by Query
 // without exposing DagManager, DbStorage, or FinalChain period lookups to the
@@ -47,8 +54,8 @@ class Query {
                  std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
                  uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
   explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryBlockReader block_reader = {},
-                 BlockTransactionReader block_transaction_reader = {}, QueryDagBlockReader dag_block_reader = {},
-                 DagBlockTransactionReader dag_block_transaction_reader = {},
+                 BlockTransactionReader block_transaction_reader = {}, QueryTransactionReader transaction_reader = {},
+                 QueryDagBlockReader dag_block_reader = {}, DagBlockTransactionReader dag_block_transaction_reader = {},
                  DagBlockPeriodReader dag_block_period_reader = {}) noexcept;
 
   std::shared_ptr<object::Block> getBlock(std::optional<response::Value>&& numberArg,
@@ -84,6 +91,7 @@ class Query {
   AccountStateReader account_reader_;
   QueryBlockReader block_reader_;
   BlockTransactionReader block_transaction_reader_;
+  QueryTransactionReader transaction_reader_;
   QueryDagBlockReader dag_block_reader_;
   DagBlockTransactionReader dag_block_transaction_reader_;
   DagBlockPeriodReader dag_block_period_reader_;
