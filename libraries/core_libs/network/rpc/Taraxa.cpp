@@ -167,6 +167,47 @@ TaraxaScheduleReader makeTaraxaScheduleReader(std::weak_ptr<taraxa::AppBase> app
   return reader;
 }
 
+TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBase> app) {
+  TaraxaNodeVersionReader reader;
+  reader.latest_finalized_period = [app] {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_NODE_VERSION_READER_APP_EXPIRED");
+    }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    return query_api->consensus_query_final_chain_last_block_number();
+#endif
+    return node->getFinalChain()->lastBlockNumber();
+  };
+  reader.node_version_by_period = [app](uint64_t period) -> std::optional<TaraxaNodeVersionView> {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_NODE_VERSION_READER_APP_EXPIRED");
+    }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto version_view = query_api->consensus_query_pbft_node_version_by_period(period);
+    if (!version_view.found) {
+      return std::nullopt;
+    }
+    return TaraxaNodeVersionView{addr_t(version_view.beneficiary.data(), addr_t::ConstructFromPointer),
+                                 std::to_string(version_view.major_version) + "." +
+                                     std::to_string(version_view.minor_version) + "." +
+                                     std::to_string(version_view.patch_version)};
+#endif
+    auto block = node->getDB()->getPbftBlock(period);  // RUSTAXA_QUERY_COMPAT_READ
+    if (!block.has_value()) {
+      return std::nullopt;
+    }
+    const auto extra_data = block->getExtraData()->getJson();
+    return TaraxaNodeVersionView{block->getBeneficiary(), extra_data["major_version"].asString() + "." +
+                                                              extra_data["minor_version"].asString() + "." +
+                                                              extra_data["patch_version"].asString()};
+  };
+  return reader;
+}
+
 void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_ptr<taraxa::AppBase> app) {
   auto defaults = makeTaraxaDposReader(std::move(app));
   if (!reader.eligible_total_vote_count) {
@@ -226,6 +267,16 @@ void fillMissingTaraxaScheduleReaderCallbacks(TaraxaScheduleReader& reader, std:
   auto defaults = makeTaraxaScheduleReader(std::move(app));
   if (!reader.schedule_block_by_period) {
     reader.schedule_block_by_period = std::move(defaults.schedule_block_by_period);
+  }
+}
+
+void fillMissingTaraxaNodeVersionReaderCallbacks(TaraxaNodeVersionReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTaraxaNodeVersionReader(std::move(app));
+  if (!reader.latest_finalized_period) {
+    reader.latest_finalized_period = std::move(defaults.latest_finalized_period);
+  }
+  if (!reader.node_version_by_period) {
+    reader.node_version_by_period = std::move(defaults.node_version_by_period);
   }
 }
 
@@ -437,19 +488,22 @@ void fillMissingTaraxaPillarBlockDataReaderCallbacks(TaraxaPillarBlockDataReader
 
 Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, TaraxaDagStatusReader dag_status_reader,
                TaraxaDagBlockReader dag_block_reader, TaraxaPersistentReader persistent_reader,
-               TaraxaScheduleReader schedule_reader, TaraxaPillarBlockDataReader pillar_block_data_reader)
+               TaraxaScheduleReader schedule_reader, TaraxaNodeVersionReader node_version_reader,
+               TaraxaPillarBlockDataReader pillar_block_data_reader)
     : app_(app),
       dpos_reader_(std::move(dpos_reader)),
       dag_status_reader_(std::move(dag_status_reader)),
       dag_block_reader_(std::move(dag_block_reader)),
       persistent_reader_(std::move(persistent_reader)),
       schedule_reader_(std::move(schedule_reader)),
+      node_version_reader_(std::move(node_version_reader)),
       pillar_block_data_reader_(std::move(pillar_block_data_reader)) {
   fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
   fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_);
   fillMissingTaraxaDagBlockReaderCallbacks(dag_block_reader_, app_);
   fillMissingTaraxaPersistentReaderCallbacks(persistent_reader_, app_);
   fillMissingTaraxaScheduleReaderCallbacks(schedule_reader_, app_);
+  fillMissingTaraxaNodeVersionReaderCallbacks(node_version_reader_, app_);
   fillMissingTaraxaPillarBlockDataReaderCallbacks(pillar_block_data_reader_, app_);
 
   Json::CharReaderBuilder builder;
@@ -594,42 +648,21 @@ Json::Value Taraxa::taraxa_getScheduleBlockByPeriod(const std::string& _period) 
 
 Json::Value Taraxa::taraxa_getNodeVersions() {
   try {
-    auto app = tryGetApp();
-    auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
     const uint64_t max_blocks_to_process = 6000;
     std::map<addr_t, std::string> node_version_map;
     std::multimap<std::string, std::pair<addr_t, uint64_t>> version_node_map;
     std::map<std::string, std::pair<uint32_t, uint32_t>> version_count;
-#ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(db->rustStorage());
-    auto period = query_api->consensus_query_final_chain_last_block_number();
+
+    auto period = node_version_reader_.latest_finalized_period();
     for (uint64_t i = period; i > 0 && period - i < max_blocks_to_process; i--) {
-      const auto version_view = query_api->consensus_query_pbft_node_version_by_period(i);
-      if (!version_view.found) {
+      auto node_version = node_version_reader_.node_version_by_period(i);
+      if (!node_version) {
         break;
       }
-      const auto beneficiary = addressFromBridge(version_view.beneficiary);
-      if (!node_version_map.contains(beneficiary)) {
-        node_version_map[beneficiary] = std::to_string(version_view.major_version) + "." +
-                                        std::to_string(version_view.minor_version) + "." +
-                                        std::to_string(version_view.patch_version);
+      if (!node_version_map.contains(node_version->beneficiary)) {
+        node_version_map[node_version->beneficiary] = node_version->version;
       }
     }
-#endif
-#ifndef RUSTAXA_ENABLE
-    auto period = app->getFinalChain()->lastBlockNumber();
-    for (uint64_t i = period; i > 0 && period - i < max_blocks_to_process; i--) {
-      auto blk = db->getPbftBlock(i);
-      if (!blk.has_value()) {
-        break;
-      }
-      if (!node_version_map.contains(blk->getBeneficiary())) {
-        node_version_map[blk->getBeneficiary()] = blk->getExtraData()->getJson()["major_version"].asString() + "." +
-                                                  blk->getExtraData()->getJson()["minor_version"].asString() + "." +
-                                                  blk->getExtraData()->getJson()["patch_version"].asString();
-      }
-    }
-#endif
 
     auto total_vote_count = dpos_reader_.eligible_total_vote_count(period);
     for (auto nv : node_version_map) {

@@ -379,6 +379,70 @@ TEST_F(RPCTest, taraxa_dpos_scalar_reads_use_taraxa_dpos_reader) {
   ASSERT_TRUE(*supply_called);
 }
 
+TEST_F(RPCTest, taraxa_node_versions_use_node_version_reader) {
+  const auto first_author = addr_t::random();
+  const auto second_author = addr_t::random();
+  auto latest_called = std::make_shared<bool>(false);
+  auto period_queries = std::make_shared<int>(0);
+
+  net::TaraxaDposReader dpos_reader;
+  dpos_reader.eligible_total_vote_count = [](EthBlockNumber block_number) {
+    EXPECT_EQ(3, block_number);
+    return uint64_t(100);
+  };
+  dpos_reader.eligible_vote_count = [first_author, second_author](EthBlockNumber block_number, const addr_t& address) {
+    EXPECT_EQ(3, block_number);
+    if (address == first_author) {
+      return uint64_t(40);
+    }
+    EXPECT_EQ(second_author, address);
+    return uint64_t(60);
+  };
+  dpos_reader.dpos_yield = [](EthBlockNumber) { return uint64_t(0); };
+  dpos_reader.total_supply = [](EthBlockNumber) { return u256(0); };
+
+  net::TaraxaNodeVersionReader node_version_reader;
+  node_version_reader.latest_finalized_period = [latest_called] {
+    *latest_called = true;
+    return uint64_t(3);
+  };
+  node_version_reader.node_version_by_period = [period_queries, first_author, second_author](uint64_t period) {
+    ++*period_queries;
+    if (period == 3) {
+      return std::optional<net::TaraxaNodeVersionView>({first_author, "1.2.3"});
+    }
+    if (period == 2) {
+      return std::optional<net::TaraxaNodeVersionView>({second_author, "2.0.0"});
+    }
+    if (period == 1) {
+      return std::optional<net::TaraxaNodeVersionView>({first_author, "9.9.9"});
+    }
+    return std::optional<net::TaraxaNodeVersionView>();
+  };
+
+  net::Taraxa taraxa_rpc(nullptr, std::move(dpos_reader), {}, {}, {}, {}, std::move(node_version_reader));
+
+  const auto result = taraxa_rpc.taraxa_getNodeVersions();
+  ASSERT_TRUE(*latest_called);
+  EXPECT_EQ(3, *period_queries);
+
+  ASSERT_EQ(Json::ArrayIndex(2), result["nodes"].size());
+  EXPECT_EQ(first_author.toString(), result["nodes"][0]["node"].asString());
+  EXPECT_EQ("1.2.3", result["nodes"][0]["version"].asString());
+  EXPECT_EQ(Json::UInt64(40), result["nodes"][0]["vote_count"].asUInt64());
+  EXPECT_EQ(second_author.toString(), result["nodes"][1]["node"].asString());
+  EXPECT_EQ("2.0.0", result["nodes"][1]["version"].asString());
+  EXPECT_EQ(Json::UInt64(60), result["nodes"][1]["vote_count"].asUInt64());
+
+  ASSERT_EQ(Json::ArrayIndex(2), result["versions"].size());
+  EXPECT_EQ("1.2.3", result["versions"][0]["version"].asString());
+  EXPECT_EQ(Json::UInt(1), result["versions"][0]["node_count"].asUInt());
+  EXPECT_EQ(Json::UInt(40), result["versions"][0]["vote_percentage"].asUInt());
+  EXPECT_EQ("2.0.0", result["versions"][1]["version"].asString());
+  EXPECT_EQ(Json::UInt(1), result["versions"][1]["node_count"].asUInt());
+  EXPECT_EQ(Json::UInt(60), result["versions"][1]["vote_percentage"].asUInt());
+}
+
 TEST_F(RPCTest, taraxa_dag_status_reads_use_dag_status_reader) {
   auto level_called = std::make_shared<bool>(false);
   auto period_called = std::make_shared<bool>(false);
@@ -478,7 +542,7 @@ TEST_F(RPCTest, taraxa_pillar_block_data_reads_use_pillar_reader) {
     return std::optional<Json::Value>(std::move(data));
   };
 
-  net::Taraxa taraxa_rpc(nullptr, {}, {}, {}, {}, {}, std::move(pillar_reader));
+  net::Taraxa taraxa_rpc(nullptr, {}, {}, {}, {}, {}, {}, std::move(pillar_reader));
 
   const auto result = taraxa_rpc.taraxa_getPillarBlockData(dev::toJS(uint64_t(44)), true);
   EXPECT_EQ(dev::toJS(uint64_t(44)), result["pillar_block"]["pbft_period"].asString());

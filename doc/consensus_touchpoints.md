@@ -473,6 +473,9 @@ Implemented first slice:
   creating an endpoint-local period-storage query handle. The route intentionally leaves scan policy, version string
   formatting, and DPoS vote-count aggregation in the public RPC layer until live FinalChain/state reads move behind a
   dedicated query view.
+- Taraxa RPC legacy fallback `taraxa_getNodeVersions` now uses a dedicated `TaraxaNodeVersionReader` callback bundle for
+  latest finalized period lookup and per-period PBFT author/version facts instead of reading `FinalChain` or `DbStorage`
+  directly from the public method. DPoS vote aggregation still uses `TaraxaDposReader`.
 - `debug_getPreviousBlockCertVotes` now uses `ConsensusQueryApi` in Rust mode for storage-backed optimized cert-vote
   bundle lookup and canonical `PbftVote` RLP reconstruction instead of reading period data through `DbStorage` directly.
   The debug endpoint still owns legacy JSON materialization for the returned vote objects.

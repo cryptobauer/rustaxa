@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "TaraxaFace.h"
@@ -81,6 +82,23 @@ struct TaraxaScheduleReader {
   std::function<std::optional<Json::Value>(uint64_t)> schedule_block_by_period;
 };
 
+// TaraxaNodeVersionView is the scalar PBFT author/version fact consumed by
+// taraxa_getNodeVersions. The public RPC method owns scan aggregation and JSON
+// formatting; the reader owns the storage/query source for each period.
+struct TaraxaNodeVersionView {
+  addr_t beneficiary;
+  std::string version;
+};
+
+// TaraxaNodeVersionReader is the Taraxa RPC boundary for PBFT block
+// author/version facts. Missing callbacks are completed from either
+// ConsensusQueryApi in Rust mode or legacy FinalChain/DbStorage in the default
+// compatibility adapter.
+struct TaraxaNodeVersionReader {
+  std::function<uint64_t()> latest_finalized_period;
+  std::function<std::optional<TaraxaNodeVersionView>(uint64_t)> node_version_by_period;
+};
+
 // TaraxaPillarBlockDataReader is the Taraxa RPC boundary for pillar block data
 // materialization. It returns the public JSON payload because the fallback path
 // preserves legacy PillarBlockData formatting while Rust-mode production routes
@@ -95,6 +113,7 @@ class Taraxa : public TaraxaFace {
   explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {},
                   TaraxaDagStatusReader dag_status_reader = {}, TaraxaDagBlockReader dag_block_reader = {},
                   TaraxaPersistentReader persistent_reader = {}, TaraxaScheduleReader schedule_reader = {},
+                  TaraxaNodeVersionReader node_version_reader = {},
                   TaraxaPillarBlockDataReader pillar_block_data_reader = {});
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
@@ -123,6 +142,7 @@ class Taraxa : public TaraxaFace {
   TaraxaDagBlockReader dag_block_reader_;
   TaraxaPersistentReader persistent_reader_;
   TaraxaScheduleReader schedule_reader_;
+  TaraxaNodeVersionReader node_version_reader_;
   TaraxaPillarBlockDataReader pillar_block_data_reader_;
 
  private:
