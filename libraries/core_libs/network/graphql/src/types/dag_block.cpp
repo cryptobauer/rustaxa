@@ -5,10 +5,19 @@
 #include "graphql/account.hpp"
 #include "graphql/transaction.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "transaction/system_transaction.hpp"
+#endif
+
 namespace graphql::taraxa {
 
 #ifdef RUSTAXA_ENABLE
 namespace {
+constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
+constexpr uint8_t kConsensusQueryTransactionSourcePending = 1;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedRegular = 2;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedSystem = 3;
+
 dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
   return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
 }
@@ -18,6 +27,27 @@ dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
 }
 
 dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+std::shared_ptr<::taraxa::Transaction> materializeTransactionView(const rustaxa::TransactionPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<::taraxa::Transaction> transaction;
+  if (view.source == kConsensusQueryTransactionSourceFinalizedSystem) {
+    transaction = std::make_shared<::taraxa::SystemTransaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source == kConsensusQueryTransactionSourcePending ||
+             view.source == kConsensusQueryTransactionSourceFinalizedRegular) {
+    transaction = std::make_shared<::taraxa::Transaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source != kConsensusQueryTransactionSourceMissing) {
+    return nullptr;
+  }
+
+  if (transaction && transaction->getHash() != hashFromBridge(view.hash)) {
+    return nullptr;
+  }
+  return transaction;
+}
 }  // namespace
 #endif
 
@@ -33,16 +63,20 @@ DagBlock::DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
       get_block_by_num_(get_block_by_num) {}
 
 #ifdef RUSTAXA_ENABLE
-DagBlock::DagBlock(rustaxa::DagBlockPublicView dag_block,
-                   std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                   std::shared_ptr<::taraxa::PbftManager> pbft_manager,
-                   std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
+DagBlock::DagBlock(
+    rustaxa::DagBlockPublicView dag_block, std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+    std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_query,
+    std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query) noexcept
     : rust_dag_block_(std::move(dag_block)),
       final_chain_(std::move(final_chain)),
       pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
-      get_block_by_num_(get_block_by_num) {}
+      get_block_by_num_(std::move(get_block_by_num)),
+      transaction_query_(std::move(transaction_query)),
+      receipt_query_(std::move(receipt_query)) {}
 #endif
 
 response::Value DagBlock::getHash() const noexcept {
@@ -67,8 +101,9 @@ std::vector<response::Value> DagBlock::getTips() const noexcept {
   std::vector<response::Value> tips_result;
 #ifdef RUSTAXA_ENABLE
   if (rust_dag_block_) {
-    std::transform(rust_dag_block_->tips.begin(), rust_dag_block_->tips.end(), std::back_inserter(tips_result),
-                   [](const auto& tip) -> response::Value { return response::Value(hashFromBridge(tip.hash).toString()); });
+    std::transform(
+        rust_dag_block_->tips.begin(), rust_dag_block_->tips.end(), std::back_inserter(tips_result),
+        [](const auto& tip) -> response::Value { return response::Value(hashFromBridge(tip.hash).toString()); });
     return tips_result;
   }
 #endif
@@ -186,10 +221,19 @@ std::optional<std::vector<std::shared_ptr<object::Transaction>>> DagBlock::getTr
   std::vector<std::shared_ptr<object::Transaction>> transactions_result;
 #ifdef RUSTAXA_ENABLE
   if (rust_dag_block_) {
+    if (!transaction_query_ || !receipt_query_) {
+      return std::nullopt;
+    }
     for (const auto& trx_hash : rust_dag_block_->transactions) {
+      auto transaction_view = transaction_query_(hashFromBridge(trx_hash.hash));
+      auto transaction = materializeTransactionView(transaction_view);
+      if (!transaction) {
+        return std::nullopt;
+      }
+      auto receipt_view = receipt_query_(transaction->getHash());
       transactions_result.push_back(std::make_shared<object::Transaction>(
-          std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_,
-                                        transaction_manager_->getTransaction(hashFromBridge(trx_hash.hash)))));
+          std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction),
+                                        transaction_view, receipt_view)));
     }
     return transactions_result;
   }

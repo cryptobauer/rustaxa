@@ -11,10 +11,10 @@
 #include "graphql/transaction.hpp"
 #include "graphql/types/current_state.hpp"
 #include "graphql/types/dag_block.hpp"
-#include "transaction/system_transaction.hpp"
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/system_transaction.hpp"
 #endif
 
 using namespace std::literals;
@@ -262,21 +262,30 @@ response::Value Query::getChainID() const { return response::Value(dev::toJS(kCh
 
 std::shared_ptr<object::DagBlock> Query::getDagBlock(std::optional<response::Value>&& hashArg) const {
 #ifdef RUSTAXA_ENABLE
-  const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+  auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
+      rustaxa::create_consensus_query_api(db_->rustStorage()));
+  auto transaction_query = [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+    return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+  };
+  auto receipt_query = [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+    return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+  };
   if (hashArg) {
     if (const auto hash = ::taraxa::blk_hash_t(hashArg->get<response::StringType>());
         hash != ::taraxa::kNullBlockHash) {
-      auto rust_dag_block = query_api->consensus_query_dag_block_by_hash(hash.asArray());
+      auto rust_dag_block = (*query_api)->consensus_query_dag_block_by_hash(hash.asArray());
       if (rust_dag_block.found) {
-        return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-            std::move(rust_dag_block), final_chain_, pbft_manager_, transaction_manager_, get_block_by_num_));
+        return std::make_shared<object::DagBlock>(
+            std::make_shared<DagBlock>(std::move(rust_dag_block), final_chain_, pbft_manager_, transaction_manager_,
+                                       get_block_by_num_, transaction_query, receipt_query));
       }
     }
   } else {
-    auto rust_dag_blocks = query_api->consensus_query_dag_blocks_by_level(dag_manager_->getMaxLevel(), 1);
+    auto rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(dag_manager_->getMaxLevel(), 1);
     for (auto& rust_dag_block : rust_dag_blocks) {
-      return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-          std::move(rust_dag_block), final_chain_, pbft_manager_, transaction_manager_, get_block_by_num_));
+      return std::make_shared<object::DagBlock>(
+          std::make_shared<DagBlock>(std::move(rust_dag_block), final_chain_, pbft_manager_, transaction_manager_,
+                                     get_block_by_num_, transaction_query, receipt_query));
     }
   }
   return nullptr;
@@ -312,13 +321,20 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getPeriodDagBlocks(
     period = final_chain_->lastBlockNumber();
   }
 #ifdef RUSTAXA_ENABLE
-  const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
-  auto rust_dag_blocks = query_api->consensus_query_finalized_dag_blocks_by_period(period);
+  auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
+      rustaxa::create_consensus_query_api(db_->rustStorage()));
+  auto rust_dag_blocks = (*query_api)->consensus_query_finalized_dag_blocks_by_period(period);
   if (rust_dag_blocks.size()) {
     blocks.reserve(rust_dag_blocks.size());
     for (auto& block : rust_dag_blocks) {
       blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-          std::move(block), final_chain_, pbft_manager_, transaction_manager_, get_block_by_num_)));
+          std::move(block), final_chain_, pbft_manager_, transaction_manager_, get_block_by_num_,
+          [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+            return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+          },
+          [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+            return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+          })));
     }
   }
   return blocks;
@@ -349,19 +365,26 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
       }
     }
 
-    const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
+        rustaxa::create_consensus_query_api(db_->rustStorage()));
     auto addRustDagBlocks = [final_chain = final_chain_, pbft_manager = pbft_manager_,
-                             transaction_manager = transaction_manager_, get_block_by_num = get_block_by_num_](
-                                auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
+                             transaction_manager = transaction_manager_, get_block_by_num = get_block_by_num_,
+                             query_api](auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
       const auto added = rust_dag_blocks.size();
       for (auto& dag_block : rust_dag_blocks) {
         result_dag_blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-            std::move(dag_block), final_chain, pbft_manager, transaction_manager, get_block_by_num)));
+            std::move(dag_block), final_chain, pbft_manager, transaction_manager, get_block_by_num,
+            [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+              return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+            },
+            [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+              return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+            })));
       }
       return added;
     };
 
-    auto rust_dag_blocks = query_api->consensus_query_dag_blocks_by_level(rust_act_dag_level, 1);
+    auto rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(rust_act_dag_level, 1);
     auto rust_act_count = addRustDagBlocks(rust_dag_blocks, rust_dag_blocks_result);
 
     if (!countArg) {
@@ -380,7 +403,7 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
         return rust_dag_blocks_result;
       }
 
-      auto next_rust_dag_blocks = query_api->consensus_query_dag_blocks_by_level(rust_act_dag_level, 1);
+      auto next_rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(rust_act_dag_level, 1);
       rust_act_count += addRustDagBlocks(next_rust_dag_blocks, rust_dag_blocks_result);
     }
 

@@ -455,12 +455,15 @@ Implemented first slice:
   optimized pillar-vote bundle in Rust mode instead of creating an endpoint-local pillar storage query handle.
 - `taraxa_getDagBlockByHash` and `taraxa_getDagBlockByLevel` now use `ConsensusQueryApi` for DAG block facts and
   finalized period/position lookup in Rust mode instead of creating endpoint-local DAG query handles and asking the live
-  `PbftManager` for block period.
+  `PbftManager` for block period. Their optional transaction expansion now also resolves each DAG transaction hash
+  through `ConsensusQueryApi::consensus_query_transaction_by_hash` instead of asking `TransactionManager` directly.
 - `debug_getPeriodDagBlocks` and GraphQL `periodDagBlocks` now use `ConsensusQueryApi` for finalized DAG block facts by
   PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. GraphQL DAG objects also use
   the finalized-period facts carried by Rust DTOs before falling back to live PBFT-manager lookup for older routes.
 - GraphQL `dagBlock` and `dagBlocks` now use `ConsensusQueryApi` for DAG hash, latest-level, and paged level-window
-  reads in Rust mode instead of creating endpoint-local DAG storage query handles.
+  reads in Rust mode instead of creating endpoint-local DAG storage query handles. Rust-backed GraphQL DAG object
+  transaction expansion now resolves transaction payloads through `ConsensusQueryApi::consensus_query_transaction_by_hash`
+  instead of calling `TransactionManager`.
 - GraphQL top-level `transaction(hash)` now uses `ConsensusQueryApi` for storage-backed transaction payload lookup in
   Rust mode instead of asking the live `TransactionManager` to resolve the hash. The query view returns canonical RLP
   plus source classification for pending, finalized regular, and finalized system transaction materialization.

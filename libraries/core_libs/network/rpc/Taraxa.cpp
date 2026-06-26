@@ -6,11 +6,17 @@
 #include <libdevcore/CommonJS.h>
 #include <libp2p/Common.h>
 
+#include <stdexcept>
+
 #include "config/version.hpp"
 #include "dag/dag_manager.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "transaction/transaction_manager.hpp"
+
+#ifdef RUSTAXA_ENABLE
+#include "transaction/system_transaction.hpp"
+#endif
 
 using namespace std;
 using namespace jsonrpc;
@@ -22,6 +28,11 @@ namespace taraxa::net {
 
 #ifdef RUSTAXA_ENABLE
 namespace {
+constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
+constexpr uint8_t kConsensusQueryTransactionSourcePending = 1;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedRegular = 2;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedSystem = 3;
+
 dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
   return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
 }
@@ -31,6 +42,27 @@ dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
 }
 
 dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+std::shared_ptr<Transaction> materializeTransactionView(const rustaxa::TransactionPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<Transaction> transaction;
+  if (view.source == kConsensusQueryTransactionSourceFinalizedSystem) {
+    transaction = std::make_shared<SystemTransaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source == kConsensusQueryTransactionSourcePending ||
+             view.source == kConsensusQueryTransactionSourceFinalizedRegular) {
+    transaction = std::make_shared<Transaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source != kConsensusQueryTransactionSourceMissing) {
+    throw std::runtime_error("CONSENSUS_QUERY_TRANSACTION_UNKNOWN_SOURCE");
+  }
+
+  if (transaction && transaction->getHash() != hashFromBridge(view.hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_TRANSACTION_HASH_MISMATCH");
+  }
+  return transaction;
+}
 
 Json::Value pbftExtraDataViewToJson(const rustaxa::PbftBlockExtraDataView& view) {
   Json::Value json;
@@ -94,6 +126,20 @@ Json::Value dagBlockPublicViewToJson(const rustaxa::DagBlockPublicView& view) {
     json["vdf"] = vdf;
   }
   return json;
+}
+
+template <typename QueryApi>
+void appendDagBlockTransactionsFromQuery(Json::Value& block_json, const rust::Vec<rustaxa::DagHash>& transaction_hashes,
+                                         const QueryApi& query_api) {
+  block_json["transactions"] = Json::Value(Json::arrayValue);
+  for (const auto& transaction_hash : transaction_hashes) {
+    auto transaction =
+        materializeTransactionView(query_api->consensus_query_transaction_by_hash(transaction_hash.hash));
+    if (!transaction) {
+      throw std::runtime_error("CONSENSUS_QUERY_DAG_BLOCK_TRANSACTION_MISSING");
+    }
+    block_json["transactions"].append(transaction->toJSON());
+  }
 }
 
 Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, bool include_signatures) {
@@ -180,11 +226,7 @@ Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _inc
         block_json["period"] = "-0x1";
       }
       if (_includeTransactions) {
-        block_json["transactions"] = Json::Value(Json::arrayValue);
-        for (auto const& t : rust_block.transactions) {
-          block_json["transactions"].append(
-              app->getTransactionManager()->getTransaction(hashFromBridge(t.hash))->toJSON());
-        }
+        appendDagBlockTransactionsFromQuery(block_json, rust_block.transactions, query_api);
       }
       return block_json;
     }
@@ -342,11 +384,7 @@ Json::Value Taraxa::taraxa_getDagBlockByLevel(const string& _blockLevel, bool _i
         block_json["period"] = "-0x1";
       }
       if (_includeTransactions) {
-        block_json["transactions"] = Json::Value(Json::arrayValue);
-        for (auto const& t : block.transactions) {
-          block_json["transactions"].append(
-              app->getTransactionManager()->getTransaction(hashFromBridge(t.hash))->toJSON());
-        }
+        appendDagBlockTransactionsFromQuery(block_json, block.transactions, query_api);
       }
       rust_res.append(block_json);
     }
