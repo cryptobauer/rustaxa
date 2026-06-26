@@ -14,6 +14,10 @@
 #include "network/rpc/jsonrpc_ws_server.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 namespace taraxa::plugin {
 
 namespace bpo = boost::program_options;
@@ -59,6 +63,16 @@ void Rpc::start() {
     eth_rpc_params.gas_pricer = [gas_pricer = app()->getGasPricer()]() { return gas_pricer->bid(); };
     eth_rpc_params.get_earliest_block = [db = app()->getDB()]() { return db->getEarliestBlockNumber(); };
     eth_rpc_params.get_trx = [db = app()->getDB()](auto const &trx_hash) { return db->getTransaction(trx_hash); };
+#ifdef RUSTAXA_ENABLE
+    auto eth_query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(app()->getDB()->rustStorage()))>(
+        rustaxa::create_consensus_query_api(app()->getDB()->rustStorage()));
+    eth_rpc_params.query_transaction = [query_api = eth_query_api](auto const &trx_hash) {
+      return (*query_api)->consensus_query_transaction_by_hash(trx_hash.asArray());
+    };
+    eth_rpc_params.query_transaction_receipt = [query_api = eth_query_api](auto const &trx_hash) {
+      return (*query_api)->consensus_query_transaction_receipt_by_hash(trx_hash.asArray());
+    };
+#endif
     eth_rpc_params.send_trx = [trx_manager = app()->getTransactionManager()](auto const &trx) {
       if (auto [ok, err_msg] = trx_manager->insertTransaction(trx); !ok) {
         BOOST_THROW_EXCEPTION(

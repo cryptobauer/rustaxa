@@ -3831,7 +3831,27 @@ pub mod rustaxa_ffi {
         found: bool,
         hash: [u8; 32],
         source: u8,
+        location_found: bool,
+        block_number: u64,
+        transaction_index: u32,
+        is_system: bool,
+        block_hash_found: bool,
+        block_hash: [u8; 32],
         transaction_rlp: Vec<u8>,
+    }
+
+    /// Public/query transaction receipt payload view.
+    struct TransactionReceiptPublicView {
+        found: bool,
+        transaction_hash: [u8; 32],
+        transaction_source: u8,
+        transaction_rlp: Vec<u8>,
+        receipt_rlp: Vec<u8>,
+        block_number: u64,
+        transaction_index: u32,
+        is_system: bool,
+        block_hash_found: bool,
+        block_hash: [u8; 32],
     }
 
     struct DagCounterUpdate {
@@ -5061,6 +5081,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             hash: &[u8; 32],
         ) -> Result<TransactionPublicView>;
+        pub fn consensus_query_transaction_receipt_by_hash(
+            self: &BridgeConsensusQueryApi,
+            hash: &[u8; 32],
+        ) -> Result<TransactionReceiptPublicView>;
     }
 
     extern "Rust" {

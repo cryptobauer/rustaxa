@@ -169,7 +169,30 @@ fn transaction_view_to_ffi(
         found: view.found,
         hash: view.hash,
         source: view.source,
+        location_found: view.location_found,
+        block_number: view.block_number,
+        transaction_index: view.transaction_index,
+        is_system: view.is_system,
+        block_hash_found: view.block_hash_found,
+        block_hash: view.block_hash,
         transaction_rlp: view.transaction_rlp,
+    }
+}
+
+fn transaction_receipt_view_to_ffi(
+    view: rustaxa_consensus::TransactionReceiptView,
+) -> rustaxa_ffi::TransactionReceiptPublicView {
+    rustaxa_ffi::TransactionReceiptPublicView {
+        found: view.found,
+        transaction_hash: view.transaction_hash,
+        transaction_source: view.transaction_source,
+        transaction_rlp: view.transaction_rlp,
+        receipt_rlp: view.receipt_rlp,
+        block_number: view.block_number,
+        transaction_index: view.transaction_index,
+        is_system: view.is_system,
+        block_hash_found: view.block_hash_found,
+        block_hash: view.block_hash,
     }
 }
 
@@ -273,6 +296,16 @@ impl BridgeConsensusQueryApi {
     ) -> Result<rustaxa_ffi::TransactionPublicView, anyhow::Error> {
         Ok(transaction_view_to_ffi(self.0.transaction_by_hash(*hash)?))
     }
+
+    /// Returns a stable public transaction receipt payload view by transaction hash.
+    pub fn consensus_query_transaction_receipt_by_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::TransactionReceiptPublicView, anyhow::Error> {
+        Ok(transaction_receipt_view_to_ffi(
+            self.0.transaction_receipt_by_hash(*hash)?,
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -335,6 +368,14 @@ mod tests {
         stream.append_raw(&transactions.out(), 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn receipt_list_rlp(receipt_rlps: &[Vec<u8>]) -> Vec<u8> {
+        let mut receipts = RlpStream::new_list(receipt_rlps.len());
+        for receipt_rlp in receipt_rlps {
+            receipts.append_raw(receipt_rlp, 1);
+        }
+        receipts.out().to_vec()
     }
 
     fn signature(value: u8) -> [u8; 65] {
@@ -821,6 +862,11 @@ mod tests {
             finalized.source,
             rustaxa_consensus::STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
         );
+        assert!(finalized.location_found);
+        assert_eq!(finalized.block_number, 8);
+        assert_eq!(finalized.transaction_index, 0);
+        assert!(!finalized.is_system);
+        assert!(!finalized.block_hash_found);
         assert_eq!(finalized.transaction_rlp, vec![0x22]);
 
         let system = api
@@ -831,6 +877,10 @@ mod tests {
             system.source,
             rustaxa_consensus::STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM
         );
+        assert!(system.location_found);
+        assert_eq!(system.block_number, 9);
+        assert_eq!(system.transaction_index, 0);
+        assert!(system.is_system);
         assert_eq!(system.transaction_rlp, vec![0x44]);
 
         let missing = api
@@ -842,6 +892,72 @@ mod tests {
             rustaxa_consensus::STORED_TRANSACTION_SOURCE_MISSING
         );
         assert!(missing.transaction_rlp.is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_transaction_receipt_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_transaction_receipt_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let trx_hash = H256::from_low_u64_be(0x21);
+        let block_hash = H256::from_low_u64_be(0x24);
+        let trx_rlp = vec![0x31];
+        let receipt_rlp = vec![0x41];
+
+        storage
+            .save_transaction_location(&trx_hash.0, 12, 0, false)
+            .unwrap();
+        storage
+            .save_period_data(
+                12,
+                period_data_with_transactions_rlp(std::slice::from_ref(&trx_rlp)),
+            )
+            .unwrap();
+        storage
+            .seed_final_chain_conformance_lookup_rows(
+                0,
+                b"meta".to_vec(),
+                12,
+                &block_hash.0,
+                vec![0xC0],
+                &trx_hash.0,
+                receipt_rlp.clone(),
+                &[0; 32],
+                vec![0xC0],
+                12,
+                receipt_list_rlp(std::slice::from_ref(&receipt_rlp)),
+            )
+            .unwrap();
+
+        let view = api
+            .consensus_query_transaction_receipt_by_hash(&trx_hash.0)
+            .unwrap();
+        assert!(view.found);
+        assert_eq!(view.transaction_hash, trx_hash.0);
+        assert_eq!(
+            view.transaction_source,
+            rustaxa_consensus::STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+        );
+        assert_eq!(view.transaction_rlp, trx_rlp);
+        assert_eq!(view.receipt_rlp, receipt_rlp);
+        assert_eq!(view.block_number, 12);
+        assert_eq!(view.transaction_index, 0);
+        assert!(!view.is_system);
+        assert!(view.block_hash_found);
+        assert_eq!(view.block_hash, block_hash.0);
+        assert!(
+            !api.consensus_query_transaction_receipt_by_hash(&[0x99; 32])
+                .unwrap()
+                .found
+        );
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

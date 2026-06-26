@@ -123,7 +123,41 @@ pub struct TransactionView {
     pub found: bool,
     pub hash: [u8; 32],
     pub source: u8,
+    pub location_found: bool,
+    pub block_number: u64,
+    pub transaction_index: u32,
+    pub is_system: bool,
+    pub block_hash_found: bool,
+    pub block_hash: [u8; 32],
     pub transaction_rlp: Vec<u8>,
+}
+
+/// Stable public view of one transaction receipt resolved by transaction hash.
+///
+/// The view is built from Rust-owned transaction location, FinalChain block
+/// hash, transaction payload, and receipt indexes. The receipt remains canonical
+/// RLP so C++ public adapters can keep existing JSON formatting while no longer
+/// reading `FinalChain` directly for single-receipt lookup.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransactionReceiptView {
+    pub found: bool,
+    pub transaction_hash: [u8; 32],
+    pub transaction_source: u8,
+    pub transaction_rlp: Vec<u8>,
+    pub receipt_rlp: Vec<u8>,
+    pub block_number: u64,
+    pub transaction_index: u32,
+    pub is_system: bool,
+    pub block_hash_found: bool,
+    pub block_hash: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct TransactionLocationView {
+    period: u64,
+    position: u32,
+    is_system: bool,
+    block_hash: Option<[u8; 32]>,
 }
 
 /// Stable public view of optional PBFT block extra data.
@@ -473,6 +507,51 @@ impl ConsensusQueryApi {
         )
     }
 
+    fn transaction_location_by_hash(&self, hash: H256) -> Result<Option<TransactionLocationView>> {
+        let Some(location_rlp) = self.storage.transaction().location_rlp(hash)? else {
+            return Ok(None);
+        };
+        let location = Rlp::new(&location_rlp);
+        let period = location
+            .val_at::<u64>(0)
+            .context("CONSENSUS_QUERY_TRANSACTION_LOCATION_PERIOD")?;
+        let position = location
+            .val_at::<u32>(1)
+            .context("CONSENSUS_QUERY_TRANSACTION_LOCATION_POSITION")?;
+        let is_system = location
+            .item_count()
+            .context("CONSENSUS_QUERY_TRANSACTION_LOCATION_SHAPE")?
+            == 3
+            && location
+                .val_at::<bool>(2)
+                .context("CONSENSUS_QUERY_TRANSACTION_LOCATION_SYSTEM_FLAG")?;
+        let block_hash = self
+            .storage
+            .final_chain()
+            .block_hash_by_number(period)?
+            .map(|bytes| h256_bytes(&bytes).map(Into::into))
+            .transpose()
+            .context("CONSENSUS_QUERY_TRANSACTION_BLOCK_HASH")?;
+        Ok(Some(TransactionLocationView {
+            period,
+            position,
+            is_system,
+            block_hash,
+        }))
+    }
+
+    fn receipt_by_period_position(&self, period: u64, position: u32) -> Result<Option<Vec<u8>>> {
+        let receipts_rlp = self.storage.period().receipt(period)?;
+        if receipts_rlp.is_empty() {
+            return Ok(None);
+        }
+        let receipts = Rlp::new(&receipts_rlp);
+        if position as usize >= receipts.item_count()? {
+            return Ok(None);
+        }
+        Ok(Some(receipts.at(position as usize)?.as_raw().to_vec()))
+    }
+
     /// Returns a public transaction view by transaction hash.
     ///
     /// The query uses the Rust-owned transaction storage lookup rules shared
@@ -497,12 +576,81 @@ impl ConsensusQueryApi {
         if lookup.input_index != 0 || lookup.hash != requested_hash {
             anyhow::bail!("CONSENSUS_QUERY_TRANSACTION_LOOKUP_MISMATCH");
         }
+        let location = self.transaction_location_by_hash(requested_hash)?;
+        let (
+            location_found,
+            block_number,
+            transaction_index,
+            is_system,
+            block_hash_found,
+            block_hash,
+        ) = match location {
+            Some(location) => (
+                true,
+                location.period,
+                location.position,
+                location.is_system,
+                location.block_hash.is_some(),
+                location.block_hash.unwrap_or_default(),
+            ),
+            None => (false, 0, 0, false, false, [0; 32]),
+        };
 
         Ok(TransactionView {
             found: lookup.found,
             hash,
             source: lookup.source,
+            location_found,
+            block_number,
+            transaction_index,
+            is_system,
+            block_hash_found,
+            block_hash,
             transaction_rlp: lookup.tx_rlp,
+        })
+    }
+
+    /// Returns a public transaction receipt view by transaction hash.
+    ///
+    /// Missing transaction location, transaction payload, or receipt bytes
+    /// return `found == false`. The receipt bytes are loaded through the
+    /// finalized period receipt list when available and fall back to the legacy
+    /// receipt-by-transaction-hash row, matching the C++ FinalChain lookup
+    /// contract. Malformed transaction-location or block-hash rows are returned
+    /// as errors with stable context labels.
+    pub fn transaction_receipt_by_hash(&self, hash: [u8; 32]) -> Result<TransactionReceiptView> {
+        let transaction = self.transaction_by_hash(hash)?;
+        if !transaction.found || !transaction.location_found {
+            return Ok(TransactionReceiptView::default());
+        }
+
+        let requested_hash = H256::from(hash);
+        let receipt_rlp = match self
+            .receipt_by_period_position(transaction.block_number, transaction.transaction_index)
+            .context("CONSENSUS_QUERY_TRANSACTION_RECEIPT_BY_PERIOD")?
+        {
+            Some(receipt_rlp) => Some(receipt_rlp),
+            None => self
+                .storage
+                .final_chain()
+                .receipt_by_trx_hash(requested_hash)
+                .context("CONSENSUS_QUERY_TRANSACTION_RECEIPT_BY_HASH")?,
+        };
+        let Some(receipt_rlp) = receipt_rlp else {
+            return Ok(TransactionReceiptView::default());
+        };
+
+        Ok(TransactionReceiptView {
+            found: true,
+            transaction_hash: hash,
+            transaction_source: transaction.source,
+            transaction_rlp: transaction.transaction_rlp,
+            receipt_rlp,
+            block_number: transaction.block_number,
+            transaction_index: transaction.transaction_index,
+            is_system: transaction.is_system,
+            block_hash_found: transaction.block_hash_found,
+            block_hash: transaction.block_hash,
         })
     }
 }
@@ -901,6 +1049,14 @@ mod tests {
         stream.append_raw(&transactions.out(), 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn receipt_list_rlp(receipt_rlps: &[Vec<u8>]) -> Vec<u8> {
+        let mut receipts = RlpStream::new_list(receipt_rlps.len());
+        for receipt_rlp in receipt_rlps {
+            receipts.append_raw(receipt_rlp, 1);
+        }
+        receipts.out().to_vec()
     }
 
     fn signature(value: u8) -> [u8; 65] {
@@ -1331,17 +1487,125 @@ mod tests {
             finalized.source,
             STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
         );
+        assert!(finalized.location_found);
+        assert_eq!(finalized.block_number, 8);
+        assert_eq!(finalized.transaction_index, 0);
+        assert!(!finalized.is_system);
+        assert!(!finalized.block_hash_found);
         assert_eq!(finalized.transaction_rlp, vec![0x22]);
 
         let system = api.transaction_by_hash(system_hash.0).unwrap();
         assert!(system.found);
         assert_eq!(system.source, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM);
+        assert!(system.location_found);
+        assert_eq!(system.block_number, 9);
+        assert_eq!(system.transaction_index, 0);
+        assert!(system.is_system);
         assert_eq!(system.transaction_rlp, vec![0x44]);
 
         let missing = api.transaction_by_hash(missing_hash.0).unwrap();
         assert!(!missing.found);
         assert_eq!(missing.source, STORED_TRANSACTION_SOURCE_MISSING);
         assert!(missing.transaction_rlp.is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_transaction_receipt_view_from_storage() {
+        let (path, storage) = test_storage("transaction_receipt_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let trx_hash = H256::from_low_u64_be(0x21);
+        let fallback_hash = H256::from_low_u64_be(0x22);
+        let missing_hash = H256::from_low_u64_be(0x23);
+        let block_hash = H256::from_low_u64_be(0x24);
+        let fallback_block_hash = H256::from_low_u64_be(0x25);
+        let trx_rlp = vec![0x31];
+        let fallback_trx_rlp = vec![0x32];
+        let receipt_rlp = vec![0x41];
+        let fallback_receipt_rlp = vec![0x42];
+
+        storage
+            .transaction()
+            .write_location(trx_hash, 12, 0, false)
+            .unwrap();
+        storage
+            .period()
+            .write(
+                12,
+                &period_data_with_transactions_rlp(std::slice::from_ref(&trx_rlp)),
+            )
+            .unwrap();
+        storage
+            .final_chain()
+            .write_conformance_lookup_rows(
+                0,
+                b"meta",
+                12,
+                block_hash,
+                &[0xC0],
+                trx_hash,
+                &receipt_rlp,
+                H256::zero(),
+                &[0xC0],
+                12,
+                &receipt_list_rlp(std::slice::from_ref(&receipt_rlp)),
+            )
+            .unwrap();
+
+        storage
+            .transaction()
+            .write_location(fallback_hash, 13, 0, false)
+            .unwrap();
+        storage
+            .period()
+            .write(
+                13,
+                &period_data_with_transactions_rlp(std::slice::from_ref(&fallback_trx_rlp)),
+            )
+            .unwrap();
+        storage
+            .final_chain()
+            .write_conformance_lookup_rows(
+                1,
+                b"meta",
+                13,
+                fallback_block_hash,
+                &[0xC0],
+                fallback_hash,
+                &fallback_receipt_rlp,
+                H256::zero(),
+                &[0xC0],
+                13,
+                &receipt_list_rlp(&[]),
+            )
+            .unwrap();
+
+        let view = api.transaction_receipt_by_hash(trx_hash.0).unwrap();
+        assert!(view.found);
+        assert_eq!(view.transaction_hash, trx_hash.0);
+        assert_eq!(
+            view.transaction_source,
+            STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+        );
+        assert_eq!(view.transaction_rlp, trx_rlp);
+        assert_eq!(view.receipt_rlp, receipt_rlp);
+        assert_eq!(view.block_number, 12);
+        assert_eq!(view.transaction_index, 0);
+        assert!(view.block_hash_found);
+        assert_eq!(view.block_hash, block_hash.0);
+
+        let fallback = api.transaction_receipt_by_hash(fallback_hash.0).unwrap();
+        assert!(fallback.found);
+        assert_eq!(fallback.receipt_rlp, fallback_receipt_rlp);
+        assert_eq!(fallback.block_hash, fallback_block_hash.0);
+
+        assert!(
+            !api.transaction_receipt_by_hash(missing_hash.0)
+                .unwrap()
+                .found
+        );
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

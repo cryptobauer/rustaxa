@@ -427,6 +427,7 @@ Implemented first slice:
   - `consensus_query_dag_blocks_by_level(level, number_of_levels) -> Vec<DagBlockPublicView>`
   - `consensus_query_finalized_dag_blocks_by_period(period) -> Vec<DagBlockPublicView>`
   - `consensus_query_transaction_by_hash(hash) -> TransactionPublicView`
+  - `consensus_query_transaction_receipt_by_hash(hash) -> TransactionReceiptPublicView`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
   hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
@@ -448,11 +449,14 @@ Implemented first slice:
 - GraphQL top-level `transaction(hash)` now uses `ConsensusQueryApi` for storage-backed transaction payload lookup in
   Rust mode instead of asking the live `TransactionManager` to resolve the hash. The query view returns canonical RLP
   plus source classification for pending, finalized regular, and finalized system transaction materialization.
+- `eth_getTransactionByHash` and `eth_getTransactionReceipt` now use `ConsensusQueryApi` in Rust mode for
+  location-aware transaction payload and receipt lookup instead of calling the generic ETH transaction callback or
+  reading `FinalChain` transaction location/receipt rows directly.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing receipt, account-state, expanded transaction, and sync/status routes remain compatibility or typed-storage
-  routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing indexed transaction, account-state, expanded transaction, block receipt/log, and sync/status routes remain
+  compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal
 

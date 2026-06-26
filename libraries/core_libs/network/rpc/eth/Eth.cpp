@@ -6,15 +6,101 @@
 
 #include <stdexcept>
 
+#include "common/encoding_rlp.hpp"
 #include "LogFilter.hpp"
 #include "common/rpc_utils.hpp"
 #include "common/types.hpp"
+#include "transaction/system_transaction.hpp"
 using namespace std;
 using namespace dev;
 using namespace taraxa::final_chain;
 using namespace taraxa::state_api;
 
 namespace taraxa::net::rpc::eth {
+#ifdef RUSTAXA_ENABLE
+namespace {
+constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
+constexpr uint8_t kConsensusQueryTransactionSourcePending = 1;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedRegular = 2;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedSystem = 3;
+
+dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
+  return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
+}
+
+dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+std::shared_ptr<Transaction> materializeTransactionView(const rustaxa::TransactionPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<Transaction> transaction;
+  if (view.source == kConsensusQueryTransactionSourceFinalizedSystem) {
+    transaction = std::make_shared<SystemTransaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source == kConsensusQueryTransactionSourcePending ||
+             view.source == kConsensusQueryTransactionSourceFinalizedRegular) {
+    transaction = std::make_shared<Transaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source != kConsensusQueryTransactionSourceMissing) {
+    throw std::runtime_error("CONSENSUS_QUERY_ETH_TRANSACTION_UNKNOWN_SOURCE");
+  }
+
+  if (transaction && transaction->getHash() != hashFromBridge(view.hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_ETH_TRANSACTION_HASH_MISMATCH");
+  }
+  return transaction;
+}
+
+std::shared_ptr<Transaction> materializeReceiptTransactionView(const rustaxa::TransactionReceiptPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<Transaction> transaction;
+  if (view.transaction_source == kConsensusQueryTransactionSourceFinalizedSystem) {
+    transaction = std::make_shared<SystemTransaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.transaction_source == kConsensusQueryTransactionSourcePending ||
+             view.transaction_source == kConsensusQueryTransactionSourceFinalizedRegular) {
+    transaction = std::make_shared<Transaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.transaction_source != kConsensusQueryTransactionSourceMissing) {
+    throw std::runtime_error("CONSENSUS_QUERY_ETH_RECEIPT_TRANSACTION_UNKNOWN_SOURCE");
+  }
+
+  if (transaction && transaction->getHash() != hashFromBridge(view.transaction_hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_ETH_RECEIPT_TRANSACTION_HASH_MISMATCH");
+  }
+  return transaction;
+}
+
+std::optional<TransactionLocationWithBlockHash> locationFromTransactionView(const rustaxa::TransactionPublicView& view) {
+  if (!view.location_found || !view.block_hash_found) {
+    return std::nullopt;
+  }
+
+  TransactionLocationWithBlockHash location;
+  location.period = view.block_number;
+  location.position = view.transaction_index;
+  location.is_system = view.is_system;
+  location.blk_h = hashFromBridge(view.block_hash);
+  return location;
+}
+
+ExtendedTransactionLocation receiptLocationFromView(const rustaxa::TransactionReceiptPublicView& view) {
+  if (!view.block_hash_found) {
+    throw std::runtime_error("CONSENSUS_QUERY_ETH_RECEIPT_BLOCK_HASH_MISSING");
+  }
+
+  ExtendedTransactionLocation location;
+  location.period = view.block_number;
+  location.position = view.transaction_index;
+  location.is_system = view.is_system;
+  location.blk_h = hashFromBridge(view.block_hash);
+  location.trx_hash = hashFromBridge(view.transaction_hash);
+  return location;
+}
+}  // namespace
+#endif
+
 void add(Json::Value& obj, const optional<TransactionLocationWithBlockHash>& info) {
   obj["blockNumber"] = info ? toJS(info->period) : Json::Value();
   obj["blockHash"] = info ? toJS(info->blk_h) : Json::Value();
@@ -371,6 +457,16 @@ class EthImpl : public Eth, EthParams {
   }
 
   optional<LocalisedTransaction> get_transaction(const h256& h) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_transaction) {
+      const auto view = query_transaction(h);
+      auto trx = materializeTransactionView(view);
+      if (!trx) {
+        return {};
+      }
+      return LocalisedTransaction{trx, locationFromTransactionView(view)};
+    }
+#endif
     auto trx = get_trx(h);
     if (!trx) {
       return {};
@@ -408,6 +504,22 @@ class EthImpl : public Eth, EthParams {
   }
 
   optional<LocalisedTransactionReceipt> get_transaction_receipt(const h256& trx_h) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_transaction_receipt) {
+      const auto view = query_transaction_receipt(trx_h);
+      auto trx = materializeReceiptTransactionView(view);
+      if (!trx) {
+        return {};
+      }
+      auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
+      return LocalisedTransactionReceipt{
+          util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)),
+          receiptLocationFromView(view),
+          trx->getSender(),
+          trx->getReceiver(),
+      };
+    }
+#endif
     auto location = final_chain->transactionLocation(trx_h);
     if (!location) {
       return {};
