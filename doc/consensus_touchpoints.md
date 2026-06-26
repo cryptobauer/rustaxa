@@ -442,12 +442,13 @@ Implemented first slice:
 - `debug_getPeriodDagBlocks` and GraphQL `periodDagBlocks` now use `ConsensusQueryApi` for finalized DAG block facts by
   PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. GraphQL DAG objects also use
   the finalized-period facts carried by Rust DTOs before falling back to live PBFT-manager lookup for older routes.
+- GraphQL `dagBlock` and `dagBlocks` now use `ConsensusQueryApi` for DAG hash, latest-level, and paged level-window
+  reads in Rust mode instead of creating endpoint-local DAG storage query handles.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing DAG page/range beyond the public one-level and finalized-period routes, transaction, receipt, account-state,
-  and sync/status routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in
-  later slices.
+- Existing transaction, receipt, account-state, and sync/status routes remain compatibility or typed-storage routes until
+  they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal
 

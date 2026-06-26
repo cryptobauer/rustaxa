@@ -366,11 +366,6 @@ pub struct TransactionManagerRuntimePackSession {
 
 #[cxx::bridge(namespace = "rustaxa")]
 pub mod rustaxa_ffi {
-    struct BlockPeriod {
-        period: u64,
-        position: u32,
-    }
-
     struct BlockPeriodLookup {
         found: bool,
         period: u64,
@@ -7365,14 +7360,6 @@ pub mod rustaxa_ffi {
         ) -> Result<()>;
         pub fn dag_block_in_db(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_dag_block(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
-        pub fn get_dag_block_public_view(
-            self: &BridgeDagStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<DagBlockPublicView>;
-        pub fn get_dag_block_period(
-            self: &BridgeDagStorageQueries,
-            hash: &[u8; 32],
-        ) -> Result<BlockPeriod>;
         pub fn get_dag_block_period_lookup(
             self: &BridgeDagStorageQueries,
             hash: &[u8; 32],
@@ -7384,11 +7371,6 @@ pub mod rustaxa_ffi {
             level: u64,
             number_of_levels: u32,
         ) -> Result<Vec<BlockRlp>>;
-        pub fn get_dag_block_views_at_level(
-            self: &BridgeDagStorageQueries,
-            level: u64,
-            number_of_levels: u32,
-        ) -> Result<Vec<DagBlockPublicView>>;
         pub fn get_nonfinalized_dag_blocks(
             self: &BridgeDagStorageQueries,
         ) -> Result<Vec<LevelBlocks>>;

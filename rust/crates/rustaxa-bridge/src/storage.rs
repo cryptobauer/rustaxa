@@ -24,19 +24,11 @@ use rustaxa_consensus::{
 };
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
-use rustaxa_types::codec::rlp::dag::DagBlockRlp;
-use rustaxa_types::dag::DagBlock;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
-const DAG_VDF_SORTITION_FIELDS: usize = 4;
-const DAG_VDF_PROOF_POS: usize = 0;
-const DAG_VDF_SOL1_POS: usize = 1;
-const DAG_VDF_SOL2_POS: usize = 2;
-const DAG_VDF_DIFFICULTY_POS: usize = 3;
-const DAG_VDF_PROOF_SIZE: usize = 80;
 
 fn pbft_vote_persistence_from_domain(
     value: DomainPbftVotePersistenceResult,
@@ -440,47 +432,6 @@ impl BridgeDagStorageQueries {
             .unwrap_or_default())
     }
 
-    /// Returns a public/query DAG block view loaded by block hash.
-    ///
-    /// Inputs:
-    /// - `hash`: canonical DAG block hash requested by RPC or GraphQL.
-    ///
-    /// Outputs:
-    /// - `found == false` when the block is absent from DAG storage.
-    /// - Otherwise the same base JSON facts as `DagBlock::getJson()`, with
-    ///   transaction hashes left available for endpoint-specific expansion.
-    ///
-    /// Edge behavior:
-    /// - Malformed stored DAG block RLP, signatures, or VDF payloads return
-    ///   errors so legacy public catch blocks keep mapping bad inputs to invalid
-    ///   params.
-    pub fn get_dag_block_public_view(
-        &self,
-        hash: &[u8; 32],
-    ) -> Result<rustaxa_ffi::DagBlockPublicView, anyhow::Error> {
-        let Some(block_rlp) = self
-            .storage
-            .dag()
-            .by_hash_rlp_optional(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))?
-        else {
-            return Ok(empty_dag_block_public_view());
-        };
-        dag_block_public_view_from_canonical_rlp(&block_rlp)
-    }
-
-    pub fn get_dag_block_period(
-        &self,
-        hash: &[u8; 32],
-    ) -> Result<rustaxa_ffi::BlockPeriod, anyhow::Error> {
-        let (period, position) = self
-            .storage
-            .dag()
-            .period(H256::from(*hash))
-            .map_err(|e| anyhow::anyhow!(e))?;
-        Ok(rustaxa_ffi::BlockPeriod { period, position })
-    }
-
     pub fn get_dag_block_period_lookup(
         &self,
         hash: &[u8; 32],
@@ -538,35 +489,6 @@ impl BridgeDagStorageQueries {
             .into_iter()
             .map(|data| rustaxa_ffi::BlockRlp { data })
             .collect())
-    }
-
-    /// Returns public/query DAG block views loaded from DAG storage by level range.
-    ///
-    /// Inputs:
-    /// - `level`: first DAG level to query.
-    /// - `number_of_levels`: number of consecutive levels to scan.
-    ///
-    /// Outputs preserve storage order from `at_level_range` and carry the same
-    /// base JSON facts as `DagBlock::getJson()`. Transaction hashes remain hashes;
-    /// C++ public RPC adapters may expand them to full transaction JSON when the
-    /// external API requests that compatibility mode.
-    ///
-    /// Edge behavior:
-    /// - Malformed DAG block RLP, signatures, or VDF payloads return errors so
-    ///   legacy RPC catch blocks keep mapping bad inputs to invalid params.
-    pub fn get_dag_block_views_at_level(
-        &self,
-        level: u64,
-        number_of_levels: u32,
-    ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
-        let rlps = self
-            .storage
-            .dag()
-            .at_level_range(level, number_of_levels)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        rlps.into_iter()
-            .map(|block_rlp| dag_block_public_view_from_canonical_rlp(&block_rlp))
-            .collect()
     }
 
     pub fn get_nonfinalized_dag_blocks(
@@ -819,94 +741,6 @@ impl BridgePeriodStorageQueries {
             .receipt(period)
             .map_err(|e| anyhow::anyhow!(e))
     }
-}
-
-fn empty_dag_block_public_view() -> rustaxa_ffi::DagBlockPublicView {
-    rustaxa_ffi::DagBlockPublicView {
-        found: false,
-        pivot: [0; 32],
-        level: 0,
-        tips: Vec::new(),
-        transactions: Vec::new(),
-        trx_estimations: 0,
-        signature: Vec::new(),
-        hash: [0; 32],
-        sender: [0; 20],
-        timestamp: 0,
-        finalized_period_found: false,
-        finalized_period: 0,
-        finalized_position: 0,
-        has_vdf: false,
-        vdf_proof: Vec::new(),
-        vdf_sol1: Vec::new(),
-        vdf_sol2: Vec::new(),
-        vdf_difficulty: 0,
-    }
-}
-
-fn dag_block_public_view_from_canonical_rlp(
-    block_rlp: &[u8],
-) -> Result<rustaxa_ffi::DagBlockPublicView, anyhow::Error> {
-    let block = DagBlock::try_from(DagBlockRlp::new(block_rlp))?;
-    let sender = block
-        .recover_sender()
-        .ok_or_else(|| anyhow::anyhow!("could not recover DAG block sender"))?;
-    let (has_vdf, vdf_proof, vdf_sol1, vdf_sol2, vdf_difficulty) = if block.level > 0 {
-        decode_dag_vdf_view(&block.vdf)?
-    } else {
-        (false, Vec::new(), Vec::new(), Vec::new(), 0)
-    };
-
-    Ok(rustaxa_ffi::DagBlockPublicView {
-        found: true,
-        pivot: block.pivot.into(),
-        level: block.level,
-        tips: block
-            .tips
-            .into_iter()
-            .map(|hash| rustaxa_ffi::DagHash { hash: hash.into() })
-            .collect(),
-        transactions: block
-            .transactions
-            .into_iter()
-            .map(|hash| rustaxa_ffi::DagHash { hash: hash.into() })
-            .collect(),
-        trx_estimations: block.gas_estimation,
-        signature: block.signature.to_vec(),
-        hash: keccak256(block_rlp).into(),
-        sender: sender.into(),
-        timestamp: block.timestamp,
-        finalized_period_found: false,
-        finalized_period: 0,
-        finalized_position: 0,
-        has_vdf,
-        vdf_proof,
-        vdf_sol1,
-        vdf_sol2,
-        vdf_difficulty,
-    })
-}
-
-fn decode_dag_vdf_view(
-    vdf_rlp: &[u8],
-) -> Result<(bool, Vec<u8>, Vec<u8>, Vec<u8>, u16), anyhow::Error> {
-    let rlp = Rlp::new(vdf_rlp);
-    anyhow::ensure!(
-        rlp.item_count()? == DAG_VDF_SORTITION_FIELDS,
-        "invalid DAG VDF sortition field count"
-    );
-    let proof = rlp.at(DAG_VDF_PROOF_POS)?.data()?.to_vec();
-    anyhow::ensure!(
-        proof.len() == DAG_VDF_PROOF_SIZE,
-        "invalid DAG VDF proof length"
-    );
-    Ok((
-        true,
-        proof,
-        rlp.at(DAG_VDF_SOL1_POS)?.data()?.to_vec(),
-        rlp.at(DAG_VDF_SOL2_POS)?.data()?.to_vec(),
-        rlp.val_at(DAG_VDF_DIFFICULTY_POS)?,
-    ))
 }
 
 fn keccak256(data: &[u8]) -> H256 {

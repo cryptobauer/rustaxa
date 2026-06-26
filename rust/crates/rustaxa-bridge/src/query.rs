@@ -354,17 +354,33 @@ mod tests {
         vdf.append(&vec![0x22, 0x23]);
         vdf.append(&vec![0x33, 0x34]);
         vdf.append(&7u16);
+        let signing_key = SigningKey::from_slice(&[0x43; 32]).unwrap();
+        let mut block = rustaxa_types::dag::DagBlock {
+            pivot: H256::from_low_u64_be(1),
+            level: 5,
+            timestamp: 123,
+            vdf: vdf.out().to_vec(),
+            tips: vec![H256::from_low_u64_be(2)],
+            transactions: vec![H256::from_low_u64_be(3), H256::from_low_u64_be(4)],
+            signature: [0; 65],
+            gas_estimation: 987,
+        };
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .unwrap();
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
 
-        let mut block = RlpStream::new_list(8);
-        block.append(&H256::from_low_u64_be(1));
-        block.append(&5u64);
-        block.append(&123u64);
-        block.append(&vdf.out().to_vec());
-        block.append_list(&[H256::from_low_u64_be(2)]);
-        block.append_list(&[H256::from_low_u64_be(3), H256::from_low_u64_be(4)]);
-        block.append(&vec![0x44; 65]);
-        block.append(&987u64);
-        block.out().to_vec()
+        let mut stream = RlpStream::new_list(8);
+        stream.append(&block.pivot);
+        stream.append(&block.level);
+        stream.append(&block.timestamp);
+        stream.append(&block.vdf);
+        stream.append_list(&block.tips);
+        stream.append_list(&block.transactions);
+        stream.append(&block.signature.to_vec());
+        stream.append(&block.gas_estimation);
+        stream.out().to_vec()
     }
 
     fn signed_finalized_dag_bundle_rlp() -> (Vec<u8>, Vec<u8>) {

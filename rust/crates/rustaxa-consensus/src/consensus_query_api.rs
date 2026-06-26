@@ -365,10 +365,23 @@ impl ConsensusQueryApi {
         };
         let block = DagBlock::try_from(DagBlockRlp::new(&block_rlp))
             .context("CONSENSUS_QUERY_DAG_BLOCK_DECODE")?;
-        let vdf = decode_vdf_sortition_payload(&block.vdf)
-            .context("CONSENSUS_QUERY_DAG_BLOCK_VDF_DECODE")?;
         let finalized = self.storage.dag().period_optional(requested_hash)?;
-        let sender = block.recover_sender().unwrap_or_default();
+        let sender = block
+            .recover_sender()
+            .context("CONSENSUS_QUERY_DAG_BLOCK_SENDER")?;
+        let (has_vdf, vdf_proof, vdf_sol1, vdf_sol2, vdf_difficulty) = if block.level > 0 {
+            let vdf = decode_vdf_sortition_payload(&block.vdf)
+                .context("CONSENSUS_QUERY_DAG_BLOCK_VDF_DECODE")?;
+            (
+                true,
+                vdf.vrf_proof.to_vec(),
+                vdf.vdf_solution_proof,
+                vdf.vdf_solution_output,
+                vdf.difficulty,
+            )
+        } else {
+            (false, Vec::new(), Vec::new(), Vec::new(), 0)
+        };
 
         Ok(DagBlockView {
             found: true,
@@ -384,11 +397,11 @@ impl ConsensusQueryApi {
             finalized_period_found: finalized.is_some(),
             finalized_period: finalized.map(|(period, _)| period).unwrap_or_default(),
             finalized_position: finalized.map(|(_, position)| position).unwrap_or_default(),
-            has_vdf: true,
-            vdf_proof: vdf.vrf_proof.to_vec(),
-            vdf_sol1: vdf.vdf_solution_proof,
-            vdf_sol2: vdf.vdf_solution_output,
-            vdf_difficulty: vdf.difficulty,
+            has_vdf,
+            vdf_proof,
+            vdf_sol1,
+            vdf_sol2,
+            vdf_difficulty,
         })
     }
 
@@ -873,17 +886,33 @@ mod tests {
         vdf.append(&vec![0x22, 0x23]);
         vdf.append(&vec![0x33, 0x34]);
         vdf.append(&7u16);
+        let signing_key = SigningKey::from_slice(&[0x43; 32]).unwrap();
+        let mut block = DagBlock {
+            pivot: H256::from_low_u64_be(1),
+            level: 5,
+            timestamp: 123,
+            vdf: vdf.out().to_vec(),
+            tips: vec![H256::from_low_u64_be(2)],
+            transactions: vec![H256::from_low_u64_be(3), H256::from_low_u64_be(4)],
+            signature: [0; 65],
+            gas_estimation: 987,
+        };
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .unwrap();
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
 
-        let mut block = RlpStream::new_list(8);
-        block.append(&H256::from_low_u64_be(1));
-        block.append(&5u64);
-        block.append(&123u64);
-        block.append(&vdf.out().to_vec());
-        block.append_list(&[H256::from_low_u64_be(2)]);
-        block.append_list(&[H256::from_low_u64_be(3), H256::from_low_u64_be(4)]);
-        block.append(&vec![0x44; 65]);
-        block.append(&987u64);
-        block.out().to_vec()
+        let mut stream = RlpStream::new_list(8);
+        stream.append(&block.pivot);
+        stream.append(&block.level);
+        stream.append(&block.timestamp);
+        stream.append(&block.vdf);
+        stream.append_list(&block.tips);
+        stream.append_list(&block.transactions);
+        stream.append(&block.signature.to_vec());
+        stream.append(&block.gas_estimation);
+        stream.out().to_vec()
     }
 
     fn signed_finalized_dag_bundle_rlp() -> (Vec<u8>, Vec<u8>) {
@@ -1177,7 +1206,7 @@ mod tests {
             vec![H256::from_low_u64_be(3).0, H256::from_low_u64_be(4).0]
         );
         assert_eq!(view.trx_estimations, 987);
-        assert_eq!(view.signature, vec![0x44; 65]);
+        assert_eq!(view.signature.len(), 65);
         assert!(view.finalized_period_found);
         assert_eq!(view.finalized_period, 9);
         assert_eq!(view.vdf_proof, vec![0x11; 80]);
