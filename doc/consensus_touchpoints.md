@@ -547,6 +547,9 @@ Implemented first slice:
 - GraphQL `DagBlock.transactions` on the legacy DAG object path now uses a local `DagBlockTransactionReader` callback
   bundle to resolve DAG transaction hashes instead of calling `TransactionManager` directly from the field resolver. The
   existing manager-backed constructor remains an audited compatibility adapter.
+- GraphQL `DagBlock.pbftPeriod` and the legacy `DagBlock.author` period scope now use a local `DagBlockPeriodReader`
+  callback bundle instead of asking `PbftManager` directly from field resolvers. The existing manager-backed constructor
+  remains the compatibility adapter until all legacy DAG objects are Rust DTO backed.
 - GraphQL top-level `account(address, block)` now also uses `AccountStateReader` instead of constructing the account
   object from `FinalChain` directly. The default `Query` constructor keeps the same FinalChain-backed compatibility
   adapter for now.

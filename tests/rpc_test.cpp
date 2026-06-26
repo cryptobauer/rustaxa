@@ -1016,6 +1016,38 @@ TEST_F(RPCTest, graphql_dag_block_transactions_use_transaction_reader) {
   ASSERT_TRUE(*transaction_called);
 }
 
+TEST_F(RPCTest, graphql_dag_block_period_uses_period_reader) {
+  auto dag_block = std::make_shared<DagBlock>(blk_hash_t(7), level_t(1), vec_blk_t{}, vec_trx_t{}, secret_t::random());
+  const auto dag_block_hash = dag_block->getHash();
+  auto period_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::AccountStateReader account_reader;
+  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::DagBlockPeriodReader period_reader;
+  period_reader.period_by_hash = [period_called, dag_block_hash](const blk_hash_t& requested_hash) {
+    *period_called = true;
+    EXPECT_EQ(dag_block_hash, requested_hash);
+    return std::optional<uint64_t>(23);
+  };
+
+  graphql::taraxa::DagBlock graphql_dag_block(std::move(account_reader), graphql::taraxa::DagBlockTransactionReader{},
+                                              std::move(period_reader), std::move(dag_block), nullptr, nullptr,
+                                              [](EthBlockNumber) { return nullptr; });
+
+  const auto period = graphql_dag_block.getPbftPeriod();
+  ASSERT_TRUE(period.has_value());
+  EXPECT_EQ(23, period->get<int>());
+  ASSERT_TRUE(*period_called);
+}
+
 TEST_F(RPCTest, graphql_query_account_uses_account_reader) {
   const auto address = dev::KeyPair::create().address();
   auto account_called = std::make_shared<bool>(false);

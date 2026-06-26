@@ -23,6 +23,13 @@ struct DagBlockTransactionReader {
   std::function<std::shared_ptr<::taraxa::Transaction>(const ::taraxa::trx_hash_t&)> transaction_by_hash;
 };
 
+// DagBlockPeriodReader is GraphQL's minimal DAG finalization boundary. It
+// resolves a DAG block hash to its finalized PBFT period without exposing
+// PbftManager to DAG block field resolvers.
+struct DagBlockPeriodReader {
+  std::function<std::optional<uint64_t>(const ::taraxa::blk_hash_t&)> period_by_hash;
+};
+
 class DagBlock {
  public:
   explicit DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
@@ -36,6 +43,11 @@ class DagBlock {
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
   explicit DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
                     std::shared_ptr<::taraxa::DagBlock> dag_block, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
+  explicit DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
+                    DagBlockPeriodReader period_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
+                    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                     std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
 #ifdef RUSTAXA_ENABLE
@@ -66,6 +78,7 @@ class DagBlock {
 #endif
   AccountStateReader account_reader_;
   DagBlockTransactionReader transaction_reader_;
+  DagBlockPeriodReader period_reader_;
   std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
   std::shared_ptr<::taraxa::PbftManager> pbft_manager_;
   std::shared_ptr<::taraxa::TransactionManager> transaction_manager_;

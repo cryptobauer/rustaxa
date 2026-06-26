@@ -19,6 +19,21 @@ DagBlockTransactionReader makeDagBlockTransactionReader(
   };
   return reader;
 }
+
+DagBlockPeriodReader makeDagBlockPeriodReader(const std::shared_ptr<::taraxa::PbftManager>& pbft_manager) {
+  DagBlockPeriodReader reader;
+  reader.period_by_hash = [pbft_manager](const ::taraxa::blk_hash_t& hash) -> std::optional<uint64_t> {
+    if (!pbft_manager) {
+      return std::nullopt;
+    }
+    const auto [has_period, period] = pbft_manager->getDagBlockPeriod(hash);
+    if (!has_period) {
+      return std::nullopt;
+    }
+    return period;
+  };
+  return reader;
+}
 }  // namespace
 
 #ifdef RUSTAXA_ENABLE
@@ -69,6 +84,7 @@ DagBlock::DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
     : dag_block_(std::move(dag_block)),
       account_reader_(makeAccountStateReader(final_chain)),
       transaction_reader_(makeDagBlockTransactionReader(transaction_manager)),
+      period_reader_(makeDagBlockPeriodReader(pbft_manager)),
       final_chain_(std::move(final_chain)),
       pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
@@ -78,16 +94,27 @@ DagBlock::DagBlock(AccountStateReader account_reader, std::shared_ptr<::taraxa::
                    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
-    : DagBlock(std::move(account_reader), makeDagBlockTransactionReader(transaction_manager), std::move(dag_block),
-               std::move(pbft_manager), std::move(transaction_manager), std::move(get_block_by_num)) {}
+    : DagBlock(std::move(account_reader), makeDagBlockTransactionReader(transaction_manager),
+               makeDagBlockPeriodReader(pbft_manager), std::move(dag_block), std::move(pbft_manager),
+               std::move(transaction_manager), std::move(get_block_by_num)) {}
 
 DagBlock::DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
                    std::shared_ptr<::taraxa::DagBlock> dag_block, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
+    : DagBlock(std::move(account_reader), std::move(transaction_reader), makeDagBlockPeriodReader(pbft_manager),
+               std::move(dag_block), std::move(pbft_manager), std::move(transaction_manager),
+               std::move(get_block_by_num)) {}
+
+DagBlock::DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
+                   DagBlockPeriodReader period_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
+                   std::shared_ptr<::taraxa::PbftManager> pbft_manager,
+                   std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+                   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
     : dag_block_(std::move(dag_block)),
       account_reader_(std::move(account_reader)),
       transaction_reader_(std::move(transaction_reader)),
+      period_reader_(std::move(period_reader)),
       pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
       get_block_by_num_(std::move(get_block_by_num)) {}
@@ -167,9 +194,10 @@ std::optional<response::Value> DagBlock::getPbftPeriod() const noexcept {
     return std::nullopt;
   }
 #endif
-  const auto [has_period, period] = pbft_manager_->getDagBlockPeriod(::taraxa::blk_hash_t(dag_block_->getHash()));
-  if (has_period) {
-    period_ = period;
+  if (period_reader_.period_by_hash) {
+    period_ = period_reader_.period_by_hash(::taraxa::blk_hash_t(dag_block_->getHash()));
+  }
+  if (period_) {
     return {response::Value(static_cast<int>(*period_))};
   }
   return std::nullopt;
@@ -187,10 +215,9 @@ std::shared_ptr<object::Account> DagBlock::getAuthor() const noexcept {
     return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, sender));
   }
 #endif
-  if (!period_ && pbft_manager_) {
-    const auto [has_period, period] = pbft_manager_->getDagBlockPeriod(::taraxa::blk_hash_t(dag_block_->getHash()));
-    if (has_period) {
-      period_ = period;
+  if (!period_ && period_reader_.period_by_hash) {
+    period_ = period_reader_.period_by_hash(::taraxa::blk_hash_t(dag_block_->getHash()));
+    if (period_) {
       return std::make_shared<object::Account>(
           std::make_shared<Account>(account_reader_, dag_block_->getSender(), *period_));
     }
