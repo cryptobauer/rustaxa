@@ -13,6 +13,7 @@
 #include "TaraxaFace.h"
 #include "common/app_base.hpp"
 #include "libweb3jsonrpc/ModularServer.h"
+#include "network/consensus_query.hpp"
 
 namespace taraxa {
 class DagBlock;
@@ -114,7 +115,12 @@ class Taraxa : public TaraxaFace {
                   TaraxaDagStatusReader dag_status_reader = {}, TaraxaDagBlockReader dag_block_reader = {},
                   TaraxaPersistentReader persistent_reader = {}, TaraxaScheduleReader schedule_reader = {},
                   TaraxaNodeVersionReader node_version_reader = {},
-                  TaraxaPillarBlockDataReader pillar_block_data_reader = {});
+                  TaraxaPillarBlockDataReader pillar_block_data_reader = {}
+#ifdef RUSTAXA_ENABLE
+                  ,
+                  ConsensusQueryApiPtr consensus_query_api = {}
+#endif
+  );
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
 
@@ -144,6 +150,9 @@ class Taraxa : public TaraxaFace {
   TaraxaScheduleReader schedule_reader_;
   TaraxaNodeVersionReader node_version_reader_;
   TaraxaPillarBlockDataReader pillar_block_data_reader_;
+#ifdef RUSTAXA_ENABLE
+  ConsensusQueryApiPtr consensus_query_api_;
+#endif
 
  private:
   Json::Value version;

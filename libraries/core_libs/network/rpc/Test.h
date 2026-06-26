@@ -7,6 +7,7 @@
 
 #include "TestFace.h"
 #include "common/app_base.hpp"
+#include "network/consensus_query.hpp"
 #include "network/live_status.hpp"
 #include "transaction/transaction.hpp"
 
@@ -80,7 +81,12 @@ class Test : public TestFace {
  public:
   explicit Test(const std::shared_ptr<taraxa::AppBase>& app, LiveStatusReader live_status = {},
                 TestTransactionApi transaction_api = {}, uint64_t chain_id = 0, TestNetworkReader network_reader = {},
-                TestNodeStatusReader node_status_reader = {}, TestSortitionReader sortition_reader = {});
+                TestNodeStatusReader node_status_reader = {}, TestSortitionReader sortition_reader = {}
+#ifdef RUSTAXA_ENABLE
+                ,
+                ConsensusQueryApiPtr consensus_query_api = {}
+#endif
+  );
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"test", "1.0"}}; }
 
   virtual Json::Value get_sortition_change(const Json::Value& param1) override;
@@ -99,6 +105,9 @@ class Test : public TestFace {
   TestNetworkReader network_reader_;
   TestNodeStatusReader node_status_reader_;
   TestSortitionReader sortition_reader_;
+#ifdef RUSTAXA_ENABLE
+  ConsensusQueryApiPtr consensus_query_api_;
+#endif
 };
 
 }  // namespace taraxa::net

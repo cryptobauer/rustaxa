@@ -9,6 +9,7 @@
 #include "graphql/transaction.hpp"
 #include "graphql/types/current_state.hpp"
 #include "graphql/types/dag_block.hpp"
+#include "network/consensus_query.hpp"
 #include "network/live_status.hpp"
 #include "network/network.hpp"
 #include "pbft/pbft_manager.hpp"
@@ -109,7 +110,12 @@ class Query {
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                  std::shared_ptr<::taraxa::DbStorage> db, std::shared_ptr<::taraxa::GasPricer> gas_pricer,
                  std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
-                 ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
+                 ::taraxa::net::LiveStatusReader live_status = {}
+#ifdef RUSTAXA_ENABLE
+                 ,
+                 ::taraxa::net::ConsensusQueryApiPtr consensus_query_api = {}
+#endif
+                 ) noexcept;
   explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryBlockReader block_reader = {},
                  BlockTransactionReader block_transaction_reader = {}, QueryTransactionReader transaction_reader = {},
                  QueryGasPriceReader gas_price_reader = {}, QueryDagBlockReader dag_block_reader = {},

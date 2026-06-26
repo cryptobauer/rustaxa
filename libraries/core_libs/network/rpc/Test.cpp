@@ -98,24 +98,35 @@ TestNetworkReader makeTestNetworkReader(std::weak_ptr<taraxa::AppBase> app) {
   return reader;
 }
 
-TestNodeStatusReader makeTestNodeStatusReader(std::weak_ptr<taraxa::AppBase> app) {
+TestNodeStatusReader makeTestNodeStatusReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                              ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TestNodeStatusReader reader;
-  reader.status = [app] {
+  reader.status = [app
+#ifdef RUSTAXA_ENABLE
+                   ,
+                   consensus_query_api
+#endif
+  ] {
     TestNodeStatusView status;
     auto node = app.lock();
     if (!node) {
       return status;
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto chain_stats = query_api->consensus_query_chain_stats();
-    status.blocks_executed = chain_stats.dag_blocks_executed;
-    status.dag_blocks_count = chain_stats.dag_blocks_count;
-    status.transactions_executed = chain_stats.transactions_executed;
-    status.transactions_count = chain_stats.transactions_count;
-    const auto consensus_status = query_api->consensus_query_status();
-    status.dag_level = consensus_status.latest_dag_level;
-    return status;
+    if (consensus_query_api) {
+      const auto chain_stats = (*consensus_query_api)->consensus_query_chain_stats();
+      status.blocks_executed = chain_stats.dag_blocks_executed;
+      status.dag_blocks_count = chain_stats.dag_blocks_count;
+      status.transactions_executed = chain_stats.transactions_executed;
+      status.transactions_count = chain_stats.transactions_count;
+      const auto consensus_status = (*consensus_query_api)->consensus_query_status();
+      status.dag_level = consensus_status.latest_dag_level;
+      return status;
+    }
 #endif
     status.blocks_executed = node->getDB()->getNumBlockExecuted();
     status.dag_blocks_count = node->getDB()->getDagBlocksCount();
@@ -127,26 +138,37 @@ TestNodeStatusReader makeTestNodeStatusReader(std::weak_ptr<taraxa::AppBase> app
   return reader;
 }
 
-TestSortitionReader makeTestSortitionReader(std::weak_ptr<taraxa::AppBase> app) {
+TestSortitionReader makeTestSortitionReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                            ,
+                                            ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TestSortitionReader reader;
-  reader.sortition_change_by_period = [app](uint64_t period) {
+  reader.sortition_change_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                       ,
+                                       consensus_query_api
+#endif
+  ](uint64_t period) {
     TestSortitionChangeView view;
     auto node = app.lock();
     if (!node) {
       return view;
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto params_change = query_api->consensus_query_sortition_params_change_by_period(period);
-    if (!params_change.found) {
+    if (consensus_query_api) {
+      const auto params_change = (*consensus_query_api)->consensus_query_sortition_params_change_by_period(period);
+      if (!params_change.found) {
+        return view;
+      }
+      view.found = true;
+      view.period = params_change.period;
+      view.interval_efficiency = params_change.interval_efficiency;
+      view.threshold_upper = params_change.threshold_upper;
+      view.threshold_upper_min = params_change.threshold_upper_min;
       return view;
     }
-    view.found = true;
-    view.period = params_change.period;
-    view.interval_efficiency = params_change.interval_efficiency;
-    view.threshold_upper = params_change.threshold_upper;
-    view.threshold_upper_min = params_change.threshold_upper_min;
-    return view;
 #endif
     const auto legacy_params_change = node->getDB()->getParamsChangeForPeriod(period);
     if (!legacy_params_change) {
@@ -182,15 +204,35 @@ void fillMissingTestNetworkReaderCallbacks(TestNetworkReader &reader, std::weak_
   }
 }
 
-void fillMissingTestNodeStatusReaderCallbacks(TestNodeStatusReader &reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTestNodeStatusReader(std::move(app));
+void fillMissingTestNodeStatusReaderCallbacks(TestNodeStatusReader &reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                              ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTestNodeStatusReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                               ,
+                                           std::move(consensus_query_api)
+#endif
+  );
   if (!reader.status) {
     reader.status = std::move(defaults.status);
   }
 }
 
-void fillMissingTestSortitionReaderCallbacks(TestSortitionReader &reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTestSortitionReader(std::move(app));
+void fillMissingTestSortitionReaderCallbacks(TestSortitionReader &reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                             ,
+                                             ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTestSortitionReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                          std::move(consensus_query_api)
+#endif
+  );
   if (!reader.sortition_change_by_period) {
     reader.sortition_change_by_period = std::move(defaults.sortition_change_by_period);
   }
@@ -199,29 +241,47 @@ void fillMissingTestSortitionReaderCallbacks(TestSortitionReader &reader, std::w
 
 Test::Test(const std::shared_ptr<taraxa::AppBase> &app, LiveStatusReader live_status,
            TestTransactionApi transaction_api, uint64_t chain_id, TestNetworkReader network_reader,
-           TestNodeStatusReader node_status_reader, TestSortitionReader sortition_reader)
+           TestNodeStatusReader node_status_reader, TestSortitionReader sortition_reader
+#ifdef RUSTAXA_ENABLE
+           ,
+           ConsensusQueryApiPtr consensus_query_api
+#endif
+           )
     : app_(app),
       kChainId(app ? app->getConfig().genesis.chain_id : chain_id),
       live_status_(std::move(live_status)),
       transaction_api_(std::move(transaction_api)),
       network_reader_(std::move(network_reader)),
       node_status_reader_(std::move(node_status_reader)),
-      sortition_reader_(std::move(sortition_reader)) {
+      sortition_reader_(std::move(sortition_reader))
+#ifdef RUSTAXA_ENABLE
+      ,
+      consensus_query_api_(std::move(consensus_query_api))
+#endif
+{
   fillMissingTestTransactionApiCallbacks(transaction_api_, app_);
   fillMissingTestNetworkReaderCallbacks(network_reader_, app_);
-  fillMissingTestNodeStatusReaderCallbacks(node_status_reader_, app_);
-  fillMissingTestSortitionReaderCallbacks(sortition_reader_, app_);
+  fillMissingTestNodeStatusReaderCallbacks(node_status_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                           ,
+                                           consensus_query_api_
+#endif
+  );
+  fillMissingTestSortitionReaderCallbacks(sortition_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                          ,
+                                          consensus_query_api_
+#endif
+  );
 }
 
 Json::Value Test::get_sortition_change(const Json::Value &param1) {
   try {
     Json::Value res;
     const uint64_t period = param1["period"].asUInt64();
-    auto node = app_.lock();
 #ifdef RUSTAXA_ENABLE
-    if (node) {
-      const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-      const auto params_change = query_api->consensus_query_sortition_params_change_by_period(period);
+    if (consensus_query_api_) {
+      const auto params_change = (*consensus_query_api_)->consensus_query_sortition_params_change_by_period(period);
       if (!params_change.found) {
         return res;
       }
@@ -324,14 +384,13 @@ Json::Value Test::get_node_status() {
     TestNodeStatusView node_status;
 
 #ifdef RUSTAXA_ENABLE
-    if (node) {
-      const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-      const auto chain_stats = query_api->consensus_query_chain_stats();
+    if (consensus_query_api_) {
+      const auto chain_stats = (*consensus_query_api_)->consensus_query_chain_stats();
       node_status.blocks_executed = chain_stats.dag_blocks_executed;
       node_status.dag_blocks_count = chain_stats.dag_blocks_count;
       node_status.transactions_executed = chain_stats.transactions_executed;
       node_status.transactions_count = chain_stats.transactions_count;
-      const auto consensus_status = query_api->consensus_query_status();
+      const auto consensus_status = (*consensus_query_api_)->consensus_query_status();
       node_status.dag_level = consensus_status.latest_dag_level;
     } else {
       node_status = node_status_reader_.status ? node_status_reader_.status() : TestNodeStatusView{};

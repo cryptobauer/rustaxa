@@ -63,7 +63,12 @@ void fillMissingDebugDposReaderCallbacks(DebugDposReader& reader, std::weak_ptr<
   }
 }
 
-DebugTraceReader makeDebugTraceReader(std::weak_ptr<taraxa::AppBase> app) {
+DebugTraceReader makeDebugTraceReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                      ,
+                                      ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   DebugTraceReader reader;
   reader.trace = [app](std::vector<state_api::EVMTransaction> state_trxs, std::vector<state_api::EVMTransaction> trxs,
                        EthBlockNumber block_number, std::optional<state_api::Tracing> tracing) {
@@ -83,22 +88,38 @@ DebugTraceReader makeDebugTraceReader(std::weak_ptr<taraxa::AppBase> app) {
     }
     return node->getFinalChain()->getAccount(address, block_number);
   };
-  reader.latest_finalized_block_number = [app] {
+  reader.latest_finalized_block_number = [app
+#ifdef RUSTAXA_ENABLE
+                                          ,
+                                          consensus_query_api
+#endif
+  ] {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    return query_api->consensus_query_final_chain_last_block_number();
+    if (consensus_query_api) {
+      return (*consensus_query_api)->consensus_query_final_chain_last_block_number();
+    }
 #endif
     return node->getFinalChain()->lastBlockNumber();
   };
   return reader;
 }
 
-void fillMissingDebugTraceReaderCallbacks(DebugTraceReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeDebugTraceReader(std::move(app));
+void fillMissingDebugTraceReaderCallbacks(DebugTraceReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                          ,
+                                          ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeDebugTraceReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                           ,
+                                       std::move(consensus_query_api)
+#endif
+  );
   if (!reader.trace) {
     reader.trace = std::move(defaults.trace);
   }
@@ -110,9 +131,19 @@ void fillMissingDebugTraceReaderCallbacks(DebugTraceReader& reader, std::weak_pt
   }
 }
 
-DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::weak_ptr<taraxa::AppBase> app) {
+DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                                        ,
+                                                                        ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   DebugPreviousBlockCertVotesReader reader;
-  reader.cert_votes_by_period = [app](uint64_t period) {
+  reader.cert_votes_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                 ,
+                                 consensus_query_api
+#endif
+  ](uint64_t period) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_PREVIOUS_BLOCK_CERT_VOTES_READER_APP_EXPIRED");
@@ -121,22 +152,24 @@ DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::wea
     DebugPreviousBlockCertVotesView view;
     auto vote_manager = node->getVoteManager();
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto cert_vote_view = query_api->consensus_query_pbft_previous_block_cert_votes_by_period(period);
-    if (!cert_vote_view.found) {
+    if (consensus_query_api) {
+      const auto cert_vote_view =
+          (*consensus_query_api)->consensus_query_pbft_previous_block_cert_votes_by_period(period);
+      if (!cert_vote_view.found) {
+        return view;
+      }
+
+      view.found = true;
+      view.total_votes_count = node->getFinalChain()->dposEligibleTotalVoteCount(cert_vote_view.certified_period - 1);
+      view.round = cert_vote_view.round;
+      view.votes.reserve(cert_vote_view.votes.size());
+      for (const auto& vote_view : cert_vote_view.votes) {
+        auto vote = std::make_shared<PbftVote>(bytes(vote_view.vote_rlp.begin(), vote_view.vote_rlp.end()));
+        vote_manager->validateVote(vote);
+        view.votes.emplace_back(std::move(vote));
+      }
       return view;
     }
-
-    view.found = true;
-    view.total_votes_count = node->getFinalChain()->dposEligibleTotalVoteCount(cert_vote_view.certified_period - 1);
-    view.round = cert_vote_view.round;
-    view.votes.reserve(cert_vote_view.votes.size());
-    for (const auto& vote_view : cert_vote_view.votes) {
-      auto vote = std::make_shared<PbftVote>(bytes(vote_view.vote_rlp.begin(), vote_view.vote_rlp.end()));
-      vote_manager->validateVote(vote);
-      view.votes.emplace_back(std::move(vote));
-    }
-    return view;
 #endif
     auto votes = node->getDB()->getPeriodCertVotes(period);
     if (votes.empty()) {
@@ -158,24 +191,54 @@ DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::wea
 }
 
 void fillMissingDebugPreviousBlockCertVotesReaderCallbacks(DebugPreviousBlockCertVotesReader& reader,
-                                                           std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeDebugPreviousBlockCertVotesReader(std::move(app));
+                                                           std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                           ,
+                                                           ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeDebugPreviousBlockCertVotesReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                            ,
+                                                        std::move(consensus_query_api)
+#endif
+  );
   if (!reader.cert_votes_by_period) {
     reader.cert_votes_by_period = std::move(defaults.cert_votes_by_period);
   }
 }
 
 void fillMissingDebugPeriodDagBlocksReaderCallbacks(DebugPeriodDagBlocksReader& reader,
-                                                    std::weak_ptr<taraxa::AppBase> app);
+                                                    std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                    ,
+                                                    ConsensusQueryApiPtr consensus_query_api
+#endif
+);
 void fillMissingDebugPeriodTransactionsReaderCallbacks(DebugPeriodTransactionsReader& reader,
-                                                       std::weak_ptr<taraxa::AppBase> app);
-void fillMissingDebugTraceReplayReaderCallbacks(DebugTraceReplayReader& reader, std::weak_ptr<taraxa::AppBase> app);
+                                                       std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                       ,
+                                                       ConsensusQueryApiPtr consensus_query_api
+#endif
+);
+void fillMissingDebugTraceReplayReaderCallbacks(DebugTraceReplayReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                ,
+                                                ConsensusQueryApiPtr consensus_query_api
+#endif
+);
 }  // namespace
 
 Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader,
              DebugTraceReader trace_reader, DebugPreviousBlockCertVotesReader previous_cert_votes_reader,
              DebugPeriodDagBlocksReader period_dag_blocks_reader,
-             DebugPeriodTransactionsReader period_transactions_reader, DebugTraceReplayReader trace_replay_reader)
+             DebugPeriodTransactionsReader period_transactions_reader, DebugTraceReplayReader trace_replay_reader
+#ifdef RUSTAXA_ENABLE
+             ,
+             ConsensusQueryApiPtr consensus_query_api
+#endif
+             )
     : app_(app),
       dpos_reader_(std::move(dpos_reader)),
       trace_reader_(std::move(trace_reader)),
@@ -183,13 +246,41 @@ Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDpos
       period_dag_blocks_reader_(std::move(period_dag_blocks_reader)),
       period_transactions_reader_(std::move(period_transactions_reader)),
       trace_replay_reader_(std::move(trace_replay_reader)),
+#ifdef RUSTAXA_ENABLE
+      consensus_query_api_(std::move(consensus_query_api)),
+#endif
       kGasLimit(gas_limit) {
   fillMissingDebugDposReaderCallbacks(dpos_reader_, app_);
-  fillMissingDebugTraceReaderCallbacks(trace_reader_, app_);
-  fillMissingDebugPreviousBlockCertVotesReaderCallbacks(previous_cert_votes_reader_, app_);
-  fillMissingDebugPeriodDagBlocksReaderCallbacks(period_dag_blocks_reader_, app_);
-  fillMissingDebugPeriodTransactionsReaderCallbacks(period_transactions_reader_, app_);
-  fillMissingDebugTraceReplayReaderCallbacks(trace_replay_reader_, app_);
+  fillMissingDebugTraceReaderCallbacks(trace_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                       ,
+                                       consensus_query_api_
+#endif
+  );
+  fillMissingDebugPreviousBlockCertVotesReaderCallbacks(previous_cert_votes_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                                        ,
+                                                        consensus_query_api_
+#endif
+  );
+  fillMissingDebugPeriodDagBlocksReaderCallbacks(period_dag_blocks_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                                 ,
+                                                 consensus_query_api_
+#endif
+  );
+  fillMissingDebugPeriodTransactionsReaderCallbacks(period_transactions_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                                    ,
+                                                    consensus_query_api_
+#endif
+  );
+  fillMissingDebugTraceReplayReaderCallbacks(trace_replay_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                             ,
+                                             consensus_query_api_
+#endif
+  );
 }
 
 #ifdef RUSTAXA_ENABLE
@@ -313,22 +404,33 @@ Json::Value dagBlockPublicViewToJson(const rustaxa::DagBlockPublicView& view, ui
 #endif
 
 namespace {
-DebugPeriodDagBlocksReader makeDebugPeriodDagBlocksReader(std::weak_ptr<taraxa::AppBase> app) {
+DebugPeriodDagBlocksReader makeDebugPeriodDagBlocksReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                          ,
+                                                          ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   DebugPeriodDagBlocksReader reader;
-  reader.finalized_dag_blocks_by_period = [app](uint64_t period) {
+  reader.finalized_dag_blocks_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                           ,
+                                           consensus_query_api
+#endif
+  ](uint64_t period) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_PERIOD_DAG_BLOCKS_READER_APP_EXPIRED");
     }
 
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto dag_views = query_api->consensus_query_finalized_dag_blocks_by_period(period);
-    Json::Value result(Json::arrayValue);
-    for (const auto& dag_view : dag_views) {
-      result.append(dagBlockPublicViewToJson(dag_view, period));
+    if (consensus_query_api) {
+      const auto dag_views = (*consensus_query_api)->consensus_query_finalized_dag_blocks_by_period(period);
+      Json::Value result(Json::arrayValue);
+      for (const auto& dag_view : dag_views) {
+        result.append(dagBlockPublicViewToJson(dag_view, period));
+      }
+      return result;
     }
-    return result;
 #endif
 
     auto dags = node->getDB()->getFinalizedDagBlockByPeriod(period);
@@ -342,40 +444,61 @@ DebugPeriodDagBlocksReader makeDebugPeriodDagBlocksReader(std::weak_ptr<taraxa::
 }
 
 void fillMissingDebugPeriodDagBlocksReaderCallbacks(DebugPeriodDagBlocksReader& reader,
-                                                    std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeDebugPeriodDagBlocksReader(std::move(app));
+                                                    std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                    ,
+                                                    ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeDebugPeriodDagBlocksReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                     ,
+                                                 std::move(consensus_query_api)
+#endif
+  );
   if (!reader.finalized_dag_blocks_by_period) {
     reader.finalized_dag_blocks_by_period = std::move(defaults.finalized_dag_blocks_by_period);
   }
 }
 
-DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<taraxa::AppBase> app) {
+DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                                ,
+                                                                ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   DebugPeriodTransactionsReader reader;
-  reader.transactions_with_receipts_by_period = [app](uint64_t period) {
+  reader.transactions_with_receipts_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                                 ,
+                                                 consensus_query_api
+#endif
+  ](uint64_t period) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_PERIOD_TRANSACTIONS_READER_APP_EXPIRED");
     }
     auto final_chain = node->getFinalChain();
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto receipt_views = query_api->consensus_query_transaction_receipts_by_block_number(period);
-    Json::Value result(Json::arrayValue);
-    for (const auto& view : receipt_views) {
-      auto trx = materializeReceiptTransactionView(view);
-      if (!trx) {
-        throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_MISSING");
+    if (consensus_query_api) {
+      const auto receipt_views = (*consensus_query_api)->consensus_query_transaction_receipts_by_block_number(period);
+      Json::Value result(Json::arrayValue);
+      for (const auto& view : receipt_views) {
+        auto trx = materializeReceiptTransactionView(view);
+        if (!trx) {
+          throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_MISSING");
+        }
+        auto location = receiptLocationFromView(view);
+        auto transaction = rpc::eth::LocalisedTransaction{trx, location};
+        auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
+        auto receipt = rpc::eth::LocalisedTransactionReceipt{util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)),
+                                                             location, trx->getSender(), trx->getReceiver()};
+        auto receipt_json = rpc::eth::toJson(receipt);
+        receipt_json.removeMember("transactionHash");
+        result.append(util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json)));
       }
-      auto location = receiptLocationFromView(view);
-      auto transaction = rpc::eth::LocalisedTransaction{trx, location};
-      auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
-      auto receipt = rpc::eth::LocalisedTransactionReceipt{util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)),
-                                                           location, trx->getSender(), trx->getReceiver()};
-      auto receipt_json = rpc::eth::toJson(receipt);
-      receipt_json.removeMember("transactionHash");
-      result.append(util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json)));
+      return result;
     }
-    return result;
 #endif
 
     auto block_hash = final_chain->blockHash(period);
@@ -411,29 +534,48 @@ DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<ta
 }
 
 void fillMissingDebugPeriodTransactionsReaderCallbacks(DebugPeriodTransactionsReader& reader,
-                                                       std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeDebugPeriodTransactionsReader(std::move(app));
+                                                       std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                       ,
+                                                       ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeDebugPeriodTransactionsReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                        ,
+                                                    std::move(consensus_query_api)
+#endif
+  );
   if (!reader.transactions_with_receipts_by_period) {
     reader.transactions_with_receipts_by_period = std::move(defaults.transactions_with_receipts_by_period);
   }
 }
 
-DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase> app) {
+DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                  ,
+                                                  ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   DebugTraceReplayReader reader;
-  reader.transaction_with_state_by_hash = [app](const trx_hash_t& transaction_hash) {
+  reader.transaction_with_state_by_hash = [app
+#ifdef RUSTAXA_ENABLE
+                                           ,
+                                           consensus_query_api
+#endif
+  ](const trx_hash_t& transaction_hash) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_TRACE_REPLAY_READER_APP_EXPIRED");
     }
 
 #ifdef RUSTAXA_ENABLE
-    {
-      const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-      const auto target_view = query_api->consensus_query_transaction_by_hash(transaction_hash.asArray());
+    if (consensus_query_api) {
+      const auto target_view = (*consensus_query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
       if (!target_view.found || !target_view.location_found) {
         throw std::runtime_error("Transaction not found");
       }
-      auto block_transactions = materializeBlockTransactionsFromQuery(target_view.block_number, query_api);
+      auto block_transactions = materializeBlockTransactionsFromQuery(target_view.block_number, *consensus_query_api);
       if (target_view.transaction_index >= block_transactions.size()) {
         throw std::runtime_error("Transaction not found");
       }
@@ -461,15 +603,21 @@ DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase>
     view.period = loc->period;
     return view;
   };
-  reader.transactions_by_block_number = [app](uint64_t block_number) {
+  reader.transactions_by_block_number = [app
+#ifdef RUSTAXA_ENABLE
+                                         ,
+                                         consensus_query_api
+#endif
+  ](uint64_t block_number) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("DEBUG_TRACE_REPLAY_READER_APP_EXPIRED");
     }
 
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    return materializeBlockTransactionsFromQuery(block_number, query_api);
+    if (consensus_query_api) {
+      return materializeBlockTransactionsFromQuery(block_number, *consensus_query_api);
+    }
 #endif
 
     auto legacy_transactions = node->getDB()->getPeriodTransactions(block_number);
@@ -481,8 +629,18 @@ DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase>
   return reader;
 }
 
-void fillMissingDebugTraceReplayReaderCallbacks(DebugTraceReplayReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeDebugTraceReplayReader(std::move(app));
+void fillMissingDebugTraceReplayReaderCallbacks(DebugTraceReplayReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                ,
+                                                ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeDebugTraceReplayReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                 ,
+                                             std::move(consensus_query_api)
+#endif
+  );
   if (!reader.transaction_with_state_by_hash) {
     reader.transaction_with_state_by_hash = std::move(defaults.transaction_with_state_by_hash);
   }

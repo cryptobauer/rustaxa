@@ -11,6 +11,7 @@
 #include "DebugFace.h"
 #include "common/app_base.hpp"
 #include "final_chain/state_api_data.hpp"
+#include "network/consensus_query.hpp"
 
 namespace taraxa {
 class PbftVote;
@@ -123,7 +124,12 @@ class Debug : public DebugFace {
                  DebugTraceReader trace_reader = {}, DebugPreviousBlockCertVotesReader previous_cert_votes_reader = {},
                  DebugPeriodDagBlocksReader period_dag_blocks_reader = {},
                  DebugPeriodTransactionsReader period_transactions_reader = {},
-                 DebugTraceReplayReader trace_replay_reader = {});
+                 DebugTraceReplayReader trace_replay_reader = {}
+#ifdef RUSTAXA_ENABLE
+                 ,
+                 ConsensusQueryApiPtr consensus_query_api = {}
+#endif
+  );
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"debug", "1.0"}}; }
 
   virtual Json::Value debug_traceTransaction(const std::string& param1) override;
@@ -153,6 +159,9 @@ class Debug : public DebugFace {
   DebugPeriodDagBlocksReader period_dag_blocks_reader_;
   DebugPeriodTransactionsReader period_transactions_reader_;
   DebugTraceReplayReader trace_replay_reader_;
+#ifdef RUSTAXA_ENABLE
+  ConsensusQueryApiPtr consensus_query_api_;
+#endif
   const uint64_t kGasLimit = ((uint64_t)1 << 53) - 1;
 };
 

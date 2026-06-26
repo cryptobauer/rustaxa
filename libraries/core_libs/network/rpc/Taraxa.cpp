@@ -65,35 +65,57 @@ TaraxaDposReader makeTaraxaDposReader(std::weak_ptr<taraxa::AppBase> app) {
   return reader;
 }
 
-TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> app) {
+TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                ,
+                                                ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TaraxaDagStatusReader reader;
-  reader.latest_level = [app] {
+  reader.latest_level = [app
+#ifdef RUSTAXA_ENABLE
+                         ,
+                         consensus_query_api
+#endif
+  ] {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    return query_api->consensus_query_status().latest_dag_level;
+    if (consensus_query_api) {
+      return (*consensus_query_api)->consensus_query_status().latest_dag_level;
+    }
 #endif
     return static_cast<uint64_t>(node->getDagManager()->getMaxLevel());
   };
-  reader.latest_period = [app] {
+  reader.latest_period = [app
+#ifdef RUSTAXA_ENABLE
+                          ,
+                          consensus_query_api
+#endif
+  ] {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto status = query_api->consensus_query_status();
-    return status.latest_dag_period_found ? status.latest_dag_period : uint64_t(0);
+    if (consensus_query_api) {
+      const auto status = (*consensus_query_api)->consensus_query_status();
+      return status.latest_dag_period_found ? status.latest_dag_period : uint64_t(0);
+    }
 #endif
     return static_cast<uint64_t>(node->getDagManager()->getLatestPeriod());
   };
   return reader;
 }
 
-TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app) {
+TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                              ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TaraxaDagBlockReader reader;
   reader.block_by_hash = [app](const blk_hash_t& hash) {
     auto node = app.lock();
@@ -102,21 +124,27 @@ TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
     }
     return node->getDagManager()->getDagBlock(hash);
   };
-  reader.blocks_by_level = [app](level_t level) {
+  reader.blocks_by_level = [app
+#ifdef RUSTAXA_ENABLE
+                            ,
+                            consensus_query_api
+#endif
+  ](level_t level) {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto views = query_api->consensus_query_dag_blocks_by_level(level, 1);
-    std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
-    blocks.reserve(views.size());
-    for (const auto& view : views) {
-      auto block_rlp = dev::bytes(view.block_rlp.begin(), view.block_rlp.end());
-      blocks.emplace_back(std::make_shared<::taraxa::DagBlock>(block_rlp));
+    if (consensus_query_api) {
+      const auto views = (*consensus_query_api)->consensus_query_dag_blocks_by_level(level, 1);
+      std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
+      blocks.reserve(views.size());
+      for (const auto& view : views) {
+        auto block_rlp = dev::bytes(view.block_rlp.begin(), view.block_rlp.end());
+        blocks.emplace_back(std::make_shared<::taraxa::DagBlock>(block_rlp));
+      }
+      return blocks;
     }
-    return blocks;
 #endif
     return node->getDB()->getDagBlocksAtLevel(level, 1);
   };
@@ -141,20 +169,31 @@ TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
   return reader;
 }
 
-TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase> app) {
+TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                  ,
+                                                  ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TaraxaPersistentReader reader;
-  reader.pbft_block_hash_by_period = [app](uint64_t period) -> std::optional<blk_hash_t> {
+  reader.pbft_block_hash_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                      ,
+                                      consensus_query_api
+#endif
+  ](uint64_t period) -> std::optional<blk_hash_t> {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto lookup = query_api->consensus_query_pbft_block_hash_by_period(period);
-    if (!lookup.found) {
-      return std::nullopt;
+    if (consensus_query_api) {
+      const auto lookup = (*consensus_query_api)->consensus_query_pbft_block_hash_by_period(period);
+      if (!lookup.found) {
+        return std::nullopt;
+      }
+      return blk_hash_t(lookup.hash.data(), blk_hash_t::ConstructFromPointer);
     }
-    return blk_hash_t(lookup.hash.data(), blk_hash_t::ConstructFromPointer);
 #endif
     const auto block = node->getDB()->getPbftBlock(period);
     if (!block) {
@@ -162,15 +201,21 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
     }
     return block->getBlockHash();
   };
-  reader.chain_stats = [app] {
+  reader.chain_stats = [app
+#ifdef RUSTAXA_ENABLE
+                        ,
+                        consensus_query_api
+#endif
+  ] {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto stats = query_api->consensus_query_chain_stats();
-    return TaraxaChainStatsView{stats.pbft_period, stats.dag_blocks_executed, stats.transactions_executed};
+    if (consensus_query_api) {
+      const auto stats = (*consensus_query_api)->consensus_query_chain_stats();
+      return TaraxaChainStatsView{stats.pbft_period, stats.dag_blocks_executed, stats.transactions_executed};
+    }
 #endif
     return TaraxaChainStatsView{
         node->getFinalChain()->lastBlockNumber(),
@@ -178,38 +223,55 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
         node->getDB()->getNumTransactionExecuted(),
     };
   };
-  reader.period_lambda = [app](uint64_t period) -> std::optional<uint64_t> {
+  reader.period_lambda = [app
+#ifdef RUSTAXA_ENABLE
+                          ,
+                          consensus_query_api
+#endif
+  ](uint64_t period) -> std::optional<uint64_t> {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto period_lambda = query_api->consensus_query_period_lambda_by_period(period);
-    if (!period_lambda.found) {
-      return std::nullopt;
+    if (consensus_query_api) {
+      const auto period_lambda = (*consensus_query_api)->consensus_query_period_lambda_by_period(period);
+      if (!period_lambda.found) {
+        return std::nullopt;
+      }
+      return period_lambda.value;
     }
-    return period_lambda.value;
 #endif
     return node->getDB()->getPeriodLambda(period, false);
   };
   return reader;
 }
 
-TaraxaScheduleReader makeTaraxaScheduleReader(std::weak_ptr<taraxa::AppBase> app) {
+TaraxaScheduleReader makeTaraxaScheduleReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                              ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TaraxaScheduleReader reader;
-  reader.schedule_block_by_period = [app](uint64_t period) -> std::optional<Json::Value> {
+  reader.schedule_block_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                     ,
+                                     consensus_query_api
+#endif
+  ](uint64_t period) -> std::optional<Json::Value> {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_SCHEDULE_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto view = query_api->consensus_query_pbft_schedule_block_by_period(period);
-    if (!view.found) {
-      return std::nullopt;
+    if (consensus_query_api) {
+      const auto view = (*consensus_query_api)->consensus_query_pbft_schedule_block_by_period(period);
+      if (!view.found) {
+        return std::nullopt;
+      }
+      return pbftScheduleBlockViewToJson(view);
     }
-    return pbftScheduleBlockViewToJson(view);
 #endif
     auto db = node->getDB();
     auto block = db->getPbftBlock(period);
@@ -221,34 +283,51 @@ TaraxaScheduleReader makeTaraxaScheduleReader(std::weak_ptr<taraxa::AppBase> app
   return reader;
 }
 
-TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBase> app) {
+TaraxaNodeVersionReader makeTaraxaNodeVersionReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                    ,
+                                                    ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TaraxaNodeVersionReader reader;
-  reader.latest_finalized_period = [app] {
+  reader.latest_finalized_period = [app
+#ifdef RUSTAXA_ENABLE
+                                    ,
+                                    consensus_query_api
+#endif
+  ] {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_NODE_VERSION_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    return query_api->consensus_query_final_chain_last_block_number();
+    if (consensus_query_api) {
+      return (*consensus_query_api)->consensus_query_final_chain_last_block_number();
+    }
 #endif
     return node->getFinalChain()->lastBlockNumber();
   };
-  reader.node_version_by_period = [app](uint64_t period) -> std::optional<TaraxaNodeVersionView> {
+  reader.node_version_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                   ,
+                                   consensus_query_api
+#endif
+  ](uint64_t period) -> std::optional<TaraxaNodeVersionView> {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_NODE_VERSION_READER_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto version_view = query_api->consensus_query_pbft_node_version_by_period(period);
-    if (!version_view.found) {
-      return std::nullopt;
+    if (consensus_query_api) {
+      const auto version_view = (*consensus_query_api)->consensus_query_pbft_node_version_by_period(period);
+      if (!version_view.found) {
+        return std::nullopt;
+      }
+      return TaraxaNodeVersionView{addr_t(version_view.beneficiary.data(), addr_t::ConstructFromPointer),
+                                   std::to_string(version_view.major_version) + "." +
+                                       std::to_string(version_view.minor_version) + "." +
+                                       std::to_string(version_view.patch_version)};
     }
-    return TaraxaNodeVersionView{addr_t(version_view.beneficiary.data(), addr_t::ConstructFromPointer),
-                                 std::to_string(version_view.major_version) + "." +
-                                     std::to_string(version_view.minor_version) + "." +
-                                     std::to_string(version_view.patch_version)};
 #endif
     auto block = node->getDB()->getPbftBlock(period);
     if (!block.has_value()) {
@@ -278,8 +357,18 @@ void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_pt
   }
 }
 
-void fillMissingTaraxaDagStatusReaderCallbacks(TaraxaDagStatusReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTaraxaDagStatusReader(std::move(app));
+void fillMissingTaraxaDagStatusReaderCallbacks(TaraxaDagStatusReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                               ,
+                                               ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTaraxaDagStatusReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                ,
+                                            std::move(consensus_query_api)
+#endif
+  );
   if (!reader.latest_level) {
     reader.latest_level = std::move(defaults.latest_level);
   }
@@ -288,8 +377,18 @@ void fillMissingTaraxaDagStatusReaderCallbacks(TaraxaDagStatusReader& reader, st
   }
 }
 
-void fillMissingTaraxaDagBlockReaderCallbacks(TaraxaDagBlockReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTaraxaDagBlockReader(std::move(app));
+void fillMissingTaraxaDagBlockReaderCallbacks(TaraxaDagBlockReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                              ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTaraxaDagBlockReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                               ,
+                                           std::move(consensus_query_api)
+#endif
+  );
   if (!reader.block_by_hash) {
     reader.block_by_hash = std::move(defaults.block_by_hash);
   }
@@ -304,8 +403,18 @@ void fillMissingTaraxaDagBlockReaderCallbacks(TaraxaDagBlockReader& reader, std:
   }
 }
 
-void fillMissingTaraxaPersistentReaderCallbacks(TaraxaPersistentReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTaraxaPersistentReader(std::move(app));
+void fillMissingTaraxaPersistentReaderCallbacks(TaraxaPersistentReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                ,
+                                                ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTaraxaPersistentReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                 ,
+                                             std::move(consensus_query_api)
+#endif
+  );
   if (!reader.pbft_block_hash_by_period) {
     reader.pbft_block_hash_by_period = std::move(defaults.pbft_block_hash_by_period);
   }
@@ -317,15 +426,35 @@ void fillMissingTaraxaPersistentReaderCallbacks(TaraxaPersistentReader& reader, 
   }
 }
 
-void fillMissingTaraxaScheduleReaderCallbacks(TaraxaScheduleReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTaraxaScheduleReader(std::move(app));
+void fillMissingTaraxaScheduleReaderCallbacks(TaraxaScheduleReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                              ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTaraxaScheduleReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                               ,
+                                           std::move(consensus_query_api)
+#endif
+  );
   if (!reader.schedule_block_by_period) {
     reader.schedule_block_by_period = std::move(defaults.schedule_block_by_period);
   }
 }
 
-void fillMissingTaraxaNodeVersionReaderCallbacks(TaraxaNodeVersionReader& reader, std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTaraxaNodeVersionReader(std::move(app));
+void fillMissingTaraxaNodeVersionReaderCallbacks(TaraxaNodeVersionReader& reader, std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                 ,
+                                                 ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTaraxaNodeVersionReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                  ,
+                                              std::move(consensus_query_api)
+#endif
+  );
   if (!reader.latest_finalized_period) {
     reader.latest_finalized_period = std::move(defaults.latest_finalized_period);
   }
@@ -335,7 +464,12 @@ void fillMissingTaraxaNodeVersionReaderCallbacks(TaraxaNodeVersionReader& reader
 }
 
 void fillMissingTaraxaPillarBlockDataReaderCallbacks(TaraxaPillarBlockDataReader& reader,
-                                                     std::weak_ptr<taraxa::AppBase> app);
+                                                     std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                     ,
+                                                     ConsensusQueryApiPtr consensus_query_api
+#endif
+);
 }  // namespace
 
 #ifdef RUSTAXA_ENABLE
@@ -488,7 +622,12 @@ Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, 
 #endif
 
 namespace {
-TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa::AppBase> app) {
+TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                            ,
+                                                            ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
   TaraxaPillarBlockDataReader reader;
   reader.is_pillar_block_period = [app](uint64_t pbft_period) {
     auto node = app.lock();
@@ -497,20 +636,25 @@ TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa
     }
     return node->getConfig().genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(pbft_period);
   };
-  reader.pillar_block_data_by_period = [app](uint64_t pbft_period,
-                                             bool include_signatures) -> std::optional<Json::Value> {
+  reader.pillar_block_data_by_period = [app
+#ifdef RUSTAXA_ENABLE
+                                        ,
+                                        consensus_query_api
+#endif
+  ](uint64_t pbft_period, bool include_signatures) -> std::optional<Json::Value> {
     auto node = app.lock();
     if (!node) {
       throw std::runtime_error("TARAXA_PILLAR_BLOCK_DATA_READER_APP_EXPIRED");
     }
 
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto pillar_block_data = query_api->consensus_query_pillar_block_data_by_period(pbft_period);
-    if (!pillar_block_data.found) {
-      return std::nullopt;
+    if (consensus_query_api) {
+      const auto pillar_block_data = (*consensus_query_api)->consensus_query_pillar_block_data_by_period(pbft_period);
+      if (!pillar_block_data.found) {
+        return std::nullopt;
+      }
+      return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
     }
-    return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
 #endif
 
     const auto pillar_block = node->getDB()->getPillarBlock(pbft_period);
@@ -529,8 +673,18 @@ TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa
 }
 
 void fillMissingTaraxaPillarBlockDataReaderCallbacks(TaraxaPillarBlockDataReader& reader,
-                                                     std::weak_ptr<taraxa::AppBase> app) {
-  auto defaults = makeTaraxaPillarBlockDataReader(std::move(app));
+                                                     std::weak_ptr<taraxa::AppBase> app
+#ifdef RUSTAXA_ENABLE
+                                                     ,
+                                                     ConsensusQueryApiPtr consensus_query_api
+#endif
+) {
+  auto defaults = makeTaraxaPillarBlockDataReader(std::move(app)
+#ifdef RUSTAXA_ENABLE
+                                                      ,
+                                                  std::move(consensus_query_api)
+#endif
+  );
   if (!reader.is_pillar_block_period) {
     reader.is_pillar_block_period = std::move(defaults.is_pillar_block_period);
   }
@@ -543,7 +697,12 @@ void fillMissingTaraxaPillarBlockDataReaderCallbacks(TaraxaPillarBlockDataReader
 Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, TaraxaDagStatusReader dag_status_reader,
                TaraxaDagBlockReader dag_block_reader, TaraxaPersistentReader persistent_reader,
                TaraxaScheduleReader schedule_reader, TaraxaNodeVersionReader node_version_reader,
-               TaraxaPillarBlockDataReader pillar_block_data_reader)
+               TaraxaPillarBlockDataReader pillar_block_data_reader
+#ifdef RUSTAXA_ENABLE
+               ,
+               ConsensusQueryApiPtr consensus_query_api
+#endif
+               )
     : app_(app),
       dpos_reader_(std::move(dpos_reader)),
       dag_status_reader_(std::move(dag_status_reader)),
@@ -551,14 +710,49 @@ Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, Tarax
       persistent_reader_(std::move(persistent_reader)),
       schedule_reader_(std::move(schedule_reader)),
       node_version_reader_(std::move(node_version_reader)),
-      pillar_block_data_reader_(std::move(pillar_block_data_reader)) {
+      pillar_block_data_reader_(std::move(pillar_block_data_reader))
+#ifdef RUSTAXA_ENABLE
+      ,
+      consensus_query_api_(std::move(consensus_query_api))
+#endif
+{
   fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
-  fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_);
-  fillMissingTaraxaDagBlockReaderCallbacks(dag_block_reader_, app_);
-  fillMissingTaraxaPersistentReaderCallbacks(persistent_reader_, app_);
-  fillMissingTaraxaScheduleReaderCallbacks(schedule_reader_, app_);
-  fillMissingTaraxaNodeVersionReaderCallbacks(node_version_reader_, app_);
-  fillMissingTaraxaPillarBlockDataReaderCallbacks(pillar_block_data_reader_, app_);
+  fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                            ,
+                                            consensus_query_api_
+#endif
+  );
+  fillMissingTaraxaDagBlockReaderCallbacks(dag_block_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                           ,
+                                           consensus_query_api_
+#endif
+  );
+  fillMissingTaraxaPersistentReaderCallbacks(persistent_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                             ,
+                                             consensus_query_api_
+#endif
+  );
+  fillMissingTaraxaScheduleReaderCallbacks(schedule_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                           ,
+                                           consensus_query_api_
+#endif
+  );
+  fillMissingTaraxaNodeVersionReaderCallbacks(node_version_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                              ,
+                                              consensus_query_api_
+#endif
+  );
+  fillMissingTaraxaPillarBlockDataReaderCallbacks(pillar_block_data_reader_, app_
+#ifdef RUSTAXA_ENABLE
+                                                  ,
+                                                  consensus_query_api_
+#endif
+  );
 
   Json::CharReaderBuilder builder;
   auto reader = std::unique_ptr<Json::CharReader>(builder.newCharReader());
@@ -574,9 +768,8 @@ Json::Value Taraxa::taraxa_getVersion() { return version; }
 string Taraxa::taraxa_dagBlockLevel() {
   try {
 #ifdef RUSTAXA_ENABLE
-    if (auto app = app_.lock()) {
-      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-      return toJS(query_api->consensus_query_status().latest_dag_level);
+    if (consensus_query_api_) {
+      return toJS((*consensus_query_api_)->consensus_query_status().latest_dag_level);
     }
 #endif
     return toJS(dag_status_reader_.latest_level());
@@ -588,9 +781,8 @@ string Taraxa::taraxa_dagBlockLevel() {
 string Taraxa::taraxa_dagBlockPeriod() {
   try {
 #ifdef RUSTAXA_ENABLE
-    if (auto app = app_.lock()) {
-      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-      return toJS(query_api->consensus_query_status().latest_dag_period);
+    if (consensus_query_api_) {
+      return toJS((*consensus_query_api_)->consensus_query_status().latest_dag_period);
     }
 #endif
     return toJS(dag_status_reader_.latest_period());
@@ -609,9 +801,9 @@ std::shared_ptr<AppBase> Taraxa::tryGetApp() {
 Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _includeTransactions) {
   try {
 #ifdef RUSTAXA_ENABLE
-    if (auto app = app_.lock()) {
-      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-      const auto rust_block = query_api->consensus_query_dag_block_by_hash(blk_hash_t(_blockHash).asArray());
+    if (consensus_query_api_) {
+      const auto rust_block =
+          (*consensus_query_api_)->consensus_query_dag_block_by_hash(blk_hash_t(_blockHash).asArray());
       if (rust_block.found) {
         auto block_json = dagBlockPublicViewToJson(rust_block);
         if (rust_block.finalized_period_found) {
@@ -620,7 +812,7 @@ Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _inc
           block_json["period"] = "-0x1";
         }
         if (_includeTransactions) {
-          appendDagBlockTransactionsFromQuery(block_json, rust_block.transactions, query_api);
+          appendDagBlockTransactionsFromQuery(block_json, rust_block.transactions, *consensus_query_api_);
         }
         return block_json;
       }
@@ -658,9 +850,8 @@ std::string Taraxa::taraxa_pbftBlockHashByPeriod(const std::string& _period) {
   try {
     const auto period = dev::jsToInt(_period);
 #ifdef RUSTAXA_ENABLE
-    if (auto app = app_.lock()) {
-      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-      const auto lookup = query_api->consensus_query_pbft_block_hash_by_period(period);
+    if (consensus_query_api_) {
+      const auto lookup = (*consensus_query_api_)->consensus_query_pbft_block_hash_by_period(period);
       if (!lookup.found) {
         return {};
       }
@@ -681,9 +872,8 @@ Json::Value Taraxa::taraxa_getScheduleBlockByPeriod(const std::string& _period) 
   try {
     auto period = dev::jsToInt(_period);
 #ifdef RUSTAXA_ENABLE
-    if (auto app = app_.lock()) {
-      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-      const auto view = query_api->consensus_query_pbft_schedule_block_by_period(period);
+    if (consensus_query_api_) {
+      const auto view = (*consensus_query_api_)->consensus_query_pbft_schedule_block_by_period(period);
       if (!view.found) {
         return Json::Value();
       }
@@ -752,9 +942,9 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
 Json::Value Taraxa::taraxa_getDagBlockByLevel(const string& _blockLevel, bool _includeTransactions) {
   try {
 #ifdef RUSTAXA_ENABLE
-    if (auto app = app_.lock()) {
-      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-      const auto rust_blocks = query_api->consensus_query_dag_blocks_by_level(dev::jsToInt(_blockLevel), 1);
+    if (consensus_query_api_) {
+      const auto rust_blocks =
+          (*consensus_query_api_)->consensus_query_dag_blocks_by_level(dev::jsToInt(_blockLevel), 1);
       auto rust_res = Json::Value(Json::arrayValue);
       for (auto const& block : rust_blocks) {
         auto block_json = dagBlockPublicViewToJson(block);
@@ -764,7 +954,7 @@ Json::Value Taraxa::taraxa_getDagBlockByLevel(const string& _blockLevel, bool _i
           block_json["period"] = "-0x1";
         }
         if (_includeTransactions) {
-          appendDagBlockTransactionsFromQuery(block_json, block.transactions, query_api);
+          appendDagBlockTransactionsFromQuery(block_json, block.transactions, *consensus_query_api_);
         }
         rust_res.append(block_json);
       }
@@ -804,9 +994,8 @@ Json::Value Taraxa::taraxa_getConfig() { return enc_json(tryGetApp()->getConfig(
 Json::Value Taraxa::taraxa_getChainStats() {
   Json::Value res;
 #ifdef RUSTAXA_ENABLE
-  if (auto app = app_.lock()) {
-    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-    const auto stats = query_api->consensus_query_chain_stats();
+  if (consensus_query_api_) {
+    const auto stats = (*consensus_query_api_)->consensus_query_chain_stats();
     res["pbft_period"] = Json::UInt64(stats.pbft_period);
     res["dag_blocks_executed"] = Json::UInt64(stats.dag_blocks_executed);
     res["transactions_executed"] = Json::UInt64(stats.transactions_executed);
@@ -860,9 +1049,8 @@ std::string Taraxa::taraxa_getPeriodLambda(const std::string& period) {
   try {
     const auto period_number = dev::jsToInt(period);
 #ifdef RUSTAXA_ENABLE
-    if (auto app = app_.lock()) {
-      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-      const auto period_lambda = query_api->consensus_query_period_lambda_by_period(period_number);
+    if (consensus_query_api_) {
+      const auto period_lambda = (*consensus_query_api_)->consensus_query_period_lambda_by_period(period_number);
       if (!period_lambda.found) {
         return {};
       }

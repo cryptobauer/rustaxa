@@ -5,6 +5,7 @@
 #include "graphql/http_processor.hpp"
 #include "graphql/ws_server.hpp"
 #include "metrics/metrics_service.hpp"
+#include "network/consensus_query.hpp"
 #include "network/rpc/Debug.h"
 #include "network/rpc/Net.h"
 #include "network/rpc/Taraxa.h"
@@ -80,6 +81,10 @@ void Rpc::start() {
     return snapshot;
   };
 
+#ifdef RUSTAXA_ENABLE
+  auto consensus_query_api = net::createConsensusQueryApi(app()->getDB());
+#endif
+
   // Inits rpc related members
   if (conf.network.rpc) {
     rpc_thread_pool_ = std::make_unique<util::ThreadPool>(conf.network.rpc->threads_num);
@@ -92,43 +97,41 @@ void Rpc::start() {
     eth_rpc_params.get_earliest_block = [db = app()->getDB()]() { return db->getEarliestBlockNumber(); };
     eth_rpc_params.get_trx = [db = app()->getDB()](auto const &trx_hash) { return db->getTransaction(trx_hash); };
 #ifdef RUSTAXA_ENABLE
-    auto eth_query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(app()->getDB()->rustStorage()))>(
-        rustaxa::create_consensus_query_api(app()->getDB()->rustStorage()));
-    eth_rpc_params.query_transaction = [query_api = eth_query_api](auto const &trx_hash) {
+    eth_rpc_params.query_transaction = [query_api = consensus_query_api](auto const &trx_hash) {
       return (*query_api)->consensus_query_transaction_by_hash(trx_hash.asArray());
     };
-    eth_rpc_params.query_transaction_by_block_number_and_index = [query_api = eth_query_api](auto block_number,
-                                                                                             auto transaction_index) {
+    eth_rpc_params.query_transaction_by_block_number_and_index = [query_api = consensus_query_api](
+                                                                     auto block_number, auto transaction_index) {
       return (*query_api)->consensus_query_transaction_by_block_number_and_index(block_number, transaction_index);
     };
-    eth_rpc_params.query_transaction_by_block_hash_and_index = [query_api = eth_query_api](auto const &block_hash,
-                                                                                           auto transaction_index) {
+    eth_rpc_params.query_transaction_by_block_hash_and_index = [query_api = consensus_query_api](
+                                                                   auto const &block_hash, auto transaction_index) {
       return (*query_api)->consensus_query_transaction_by_block_hash_and_index(block_hash.asArray(), transaction_index);
     };
-    eth_rpc_params.query_transaction_count_by_block_number = [query_api = eth_query_api](auto block_number) {
+    eth_rpc_params.query_transaction_count_by_block_number = [query_api = consensus_query_api](auto block_number) {
       return (*query_api)->consensus_query_transaction_count_by_block_number(block_number);
     };
-    eth_rpc_params.query_transaction_count_by_block_hash = [query_api = eth_query_api](auto const &block_hash) {
+    eth_rpc_params.query_transaction_count_by_block_hash = [query_api = consensus_query_api](auto const &block_hash) {
       return (*query_api)->consensus_query_transaction_count_by_block_hash(block_hash.asArray());
     };
-    eth_rpc_params.query_transaction_receipt = [query_api = eth_query_api](auto const &trx_hash) {
+    eth_rpc_params.query_transaction_receipt = [query_api = consensus_query_api](auto const &trx_hash) {
       return (*query_api)->consensus_query_transaction_receipt_by_hash(trx_hash.asArray());
     };
-    eth_rpc_params.query_transaction_receipts_by_block_number = [query_api = eth_query_api](auto block_number) {
+    eth_rpc_params.query_transaction_receipts_by_block_number = [query_api = consensus_query_api](auto block_number) {
       return (*query_api)->consensus_query_transaction_receipts_by_block_number(block_number);
     };
-    eth_rpc_params.query_final_chain_block_by_number = [query_api = eth_query_api](auto block_number) {
+    eth_rpc_params.query_final_chain_block_by_number = [query_api = consensus_query_api](auto block_number) {
       return (*query_api)->consensus_query_final_chain_block_by_number(block_number);
     };
-    eth_rpc_params.query_final_chain_block_number_by_hash = [query_api = eth_query_api](auto const &block_hash) {
+    eth_rpc_params.query_final_chain_block_number_by_hash = [query_api = consensus_query_api](auto const &block_hash) {
       return (*query_api)->consensus_query_final_chain_block_number_by_hash(block_hash.asArray());
     };
-    eth_rpc_params.query_final_chain_last_block_number = [query_api = eth_query_api]() {
+    eth_rpc_params.query_final_chain_last_block_number = [query_api = consensus_query_api]() {
       return (*query_api)->consensus_query_final_chain_last_block_number();
     };
     net::rpc::eth::FinalizedLogReplayApi log_replay_api;
     log_replay_api.latest_finalized_block_number = eth_rpc_params.query_final_chain_last_block_number;
-    log_replay_api.blocks_with_bloom = [query_api = eth_query_api](auto const &bloom, auto from, auto to) {
+    log_replay_api.blocks_with_bloom = [query_api = consensus_query_api](auto const &bloom, auto from, auto to) {
       return (*query_api)->consensus_query_final_chain_blocks_with_bloom(bloom, from, to);
     };
     log_replay_api.transaction_receipts_by_block_number = eth_rpc_params.query_transaction_receipts_by_block_number;
@@ -159,20 +162,43 @@ void Rpc::start() {
     std::shared_ptr<net::Test> test_json_rpc;
     if (enable_test_rpc_) {
       //  TODO Because this object refers to App, the lifecycle/dependency management is more complicated);
-      test_json_rpc = std::make_shared<net::Test>(app(), live_status_reader);
+      test_json_rpc =
+          std::make_shared<net::Test>(app(), live_status_reader, net::TestTransactionApi{}, 0, net::TestNetworkReader{},
+                                      net::TestNodeStatusReader{}, net::TestSortitionReader{}
+#ifdef RUSTAXA_ENABLE
+                                      ,
+                                      consensus_query_api
+#endif
+          );
     }
 
     std::shared_ptr<net::Debug> debug_json_rpc;
     if (enable_debug_) {
       // TODO Because this object refers to App, the lifecycle/dependency management is more complicated);
-      debug_json_rpc = std::make_shared<net::Debug>(app(), conf.genesis.dag.gas_limit);
+      debug_json_rpc = std::make_shared<net::Debug>(app(), conf.genesis.dag.gas_limit, net::DebugDposReader{},
+                                                    net::DebugTraceReader{}, net::DebugPreviousBlockCertVotesReader{},
+                                                    net::DebugPeriodDagBlocksReader{},
+                                                    net::DebugPeriodTransactionsReader{}, net::DebugTraceReplayReader{}
+#ifdef RUSTAXA_ENABLE
+                                                    ,
+                                                    consensus_query_api
+#endif
+      );
     }
 
     jsonrpc_api_ = std::make_unique<JsonRpcServer>(
-        std::make_shared<net::Taraxa>(app()),  // TODO Because this object refers to App, the
-                                               // lifecycle/dependency management is more complicated
-        std::make_shared<net::Net>(app()),     // TODO Because this object refers to App, the
-                                               // lifecycle/dependency management is more complicated
+        std::make_shared<net::Taraxa>(app(), net::TaraxaDposReader{}, net::TaraxaDagStatusReader{},
+                                      net::TaraxaDagBlockReader{}, net::TaraxaPersistentReader{},
+                                      net::TaraxaScheduleReader{}, net::TaraxaNodeVersionReader{},
+                                      net::TaraxaPillarBlockDataReader{}
+#ifdef RUSTAXA_ENABLE
+                                      ,
+                                      consensus_query_api
+#endif
+                                      ),    // TODO Because this object refers to App, the
+                                            // lifecycle/dependency management is more complicated
+        std::make_shared<net::Net>(app()),  // TODO Because this object refers to App, the
+                                            // lifecycle/dependency management is more complicated
         eth_json_rpc, test_json_rpc, debug_json_rpc);
 
     if (conf.network.rpc->http_port) {
@@ -256,8 +282,12 @@ void Rpc::start() {
     if (conf.network.graphql->http_port) {
       auto graphql_query = std::make_shared<graphql::taraxa::Query>(
           app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
-          app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id,
-          live_status_reader);
+          app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id, live_status_reader
+#ifdef RUSTAXA_ENABLE
+          ,
+          consensus_query_api
+#endif
+      );
       auto graphql_mutation = std::make_shared<graphql::taraxa::Mutation>(app()->getTransactionManager());
       graphql_http_ = std::make_shared<net::HttpServer>(
           graphql_thread_pool_->unsafe_get_io_context(),
