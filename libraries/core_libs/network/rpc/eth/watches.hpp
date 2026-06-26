@@ -126,6 +126,23 @@ class WatchGroup {
     }
   }
 
+  // Applies a caller-supplied processor to every installed watch in this group.
+  // The processor receives immutable watch params and a `do_update` callback.
+  // It may emit zero or more OutputType values; each output is appended under
+  // the target watch lock. Watch-group lifetime and stale cleanup remain owned
+  // by this class, and callers must not retain the callback after returning.
+  template <typename Processor>
+  void process_each(Processor&& processor) const {
+    std::shared_lock l(watches_mu_);
+    for (auto& entry : watches_) {
+      auto& watch = entry.second;
+      processor(watch.params, [&](auto const& obj_out) {
+        std::unique_lock l(watch.mu.val);
+        watch.updates.push_back(obj_out);
+      });
+    }
+  }
+
   auto poll(WatchID watch_id) const {
     std::vector<OutputType> ret;
     std::shared_lock l(watches_mu_);

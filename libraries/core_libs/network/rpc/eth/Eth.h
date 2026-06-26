@@ -9,6 +9,7 @@
 #include "final_chain/final_chain.hpp"
 #include "network/live_status.hpp"
 #include "network/rpc/EthFace.h"
+#include "network/rpc/eth/LiveLogSubscription.hpp"
 #include "watches.hpp"
 
 #ifdef RUSTAXA_ENABLE
@@ -55,6 +56,10 @@ struct EthParams {
   std::function<u256()> gas_pricer = [] { return u256(0); };
   std::function<uint64_t()> get_earliest_block = [] { return uint64_t(0); };
   ::taraxa::net::LiveStatusReader live_status;
+  // Live log matcher used by installed filter changes. Inputs are parsed ETH
+  // filter params plus the execution-event DTO; outputs are localized logs
+  // ready for legacy JSON formatting. Empty callback disables live log updates.
+  LiveLogSubscriptionApi live_log_subscription = makeLiveLogSubscriptionApi();
   WatchesConfig watches_cfg;
 };
 

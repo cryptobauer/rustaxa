@@ -552,8 +552,8 @@ Implemented first slice:
 - Websocket `eth_subscribe: logs` delivery now uses a dedicated `LiveLogSubscriptionApi` and `LiveLogBlock` event shape
   for live execution logs. The RPC plugin remains the audited compatibility adapter from FinalChain execution events to
   the subscription DTO, while websocket subscription matching and JSON-RPC delivery no longer traverse FinalChain header
-  objects directly. Installed `eth_getFilterChanges` log watches still use their legacy watch-group update path and are
-  tracked separately from websocket subscription delivery.
+  objects directly. Installed `eth_getFilterChanges` log watches use the same live-log subscription API for live
+  execution-event matching before polling changes.
 
 ## Consensus Internal
 

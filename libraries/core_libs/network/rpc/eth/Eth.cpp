@@ -513,12 +513,21 @@ class EthImpl : public Eth, EthParams {
   void note_block_executed(const BlockHeader& blk_header, const SharedTransactions& trxs,
                            const TransactionReceipts& receipts) override {
     watches_.new_blocks_.process_update(blk_header.hash);
-    ExtendedTransactionLocation trx_loc{{{blk_header.number}, blk_header.hash}};
-    for (; trx_loc.position < trxs.size(); ++trx_loc.position) {
-      trx_loc.trx_hash = trxs[trx_loc.position]->getHash();
-      using LogsInput = typename decltype(watches_.logs_)::InputType;
-      watches_.logs_.process_update(LogsInput(trx_loc, receipts[trx_loc.position]));
-    }
+
+    LiveLogBlock block;
+    block.block_number = blk_header.number;
+    block.block_hash = blk_header.hash;
+    block.log_bloom = blk_header.log_bloom;
+    block.transaction_hashes = hashes_from_transactions(trxs);
+    block.transaction_receipts = receipts;
+    watches_.logs_.process_each([this, &block](const LogFilter& filter, const auto& do_update) {
+      if (!live_log_subscription.matching_logs) {
+        return;
+      }
+      for (const auto& log : live_log_subscription.matching_logs(filter, block)) {
+        do_update(log);
+      }
+    });
   }
 
   void note_pending_transaction(const h256& trx_hash) override { watches_.new_transactions_.process_update(trx_hash); }

@@ -101,6 +101,48 @@ TEST_F(RPCTest, live_log_subscription_uses_subscription_api) {
   EXPECT_EQ(dev::toJS(trx_hash), message["params"]["result"]["transactionHash"].asString());
 }
 
+TEST_F(RPCTest, eth_filter_changes_uses_live_log_subscription_api) {
+  auto called = std::make_shared<bool>(false);
+  const auto log_address = addr_t::random();
+  const auto topic = h256::random();
+  const auto block_hash = blk_hash_t::random();
+  const auto trx_hash = trx_hash_t::random();
+
+  net::rpc::eth::EthParams eth_rpc_params;
+  eth_rpc_params.live_log_subscription.matching_logs =
+      [called, log_address, topic, block_hash, trx_hash](const net::rpc::eth::LogFilter&,
+                                                         const net::rpc::eth::LiveLogBlock& block) {
+        *called = true;
+        EXPECT_EQ(8, block.block_number);
+        EXPECT_EQ(block_hash, block.block_hash);
+
+        net::rpc::eth::LocalisedLogEntry entry;
+        entry.le = LogEntry{log_address, {topic}, bytes{0xcc}};
+        entry.trx_loc.period = block.block_number;
+        entry.trx_loc.position = 0;
+        entry.trx_loc.blk_h = block.block_hash;
+        entry.trx_loc.trx_hash = trx_hash;
+        return std::vector<net::rpc::eth::LocalisedLogEntry>{entry};
+      };
+  auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
+  Json::Value filter(Json::objectValue);
+  filter["fromBlock"] = dev::toJS(0);
+  const auto filter_id = eth_json_rpc->eth_newFilter(filter);
+
+  final_chain::BlockHeader header;
+  header.number = 8;
+  header.hash = block_hash;
+  eth_json_rpc->note_block_executed(header, {}, {});
+
+  const auto changes = eth_json_rpc->eth_getFilterChanges(filter_id);
+  ASSERT_TRUE(*called);
+  ASSERT_EQ(1, changes.size());
+  EXPECT_EQ(dev::toJS(log_address), changes[0]["address"].asString());
+  EXPECT_EQ(dev::toJS(topic), changes[0]["topics"][0].asString());
+  EXPECT_EQ(dev::toJS(block_hash), changes[0]["blockHash"].asString());
+  EXPECT_EQ(dev::toJS(trx_hash), changes[0]["transactionHash"].asString());
+}
+
 TEST_F(RPCTest, eth_estimateGas) {
   auto node_cfg = make_node_cfgs(1);
   auto nodes = launch_nodes(node_cfg);
