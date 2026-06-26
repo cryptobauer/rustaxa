@@ -32,7 +32,6 @@ class Mutation {
   response::Value applySendRawTransaction(response::Value&& dataArg) const;
 
  private:
-  std::shared_ptr<::taraxa::TransactionManager> trx_manager_;
   MutationTransactionApi transaction_api_;
 };
 

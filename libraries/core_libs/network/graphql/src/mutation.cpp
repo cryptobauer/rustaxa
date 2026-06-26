@@ -34,12 +34,12 @@ void fillMissingMutationTransactionApiCallbacks(MutationTransactionApi& api,
 
 Mutation::Mutation(std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                    MutationTransactionApi transaction_api) noexcept
-    : trx_manager_(std::move(trx_manager)), transaction_api_(std::move(transaction_api)) {
-  fillMissingMutationTransactionApiCallbacks(transaction_api_, trx_manager_);
+    : transaction_api_(std::move(transaction_api)) {
+  fillMissingMutationTransactionApiCallbacks(transaction_api_, std::move(trx_manager));
 }
 
 Mutation::Mutation(MutationTransactionApi transaction_api) noexcept : transaction_api_(std::move(transaction_api)) {
-  fillMissingMutationTransactionApiCallbacks(transaction_api_, trx_manager_);
+  fillMissingMutationTransactionApiCallbacks(transaction_api_, {});
 }
 
 response::Value Mutation::applySendRawTransaction(response::Value&& dataArg) const {

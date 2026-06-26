@@ -647,6 +647,9 @@ Implemented first slice:
 - GraphQL `sendRawTransaction` mutation now uses a dedicated `MutationTransactionApi` callback bundle for transaction
   insertion. The default adapter is still backed by TransactionManager because mempool admission is outside public query
   formatting, but the GraphQL mutation method no longer reaches through the manager directly.
+- GraphQL `Mutation` no longer stores the `TransactionManager` compatibility payload after construction. The manager
+  constructor immediately adapts it into `MutationTransactionApi`, keeping the mutation object itself on the narrow
+  transaction-submission API.
 - GraphQL `nodeState` and `syncing` field objects now consume dedicated `CurrentStateReader` and `SyncStateReader`
   callback bundles for finalized head, DAG head, and highest-peer progress facts. Existing constructors still provide
   manager-backed compatibility adapters, but the GraphQL field resolvers no longer call FinalChain, DagManager, or
