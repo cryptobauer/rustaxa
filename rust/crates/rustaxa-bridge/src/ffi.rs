@@ -40,6 +40,7 @@ use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
 };
 use rustaxa_consensus::transaction_queue::{TransactionQueue, TransactionQueueEntry};
+use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::FinalChain;
 use rustaxa_consensus::PbftVoteAdmissionRuntime;
@@ -130,6 +131,14 @@ pub struct BridgeFinalChain(pub FinalChain);
 pub struct BridgeFinalChainExecutionSession {
     pub state: rustaxa_consensus::FinalChainExecutionSession,
 }
+
+/// Rust-owned external EVM/StateAPI facade.
+///
+/// The facade is intentionally stateless. C++ passes the live FinalChain and
+/// execution-session handles for each call while Rust owns request identity,
+/// report validation, publication planning, storage publication, and audit
+/// decisions.
+pub struct BridgeConsensusExecutionApi(pub ConsensusExecutionApi);
 
 pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>, pub Option<Arc<Storage>>);
 
@@ -3724,6 +3733,16 @@ pub mod rustaxa_ffi {
         executed_transaction_count: u64,
         dpos_snapshot_status: u8,
         account_snapshot_status: u8,
+        status: u8,
+        error_code: String,
+    }
+
+    struct FinalChainExternalEvmPublicationAuditReport {
+        request_id: [u8; 32],
+        plan_id: [u8; 32],
+        period: u64,
+        block_hash: [u8; 32],
+        checked_fields: u64,
         status: u8,
         error_code: String,
     }
@@ -7737,6 +7756,69 @@ pub mod rustaxa_ffi {
             committed_period: u64,
             committed_state_root: &[u8; 32],
         ) -> Result<FinalChainExternalEvmPublicationReport>;
+        type BridgeConsensusExecutionApi;
+        pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionApi>>;
+        pub fn consensus_execution_next_execution_request(
+            self: &BridgeConsensusExecutionApi,
+            session: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExecutionStep>;
+        pub fn consensus_execution_report_execution_result(
+            self: &BridgeConsensusExecutionApi,
+            session: &mut BridgeFinalChainExecutionSession,
+            report: FinalChainEvmExecutionReport,
+        ) -> Result<FinalChainExecutionStep>;
+        pub fn consensus_execution_report_system_transactions(
+            self: &BridgeConsensusExecutionApi,
+            session: &mut BridgeFinalChainExecutionSession,
+            report: FinalChainSystemTransactionReport,
+        ) -> Result<FinalChainExecutionStep>;
+        pub fn consensus_execution_report_rewards_result(
+            self: &BridgeConsensusExecutionApi,
+            session: &mut BridgeFinalChainExecutionSession,
+            report: FinalChainEvmRewardsReport,
+        ) -> Result<FinalChainExternalEvmCommitPlan>;
+        pub fn consensus_execution_plan_publication(
+            self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExternalEvmPublicationPlan>;
+        pub fn consensus_execution_attach_rewards_stats(
+            self: &BridgeConsensusExecutionApi,
+            session: &mut BridgeFinalChainExecutionSession,
+            rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+        ) -> Result<FinalChainExternalEvmPublicationPlan>;
+        pub fn consensus_execution_attach_proposal_period_dag_level(
+            self: &BridgeConsensusExecutionApi,
+            session: &mut BridgeFinalChainExecutionSession,
+            update: FinalChainProposalPeriodDagLevelUpdate,
+        ) -> Result<FinalChainExternalEvmPublicationPlan>;
+        pub fn consensus_execution_next_state_commit_request(
+            self: &BridgeConsensusExecutionApi,
+            session: &mut BridgeFinalChainExecutionSession,
+            commit_plan: &FinalChainExternalEvmCommitPlan,
+            publication_plan: &FinalChainExternalEvmPublicationPlan,
+        ) -> Result<FinalChainExternalEvmStateCommitIntent>;
+        pub fn consensus_execution_persist_pending_publication(
+            self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExternalEvmPublicationReport>;
+        pub fn consensus_execution_report_state_commit_result(
+            self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+            result: FinalChainExternalEvmStateCommitResult,
+        ) -> Result<FinalChainExternalEvmCommitDecision>;
+        pub fn consensus_execution_publish_state_commit(
+            self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+        ) -> Result<FinalChainExternalEvmPublicationReport>;
+        pub fn consensus_execution_publication_audit(
+            self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
+            publication_plan: &FinalChainExternalEvmPublicationPlan,
+        ) -> Result<FinalChainExternalEvmPublicationAuditReport>;
         pub fn final_chain_execution_session_commit(
             final_chain: &BridgeFinalChain,
             session: Box<BridgeFinalChainExecutionSession>,

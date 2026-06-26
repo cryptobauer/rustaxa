@@ -1,4 +1,5 @@
 use crate::ffi::rustaxa_ffi;
+use crate::ffi::BridgeConsensusExecutionApi;
 use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeFinalChainExecutionSession;
 use crate::ffi::BridgeStorage;
@@ -349,6 +350,34 @@ fn external_evm_commit_plan_to_ffi(
     }
 }
 
+fn external_evm_commit_plan_from_ffi_ref(
+    plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
+) -> rustaxa_consensus::FinalChainExternalEvmCommitPlan {
+    rustaxa_consensus::FinalChainExternalEvmCommitPlan {
+        request_id: plan.request_id,
+        period: plan.period,
+        post_execution_state_root: plan.post_execution_state_root,
+        state_root: plan.state_root,
+        total_reward: plan.total_reward.clone(),
+        transactions_root: plan.transactions_root,
+        receipts_root: plan.receipts_root,
+        header_log_bloom: plan.header_log_bloom.clone(),
+        indexed_log_bloom: plan.indexed_log_bloom.clone(),
+        receipts_rlp: plan.receipts_rlp.clone(),
+        encoded_receipts: plan
+            .encoded_receipts
+            .iter()
+            .map(|receipt| receipt.data.clone())
+            .collect(),
+        gas_used: plan.gas_used,
+        executed_dag_blocks: plan.executed_dag_blocks,
+        executed_transactions: plan.executed_transactions,
+        regular_transaction_count: plan.regular_transaction_count,
+        system_transaction_count: plan.system_transaction_count,
+        error_code: plan.error_code.clone(),
+    }
+}
+
 fn external_evm_publication_plan_to_ffi(
     plan: rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
 ) -> rustaxa_ffi::FinalChainExternalEvmPublicationPlan {
@@ -459,7 +488,6 @@ fn external_evm_publication_plan_from_ffi(
     }
 }
 
-#[cfg(test)]
 fn external_evm_publication_plan_from_ffi_ref(
     plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
 ) -> rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
@@ -592,6 +620,20 @@ fn external_evm_publication_report_to_ffi(
         executed_transaction_count: report.executed_transaction_count,
         dpos_snapshot_status: report.dpos_snapshot_status,
         account_snapshot_status: report.account_snapshot_status,
+        status: report.status,
+        error_code: report.error_code,
+    }
+}
+
+fn external_evm_publication_audit_report_to_ffi(
+    report: rustaxa_consensus::FinalChainExternalEvmPublicationAuditReport,
+) -> rustaxa_ffi::FinalChainExternalEvmPublicationAuditReport {
+    rustaxa_ffi::FinalChainExternalEvmPublicationAuditReport {
+        request_id: report.request_id,
+        plan_id: report.plan_id,
+        period: report.period,
+        block_hash: report.block_hash,
+        checked_fields: report.checked_fields,
         status: report.status,
         error_code: report.error_code,
     }
@@ -780,6 +822,184 @@ pub fn plan_external_evm_system_transactions(
         fact,
     ))
     .map(system_transaction_plan_to_ffi)
+}
+
+pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionApi>, anyhow::Error> {
+    Ok(Box::new(BridgeConsensusExecutionApi(
+        rustaxa_consensus::ConsensusExecutionApi::new(),
+    )))
+}
+
+impl BridgeConsensusExecutionApi {
+    /// Returns the next external-EVM/StateAPI boundary request for a FinalChain session.
+    ///
+    /// The facade keeps C++ executor code from reaching directly into the lower-level
+    /// Rust session helper API. It returns only the existing step DTO that names the
+    /// boundary action and carries the minimal request payload for that action.
+    pub fn consensus_execution_next_execution_request(
+        &self,
+        session: &mut BridgeFinalChainExecutionSession,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
+        Ok(execution_step_to_ffi(
+            self.0.next_execution_request(&mut session.state),
+        ))
+    }
+
+    /// Reports arbitrary EVM transaction execution results to Rust.
+    ///
+    /// Rust validates the report against the session-owned request and returns the
+    /// next boundary action. This method does not execute EVM, mutate `StateAPI`, or
+    /// publish FinalChain storage.
+    pub fn consensus_execution_report_execution_result(
+        &self,
+        session: &mut BridgeFinalChainExecutionSession,
+        report: rustaxa_ffi::FinalChainEvmExecutionReport,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
+        Ok(execution_step_to_ffi(self.0.report_execution_result(
+            &mut session.state,
+            evm_report_from_ffi(report),
+        )))
+    }
+
+    /// Reports Rust-planned system transaction RLPs back to the execution session.
+    pub fn consensus_execution_report_system_transactions(
+        &self,
+        session: &mut BridgeFinalChainExecutionSession,
+        report: rustaxa_ffi::FinalChainSystemTransactionReport,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
+        Ok(execution_step_to_ffi(self.0.report_system_transactions(
+            &mut session.state,
+            system_transaction_report_from_ffi(report),
+        )))
+    }
+
+    /// Reports external reward execution and returns the Rust commit plan.
+    pub fn consensus_execution_report_rewards_result(
+        &self,
+        session: &mut BridgeFinalChainExecutionSession,
+        report: rustaxa_ffi::FinalChainEvmRewardsReport,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitPlan, anyhow::Error> {
+        Ok(external_evm_commit_plan_to_ffi(
+            self.0
+                .report_rewards_result(&mut session.state, evm_rewards_report_from_ffi(report)),
+        ))
+    }
+
+    /// Builds the Rust-owned publication plan for an external-EVM block.
+    ///
+    /// The returned plan contains deterministic FinalChain storage facts only. C++
+    /// still owns EVM and `StateAPI` execution at this boundary.
+    pub fn consensus_execution_plan_publication(
+        &self,
+        final_chain: &BridgeFinalChain,
+        session: &mut BridgeFinalChainExecutionSession,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(external_evm_publication_plan_to_ffi(
+            self.0.plan_publication(&final_chain.0, &mut session.state),
+        ))
+    }
+
+    /// Attaches rewards-stat storage updates to the external-EVM publication plan.
+    pub fn consensus_execution_attach_rewards_stats(
+        &self,
+        session: &mut BridgeFinalChainExecutionSession,
+        rewards_stats_update: rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(external_evm_publication_plan_to_ffi(
+            self.0.attach_rewards_stats(
+                &mut session.state,
+                external_evm_rewards_stats_update_from_ffi(rewards_stats_update),
+            ),
+        ))
+    }
+
+    /// Attaches the optional proposal-period DAG-level mapping to the publication plan.
+    pub fn consensus_execution_attach_proposal_period_dag_level(
+        &self,
+        session: &mut BridgeFinalChainExecutionSession,
+        update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(external_evm_publication_plan_to_ffi(
+            self.0.attach_proposal_period_dag_level(
+                &mut session.state,
+                proposal_period_dag_level_update_from_ffi(update),
+            ),
+        ))
+    }
+
+    /// Requests Rust approval for the external staged-state commit attempt.
+    ///
+    /// C++ supplies the existing commit/publication plans. Rust derives the compact
+    /// state-commit request and validates it against the session before the caller
+    /// invokes `StateAPI::transition_state_commit`.
+    pub fn consensus_execution_next_state_commit_request(
+        &self,
+        session: &mut BridgeFinalChainExecutionSession,
+        commit_plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
+        publication_plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
+        Ok(external_evm_state_commit_intent_to_ffi(
+            self.0.next_state_commit_request(
+                &mut session.state,
+                &external_evm_commit_plan_from_ffi_ref(commit_plan),
+                &external_evm_publication_plan_from_ffi_ref(publication_plan),
+            ),
+        ))
+    }
+
+    /// Persists the Rust pending-publication marker before external state commit.
+    pub fn consensus_execution_persist_pending_publication(
+        &self,
+        final_chain: &BridgeFinalChain,
+        session: &mut BridgeFinalChainExecutionSession,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        Ok(external_evm_publication_report_to_ffi(
+            self.0
+                .persist_pending_publication(&final_chain.0, &mut session.state)?,
+        ))
+    }
+
+    /// Reports the external state DB commit result and returns Rust's publication decision.
+    pub fn consensus_execution_report_state_commit_result(
+        &self,
+        final_chain: &BridgeFinalChain,
+        session: &mut BridgeFinalChainExecutionSession,
+        result: rustaxa_ffi::FinalChainExternalEvmStateCommitResult,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitDecision, anyhow::Error> {
+        Ok(external_evm_commit_decision_to_ffi(
+            self.0.report_state_commit_result(
+                &final_chain.0,
+                &mut session.state,
+                external_evm_state_commit_result_from_ffi(result),
+            )?,
+        ))
+    }
+
+    /// Publishes Rust FinalChain storage after a committed external state result.
+    pub fn consensus_execution_publish_state_commit(
+        &self,
+        final_chain: &BridgeFinalChain,
+        session: &mut BridgeFinalChainExecutionSession,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        Ok(external_evm_publication_report_to_ffi(
+            self.0
+                .publish_state_commit(&final_chain.0, &mut session.state)?,
+        ))
+    }
+
+    /// Audits the supplied publication plan against Rust FinalChain storage.
+    pub fn consensus_execution_publication_audit(
+        &self,
+        final_chain: &BridgeFinalChain,
+        publication_plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
+        Ok(external_evm_publication_audit_report_to_ffi(
+            self.0.publication_audit(
+                &final_chain.0,
+                external_evm_publication_plan_from_ffi_ref(publication_plan),
+            )?,
+        ))
+    }
 }
 
 impl BridgeFinalChainExecutionSession {
@@ -1937,6 +2157,81 @@ mod tests {
         decision
     }
 
+    fn ready_external_evm_commit_decision_via_execution_api(
+        api: &BridgeConsensusExecutionApi,
+        final_chain: &BridgeFinalChain,
+        session: &mut BridgeFinalChainExecutionSession,
+        plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
+        publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+    ) -> rustaxa_ffi::FinalChainExternalEvmCommitDecision {
+        let intent = api
+            .consensus_execution_next_state_commit_request(session, plan, publication)
+            .expect("state commit intent should convert through execution API");
+        assert_eq!(
+            intent.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT
+        );
+        assert_eq!(intent.request_id, publication.request_id);
+        assert_eq!(intent.plan_id, publication.plan_id);
+        assert_eq!(intent.publication_block_hash, publication.block_hash);
+        assert!(intent.error_code.is_empty());
+
+        let step = api
+            .consensus_execution_next_execution_request(session)
+            .expect("post-intent lifecycle step should convert through execution API");
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE
+        );
+
+        let pending = api
+            .consensus_execution_persist_pending_publication(final_chain, session)
+            .expect("pending publication should persist through execution API");
+        assert_eq!(
+            pending.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        );
+        assert_eq!(pending.request_id, publication.request_id);
+        assert_eq!(pending.plan_id, publication.plan_id);
+        assert!(pending.error_code.is_empty());
+
+        let decision = api
+            .consensus_execution_report_state_commit_result(
+                final_chain,
+                session,
+                rustaxa_ffi::FinalChainExternalEvmStateCommitResult {
+                    status: rustaxa_consensus::FINAL_CHAIN_EVM_LIFECYCLE_STATUS_COMMITTED,
+                    error_code: String::new(),
+                },
+            )
+            .expect("state commit result decision should convert through execution API");
+        assert_eq!(decision.request_id, intent.request_id);
+        assert_eq!(decision.plan_id, intent.plan_id);
+        assert_eq!(
+            decision.publication_block_hash,
+            intent.publication_block_hash
+        );
+        assert_eq!(
+            decision.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH
+        );
+        assert_ne!(decision.decision_id, [0; 32]);
+        assert!(decision.error_code.is_empty());
+
+        let step = api
+            .consensus_execution_next_execution_request(session)
+            .expect("storage publication step should convert through execution API");
+        assert_eq!(
+            step.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STORAGE_PUBLICATION
+        );
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE
+        );
+        decision
+    }
+
     fn assert_external_evm_publication_audit_matches(
         final_chain: &BridgeFinalChain,
         publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
@@ -1958,6 +2253,74 @@ mod tests {
                 + publication.transaction_publications.len() as u64 * 2
         );
         assert!(audit.error_code.is_empty());
+    }
+
+    fn assert_external_evm_publication_audit_matches_via_execution_api(
+        api: &BridgeConsensusExecutionApi,
+        final_chain: &BridgeFinalChain,
+        publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+    ) {
+        let audit = api
+            .consensus_execution_publication_audit(final_chain, publication)
+            .expect("external EVM publication audit should run through execution API");
+        assert_eq!(
+            audit.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED
+        );
+        assert_eq!(audit.request_id, publication.request_id);
+        assert_eq!(audit.plan_id, publication.plan_id);
+        assert_eq!(audit.period, publication.period);
+        assert_eq!(audit.block_hash, publication.block_hash);
+        assert_eq!(
+            audit.checked_fields,
+            14 + u64::from(publication.proposal_period_dag_level_update.has_update)
+                + publication.transaction_publications.len() as u64 * 2
+        );
+        assert!(audit.error_code.is_empty());
+    }
+
+    #[test]
+    fn bridge_consensus_execution_api_drives_external_evm_publication() {
+        let (temp_dir, final_chain, mut session, plan, publication) =
+            external_evm_publication_fixture(
+                "rustaxa_bridge_consensus_execution_api_publication",
+                1,
+            );
+        let api = create_consensus_execution_api().expect("execution API should initialize");
+
+        let _decision = ready_external_evm_commit_decision_via_execution_api(
+            &api,
+            &final_chain,
+            &mut session,
+            &plan,
+            &publication,
+        );
+        let report = api
+            .consensus_execution_publish_state_commit(&final_chain, &mut session)
+            .expect("publication should convert through execution API");
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        );
+        assert_eq!(report.request_id, publication.request_id);
+        assert_eq!(report.plan_id, publication.plan_id);
+        assert!(report.error_code.is_empty());
+
+        let complete = api
+            .consensus_execution_next_execution_request(&mut session)
+            .expect("complete step should convert through execution API");
+        assert_eq!(
+            complete.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_COMPLETE
+        );
+        assert_external_evm_publication_audit_matches_via_execution_api(
+            &api,
+            &final_chain,
+            &publication,
+        );
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     fn signed_pbft_block_rlp(period: u64) -> Vec<u8> {

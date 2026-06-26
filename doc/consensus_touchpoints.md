@@ -283,6 +283,33 @@ First useful routes:
 - State commit result reporting.
 - Publication recovery and audit after restart.
 
+Implemented first slice:
+
+- Rust domain facade: `rust/crates/rustaxa-consensus/src/consensus_execution_api.rs`
+- CXX bridge facade: `BridgeConsensusExecutionApi` in `rust/crates/rustaxa-bridge/src/final_chain.rs`
+- Rust-enabled `FinalChain::finalizeExternalEvm` now holds a dedicated execution API handle and routes the external
+  EVM/session boundary through it for:
+  - next execution/action requests
+  - system-transaction report validation
+  - arbitrary EVM execution report validation
+  - rewards execution report validation and commit-plan derivation
+  - external-EVM publication planning
+  - rewards-stat and proposal-period publication attachments
+  - state-commit intent creation
+  - pending-publication marker persistence
+  - state-commit result reporting
+  - Rust FinalChain storage publication
+- `ConsensusExecutionApi` is intentionally stateless. C++ still passes the live `BridgeFinalChain` and
+  `BridgeFinalChainExecutionSession` handles, while Rust owns request identity, report validation, publication plans,
+  pending marker handling, storage publication, and publication audit decisions.
+- A CXX-facing `FinalChainExternalEvmPublicationAuditReport` is now available through
+  `consensus_execution_publication_audit`, making restart/publication verification part of the external execution facade
+  instead of a test-only bridge helper.
+- The facade does not call `StateAPI`, execute EVM, mutate `state_db/`, read bridge-contract state, or own rewards
+  execution. Those remain the external executor responsibilities for this section.
+- Native-only FinalChain commits still use the existing Rust session commit helper because they are not part of the
+  external EVM/StateAPI boundary.
+
 ### 3. Public Query API
 
 Purpose: serve RPC, GraphQL, plugins, debug, and CLI read paths without exposing consensus managers, storage internals,

@@ -164,6 +164,7 @@ class FinalChain {
 
   std::shared_ptr<DbStorage> db_;
   std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
+  std::optional<::rust::Box<rustaxa::BridgeConsensusExecutionApi>> rust_execution_api_;
   EthBlockNumber delegation_delay_ = 0;
   uint64_t block_gas_limit_ = 0;
   uint32_t max_levels_per_period_ = 0;

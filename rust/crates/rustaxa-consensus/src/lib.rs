@@ -1,3 +1,4 @@
+pub mod consensus_execution_api;
 pub mod consensus_pipeline;
 pub mod dag;
 pub mod gas_pricer;
@@ -33,6 +34,7 @@ pub mod verified_votes;
 mod final_chain;
 pub mod final_chain_execution;
 
+pub use consensus_execution_api::ConsensusExecutionApi;
 pub use consensus_pipeline::{
     Address20, ConsensusEffect, ConsensusEvent, ConsensusPlan, DagBlockEvent, DagSyncEvent,
     EventOrigin, Hash32, IngressPayloadRef, PbftSyncEvent, PbftVoteEvent, PbftVoteFacts,
