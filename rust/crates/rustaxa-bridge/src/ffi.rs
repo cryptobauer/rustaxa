@@ -3821,6 +3821,9 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
         sender: [u8; 20],
         timestamp: u64,
+        finalized_period_found: bool,
+        finalized_period: u64,
+        finalized_position: u32,
         has_vdf: bool,
         vdf_proof: Vec<u8>,
         vdf_sol1: Vec<u8>,
@@ -5026,6 +5029,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             number: u64,
         ) -> Result<FinalChainBlockView>;
+        pub fn consensus_query_dag_block_by_hash(
+            self: &BridgeConsensusQueryApi,
+            hash: &[u8; 32],
+        ) -> Result<DagBlockPublicView>;
     }
 
     extern "Rust" {

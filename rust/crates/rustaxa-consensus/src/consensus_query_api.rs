@@ -2,17 +2,19 @@
 //!
 //! The facade is the narrow read-only API that RPC, GraphQL, plugins, debug
 //! tools, and CLI code should call instead of reaching into consensus managers,
-//! mutable sidecars, or generic storage iterators. It owns no storage handle and
-//! mutates no state; callers pass the current Rust storage owner for each query
-//! and receive stable DTOs plus canonical bytes when compatibility materializers
-//! still need legacy encodings.
+//! mutable sidecars, or generic storage iterators. It owns only a cloned Rust
+//! storage handle and mutates no state; callers receive stable DTOs plus
+//! canonical bytes when compatibility materializers still need legacy encodings.
 
 use anyhow::{Context, Result};
 use ethereum_types::{H160, H256};
 use rlp::Rlp;
 use rustaxa_storage::Storage;
+use rustaxa_types::codec::rlp::dag::DagBlockRlp;
 use rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp;
+use rustaxa_types::dag::DagBlock;
 use rustaxa_types::final_chain::StoredFinalChainBlockHeader;
+use rustaxa_vdf::vdf_sortition::decode_vdf_sortition_payload;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
@@ -56,6 +58,35 @@ pub struct FinalChainBlockView {
     pub stored_header_rlp: Vec<u8>,
     pub has_pbft_hash: bool,
     pub pbft_block_hash: [u8; 32],
+}
+
+/// Stable public view of one DAG block.
+///
+/// The view is loaded from Rust DAG storage and contains the base facts public
+/// RPC/GraphQL formatters need for DAG block JSON without exposing a live DAG
+/// manager or C++ block object. `finalized_period_found` distinguishes
+/// non-finalized blocks from finalized blocks whose period/position index has
+/// already been written.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DagBlockView {
+    pub found: bool,
+    pub pivot: [u8; 32],
+    pub level: u64,
+    pub tips: Vec<[u8; 32]>,
+    pub transactions: Vec<[u8; 32]>,
+    pub trx_estimations: u64,
+    pub signature: Vec<u8>,
+    pub hash: [u8; 32],
+    pub sender: [u8; 20],
+    pub timestamp: u64,
+    pub finalized_period_found: bool,
+    pub finalized_period: u64,
+    pub finalized_position: u32,
+    pub has_vdf: bool,
+    pub vdf_proof: Vec<u8>,
+    pub vdf_sol1: Vec<u8>,
+    pub vdf_sol2: Vec<u8>,
+    pub vdf_difficulty: u16,
 }
 
 /// Read-only public query facade over Rust consensus storage.
@@ -136,6 +167,48 @@ impl ConsensusQueryApi {
             pbft_block_hash: pbft_hash.hash,
         })
     }
+
+    /// Returns a public DAG block view by block hash.
+    ///
+    /// The query reads canonical DAG block bytes and finalized period metadata
+    /// from Rust storage. It does not expand transaction hashes into
+    /// transaction objects and it does not consult a live `DagManager` or
+    /// `PbftManager`. Missing DAG block bytes return `found == false`;
+    /// malformed block or VDF bytes are returned as errors for public adapters
+    /// to map to their existing invalid-params behavior.
+    pub fn dag_block_by_hash(&self, hash: [u8; 32]) -> Result<DagBlockView> {
+        let requested_hash = H256::from(hash);
+        let Some(block_rlp) = self.storage.dag().by_hash_rlp_optional(requested_hash)? else {
+            return Ok(DagBlockView::default());
+        };
+        let block = DagBlock::try_from(DagBlockRlp::new(&block_rlp))
+            .context("CONSENSUS_QUERY_DAG_BLOCK_DECODE")?;
+        let vdf = decode_vdf_sortition_payload(&block.vdf)
+            .context("CONSENSUS_QUERY_DAG_BLOCK_VDF_DECODE")?;
+        let finalized = self.storage.dag().period_optional(requested_hash)?;
+        let sender = block.recover_sender().unwrap_or_default();
+
+        Ok(DagBlockView {
+            found: true,
+            pivot: block.pivot.into(),
+            level: block.level,
+            tips: block.tips.into_iter().map(Into::into).collect(),
+            transactions: block.transactions.into_iter().map(Into::into).collect(),
+            trx_estimations: block.gas_estimation,
+            signature: block.signature.to_vec(),
+            hash: keccak256(&block_rlp).into(),
+            sender: sender.into(),
+            timestamp: block.timestamp,
+            finalized_period_found: finalized.is_some(),
+            finalized_period: finalized.map(|(period, _)| period).unwrap_or_default(),
+            finalized_position: finalized.map(|(_, position)| position).unwrap_or_default(),
+            has_vdf: true,
+            vdf_proof: vdf.vrf_proof.to_vec(),
+            vdf_sol1: vdf.vdf_solution_proof,
+            vdf_sol2: vdf.vdf_solution_output,
+            vdf_difficulty: vdf.difficulty,
+        })
+    }
 }
 
 fn h256_bytes(bytes: &[u8]) -> Result<H256> {
@@ -181,6 +254,25 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn dag_block_rlp() -> Vec<u8> {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11; 80]);
+        vdf.append(&vec![0x22, 0x23]);
+        vdf.append(&vec![0x33, 0x34]);
+        vdf.append(&7u16);
+
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::from_low_u64_be(1));
+        block.append(&5u64);
+        block.append(&123u64);
+        block.append(&vdf.out().to_vec());
+        block.append_list(&[H256::from_low_u64_be(2)]);
+        block.append_list(&[H256::from_low_u64_be(3), H256::from_low_u64_be(4)]);
+        block.append(&vec![0x44; 65]);
+        block.append(&987u64);
+        block.out().to_vec()
     }
 
     fn stored_header_rlp() -> Vec<u8> {
@@ -241,6 +333,39 @@ mod tests {
 
         assert!(!api.final_chain_block_by_number(44).unwrap().found);
         assert!(!api.pbft_block_hash_by_period(44).unwrap().found);
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_dag_block_view_and_finalized_period_from_storage() {
+        let (path, storage) = test_storage("dag_block_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let block_rlp = dag_block_rlp();
+        let block_hash = keccak256(&block_rlp);
+        storage.dag().write(block_hash, 5, 1, &block_rlp).unwrap();
+        storage.dag().write_period(block_hash, 9, 2).unwrap();
+
+        let view = api.dag_block_by_hash(block_hash.0).unwrap();
+        assert!(view.found);
+        assert_eq!(view.hash, block_hash.0);
+        assert_eq!(view.pivot, H256::from_low_u64_be(1).0);
+        assert_eq!(view.level, 5);
+        assert_eq!(view.timestamp, 123);
+        assert_eq!(view.tips, vec![H256::from_low_u64_be(2).0]);
+        assert_eq!(
+            view.transactions,
+            vec![H256::from_low_u64_be(3).0, H256::from_low_u64_be(4).0]
+        );
+        assert_eq!(view.trx_estimations, 987);
+        assert_eq!(view.signature, vec![0x44; 65]);
+        assert!(view.finalized_period_found);
+        assert_eq!(view.finalized_period, 9);
+        assert_eq!(view.vdf_proof, vec![0x11; 80]);
+        assert_eq!(view.vdf_sol1, vec![0x22, 0x23]);
+        assert_eq!(view.vdf_sol2, vec![0x33, 0x34]);
+        assert_eq!(view.vdf_difficulty, 7);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

@@ -420,12 +420,15 @@ Implemented first slice:
 - Implemented routes:
   - `consensus_query_pbft_block_hash_by_period(period) -> HashLookup`
   - `consensus_query_final_chain_block_by_number(number) -> FinalChainBlockView`
+  - `consensus_query_dag_block_by_hash(hash) -> DagBlockPublicView`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
   hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
+- `taraxa_getDagBlockByHash` now uses `ConsensusQueryApi` for DAG block facts and finalized period/position lookup in
+  Rust mode instead of creating an endpoint-local DAG query handle and asking the live `PbftManager` for block period.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing DAG public-view, PBFT schedule-block, pillar-block, transaction, receipt, account-state, and sync/status
+- Existing DAG-by-level/page, PBFT schedule-block, pillar-block, transaction, receipt, account-state, and sync/status
   routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal

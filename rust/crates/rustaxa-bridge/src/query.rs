@@ -35,6 +35,36 @@ fn final_chain_block_view_to_ffi(
     }
 }
 
+fn dag_hashes_to_ffi(hashes: Vec<[u8; 32]>) -> Vec<rustaxa_ffi::DagHash> {
+    hashes
+        .into_iter()
+        .map(|hash| rustaxa_ffi::DagHash { hash })
+        .collect()
+}
+
+fn dag_block_view_to_ffi(view: rustaxa_consensus::DagBlockView) -> rustaxa_ffi::DagBlockPublicView {
+    rustaxa_ffi::DagBlockPublicView {
+        found: view.found,
+        pivot: view.pivot,
+        level: view.level,
+        tips: dag_hashes_to_ffi(view.tips),
+        transactions: dag_hashes_to_ffi(view.transactions),
+        trx_estimations: view.trx_estimations,
+        signature: view.signature,
+        hash: view.hash,
+        sender: view.sender,
+        timestamp: view.timestamp,
+        finalized_period_found: view.finalized_period_found,
+        finalized_period: view.finalized_period,
+        finalized_position: view.finalized_position,
+        has_vdf: view.has_vdf,
+        vdf_proof: view.vdf_proof,
+        vdf_sol1: view.vdf_sol1,
+        vdf_sol2: view.vdf_sol2,
+        vdf_difficulty: view.vdf_difficulty,
+    }
+}
+
 /// Creates a stateless public consensus query facade.
 pub fn create_consensus_query_api(storage: &BridgeStorage) -> Box<BridgeConsensusQueryApi> {
     Box::new(BridgeConsensusQueryApi(
@@ -62,6 +92,14 @@ impl BridgeConsensusQueryApi {
             self.0.final_chain_block_by_number(number)?,
         ))
     }
+
+    /// Returns a stable DAG public block view by block hash.
+    pub fn consensus_query_dag_block_by_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::DagBlockPublicView, anyhow::Error> {
+        Ok(dag_block_view_to_ffi(self.0.dag_block_by_hash(*hash)?))
+    }
 }
 
 #[cfg(test)]
@@ -80,6 +118,33 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
+    }
+
+    fn dag_block_rlp() -> Vec<u8> {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11; 80]);
+        vdf.append(&vec![0x22, 0x23]);
+        vdf.append(&vec![0x33, 0x34]);
+        vdf.append(&7u16);
+
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::from_low_u64_be(1));
+        block.append(&5u64);
+        block.append(&123u64);
+        block.append(&vdf.out().to_vec());
+        block.append_list(&[H256::from_low_u64_be(2)]);
+        block.append_list(&[H256::from_low_u64_be(3), H256::from_low_u64_be(4)]);
+        block.append(&vec![0x44; 65]);
+        block.append(&987u64);
+        block.out().to_vec()
+    }
+
+    fn keccak256(data: &[u8]) -> H256 {
+        let mut hasher = tiny_keccak::Keccak::v256();
+        tiny_keccak::Hasher::update(&mut hasher, data);
+        let mut out = [0u8; 32];
+        tiny_keccak::Hasher::finalize(hasher, &mut out);
+        H256::from(out)
     }
 
     fn stored_header_rlp() -> Vec<u8> {
@@ -140,6 +205,43 @@ mod tests {
         let lookup = api.consensus_query_pbft_block_hash_by_period(15).unwrap();
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_dag_block_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_dag_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let block_rlp = dag_block_rlp();
+        let block_hash = keccak256(&block_rlp);
+
+        storage
+            .save_dag_block(&block_hash.0, 5, 1, block_rlp)
+            .unwrap();
+        storage.save_dag_block_period(&block_hash.0, 9, 2).unwrap();
+
+        let view = api
+            .consensus_query_dag_block_by_hash(&block_hash.0)
+            .unwrap();
+        assert!(view.found);
+        assert_eq!(view.hash, block_hash.0);
+        assert_eq!(view.pivot, H256::from_low_u64_be(1).0);
+        assert_eq!(view.level, 5);
+        assert_eq!(view.transactions.len(), 2);
+        assert!(view.finalized_period_found);
+        assert_eq!(view.finalized_period, 9);
+        assert_eq!(view.vdf_proof, vec![0x11; 80]);
+        assert_eq!(view.vdf_sol1, vec![0x22, 0x23]);
+        assert_eq!(view.vdf_sol2, vec![0x33, 0x34]);
+        assert_eq!(view.vdf_difficulty, 7);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

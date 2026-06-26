@@ -41,7 +41,9 @@ pub use consensus_pipeline::{
     EventOrigin, Hash32, IngressPayloadRef, PbftSyncEvent, PbftVoteEvent, PbftVoteFacts,
     PeerStatusEvent, PillarVoteEvent, PipelineKind, TransactionEvent,
 };
-pub use consensus_query_api::{ConsensusQueryApi, FinalChainBlockView, QueryHashLookup};
+pub use consensus_query_api::{
+    ConsensusQueryApi, DagBlockView, FinalChainBlockView, QueryHashLookup,
+};
 pub use final_chain::FinalChain;
 pub use final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH, FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED,

@@ -170,13 +170,12 @@ Json::Value Taraxa::taraxa_getDagBlockByHash(const string& _blockHash, bool _inc
   try {
     auto app = tryGetApp();
 #ifdef RUSTAXA_ENABLE
-    const auto dag_queries = rustaxa::create_dag_storage_queries(app->getDB()->rustStorage());
-    const auto rust_block = dag_queries->get_dag_block_public_view(blk_hash_t(_blockHash).asArray());
+    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+    const auto rust_block = query_api->consensus_query_dag_block_by_hash(blk_hash_t(_blockHash).asArray());
     if (rust_block.found) {
       auto block_json = dagBlockPublicViewToJson(rust_block);
-      auto period = app->getPbftManager()->getDagBlockPeriod(hashFromBridge(rust_block.hash));
-      if (period.first) {
-        block_json["period"] = toJS(period.second);
+      if (rust_block.finalized_period_found) {
+        block_json["period"] = toJS(rust_block.finalized_period);
       } else {
         block_json["period"] = "-0x1";
       }
