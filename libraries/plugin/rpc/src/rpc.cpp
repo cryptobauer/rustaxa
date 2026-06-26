@@ -101,6 +101,16 @@ void Rpc::start() {
     eth_rpc_params.query_blocks_with_bloom = [query_api = eth_query_api](auto const &bloom, auto from, auto to) {
       return (*query_api)->consensus_query_final_chain_blocks_with_bloom(bloom, from, to);
     };
+    eth_rpc_params.query_account = [final_chain = app()->getFinalChain()](auto const &address, auto block_number) {
+      return final_chain->getAccount(address, block_number);
+    };
+    eth_rpc_params.query_account_storage =
+        [final_chain = app()->getFinalChain()](auto const &address, auto const &key, auto block_number) {
+          return final_chain->getAccountStorage(address, key, block_number);
+        };
+    eth_rpc_params.query_account_code = [final_chain = app()->getFinalChain()](auto const &address, auto block_number) {
+      return final_chain->getCode(address, block_number);
+    };
 #endif
     eth_rpc_params.send_trx = [trx_manager = app()->getTransactionManager()](auto const &trx) {
       if (auto [ok, err_msg] = trx_manager->insertTransaction(trx); !ok) {

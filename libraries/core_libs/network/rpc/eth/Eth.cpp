@@ -253,23 +253,21 @@ class EthImpl : public Eth, EthParams {
 
   string eth_getBalance(const string& _address, const Json::Value& _json) override {
     const auto block_number = get_block_number_from_json(_json);
-    return toJS(final_chain->getAccount(toAddress(_address), block_number).value_or(ZeroAccount).balance);
+    return toJS(account(toAddress(_address), block_number).value_or(ZeroAccount).balance);
   }
 
   string eth_getStorageAt(const string& _address, const string& _position, const Json::Value& _json) override {
     const auto block_number = get_block_number_from_json(_json);
-    return toJS(final_chain->getAccountStorage(toAddress(_address), jsToU256(_position), block_number));
+    return toJS(account_storage(toAddress(_address), jsToU256(_position), block_number));
   }
 
   string eth_getStorageRoot(const string& _address, const string& _blockNumber) override {
-    return toJS(final_chain->getAccount(toAddress(_address), parse_blk_num(_blockNumber))
-                    .value_or(ZeroAccount)
-                    .storage_root_eth());
+    return toJS(account(toAddress(_address), parse_blk_num(_blockNumber)).value_or(ZeroAccount).storage_root_eth());
   }
 
   string eth_getCode(const string& _address, const Json::Value& _json) override {
     const auto block_number = get_block_number_from_json(_json);
-    return toJS(final_chain->getCode(toAddress(_address), block_number));
+    return toJS(account_code(toAddress(_address), block_number));
   }
 
   string eth_call(const Json::Value& _json, const Json::Value& _jsonBlock) override {
@@ -703,7 +701,34 @@ class EthImpl : public Eth, EthParams {
 #endif
 
   trx_nonce_t transaction_count(EthBlockNumber n, const Address& addr) {
-    return final_chain->getAccount(addr, n).value_or(ZeroAccount).nonce;
+    return account(addr, n).value_or(ZeroAccount).nonce;
+  }
+
+  std::optional<state_api::Account> account(const Address& addr, EthBlockNumber n) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_account) {
+      return query_account(addr, n);
+    }
+#endif
+    return final_chain->getAccount(addr, n);
+  }
+
+  h256 account_storage(const Address& addr, const u256& key, EthBlockNumber n) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_account_storage) {
+      return query_account_storage(addr, key, n);
+    }
+#endif
+    return final_chain->getAccountStorage(addr, key, n);
+  }
+
+  bytes account_code(const Address& addr, EthBlockNumber n) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_account_code) {
+      return query_account_code(addr, n);
+    }
+#endif
+    return final_chain->getCode(addr, n);
   }
 
   state_api::ExecutionResult call(EthBlockNumber blk_n, const TransactionSkeleton& trx) {
@@ -781,6 +806,11 @@ class EthImpl : public Eth, EthParams {
 
   EthBlockNumber parse_blk_num(const string& blk_num_str) {
     auto ret = parse_blk_num_specific(blk_num_str);
+#ifdef RUSTAXA_ENABLE
+    if (!ret && query_final_chain_last_block_number) {
+      return query_final_chain_last_block_number();
+    }
+#endif
     return ret ? *ret : final_chain->lastBlockNumber();
   }
 
@@ -797,6 +827,15 @@ class EthImpl : public Eth, EthParams {
         return parse_blk_num(json["blockNumber"].asString());
       }
       if (!json["blockHash"].empty()) {
+#ifdef RUSTAXA_ENABLE
+        if (query_final_chain_block_number_by_hash) {
+          const auto lookup = query_final_chain_block_number_by_hash(jsToFixed<32>(json["blockHash"].asString()));
+          if (lookup.found) {
+            return lookup.value;
+          }
+          throw std::runtime_error("Resource not found");
+        }
+#endif
         if (auto ret = final_chain->blockNumber(jsToFixed<32>(json["blockHash"].asString()))) {
           return *ret;
         }

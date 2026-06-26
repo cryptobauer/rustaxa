@@ -256,6 +256,58 @@ TEST_F(RPCTest, eip_1898) {
   EXPECT_EQ(eth_json_rpc->eth_getBalance(from, "0x0"), eth_json_rpc->eth_getBalance(from, genesis_block));
 }
 
+#ifdef RUSTAXA_ENABLE
+TEST_F(RPCTest, eth_account_state_uses_query_callbacks) {
+  const auto address = dev::KeyPair::create().address();
+  const auto block_hash = h256(0x1234);
+  constexpr EthBlockNumber kLatestBlock = 11;
+  constexpr EthBlockNumber kHashBlock = 7;
+
+  state_api::Account account;
+  account.balance = 12345;
+  account.nonce = 9;
+  account.storage_root_hash = h256(0x55);
+
+  net::rpc::eth::EthParams eth_rpc_params;
+  eth_rpc_params.query_final_chain_last_block_number = [] { return kLatestBlock; };
+  eth_rpc_params.query_final_chain_block_number_by_hash = [block_hash](const h256& hash) {
+    rustaxa::FinalChainBlockNumberLookup lookup;
+    lookup.found = hash == block_hash;
+    lookup.value = kHashBlock;
+    return lookup;
+  };
+  eth_rpc_params.query_account = [address, account](const Address& requested_address, EthBlockNumber block_number) {
+    EXPECT_EQ(address, requested_address);
+    EXPECT_TRUE(block_number == kLatestBlock || block_number == kHashBlock);
+    return std::optional<state_api::Account>(account);
+  };
+  eth_rpc_params.query_account_storage = [address, kLatestBlock](const Address& requested_address, const u256& key,
+                                                                 EthBlockNumber block_number) {
+    EXPECT_EQ(address, requested_address);
+    EXPECT_EQ(u256(3), key);
+    EXPECT_EQ(kLatestBlock, block_number);
+    return h256(0x99);
+  };
+  eth_rpc_params.query_account_code = [address, kLatestBlock](const Address& requested_address,
+                                                              EthBlockNumber block_number) {
+    EXPECT_EQ(address, requested_address);
+    EXPECT_EQ(kLatestBlock, block_number);
+    return bytes{0x60, 0x01};
+  };
+  auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
+
+  EXPECT_EQ(dev::toJS(account.balance), eth_json_rpc->eth_getBalance(address.toString(), "latest"));
+  EXPECT_EQ(dev::toJS(account.nonce), eth_json_rpc->eth_getTransactionCount(address.toString(), "latest"));
+  EXPECT_EQ(dev::toJS(account.storage_root_eth()), eth_json_rpc->eth_getStorageRoot(address.toString(), "latest"));
+  EXPECT_EQ(dev::toJS(h256(0x99)), eth_json_rpc->eth_getStorageAt(address.toString(), "0x3", "latest"));
+  EXPECT_EQ(dev::toJS(bytes{0x60, 0x01}), eth_json_rpc->eth_getCode(address.toString(), "latest"));
+
+  Json::Value hash_block(Json::objectValue);
+  hash_block["blockHash"] = dev::toJS(block_hash);
+  EXPECT_EQ(dev::toJS(account.balance), eth_json_rpc->eth_getBalance(address.toString(), hash_block));
+}
+#endif
+
 TEST_F(RPCTest, transaction_json) {
   auto nonce = 0;
   auto trx = std::make_shared<Transaction>(nonce, 100, 1000000000, 100000, dev::bytes(),

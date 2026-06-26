@@ -33,6 +33,9 @@ struct EthParams {
   std::function<EthBlockNumber()> query_final_chain_last_block_number;
   std::function<rust::Vec<uint64_t>(const std::array<uint8_t, 256>&, EthBlockNumber, EthBlockNumber)>
       query_blocks_with_bloom;
+  std::function<std::optional<state_api::Account>(const Address&, EthBlockNumber)> query_account;
+  std::function<h256(const Address&, const u256&, EthBlockNumber)> query_account_storage;
+  std::function<bytes(const Address&, EthBlockNumber)> query_account_code;
 #endif
   std::function<void(const std::shared_ptr<Transaction>& trx)> send_trx;
   std::function<u256()> gas_pricer = [] { return u256(0); };
