@@ -664,6 +664,10 @@ Implemented first slice:
   node-state, and sync-state callback bundles. The old manager-heavy `Query` constructor remains the compatibility
   adapter, while `nodeState` and `syncing` field construction now consumes injected reader bundles instead of passing
   `FinalChain`, `DagManager`, or `Network` pointers into those public field routes.
+- GraphQL `QueryReaders` now also carries top-level transaction receipt/location callbacks, and `Query` no longer stores
+  broad `FinalChain`, `DagManager`, `PbftManager`, `TransactionManager`, `GasPricer`, or `Network` pointers after
+  construction. The manager-heavy constructor immediately converts those dependencies into reader callbacks plus the
+  remaining Rust-mode storage compatibility handle used to create `ConsensusQueryApi`.
 - GraphQL Rust-backed final-chain block objects now materialize legacy `BlockHeader` fields from typed
   `FinalChainBlockView` DTO fields instead of decoding Rust stored-header compatibility RLP as a full legacy block
   header. Stored-header bytes remain available on the query DTO for compatibility clients, but GraphQL block formatting

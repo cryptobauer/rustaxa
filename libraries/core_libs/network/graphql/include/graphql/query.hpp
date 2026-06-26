@@ -6,6 +6,7 @@
 #include "graphql/account.hpp"
 #include "graphql/block.hpp"
 #include "graphql/sync_state.hpp"
+#include "graphql/transaction.hpp"
 #include "graphql/types/current_state.hpp"
 #include "graphql/types/dag_block.hpp"
 #include "network/live_status.hpp"
@@ -63,6 +64,7 @@ struct QueryReaders {
   QueryBlockReader block;
   BlockTransactionReader block_transaction;
   QueryTransactionReader transaction;
+  TransactionReceiptReader transaction_receipt;
   QueryGasPriceReader gas_price;
   QueryDagBlockReader dag_block;
   DagBlockTransactionReader dag_block_transaction;
@@ -107,19 +109,13 @@ class Query {
   // TODO: use pagination limit for all "list" queries
   static constexpr size_t kMaxPropagationLimit{100};
 
-  std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
-  std::shared_ptr<::taraxa::DagManager> dag_manager_;
-  std::shared_ptr<::taraxa::PbftManager> pbft_manager_;
-  std::shared_ptr<::taraxa::TransactionManager> transaction_manager_;
   std::shared_ptr<::taraxa::DbStorage> db_;  // RUSTAXA_QUERY_COMPAT_READ
-  std::shared_ptr<::taraxa::GasPricer> gas_pricer_;
-  std::weak_ptr<::taraxa::Network> network_;
   const uint64_t kChainId;
-  ::taraxa::net::LiveStatusReader live_status_;
   AccountStateReader account_reader_;
   QueryBlockReader block_reader_;
   BlockTransactionReader block_transaction_reader_;
   QueryTransactionReader transaction_reader_;
+  TransactionReceiptReader transaction_receipt_reader_;
   QueryGasPriceReader gas_price_reader_;
   QueryDagBlockReader dag_block_reader_;
   DagBlockTransactionReader dag_block_transaction_reader_;

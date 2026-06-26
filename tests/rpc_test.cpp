@@ -1785,29 +1785,35 @@ TEST_F(RPCTest, graphql_query_transaction_uses_query_transaction_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();
   auto transaction_called = std::make_shared<bool>(false);
+  auto location_called = std::make_shared<bool>(false);
 
-  graphql::taraxa::AccountStateReader account_reader;
-  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+  graphql::taraxa::QueryReaders readers;
+  readers.account.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
     return std::optional<state_api::Account>{};
   };
-  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+  readers.account.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
     return dev::h256();
   };
-  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
-  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+  readers.account.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  readers.account.latest_finalized_block_number = [] { return EthBlockNumber(0); };
 
-  graphql::taraxa::QueryTransactionReader transaction_reader;
-  transaction_reader.transaction_by_hash = [transaction_called, transaction,
-                                            transaction_hash](const trx_hash_t& requested_hash) {
+  readers.transaction.transaction_by_hash = [transaction_called, transaction,
+                                             transaction_hash](const trx_hash_t& requested_hash) {
     *transaction_called = true;
     EXPECT_EQ(transaction_hash, requested_hash);
     return transaction;
   };
+  readers.transaction_receipt.location = [location_called, transaction_hash](const trx_hash_t& requested_hash) {
+    *location_called = true;
+    EXPECT_EQ(transaction_hash, requested_hash);
+    return std::optional<TransactionLocation>(TransactionLocation{7, 2, false});
+  };
 
-  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, std::move(transaction_reader));
+  graphql::taraxa::Query query(std::move(readers));
 
   ASSERT_NE(nullptr, query.getTransaction(graphql::response::Value(transaction_hash.toString())));
   ASSERT_TRUE(*transaction_called);
+  ASSERT_TRUE(*location_called);
 }
 
 TEST_F(RPCTest, graphql_query_gas_price_uses_query_gas_price_reader) {
