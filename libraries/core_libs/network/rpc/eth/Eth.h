@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
 
 #include "data.hpp"
 #include "final_chain/final_chain.hpp"
@@ -12,6 +15,17 @@
 #endif
 
 namespace taraxa::net::rpc::eth {
+
+#ifdef RUSTAXA_ENABLE
+// FinalizedLogReplayApi is ETH RPC's bridge-facing finalized-log replay port.
+// It exposes only the finalized head, bloom-index candidate blocks, and
+// transaction receipt rows needed for `eth_getLogs` and installed log filters.
+struct FinalizedLogReplayApi {
+  std::function<EthBlockNumber()> latest_finalized_block_number;
+  std::function<rust::Vec<uint64_t>(const std::array<uint8_t, 256>&, EthBlockNumber, EthBlockNumber)> blocks_with_bloom;
+  std::function<rust::Vec<rustaxa::TransactionReceiptPublicView>(EthBlockNumber)> transaction_receipts_by_block_number;
+};
+#endif
 
 struct EthParams {
   Address address;
@@ -31,8 +45,7 @@ struct EthParams {
   std::function<rustaxa::FinalChainBlockView(EthBlockNumber)> query_final_chain_block_by_number;
   std::function<rustaxa::FinalChainBlockNumberLookup(const h256&)> query_final_chain_block_number_by_hash;
   std::function<EthBlockNumber()> query_final_chain_last_block_number;
-  std::function<rust::Vec<uint64_t>(const std::array<uint8_t, 256>&, EthBlockNumber, EthBlockNumber)>
-      query_blocks_with_bloom;
+  std::optional<FinalizedLogReplayApi> query_log_replay;
   std::function<std::optional<state_api::Account>(const Address&, EthBlockNumber)> query_account;
   std::function<h256(const Address&, const u256&, EthBlockNumber)> query_account_storage;
   std::function<bytes(const Address&, EthBlockNumber)> query_account_code;

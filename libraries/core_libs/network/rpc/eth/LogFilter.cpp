@@ -126,7 +126,8 @@ void LogFilter::match_one(const ExtendedTransactionLocation& trx_loc, const Tran
 
 std::vector<LocalisedLogEntry> LogFilter::match_all(
     EthBlockNumber last_block_number,
-    const std::function<std::vector<EthBlockNumber>(const LogBloom&, EthBlockNumber, EthBlockNumber)>& blocks_with_bloom,
+    const std::function<std::vector<EthBlockNumber>(const LogBloom&, EthBlockNumber, EthBlockNumber)>&
+        blocks_with_bloom,
     const std::function<std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>>(EthBlockNumber)>&
         block_receipts) const {
   std::vector<LocalisedLogEntry> ret;
@@ -158,6 +159,10 @@ std::vector<LocalisedLogEntry> LogFilter::match_all(
     action(blk_n);
   }
   return ret;
+}
+
+std::vector<LocalisedLogEntry> LogFilter::match_all(const LogReplayReader& reader) const {
+  return match_all(reader.latest_finalized_block_number(), reader.blocks_with_bloom, reader.block_receipts_by_number);
 }
 
 std::vector<LocalisedLogEntry> LogFilter::match_all(const final_chain::FinalChain& final_chain) const {

@@ -7,6 +7,8 @@
 
 namespace taraxa::net::rpc::eth {
 
+struct LogReplayReader;
+
 struct LogFilter {
   using Topics = std::array<std::unordered_set<h256>, 4>;
 
@@ -32,7 +34,18 @@ struct LogFilter {
           blocks_with_bloom,
       const std::function<std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>>(EthBlockNumber)>&
           block_receipts) const;
+  std::vector<LocalisedLogEntry> match_all(const LogReplayReader& reader) const;
   std::vector<LocalisedLogEntry> match_all(const final_chain::FinalChain& final_chain) const;
+};
+
+// LogReplayReader is the minimal finalized-log replay boundary used by ETH log
+// filters. It supplies finalized head, bloom-index candidates, and receipt rows;
+// LogFilter still owns JSON filter semantics and per-log matching.
+struct LogReplayReader {
+  std::function<EthBlockNumber()> latest_finalized_block_number;
+  std::function<std::vector<EthBlockNumber>(const LogBloom&, EthBlockNumber, EthBlockNumber)> blocks_with_bloom;
+  std::function<std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>>(EthBlockNumber)>
+      block_receipts_by_number;
 };
 
 AddressSet parse_addresses(const Json::Value& json);

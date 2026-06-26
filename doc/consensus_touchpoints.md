@@ -516,6 +516,10 @@ Implemented first slice:
 - `eth_getLogs` and installed `eth_getFilterLogs` replay now use `ConsensusQueryApi` in Rust mode for latest finalized
   block lookup, bloom-index candidate block lookup, and block receipt expansion instead of asking `FinalChain` for bloom
   matches and receipt rows directly. Live subscription delivery still remains on the execution-event compatibility route.
+- ETH log replay is now exposed to the RPC filter layer as a grouped `FinalizedLogReplayApi` backed by
+  `ConsensusQueryApi`; `LogFilter` consumes a local `LogReplayReader` for finalized-head, bloom-candidate, and
+  receipt-row facts instead of assembling ad hoc FinalChain/storage callbacks in the installed-filter path. Missing
+  `fromBlock` defaults also use the replay API's finalized head in Rust mode.
 - `eth_getBalance`, `eth_getStorageAt`, `eth_getStorageRoot`, `eth_getTransactionCount`, and `eth_getCode` now use narrow
   ETH account-state callbacks in Rust mode instead of directly reading `FinalChain` from the public RPC object. The
   callbacks are intentionally backed by the existing FinalChain external-state adapter because account state, storage
@@ -539,8 +543,8 @@ Implemented first slice:
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Live subscription log delivery, debug log filtering, and live sync/status routes remain compatibility or typed-storage
-  routes until they are moved behind dedicated query APIs in later slices.
+- Live subscription log delivery and live sync/status routes remain compatibility or typed-storage routes until they are
+  moved behind dedicated query APIs in later slices.
 
 ## Consensus Internal
 

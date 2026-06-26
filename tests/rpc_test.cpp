@@ -3,6 +3,7 @@
 #include <libdevcore/Common.h>
 #include <libdevcore/CommonJS.h>
 
+#include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
 #include "network/rpc/eth/Eth.h"
 #include "test_util/samples.hpp"
@@ -307,6 +308,97 @@ TEST_F(RPCTest, eth_account_state_uses_query_callbacks) {
   hash_block["blockHash"] = dev::toJS(block_hash);
   EXPECT_EQ(dev::toJS(account.balance), eth_json_rpc->eth_getBalance(address.toString(), hash_block));
 }
+
+TEST_F(RPCTest, eth_installed_log_filter_uses_log_replay_api) {
+  const auto log_address = dev::KeyPair::create().address();
+  const auto topic = h256(0x2222);
+  const auto block_hash = h256(0x3333);
+  constexpr EthBlockNumber kLatestBlock = 5;
+  constexpr EthBlockNumber kFilterBlock = 2;
+
+  const auto trx = samples::createSignedTrxSamples(0, 0, secret_t::random()).front();
+  TransactionReceipt receipt;
+  receipt.status_code = 1;
+  receipt.gas_used = 21000;
+  receipt.cumulative_gas_used = 21000;
+  receipt.logs.push_back(LogEntry{log_address, {topic}, bytes{0xaa, 0xbb}});
+
+  auto to_rust_bytes = [](const bytes& input) {
+    rust::Vec<uint8_t> output;
+    for (const auto byte : input) {
+      output.push_back(byte);
+    }
+    return output;
+  };
+
+  const auto trx_hash = trx->getHash();
+  const auto trx_rlp = trx->rlp();
+  const auto receipt_rlp = util::rlp_enc(receipt);
+
+  auto bloom_queries = std::make_shared<size_t>(0);
+  auto receipt_queries = std::make_shared<size_t>(0);
+  net::rpc::eth::EthParams eth_rpc_params;
+  net::rpc::eth::FinalizedLogReplayApi log_replay_api;
+  log_replay_api.latest_finalized_block_number = [] { return kLatestBlock; };
+  log_replay_api.blocks_with_bloom = [bloom_queries, kFilterBlock](const std::array<uint8_t, 256>&, EthBlockNumber from,
+                                                                   EthBlockNumber to) {
+    ++*bloom_queries;
+    EXPECT_EQ(kFilterBlock, from);
+    EXPECT_EQ(kFilterBlock, to);
+    rust::Vec<uint64_t> blocks;
+    blocks.push_back(kFilterBlock);
+    return blocks;
+  };
+  log_replay_api.transaction_receipts_by_block_number = [receipt_queries, trx_hash, block_hash, trx_rlp, receipt_rlp,
+                                                         to_rust_bytes, kLatestBlock](EthBlockNumber requested_block) {
+    ++*receipt_queries;
+    rust::Vec<rustaxa::TransactionReceiptPublicView> receipts;
+    if (requested_block == kFilterBlock) {
+      rustaxa::TransactionReceiptPublicView receipt_view;
+      receipt_view.found = true;
+      receipt_view.transaction_hash = trx_hash.asArray();
+      receipt_view.transaction_source = 2;
+      receipt_view.transaction_rlp = to_rust_bytes(trx_rlp);
+      receipt_view.receipt_rlp = to_rust_bytes(receipt_rlp);
+      receipt_view.block_number = kFilterBlock;
+      receipt_view.transaction_index = 0;
+      receipt_view.is_system = false;
+      receipt_view.block_hash_found = true;
+      receipt_view.block_hash = block_hash.asArray();
+      receipts.push_back(std::move(receipt_view));
+    } else {
+      EXPECT_EQ(kLatestBlock, requested_block);
+    }
+    return receipts;
+  };
+  eth_rpc_params.query_log_replay = std::move(log_replay_api);
+  auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
+
+  Json::Value filter(Json::objectValue);
+  filter["fromBlock"] = dev::toJS(kFilterBlock);
+  filter["toBlock"] = dev::toJS(kFilterBlock);
+  filter["address"] = dev::toJS(log_address);
+  filter["topics"] = Json::Value(Json::arrayValue);
+  filter["topics"].append(dev::toJS(topic));
+
+  const auto filter_id = eth_json_rpc->eth_newFilter(filter);
+  auto logs = eth_json_rpc->eth_getFilterLogs(filter_id);
+  ASSERT_EQ(1, logs.size());
+  EXPECT_EQ(dev::toJS(log_address), logs[0]["address"].asString());
+  EXPECT_EQ(dev::toJS(topic), logs[0]["topics"][0].asString());
+  EXPECT_EQ(dev::toJS(bytes{0xaa, 0xbb}), logs[0]["data"].asString());
+  EXPECT_EQ(dev::toJS(kFilterBlock), logs[0]["blockNumber"].asString());
+  EXPECT_EQ(dev::toJS(block_hash), logs[0]["blockHash"].asString());
+  EXPECT_EQ(dev::toJS(trx->getHash()), logs[0]["transactionHash"].asString());
+  EXPECT_EQ(1, *bloom_queries);
+  EXPECT_EQ(1, *receipt_queries);
+
+  Json::Value default_from_filter(Json::objectValue);
+  const auto default_filter_id = eth_json_rpc->eth_newFilter(default_from_filter);
+  EXPECT_TRUE(eth_json_rpc->eth_getFilterLogs(default_filter_id).empty());
+  EXPECT_EQ(1, *bloom_queries);
+  EXPECT_EQ(2, *receipt_queries);
+}
 #endif
 
 TEST_F(RPCTest, graphql_account_uses_query_callbacks) {
@@ -344,8 +436,7 @@ TEST_F(RPCTest, graphql_account_uses_query_callbacks) {
   EXPECT_EQ(dev::toJS(account.balance), graphql_account.getBalance().get<std::string>());
   EXPECT_EQ(static_cast<int>(account.nonce), graphql_account.getTransactionCount().get<int>());
   EXPECT_EQ(dev::toJS(dev::bytes{0x60, 0x02}), graphql_account.getCode().get<std::string>());
-  EXPECT_EQ(dev::toJS(dev::h256(0x44)),
-            graphql_account.getStorage(graphql::response::Value("0x4")).get<std::string>());
+  EXPECT_EQ(dev::toJS(dev::h256(0x44)), graphql_account.getStorage(graphql::response::Value("0x4")).get<std::string>());
 }
 
 TEST_F(RPCTest, transaction_json) {

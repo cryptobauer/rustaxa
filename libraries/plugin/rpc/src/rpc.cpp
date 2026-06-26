@@ -98,16 +98,20 @@ void Rpc::start() {
     eth_rpc_params.query_final_chain_last_block_number = [query_api = eth_query_api]() {
       return (*query_api)->consensus_query_final_chain_last_block_number();
     };
-    eth_rpc_params.query_blocks_with_bloom = [query_api = eth_query_api](auto const &bloom, auto from, auto to) {
+    net::rpc::eth::FinalizedLogReplayApi log_replay_api;
+    log_replay_api.latest_finalized_block_number = eth_rpc_params.query_final_chain_last_block_number;
+    log_replay_api.blocks_with_bloom = [query_api = eth_query_api](auto const &bloom, auto from, auto to) {
       return (*query_api)->consensus_query_final_chain_blocks_with_bloom(bloom, from, to);
     };
+    log_replay_api.transaction_receipts_by_block_number = eth_rpc_params.query_transaction_receipts_by_block_number;
+    eth_rpc_params.query_log_replay = std::move(log_replay_api);
     eth_rpc_params.query_account = [final_chain = app()->getFinalChain()](auto const &address, auto block_number) {
       return final_chain->getAccount(address, block_number);
     };
-    eth_rpc_params.query_account_storage =
-        [final_chain = app()->getFinalChain()](auto const &address, auto const &key, auto block_number) {
-          return final_chain->getAccountStorage(address, key, block_number);
-        };
+    eth_rpc_params.query_account_storage = [final_chain = app()->getFinalChain()](auto const &address, auto const &key,
+                                                                                  auto block_number) {
+      return final_chain->getAccountStorage(address, key, block_number);
+    };
     eth_rpc_params.query_account_code = [final_chain = app()->getFinalChain()](auto const &address, auto block_number) {
       return final_chain->getCode(address, block_number);
     };

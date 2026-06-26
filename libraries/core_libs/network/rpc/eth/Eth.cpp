@@ -681,22 +681,22 @@ class EthImpl : public Eth, EthParams {
 
 #ifdef RUSTAXA_ENABLE
   std::optional<Json::Value> get_logs_with_query(const LogFilter& filter) const {
-    if (!query_final_chain_last_block_number || !query_blocks_with_bloom ||
-        !query_transaction_receipts_by_block_number) {
+    if (!query_log_replay) {
       return std::nullopt;
     }
 
-    auto last_block_number = query_final_chain_last_block_number();
-    auto blocks_with_bloom = [this](const LogBloom& bloom, EthBlockNumber from, EthBlockNumber to) {
+    LogReplayReader reader;
+    reader.latest_finalized_block_number = query_log_replay->latest_finalized_block_number;
+    reader.blocks_with_bloom = [this](const LogBloom& bloom, EthBlockNumber from, EthBlockNumber to) {
       std::array<uint8_t, 256> bloom_bytes{};
       std::memcpy(bloom_bytes.data(), bloom.data(), bloom_bytes.size());
-      auto rust_blocks = query_blocks_with_bloom(bloom_bytes, from, to);
+      auto rust_blocks = query_log_replay->blocks_with_bloom(bloom_bytes, from, to);
       return std::vector<EthBlockNumber>(rust_blocks.begin(), rust_blocks.end());
     };
-    auto block_receipts = [this](EthBlockNumber block_number) {
-      return receiptViewsForLogFilter(query_transaction_receipts_by_block_number(block_number));
+    reader.block_receipts_by_number = [this](EthBlockNumber block_number) {
+      return receiptViewsForLogFilter(query_log_replay->transaction_receipts_by_block_number(block_number));
     };
-    return toJsonArray(filter.match_all(last_block_number, blocks_with_bloom, block_receipts));
+    return toJsonArray(filter.match_all(reader));
   }
 #endif
 
@@ -851,7 +851,12 @@ class EthImpl : public Eth, EthParams {
     if (const auto& fromBlock = json["fromBlock"]; !fromBlock.empty()) {
       from_block = parse_blk_num(fromBlock.asString());
     } else {
-      from_block = final_chain->lastBlockNumber();
+#ifdef RUSTAXA_ENABLE
+      if (query_log_replay) {
+        from_block = query_log_replay->latest_finalized_block_number();
+      } else
+#endif
+        from_block = final_chain->lastBlockNumber();
     }
     if (const auto& toBlock = json["toBlock"]; !toBlock.empty()) {
       to_block = parse_blk_num_specific(toBlock.asString());
