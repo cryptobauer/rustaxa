@@ -565,6 +565,10 @@ Implemented first slice:
   account nonce lookup for synthetic calls, and latest finalized block resolution. The default production reader remains
   FinalChain-backed because tracing executes on the external EVM/StateAPI boundary, but debug RPC methods no longer call
   `FinalChain::trace`, `getAccount`, or `lastBlockNumber` directly.
+- Test RPC coin submission now uses a dedicated `TestTransactionApi` callback bundle for account nonce lookup and
+  transaction insertion. The default adapter is still backed by FinalChain and TransactionManager because this test/admin
+  command crosses the external account-state and mempool boundary, but `send_coin_transaction` and
+  `send_coin_transactions` no longer reach through those managers directly from the public RPC methods.
 
 ## Consensus Internal
 

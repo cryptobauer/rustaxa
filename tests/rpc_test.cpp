@@ -10,9 +10,10 @@
 #include "graphql/sync_state.hpp"
 #include "network/rpc/Debug.h"
 #include "network/rpc/Taraxa.h"
-#include "network/subscriptions.hpp"
+#include "network/rpc/Test.h"
 #include "network/rpc/eth/Eth.h"
 #include "network/rpc/eth/LiveLogSubscription.hpp"
+#include "network/subscriptions.hpp"
 #include "test_util/samples.hpp"
 
 namespace taraxa::core_tests {
@@ -111,21 +112,21 @@ TEST_F(RPCTest, eth_filter_changes_uses_live_log_subscription_api) {
   const auto trx_hash = trx_hash_t::random();
 
   net::rpc::eth::EthParams eth_rpc_params;
-  eth_rpc_params.live_log_subscription.matching_logs =
-      [called, log_address, topic, block_hash, trx_hash](const net::rpc::eth::LogFilter&,
-                                                         const net::rpc::eth::LiveLogBlock& block) {
-        *called = true;
-        EXPECT_EQ(8, block.block_number);
-        EXPECT_EQ(block_hash, block.block_hash);
+  eth_rpc_params.live_log_subscription.matching_logs = [called, log_address, topic, block_hash, trx_hash](
+                                                           const net::rpc::eth::LogFilter&,
+                                                           const net::rpc::eth::LiveLogBlock& block) {
+    *called = true;
+    EXPECT_EQ(8, block.block_number);
+    EXPECT_EQ(block_hash, block.block_hash);
 
-        net::rpc::eth::LocalisedLogEntry entry;
-        entry.le = LogEntry{log_address, {topic}, bytes{0xcc}};
-        entry.trx_loc.period = block.block_number;
-        entry.trx_loc.position = 0;
-        entry.trx_loc.blk_h = block.block_hash;
-        entry.trx_loc.trx_hash = trx_hash;
-        return std::vector<net::rpc::eth::LocalisedLogEntry>{entry};
-      };
+    net::rpc::eth::LocalisedLogEntry entry;
+    entry.le = LogEntry{log_address, {topic}, bytes{0xcc}};
+    entry.trx_loc.period = block.block_number;
+    entry.trx_loc.position = 0;
+    entry.trx_loc.blk_h = block.block_hash;
+    entry.trx_loc.trx_hash = trx_hash;
+    return std::vector<net::rpc::eth::LocalisedLogEntry>{entry};
+  };
   auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
   Json::Value filter(Json::objectValue);
   filter["fromBlock"] = dev::toJS(0);
@@ -195,8 +196,7 @@ TEST_F(RPCTest, debug_trace_call_uses_debug_trace_reader) {
     return std::optional<state_api::Account>(account);
   };
   trace_reader.trace = [trace_called, caller](std::vector<state_api::EVMTransaction> state_trxs,
-                                              std::vector<state_api::EVMTransaction> trxs,
-                                              EthBlockNumber block_number,
+                                              std::vector<state_api::EVMTransaction> trxs, EthBlockNumber block_number,
                                               std::optional<state_api::Tracing> tracing) {
     *trace_called = true;
     EXPECT_TRUE(state_trxs.empty());
@@ -243,6 +243,46 @@ TEST_F(RPCTest, taraxa_dpos_scalar_reads_use_taraxa_dpos_reader) {
   ASSERT_TRUE(*yield_called);
   EXPECT_EQ(dev::toJS(u256(5600)), taraxa_rpc.taraxa_totalSupply(dev::toJS(12)));
   ASSERT_TRUE(*supply_called);
+}
+
+TEST_F(RPCTest, test_coin_transaction_uses_transaction_api) {
+  constexpr uint64_t chain_id = 2999;
+  const auto secret = secret_t::random();
+  const auto sender = dev::toAddress(secret);
+  const auto receiver = addr_t::random();
+  auto nonce_called = std::make_shared<bool>(false);
+  auto insert_called = std::make_shared<bool>(false);
+
+  net::TestTransactionApi transaction_api;
+  transaction_api.next_account_nonce = [nonce_called, sender](const addr_t& requested_sender) {
+    *nonce_called = true;
+    EXPECT_EQ(sender, requested_sender);
+    return uint64_t(17);
+  };
+  transaction_api.insert_transaction = [insert_called, sender, receiver](const SharedTransaction& trx) {
+    *insert_called = true;
+    EXPECT_EQ(17, trx->getNonce());
+    EXPECT_EQ(sender, trx->getSender());
+    EXPECT_TRUE(trx->getReceiver().has_value());
+    if (!trx->getReceiver()) {
+      return std::pair<bool, std::string>{false, "missing receiver"};
+    }
+    EXPECT_EQ(receiver, *trx->getReceiver());
+    return std::pair<bool, std::string>{true, ""};
+  };
+
+  net::Test test_rpc(nullptr, {}, std::move(transaction_api), chain_id);
+  Json::Value params(Json::objectValue);
+  params["secret"] = secret.makeInsecure().hex();
+  params["value"] = "1";
+  params["gasPrice"] = "2";
+  params["gas"] = "21000";
+  params["receiver"] = receiver.toString();
+
+  const auto result = test_rpc.send_coin_transaction(params);
+  EXPECT_FALSE(result.asString().empty());
+  ASSERT_TRUE(*nonce_called);
+  ASSERT_TRUE(*insert_called);
 }
 
 TEST_F(RPCTest, eth_estimateGas) {

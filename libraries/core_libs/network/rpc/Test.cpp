@@ -4,6 +4,8 @@
 #include <jsonrpccpp/common/exception.h>
 #include <libdevcore/CommonJS.h>
 
+#include <stdexcept>
+
 #include "common/types.hpp"
 #include "dag/dag_manager.hpp"
 #include "network/network.hpp"
@@ -50,7 +52,45 @@ LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBa
   snapshot.compatibility_network_status = node->getNetwork()->getStatus();
   return snapshot;
 }
+
+TestTransactionApi makeTestTransactionApi(std::weak_ptr<taraxa::AppBase> app) {
+  TestTransactionApi api;
+  api.next_account_nonce = [app](const addr_t &address) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TEST_TRANSACTION_API_APP_EXPIRED");
+    }
+    return node->getFinalChain()->getAccount(address).value().nonce.convert_to<uint64_t>() + 1;
+  };
+  api.insert_transaction = [app](const SharedTransaction &trx) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TEST_TRANSACTION_API_APP_EXPIRED");
+    }
+    return node->getTransactionManager()->insertTransaction(trx);
+  };
+  return api;
+}
+
+void fillMissingTestTransactionApiCallbacks(TestTransactionApi &api, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTestTransactionApi(std::move(app));
+  if (!api.next_account_nonce) {
+    api.next_account_nonce = std::move(defaults.next_account_nonce);
+  }
+  if (!api.insert_transaction) {
+    api.insert_transaction = std::move(defaults.insert_transaction);
+  }
+}
 }  // namespace
+
+Test::Test(const std::shared_ptr<taraxa::AppBase> &app, LiveStatusReader live_status,
+           TestTransactionApi transaction_api, uint64_t chain_id)
+    : app_(app),
+      kChainId(app ? app->getConfig().genesis.chain_id : chain_id),
+      live_status_(std::move(live_status)),
+      transaction_api_(std::move(transaction_api)) {
+  fillMissingTestTransactionApiCallbacks(transaction_api_, app_);
+}
 
 Json::Value Test::get_sortition_change(const Json::Value &param1) {
   try {
@@ -85,25 +125,22 @@ Json::Value Test::get_sortition_change(const Json::Value &param1) {
 
 Json::Value Test::send_coin_transaction(const Json::Value &param1) {
   Json::Value res;
-  if (auto node = app_.lock()) {
-    secret_t sk = secret_t(param1["secret"].asString());
-    uint64_t nonce = 0;
-    if (!param1["nonce"]) {
-      auto acc = node->getFinalChain()->getAccount(toAddress(sk));
-      nonce = acc->nonce.convert_to<uint64_t>() + 1;
-    } else {
-      nonce = dev::jsToInt(param1["nonce"].asString());
-    }
-    val_t value = val_t(param1["value"].asString());
-    val_t gas_price = val_t(param1["gasPrice"].asString());
-    auto gas = dev::jsToInt(param1["gas"].asString());
-    addr_t receiver = addr_t(param1["receiver"].asString());
-    auto trx = std::make_shared<Transaction>(nonce, value, gas_price, gas, bytes(), sk, receiver, kChainId);
-    if (auto [ok, err_msg] = node->getTransactionManager()->insertTransaction(trx); !ok) {
-      res["status"] = err_msg;
-    } else {
-      res = toHex(trx->rlp());
-    }
+  secret_t sk = secret_t(param1["secret"].asString());
+  uint64_t nonce = 0;
+  if (!param1["nonce"]) {
+    nonce = transaction_api_.next_account_nonce(toAddress(sk));
+  } else {
+    nonce = dev::jsToInt(param1["nonce"].asString());
+  }
+  val_t value = val_t(param1["value"].asString());
+  val_t gas_price = val_t(param1["gasPrice"].asString());
+  auto gas = dev::jsToInt(param1["gas"].asString());
+  addr_t receiver = addr_t(param1["receiver"].asString());
+  auto trx = std::make_shared<Transaction>(nonce, value, gas_price, gas, bytes(), sk, receiver, kChainId);
+  if (auto [ok, err_msg] = transaction_api_.insert_transaction(trx); !ok) {
+    res["status"] = err_msg;
+  } else {
+    res = toHex(trx->rlp());
   }
   return res;
 }
@@ -111,26 +148,24 @@ Json::Value Test::send_coin_transaction(const Json::Value &param1) {
 Json::Value Test::send_coin_transactions(const Json::Value &param1) {
   Json::Value res;
   uint32_t inserted = 0;
-  if (auto node = app_.lock()) {
-    secret_t sk = secret_t(param1["secret"].asString());
-    auto nonce = param1["nonce"].asUInt64();
-    val_t value = val_t(param1["value"].asString());
-    val_t gas_price = val_t(param1["gasPrice"].asString());
-    auto gas = dev::jsToInt(param1["gas"].asString());
-    auto transactions_count = param1["transaction_count"].asUInt64();
-    std::vector<addr_t> receivers;
-    std::transform(param1["receiver"].begin(), param1["receiver"].end(), std::back_inserter(receivers),
-                   [](const auto rec) { return addr_t(rec.asString()); });
-    for (uint32_t i = 0; i < transactions_count; i++) {
-      auto trx = std::make_shared<Transaction>(nonce, value, gas_price, gas, bytes(), sk,
-                                               receivers[i % receivers.size()], kChainId);
-      nonce++;
-      if (auto [ok, err_msg] = node->getTransactionManager()->insertTransaction(trx); !ok) {
-        res["err"] = err_msg;
-        break;
-      } else {
-        inserted++;
-      }
+  secret_t sk = secret_t(param1["secret"].asString());
+  auto nonce = param1["nonce"].asUInt64();
+  val_t value = val_t(param1["value"].asString());
+  val_t gas_price = val_t(param1["gasPrice"].asString());
+  auto gas = dev::jsToInt(param1["gas"].asString());
+  auto transactions_count = param1["transaction_count"].asUInt64();
+  std::vector<addr_t> receivers;
+  std::transform(param1["receiver"].begin(), param1["receiver"].end(), std::back_inserter(receivers),
+                 [](const auto rec) { return addr_t(rec.asString()); });
+  for (uint32_t i = 0; i < transactions_count; i++) {
+    auto trx = std::make_shared<Transaction>(nonce, value, gas_price, gas, bytes(), sk, receivers[i % receivers.size()],
+                                             kChainId);
+    nonce++;
+    if (auto [ok, err_msg] = transaction_api_.insert_transaction(trx); !ok) {
+      res["err"] = err_msg;
+      break;
+    } else {
+      inserted++;
     }
   }
   res["status"] = Json::UInt64(inserted);
