@@ -25,7 +25,6 @@ class DagBlock {
 #ifdef RUSTAXA_ENABLE
   explicit DagBlock(
       rustaxa::DagBlockPublicView dag_block, std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-      std::shared_ptr<::taraxa::PbftManager> pbft_manager,
       std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
       std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
       std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_query,

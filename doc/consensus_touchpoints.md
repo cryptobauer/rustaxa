@@ -468,8 +468,9 @@ Implemented first slice:
   `PbftManager` for block period. Their optional transaction expansion now also resolves each DAG transaction hash
   through `ConsensusQueryApi::consensus_query_transaction_by_hash` instead of asking `TransactionManager` directly.
 - `debug_getPeriodDagBlocks` and GraphQL `periodDagBlocks` now use `ConsensusQueryApi` for finalized DAG block facts by
-  PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. GraphQL DAG objects also use
-  the finalized-period facts carried by Rust DTOs before falling back to live PBFT-manager lookup for older routes.
+  PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. Rust-backed GraphQL DAG
+  objects use the finalized-period facts carried by Rust DTOs and no longer fall back to live `PbftManager` period
+  lookup; legacy C++ DAG objects still use the manager compatibility path.
 - GraphQL `dagBlock` and `dagBlocks` now use `ConsensusQueryApi` for DAG hash, latest-level, and paged level-window
   reads in Rust mode instead of creating endpoint-local DAG storage query handles. Rust-backed GraphQL DAG object
   transaction expansion now resolves transaction payloads through `ConsensusQueryApi::consensus_query_transaction_by_hash`

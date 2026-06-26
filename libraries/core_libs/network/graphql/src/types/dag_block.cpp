@@ -65,14 +65,12 @@ DagBlock::DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
 #ifdef RUSTAXA_ENABLE
 DagBlock::DagBlock(
     rustaxa::DagBlockPublicView dag_block, std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
     std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
     std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_query,
     std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query) noexcept
     : rust_dag_block_(std::move(dag_block)),
       final_chain_(std::move(final_chain)),
-      pbft_manager_(std::move(pbft_manager)),
       transaction_manager_(std::move(transaction_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_query_(std::move(transaction_query)),
@@ -135,11 +133,6 @@ std::optional<response::Value> DagBlock::getPbftPeriod() const noexcept {
       period_ = rust_dag_block_->finalized_period;
       return {response::Value(static_cast<int>(*period_))};
     }
-    const auto [has_period, period] = pbft_manager_->getDagBlockPeriod(hashFromBridge(rust_dag_block_->hash));
-    if (has_period) {
-      period_ = period;
-      return {response::Value(static_cast<int>(*period_))};
-    }
     return std::nullopt;
   }
 #endif
@@ -159,13 +152,6 @@ std::shared_ptr<object::Account> DagBlock::getAuthor() const noexcept {
     if (rust_dag_block_->finalized_period_found) {
       period_ = rust_dag_block_->finalized_period;
       return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, sender, *period_));
-    }
-    if (!period_) {
-      const auto [has_period, period] = pbft_manager_->getDagBlockPeriod(hashFromBridge(rust_dag_block_->hash));
-      if (has_period) {
-        period_ = period;
-        return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, sender, *period_));
-      }
     }
     return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, sender));
   }
