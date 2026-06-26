@@ -467,6 +467,8 @@ Implemented first slice:
   Rust-mode production calls still prefer `ConsensusQueryApi::consensus_query_status` when app storage is available.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
+- Taraxa RPC legacy `taraxa_getScheduleBlockByPeriod` now uses a dedicated `TaraxaScheduleReader` callback bundle for
+  PBFT schedule block materialization instead of reading `DbStorage` directly from the public method.
 - `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of
   creating an endpoint-local period-storage query handle. The route intentionally leaves scan policy, version string
   formatting, and DPoS vote-count aggregation in the public RPC layer until live FinalChain/state reads move behind a

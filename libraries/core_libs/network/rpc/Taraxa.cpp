@@ -150,6 +150,23 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
   return reader;
 }
 
+TaraxaScheduleReader makeTaraxaScheduleReader(std::weak_ptr<taraxa::AppBase> app) {
+  TaraxaScheduleReader reader;
+  reader.schedule_block_by_period = [app](uint64_t period) -> std::optional<Json::Value> {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_SCHEDULE_READER_APP_EXPIRED");
+    }
+    auto db = node->getDB();  // RUSTAXA_QUERY_COMPAT_READ
+    auto block = db->getPbftBlock(period);
+    if (!block) {
+      return std::nullopt;
+    }
+    return PbftBlock::toJson(*block, db->getFinalizedDagBlockHashesByPeriod(period));
+  };
+  return reader;
+}
+
 void fillMissingTaraxaDposReaderCallbacks(TaraxaDposReader& reader, std::weak_ptr<taraxa::AppBase> app) {
   auto defaults = makeTaraxaDposReader(std::move(app));
   if (!reader.eligible_total_vote_count) {
@@ -202,6 +219,13 @@ void fillMissingTaraxaPersistentReaderCallbacks(TaraxaPersistentReader& reader, 
   }
   if (!reader.period_lambda) {
     reader.period_lambda = std::move(defaults.period_lambda);
+  }
+}
+
+void fillMissingTaraxaScheduleReaderCallbacks(TaraxaScheduleReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTaraxaScheduleReader(std::move(app));
+  if (!reader.schedule_block_by_period) {
+    reader.schedule_block_by_period = std::move(defaults.schedule_block_by_period);
   }
 }
 }  // namespace
@@ -356,16 +380,19 @@ Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, 
 #endif
 
 Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, TaraxaDagStatusReader dag_status_reader,
-               TaraxaDagBlockReader dag_block_reader, TaraxaPersistentReader persistent_reader)
+               TaraxaDagBlockReader dag_block_reader, TaraxaPersistentReader persistent_reader,
+               TaraxaScheduleReader schedule_reader)
     : app_(app),
       dpos_reader_(std::move(dpos_reader)),
       dag_status_reader_(std::move(dag_status_reader)),
       dag_block_reader_(std::move(dag_block_reader)),
-      persistent_reader_(std::move(persistent_reader)) {
+      persistent_reader_(std::move(persistent_reader)),
+      schedule_reader_(std::move(schedule_reader)) {
   fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
   fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_);
   fillMissingTaraxaDagBlockReaderCallbacks(dag_block_reader_, app_);
   fillMissingTaraxaPersistentReaderCallbacks(persistent_reader_, app_);
+  fillMissingTaraxaScheduleReaderCallbacks(schedule_reader_, app_);
 
   Json::CharReaderBuilder builder;
   auto reader = std::unique_ptr<Json::CharReader>(builder.newCharReader());
@@ -486,22 +513,22 @@ std::string Taraxa::taraxa_pbftBlockHashByPeriod(const std::string& _period) {
 
 Json::Value Taraxa::taraxa_getScheduleBlockByPeriod(const std::string& _period) {
   try {
-    auto app = tryGetApp();
     auto period = dev::jsToInt(_period);
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-    const auto view = query_api->consensus_query_pbft_schedule_block_by_period(period);
-    if (!view.found) {
-      return Json::Value();
+    if (auto app = app_.lock()) {
+      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+      const auto view = query_api->consensus_query_pbft_schedule_block_by_period(period);
+      if (!view.found) {
+        return Json::Value();
+      }
+      return pbftScheduleBlockViewToJson(view);
     }
-    return pbftScheduleBlockViewToJson(view);
 #endif
-    auto db = app->getDB();  // RUSTAXA_QUERY_COMPAT_READ
-    auto blk = db->getPbftBlock(period);
-    if (!blk.has_value()) {
+    const auto schedule_block = schedule_reader_.schedule_block_by_period(period);
+    if (!schedule_block) {
       return Json::Value();
     }
-    return PbftBlock::toJson(*blk, db->getFinalizedDagBlockHashesByPeriod(period));
+    return *schedule_block;
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }

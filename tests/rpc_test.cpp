@@ -414,6 +414,27 @@ TEST_F(RPCTest, taraxa_persistent_reads_use_persistent_reader) {
   ASSERT_TRUE(*lambda_called);
 }
 
+TEST_F(RPCTest, taraxa_schedule_reads_use_schedule_reader) {
+  auto schedule_called = std::make_shared<bool>(false);
+
+  net::TaraxaScheduleReader schedule_reader;
+  schedule_reader.schedule_block_by_period = [schedule_called](uint64_t period) {
+    *schedule_called = true;
+    EXPECT_EQ(uint64_t(24), period);
+    Json::Value schedule(Json::objectValue);
+    schedule["period"] = dev::toJS(uint64_t(24));
+    schedule["block_hash"] = dev::toJS(blk_hash_t::random());
+    return std::optional<Json::Value>(std::move(schedule));
+  };
+
+  net::Taraxa taraxa_rpc(nullptr, {}, {}, {}, {}, std::move(schedule_reader));
+
+  const auto result = taraxa_rpc.taraxa_getScheduleBlockByPeriod(dev::toJS(uint64_t(24)));
+  EXPECT_EQ(dev::toJS(uint64_t(24)), result["period"].asString());
+  EXPECT_TRUE(result.isMember("block_hash"));
+  ASSERT_TRUE(*schedule_called);
+}
+
 TEST_F(RPCTest, taraxa_dag_block_reads_use_dag_block_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();

@@ -72,11 +72,20 @@ struct TaraxaPersistentReader {
   std::function<std::optional<uint64_t>(uint64_t)> period_lambda;
 };
 
+// TaraxaScheduleReader is the Taraxa RPC boundary for legacy PBFT schedule
+// block materialization. It returns the public schedule JSON payload because
+// the fallback path is a temporary RPC compatibility adapter around legacy
+// PbftBlock formatting; Rust-mode production routes still use typed
+// ConsensusQueryApi DTOs before formatting in the public method.
+struct TaraxaScheduleReader {
+  std::function<std::optional<Json::Value>(uint64_t)> schedule_block_by_period;
+};
+
 class Taraxa : public TaraxaFace {
  public:
   explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {},
                   TaraxaDagStatusReader dag_status_reader = {}, TaraxaDagBlockReader dag_block_reader = {},
-                  TaraxaPersistentReader persistent_reader = {});
+                  TaraxaPersistentReader persistent_reader = {}, TaraxaScheduleReader schedule_reader = {});
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
 
@@ -103,6 +112,7 @@ class Taraxa : public TaraxaFace {
   TaraxaDagStatusReader dag_status_reader_;
   TaraxaDagBlockReader dag_block_reader_;
   TaraxaPersistentReader persistent_reader_;
+  TaraxaScheduleReader schedule_reader_;
 
  private:
   Json::Value version;
