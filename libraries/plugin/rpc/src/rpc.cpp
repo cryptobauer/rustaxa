@@ -201,7 +201,9 @@ void Rpc::start() {
             }
             if (auto _ws = ws.lock()) {
               if (_ws->numberOfSessions()) {
-                _ws->newEthBlock(*res->final_chain_blk, hashes_from_transactions(res->trxs));
+                auto trx_hashes = hashes_from_transactions(res->trxs);
+                _ws->newEthBlock(*res->final_chain_blk, trx_hashes);
+                _ws->newLogs(*res->final_chain_blk, std::move(trx_hashes), res->trx_receipts);
                 if (auto _db = db.lock()) {
                   auto pbft_blk = _db->getPbftBlock(res->hash);
                   if (const auto &hash = pbft_blk->getPivotDagBlockHash(); hash != kNullBlockHash) {

@@ -6,8 +6,10 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <utility>
 
 #include "network/rpc/eth/LogFilter.hpp"
+#include "network/rpc/eth/LiveLogSubscription.hpp"
 
 enum class SubscriptionType {
   HEADS,
@@ -106,15 +108,17 @@ class LogsSubscription : public Subscription {
 
 class Subscriptions {
  public:
-  Subscriptions(std::function<void(std::string&&)> send) : send_(send) {}
+  explicit Subscriptions(std::function<void(std::string&&)> send,
+                         rpc::eth::LiveLogSubscriptionApi live_logs = rpc::eth::makeLiveLogSubscriptionApi())
+      : send_(std::move(send)), live_logs_(std::move(live_logs)) {}
   int addSubscription(std::shared_ptr<Subscription> subscription);
   bool removeSubscription(int id);
   void process(SubscriptionType type, const Json::Value& payload);
-  void processLogs(const final_chain::BlockHeader& header, TransactionHashes trx_hashes,
-                   const TransactionReceipts& receipts);
+  void processLogs(const rpc::eth::LiveLogBlock& block);
 
  private:
   std::function<void(std::string&&)> send_;
+  rpc::eth::LiveLogSubscriptionApi live_logs_;
   std::map<uint64_t, std::shared_ptr<Subscription>> subscriptions_;
   std::map<SubscriptionType, std::list<uint64_t>> subscriptions_by_type_;
   std::mutex subscriptions_mutex_;

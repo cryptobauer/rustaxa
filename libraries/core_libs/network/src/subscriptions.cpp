@@ -33,24 +33,19 @@ void Subscriptions::process(SubscriptionType type, const Json::Value& payload) {
     send_(subscriptions_[id]->processPayload(payload));
   }
 }
-void Subscriptions::processLogs(const final_chain::BlockHeader& header, TransactionHashes trx_hashes,
-                                const TransactionReceipts& receipts) {
+void Subscriptions::processLogs(const rpc::eth::LiveLogBlock& block) {
+  if (!live_logs_.matching_logs) {
+    return;
+  }
+
   for (auto id : subscriptions_by_type_[SubscriptionType::LOGS]) {
     auto sub = std::dynamic_pointer_cast<LogsSubscription>(subscriptions_[id]);
     if (!sub) {
       continue;
     }
 
-    auto filter = sub->getFilter();
-    if (!filter.matches(header.log_bloom)) {
-      continue;
-    }
-
-    uint32_t idx = 0;
-    for (const auto& receipt : receipts) {
-      rpc::eth::ExtendedTransactionLocation loc{{{header.number, idx}, header.hash}, trx_hashes[idx]};
-      filter.match_one(loc, receipt,
-                       [&](const rpc::eth::LocalisedLogEntry& le) { send_(sub->processPayload(toJson(le))); });
+    for (const auto& log : live_logs_.matching_logs(sub->getFilter(), block)) {
+      send_(sub->processPayload(toJson(log)));
     }
   }
 }

@@ -505,8 +505,8 @@ Implemented first slice:
 - `eth_blockNumber` now uses `ConsensusQueryApi` in Rust mode for the latest finalized block number instead of reading
   `FinalChain` directly.
 - GraphQL `syncing.currentBlock` now uses `ConsensusQueryApi` in Rust mode for the latest finalized block number
-  instead of reading `FinalChain` directly. `syncing.highestBlock` remains a network peer-progress view until the
-  network-backed `SyncStateView` route exists.
+  instead of reading `FinalChain` directly. `syncing.highestBlock` uses the shared `LiveStatusReader` peer-progress
+  snapshot described below.
 - `debug_getPeriodTransactionsWithReceipts` now uses the same `ConsensusQueryApi` block-receipts DTO in Rust mode
   instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
 - `debug_traceTransaction`, `trace_replayTransaction`, and `trace_replayBlockTransactions` now use
@@ -515,7 +515,8 @@ Implemented first slice:
   lookup for synthetic calls, and result formatting remain on the external FinalChain/StateAPI execution boundary.
 - `eth_getLogs` and installed `eth_getFilterLogs` replay now use `ConsensusQueryApi` in Rust mode for latest finalized
   block lookup, bloom-index candidate block lookup, and block receipt expansion instead of asking `FinalChain` for bloom
-  matches and receipt rows directly. Live subscription delivery still remains on the execution-event compatibility route.
+  matches and receipt rows directly. Websocket live subscription delivery uses the dedicated subscription API described
+  below.
 - ETH log replay is now exposed to the RPC filter layer as a grouped `FinalizedLogReplayApi` backed by
   `ConsensusQueryApi`; `LogFilter` consumes a local `LogReplayReader` for finalized-head, bloom-candidate, and
   receipt-row facts instead of assembling ad hoc FinalChain/storage callbacks in the installed-filter path. Missing
@@ -548,8 +549,11 @@ Implemented first slice:
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Live subscription log delivery remains on the execution-event compatibility route until it is moved behind a dedicated
-  subscription API in a later slice.
+- Websocket `eth_subscribe: logs` delivery now uses a dedicated `LiveLogSubscriptionApi` and `LiveLogBlock` event shape
+  for live execution logs. The RPC plugin remains the audited compatibility adapter from FinalChain execution events to
+  the subscription DTO, while websocket subscription matching and JSON-RPC delivery no longer traverse FinalChain header
+  objects directly. Installed `eth_getFilterChanges` log watches still use their legacy watch-group update path and are
+  tracked separately from websocket subscription delivery.
 
 ## Consensus Internal
 

@@ -3,10 +3,14 @@
 #include <libdevcore/Common.h>
 #include <libdevcore/CommonJS.h>
 
+#include <sstream>
+
 #include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
 #include "graphql/sync_state.hpp"
+#include "network/subscriptions.hpp"
 #include "network/rpc/eth/Eth.h"
+#include "network/rpc/eth/LiveLogSubscription.hpp"
 #include "test_util/samples.hpp"
 
 namespace taraxa::core_tests {
@@ -45,6 +49,56 @@ TEST_F(RPCTest, graphql_syncing_uses_live_status_reader) {
   EXPECT_EQ(0, sync_state.getStartingBlock().get<int>());
   EXPECT_EQ(6, sync_state.getCurrentBlock().get<int>());
   EXPECT_EQ(12, sync_state.getHighestBlock().get<int>());
+}
+
+TEST_F(RPCTest, live_log_subscription_uses_subscription_api) {
+  std::vector<std::string> sent_messages;
+  auto called = std::make_shared<bool>(false);
+  const auto log_address = addr_t::random();
+  const auto topic = h256::random();
+  const auto block_hash = blk_hash_t::random();
+  const auto trx_hash = trx_hash_t::random();
+
+  net::rpc::eth::LiveLogSubscriptionApi live_logs;
+  live_logs.matching_logs = [called, log_address, topic, block_hash, trx_hash](
+                                const net::rpc::eth::LogFilter&, const net::rpc::eth::LiveLogBlock& block) {
+    *called = true;
+    EXPECT_EQ(7, block.block_number);
+    EXPECT_EQ(block_hash, block.block_hash);
+
+    net::rpc::eth::LocalisedLogEntry entry;
+    entry.le = LogEntry{log_address, {topic}, bytes{0xaa, 0xbb}};
+    entry.trx_loc.period = block.block_number;
+    entry.trx_loc.blk_h = block.block_hash;
+    entry.trx_loc.trx_hash = trx_hash;
+    entry.position_in_receipt = 2;
+    return std::vector<net::rpc::eth::LocalisedLogEntry>{entry};
+  };
+
+  net::Subscriptions subscriptions([&](std::string&& message) { sent_messages.push_back(std::move(message)); },
+                                   std::move(live_logs));
+  subscriptions.addSubscription(std::make_shared<net::LogsSubscription>(
+      3, net::rpc::eth::LogFilter(0, std::nullopt, {}, net::rpc::eth::LogFilter::Topics{})));
+
+  net::rpc::eth::LiveLogBlock block;
+  block.block_number = 7;
+  block.block_hash = block_hash;
+  subscriptions.processLogs(block);
+
+  ASSERT_TRUE(*called);
+  ASSERT_EQ(1, sent_messages.size());
+
+  Json::CharReaderBuilder builder;
+  Json::Value message;
+  std::string errors;
+  std::istringstream stream(sent_messages.front());
+  ASSERT_TRUE(Json::parseFromStream(builder, stream, &message, &errors)) << errors;
+  EXPECT_EQ("eth_subscription", message["method"].asString());
+  EXPECT_EQ(dev::toJS(3), message["params"]["subscription"].asString());
+  EXPECT_EQ(dev::toJS(log_address), message["params"]["result"]["address"].asString());
+  EXPECT_EQ(dev::toJS(topic), message["params"]["result"]["topics"][0].asString());
+  EXPECT_EQ(dev::toJS(block_hash), message["params"]["result"]["blockHash"].asString());
+  EXPECT_EQ(dev::toJS(trx_hash), message["params"]["result"]["transactionHash"].asString());
 }
 
 TEST_F(RPCTest, eth_estimateGas) {

@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "common/types.hpp"
 #include "final_chain/data.hpp"
@@ -26,10 +27,11 @@ class WsServer;
 class WsSession : public std::enable_shared_from_this<WsSession> {
  public:
   // Take ownership of the socket
-  explicit WsSession(tcp::socket&& socket, addr_t node_addr, std::shared_ptr<WsServer> ws_server)
+  explicit WsSession(tcp::socket&& socket, addr_t node_addr, std::shared_ptr<WsServer> ws_server,
+                     rpc::eth::LiveLogSubscriptionApi live_logs = rpc::eth::makeLiveLogSubscriptionApi())
       : ws_(std::move(socket)),
         ws_server_(ws_server),
-        subscriptions_(std::bind(&WsSession::do_write, this, std::placeholders::_1)),
+        subscriptions_(std::bind(&WsSession::do_write, this, std::placeholders::_1), std::move(live_logs)),
         write_strand_(boost::asio::make_strand(ws_.get_executor())) {
     LOG_OBJECTS_CREATE("WS_SESSION");
   }
@@ -47,8 +49,7 @@ class WsSession : public std::enable_shared_from_this<WsSession> {
   void newPbftBlockExecuted(const Json::Value& payload);
   void newPendingTransaction(const Json::Value& payload);
   void newPillarBlockData(const Json::Value& payload);
-  void newLogs(const final_chain::BlockHeader& header, TransactionHashes trx_hashes,
-               const TransactionReceipts& receipts);
+  void newLogs(const rpc::eth::LiveLogBlock& block);
 
   LOG_OBJECTS_DEFINE
  private:

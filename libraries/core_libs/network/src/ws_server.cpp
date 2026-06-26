@@ -185,10 +185,7 @@ void WsSession::newPendingTransaction(const Json::Value &payload) {
   subscriptions_.process(SubscriptionType::TRANSACTIONS, payload);
 }
 
-void WsSession::newLogs(const final_chain::BlockHeader &header, TransactionHashes trx_hashes,
-                        const TransactionReceipts &receipts) {
-  subscriptions_.processLogs(header, trx_hashes, receipts);
-}
+void WsSession::newLogs(const rpc::eth::LiveLogBlock &block) { subscriptions_.processLogs(block); }
 
 WsServer::WsServer(boost::asio::io_context &ioc, tcp::endpoint endpoint, addr_t node_addr,
                    std::shared_ptr<metrics::JsonRpcMetrics> metrics)
@@ -290,9 +287,16 @@ void WsServer::newLogs(const ::taraxa::final_chain::BlockHeader &header, Transac
   boost::shared_lock<boost::shared_mutex> lock(sessions_mtx_);
   if (sessions_.empty()) return;
 
+  rpc::eth::LiveLogBlock block;
+  block.block_number = header.number;
+  block.block_hash = header.hash;
+  block.log_bloom = header.log_bloom;
+  block.transaction_hashes = std::move(trx_hashes);
+  block.transaction_receipts = receipts;
+
   for (auto const &session : sessions_) {
     if (!session->is_closed()) {
-      session->newLogs(header, trx_hashes, receipts);
+      session->newLogs(block);
     }
   }
 }
