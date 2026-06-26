@@ -660,6 +660,10 @@ Implemented first slice:
   `Mutation`, and optional `Subscription` roots. The old manager-heavy `GraphQlHttpProcessor` constructor remains only as
   a compatibility adapter that builds those roots, while RPC plugin HTTP wiring now hands the processor the operation
   bundle instead of making broad consensus managers part of the processor-facing API.
+- GraphQL `Query` now has a primary `QueryReaders` constructor that groups account, block, transaction, gas-price, DAG,
+  node-state, and sync-state callback bundles. The old manager-heavy `Query` constructor remains the compatibility
+  adapter, while `nodeState` and `syncing` field construction now consumes injected reader bundles instead of passing
+  `FinalChain`, `DagManager`, or `Network` pointers into those public field routes.
 - GraphQL Rust-backed final-chain block objects now materialize legacy `BlockHeader` fields from typed
   `FinalChainBlockView` DTO fields instead of decoding Rust stored-header compatibility RLP as a full legacy block
   header. Stored-header bytes remain available on the query DTO for compatibility clients, but GraphQL block formatting

@@ -965,6 +965,64 @@ TEST_F(RPCTest, graphql_http_processor_requires_query_and_mutation_roots) {
                std::invalid_argument);
 }
 
+TEST_F(RPCTest, graphql_query_status_fields_use_injected_readers) {
+  auto final_block_called = std::make_shared<bool>(false);
+  auto dag_level_called = std::make_shared<bool>(false);
+  auto dag_period_called = std::make_shared<bool>(false);
+  auto current_block_called = std::make_shared<bool>(false);
+  auto highest_block_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::QueryReaders readers;
+  readers.current_state.final_block = [final_block_called] {
+    *final_block_called = true;
+    return uint64_t(21);
+  };
+  readers.current_state.dag_block_level = [dag_level_called] {
+    *dag_level_called = true;
+    return uint64_t(22);
+  };
+  readers.current_state.dag_block_period = [dag_period_called] {
+    *dag_period_called = true;
+    return uint64_t(23);
+  };
+  readers.sync_state.current_block = [current_block_called] {
+    *current_block_called = true;
+    return uint64_t(24);
+  };
+  readers.sync_state.highest_block = [highest_block_called] {
+    *highest_block_called = true;
+    return std::optional<uint64_t>(25);
+  };
+
+  net::GraphQlHttpProcessor processor(net::GraphQlOperations{
+      std::make_shared<graphql::taraxa::Query>(std::move(readers), uint64_t(1)),
+      std::make_shared<graphql::taraxa::Mutation>(graphql::taraxa::MutationTransactionApi{}),
+      {},
+  });
+
+  net::HttpProcessor::Request request;
+  request.set("Content-Type", "application/json");
+  request.body() =
+      R"({"query":"{ nodeState { finalBlock dagBlockLevel dagBlockPeriod } syncing { currentBlock highestBlock } }"})";
+
+  const auto response = processor.process(request);
+  Json::Value json;
+  std::stringstream stream(response.body());
+  stream >> json;
+
+  EXPECT_EQ(boost::beast::http::status::ok, response.result());
+  EXPECT_EQ("21", json["data"]["nodeState"]["finalBlock"].asString());
+  EXPECT_EQ("22", json["data"]["nodeState"]["dagBlockLevel"].asString());
+  EXPECT_EQ("23", json["data"]["nodeState"]["dagBlockPeriod"].asString());
+  EXPECT_EQ("24", json["data"]["syncing"]["currentBlock"].asString());
+  EXPECT_EQ("25", json["data"]["syncing"]["highestBlock"].asString());
+  ASSERT_TRUE(*final_block_called);
+  ASSERT_TRUE(*dag_level_called);
+  ASSERT_TRUE(*dag_period_called);
+  ASSERT_TRUE(*current_block_called);
+  ASSERT_TRUE(*highest_block_called);
+}
+
 TEST_F(RPCTest, graphql_transaction_uses_receipt_reader) {
   const auto trx = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   auto location_called = std::make_shared<bool>(false);

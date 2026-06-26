@@ -5,6 +5,8 @@
 #include "final_chain/final_chain.hpp"
 #include "graphql/account.hpp"
 #include "graphql/block.hpp"
+#include "graphql/sync_state.hpp"
+#include "graphql/types/current_state.hpp"
 #include "graphql/types/dag_block.hpp"
 #include "network/live_status.hpp"
 #include "network/network.hpp"
@@ -52,8 +54,26 @@ struct QueryDagBlockReader {
   std::function<std::vector<std::shared_ptr<::taraxa::DagBlock>>(uint64_t)> finalized_blocks_by_period;
 };
 
+// QueryReaders is GraphQL Query's primary external read API bundle. It contains
+// the narrow read callbacks needed by public GraphQL fields so callers can wire
+// ConsensusQueryApi, live-status snapshots, or compatibility adapters without
+// exposing broad consensus managers to the query object.
+struct QueryReaders {
+  AccountStateReader account;
+  QueryBlockReader block;
+  BlockTransactionReader block_transaction;
+  QueryTransactionReader transaction;
+  QueryGasPriceReader gas_price;
+  QueryDagBlockReader dag_block;
+  DagBlockTransactionReader dag_block_transaction;
+  DagBlockPeriodReader dag_block_period;
+  CurrentStateReader current_state;
+  SyncStateReader sync_state;
+};
+
 class Query {
  public:
+  explicit Query(QueryReaders readers, uint64_t chain_id = 0) noexcept;
   explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                  std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
@@ -104,6 +124,8 @@ class Query {
   QueryDagBlockReader dag_block_reader_;
   DagBlockTransactionReader dag_block_transaction_reader_;
   DagBlockPeriodReader dag_block_period_reader_;
+  CurrentStateReader current_state_reader_;
+  SyncStateReader sync_state_reader_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
 };
 
