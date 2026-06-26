@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "DebugFace.h"
@@ -38,6 +39,20 @@ struct DebugDposReader {
   std::function<uint256_t(EthBlockNumber)> total_amount_delegated;
 };
 
+// DebugTraceReader is the debug RPC boundary for external EVM trace execution.
+// Inputs are already materialized EVM transaction DTOs and a finalized block
+// number; outputs are the legacy trace JSON string produced by the execution
+// engine. Account and latest-block callbacks are used only to complete
+// synthetic call parameters. Missing callbacks are completed from FinalChain by
+// the Debug constructor and throw if used after the app expires.
+struct DebugTraceReader {
+  std::function<std::string(std::vector<state_api::EVMTransaction>, std::vector<state_api::EVMTransaction>,
+                            EthBlockNumber, std::optional<state_api::Tracing>)>
+      trace;
+  std::function<std::optional<state_api::Account>(const Address&, EthBlockNumber)> account_at;
+  std::function<EthBlockNumber()> latest_finalized_block_number;
+};
+
 class InvalidAddress : public std::exception {
  public:
   virtual const char* what() const noexcept { return "Invalid account address"; }
@@ -50,7 +65,8 @@ class InvalidTracingParams : public std::exception {
 
 class Debug : public DebugFace {
  public:
-  explicit Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader = {});
+  explicit Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader = {},
+                 DebugTraceReader trace_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"debug", "1.0"}}; }
 
   virtual Json::Value debug_traceTransaction(const std::string& param1) override;
@@ -77,6 +93,7 @@ class Debug : public DebugFace {
 
   std::weak_ptr<taraxa::AppBase> app_;
   DebugDposReader dpos_reader_;
+  DebugTraceReader trace_reader_;
   const uint64_t kGasLimit = ((uint64_t)1 << 53) - 1;
 };
 

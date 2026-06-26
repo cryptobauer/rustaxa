@@ -561,6 +561,10 @@ Implemented first slice:
 - Taraxa RPC DPoS reads now use a dedicated `TaraxaDposReader` callback bundle for node-version vote aggregation,
   per-period DPoS yield, and total supply. Rust-mode `taraxa_getNodeVersions` now combines `ConsensusQueryApi` PBFT
   version facts with this external-state reader instead of reading DPoS vote counts through public `FinalChain` calls.
+- Debug trace execution now uses a dedicated `DebugTraceReader` callback bundle for external EVM trace execution,
+  account nonce lookup for synthetic calls, and latest finalized block resolution. The default production reader remains
+  FinalChain-backed because tracing executes on the external EVM/StateAPI boundary, but debug RPC methods no longer call
+  `FinalChain::trace`, `getAccount`, or `lastBlockNumber` directly.
 
 ## Consensus Internal
 

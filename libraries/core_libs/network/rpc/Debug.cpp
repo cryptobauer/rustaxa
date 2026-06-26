@@ -62,11 +62,57 @@ void fillMissingDebugDposReaderCallbacks(DebugDposReader& reader, std::weak_ptr<
     reader.total_amount_delegated = std::move(defaults.total_amount_delegated);
   }
 }
+
+DebugTraceReader makeDebugTraceReader(std::weak_ptr<taraxa::AppBase> app) {
+  DebugTraceReader reader;
+  reader.trace = [app](std::vector<state_api::EVMTransaction> state_trxs,
+                       std::vector<state_api::EVMTransaction> trxs, EthBlockNumber block_number,
+                       std::optional<state_api::Tracing> tracing) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
+    }
+    if (tracing) {
+      return node->getFinalChain()->trace(std::move(state_trxs), std::move(trxs), block_number, std::move(*tracing));
+    }
+    return node->getFinalChain()->trace(std::move(state_trxs), std::move(trxs), block_number);
+  };
+  reader.account_at = [app](const Address& address, EthBlockNumber block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->getAccount(address, block_number);
+  };
+  reader.latest_finalized_block_number = [app] {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->lastBlockNumber();
+  };
+  return reader;
+}
+
+void fillMissingDebugTraceReaderCallbacks(DebugTraceReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeDebugTraceReader(std::move(app));
+  if (!reader.trace) {
+    reader.trace = std::move(defaults.trace);
+  }
+  if (!reader.account_at) {
+    reader.account_at = std::move(defaults.account_at);
+  }
+  if (!reader.latest_finalized_block_number) {
+    reader.latest_finalized_block_number = std::move(defaults.latest_finalized_block_number);
+  }
+}
 }  // namespace
 
-Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader)
-    : app_(app), dpos_reader_(std::move(dpos_reader)), kGasLimit(gas_limit) {
+Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader,
+             DebugTraceReader trace_reader)
+    : app_(app), dpos_reader_(std::move(dpos_reader)), trace_reader_(std::move(trace_reader)), kGasLimit(gas_limit) {
   fillMissingDebugDposReaderCallbacks(dpos_reader_, app_);
+  fillMissingDebugTraceReaderCallbacks(trace_reader_, app_);
 }
 
 #ifdef RUSTAXA_ENABLE
@@ -190,25 +236,16 @@ Json::Value dagBlockPublicViewToJson(const rustaxa::DagBlockPublicView& view, ui
 #endif
 
 Json::Value Debug::debug_traceCall(const Json::Value& call_params, const std::string& blk_num) {
-  Json::Value res;
   const auto block = parse_blk_num(blk_num);
   auto trx = to_eth_trx(call_params, block);
-  if (auto node = app_.lock()) {
-    return util::readJsonFromString(node->getFinalChain()->trace({}, {std::move(trx)}, block));
-  }
-  return res;
+  return util::readJsonFromString(trace_reader_.trace({}, {std::move(trx)}, block, std::nullopt));
 }
 
 Json::Value Debug::trace_call(const Json::Value& call_params, const Json::Value& trace_params,
                               const std::string& blk_num) {
-  Json::Value res;
   const auto block = parse_blk_num(blk_num);
   auto params = parse_tracking_parms(trace_params);
-  if (auto node = app_.lock()) {
-    return util::readJsonFromString(
-        node->getFinalChain()->trace({}, {to_eth_trx(call_params, block)}, block, std::move(params)));
-  }
-  return res;
+  return util::readJsonFromString(trace_reader_.trace({}, {to_eth_trx(call_params, block)}, block, std::move(params)));
 }
 
 std::tuple<std::vector<state_api::EVMTransaction>, state_api::EVMTransaction, uint64_t>
@@ -248,22 +285,14 @@ Debug::get_transaction_with_state(const std::string& transaction_hash) {
   return {to_eth_trxs(state_trxs), to_eth_trx(block_transactions[loc->position]), loc->period};
 }
 Json::Value Debug::debug_traceTransaction(const std::string& transaction_hash) {
-  Json::Value res;
   auto [state_trxs, trx, period] = get_transaction_with_state(transaction_hash);
-  if (auto node = app_.lock()) {
-    return util::readJsonFromString(node->getFinalChain()->trace({}, {trx}, period));
-  }
-  return res;
+  return util::readJsonFromString(trace_reader_.trace({}, {trx}, period, std::nullopt));
 }
 
 Json::Value Debug::trace_replayTransaction(const std::string& transaction_hash, const Json::Value& trace_params) {
-  Json::Value res;
   auto params = parse_tracking_parms(trace_params);
   auto [state_trxs, trx, period] = get_transaction_with_state(transaction_hash);
-  if (auto node = app_.lock()) {
-    return util::readJsonFromString(node->getFinalChain()->trace(state_trxs, {trx}, period, params));
-  }
-  return res;
+  return util::readJsonFromString(trace_reader_.trace(state_trxs, {trx}, period, std::move(params)));
 }
 
 bool only_transfers(const SharedTransactions& trxs) {
@@ -294,7 +323,7 @@ Json::Value Debug::trace_replayBlockTransactions(const std::string& block_num, c
       return Json::Value(Json::arrayValue);
     }
     std::vector<state_api::EVMTransaction> trxs = to_eth_trxs(transactions);
-    return util::readJsonFromString(node->getFinalChain()->trace({}, std::move(trxs), block, std::move(params)));
+    return util::readJsonFromString(trace_reader_.trace({}, std::move(trxs), block, std::move(params)));
   }
   return res;
 }
@@ -544,9 +573,7 @@ state_api::EVMTransaction Debug::to_eth_trx(const Json::Value& json, EthBlockNum
   if (!json["nonce"].empty()) {
     trx.nonce = jsToU256(json["nonce"].asString());
   } else {
-    if (auto node = app_.lock()) {
-      trx.nonce = node->getFinalChain()->getAccount(trx.from, blk_num).value_or(state_api::ZeroAccount).nonce;
-    }
+    trx.nonce = trace_reader_.account_at(trx.from, blk_num).value_or(state_api::ZeroAccount).nonce;
   }
 
   return trx;
@@ -554,9 +581,7 @@ state_api::EVMTransaction Debug::to_eth_trx(const Json::Value& json, EthBlockNum
 
 EthBlockNumber Debug::parse_blk_num(const std::string& blk_num_str) {
   if (blk_num_str == "latest" || blk_num_str == "pending" || blk_num_str.empty()) {
-    if (auto node = app_.lock()) {
-      return node->getFinalChain()->lastBlockNumber();
-    }
+    return trace_reader_.latest_finalized_block_number();
   } else if (blk_num_str == "earliest") {
     return 0;
   }

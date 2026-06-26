@@ -175,6 +175,50 @@ TEST_F(RPCTest, debug_dpos_reads_use_debug_dpos_reader) {
   ASSERT_TRUE(*delegated_called);
 }
 
+TEST_F(RPCTest, debug_trace_call_uses_debug_trace_reader) {
+  const auto caller = addr_t::random();
+  auto latest_called = std::make_shared<bool>(false);
+  auto account_called = std::make_shared<bool>(false);
+  auto trace_called = std::make_shared<bool>(false);
+
+  net::DebugTraceReader trace_reader;
+  trace_reader.latest_finalized_block_number = [latest_called] {
+    *latest_called = true;
+    return EthBlockNumber(15);
+  };
+  trace_reader.account_at = [account_called, caller](const Address& requested_address, EthBlockNumber block_number) {
+    *account_called = true;
+    EXPECT_EQ(caller, requested_address);
+    EXPECT_EQ(15, block_number);
+    state_api::Account account;
+    account.nonce = 42;
+    return std::optional<state_api::Account>(account);
+  };
+  trace_reader.trace = [trace_called, caller](std::vector<state_api::EVMTransaction> state_trxs,
+                                              std::vector<state_api::EVMTransaction> trxs,
+                                              EthBlockNumber block_number,
+                                              std::optional<state_api::Tracing> tracing) {
+    *trace_called = true;
+    EXPECT_TRUE(state_trxs.empty());
+    EXPECT_EQ(1, trxs.size());
+    EXPECT_EQ(caller, trxs.front().from);
+    EXPECT_EQ(42, trxs.front().nonce);
+    EXPECT_EQ(15, block_number);
+    EXPECT_FALSE(tracing.has_value());
+    return std::string(R"({"ok":true})");
+  };
+
+  net::Debug debug_rpc(nullptr, 1000000, {}, std::move(trace_reader));
+  Json::Value call(Json::objectValue);
+  call["from"] = dev::toJS(caller);
+
+  const auto result = debug_rpc.debug_traceCall(call, "latest");
+  EXPECT_TRUE(result["ok"].asBool());
+  ASSERT_TRUE(*latest_called);
+  ASSERT_TRUE(*account_called);
+  ASSERT_TRUE(*trace_called);
+}
+
 TEST_F(RPCTest, taraxa_dpos_scalar_reads_use_taraxa_dpos_reader) {
   auto yield_called = std::make_shared<bool>(false);
   auto supply_called = std::make_shared<bool>(false);
