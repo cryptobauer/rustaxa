@@ -77,6 +77,12 @@ void Rpc::start() {
                                                                                           auto transaction_index) {
       return (*query_api)->consensus_query_transaction_by_block_hash_and_index(block_hash.asArray(), transaction_index);
     };
+    eth_rpc_params.query_transaction_count_by_block_number = [query_api = eth_query_api](auto block_number) {
+      return (*query_api)->consensus_query_transaction_count_by_block_number(block_number);
+    };
+    eth_rpc_params.query_transaction_count_by_block_hash = [query_api = eth_query_api](auto const &block_hash) {
+      return (*query_api)->consensus_query_transaction_count_by_block_hash(block_hash.asArray());
+    };
     eth_rpc_params.query_transaction_receipt = [query_api = eth_query_api](auto const &trx_hash) {
       return (*query_api)->consensus_query_transaction_receipt_by_hash(trx_hash.asArray());
     };

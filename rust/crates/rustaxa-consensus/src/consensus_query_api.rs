@@ -691,6 +691,43 @@ impl ConsensusQueryApi {
         Ok(view)
     }
 
+    /// Returns the finalized transaction count for a block number.
+    ///
+    /// Unknown blocks return zero, matching ETH RPC transaction-count behavior.
+    /// The count is read from Rust-owned period data and does not expose a
+    /// `FinalChain` object or transaction vector to public adapters.
+    pub fn transaction_count_by_block_number(&self, block_number: u64) -> Result<u64> {
+        if self
+            .storage
+            .final_chain()
+            .block_hash_by_number(block_number)?
+            .is_none()
+        {
+            return Ok(0);
+        }
+        self.storage.transaction().count(block_number)
+    }
+
+    /// Returns the finalized transaction count for a block hash.
+    ///
+    /// Missing block-hash rows return zero. The block-number translation stays
+    /// inside the query facade so ETH RPC callers do not read `FinalChain`
+    /// indexes directly in Rust mode.
+    pub fn transaction_count_by_block_hash(&self, block_hash: [u8; 32]) -> Result<u64> {
+        let Some(block_number_bytes) = self
+            .storage
+            .final_chain()
+            .block_number_by_hash(H256::from(block_hash))?
+        else {
+            return Ok(0);
+        };
+        let block_number = decode_u64_le(
+            &block_number_bytes,
+            "CONSENSUS_QUERY_TRANSACTION_COUNT_BLOCK_NUMBER",
+        )?;
+        self.transaction_count_by_block_number(block_number)
+    }
+
     /// Returns a public transaction receipt view by transaction hash.
     ///
     /// Missing transaction location, transaction payload, or receipt bytes
@@ -1655,6 +1692,13 @@ mod tests {
         assert!(by_hash.found);
         assert_eq!(by_hash.hash, keccak256(&first_rlp).0);
         assert_eq!(by_hash.transaction_rlp, first_rlp);
+        assert_eq!(api.transaction_count_by_block_number(12).unwrap(), 2);
+        assert_eq!(
+            api.transaction_count_by_block_hash(block_hash.0).unwrap(),
+            2
+        );
+        assert_eq!(api.transaction_count_by_block_number(99).unwrap(), 0);
+        assert_eq!(api.transaction_count_by_block_hash([0x99; 32]).unwrap(), 0);
 
         assert!(
             !api.transaction_by_block_number_and_index(12, 2)

@@ -306,6 +306,11 @@ class EthImpl : public Eth, EthParams {
   }
 
   Json::Value eth_getBlockTransactionCountByNumber(const string& _blockNumber) override {
+#ifdef RUSTAXA_ENABLE
+    if (query_transaction_count_by_block_number) {
+      return toJS(query_transaction_count_by_block_number(parse_blk_num(_blockNumber)));
+    }
+#endif
     return toJS(final_chain->transactionCount(parse_blk_num(_blockNumber)));
   }
 
@@ -559,6 +564,11 @@ class EthImpl : public Eth, EthParams {
   }
 
   uint64_t transactionCount(const h256& block_hash) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_transaction_count_by_block_hash) {
+      return query_transaction_count_by_block_hash(block_hash);
+    }
+#endif
     auto n = final_chain->blockNumber(block_hash);
     return n ? final_chain->transactionCount(n) : 0;
   }

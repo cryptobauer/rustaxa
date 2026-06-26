@@ -321,6 +321,22 @@ impl BridgeConsensusQueryApi {
         ))
     }
 
+    /// Returns the finalized transaction count for a public block-number query.
+    pub fn consensus_query_transaction_count_by_block_number(
+        &self,
+        block_number: u64,
+    ) -> Result<u64, anyhow::Error> {
+        self.0.transaction_count_by_block_number(block_number)
+    }
+
+    /// Returns the finalized transaction count for a public block-hash query.
+    pub fn consensus_query_transaction_count_by_block_hash(
+        &self,
+        block_hash: &[u8; 32],
+    ) -> Result<u64, anyhow::Error> {
+        self.0.transaction_count_by_block_hash(*block_hash)
+    }
+
     /// Returns a stable public transaction receipt payload view by transaction hash.
     pub fn consensus_query_transaction_receipt_by_hash(
         &self,
@@ -979,6 +995,26 @@ mod tests {
         assert!(by_hash.found);
         assert_eq!(by_hash.hash, keccak256(&first_rlp).0);
         assert_eq!(by_hash.transaction_rlp, first_rlp);
+        assert_eq!(
+            api.consensus_query_transaction_count_by_block_number(12)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            api.consensus_query_transaction_count_by_block_hash(&block_hash.0)
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            api.consensus_query_transaction_count_by_block_number(99)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            api.consensus_query_transaction_count_by_block_hash(&[0x99; 32])
+                .unwrap(),
+            0
+        );
         assert!(
             !api.consensus_query_transaction_by_block_number_and_index(12, 2)
                 .unwrap()
