@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 
 #include "SyncStateObject.h"
@@ -11,7 +13,8 @@ namespace graphql::taraxa {
 class SyncState {
  public:
   explicit SyncState(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                     std::weak_ptr<::taraxa::Network> network) noexcept;
+                     std::weak_ptr<::taraxa::Network> network,
+                     std::function<uint64_t()> current_block_query = {}) noexcept;
 
   response::Value getStartingBlock() const noexcept;
   response::Value getCurrentBlock() const noexcept;
@@ -22,6 +25,7 @@ class SyncState {
  private:
   std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
   std::weak_ptr<::taraxa::Network> network_;
+  std::function<uint64_t()> current_block_query_;
 };
 
 }  // namespace graphql::taraxa

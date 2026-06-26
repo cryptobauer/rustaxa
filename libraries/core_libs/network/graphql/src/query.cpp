@@ -190,6 +190,12 @@ std::shared_ptr<object::Account> Query::getAccount(response::Value&& addressArg,
 response::Value Query::getGasPrice() const { return response::Value(dev::toJS(gas_pricer_->bid())); }
 
 std::shared_ptr<object::SyncState> Query::getSyncing() const {
+#ifdef RUSTAXA_ENABLE
+  auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
+      rustaxa::create_consensus_query_api(db_->rustStorage()));
+  return std::make_shared<object::SyncState>(std::make_shared<SyncState>(
+      final_chain_, network_, [query_api]() { return (*query_api)->consensus_query_final_chain_last_block_number(); }));
+#endif
   return std::make_shared<object::SyncState>(std::make_shared<SyncState>(final_chain_, network_));
 }
 
