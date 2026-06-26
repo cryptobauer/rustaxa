@@ -435,6 +435,13 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
 }
 
 std::shared_ptr<object::CurrentState> Query::getNodeState() const {
+#ifdef RUSTAXA_ENABLE
+  auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
+      rustaxa::create_consensus_query_api(db_->rustStorage()));
+  return std::make_shared<object::CurrentState>(std::make_shared<CurrentState>(
+      final_chain_, dag_manager_,
+      [query_api]() { return (*query_api)->consensus_query_final_chain_last_block_number(); }));
+#endif
   return std::make_shared<object::CurrentState>(std::make_shared<CurrentState>(final_chain_, dag_manager_));
 }
 

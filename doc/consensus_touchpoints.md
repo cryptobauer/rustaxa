@@ -442,6 +442,9 @@ Implemented first slice:
 - GraphQL `Block.transactionCount`, `Block.transactions`, and `Block.transactionAt` now use `ConsensusQueryApi` in Rust
   mode for finalized transaction counts, indexed transaction payloads, and receipt DTOs instead of lazy-loading
   `FinalChain` transaction vectors and receipts from the block object.
+- GraphQL `nodeState.finalBlock` now uses `ConsensusQueryApi` in Rust mode for the finalized head number instead of
+  reading `FinalChain` directly. `nodeState.dagBlockLevel` and `nodeState.dagBlockPeriod` remain live DAG-manager
+  compatibility reads until a dedicated consensus status DTO owns the mixed live/finalized status view.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
 - `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of
