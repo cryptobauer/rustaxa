@@ -459,6 +459,39 @@ TEST_F(RPCTest, taraxa_schedule_reads_use_schedule_reader) {
   ASSERT_TRUE(*schedule_called);
 }
 
+TEST_F(RPCTest, taraxa_pillar_block_data_reads_use_pillar_reader) {
+  auto period_check_count = std::make_shared<int>(0);
+  auto data_called = std::make_shared<bool>(false);
+
+  net::TaraxaPillarBlockDataReader pillar_reader;
+  pillar_reader.is_pillar_block_period = [period_check_count](uint64_t period) {
+    ++*period_check_count;
+    return period == 44;
+  };
+  pillar_reader.pillar_block_data_by_period = [data_called](uint64_t period, bool include_signatures) {
+    *data_called = true;
+    EXPECT_EQ(uint64_t(44), period);
+    EXPECT_TRUE(include_signatures);
+    Json::Value data(Json::objectValue);
+    data["pillar_block"]["pbft_period"] = dev::toJS(uint64_t(44));
+    data["signatures"] = Json::Value(Json::arrayValue);
+    return std::optional<Json::Value>(std::move(data));
+  };
+
+  net::Taraxa taraxa_rpc(nullptr, {}, {}, {}, {}, {}, std::move(pillar_reader));
+
+  const auto result = taraxa_rpc.taraxa_getPillarBlockData(dev::toJS(uint64_t(44)), true);
+  EXPECT_EQ(dev::toJS(uint64_t(44)), result["pillar_block"]["pbft_period"].asString());
+  EXPECT_TRUE(result["signatures"].isArray());
+  ASSERT_TRUE(*data_called);
+
+  *data_called = false;
+  const auto non_pillar_result = taraxa_rpc.taraxa_getPillarBlockData(dev::toJS(uint64_t(45)), true);
+  EXPECT_TRUE(non_pillar_result.empty());
+  EXPECT_FALSE(*data_called);
+  EXPECT_EQ(2, *period_check_count);
+}
+
 TEST_F(RPCTest, taraxa_dag_block_reads_use_dag_block_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();

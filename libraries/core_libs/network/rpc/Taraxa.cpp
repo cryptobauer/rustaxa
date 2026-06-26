@@ -228,6 +228,9 @@ void fillMissingTaraxaScheduleReaderCallbacks(TaraxaScheduleReader& reader, std:
     reader.schedule_block_by_period = std::move(defaults.schedule_block_by_period);
   }
 }
+
+void fillMissingTaraxaPillarBlockDataReaderCallbacks(TaraxaPillarBlockDataReader& reader,
+                                                     std::weak_ptr<taraxa::AppBase> app);
 }  // namespace
 
 #ifdef RUSTAXA_ENABLE
@@ -379,20 +382,75 @@ Json::Value pillarBlockDataViewToJson(const rustaxa::PillarBlockDataView& view, 
 }  // namespace
 #endif
 
+namespace {
+TaraxaPillarBlockDataReader makeTaraxaPillarBlockDataReader(std::weak_ptr<taraxa::AppBase> app) {
+  TaraxaPillarBlockDataReader reader;
+  reader.is_pillar_block_period = [app](uint64_t pbft_period) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_PILLAR_BLOCK_DATA_READER_APP_EXPIRED");
+    }
+    return node->getConfig().genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(pbft_period);
+  };
+  reader.pillar_block_data_by_period = [app](uint64_t pbft_period,
+                                             bool include_signatures) -> std::optional<Json::Value> {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("TARAXA_PILLAR_BLOCK_DATA_READER_APP_EXPIRED");
+    }
+
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto pillar_block_data = query_api->consensus_query_pillar_block_data_by_period(pbft_period);
+    if (!pillar_block_data.found) {
+      return std::nullopt;
+    }
+    return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
+#endif
+
+    const auto pillar_block = node->getDB()->getPillarBlock(pbft_period);  // RUSTAXA_QUERY_COMPAT_READ
+    if (!pillar_block) {
+      return std::nullopt;
+    }
+
+    const auto& pillar_votes = node->getDB()->getPeriodPillarVotes(pbft_period + 1);  // RUSTAXA_QUERY_COMPAT_READ
+    if (pillar_votes.empty()) {
+      return std::nullopt;
+    }
+
+    return pillar_chain::PillarBlockData{pillar_block, pillar_votes}.getJson(include_signatures);
+  };
+  return reader;
+}
+
+void fillMissingTaraxaPillarBlockDataReaderCallbacks(TaraxaPillarBlockDataReader& reader,
+                                                     std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTaraxaPillarBlockDataReader(std::move(app));
+  if (!reader.is_pillar_block_period) {
+    reader.is_pillar_block_period = std::move(defaults.is_pillar_block_period);
+  }
+  if (!reader.pillar_block_data_by_period) {
+    reader.pillar_block_data_by_period = std::move(defaults.pillar_block_data_by_period);
+  }
+}
+}  // namespace
+
 Taraxa::Taraxa(std::shared_ptr<AppBase> app, TaraxaDposReader dpos_reader, TaraxaDagStatusReader dag_status_reader,
                TaraxaDagBlockReader dag_block_reader, TaraxaPersistentReader persistent_reader,
-               TaraxaScheduleReader schedule_reader)
+               TaraxaScheduleReader schedule_reader, TaraxaPillarBlockDataReader pillar_block_data_reader)
     : app_(app),
       dpos_reader_(std::move(dpos_reader)),
       dag_status_reader_(std::move(dag_status_reader)),
       dag_block_reader_(std::move(dag_block_reader)),
       persistent_reader_(std::move(persistent_reader)),
-      schedule_reader_(std::move(schedule_reader)) {
+      schedule_reader_(std::move(schedule_reader)),
+      pillar_block_data_reader_(std::move(pillar_block_data_reader)) {
   fillMissingTaraxaDposReaderCallbacks(dpos_reader_, app_);
   fillMissingTaraxaDagStatusReaderCallbacks(dag_status_reader_, app_);
   fillMissingTaraxaDagBlockReaderCallbacks(dag_block_reader_, app_);
   fillMissingTaraxaPersistentReaderCallbacks(persistent_reader_, app_);
   fillMissingTaraxaScheduleReaderCallbacks(schedule_reader_, app_);
+  fillMissingTaraxaPillarBlockDataReaderCallbacks(pillar_block_data_reader_, app_);
 
   Json::CharReaderBuilder builder;
   auto reader = std::unique_ptr<Json::CharReader>(builder.newCharReader());
@@ -696,36 +754,16 @@ std::string Taraxa::taraxa_totalSupply(const std::string& _period) {
 
 Json::Value Taraxa::taraxa_getPillarBlockData(const std::string& pillar_block_period, bool include_signatures) {
   try {
-    auto app = app_.lock();
-    if (!app) {
-      BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
-    }
-
     const auto pbft_period = dev::jsToInt(pillar_block_period);
-    if (!app->getConfig().genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(pbft_period)) {
+    if (!pillar_block_data_reader_.is_pillar_block_period(pbft_period)) {
       return {};
     }
-
-#ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
-    const auto pillar_block_data = query_api->consensus_query_pillar_block_data_by_period(pbft_period);
-    if (!pillar_block_data.found) {
+    const auto pillar_block_data =
+        pillar_block_data_reader_.pillar_block_data_by_period(pbft_period, include_signatures);
+    if (!pillar_block_data) {
       return {};
     }
-    return pillarBlockDataViewToJson(pillar_block_data, include_signatures);
-#endif
-
-    const auto pillar_block = app->getDB()->getPillarBlock(pbft_period);  // RUSTAXA_QUERY_COMPAT_READ
-    if (!pillar_block) {
-      return {};
-    }
-
-    const auto& pillar_votes = app->getDB()->getPeriodPillarVotes(pbft_period + 1);  // RUSTAXA_QUERY_COMPAT_READ
-    if (pillar_votes.empty()) {
-      return {};
-    }
-
-    return pillar_chain::PillarBlockData{pillar_block, pillar_votes}.getJson(include_signatures);
+    return *pillar_block_data;
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }

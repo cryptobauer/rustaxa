@@ -481,6 +481,10 @@ Implemented first slice:
   longer reaches through `DbStorage`, `VoteManager`, or `FinalChain` for this method.
 - `taraxa_getPillarBlockData` now uses `ConsensusQueryApi` for finalized pillar block facts and the following period's
   optimized pillar-vote bundle in Rust mode instead of creating an endpoint-local pillar storage query handle.
+- Taraxa RPC legacy fallback `taraxa_getPillarBlockData` now uses a dedicated `TaraxaPillarBlockDataReader` callback
+  bundle for pillar-period validation and pillar block data materialization instead of reading config and `DbStorage`
+  directly from the public method. The default reader is the remaining audited compatibility adapter and uses
+  `ConsensusQueryApi` in Rust mode.
 - `taraxa_getDagBlockByHash` and `taraxa_getDagBlockByLevel` now use `ConsensusQueryApi` for DAG block facts and
   finalized period/position lookup in Rust mode instead of creating endpoint-local DAG query handles and asking the live
   `PbftManager` for block period. Their optional transaction expansion now also resolves each DAG transaction hash

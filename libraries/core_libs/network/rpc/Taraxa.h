@@ -81,11 +81,21 @@ struct TaraxaScheduleReader {
   std::function<std::optional<Json::Value>(uint64_t)> schedule_block_by_period;
 };
 
+// TaraxaPillarBlockDataReader is the Taraxa RPC boundary for pillar block data
+// materialization. It returns the public JSON payload because the fallback path
+// preserves legacy PillarBlockData formatting while Rust-mode production routes
+// still use typed ConsensusQueryApi DTOs inside the default adapter.
+struct TaraxaPillarBlockDataReader {
+  std::function<bool(uint64_t)> is_pillar_block_period;
+  std::function<std::optional<Json::Value>(uint64_t, bool)> pillar_block_data_by_period;
+};
+
 class Taraxa : public TaraxaFace {
  public:
   explicit Taraxa(std::shared_ptr<taraxa::AppBase> app, TaraxaDposReader dpos_reader = {},
                   TaraxaDagStatusReader dag_status_reader = {}, TaraxaDagBlockReader dag_block_reader = {},
-                  TaraxaPersistentReader persistent_reader = {}, TaraxaScheduleReader schedule_reader = {});
+                  TaraxaPersistentReader persistent_reader = {}, TaraxaScheduleReader schedule_reader = {},
+                  TaraxaPillarBlockDataReader pillar_block_data_reader = {});
 
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"taraxa", "1.0"}}; }
 
@@ -113,6 +123,7 @@ class Taraxa : public TaraxaFace {
   TaraxaDagBlockReader dag_block_reader_;
   TaraxaPersistentReader persistent_reader_;
   TaraxaScheduleReader schedule_reader_;
+  TaraxaPillarBlockDataReader pillar_block_data_reader_;
 
  private:
   Json::Value version;
