@@ -21,6 +21,8 @@ struct EthParams {
   std::function<std::shared_ptr<Transaction>(const h256&)> get_trx;
 #ifdef RUSTAXA_ENABLE
   std::function<rustaxa::TransactionPublicView(const h256&)> query_transaction;
+  std::function<rustaxa::TransactionPublicView(EthBlockNumber, uint64_t)> query_transaction_by_block_number_and_index;
+  std::function<rustaxa::TransactionPublicView(const h256&, uint64_t)> query_transaction_by_block_hash_and_index;
   std::function<rustaxa::TransactionReceiptPublicView(const h256&)> query_transaction_receipt;
 #endif
   std::function<void(const std::shared_ptr<Transaction>& trx)> send_trx;

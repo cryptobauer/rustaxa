@@ -427,6 +427,8 @@ Implemented first slice:
   - `consensus_query_dag_blocks_by_level(level, number_of_levels) -> Vec<DagBlockPublicView>`
   - `consensus_query_finalized_dag_blocks_by_period(period) -> Vec<DagBlockPublicView>`
   - `consensus_query_transaction_by_hash(hash) -> TransactionPublicView`
+  - `consensus_query_transaction_by_block_number_and_index(block_number, transaction_index) -> TransactionPublicView`
+  - `consensus_query_transaction_by_block_hash_and_index(block_hash, transaction_index) -> TransactionPublicView`
   - `consensus_query_transaction_receipt_by_hash(hash) -> TransactionReceiptPublicView`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
   hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
@@ -452,10 +454,13 @@ Implemented first slice:
 - `eth_getTransactionByHash` and `eth_getTransactionReceipt` now use `ConsensusQueryApi` in Rust mode for
   location-aware transaction payload and receipt lookup instead of calling the generic ETH transaction callback or
   reading `FinalChain` transaction location/receipt rows directly.
+- `eth_getTransactionByBlockNumberAndIndex` and `eth_getTransactionByBlockHashAndIndex` now use `ConsensusQueryApi` in
+  Rust mode for indexed finalized transaction payload lookup instead of reading `FinalChain` transaction vectors and
+  block hash/number indexes directly.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing indexed transaction, account-state, expanded transaction, block receipt/log, and sync/status routes remain
+- Existing account-state, expanded transaction, block receipt/log, transaction-count, and sync/status routes remain
   compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal

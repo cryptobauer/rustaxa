@@ -297,6 +297,30 @@ impl BridgeConsensusQueryApi {
         Ok(transaction_view_to_ffi(self.0.transaction_by_hash(*hash)?))
     }
 
+    /// Returns a stable public transaction payload view by finalized block number and index.
+    pub fn consensus_query_transaction_by_block_number_and_index(
+        &self,
+        block_number: u64,
+        transaction_index: u64,
+    ) -> Result<rustaxa_ffi::TransactionPublicView, anyhow::Error> {
+        Ok(transaction_view_to_ffi(
+            self.0
+                .transaction_by_block_number_and_index(block_number, transaction_index)?,
+        ))
+    }
+
+    /// Returns a stable public transaction payload view by finalized block hash and index.
+    pub fn consensus_query_transaction_by_block_hash_and_index(
+        &self,
+        block_hash: &[u8; 32],
+        transaction_index: u64,
+    ) -> Result<rustaxa_ffi::TransactionPublicView, anyhow::Error> {
+        Ok(transaction_view_to_ffi(
+            self.0
+                .transaction_by_block_hash_and_index(*block_hash, transaction_index)?,
+        ))
+    }
+
     /// Returns a stable public transaction receipt payload view by transaction hash.
     pub fn consensus_query_transaction_receipt_by_hash(
         &self,
@@ -892,6 +916,79 @@ mod tests {
             rustaxa_consensus::STORED_TRANSACTION_SOURCE_MISSING
         );
         assert!(missing.transaction_rlp.is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_indexed_transaction_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_indexed_transaction_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let block_hash = H256::from_low_u64_be(0x24);
+        let first_rlp = vec![0x22];
+        let second_rlp = vec![0x33];
+
+        storage
+            .save_period_data(
+                12,
+                period_data_with_transactions_rlp(&[first_rlp.clone(), second_rlp.clone()]),
+            )
+            .unwrap();
+        storage
+            .seed_final_chain_conformance_lookup_rows(
+                0,
+                b"meta".to_vec(),
+                12,
+                &block_hash.0,
+                vec![0xC0],
+                &[0; 32],
+                vec![0xC0],
+                &[0; 32],
+                vec![0xC0],
+                12,
+                receipt_list_rlp(&[]),
+            )
+            .unwrap();
+
+        let by_number = api
+            .consensus_query_transaction_by_block_number_and_index(12, 1)
+            .unwrap();
+        assert!(by_number.found);
+        assert_eq!(by_number.hash, keccak256(&second_rlp).0);
+        assert_eq!(
+            by_number.source,
+            rustaxa_consensus::STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+        );
+        assert!(by_number.location_found);
+        assert_eq!(by_number.block_number, 12);
+        assert_eq!(by_number.transaction_index, 1);
+        assert!(by_number.block_hash_found);
+        assert_eq!(by_number.block_hash, block_hash.0);
+        assert_eq!(by_number.transaction_rlp, second_rlp);
+
+        let by_hash = api
+            .consensus_query_transaction_by_block_hash_and_index(&block_hash.0, 0)
+            .unwrap();
+        assert!(by_hash.found);
+        assert_eq!(by_hash.hash, keccak256(&first_rlp).0);
+        assert_eq!(by_hash.transaction_rlp, first_rlp);
+        assert!(
+            !api.consensus_query_transaction_by_block_number_and_index(12, 2)
+                .unwrap()
+                .found
+        );
+        assert!(
+            !api.consensus_query_transaction_by_block_hash_and_index(&[0x99; 32], 0)
+                .unwrap()
+                .found
+        );
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

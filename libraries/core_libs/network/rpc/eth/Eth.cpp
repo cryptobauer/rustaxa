@@ -482,6 +482,16 @@ class EthImpl : public Eth, EthParams {
   }
 
   optional<LocalisedTransaction> get_transaction(EthBlockNumber blk_n, uint32_t trx_pos) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_transaction_by_block_number_and_index) {
+      const auto view = query_transaction_by_block_number_and_index(blk_n, trx_pos);
+      auto trx = materializeTransactionView(view);
+      if (!trx) {
+        return {};
+      }
+      return LocalisedTransaction{trx, locationFromTransactionView(view)};
+    }
+#endif
     const auto& trxs = final_chain->transactions(blk_n);
     if (trxs.size() <= trx_pos) {
       return {};
@@ -496,6 +506,16 @@ class EthImpl : public Eth, EthParams {
   }
 
   optional<LocalisedTransaction> get_transaction(const h256& blk_h, uint64_t _i) const {
+#ifdef RUSTAXA_ENABLE
+    if (query_transaction_by_block_hash_and_index) {
+      const auto view = query_transaction_by_block_hash_and_index(blk_h, _i);
+      auto trx = materializeTransactionView(view);
+      if (!trx) {
+        return {};
+      }
+      return LocalisedTransaction{trx, locationFromTransactionView(view)};
+    }
+#endif
     auto blk_n = final_chain->blockNumber(blk_h);
     if (!blk_n) {
       return {};

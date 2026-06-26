@@ -610,6 +610,87 @@ impl ConsensusQueryApi {
         })
     }
 
+    /// Returns a public transaction view by finalized block number and index.
+    ///
+    /// Unknown blocks and out-of-range indexes return `found == false`,
+    /// matching ETH RPC null-result behavior. The query reads Rust-owned
+    /// FinalChain block-hash and period-data rows, computes the canonical
+    /// transaction hash from the stored transaction bytes, and returns the same
+    /// location-aware DTO as hash lookup without materializing C++ objects.
+    pub fn transaction_by_block_number_and_index(
+        &self,
+        block_number: u64,
+        transaction_index: u64,
+    ) -> Result<TransactionView> {
+        let Some(block_hash_bytes) = self
+            .storage
+            .final_chain()
+            .block_hash_by_number(block_number)?
+        else {
+            return Ok(TransactionView::default());
+        };
+        let block_hash = h256_bytes(&block_hash_bytes)
+            .context("CONSENSUS_QUERY_TRANSACTION_INDEX_BLOCK_HASH")?;
+        if transaction_index > u64::from(u32::MAX) {
+            return Ok(TransactionView::default());
+        }
+        let transaction_index = transaction_index as u32;
+        if u64::from(transaction_index) >= self.storage.transaction().count(block_number)? {
+            return Ok(TransactionView::default());
+        }
+        let Some(transaction_rlp) = self
+            .storage
+            .transaction()
+            .by_period_position_rlp(block_number, transaction_index)
+            .context("CONSENSUS_QUERY_TRANSACTION_INDEX_PAYLOAD")?
+        else {
+            return Ok(TransactionView::default());
+        };
+        let hash: [u8; 32] = keccak256(&transaction_rlp).into();
+
+        Ok(TransactionView {
+            found: true,
+            hash,
+            source: STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
+            location_found: true,
+            block_number,
+            transaction_index,
+            is_system: false,
+            block_hash_found: true,
+            block_hash: block_hash.into(),
+            transaction_rlp,
+        })
+    }
+
+    /// Returns a public transaction view by finalized block hash and index.
+    ///
+    /// The block-hash index is resolved inside the query facade so ETH RPC
+    /// callers do not need to ask `FinalChain` for block-number translation in
+    /// Rust mode. Missing hash rows, inconsistent hash/number indexes, and
+    /// out-of-range transaction indexes return `found == false`.
+    pub fn transaction_by_block_hash_and_index(
+        &self,
+        block_hash: [u8; 32],
+        transaction_index: u64,
+    ) -> Result<TransactionView> {
+        let Some(block_number_bytes) = self
+            .storage
+            .final_chain()
+            .block_number_by_hash(H256::from(block_hash))?
+        else {
+            return Ok(TransactionView::default());
+        };
+        let block_number = decode_u64_le(
+            &block_number_bytes,
+            "CONSENSUS_QUERY_TRANSACTION_INDEX_BLOCK_NUMBER",
+        )?;
+        let view = self.transaction_by_block_number_and_index(block_number, transaction_index)?;
+        if view.found && view.block_hash != block_hash {
+            return Ok(TransactionView::default());
+        }
+        Ok(view)
+    }
+
     /// Returns a public transaction receipt view by transaction hash.
     ///
     /// Missing transaction location, transaction payload, or receipt bytes
@@ -660,6 +741,13 @@ fn h256_bytes(bytes: &[u8]) -> Result<H256> {
         .try_into()
         .with_context(|| format!("expected 32-byte hash, got {}", bytes.len()))?;
     Ok(H256::from(array))
+}
+
+fn decode_u64_le(bytes: &[u8], context: &'static str) -> Result<u64> {
+    let array: [u8; 8] = bytes
+        .try_into()
+        .with_context(|| format!("{context}: expected 8 bytes, got {}", bytes.len()))?;
+    Ok(u64::from_le_bytes(array))
 }
 
 fn keccak256(data: &[u8]) -> H256 {
@@ -1507,6 +1595,82 @@ mod tests {
         assert!(!missing.found);
         assert_eq!(missing.source, STORED_TRANSACTION_SOURCE_MISSING);
         assert!(missing.transaction_rlp.is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_indexed_transaction_view_from_storage() {
+        let (path, storage) = test_storage("indexed_transaction_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let block_hash = H256::from_low_u64_be(0x24);
+        let first_rlp = vec![0x22];
+        let second_rlp = vec![0x33];
+
+        storage
+            .period()
+            .write(
+                12,
+                &period_data_with_transactions_rlp(&[first_rlp.clone(), second_rlp.clone()]),
+            )
+            .expect("period transaction payloads should persist");
+        storage
+            .final_chain()
+            .write_conformance_lookup_rows(
+                0,
+                b"meta",
+                12,
+                block_hash,
+                &[0xC0],
+                H256::zero(),
+                &[0xC0],
+                H256::zero(),
+                &[0xC0],
+                12,
+                &receipt_list_rlp(&[]),
+            )
+            .expect("final-chain lookup rows should persist");
+
+        let by_number = api
+            .transaction_by_block_number_and_index(12, 1)
+            .expect("number-index query should succeed");
+        assert!(by_number.found);
+        assert_eq!(by_number.hash, keccak256(&second_rlp).0);
+        assert_eq!(
+            by_number.source,
+            STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+        );
+        assert!(by_number.location_found);
+        assert_eq!(by_number.block_number, 12);
+        assert_eq!(by_number.transaction_index, 1);
+        assert!(!by_number.is_system);
+        assert!(by_number.block_hash_found);
+        assert_eq!(by_number.block_hash, block_hash.0);
+        assert_eq!(by_number.transaction_rlp, second_rlp);
+
+        let by_hash = api
+            .transaction_by_block_hash_and_index(block_hash.0, 0)
+            .expect("hash-index query should succeed");
+        assert!(by_hash.found);
+        assert_eq!(by_hash.hash, keccak256(&first_rlp).0);
+        assert_eq!(by_hash.transaction_rlp, first_rlp);
+
+        assert!(
+            !api.transaction_by_block_number_and_index(12, 2)
+                .unwrap()
+                .found
+        );
+        assert!(
+            !api.transaction_by_block_number_and_index(99, 0)
+                .unwrap()
+                .found
+        );
+        assert!(
+            !api.transaction_by_block_hash_and_index([0x99; 32], 0)
+                .unwrap()
+                .found
+        );
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

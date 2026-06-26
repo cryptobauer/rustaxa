@@ -5081,6 +5081,16 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             hash: &[u8; 32],
         ) -> Result<TransactionPublicView>;
+        pub fn consensus_query_transaction_by_block_number_and_index(
+            self: &BridgeConsensusQueryApi,
+            block_number: u64,
+            transaction_index: u64,
+        ) -> Result<TransactionPublicView>;
+        pub fn consensus_query_transaction_by_block_hash_and_index(
+            self: &BridgeConsensusQueryApi,
+            block_hash: &[u8; 32],
+            transaction_index: u64,
+        ) -> Result<TransactionPublicView>;
         pub fn consensus_query_transaction_receipt_by_hash(
             self: &BridgeConsensusQueryApi,
             hash: &[u8; 32],
