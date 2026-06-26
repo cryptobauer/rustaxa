@@ -7,6 +7,7 @@
 #include "common/rpc_utils.hpp"
 #include "final_chain/state_api_data.hpp"
 #include "network/rpc/eth/data.hpp"
+#include "transaction/system_transaction.hpp"
 #include "transaction/transaction.hpp"
 #include "vote_manager/vote_manager.hpp"
 
@@ -23,6 +24,11 @@ namespace taraxa::net {
 
 #ifdef RUSTAXA_ENABLE
 namespace {
+constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
+constexpr uint8_t kConsensusQueryTransactionSourcePending = 1;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedRegular = 2;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedSystem = 3;
+
 dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
   return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
 }
@@ -32,6 +38,41 @@ dev::Address addressFromBridge(const std::array<uint8_t, 20>& address) {
 }
 
 dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+std::shared_ptr<Transaction> materializeReceiptTransactionView(const rustaxa::TransactionReceiptPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<Transaction> transaction;
+  if (view.transaction_source == kConsensusQueryTransactionSourceFinalizedSystem) {
+    transaction = std::make_shared<SystemTransaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.transaction_source == kConsensusQueryTransactionSourcePending ||
+             view.transaction_source == kConsensusQueryTransactionSourceFinalizedRegular) {
+    transaction = std::make_shared<Transaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.transaction_source != kConsensusQueryTransactionSourceMissing) {
+    throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_UNKNOWN_SOURCE");
+  }
+
+  if (transaction && transaction->getHash() != hashFromBridge(view.transaction_hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_HASH_MISMATCH");
+  }
+  return transaction;
+}
+
+rpc::eth::ExtendedTransactionLocation receiptLocationFromView(const rustaxa::TransactionReceiptPublicView& view) {
+  if (!view.block_hash_found) {
+    throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_BLOCK_HASH_MISSING");
+  }
+
+  rpc::eth::ExtendedTransactionLocation location;
+  location.period = view.block_number;
+  location.position = view.transaction_index;
+  location.is_system = view.is_system;
+  location.blk_h = hashFromBridge(view.block_hash);
+  location.trx_hash = hashFromBridge(view.transaction_hash);
+  return location;
+}
 
 Json::Value dagBlockPublicViewToJson(const rustaxa::DagBlockPublicView& view, uint64_t period) {
   Json::Value json;
@@ -155,6 +196,26 @@ Json::Value Debug::debug_getPeriodTransactionsWithReceipts(const std::string& _p
     }
     auto final_chain = node->getFinalChain();
     auto period = dev::jsToInt(_period);
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto receipt_views = query_api->consensus_query_transaction_receipts_by_block_number(period);
+    Json::Value result(Json::arrayValue);
+    for (const auto& view : receipt_views) {
+      auto trx = materializeReceiptTransactionView(view);
+      if (!trx) {
+        throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_MISSING");
+      }
+      auto location = receiptLocationFromView(view);
+      auto transaction = rpc::eth::LocalisedTransaction{trx, location};
+      auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
+      auto receipt = rpc::eth::LocalisedTransactionReceipt{
+          util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)), location, trx->getSender(), trx->getReceiver()};
+      auto receipt_json = rpc::eth::toJson(receipt);
+      receipt_json.removeMember("transactionHash");
+      result.append(util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json)));
+    }
+    return result;
+#endif
     auto block_hash = final_chain->blockHash(period);
     auto trxs = node->getDB()->getPeriodTransactions(period);  // RUSTAXA_QUERY_COMPAT_READ
     if (!trxs.has_value() || trxs->empty()) {

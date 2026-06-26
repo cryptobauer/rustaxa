@@ -468,12 +468,14 @@ Implemented first slice:
   directly.
 - `eth_getBlockReceipts` now uses `ConsensusQueryApi` in Rust mode for finalized regular-transaction receipt expansion
   instead of reading `FinalChain` block hashes, transaction vectors, block receipt lists, and per-transaction receipts
-  directly. Debug receipt expansion and log filtering still remain on compatibility routes.
+  directly. Log filtering still remains on compatibility routes.
+- `debug_getPeriodTransactionsWithReceipts` now uses the same `ConsensusQueryApi` block-receipts DTO in Rust mode
+  instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing account-state, non-GraphQL expanded transaction routes, debug receipt/log, log filtering, and sync/status
-  routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing account-state, non-GraphQL expanded transaction routes, debug/log filtering, and sync/status routes remain
+  compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal
 
