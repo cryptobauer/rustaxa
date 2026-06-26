@@ -326,6 +326,20 @@ Implemented second slice:
   external to the Rust consensus rewrite. It must not publish Rust FinalChain storage or decide session state; those stay
   behind `ConsensusExecutionApi`.
 
+Implemented third slice:
+
+- The same shim-owned `ExternalEvmStateApiClient` now owns the remaining Rust-mode `StateAPI` read boundary in
+  FinalChain:
+  - account, storage, and code reads
+  - read-only external EVM dry-run calls
+  - trace calls for committed external-EVM blocks
+  - bridge-contract root/epoch reads
+  - `StateAPI` config updates
+- Direct `state_api_` access in the Rust-mode FinalChain shim is now confined to adapter implementation and construction.
+  Public FinalChain methods either call Rust-owned storage/FinalChain APIs or this explicit external StateAPI adapter.
+- These read routes are still external-client compatibility, not Rust consensus ownership. Section 3 should decide which
+  public query views move behind a future `ConsensusQueryApi`.
+
 ### 3. Public Query API
 
 Purpose: serve RPC, GraphQL, plugins, debug, and CLI read paths without exposing consensus managers, storage internals,

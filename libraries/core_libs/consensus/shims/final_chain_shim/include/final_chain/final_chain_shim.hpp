@@ -168,6 +168,16 @@ class FinalChain {
     rustaxa::FinalChainExternalEvmStateCommitResult commitState();
 
     state_api::StateDescriptor lastCommittedStateDescriptor() const;
+    void updateStateConfig(const state_api::Config& new_config, EthBlockNumber& delegation_delay);
+    std::optional<state_api::Account> account(EthBlockNumber block_number, const addr_t& address) const;
+    h256 accountStorageOrZero(EthBlockNumber block_number, const addr_t& address, const u256& key) const;
+    bytes codeOrEmpty(EthBlockNumber block_number, const addr_t& address) const;
+    state_api::ExecutionResult dryRunTransaction(const BlockHeader& block_header,
+                                                 const state_api::EVMTransaction& transaction, bool lock_client) const;
+    bytes traceTransactions(const BlockHeader& block_header, const std::vector<state_api::EVMTransaction>& state_trxs,
+                            const std::vector<state_api::EVMTransaction>& trxs,
+                            std::optional<state_api::Tracing> params) const;
+    bool accountHasCode(EthBlockNumber block_number, const addr_t& address) const;
 
    private:
     StateAPI& state_api_;
