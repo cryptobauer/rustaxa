@@ -72,6 +72,14 @@ struct DebugPreviousBlockCertVotesReader {
   std::function<DebugPreviousBlockCertVotesView(uint64_t)> cert_votes_by_period;
 };
 
+// DebugPeriodDagBlocksReader is the debug RPC boundary for finalized DAG
+// blocks by PBFT period. It returns the public debug JSON array because the
+// legacy fallback path preserves DagBlock::getJson compatibility, including
+// optional VDF fields that are not exposed as a stable C++ DTO yet.
+struct DebugPeriodDagBlocksReader {
+  std::function<Json::Value(uint64_t)> finalized_dag_blocks_by_period;
+};
+
 class InvalidAddress : public std::exception {
  public:
   virtual const char* what() const noexcept { return "Invalid account address"; }
@@ -85,7 +93,8 @@ class InvalidTracingParams : public std::exception {
 class Debug : public DebugFace {
  public:
   explicit Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader = {},
-                 DebugTraceReader trace_reader = {}, DebugPreviousBlockCertVotesReader previous_cert_votes_reader = {});
+                 DebugTraceReader trace_reader = {}, DebugPreviousBlockCertVotesReader previous_cert_votes_reader = {},
+                 DebugPeriodDagBlocksReader period_dag_blocks_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"debug", "1.0"}}; }
 
   virtual Json::Value debug_traceTransaction(const std::string& param1) override;
@@ -114,6 +123,7 @@ class Debug : public DebugFace {
   DebugDposReader dpos_reader_;
   DebugTraceReader trace_reader_;
   DebugPreviousBlockCertVotesReader previous_cert_votes_reader_;
+  DebugPeriodDagBlocksReader period_dag_blocks_reader_;
   const uint64_t kGasLimit = ((uint64_t)1 << 53) - 1;
 };
 

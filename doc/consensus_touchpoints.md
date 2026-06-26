@@ -496,6 +496,9 @@ Implemented first slice:
   PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. Rust-backed GraphQL DAG
   objects use the finalized-period facts carried by Rust DTOs and no longer fall back to live `PbftManager` period
   lookup; legacy C++ DAG objects still use the manager compatibility path.
+- Debug RPC legacy fallback `debug_getPeriodDagBlocks` now uses a dedicated `DebugPeriodDagBlocksReader` callback bundle
+  for finalized DAG block lookup instead of reading `DbStorage` directly from the public method. The default reader is
+  the remaining audited compatibility adapter and uses `ConsensusQueryApi` in Rust mode.
 - GraphQL `dagBlock` and `dagBlocks` now use `ConsensusQueryApi` for DAG hash, latest-level, and paged level-window
   reads in Rust mode instead of creating endpoint-local DAG storage query handles. Rust-backed GraphQL DAG object
   transaction expansion now resolves transaction payloads through `ConsensusQueryApi::consensus_query_transaction_by_hash`

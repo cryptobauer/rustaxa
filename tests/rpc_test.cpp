@@ -286,6 +286,30 @@ TEST_F(RPCTest, debug_previous_block_cert_votes_use_reader) {
   ASSERT_TRUE(*cert_votes_called);
 }
 
+TEST_F(RPCTest, debug_period_dag_blocks_use_reader) {
+  auto dag_blocks_called = std::make_shared<bool>(false);
+
+  net::DebugPeriodDagBlocksReader dag_blocks_reader;
+  dag_blocks_reader.finalized_dag_blocks_by_period = [dag_blocks_called](uint64_t period) {
+    *dag_blocks_called = true;
+    EXPECT_EQ(uint64_t(21), period);
+    Json::Value blocks(Json::arrayValue);
+    Json::Value block(Json::objectValue);
+    block["period"] = dev::toJS(uint64_t(21));
+    block["hash"] = dev::toJS(blk_hash_t::random());
+    blocks.append(std::move(block));
+    return blocks;
+  };
+
+  net::Debug debug_rpc(nullptr, 0, {}, {}, {}, std::move(dag_blocks_reader));
+
+  const auto result = debug_rpc.debug_getPeriodDagBlocks(dev::toJS(uint64_t(21)));
+  ASSERT_EQ(Json::ArrayIndex(1), result.size());
+  EXPECT_EQ(dev::toJS(uint64_t(21)), result[0]["period"].asString());
+  EXPECT_TRUE(result[0].isMember("hash"));
+  ASSERT_TRUE(*dag_blocks_called);
+}
+
 TEST_F(RPCTest, debug_trace_call_uses_debug_trace_reader) {
   const auto caller = addr_t::random();
   auto latest_called = std::make_shared<bool>(false);
