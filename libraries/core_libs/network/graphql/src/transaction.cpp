@@ -10,6 +10,26 @@
 using namespace std::literals;
 
 namespace graphql::taraxa {
+namespace {
+TransactionReceiptReader makeTransactionReceiptReader(
+    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+  TransactionReceiptReader reader;
+  reader.location = [final_chain](const ::taraxa::trx_hash_t& hash) {
+    if (!final_chain) {
+      return std::optional<::taraxa::TransactionLocation>{};
+    }
+    return final_chain->transactionLocation(hash);
+  };
+  reader.receipt = [final_chain](::taraxa::EthBlockNumber period, uint32_t position, const ::taraxa::trx_hash_t& hash) {
+    if (!final_chain) {
+      return std::optional<::taraxa::TransactionReceipt>{};
+    }
+    return final_chain->transactionReceipt(period, position, hash);
+  };
+  return reader;
+}
+}  // namespace
+
 #ifdef RUSTAXA_ENABLE
 namespace {
 dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
@@ -24,7 +44,28 @@ Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> fina
       trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_(std::move(transaction)),
-      location_(*final_chain_->transactionLocation(transaction_->getHash())) {}
+      receipt_reader_(makeTransactionReceiptReader(final_chain_)) {
+  if (receipt_reader_.location) {
+    if (auto location = receipt_reader_.location(transaction_->getHash())) {
+      location_ = *location;
+    }
+  }
+}
+
+Transaction::Transaction(TransactionReceiptReader receipt_reader,
+                         std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+                         std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+                         std::shared_ptr<::taraxa::Transaction> transaction) noexcept
+    : trx_manager_(std::move(trx_manager)),
+      get_block_by_num_(std::move(get_block_by_num)),
+      transaction_(std::move(transaction)),
+      receipt_reader_(std::move(receipt_reader)) {
+  if (receipt_reader_.location) {
+    if (auto location = receipt_reader_.location(transaction_->getHash())) {
+      location_ = *location;
+    }
+  }
+}
 
 #ifdef RUSTAXA_ENABLE
 Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
@@ -37,6 +78,7 @@ Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> fina
       trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_(std::move(transaction)),
+      receipt_reader_(makeTransactionReceiptReader(final_chain_)),
       location_{transaction_view.block_number, transaction_view.transaction_index, transaction_view.is_system},
       receipt_lookup_complete_(true) {
   if (receipt_view.found) {
@@ -48,7 +90,9 @@ Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> fina
 
 bool Transaction::ensureReceipt() const noexcept {
   if (!receipt_ && !receipt_lookup_complete_) {
-    receipt_ = final_chain_->transactionReceipt(location_.period, location_.position, transaction_->getHash());
+    if (receipt_reader_.receipt) {
+      receipt_ = receipt_reader_.receipt(location_.period, location_.position, transaction_->getHash());
+    }
     receipt_lookup_complete_ = true;
   }
   return receipt_.has_value();

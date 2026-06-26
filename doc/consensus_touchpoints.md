@@ -529,6 +529,11 @@ Implemented first slice:
   and latest finalized block facts instead of letting account field resolvers call `FinalChain` directly. The default
   reader is backed by the existing FinalChain external-state adapter, preserving the external EVM/StateAPI boundary
   while giving GraphQL a narrow account-state API surface.
+- GraphQL `Transaction` materialization now uses a local `TransactionReceiptReader` callback bundle for finalized
+  transaction location and receipt facts instead of letting transaction field resolvers call `FinalChain` directly. The
+  default reader is still FinalChain-backed for compatibility, while Rust-mode block, DAG, and top-level transaction
+  routes can supply receipt DTOs from `ConsensusQueryApi` without exposing FinalChain location/receipt reads to the
+  GraphQL transaction object.
 - `taraxa_getPeriodLambda` now uses `ConsensusQueryApi` in Rust mode for exact persisted dynamic-lambda lookup instead
   of reading the metadata column through `DbStorage` directly.
 - `taraxa_getChainStats` now uses `ConsensusQueryApi` in Rust mode for latest finalized period and executed

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -15,9 +17,28 @@
 
 namespace graphql::taraxa {
 
+/**
+ * Read-only transaction finalization facts used by GraphQL transaction field resolvers.
+ *
+ * The reader supplies finalized transaction location and receipt data for one public
+ * transaction object. Implementations may adapt legacy `FinalChain` temporarily or a
+ * Rust query facade directly. Missing callbacks or missing rows are treated as absent
+ * data so field resolvers can return GraphQL nulls instead of driving consensus work.
+ */
+struct TransactionReceiptReader {
+  std::function<std::optional<::taraxa::TransactionLocation>(const ::taraxa::trx_hash_t&)> location;
+  std::function<std::optional<::taraxa::TransactionReceipt>(::taraxa::EthBlockNumber, uint32_t,
+                                                            const ::taraxa::trx_hash_t&)>
+      receipt;
+};
+
 class Transaction final : public std::enable_shared_from_this<Transaction> {
  public:
   explicit Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+                       std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+                       std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
+                       std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
+  explicit Transaction(TransactionReceiptReader receipt_reader,
                        std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
@@ -54,6 +75,7 @@ class Transaction final : public std::enable_shared_from_this<Transaction> {
   std::shared_ptr<::taraxa::TransactionManager> trx_manager_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
   std::shared_ptr<::taraxa::Transaction> transaction_;
+  TransactionReceiptReader receipt_reader_;
   // Caching for performance
   mutable std::optional<::taraxa::TransactionReceipt> receipt_;
   ::taraxa::TransactionLocation location_;

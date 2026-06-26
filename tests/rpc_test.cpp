@@ -10,6 +10,7 @@
 #include "graphql/account.hpp"
 #include "graphql/mutation.hpp"
 #include "graphql/sync_state.hpp"
+#include "graphql/transaction.hpp"
 #include "graphql/types/current_state.hpp"
 #include "network/rpc/Debug.h"
 #include "network/rpc/Taraxa.h"
@@ -381,6 +382,39 @@ TEST_F(RPCTest, graphql_mutation_uses_transaction_api) {
 
   EXPECT_EQ(dev::toJS(trx->getHash()), result.get<std::string>());
   ASSERT_TRUE(*insert_called);
+}
+
+TEST_F(RPCTest, graphql_transaction_uses_receipt_reader) {
+  const auto trx = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  auto location_called = std::make_shared<bool>(false);
+  auto receipt_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::TransactionReceiptReader reader;
+  reader.location = [location_called, trx](const trx_hash_t& hash) {
+    *location_called = true;
+    EXPECT_EQ(trx->getHash(), hash);
+    return std::optional<TransactionLocation>(TransactionLocation{9, 2, false});
+  };
+  reader.receipt = [receipt_called, trx](EthBlockNumber period, uint32_t position, const trx_hash_t& hash) {
+    *receipt_called = true;
+    EXPECT_EQ(9, period);
+    EXPECT_EQ(2, position);
+    EXPECT_EQ(trx->getHash(), hash);
+    TransactionReceipt receipt;
+    receipt.status_code = 1;
+    receipt.gas_used = 21000;
+    receipt.cumulative_gas_used = 42000;
+    return std::optional<TransactionReceipt>(receipt);
+  };
+
+  graphql::taraxa::Transaction transaction(std::move(reader), nullptr, [](EthBlockNumber) { return nullptr; }, trx);
+
+  EXPECT_EQ(2, transaction.getIndex());
+  EXPECT_EQ(1, transaction.getStatus()->get<int>());
+  EXPECT_EQ(21000, transaction.getGasUsed()->get<int>());
+  EXPECT_EQ(42000, transaction.getCumulativeGasUsed()->get<int>());
+  ASSERT_TRUE(*location_called);
+  ASSERT_TRUE(*receipt_called);
 }
 
 TEST_F(RPCTest, eth_estimateGas) {
