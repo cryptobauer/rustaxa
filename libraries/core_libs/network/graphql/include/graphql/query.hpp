@@ -5,6 +5,7 @@
 #include "final_chain/final_chain.hpp"
 #include "graphql/account.hpp"
 #include "graphql/block.hpp"
+#include "graphql/types/dag_block.hpp"
 #include "network/live_status.hpp"
 #include "network/network.hpp"
 #include "pbft/pbft_manager.hpp"
@@ -12,6 +13,19 @@
 #include "transaction/transaction_manager.hpp"
 
 namespace graphql::taraxa {
+
+// QueryDagBlockReader is GraphQL Query's DAG block acquisition boundary. It
+// supplies the top-level DAG block lists and default levels needed by Query
+// without exposing DagManager, DbStorage, or FinalChain period lookups to the
+// public GraphQL query methods.
+struct QueryDagBlockReader {
+  std::function<std::shared_ptr<::taraxa::DagBlock>(const ::taraxa::blk_hash_t&)> block_by_hash;
+  std::function<::taraxa::level_t()> latest_level;
+  std::function<uint64_t()> latest_finalized_period;
+  std::function<std::vector<std::shared_ptr<::taraxa::DagBlock>>(::taraxa::level_t)> blocks_by_level;
+  std::function<std::vector<std::shared_ptr<::taraxa::DagBlock>>(uint64_t)> finalized_blocks_by_period;
+};
+
 class Query {
  public:
   explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
@@ -20,7 +34,9 @@ class Query {
                  std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
                  std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
                  uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
-  explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0) noexcept;
+  explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryDagBlockReader dag_block_reader = {},
+                 DagBlockTransactionReader dag_block_transaction_reader = {},
+                 DagBlockPeriodReader dag_block_period_reader = {}) noexcept;
 
   std::shared_ptr<object::Block> getBlock(std::optional<response::Value>&& numberArg,
                                           std::optional<response::Value>&& hashArg) const;
@@ -53,6 +69,9 @@ class Query {
   const uint64_t kChainId;
   ::taraxa::net::LiveStatusReader live_status_;
   AccountStateReader account_reader_;
+  QueryDagBlockReader dag_block_reader_;
+  DagBlockTransactionReader dag_block_transaction_reader_;
+  DagBlockPeriodReader dag_block_period_reader_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
 };
 

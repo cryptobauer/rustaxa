@@ -1174,6 +1174,100 @@ TEST_F(RPCTest, graphql_query_account_uses_account_reader) {
   ASSERT_TRUE(*account_called);
 }
 
+TEST_F(RPCTest, graphql_query_dag_blocks_use_query_dag_block_reader) {
+  auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  const auto transaction_hash = transaction->getHash();
+  auto level_four_block = std::make_shared<DagBlock>(blk_hash_t(4), level_t(4), vec_blk_t{},
+                                                     vec_trx_t{transaction_hash}, secret_t::random());
+  auto level_five_block =
+      std::make_shared<DagBlock>(blk_hash_t(5), level_t(5), vec_blk_t{}, vec_trx_t{}, secret_t::random());
+  const auto level_four_hash = level_four_block->getHash();
+
+  auto by_hash_called = std::make_shared<bool>(false);
+  auto latest_level_called = std::make_shared<int>(0);
+  auto latest_period_called = std::make_shared<bool>(false);
+  auto level_requests = std::make_shared<std::vector<level_t>>();
+  auto finalized_period_called = std::make_shared<bool>(false);
+  auto transaction_called = std::make_shared<bool>(false);
+  auto period_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::AccountStateReader account_reader;
+  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::QueryDagBlockReader dag_reader;
+  dag_reader.block_by_hash = [by_hash_called, level_four_block, level_four_hash](const blk_hash_t& requested_hash) {
+    *by_hash_called = true;
+    EXPECT_EQ(level_four_hash, requested_hash);
+    return level_four_block;
+  };
+  dag_reader.latest_level = [latest_level_called] {
+    ++*latest_level_called;
+    return level_t(5);
+  };
+  dag_reader.latest_finalized_period = [latest_period_called] {
+    *latest_period_called = true;
+    return uint64_t(9);
+  };
+  dag_reader.blocks_by_level = [level_requests, level_four_block, level_five_block](level_t requested_level) {
+    level_requests->push_back(requested_level);
+    if (requested_level == level_t(4)) {
+      return std::vector<std::shared_ptr<DagBlock>>{level_four_block};
+    }
+    if (requested_level == level_t(5)) {
+      return std::vector<std::shared_ptr<DagBlock>>{level_five_block};
+    }
+    return std::vector<std::shared_ptr<DagBlock>>{};
+  };
+  dag_reader.finalized_blocks_by_period = [finalized_period_called, level_four_block](uint64_t requested_period) {
+    *finalized_period_called = true;
+    EXPECT_EQ(uint64_t(9), requested_period);
+    return std::vector<std::shared_ptr<DagBlock>>{level_four_block};
+  };
+
+  graphql::taraxa::DagBlockTransactionReader transaction_reader;
+  transaction_reader.transaction_by_hash = [transaction_called, transaction,
+                                            transaction_hash](const trx_hash_t& requested_hash) {
+    *transaction_called = true;
+    EXPECT_EQ(transaction_hash, requested_hash);
+    return transaction;
+  };
+
+  graphql::taraxa::DagBlockPeriodReader period_reader;
+  period_reader.period_by_hash = [period_called, level_four_hash](const blk_hash_t& requested_hash) {
+    *period_called = true;
+    EXPECT_EQ(level_four_hash, requested_hash);
+    return std::optional<uint64_t>(9);
+  };
+
+  graphql::taraxa::Query query(std::move(account_reader), 0, std::move(dag_reader), std::move(transaction_reader),
+                               std::move(period_reader));
+
+  ASSERT_NE(nullptr, query.getDagBlock(graphql::response::Value(level_four_hash.toString())));
+  ASSERT_TRUE(*by_hash_called);
+
+  ASSERT_NE(nullptr, query.getDagBlock(std::nullopt));
+  ASSERT_EQ(1, *latest_level_called);
+  ASSERT_EQ(std::vector<level_t>{level_t(5)}, *level_requests);
+
+  const auto period_blocks = query.getPeriodDagBlocks(std::nullopt);
+  ASSERT_EQ(1, period_blocks.size());
+  ASSERT_TRUE(*latest_period_called);
+  ASSERT_TRUE(*finalized_period_called);
+
+  const auto level_blocks =
+      query.getDagBlocks(graphql::response::Value(4), std::optional<int>(2), std::optional<bool>(false));
+  ASSERT_EQ(2, level_blocks.size());
+  ASSERT_EQ(2, *latest_level_called);
+  ASSERT_EQ((std::vector<level_t>{level_t(5), level_t(4), level_t(5)}), *level_requests);
+}
+
 TEST_F(RPCTest, transaction_json) {
   auto nonce = 0;
   auto trx = std::make_shared<Transaction>(nonce, 100, 1000000000, 100000, dev::bytes(),

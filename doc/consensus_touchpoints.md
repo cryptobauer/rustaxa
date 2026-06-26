@@ -491,6 +491,10 @@ Implemented first slice:
   reads in Rust mode instead of creating endpoint-local DAG storage query handles. Rust-backed GraphQL DAG object
   transaction expansion now resolves transaction payloads through `ConsensusQueryApi::consensus_query_transaction_by_hash`
   instead of calling `TransactionManager`.
+- GraphQL top-level legacy DAG block acquisition now uses a dedicated `QueryDagBlockReader` callback bundle for DAG hash
+  lookup, latest-level lookup, level-window block lookup, latest finalized-period lookup, and finalized-period block
+  lookup instead of reading `DagManager`, `DbStorage`, or `FinalChain` directly from `dagBlock`, `dagBlocks`, and
+  `periodDagBlocks` fallback methods.
 - GraphQL top-level `transaction(hash)` now uses `ConsensusQueryApi` for storage-backed transaction payload lookup in
   Rust mode instead of asking the live `TransactionManager` to resolve the hash. The query view returns canonical RLP
   plus source classification for pending, finalized regular, and finalized system transaction materialization.
