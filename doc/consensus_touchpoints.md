@@ -439,6 +439,9 @@ Implemented first slice:
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` in Rust mode for
   PBFT hash-by-period lookup plus finalized block header, hash-to-number, and latest-block reads instead of creating
   endpoint-local period-storage query handles or reading `FinalChain` directly for those facts.
+- GraphQL `Block.transactionCount`, `Block.transactions`, and `Block.transactionAt` now use `ConsensusQueryApi` in Rust
+  mode for finalized transaction counts, indexed transaction payloads, and receipt DTOs instead of lazy-loading
+  `FinalChain` transaction vectors and receipts from the block object.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
 - `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of

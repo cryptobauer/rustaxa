@@ -92,7 +92,8 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
                                                std::optional<response::Value>&& hash) const {
 #ifdef RUSTAXA_ENABLE
   {
-    const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
+        rustaxa::create_consensus_query_api(db_->rustStorage()));
     uint64_t block_number = 0;
     if (number) {
       const auto parsed_number = number->get<int>();
@@ -102,16 +103,16 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
       block_number = static_cast<uint64_t>(parsed_number);
     } else if (hash) {
       const auto block_number_lookup =
-          query_api->consensus_query_final_chain_block_number_by_hash(dev::h256(hash->get<std::string>()).asArray());
+          (*query_api)->consensus_query_final_chain_block_number_by_hash(dev::h256(hash->get<std::string>()).asArray());
       if (!block_number_lookup.found) {
         return nullptr;
       }
       block_number = block_number_lookup.value;
     } else {
-      block_number = query_api->consensus_query_final_chain_last_block_number();
+      block_number = (*query_api)->consensus_query_final_chain_last_block_number();
     }
 
-    const auto block_view = query_api->consensus_query_final_chain_block_by_number(block_number);
+    const auto block_view = (*query_api)->consensus_query_final_chain_block_by_number(block_number);
     auto block_header = blockHeaderFromView(block_view);
     if (!block_header) {
       return nullptr;
@@ -125,8 +126,17 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
       pbft_block_hash = hashFromBridge(block_view.pbft_block_hash);
     }
 
-    return std::make_shared<object::Block>(
-        std::make_shared<Block>(final_chain_, transaction_manager_, get_block_by_num_, pbft_block_hash, block_header));
+    return std::make_shared<object::Block>(std::make_shared<Block>(
+        final_chain_, transaction_manager_, get_block_by_num_, pbft_block_hash, block_header,
+        [query_api](::taraxa::EthBlockNumber block_number) {
+          return (*query_api)->consensus_query_transaction_count_by_block_number(block_number);
+        },
+        [query_api](::taraxa::EthBlockNumber block_number, uint64_t index) {
+          return (*query_api)->consensus_query_transaction_by_block_number_and_index(block_number, index);
+        },
+        [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+          return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+        }));
   }
 #endif
 
