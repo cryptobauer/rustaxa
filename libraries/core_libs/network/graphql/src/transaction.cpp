@@ -2,6 +2,7 @@
 
 #include <optional>
 
+#include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
 #include "graphql/log.hpp"
 #include "libdevcore/CommonJS.h"
@@ -9,6 +10,11 @@
 using namespace std::literals;
 
 namespace graphql::taraxa {
+#ifdef RUSTAXA_ENABLE
+namespace {
+dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+}  // namespace
+#endif
 
 Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                          std::shared_ptr<::taraxa::TransactionManager> trx_manager,
@@ -19,6 +25,34 @@ Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> fina
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_(std::move(transaction)),
       location_(*final_chain_->transactionLocation(transaction_->getHash())) {}
+
+#ifdef RUSTAXA_ENABLE
+Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+                         std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+                         std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+                         std::shared_ptr<::taraxa::Transaction> transaction,
+                         const rustaxa::TransactionPublicView& transaction_view,
+                         const rustaxa::TransactionReceiptPublicView& receipt_view) noexcept
+    : final_chain_(std::move(final_chain)),
+      trx_manager_(std::move(trx_manager)),
+      get_block_by_num_(std::move(get_block_by_num)),
+      transaction_(std::move(transaction)),
+      location_{transaction_view.block_number, transaction_view.transaction_index, transaction_view.is_system},
+      receipt_lookup_complete_(true) {
+  if (receipt_view.found) {
+    auto receipt_bytes = bytesFromBridge(receipt_view.receipt_rlp);
+    receipt_ = ::taraxa::util::rlp_dec<::taraxa::TransactionReceipt>(dev::RLP(receipt_bytes));
+  }
+}
+#endif
+
+bool Transaction::ensureReceipt() const noexcept {
+  if (!receipt_ && !receipt_lookup_complete_) {
+    receipt_ = final_chain_->transactionReceipt(location_.period, location_.position, transaction_->getHash());
+    receipt_lookup_complete_ = true;
+  }
+  return receipt_.has_value();
+}
 
 response::Value Transaction::getHash() const noexcept { return response::Value(transaction_->getHash().toString()); }
 
@@ -52,44 +86,29 @@ response::Value Transaction::getInputData() const noexcept {
 std::shared_ptr<object::Block> Transaction::getBlock() const { return get_block_by_num_(location_.period); }
 
 std::optional<response::Value> Transaction::getStatus() const noexcept {
-  if (!receipt_) {
-    receipt_ = final_chain_->transactionReceipt(location_.period, location_.position, transaction_->getHash());
-    if (!receipt_) return std::nullopt;
-  }
+  if (!ensureReceipt()) return std::nullopt;
   return response::Value(static_cast<int>(receipt_->status_code));
 }
 
 std::optional<response::Value> Transaction::getGasUsed() const noexcept {
-  if (!receipt_) {
-    receipt_ = final_chain_->transactionReceipt(location_.period, location_.position, transaction_->getHash());
-    if (!receipt_) return std::nullopt;
-  }
+  if (!ensureReceipt()) return std::nullopt;
   return response::Value(static_cast<int>(receipt_->gas_used));
 }
 
 std::optional<response::Value> Transaction::getCumulativeGasUsed() const noexcept {
-  if (!receipt_) {
-    receipt_ = final_chain_->transactionReceipt(location_.period, location_.position, transaction_->getHash());
-    if (!receipt_) return std::nullopt;
-  }
+  if (!ensureReceipt()) return std::nullopt;
   return response::Value(static_cast<int>(receipt_->cumulative_gas_used));
 }
 
 std::shared_ptr<object::Account> Transaction::getCreatedContract(std::optional<response::Value>&&) const noexcept {
-  if (!receipt_) {
-    receipt_ = final_chain_->transactionReceipt(location_.period, location_.position, transaction_->getHash());
-    if (!receipt_) return nullptr;
-  }
+  if (!ensureReceipt()) return nullptr;
   if (!receipt_->new_contract_address) return nullptr;
   return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, *receipt_->new_contract_address));
 }
 
 std::optional<std::vector<std::shared_ptr<object::Log>>> Transaction::getLogs() const noexcept {
   std::vector<std::shared_ptr<object::Log>> logs;
-  if (!receipt_) {
-    receipt_ = final_chain_->transactionReceipt(location_.period, location_.position, transaction_->getHash());
-    if (!receipt_) return std::nullopt;
-  }
+  if (!ensureReceipt()) return std::nullopt;
 
   for (int i = 0; i < static_cast<int>(receipt_->logs.size()); ++i) {
     logs.push_back(std::make_shared<object::Log>(

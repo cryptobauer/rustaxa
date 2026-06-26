@@ -9,6 +9,10 @@
 #include "transaction/receipt.hpp"
 #include "transaction/transaction_manager.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 namespace graphql::taraxa {
 
 class Transaction final : public std::enable_shared_from_this<Transaction> {
@@ -17,6 +21,14 @@ class Transaction final : public std::enable_shared_from_this<Transaction> {
                        std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
+#ifdef RUSTAXA_ENABLE
+  explicit Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
+                       std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+                       std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
+                       std::shared_ptr<::taraxa::Transaction> transaction,
+                       const rustaxa::TransactionPublicView& transaction_view,
+                       const rustaxa::TransactionReceiptPublicView& receipt_view) noexcept;
+#endif
 
   response::Value getHash() const noexcept;
   response::Value getNonce() const noexcept;
@@ -45,6 +57,9 @@ class Transaction final : public std::enable_shared_from_this<Transaction> {
   // Caching for performance
   mutable std::optional<::taraxa::TransactionReceipt> receipt_;
   ::taraxa::TransactionLocation location_;
+  mutable bool receipt_lookup_complete_ = false;
+
+  bool ensureReceipt() const noexcept;
 };
 
 }  // namespace graphql::taraxa

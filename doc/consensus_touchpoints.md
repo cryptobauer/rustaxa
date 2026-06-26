@@ -454,6 +454,9 @@ Implemented first slice:
 - GraphQL top-level `transaction(hash)` now uses `ConsensusQueryApi` for storage-backed transaction payload lookup in
   Rust mode instead of asking the live `TransactionManager` to resolve the hash. The query view returns canonical RLP
   plus source classification for pending, finalized regular, and finalized system transaction materialization.
+- GraphQL top-level `transaction(hash)` expanded receipt fields (`status`, `gasUsed`, `cumulativeGasUsed`,
+  `createdContract`, and `logs`) now consume the `ConsensusQueryApi` transaction-receipt DTO in Rust mode instead of
+  lazy-loading the transaction location and receipt through `FinalChain`.
 - `eth_getTransactionByHash` and `eth_getTransactionReceipt` now use `ConsensusQueryApi` in Rust mode for
   location-aware transaction payload and receipt lookup instead of calling the generic ETH transaction callback or
   reading `FinalChain` transaction location/receipt rows directly.
@@ -469,8 +472,8 @@ Implemented first slice:
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing account-state, expanded transaction, debug receipt/log, log filtering, and sync/status routes remain
-  compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing account-state, non-GraphQL expanded transaction routes, debug receipt/log, log filtering, and sync/status
+  routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal
 

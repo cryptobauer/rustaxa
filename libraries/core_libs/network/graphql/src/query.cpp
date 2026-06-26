@@ -159,11 +159,14 @@ std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& f
 std::shared_ptr<object::Transaction> Query::getTransaction(response::Value&& hashArg) const {
 #ifdef RUSTAXA_ENABLE
   const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
-  auto transaction = materializeTransactionView(
-      query_api->consensus_query_transaction_by_hash(::taraxa::trx_hash_t(hashArg.get<std::string>()).asArray()));
+  const auto transaction_hash = ::taraxa::trx_hash_t(hashArg.get<std::string>());
+  auto transaction_view = query_api->consensus_query_transaction_by_hash(transaction_hash.asArray());
+  auto transaction = materializeTransactionView(transaction_view);
   if (transaction) {
+    auto receipt_view = query_api->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
     return std::make_shared<object::Transaction>(
-        std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction)));
+        std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction),
+                                      transaction_view, receipt_view));
   }
   return nullptr;
 #endif
