@@ -310,6 +310,32 @@ TEST_F(RPCTest, debug_period_dag_blocks_use_reader) {
   ASSERT_TRUE(*dag_blocks_called);
 }
 
+TEST_F(RPCTest, debug_period_transactions_use_reader) {
+  auto transactions_called = std::make_shared<bool>(false);
+
+  net::DebugPeriodTransactionsReader transactions_reader;
+  transactions_reader.transactions_with_receipts_by_period = [transactions_called](uint64_t period) {
+    *transactions_called = true;
+    EXPECT_EQ(uint64_t(31), period);
+    Json::Value transactions(Json::arrayValue);
+    Json::Value transaction(Json::objectValue);
+    transaction["blockNumber"] = dev::toJS(uint64_t(31));
+    transaction["transactionHash"] = dev::toJS(trx_hash_t::random());
+    transaction["status"] = dev::toJS(uint64_t(1));
+    transactions.append(std::move(transaction));
+    return transactions;
+  };
+
+  net::Debug debug_rpc(nullptr, 0, {}, {}, {}, {}, std::move(transactions_reader));
+
+  const auto result = debug_rpc.debug_getPeriodTransactionsWithReceipts(dev::toJS(uint64_t(31)));
+  ASSERT_EQ(Json::ArrayIndex(1), result.size());
+  EXPECT_EQ(dev::toJS(uint64_t(31)), result[0]["blockNumber"].asString());
+  EXPECT_TRUE(result[0].isMember("transactionHash"));
+  EXPECT_EQ(dev::toJS(uint64_t(1)), result[0]["status"].asString());
+  ASSERT_TRUE(*transactions_called);
+}
+
 TEST_F(RPCTest, debug_trace_call_uses_debug_trace_reader) {
   const auto caller = addr_t::random();
   auto latest_called = std::make_shared<bool>(false);

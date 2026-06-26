@@ -546,6 +546,9 @@ Implemented first slice:
   snapshot described below.
 - `debug_getPeriodTransactionsWithReceipts` now uses the same `ConsensusQueryApi` block-receipts DTO in Rust mode
   instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
+- Debug RPC legacy fallback `debug_getPeriodTransactionsWithReceipts` now uses a dedicated
+  `DebugPeriodTransactionsReader` callback bundle for finalized transaction and receipt JSON materialization instead of
+  reading `DbStorage` or `FinalChain` directly from the public method.
 - `debug_traceTransaction`, `trace_replayTransaction`, and `trace_replayBlockTransactions` now use
   `ConsensusQueryApi` in Rust mode for finalized transaction location/count/indexed payload materialization instead of
   reading period transactions through `FinalChain` or `DbStorage`. EVM tracing, trace parameter handling, account nonce

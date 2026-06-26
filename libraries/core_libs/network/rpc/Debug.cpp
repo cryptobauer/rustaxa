@@ -163,21 +163,26 @@ void fillMissingDebugPreviousBlockCertVotesReaderCallbacks(DebugPreviousBlockCer
 
 void fillMissingDebugPeriodDagBlocksReaderCallbacks(DebugPeriodDagBlocksReader& reader,
                                                     std::weak_ptr<taraxa::AppBase> app);
+void fillMissingDebugPeriodTransactionsReaderCallbacks(DebugPeriodTransactionsReader& reader,
+                                                       std::weak_ptr<taraxa::AppBase> app);
 }  // namespace
 
 Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader,
              DebugTraceReader trace_reader, DebugPreviousBlockCertVotesReader previous_cert_votes_reader,
-             DebugPeriodDagBlocksReader period_dag_blocks_reader)
+             DebugPeriodDagBlocksReader period_dag_blocks_reader,
+             DebugPeriodTransactionsReader period_transactions_reader)
     : app_(app),
       dpos_reader_(std::move(dpos_reader)),
       trace_reader_(std::move(trace_reader)),
       previous_cert_votes_reader_(std::move(previous_cert_votes_reader)),
       period_dag_blocks_reader_(std::move(period_dag_blocks_reader)),
+      period_transactions_reader_(std::move(period_transactions_reader)),
       kGasLimit(gas_limit) {
   fillMissingDebugDposReaderCallbacks(dpos_reader_, app_);
   fillMissingDebugTraceReaderCallbacks(trace_reader_, app_);
   fillMissingDebugPreviousBlockCertVotesReaderCallbacks(previous_cert_votes_reader_, app_);
   fillMissingDebugPeriodDagBlocksReaderCallbacks(period_dag_blocks_reader_, app_);
+  fillMissingDebugPeriodTransactionsReaderCallbacks(period_transactions_reader_, app_);
 }
 
 #ifdef RUSTAXA_ENABLE
@@ -336,6 +341,75 @@ void fillMissingDebugPeriodDagBlocksReaderCallbacks(DebugPeriodDagBlocksReader& 
     reader.finalized_dag_blocks_by_period = std::move(defaults.finalized_dag_blocks_by_period);
   }
 }
+
+DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<taraxa::AppBase> app) {
+  DebugPeriodTransactionsReader reader;
+  reader.transactions_with_receipts_by_period = [app](uint64_t period) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_PERIOD_TRANSACTIONS_READER_APP_EXPIRED");
+    }
+    auto final_chain = node->getFinalChain();
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto receipt_views = query_api->consensus_query_transaction_receipts_by_block_number(period);
+    Json::Value result(Json::arrayValue);
+    for (const auto& view : receipt_views) {
+      auto trx = materializeReceiptTransactionView(view);
+      if (!trx) {
+        throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_MISSING");
+      }
+      auto location = receiptLocationFromView(view);
+      auto transaction = rpc::eth::LocalisedTransaction{trx, location};
+      auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
+      auto receipt = rpc::eth::LocalisedTransactionReceipt{util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)),
+                                                           location, trx->getSender(), trx->getReceiver()};
+      auto receipt_json = rpc::eth::toJson(receipt);
+      receipt_json.removeMember("transactionHash");
+      result.append(util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json)));
+    }
+    return result;
+#endif
+
+    auto block_hash = final_chain->blockHash(period);
+    auto trxs = node->getDB()->getPeriodTransactions(period);  // RUSTAXA_QUERY_COMPAT_READ
+    if (!trxs.has_value() || trxs->empty()) {
+      return Json::Value(Json::arrayValue);
+    }
+
+    auto receipts = final_chain->blockReceipts(period);
+
+    return util::transformToJsonParallel(*trxs, [&final_chain, &receipts, &block_hash, &period](const auto& trx,
+                                                                                                auto index) {
+      auto hash = trx->getHash();
+
+      auto location = rpc::eth::ExtendedTransactionLocation{{TransactionLocation{period, index}, *block_hash}, hash};
+      auto transaction = rpc::eth::LocalisedTransaction{trx, location};
+      rpc::eth::LocalisedTransactionReceipt receipt;
+      if (!receipts) {
+        receipt = rpc::eth::LocalisedTransactionReceipt{final_chain->transactionReceipt(period, index, hash).value(),
+                                                        location, trx->getSender(), trx->getReceiver()};
+      } else {
+        receipt =
+            rpc::eth::LocalisedTransactionReceipt{receipts->at(index), location, trx->getSender(), trx->getReceiver()};
+      }
+
+      auto receipt_json = rpc::eth::toJson(receipt);
+      receipt_json.removeMember("transactionHash");
+
+      return util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json));
+    });
+  };
+  return reader;
+}
+
+void fillMissingDebugPeriodTransactionsReaderCallbacks(DebugPeriodTransactionsReader& reader,
+                                                       std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeDebugPeriodTransactionsReader(std::move(app));
+  if (!reader.transactions_with_receipts_by_period) {
+    reader.transactions_with_receipts_by_period = std::move(defaults.transactions_with_receipts_by_period);
+  }
+}
 }  // namespace
 
 Json::Value Debug::debug_traceCall(const Json::Value& call_params, const std::string& blk_num) {
@@ -433,60 +507,7 @@ Json::Value Debug::trace_replayBlockTransactions(const std::string& block_num, c
 
 Json::Value Debug::debug_getPeriodTransactionsWithReceipts(const std::string& _period) {
   try {
-    auto node = app_.lock();
-    if (!node) {
-      BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
-    }
-    auto final_chain = node->getFinalChain();
-    auto period = dev::jsToInt(_period);
-#ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto receipt_views = query_api->consensus_query_transaction_receipts_by_block_number(period);
-    Json::Value result(Json::arrayValue);
-    for (const auto& view : receipt_views) {
-      auto trx = materializeReceiptTransactionView(view);
-      if (!trx) {
-        throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_TRANSACTION_MISSING");
-      }
-      auto location = receiptLocationFromView(view);
-      auto transaction = rpc::eth::LocalisedTransaction{trx, location};
-      auto receipt_bytes = bytesFromBridge(view.receipt_rlp);
-      auto receipt = rpc::eth::LocalisedTransactionReceipt{util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)),
-                                                           location, trx->getSender(), trx->getReceiver()};
-      auto receipt_json = rpc::eth::toJson(receipt);
-      receipt_json.removeMember("transactionHash");
-      result.append(util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json)));
-    }
-    return result;
-#endif
-    auto block_hash = final_chain->blockHash(period);
-    auto trxs = node->getDB()->getPeriodTransactions(period);  // RUSTAXA_QUERY_COMPAT_READ
-    if (!trxs.has_value() || trxs->empty()) {
-      return Json::Value(Json::arrayValue);
-    }
-
-    auto receipts = final_chain->blockReceipts(period);
-
-    return util::transformToJsonParallel(*trxs, [&final_chain, &receipts, &block_hash, &period](const auto& trx,
-                                                                                                auto index) {
-      auto hash = trx->getHash();
-
-      auto location = rpc::eth::ExtendedTransactionLocation{{TransactionLocation{period, index}, *block_hash}, hash};
-      auto transaction = rpc::eth::LocalisedTransaction{trx, location};
-      rpc::eth::LocalisedTransactionReceipt receipt;
-      if (!receipts) {
-        receipt = rpc::eth::LocalisedTransactionReceipt{final_chain->transactionReceipt(period, index, hash).value(),
-                                                        location, trx->getSender(), trx->getReceiver()};
-      } else {
-        receipt =
-            rpc::eth::LocalisedTransactionReceipt{receipts->at(index), location, trx->getSender(), trx->getReceiver()};
-      }
-
-      auto receipt_json = rpc::eth::toJson(receipt);
-      receipt_json.removeMember("transactionHash");
-
-      return util::mergeJsons(rpc::eth::toJson(transaction), std::move(receipt_json));
-    });
+    return period_transactions_reader_.transactions_with_receipts_by_period(dev::jsToInt(_period));
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));
   }

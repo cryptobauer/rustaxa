@@ -80,6 +80,15 @@ struct DebugPeriodDagBlocksReader {
   std::function<Json::Value(uint64_t)> finalized_dag_blocks_by_period;
 };
 
+// DebugPeriodTransactionsReader is the debug RPC boundary for finalized
+// transaction and receipt materialization by PBFT period. It returns the public
+// debug JSON array because the fallback path preserves legacy
+// Transaction/Receipt JSON merging while Rust mode uses ConsensusQueryApi DTOs
+// inside the default adapter.
+struct DebugPeriodTransactionsReader {
+  std::function<Json::Value(uint64_t)> transactions_with_receipts_by_period;
+};
+
 class InvalidAddress : public std::exception {
  public:
   virtual const char* what() const noexcept { return "Invalid account address"; }
@@ -94,7 +103,8 @@ class Debug : public DebugFace {
  public:
   explicit Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader = {},
                  DebugTraceReader trace_reader = {}, DebugPreviousBlockCertVotesReader previous_cert_votes_reader = {},
-                 DebugPeriodDagBlocksReader period_dag_blocks_reader = {});
+                 DebugPeriodDagBlocksReader period_dag_blocks_reader = {},
+                 DebugPeriodTransactionsReader period_transactions_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"debug", "1.0"}}; }
 
   virtual Json::Value debug_traceTransaction(const std::string& param1) override;
@@ -124,6 +134,7 @@ class Debug : public DebugFace {
   DebugTraceReader trace_reader_;
   DebugPreviousBlockCertVotesReader previous_cert_votes_reader_;
   DebugPeriodDagBlocksReader period_dag_blocks_reader_;
+  DebugPeriodTransactionsReader period_transactions_reader_;
   const uint64_t kGasLimit = ((uint64_t)1 << 53) - 1;
 };
 
