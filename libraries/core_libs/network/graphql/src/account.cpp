@@ -6,7 +6,6 @@ using namespace std::literals;
 
 namespace graphql::taraxa {
 
-namespace {
 AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain) {
   AccountStateReader reader;
   reader.account_at = [final_chain](const dev::Address& address, std::optional<::taraxa::EthBlockNumber> block_number) {
@@ -22,7 +21,6 @@ AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain:
   reader.latest_finalized_block_number = [final_chain] { return final_chain->lastBlockNumber(); };
   return reader;
 }
-}  // namespace
 
 Account::Account(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain, dev::Address address,
                  ::taraxa::EthBlockNumber blk_n)

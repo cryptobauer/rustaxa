@@ -16,12 +16,18 @@ namespace graphql::taraxa {
 // context; missing accounts are represented by std::nullopt, while field-level
 // read failures keep the existing exception behavior of the backing adapter.
 struct AccountStateReader {
-  std::function<std::optional<::taraxa::state_api::Account>(const dev::Address&, std::optional<::taraxa::EthBlockNumber>)>
+  std::function<std::optional<::taraxa::state_api::Account>(const dev::Address&,
+                                                            std::optional<::taraxa::EthBlockNumber>)>
       account_at;
   std::function<dev::h256(const dev::Address&, const dev::u256&, std::optional<::taraxa::EthBlockNumber>)> storage_at;
   std::function<dev::bytes(const dev::Address&, std::optional<::taraxa::EthBlockNumber>)> code_at;
   std::function<::taraxa::EthBlockNumber()> latest_finalized_block_number;
 };
+
+// Builds the temporary compatibility adapter for GraphQL account-state reads.
+// The returned reader keeps the GraphQL object API narrow while the backing
+// implementation remains on the external FinalChain/StateAPI boundary.
+AccountStateReader makeAccountStateReader(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain);
 
 class Account {
  public:

@@ -2,7 +2,6 @@
 
 #include <optional>
 
-#include "graphql/account.hpp"
 #include "libdevcore/CommonJS.h"
 
 using namespace std::literals;
@@ -12,8 +11,13 @@ namespace graphql::taraxa {
 Log::Log(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
          std::shared_ptr<::taraxa::TransactionManager> trx_manager, std::shared_ptr<const Transaction> transaction,
          ::taraxa::LogEntry log, int index) noexcept
-    : final_chain_(std::move(final_chain)),
-      trx_manager_(std::move(trx_manager)),
+    : Log(makeAccountStateReader(std::move(final_chain)), std::move(transaction), std::move(log), index) {
+  (void)trx_manager;
+}
+
+Log::Log(AccountStateReader account_reader, std::shared_ptr<const Transaction> transaction, ::taraxa::LogEntry log,
+         int index) noexcept
+    : account_reader_(std::move(account_reader)),
       kTransaction(std::move(transaction)),
       kLog(std::move(log)),
       kIndex(index) {}
@@ -21,7 +25,7 @@ Log::Log(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
 int Log::getIndex() const noexcept { return kIndex; }
 
 std::shared_ptr<object::Account> Log::getAccount(std::optional<response::Value>&&) const noexcept {
-  return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, kLog.address));
+  return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, kLog.address));
 }
 
 std::vector<response::Value> Log::getTopics() const noexcept {

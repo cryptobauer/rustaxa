@@ -8,6 +8,7 @@
 
 #include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
+#include "graphql/log.hpp"
 #include "graphql/mutation.hpp"
 #include "graphql/sync_state.hpp"
 #include "graphql/transaction.hpp"
@@ -842,6 +843,33 @@ TEST_F(RPCTest, graphql_account_uses_query_callbacks) {
   EXPECT_EQ(static_cast<int>(account.nonce), graphql_account.getTransactionCount().get<int>());
   EXPECT_EQ(dev::toJS(dev::bytes{0x60, 0x02}), graphql_account.getCode().get<std::string>());
   EXPECT_EQ(dev::toJS(dev::h256(0x44)), graphql_account.getStorage(graphql::response::Value("0x4")).get<std::string>());
+}
+
+TEST_F(RPCTest, graphql_log_account_uses_account_reader) {
+  const auto log_address = dev::KeyPair::create().address();
+  auto account_called = std::make_shared<bool>(false);
+
+  state_api::Account account;
+  account.balance = 5;
+
+  graphql::taraxa::AccountStateReader reader;
+  reader.account_at = [account_called, log_address, account](const dev::Address& requested_address,
+                                                             std::optional<EthBlockNumber> block_number) {
+    *account_called = true;
+    EXPECT_EQ(log_address, requested_address);
+    EXPECT_FALSE(block_number.has_value());
+    return std::optional<state_api::Account>(account);
+  };
+  reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) { return dev::h256(); };
+  reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  LogEntry log;
+  log.address = log_address;
+  graphql::taraxa::Log graphql_log(std::move(reader), nullptr, std::move(log), 0);
+
+  ASSERT_NE(nullptr, graphql_log.getAccount(std::nullopt));
+  ASSERT_TRUE(*account_called);
 }
 
 TEST_F(RPCTest, transaction_json) {

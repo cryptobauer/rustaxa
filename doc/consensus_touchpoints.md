@@ -534,6 +534,10 @@ Implemented first slice:
   default reader is still FinalChain-backed for compatibility, while Rust-mode block, DAG, and top-level transaction
   routes can supply receipt DTOs from `ConsensusQueryApi` without exposing FinalChain location/receipt reads to the
   GraphQL transaction object.
+- GraphQL `Log.account`, plus transaction child log materialization, now reuses the `AccountStateReader` callback
+  bundle instead of storing or reading `FinalChain` inside the log object. The compatibility constructor still builds the
+  reader from the existing FinalChain external-state adapter, while Rust-mode transaction objects can pass the same
+  account reader through to logs.
 - `taraxa_getPeriodLambda` now uses `ConsensusQueryApi` in Rust mode for exact persisted dynamic-lambda lookup instead
   of reading the metadata column through `DbStorage` directly.
 - `taraxa_getChainStats` now uses `ConsensusQueryApi` in Rust mode for latest finalized period and executed

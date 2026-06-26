@@ -3,7 +3,6 @@
 #include <optional>
 
 #include "common/encoding_rlp.hpp"
-#include "graphql/account.hpp"
 #include "graphql/log.hpp"
 #include "libdevcore/CommonJS.h"
 
@@ -44,6 +43,7 @@ Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> fina
       trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_(std::move(transaction)),
+      account_reader_(makeAccountStateReader(final_chain_)),
       receipt_reader_(makeTransactionReceiptReader(final_chain_)) {
   if (receipt_reader_.location) {
     if (auto location = receipt_reader_.location(transaction_->getHash())) {
@@ -56,9 +56,17 @@ Transaction::Transaction(TransactionReceiptReader receipt_reader,
                          std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                          std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
                          std::shared_ptr<::taraxa::Transaction> transaction) noexcept
+    : Transaction(std::move(receipt_reader), AccountStateReader{}, std::move(trx_manager), std::move(get_block_by_num),
+                  std::move(transaction)) {}
+
+Transaction::Transaction(TransactionReceiptReader receipt_reader, AccountStateReader account_reader,
+                         std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+                         std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+                         std::shared_ptr<::taraxa::Transaction> transaction) noexcept
     : trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_(std::move(transaction)),
+      account_reader_(std::move(account_reader)),
       receipt_reader_(std::move(receipt_reader)) {
   if (receipt_reader_.location) {
     if (auto location = receipt_reader_.location(transaction_->getHash())) {
@@ -78,6 +86,7 @@ Transaction::Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> fina
       trx_manager_(std::move(trx_manager)),
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_(std::move(transaction)),
+      account_reader_(makeAccountStateReader(final_chain_)),
       receipt_reader_(makeTransactionReceiptReader(final_chain_)),
       location_{transaction_view.block_number, transaction_view.transaction_index, transaction_view.is_system},
       receipt_lookup_complete_(true) {
@@ -106,13 +115,13 @@ std::optional<int> Transaction::getIndex() const noexcept { return {location_.po
 
 std::shared_ptr<object::Account> Transaction::getFrom(std::optional<response::Value>&&) const {
   return std::make_shared<object::Account>(
-      std::make_shared<Account>(final_chain_, transaction_->getSender(), location_.period));
+      std::make_shared<Account>(account_reader_, transaction_->getSender(), location_.period));
 }
 
 std::shared_ptr<object::Account> Transaction::getTo(std::optional<response::Value>&&) const {
   if (!transaction_->getReceiver()) return nullptr;
   return std::make_shared<object::Account>(
-      std::make_shared<Account>(final_chain_, *transaction_->getReceiver(), location_.period));
+      std::make_shared<Account>(account_reader_, *transaction_->getReceiver(), location_.period));
 }
 
 response::Value Transaction::getValue() const noexcept { return response::Value(transaction_->getValue().str()); }
@@ -147,7 +156,7 @@ std::optional<response::Value> Transaction::getCumulativeGasUsed() const noexcep
 std::shared_ptr<object::Account> Transaction::getCreatedContract(std::optional<response::Value>&&) const noexcept {
   if (!ensureReceipt()) return nullptr;
   if (!receipt_->new_contract_address) return nullptr;
-  return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, *receipt_->new_contract_address));
+  return std::make_shared<object::Account>(std::make_shared<Account>(account_reader_, *receipt_->new_contract_address));
 }
 
 std::optional<std::vector<std::shared_ptr<object::Log>>> Transaction::getLogs() const noexcept {
@@ -156,7 +165,7 @@ std::optional<std::vector<std::shared_ptr<object::Log>>> Transaction::getLogs() 
 
   for (int i = 0; i < static_cast<int>(receipt_->logs.size()); ++i) {
     logs.push_back(std::make_shared<object::Log>(
-        std::make_shared<Log>(final_chain_, trx_manager_, shared_from_this(), receipt_->logs[i], i)));
+        std::make_shared<Log>(account_reader_, shared_from_this(), receipt_->logs[i], i)));
   }
 
   return logs;
