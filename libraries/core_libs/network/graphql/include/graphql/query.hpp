@@ -14,6 +14,18 @@
 
 namespace graphql::taraxa {
 
+// QueryBlockReader is GraphQL Query's finalized-block acquisition boundary. It
+// supplies block-number, header, and PBFT-link facts for top-level block
+// queries without exposing FinalChain or DbStorage reads to public GraphQL
+// query methods.
+struct QueryBlockReader {
+  std::function<::taraxa::EthBlockNumber()> latest_block_number;
+  std::function<std::optional<::taraxa::EthBlockNumber>(const dev::h256&)> block_number_by_hash;
+  std::function<std::shared_ptr<const ::taraxa::final_chain::BlockHeader>(std::optional<::taraxa::EthBlockNumber>)>
+      block_header;
+  std::function<std::optional<::taraxa::blk_hash_t>(::taraxa::EthBlockNumber)> pbft_hash_by_period;
+};
+
 // QueryDagBlockReader is GraphQL Query's DAG block acquisition boundary. It
 // supplies the top-level DAG block lists and default levels needed by Query
 // without exposing DagManager, DbStorage, or FinalChain period lookups to the
@@ -34,7 +46,8 @@ class Query {
                  std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
                  std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
                  uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
-  explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryDagBlockReader dag_block_reader = {},
+  explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryBlockReader block_reader = {},
+                 BlockTransactionReader block_transaction_reader = {}, QueryDagBlockReader dag_block_reader = {},
                  DagBlockTransactionReader dag_block_transaction_reader = {},
                  DagBlockPeriodReader dag_block_period_reader = {}) noexcept;
 
@@ -69,6 +82,8 @@ class Query {
   const uint64_t kChainId;
   ::taraxa::net::LiveStatusReader live_status_;
   AccountStateReader account_reader_;
+  QueryBlockReader block_reader_;
+  BlockTransactionReader block_transaction_reader_;
   QueryDagBlockReader dag_block_reader_;
   DagBlockTransactionReader dag_block_transaction_reader_;
   DagBlockPeriodReader dag_block_period_reader_;

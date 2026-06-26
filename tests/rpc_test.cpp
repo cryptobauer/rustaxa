@@ -1174,6 +1174,78 @@ TEST_F(RPCTest, graphql_query_account_uses_account_reader) {
   ASSERT_TRUE(*account_called);
 }
 
+TEST_F(RPCTest, graphql_query_blocks_use_query_block_reader) {
+  auto header_seven = std::make_shared<final_chain::BlockHeader>();
+  header_seven->number = 7;
+  header_seven->hash = h256(777);
+  auto header_eight = std::make_shared<final_chain::BlockHeader>();
+  header_eight->number = 8;
+  header_eight->hash = h256(888);
+
+  auto latest_called = std::make_shared<int>(0);
+  auto hash_called = std::make_shared<bool>(false);
+  auto header_requests = std::make_shared<std::vector<std::optional<EthBlockNumber>>>();
+  auto pbft_requests = std::make_shared<std::vector<EthBlockNumber>>();
+
+  graphql::taraxa::AccountStateReader account_reader;
+  account_reader.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  account_reader.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  account_reader.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  account_reader.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  graphql::taraxa::QueryBlockReader block_reader;
+  block_reader.latest_block_number = [latest_called] {
+    ++*latest_called;
+    return EthBlockNumber(8);
+  };
+  block_reader.block_number_by_hash = [hash_called, block_hash = header_seven->hash](const h256& requested_hash) {
+    *hash_called = true;
+    EXPECT_EQ(block_hash, requested_hash);
+    return std::optional<EthBlockNumber>(7);
+  };
+  block_reader.block_header = [header_requests, header_seven,
+                               header_eight](std::optional<EthBlockNumber> block_number) {
+    header_requests->push_back(block_number);
+    if (!block_number || *block_number == EthBlockNumber(7)) {
+      return std::shared_ptr<const final_chain::BlockHeader>(header_seven);
+    }
+    if (*block_number == EthBlockNumber(8)) {
+      return std::shared_ptr<const final_chain::BlockHeader>(header_eight);
+    }
+    return std::shared_ptr<const final_chain::BlockHeader>{};
+  };
+  block_reader.pbft_hash_by_period = [pbft_requests](EthBlockNumber period) {
+    pbft_requests->push_back(period);
+    return std::optional<blk_hash_t>(blk_hash_t(period + 100));
+  };
+
+  graphql::taraxa::BlockTransactionReader transaction_reader;
+  transaction_reader.transaction_count = [](EthBlockNumber) { return uint64_t(0); };
+  transaction_reader.transactions = [](EthBlockNumber) { return std::vector<std::shared_ptr<Transaction>>{}; };
+
+  graphql::taraxa::Query query(std::move(account_reader), 0, std::move(block_reader), std::move(transaction_reader));
+
+  ASSERT_NE(nullptr, query.getBlock(graphql::response::Value(7), std::nullopt));
+  ASSERT_NE(nullptr, query.getBlock(std::nullopt, graphql::response::Value(header_seven->hash.toString())));
+  ASSERT_NE(nullptr, query.getBlock(std::nullopt, std::nullopt));
+  const auto blocks = query.getBlocks(graphql::response::Value(7), graphql::response::Value(8));
+  ASSERT_EQ(2, blocks.size());
+
+  EXPECT_EQ(4, *latest_called);
+  ASSERT_TRUE(*hash_called);
+  ASSERT_EQ(5, header_requests->size());
+  EXPECT_EQ(std::optional<EthBlockNumber>(7), header_requests->at(0));
+  EXPECT_EQ(std::optional<EthBlockNumber>(7), header_requests->at(1));
+  EXPECT_EQ(std::nullopt, header_requests->at(2));
+  EXPECT_EQ(std::optional<EthBlockNumber>(7), header_requests->at(3));
+  EXPECT_EQ(std::optional<EthBlockNumber>(8), header_requests->at(4));
+  EXPECT_EQ((std::vector<EthBlockNumber>{7, 7, 7, 7, 8}), *pbft_requests);
+}
+
 TEST_F(RPCTest, graphql_query_dag_blocks_use_query_dag_block_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();
@@ -1246,8 +1318,8 @@ TEST_F(RPCTest, graphql_query_dag_blocks_use_query_dag_block_reader) {
     return std::optional<uint64_t>(9);
   };
 
-  graphql::taraxa::Query query(std::move(account_reader), 0, std::move(dag_reader), std::move(transaction_reader),
-                               std::move(period_reader));
+  graphql::taraxa::Query query(std::move(account_reader), 0, {}, {}, std::move(dag_reader),
+                               std::move(transaction_reader), std::move(period_reader));
 
   ASSERT_NE(nullptr, query.getDagBlock(graphql::response::Value(level_four_hash.toString())));
   ASSERT_TRUE(*by_hash_called);

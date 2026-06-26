@@ -450,6 +450,9 @@ Implemented first slice:
 - GraphQL `Block` now wraps finalized transaction-count and transaction-vector fallback reads in a local
   `BlockTransactionReader` callback bundle. Rust-mode block routes still supply `ConsensusQueryApi` callbacks directly,
   while legacy/default construction keeps the FinalChain-backed reader as an audited compatibility adapter.
+- GraphQL top-level legacy finalized block acquisition now uses a dedicated `QueryBlockReader` callback bundle for latest
+  block number, hash-to-number lookup, block-header lookup, and PBFT hash lookup instead of reading `FinalChain` and
+  `DbStorage` directly from `block` and `blocks` fallback methods.
 - GraphQL `nodeState.finalBlock` now uses `ConsensusQueryApi` in Rust mode for the finalized head number instead of
   reading `FinalChain` directly.
 - GraphQL `nodeState.dagBlockLevel`, `nodeState.dagBlockPeriod`, top-level `dagBlock` default selection, and

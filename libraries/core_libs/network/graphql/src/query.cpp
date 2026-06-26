@@ -22,6 +22,79 @@ using namespace std::literals;
 namespace graphql::taraxa {
 
 namespace {
+QueryBlockReader makeQueryBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+                                      const std::shared_ptr<::taraxa::DbStorage>& db) {
+  QueryBlockReader reader;
+  reader.latest_block_number = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
+  reader.block_number_by_hash = [final_chain](const dev::h256& hash) {
+    if (!final_chain) {
+      return std::optional<::taraxa::EthBlockNumber>{};
+    }
+    return final_chain->blockNumber(hash);
+  };
+  reader.block_header = [final_chain](std::optional<::taraxa::EthBlockNumber> block_number) {
+    if (!final_chain) {
+      return std::shared_ptr<const ::taraxa::final_chain::BlockHeader>{};
+    }
+    return final_chain->blockHeader(block_number);
+  };
+  reader.pbft_hash_by_period = [db](::taraxa::EthBlockNumber period) -> std::optional<::taraxa::blk_hash_t> {
+    if (!db) {
+      return std::nullopt;
+    }
+    auto pbft_block = db->getPbftBlock(period);  // RUSTAXA_QUERY_COMPAT_READ
+    if (!pbft_block) {
+      return std::nullopt;
+    }
+    return pbft_block->getBlockHash();
+  };
+  return reader;
+}
+
+void fillMissingQueryBlockReaderCallbacks(QueryBlockReader& reader,
+                                          const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+                                          const std::shared_ptr<::taraxa::DbStorage>& db) {
+  auto defaults = makeQueryBlockReader(final_chain, db);
+  if (!reader.latest_block_number) {
+    reader.latest_block_number = std::move(defaults.latest_block_number);
+  }
+  if (!reader.block_number_by_hash) {
+    reader.block_number_by_hash = std::move(defaults.block_number_by_hash);
+  }
+  if (!reader.block_header) {
+    reader.block_header = std::move(defaults.block_header);
+  }
+  if (!reader.pbft_hash_by_period) {
+    reader.pbft_hash_by_period = std::move(defaults.pbft_hash_by_period);
+  }
+}
+
+BlockTransactionReader makeQueryBlockTransactionReader(
+    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+  BlockTransactionReader reader;
+  reader.transaction_count = [final_chain](::taraxa::EthBlockNumber block_number) {
+    return final_chain ? final_chain->transactionCount(block_number) : 0;
+  };
+  reader.transactions = [final_chain](::taraxa::EthBlockNumber block_number) {
+    if (!final_chain) {
+      return std::vector<std::shared_ptr<::taraxa::Transaction>>{};
+    }
+    return final_chain->transactions(block_number);
+  };
+  return reader;
+}
+
+void fillMissingBlockTransactionReaderCallbacks(BlockTransactionReader& reader,
+                                                const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain) {
+  auto defaults = makeQueryBlockTransactionReader(final_chain);
+  if (!reader.transaction_count) {
+    reader.transaction_count = std::move(defaults.transaction_count);
+  }
+  if (!reader.transactions) {
+    reader.transactions = std::move(defaults.transactions);
+  }
+}
+
 QueryDagBlockReader makeQueryDagBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
                                             const std::shared_ptr<::taraxa::DagManager>& dag_manager,
                                             const std::shared_ptr<::taraxa::DbStorage>& db) {
@@ -173,6 +246,8 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
       kChainId(chain_id),
       live_status_(std::move(live_status)),
       account_reader_(makeAccountStateReader(final_chain_)),
+      block_reader_(makeQueryBlockReader(final_chain_, db_)),
+      block_transaction_reader_(makeQueryBlockTransactionReader(final_chain_)),
       dag_block_reader_(makeQueryDagBlockReader(final_chain_, dag_manager_, db_)),
       dag_block_transaction_reader_(makeQueryDagBlockTransactionReader(transaction_manager_)),
       dag_block_period_reader_(makeQueryDagBlockPeriodReader(pbft_manager_)) {
@@ -181,14 +256,19 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
   };
 }
 
-Query::Query(AccountStateReader account_reader, uint64_t chain_id, QueryDagBlockReader dag_block_reader,
+Query::Query(AccountStateReader account_reader, uint64_t chain_id, QueryBlockReader block_reader,
+             BlockTransactionReader block_transaction_reader, QueryDagBlockReader dag_block_reader,
              DagBlockTransactionReader dag_block_transaction_reader,
              DagBlockPeriodReader dag_block_period_reader) noexcept
     : kChainId(chain_id),
       account_reader_(std::move(account_reader)),
+      block_reader_(std::move(block_reader)),
+      block_transaction_reader_(std::move(block_transaction_reader)),
       dag_block_reader_(std::move(dag_block_reader)),
       dag_block_transaction_reader_(std::move(dag_block_transaction_reader)),
       dag_block_period_reader_(std::move(dag_block_period_reader)) {
+  fillMissingQueryBlockReaderCallbacks(block_reader_, final_chain_, db_);
+  fillMissingBlockTransactionReaderCallbacks(block_transaction_reader_, final_chain_);
   fillMissingQueryDagBlockReaderCallbacks(dag_block_reader_, final_chain_, dag_manager_, db_);
   fillMissingDagBlockTransactionReaderCallbacks(dag_block_transaction_reader_, transaction_manager_);
   fillMissingDagBlockPeriodReaderCallbacks(dag_block_period_reader_, pbft_manager_);
@@ -252,34 +332,36 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
   std::optional<::taraxa::EthBlockNumber> block_number;
   if (number) {
     block_number = number->get<int>();
-    if (const auto last_block_number = final_chain_->lastBlockNumber(); last_block_number < block_number) {
+    if (const auto last_block_number = block_reader_.latest_block_number(); last_block_number < block_number) {
       return nullptr;
     }
   }
   if (hash) {
-    block_number = final_chain_->blockNumber(dev::h256(hash->get<std::string>()));
+    block_number = block_reader_.block_number_by_hash(dev::h256(hash->get<std::string>()));
     if (!block_number) {
       return nullptr;
     }
   }
-  auto block_header = final_chain_->blockHeader(block_number);
+  auto block_header = block_reader_.block_header(block_number);
   if (!block_header) {
     return nullptr;
   }
 
   // Special case for genesis
   if (block_number == 0) [[unlikely]] {
-    return std::make_shared<object::Block>(std::make_shared<Block>(
-        final_chain_, transaction_manager_, get_block_by_num_, ::taraxa::blk_hash_t(), block_header));
+    return std::make_shared<object::Block>(std::make_shared<Block>(account_reader_, block_transaction_reader_,
+                                                                   transaction_manager_, get_block_by_num_,
+                                                                   ::taraxa::blk_hash_t(), block_header));
   }
 
-  auto pbft_block = db_->getPbftBlock(block_header->number);  // RUSTAXA_QUERY_COMPAT_READ
-  if (!pbft_block) {
+  auto pbft_block_hash = block_reader_.pbft_hash_by_period(block_header->number);
+  if (!pbft_block_hash) {
     // shouldn't be possible
     return nullptr;
   }
-  return std::make_shared<object::Block>(std::make_shared<Block>(final_chain_, transaction_manager_, get_block_by_num_,
-                                                                 pbft_block->getBlockHash(), block_header));
+  return std::make_shared<object::Block>(std::make_shared<Block>(account_reader_, block_transaction_reader_,
+                                                                 transaction_manager_, get_block_by_num_,
+                                                                 *pbft_block_hash, block_header));
 }
 
 std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& fromArg,
@@ -305,11 +387,11 @@ std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& f
   if (db_) {
     const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
     last_block_number = static_cast<int>(query_api->consensus_query_final_chain_last_block_number());
-  } else if (final_chain_) {
-    last_block_number = final_chain_->lastBlockNumber();
+  } else {
+    last_block_number = static_cast<int>(block_reader_.latest_block_number());
   }
 #else
-  last_block_number = final_chain_->lastBlockNumber();
+  last_block_number = static_cast<int>(block_reader_.latest_block_number());
 #endif
   if (start_block_num > last_block_number) {
     return blocks;
