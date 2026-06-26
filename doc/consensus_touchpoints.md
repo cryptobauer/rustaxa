@@ -651,6 +651,10 @@ Implemented first slice:
   callback bundles for finalized head, DAG head, and highest-peer progress facts. Existing constructors still provide
   manager-backed compatibility adapters, but the GraphQL field resolvers no longer call FinalChain, DagManager, or
   Network directly.
+- The light-node plugin now consumes a dedicated `LightHistoryApi` for finalized-block cleanup triggers, DAG cleanup
+  facts, proposal-period lookup, history range deletion, and state DB pruning. The default adapter remains the audited
+  compatibility point for live `DagManager`, `DbStorage`, and `FinalChain` access, while the plugin workflow only owns
+  retention policy, scheduling, and logging.
 
 ## Consensus Internal
 
