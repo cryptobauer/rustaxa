@@ -31,6 +31,11 @@ These APIs are target facades for the major external clients. They should be imp
 interfaces with C++ adapters only at the boundary. They must not expose C++ consensus managers, mutable internal
 runtime state, `DbStorage`, bridge batch ids, or legacy consensus objects as decision authority.
 
+Closeout status: the three major external API sections below now have dedicated facade shapes and Rust-mode wiring for
+the consensus-owned parts of their boundaries. Remaining work in this document is no longer to define these APIs; it is
+to keep shrinking the explicitly named compatibility adapters and external executor boundaries as independent rewrite
+slices.
+
 ### 1. Network and Tarcap API
 
 Purpose: let tarcap deliver canonical packet bytes to Rust consensus and execute typed network effects without giving
@@ -283,7 +288,7 @@ First useful routes:
 - State commit result reporting.
 - Publication recovery and audit after restart.
 
-Implemented first slice:
+Implementation status:
 
 - Rust domain facade: `rust/crates/rustaxa-consensus/src/consensus_execution_api.rs`
 - CXX bridge facade: `BridgeConsensusExecutionApi` in `rust/crates/rustaxa-bridge/src/final_chain.rs`
@@ -313,7 +318,7 @@ Implemented first slice:
 - Native-only FinalChain commits still use the existing Rust session commit helper because they are not part of the
   external EVM/StateAPI boundary.
 
-Implemented second slice:
+Additional executor-adapter slice:
 
 - Shim-owned executor adapter: `FinalChain::ExternalEvmStateApiClient` in the Rust-mode FinalChain shim.
 - Rust-enabled `FinalChain::finalizeExternalEvm` now consumes adapter outcomes instead of calling `StateAPI` directly for:
@@ -329,7 +334,7 @@ Implemented second slice:
   external to the Rust consensus rewrite. It must not publish Rust FinalChain storage or decide session state; those stay
   behind `ConsensusExecutionApi`.
 
-Implemented third slice:
+Additional StateAPI-read slice:
 
 - The same shim-owned `ExternalEvmStateApiClient` now owns the remaining Rust-mode `StateAPI` read boundary in
   FinalChain:
@@ -340,8 +345,9 @@ Implemented third slice:
   - `StateAPI` config updates
 - Direct `state_api_` access in the Rust-mode FinalChain shim is now confined to adapter implementation and construction.
   Public FinalChain methods either call Rust-owned storage/FinalChain APIs or this explicit external StateAPI adapter.
-- These read routes are still external-client compatibility, not Rust consensus ownership. Section 3 should decide which
-  public query views move behind a future `ConsensusQueryApi`.
+- These read routes are still external-client compatibility, not Rust consensus ownership. Public query views that are
+  consensus-storage backed now route through `ConsensusQueryApi`; remaining account/state reads stay on the external
+  EVM/StateAPI boundary by design.
 
 ### 3. Public Query API
 
@@ -411,7 +417,7 @@ First useful routes:
 - Replace RPC/GraphQL direct `PbftManager`, `DagManager`, `TransactionManager`, `FinalChain`, and `DbStorage` reads.
 - Provide a single status/sync view for metrics, RPC, GraphQL, and debug surfaces.
 
-Implemented first slice:
+Implementation status:
 
 - Rust domain facade: `rust/crates/rustaxa-consensus/src/consensus_query_api.rs`
 - CXX bridge facade: `BridgeConsensusQueryApi` in `rust/crates/rustaxa-bridge/src/query.rs`
@@ -881,7 +887,9 @@ requests, or DTOs for these boundaries, but should not absorb their ownership as
    - `libraries/plugin/rpc/`
    - `libraries/plugin/light/`
    - Materializes DAG, PBFT, transaction, final-chain, and pillar data for external callers.
-   - These should move to Rust read/query APIs where useful, but public API ownership is not consensus protocol work.
+   - Consensus-storage-backed reads now have dedicated `ConsensusQueryApi` routes in Rust mode. Remaining work here is
+     compatibility materialization, live network snapshots, external account/state reads, mempool/admin submission, and
+     public formatting; public API ownership is not consensus protocol work.
 
 4. **App and node host lifecycle**
    - `libraries/app/src/app.cpp`
@@ -915,9 +923,14 @@ requests, or DTOs for these boundaries, but should not absorb their ownership as
    - `charts/taraxa-node/templates/*transaction-generation*`
    - Do not own protocol logic, but configure and expose consensus-node behavior.
 
-## Practical Summary
+## Closeout Summary
 
-The remaining long-lived external executor boundaries are network/tarcap transport, external EVM/StateAPI execution,
-public API/query materialization, and host lifecycle mechanics. Consensus-internal follow-up should focus on shrinking
-compatibility surfaces around PBFT, DAG, votes, transactions, FinalChain facts, storage ports, pillar, slashing, rewards,
-signing decisions, config inputs, and Rust-owned tests without re-centering behavior in C++.
+This document is closed as the external API inventory and closeout tracker for the consensus touchpoint review. Sections
+1-3 define and record the dedicated external facades for network/tarcap, external EVM/StateAPI, and public query clients.
+The remaining long-lived boundaries are intentionally external executor or host surfaces: network/tarcap transport,
+external EVM/StateAPI execution, public formatting/materialization, storage admin/migration shells, and node lifecycle
+mechanics.
+
+Future consensus-internal follow-up should be tracked as separate rewrite slices against the inventory above. Those
+slices should shrink bridge/shim compatibility around PBFT, DAG, votes, transactions, FinalChain facts, storage ports,
+pillar, slashing, rewards, signing decisions, config inputs, and Rust-owned tests without re-centering behavior in C++.
