@@ -584,6 +584,8 @@ Implemented first slice:
   non-finalized transaction size are supplied through the shared live status snapshot described below.
 - Test RPC legacy `get_node_status` persisted counters and DAG level now use a dedicated `TestNodeStatusReader` callback
   bundle instead of reading `DbStorage`, `TransactionManager`, or `DagManager` directly from the public method.
+- Test RPC legacy `get_sortition_change` now uses a dedicated `TestSortitionReader` callback bundle for persisted
+  sortition params-change lookup instead of reading `DbStorage` directly from the public method.
 - ETH `eth_syncing`, GraphQL `syncing.highestBlock`, and Test RPC `get_node_status` now consume a shared
   `LiveStatusReader` snapshot for live PBFT sync, peer progress, DPoS vote, queue, and transaction-pool facts. The
   production adapter in the RPC plugin is the remaining audited compatibility point that reads live Network/PBFT/Vote/

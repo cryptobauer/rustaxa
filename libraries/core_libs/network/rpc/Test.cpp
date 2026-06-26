@@ -116,6 +116,28 @@ TestNodeStatusReader makeTestNodeStatusReader(std::weak_ptr<taraxa::AppBase> app
   return reader;
 }
 
+TestSortitionReader makeTestSortitionReader(std::weak_ptr<taraxa::AppBase> app) {
+  TestSortitionReader reader;
+  reader.sortition_change_by_period = [app](uint64_t period) {
+    TestSortitionChangeView view;
+    auto node = app.lock();
+    if (!node) {
+      return view;
+    }
+    const auto params_change = node->getDB()->getParamsChangeForPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
+    if (!params_change) {
+      return view;
+    }
+    view.found = true;
+    view.period = params_change->period;
+    view.interval_efficiency = params_change->interval_efficiency;
+    view.threshold_upper = params_change->vrf_params.threshold_upper;
+    view.threshold_upper_min = params_change->vrf_params.kThresholdUpperMinValue;
+    return view;
+  };
+  return reader;
+}
+
 void fillMissingTestTransactionApiCallbacks(TestTransactionApi &api, std::weak_ptr<taraxa::AppBase> app) {
   auto defaults = makeTestTransactionApi(std::move(app));
   if (!api.next_account_nonce) {
@@ -142,47 +164,60 @@ void fillMissingTestNodeStatusReaderCallbacks(TestNodeStatusReader &reader, std:
     reader.status = std::move(defaults.status);
   }
 }
+
+void fillMissingTestSortitionReaderCallbacks(TestSortitionReader &reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTestSortitionReader(std::move(app));
+  if (!reader.sortition_change_by_period) {
+    reader.sortition_change_by_period = std::move(defaults.sortition_change_by_period);
+  }
+}
 }  // namespace
 
 Test::Test(const std::shared_ptr<taraxa::AppBase> &app, LiveStatusReader live_status,
            TestTransactionApi transaction_api, uint64_t chain_id, TestNetworkReader network_reader,
-           TestNodeStatusReader node_status_reader)
+           TestNodeStatusReader node_status_reader, TestSortitionReader sortition_reader)
     : app_(app),
       kChainId(app ? app->getConfig().genesis.chain_id : chain_id),
       live_status_(std::move(live_status)),
       transaction_api_(std::move(transaction_api)),
       network_reader_(std::move(network_reader)),
-      node_status_reader_(std::move(node_status_reader)) {
+      node_status_reader_(std::move(node_status_reader)),
+      sortition_reader_(std::move(sortition_reader)) {
   fillMissingTestTransactionApiCallbacks(transaction_api_, app_);
   fillMissingTestNetworkReaderCallbacks(network_reader_, app_);
   fillMissingTestNodeStatusReaderCallbacks(node_status_reader_, app_);
+  fillMissingTestSortitionReaderCallbacks(sortition_reader_, app_);
 }
 
 Json::Value Test::get_sortition_change(const Json::Value &param1) {
   try {
     Json::Value res;
-    if (auto node = app_.lock()) {
-      uint64_t period = param1["period"].asUInt64();
+    const uint64_t period = param1["period"].asUInt64();
+    auto node = app_.lock();
 #ifdef RUSTAXA_ENABLE
-      {
-        const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-        const auto params_change = query_api->consensus_query_sortition_params_change_by_period(period);
-        if (!params_change.found) {
-          return res;
-        }
-        res["interval_efficiency"] = params_change.interval_efficiency;
-        res["period"] = Json::UInt64(params_change.period);
-        res["threshold_upper"] = params_change.threshold_upper;
-        res["kThresholdUpperMinValue"] = params_change.threshold_upper_min;
+    if (node) {
+      const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+      const auto params_change = query_api->consensus_query_sortition_params_change_by_period(period);
+      if (!params_change.found) {
         return res;
       }
-#endif
-      auto params_change = node->getDB()->getParamsChangeForPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
-      res["interval_efficiency"] = params_change->interval_efficiency;
-      res["period"] = params_change->period;
-      res["threshold_upper"] = params_change->vrf_params.threshold_upper;
-      res["kThresholdUpperMinValue"] = params_change->vrf_params.kThresholdUpperMinValue;
+      res["interval_efficiency"] = params_change.interval_efficiency;
+      res["period"] = Json::UInt64(params_change.period);
+      res["threshold_upper"] = params_change.threshold_upper;
+      res["kThresholdUpperMinValue"] = params_change.threshold_upper_min;
+      return res;
     }
+#endif
+    const auto params_change = sortition_reader_.sortition_change_by_period
+                                   ? sortition_reader_.sortition_change_by_period(period)
+                                   : TestSortitionChangeView{};
+    if (!params_change.found) {
+      return res;
+    }
+    res["interval_efficiency"] = params_change.interval_efficiency;
+    res["period"] = Json::UInt64(params_change.period);
+    res["threshold_upper"] = params_change.threshold_upper;
+    res["kThresholdUpperMinValue"] = params_change.threshold_upper_min;
     return res;
   } catch (...) {
     BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INVALID_PARAMS));

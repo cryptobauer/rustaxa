@@ -557,6 +557,28 @@ TEST_F(RPCTest, test_node_status_uses_status_reader) {
   ASSERT_TRUE(*node_status_called);
 }
 
+TEST_F(RPCTest, test_sortition_change_uses_sortition_reader) {
+  auto sortition_called = std::make_shared<bool>(false);
+
+  net::TestSortitionReader sortition_reader;
+  sortition_reader.sortition_change_by_period = [sortition_called](uint64_t period) {
+    *sortition_called = true;
+    EXPECT_EQ(uint64_t(7), period);
+    return net::TestSortitionChangeView{true, 11, 13, 17, 19};
+  };
+
+  net::Test test_rpc(nullptr, {}, {}, 1, {}, {}, std::move(sortition_reader));
+  Json::Value params(Json::objectValue);
+  params["period"] = Json::UInt64(7);
+
+  const auto result = test_rpc.get_sortition_change(params);
+  EXPECT_EQ(Json::UInt64(13), result["interval_efficiency"].asUInt64());
+  EXPECT_EQ(Json::UInt64(11), result["period"].asUInt64());
+  EXPECT_EQ(Json::UInt64(17), result["threshold_upper"].asUInt64());
+  EXPECT_EQ(Json::UInt64(19), result["kThresholdUpperMinValue"].asUInt64());
+  ASSERT_TRUE(*sortition_called);
+}
+
 TEST_F(RPCTest, graphql_mutation_uses_transaction_api) {
   const auto trx = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   auto insert_called = std::make_shared<bool>(false);

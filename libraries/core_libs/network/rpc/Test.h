@@ -58,11 +58,29 @@ struct TestNodeStatusReader {
   std::function<TestNodeStatusView()> status;
 };
 
+// TestSortitionChangeView is the Test RPC view of the sortition params-change
+// row. It carries only the fields formatted by get_sortition_change and avoids
+// exposing storage-owned SortitionParamsChange objects to the public method.
+struct TestSortitionChangeView {
+  bool found = false;
+  uint64_t period = 0;
+  uint16_t interval_efficiency = 0;
+  uint16_t threshold_upper = 0;
+  uint16_t threshold_upper_min = 0;
+};
+
+// TestSortitionReader is the Test RPC boundary for persisted sortition
+// params-change lookup. The default adapter is the legacy storage compatibility
+// point; Rust-enabled nodes use ConsensusQueryApi directly.
+struct TestSortitionReader {
+  std::function<TestSortitionChangeView(uint64_t)> sortition_change_by_period;
+};
+
 class Test : public TestFace {
  public:
   explicit Test(const std::shared_ptr<taraxa::AppBase>& app, LiveStatusReader live_status = {},
                 TestTransactionApi transaction_api = {}, uint64_t chain_id = 0, TestNetworkReader network_reader = {},
-                TestNodeStatusReader node_status_reader = {});
+                TestNodeStatusReader node_status_reader = {}, TestSortitionReader sortition_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"test", "1.0"}}; }
 
   virtual Json::Value get_sortition_change(const Json::Value& param1) override;
@@ -80,6 +98,7 @@ class Test : public TestFace {
   TestTransactionApi transaction_api_;
   TestNetworkReader network_reader_;
   TestNodeStatusReader node_status_reader_;
+  TestSortitionReader sortition_reader_;
 };
 
 }  // namespace taraxa::net
