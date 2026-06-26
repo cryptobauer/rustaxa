@@ -1780,6 +1780,94 @@ TEST_F(RPCTest, graphql_query_blocks_use_query_block_reader) {
   EXPECT_EQ((std::vector<EthBlockNumber>{7, 7, 7, 7, 8}), *pbft_requests);
 }
 
+#ifdef RUSTAXA_ENABLE
+TEST_F(RPCTest, graphql_query_blocks_use_consensus_query_reader) {
+  const auto block_hash = h256(777);
+  const auto pbft_hash = blk_hash_t(1777);
+  auto consensus_block_requests = std::make_shared<std::vector<uint64_t>>();
+  auto fallback_latest_called = std::make_shared<bool>(false);
+  auto fallback_header_called = std::make_shared<bool>(false);
+  auto fallback_pbft_called = std::make_shared<bool>(false);
+
+  graphql::taraxa::QueryReaders readers;
+  readers.account.account_at = [](const dev::Address&, std::optional<EthBlockNumber>) {
+    return std::optional<state_api::Account>{};
+  };
+  readers.account.storage_at = [](const dev::Address&, const dev::u256&, std::optional<EthBlockNumber>) {
+    return dev::h256();
+  };
+  readers.account.code_at = [](const dev::Address&, std::optional<EthBlockNumber>) { return dev::bytes{}; };
+  readers.account.latest_finalized_block_number = [] { return EthBlockNumber(0); };
+
+  readers.block.latest_block_number = [fallback_latest_called] {
+    *fallback_latest_called = true;
+    return EthBlockNumber(0);
+  };
+  readers.block.block_header = [fallback_header_called](std::optional<EthBlockNumber>) {
+    *fallback_header_called = true;
+    return std::shared_ptr<const final_chain::BlockHeader>{};
+  };
+  readers.block.pbft_hash_by_period = [fallback_pbft_called](EthBlockNumber) {
+    *fallback_pbft_called = true;
+    return std::optional<blk_hash_t>{};
+  };
+  readers.block_transaction.transaction_count = [](EthBlockNumber) { return uint64_t(0); };
+  readers.block_transaction.transactions = [](EthBlockNumber) { return std::vector<std::shared_ptr<Transaction>>{}; };
+
+  readers.consensus_query.final_chain_block_number_by_hash = [](const h256&) {
+    return rustaxa::FinalChainBlockNumberLookup{true, 7};
+  };
+  readers.consensus_query.final_chain_last_block_number = [] { return uint64_t(7); };
+  readers.consensus_query.final_chain_block_by_number = [consensus_block_requests, block_hash,
+                                                         pbft_hash](uint64_t block_number) {
+    consensus_block_requests->push_back(block_number);
+    rustaxa::FinalChainBlockView view;
+    view.found = true;
+    view.number = block_number;
+    view.hash = block_hash.asArray();
+    view.parent_hash = h256(776).asArray();
+    view.author = addr_t(7).asArray();
+    view.state_root = h256(8).asArray();
+    view.transactions_root = h256(9).asArray();
+    view.receipts_root = h256(10).asArray();
+    view.log_bloom = rust::Vec<uint8_t>();
+    view.log_bloom.reserve(256);
+    for (size_t i = 0; i < 256; ++i) {
+      view.log_bloom.push_back(0);
+    }
+    view.total_reward = std::array<uint8_t, 32>{};
+    view.has_pbft_hash = true;
+    view.pbft_block_hash = pbft_hash.asArray();
+    return view;
+  };
+  readers.consensus_query.transaction_count_by_block_number = [](EthBlockNumber) { return uint64_t(0); };
+  readers.consensus_query.transaction_by_block_number_and_index = [](EthBlockNumber, uint64_t) {
+    return rustaxa::TransactionPublicView{};
+  };
+  readers.consensus_query.transaction_by_hash = [](const trx_hash_t&) { return rustaxa::TransactionPublicView{}; };
+  readers.consensus_query.transaction_receipt_by_hash = [](const trx_hash_t&) {
+    return rustaxa::TransactionReceiptPublicView{};
+  };
+  readers.consensus_query.status = [] { return rustaxa::ConsensusStatusView{}; };
+  readers.consensus_query.dag_block_by_hash = [](const blk_hash_t&) { return rustaxa::DagBlockPublicView{}; };
+  readers.consensus_query.dag_blocks_by_level = [](level_t, uint64_t) {
+    return std::vector<rustaxa::DagBlockPublicView>{};
+  };
+  readers.consensus_query.finalized_dag_blocks_by_period = [](uint64_t) {
+    return std::vector<rustaxa::DagBlockPublicView>{};
+  };
+
+  graphql::taraxa::Query query(std::move(readers));
+
+  const auto block = query.getBlock(graphql::response::Value(7), std::nullopt);
+  ASSERT_NE(nullptr, block);
+  EXPECT_EQ((std::vector<uint64_t>{7}), *consensus_block_requests);
+  EXPECT_FALSE(*fallback_latest_called);
+  EXPECT_FALSE(*fallback_header_called);
+  EXPECT_FALSE(*fallback_pbft_called);
+}
+#endif
+
 TEST_F(RPCTest, graphql_query_transaction_uses_query_transaction_reader) {
   auto transaction = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   const auto transaction_hash = transaction->getHash();

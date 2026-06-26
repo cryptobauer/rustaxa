@@ -15,6 +15,10 @@
 #include "transaction/gas_pricer.hpp"
 #include "transaction/transaction_manager.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 namespace graphql::taraxa {
 
 // QueryBlockReader is GraphQL Query's finalized-block acquisition boundary. It
@@ -55,6 +59,27 @@ struct QueryDagBlockReader {
   std::function<std::vector<std::shared_ptr<::taraxa::DagBlock>>(uint64_t)> finalized_blocks_by_period;
 };
 
+#ifdef RUSTAXA_ENABLE
+// ConsensusQueryReader is GraphQL Query's narrow Rust consensus-query boundary.
+// It exposes only the stable DTO lookups needed by public GraphQL methods so
+// the Query object does not retain storage or consensus-manager handles after
+// compatibility construction.
+struct ConsensusQueryReader {
+  std::function<rustaxa::FinalChainBlockNumberLookup(const dev::h256&)> final_chain_block_number_by_hash;
+  std::function<uint64_t()> final_chain_last_block_number;
+  std::function<rustaxa::FinalChainBlockView(uint64_t)> final_chain_block_by_number;
+  std::function<uint64_t(::taraxa::EthBlockNumber)> transaction_count_by_block_number;
+  std::function<rustaxa::TransactionPublicView(::taraxa::EthBlockNumber, uint64_t)>
+      transaction_by_block_number_and_index;
+  std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_by_hash;
+  std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> transaction_receipt_by_hash;
+  std::function<rustaxa::ConsensusStatusView()> status;
+  std::function<rustaxa::DagBlockPublicView(const ::taraxa::blk_hash_t&)> dag_block_by_hash;
+  std::function<std::vector<rustaxa::DagBlockPublicView>(::taraxa::level_t, uint64_t)> dag_blocks_by_level;
+  std::function<std::vector<rustaxa::DagBlockPublicView>(uint64_t)> finalized_dag_blocks_by_period;
+};
+#endif
+
 // QueryReaders is GraphQL Query's primary external read API bundle. It contains
 // the narrow read callbacks needed by public GraphQL fields so callers can wire
 // ConsensusQueryApi, live-status snapshots, or compatibility adapters without
@@ -71,6 +96,9 @@ struct QueryReaders {
   DagBlockPeriodReader dag_block_period;
   CurrentStateReader current_state;
   SyncStateReader sync_state;
+#ifdef RUSTAXA_ENABLE
+  ConsensusQueryReader consensus_query;
+#endif
 };
 
 class Query {
@@ -79,9 +107,9 @@ class Query {
   explicit Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                  std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                  std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-                 std::shared_ptr<::taraxa::DbStorage> db,
-                 std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
-                 uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
+                 std::shared_ptr<::taraxa::DbStorage> db, std::shared_ptr<::taraxa::GasPricer> gas_pricer,
+                 std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
+                 ::taraxa::net::LiveStatusReader live_status = {}) noexcept;
   explicit Query(AccountStateReader account_reader, uint64_t chain_id = 0, QueryBlockReader block_reader = {},
                  BlockTransactionReader block_transaction_reader = {}, QueryTransactionReader transaction_reader = {},
                  QueryGasPriceReader gas_price_reader = {}, QueryDagBlockReader dag_block_reader = {},
@@ -109,10 +137,6 @@ class Query {
   // TODO: use pagination limit for all "list" queries
   static constexpr size_t kMaxPropagationLimit{100};
 
-  // Rust mode uses this storage handle only to construct ConsensusQueryApi. The
-  // same handle also builds non-Rust compatibility readers in the legacy
-  // constructor.
-  std::shared_ptr<::taraxa::DbStorage> db_;
   const uint64_t kChainId;
   AccountStateReader account_reader_;
   QueryBlockReader block_reader_;
@@ -125,6 +149,9 @@ class Query {
   DagBlockPeriodReader dag_block_period_reader_;
   CurrentStateReader current_state_reader_;
   SyncStateReader sync_state_reader_;
+#ifdef RUSTAXA_ENABLE
+  ConsensusQueryReader consensus_query_reader_;
+#endif
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
 };
 

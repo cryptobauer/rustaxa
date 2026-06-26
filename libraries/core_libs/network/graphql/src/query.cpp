@@ -37,6 +37,67 @@ std::shared_ptr<::taraxa::DagBlock> materializeDagBlockView(const rustaxa::DagBl
   }
   return block;
 }
+
+ConsensusQueryReader makeConsensusQueryReader(const std::shared_ptr<::taraxa::DbStorage>& db) {
+  ConsensusQueryReader reader;
+  if (!db) {
+    return reader;
+  }
+  auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db->rustStorage()))>(
+      rustaxa::create_consensus_query_api(db->rustStorage()));
+  reader.final_chain_block_number_by_hash = [query_api](const dev::h256& block_hash) {
+    return (*query_api)->consensus_query_final_chain_block_number_by_hash(block_hash.asArray());
+  };
+  reader.final_chain_last_block_number = [query_api] {
+    return (*query_api)->consensus_query_final_chain_last_block_number();
+  };
+  reader.final_chain_block_by_number = [query_api](uint64_t block_number) {
+    return (*query_api)->consensus_query_final_chain_block_by_number(block_number);
+  };
+  reader.transaction_count_by_block_number = [query_api](::taraxa::EthBlockNumber block_number) {
+    return (*query_api)->consensus_query_transaction_count_by_block_number(block_number);
+  };
+  reader.transaction_by_block_number_and_index = [query_api](::taraxa::EthBlockNumber block_number, uint64_t index) {
+    return (*query_api)->consensus_query_transaction_by_block_number_and_index(block_number, index);
+  };
+  reader.transaction_by_hash = [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+    return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+  };
+  reader.transaction_receipt_by_hash = [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
+    return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+  };
+  reader.status = [query_api] { return (*query_api)->consensus_query_status(); };
+  reader.dag_block_by_hash = [query_api](const ::taraxa::blk_hash_t& block_hash) {
+    return (*query_api)->consensus_query_dag_block_by_hash(block_hash.asArray());
+  };
+  reader.dag_blocks_by_level = [query_api](::taraxa::level_t level, uint64_t number_of_levels) {
+    auto views = (*query_api)->consensus_query_dag_blocks_by_level(level, number_of_levels);
+    std::vector<rustaxa::DagBlockPublicView> result;
+    result.reserve(views.size());
+    for (auto& view : views) {
+      result.emplace_back(std::move(view));
+    }
+    return result;
+  };
+  reader.finalized_dag_blocks_by_period = [query_api](uint64_t period) {
+    auto views = (*query_api)->consensus_query_finalized_dag_blocks_by_period(period);
+    std::vector<rustaxa::DagBlockPublicView> result;
+    result.reserve(views.size());
+    for (auto& view : views) {
+      result.emplace_back(std::move(view));
+    }
+    return result;
+  };
+  return reader;
+}
+
+bool hasConsensusQueryReader(const ConsensusQueryReader& reader) {
+  return reader.final_chain_block_number_by_hash && reader.final_chain_last_block_number &&
+         reader.final_chain_block_by_number && reader.transaction_count_by_block_number &&
+         reader.transaction_by_block_number_and_index && reader.transaction_by_hash &&
+         reader.transaction_receipt_by_hash && reader.status && reader.dag_block_by_hash &&
+         reader.dag_blocks_by_level && reader.finalized_dag_blocks_by_period;
+}
 #endif
 
 QueryBlockReader makeQueryBlockReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
@@ -146,8 +207,7 @@ TransactionReceiptReader makeQueryTransactionReceiptReader(
     }
     return final_chain->transactionLocation(hash);
   };
-  reader.receipt = [final_chain](::taraxa::EthBlockNumber period, uint32_t position,
-                                 const ::taraxa::trx_hash_t& hash) {
+  reader.receipt = [final_chain](::taraxa::EthBlockNumber period, uint32_t position, const ::taraxa::trx_hash_t& hash) {
     if (!final_chain) {
       return std::optional<::taraxa::TransactionReceipt>{};
     }
@@ -287,9 +347,8 @@ void fillMissingDagBlockPeriodReaderCallbacks(DagBlockPeriodReader& reader,
   }
 }
 
-CurrentStateReader makeQueryCurrentStateReader(
-    const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
-    const std::shared_ptr<::taraxa::DagManager>& dag_manager) {
+CurrentStateReader makeQueryCurrentStateReader(const std::shared_ptr<::taraxa::final_chain::FinalChain>& final_chain,
+                                               const std::shared_ptr<::taraxa::DagManager>& dag_manager) {
   CurrentStateReader reader;
   reader.final_block = [final_chain] { return final_chain ? final_chain->lastBlockNumber() : uint64_t(0); };
   reader.dag_block_level = [dag_manager] { return dag_manager ? dag_manager->getMaxLevel() : uint64_t(0); };
@@ -410,23 +469,26 @@ std::shared_ptr<::taraxa::final_chain::BlockHeader> blockHeaderFromView(const ru
 
 Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::shared_ptr<::taraxa::DagManager> dag_manager, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
-             std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
-             std::shared_ptr<::taraxa::DbStorage> db,
+             std::shared_ptr<::taraxa::TransactionManager> transaction_manager, std::shared_ptr<::taraxa::DbStorage> db,
              std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
              uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status) noexcept
-    : db_(std::move(db)),
-      kChainId(chain_id),
+    : kChainId(chain_id),
       account_reader_(makeAccountStateReader(final_chain)),
-      block_reader_(makeQueryBlockReader(final_chain, db_)),
+      block_reader_(makeQueryBlockReader(final_chain, db)),
       block_transaction_reader_(makeQueryBlockTransactionReader(final_chain)),
       transaction_reader_(makeQueryTransactionReader(transaction_manager)),
       transaction_receipt_reader_(makeQueryTransactionReceiptReader(final_chain)),
       gas_price_reader_(makeQueryGasPriceReader(gas_pricer)),
-      dag_block_reader_(makeQueryDagBlockReader(final_chain, dag_manager, db_)),
+      dag_block_reader_(makeQueryDagBlockReader(final_chain, dag_manager, db)),
       dag_block_transaction_reader_(makeQueryDagBlockTransactionReader(transaction_manager)),
       dag_block_period_reader_(makeQueryDagBlockPeriodReader(pbft_manager)),
       current_state_reader_(makeQueryCurrentStateReader(final_chain, dag_manager)),
-      sync_state_reader_(makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status))) {
+      sync_state_reader_(makeQuerySyncStateReader(final_chain, std::move(network), std::move(live_status)))
+#ifdef RUSTAXA_ENABLE
+      ,
+      consensus_query_reader_(makeConsensusQueryReader(db))
+#endif
+{
   get_block_by_num_ = [&](::taraxa::EthBlockNumber num) {
     return getBlock(response::Value(static_cast<int>(num)), std::nullopt);
   };
@@ -444,13 +506,18 @@ Query::Query(QueryReaders readers, uint64_t chain_id) noexcept
       dag_block_transaction_reader_(std::move(readers.dag_block_transaction)),
       dag_block_period_reader_(std::move(readers.dag_block_period)),
       current_state_reader_(std::move(readers.current_state)),
-      sync_state_reader_(std::move(readers.sync_state)) {
-  fillMissingQueryBlockReaderCallbacks(block_reader_, nullptr, db_);
+      sync_state_reader_(std::move(readers.sync_state))
+#ifdef RUSTAXA_ENABLE
+      ,
+      consensus_query_reader_(std::move(readers.consensus_query))
+#endif
+{
+  fillMissingQueryBlockReaderCallbacks(block_reader_, nullptr, nullptr);
   fillMissingBlockTransactionReaderCallbacks(block_transaction_reader_, nullptr);
   fillMissingQueryTransactionReaderCallbacks(transaction_reader_, nullptr);
   fillMissingQueryTransactionReceiptReaderCallbacks(transaction_receipt_reader_, nullptr);
   fillMissingQueryGasPriceReaderCallbacks(gas_price_reader_, nullptr);
-  fillMissingQueryDagBlockReaderCallbacks(dag_block_reader_, nullptr, nullptr, db_);
+  fillMissingQueryDagBlockReaderCallbacks(dag_block_reader_, nullptr, nullptr, nullptr);
   fillMissingDagBlockTransactionReaderCallbacks(dag_block_transaction_reader_, nullptr);
   fillMissingDagBlockPeriodReaderCallbacks(dag_block_period_reader_, nullptr);
   fillMissingCurrentStateReaderCallbacks(current_state_reader_, nullptr, nullptr);
@@ -475,15 +542,20 @@ Query::Query(AccountStateReader account_reader, uint64_t chain_id, QueryBlockRea
                          std::move(dag_block_transaction_reader),
                          std::move(dag_block_period_reader),
                          {},
-                         {}},
-            chain_id) {}
+                         {}
+#ifdef RUSTAXA_ENABLE
+                         ,
+                         {}
+#endif
+            },
+            chain_id) {
+}
 
 std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& number,
                                                std::optional<response::Value>&& hash) const {
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
-    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
-        rustaxa::create_consensus_query_api(db_->rustStorage()));
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
+    const auto query = consensus_query_reader_;
     uint64_t block_number = 0;
     if (number) {
       const auto parsed_number = number->get<int>();
@@ -492,17 +564,16 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
       }
       block_number = static_cast<uint64_t>(parsed_number);
     } else if (hash) {
-      const auto block_number_lookup =
-          (*query_api)->consensus_query_final_chain_block_number_by_hash(dev::h256(hash->get<std::string>()).asArray());
+      const auto block_number_lookup = query.final_chain_block_number_by_hash(dev::h256(hash->get<std::string>()));
       if (!block_number_lookup.found) {
         return nullptr;
       }
       block_number = block_number_lookup.value;
     } else {
-      block_number = (*query_api)->consensus_query_final_chain_last_block_number();
+      block_number = query.final_chain_last_block_number();
     }
 
-    const auto block_view = (*query_api)->consensus_query_final_chain_block_by_number(block_number);
+    const auto block_view = query.final_chain_block_by_number(block_number);
     auto block_header = blockHeaderFromView(block_view);
     if (!block_header) {
       return nullptr;
@@ -518,14 +589,14 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
 
     return std::make_shared<object::Block>(std::make_shared<Block>(
         account_reader_, block_transaction_reader_, get_block_by_num_, pbft_block_hash, block_header,
-        [query_api](::taraxa::EthBlockNumber block_number) {
-          return (*query_api)->consensus_query_transaction_count_by_block_number(block_number);
+        [query](::taraxa::EthBlockNumber block_number) {
+          return query.transaction_count_by_block_number(block_number);
         },
-        [query_api](::taraxa::EthBlockNumber block_number, uint64_t index) {
-          return (*query_api)->consensus_query_transaction_by_block_number_and_index(block_number, index);
+        [query](::taraxa::EthBlockNumber block_number, uint64_t index) {
+          return query.transaction_by_block_number_and_index(block_number, index);
         },
-        [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
-          return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+        [query](const ::taraxa::trx_hash_t& transaction_hash) {
+          return query.transaction_receipt_by_hash(transaction_hash);
         }));
   }
 #endif
@@ -583,9 +654,8 @@ std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& f
 
   int last_block_number = 0;
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
-    const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
-    last_block_number = static_cast<int>(query_api->consensus_query_final_chain_last_block_number());
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
+    last_block_number = static_cast<int>(consensus_query_reader_.final_chain_last_block_number());
   } else {
     last_block_number = static_cast<int>(block_reader_.latest_block_number());
   }
@@ -609,13 +679,12 @@ std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& f
 
 std::shared_ptr<object::Transaction> Query::getTransaction(response::Value&& hashArg) const {
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
-    const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
     const auto transaction_hash = ::taraxa::trx_hash_t(hashArg.get<std::string>());
-    auto transaction_view = query_api->consensus_query_transaction_by_hash(transaction_hash.asArray());
+    auto transaction_view = consensus_query_reader_.transaction_by_hash(transaction_hash);
     auto transaction = materializeTransactionView(transaction_view);
     if (transaction) {
-      auto receipt_view = query_api->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+      auto receipt_view = consensus_query_reader_.transaction_receipt_by_hash(transaction_hash);
       return std::make_shared<object::Transaction>(
           std::make_shared<Transaction>(TransactionReceiptReader{}, account_reader_, get_block_by_num_,
                                         std::move(transaction), transaction_view, receipt_view));
@@ -645,11 +714,9 @@ response::Value Query::getGasPrice() const { return response::Value(dev::toJS(ga
 
 std::shared_ptr<object::SyncState> Query::getSyncing() const {
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
-    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
-        rustaxa::create_consensus_query_api(db_->rustStorage()));
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
     SyncStateReader reader = sync_state_reader_;
-    reader.current_block = [query_api]() { return (*query_api)->consensus_query_final_chain_last_block_number(); };
+    reader.current_block = [query = consensus_query_reader_]() { return query.final_chain_last_block_number(); };
     return std::make_shared<object::SyncState>(std::make_shared<SyncState>(std::move(reader)));
   }
 #endif
@@ -660,27 +727,26 @@ response::Value Query::getChainID() const { return response::Value(dev::toJS(kCh
 
 std::shared_ptr<object::DagBlock> Query::getDagBlock(std::optional<response::Value>&& hashArg) const {
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
-    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
-        rustaxa::create_consensus_query_api(db_->rustStorage()));
-    auto transaction_query = [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
-      return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
+    const auto query = consensus_query_reader_;
+    auto transaction_query = [query](const ::taraxa::trx_hash_t& transaction_hash) {
+      return query.transaction_by_hash(transaction_hash);
     };
-    auto receipt_query = [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
-      return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+    auto receipt_query = [query](const ::taraxa::trx_hash_t& transaction_hash) {
+      return query.transaction_receipt_by_hash(transaction_hash);
     };
     if (hashArg) {
       if (const auto hash = ::taraxa::blk_hash_t(hashArg->get<response::StringType>());
           hash != ::taraxa::kNullBlockHash) {
-        auto rust_dag_block = (*query_api)->consensus_query_dag_block_by_hash(hash.asArray());
+        auto rust_dag_block = query.dag_block_by_hash(hash);
         if (rust_dag_block.found) {
           return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
               std::move(rust_dag_block), account_reader_, get_block_by_num_, transaction_query, receipt_query));
         }
       }
     } else {
-      const auto status = (*query_api)->consensus_query_status();
-      auto rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(status.latest_dag_level, 1);
+      const auto status = query.status();
+      auto rust_dag_blocks = query.dag_blocks_by_level(status.latest_dag_level, 1);
       for (auto& rust_dag_block : rust_dag_blocks) {
         return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
             std::move(rust_dag_block), account_reader_, get_block_by_num_, transaction_query, receipt_query));
@@ -721,20 +787,19 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getPeriodDagBlocks(
     period = dag_block_reader_.latest_finalized_period();
   }
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
-    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
-        rustaxa::create_consensus_query_api(db_->rustStorage()));
-    auto rust_dag_blocks = (*query_api)->consensus_query_finalized_dag_blocks_by_period(period);
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
+    const auto query = consensus_query_reader_;
+    auto rust_dag_blocks = query.finalized_dag_blocks_by_period(period);
     if (rust_dag_blocks.size()) {
       blocks.reserve(rust_dag_blocks.size());
       for (auto& block : rust_dag_blocks) {
         blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
             std::move(block), account_reader_, get_block_by_num_,
-            [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
-              return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+            [query](const ::taraxa::trx_hash_t& transaction_hash) {
+              return query.transaction_by_hash(transaction_hash);
             },
-            [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
-              return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+            [query](const ::taraxa::trx_hash_t& transaction_hash) {
+              return query.transaction_receipt_by_hash(transaction_hash);
             })));
       }
     }
@@ -757,11 +822,10 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
                                                                    std::optional<int>&& countArg,
                                                                    std::optional<bool>&& reverseArg) const {
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
     std::vector<std::shared_ptr<object::DagBlock>> rust_dag_blocks_result;
-    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
-        rustaxa::create_consensus_query_api(db_->rustStorage()));
-    const auto status = (*query_api)->consensus_query_status();
+    const auto query = consensus_query_reader_;
+    const auto status = query.status();
     const auto rust_max_dag_level = status.latest_dag_level;
     ::taraxa::level_t rust_act_dag_level = rust_max_dag_level;
 
@@ -772,23 +836,23 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
       }
     }
 
-    auto addRustDagBlocks = [account_reader = account_reader_, get_block_by_num = get_block_by_num_, query_api](
+    auto addRustDagBlocks = [account_reader = account_reader_, get_block_by_num = get_block_by_num_, query](
                                 auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
       const auto added = rust_dag_blocks.size();
       for (auto& dag_block : rust_dag_blocks) {
         result_dag_blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
             std::move(dag_block), account_reader, get_block_by_num,
-            [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
-              return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
+            [query](const ::taraxa::trx_hash_t& transaction_hash) {
+              return query.transaction_by_hash(transaction_hash);
             },
-            [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
-              return (*query_api)->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
+            [query](const ::taraxa::trx_hash_t& transaction_hash) {
+              return query.transaction_receipt_by_hash(transaction_hash);
             })));
       }
       return added;
     };
 
-    auto rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(rust_act_dag_level, 1);
+    auto rust_dag_blocks = query.dag_blocks_by_level(rust_act_dag_level, 1);
     auto rust_act_count = addRustDagBlocks(rust_dag_blocks, rust_dag_blocks_result);
 
     if (!countArg) {
@@ -807,7 +871,7 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
         return rust_dag_blocks_result;
       }
 
-      auto next_rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(rust_act_dag_level, 1);
+      auto next_rust_dag_blocks = query.dag_blocks_by_level(rust_act_dag_level, 1);
       rust_act_count += addRustDagBlocks(next_rust_dag_blocks, rust_dag_blocks_result);
     }
 
@@ -862,13 +926,11 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
 
 std::shared_ptr<object::CurrentState> Query::getNodeState() const {
 #ifdef RUSTAXA_ENABLE
-  if (db_) {
-    auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
-        rustaxa::create_consensus_query_api(db_->rustStorage()));
+  if (hasConsensusQueryReader(consensus_query_reader_)) {
     CurrentStateReader reader;
-    reader.final_block = [query_api]() { return (*query_api)->consensus_query_status().final_block_number; };
-    reader.dag_block_level = [query_api]() { return (*query_api)->consensus_query_status().latest_dag_level; };
-    reader.dag_block_period = [query_api]() { return (*query_api)->consensus_query_status().latest_dag_period; };
+    reader.final_block = [query = consensus_query_reader_]() { return query.status().final_block_number; };
+    reader.dag_block_level = [query = consensus_query_reader_]() { return query.status().latest_dag_level; };
+    reader.dag_block_period = [query = consensus_query_reader_]() { return query.status().latest_dag_period; };
     return std::make_shared<object::CurrentState>(std::make_shared<CurrentState>(std::move(reader)));
   }
 #endif

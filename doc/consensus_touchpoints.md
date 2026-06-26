@@ -457,8 +457,7 @@ Implemented first slice:
   block number, hash-to-number lookup, block-header lookup, and PBFT hash lookup instead of reading `FinalChain` and
   `DbStorage` directly from `block` and `blocks` fallback methods.
 - GraphQL `QueryBlockReader`'s default PBFT-hash callback now uses `ConsensusQueryApi` in Rust mode and keeps
-  `DbStorage::getPbftBlock` only as the non-Rust compatibility fallback. GraphQL's stored `DbStorage` handle is now
-  limited to constructing `ConsensusQueryApi` for Rust-mode public routes and building legacy fallback callbacks.
+  `DbStorage::getPbftBlock` only as the non-Rust compatibility fallback.
 - GraphQL `nodeState.finalBlock` now uses `ConsensusQueryApi` in Rust mode for the finalized head number instead of
   reading `FinalChain` directly.
 - GraphQL `nodeState.dagBlockLevel`, `nodeState.dagBlockPeriod`, top-level `dagBlock` default selection, and
@@ -701,10 +700,11 @@ Implemented first slice:
   node-state, and sync-state callback bundles. The old manager-heavy `Query` constructor remains the compatibility
   adapter, while `nodeState` and `syncing` field construction now consumes injected reader bundles instead of passing
   `FinalChain`, `DagManager`, or `Network` pointers into those public field routes.
-- GraphQL `QueryReaders` now also carries top-level transaction receipt/location callbacks, and `Query` no longer stores
-  broad `FinalChain`, `DagManager`, `PbftManager`, `TransactionManager`, `GasPricer`, or `Network` pointers after
-  construction. The manager-heavy constructor immediately converts those dependencies into reader callbacks plus the
-  remaining Rust-mode storage compatibility handle used to create `ConsensusQueryApi`.
+- GraphQL `QueryReaders` now also carries top-level transaction receipt/location callbacks plus a Rust-mode
+  `ConsensusQueryReader` callback bundle for the public DTO routes. `Query` no longer stores broad `FinalChain`,
+  `DagManager`, `PbftManager`, `TransactionManager`, `GasPricer`, `Network`, or `DbStorage` pointers after construction.
+  The manager-heavy constructor immediately converts those dependencies into reader callbacks and constructs
+  `ConsensusQueryReader` from the storage bridge.
 - GraphQL Rust-backed final-chain block objects now materialize legacy `BlockHeader` fields from typed
   `FinalChainBlockView` DTO fields instead of decoding Rust stored-header compatibility RLP as a full legacy block
   header. Stored-header bytes remain available on the query DTO for compatibility clients, but GraphQL block formatting
