@@ -223,6 +223,7 @@ fn dag_block_view_to_ffi(view: rustaxa_consensus::DagBlockView) -> rustaxa_ffi::
         transactions: dag_hashes_to_ffi(view.transactions),
         trx_estimations: view.trx_estimations,
         signature: view.signature,
+        block_rlp: view.block_rlp,
         hash: view.hash,
         sender: view.sender,
         timestamp: view.timestamp,
@@ -1222,7 +1223,7 @@ mod tests {
         let block_hash = keccak256(&block_rlp);
 
         storage
-            .save_dag_block(&block_hash.0, 5, 1, block_rlp)
+            .save_dag_block(&block_hash.0, 5, 1, block_rlp.clone())
             .unwrap();
         storage.save_dag_block_period(&block_hash.0, 9, 2).unwrap();
 
@@ -1234,6 +1235,7 @@ mod tests {
         assert_eq!(view.pivot, H256::from_low_u64_be(1).0);
         assert_eq!(view.level, 5);
         assert_eq!(view.transactions.len(), 2);
+        assert_eq!(view.block_rlp, block_rlp);
         assert!(view.finalized_period_found);
         assert_eq!(view.finalized_period, 9);
         assert_eq!(view.vdf_proof, vec![0x11; 80]);
@@ -1244,6 +1246,7 @@ mod tests {
         let level_views = api.consensus_query_dag_blocks_by_level(5, 1).unwrap();
         assert_eq!(level_views.len(), 1);
         assert_eq!(level_views[0].hash, block_hash.0);
+        assert_eq!(level_views[0].block_rlp, block_rlp);
 
         let (dag_bundle, canonical_block) = signed_finalized_dag_bundle_rlp();
         storage
@@ -1254,6 +1257,7 @@ mod tests {
             .unwrap();
         assert_eq!(finalized_views.len(), 1);
         assert_eq!(finalized_views[0].hash, keccak256(&canonical_block).0);
+        assert_eq!(finalized_views[0].block_rlp, canonical_block);
         assert_eq!(finalized_views[0].finalized_period, 7);
         assert_eq!(finalized_views[0].finalized_position, 0);
         assert_eq!(finalized_views[0].transactions.len(), 2);

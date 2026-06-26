@@ -427,6 +427,8 @@ Implemented first slice:
   - `consensus_query_dag_block_by_hash(hash) -> DagBlockPublicView`
   - `consensus_query_dag_blocks_by_level(level, number_of_levels) -> Vec<DagBlockPublicView>`
   - `consensus_query_finalized_dag_blocks_by_period(period) -> Vec<DagBlockPublicView>`
+    - `DagBlockPublicView` carries canonical DAG block RLP for compatibility adapters that still need to materialize a
+      legacy C++ `DagBlock` at the public API edge.
   - `consensus_query_transaction_by_hash(hash) -> TransactionPublicView`
   - `consensus_query_transaction_by_block_number_and_index(block_number, transaction_index) -> TransactionPublicView`
   - `consensus_query_transaction_by_block_hash_and_index(block_hash, transaction_index) -> TransactionPublicView`
@@ -503,7 +505,9 @@ Implemented first slice:
 - Taraxa RPC legacy fallback DAG block materialization now uses a dedicated `TaraxaDagBlockReader` callback bundle for
   DAG block lookup, finalized-period lookup, and optional transaction expansion instead of reading `DagManager`,
   `PbftManager`, `DbStorage`, and `TransactionManager` directly from `taraxa_getDagBlockByHash` and
-  `taraxa_getDagBlockByLevel`.
+  `taraxa_getDagBlockByLevel`. The default level lookup reader now uses `ConsensusQueryApi` in Rust mode and
+  materializes legacy `DagBlock` objects from canonical RLP only at this compatibility edge; direct `DbStorage`
+  materialization is limited to the non-Rust compatibility fallback.
 - Taraxa RPC legacy scalar persistent reads now use a dedicated `TaraxaPersistentReader` callback bundle for PBFT block
   hash lookup, chain stats, and period lambda instead of reading `DbStorage` or `FinalChain` directly from public
   methods. Rust-mode production routes and the default reader adapter now prefer `ConsensusQueryApi` when app storage is

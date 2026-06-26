@@ -107,7 +107,18 @@ TaraxaDagBlockReader makeTaraxaDagBlockReader(std::weak_ptr<taraxa::AppBase> app
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_BLOCK_READER_APP_EXPIRED");
     }
-    return node->getDB()->getDagBlocksAtLevel(level, 1);  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto views = query_api->consensus_query_dag_blocks_by_level(level, 1);
+    std::vector<std::shared_ptr<::taraxa::DagBlock>> blocks;
+    blocks.reserve(views.size());
+    for (const auto& view : views) {
+      auto block_rlp = dev::bytes(view.block_rlp.begin(), view.block_rlp.end());
+      blocks.emplace_back(std::make_shared<::taraxa::DagBlock>(block_rlp));
+    }
+    return blocks;
+#endif
+    return node->getDB()->getDagBlocksAtLevel(level, 1);
   };
   reader.period_by_hash = [app](const blk_hash_t& hash) -> std::optional<uint64_t> {
     auto node = app.lock();

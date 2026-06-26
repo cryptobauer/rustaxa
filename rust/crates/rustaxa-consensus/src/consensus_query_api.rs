@@ -174,7 +174,9 @@ pub struct FinalChainBlockView {
 ///
 /// The view is loaded from Rust DAG storage and contains the base facts public
 /// RPC/GraphQL formatters need for DAG block JSON without exposing a live DAG
-/// manager or C++ block object. `finalized_period_found` distinguishes
+/// manager or C++ block object. `block_rlp` preserves the canonical storage
+/// bytes for compatibility clients that still have to materialize a legacy C++
+/// `DagBlock` at the public API edge. `finalized_period_found` distinguishes
 /// non-finalized blocks from finalized blocks whose period/position index has
 /// already been written.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -186,6 +188,7 @@ pub struct DagBlockView {
     pub transactions: Vec<[u8; 32]>,
     pub trx_estimations: u64,
     pub signature: Vec<u8>,
+    pub block_rlp: Vec<u8>,
     pub hash: [u8; 32],
     pub sender: [u8; 20],
     pub timestamp: u64,
@@ -818,6 +821,7 @@ impl ConsensusQueryApi {
         } else {
             (false, Vec::new(), Vec::new(), Vec::new(), 0)
         };
+        let hash = keccak256(&block_rlp).into();
 
         Ok(DagBlockView {
             found: true,
@@ -827,7 +831,8 @@ impl ConsensusQueryApi {
             transactions: block.transactions.into_iter().map(Into::into).collect(),
             trx_estimations: block.gas_estimation,
             signature: block.signature.to_vec(),
-            hash: keccak256(&block_rlp).into(),
+            block_rlp,
+            hash,
             sender: sender.into(),
             timestamp: block.timestamp,
             finalized_period_found: finalized.is_some(),
@@ -1567,6 +1572,7 @@ fn finalized_dag_block_view_from_canonical_rlp(
         transactions: block.transactions.into_iter().map(Into::into).collect(),
         trx_estimations: block.gas_estimation,
         signature: block.signature.to_vec(),
+        block_rlp: block_rlp.to_vec(),
         hash: keccak256(block_rlp).into(),
         sender: sender.into(),
         timestamp: block.timestamp,
@@ -2289,6 +2295,7 @@ mod tests {
         );
         assert_eq!(view.trx_estimations, 987);
         assert_eq!(view.signature.len(), 65);
+        assert_eq!(view.block_rlp, block_rlp);
         assert!(view.finalized_period_found);
         assert_eq!(view.finalized_period, 9);
         assert_eq!(view.vdf_proof, vec![0x11; 80]);
@@ -2299,6 +2306,7 @@ mod tests {
         let level_views = api.dag_blocks_by_level(5, 1).unwrap();
         assert_eq!(level_views.len(), 1);
         assert_eq!(level_views[0].hash, block_hash.0);
+        assert_eq!(level_views[0].block_rlp, block_rlp);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

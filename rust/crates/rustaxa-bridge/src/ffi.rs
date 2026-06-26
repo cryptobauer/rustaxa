@@ -3855,6 +3855,7 @@ pub mod rustaxa_ffi {
         transactions: Vec<DagHash>,
         trx_estimations: u64,
         signature: Vec<u8>,
+        block_rlp: Vec<u8>,
         hash: [u8; 32],
         sender: [u8; 20],
         timestamp: u64,
