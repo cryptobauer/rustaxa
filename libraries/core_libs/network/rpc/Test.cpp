@@ -72,6 +72,32 @@ TestTransactionApi makeTestTransactionApi(std::weak_ptr<taraxa::AppBase> app) {
   return api;
 }
 
+TestNetworkReader makeTestNetworkReader(std::weak_ptr<taraxa::AppBase> app) {
+  TestNetworkReader reader;
+  reader.peer_count = [app] {
+    auto node = app.lock();
+    if (!node) {
+      return uint64_t(0);
+    }
+    return static_cast<uint64_t>(node->getNetwork()->getPeerCount());
+  };
+  reader.all_nodes = [app] {
+    std::vector<TestNetworkNodeView> result;
+    auto node = app.lock();
+    if (!node) {
+      return result;
+    }
+    const auto nodes = node->getNetwork()->getAllNodes();
+    result.reserve(nodes.size());
+    for (const auto &network_node : nodes) {
+      result.push_back(TestNetworkNodeView{network_node.id().toString(), network_node.endpoint().address().to_string(),
+                                           network_node.endpoint().tcpPort()});
+    }
+    return result;
+  };
+  return reader;
+}
+
 void fillMissingTestTransactionApiCallbacks(TestTransactionApi &api, std::weak_ptr<taraxa::AppBase> app) {
   auto defaults = makeTestTransactionApi(std::move(app));
   if (!api.next_account_nonce) {
@@ -81,15 +107,27 @@ void fillMissingTestTransactionApiCallbacks(TestTransactionApi &api, std::weak_p
     api.insert_transaction = std::move(defaults.insert_transaction);
   }
 }
+
+void fillMissingTestNetworkReaderCallbacks(TestNetworkReader &reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeTestNetworkReader(std::move(app));
+  if (!reader.peer_count) {
+    reader.peer_count = std::move(defaults.peer_count);
+  }
+  if (!reader.all_nodes) {
+    reader.all_nodes = std::move(defaults.all_nodes);
+  }
+}
 }  // namespace
 
 Test::Test(const std::shared_ptr<taraxa::AppBase> &app, LiveStatusReader live_status,
-           TestTransactionApi transaction_api, uint64_t chain_id)
+           TestTransactionApi transaction_api, uint64_t chain_id, TestNetworkReader network_reader)
     : app_(app),
       kChainId(app ? app->getConfig().genesis.chain_id : chain_id),
       live_status_(std::move(live_status)),
-      transaction_api_(std::move(transaction_api)) {
+      transaction_api_(std::move(transaction_api)),
+      network_reader_(std::move(network_reader)) {
   fillMissingTestTransactionApiCallbacks(transaction_api_, app_);
+  fillMissingTestNetworkReaderCallbacks(network_reader_, app_);
 }
 
 Json::Value Test::get_sortition_change(const Json::Value &param1) {
@@ -184,9 +222,8 @@ Json::Value Test::get_account_address() {
 
 Json::Value Test::get_peer_count() {
   Json::Value res;
-  if (auto node = app_.lock()) {
-    auto peer = node->getNetwork()->getPeerCount();
-    res["value"] = Json::UInt64(peer);
+  if (network_reader_.peer_count) {
+    res["value"] = Json::UInt64(network_reader_.peer_count());
   }
   return res;
 }
@@ -238,15 +275,15 @@ Json::Value Test::get_node_status() {
 Json::Value Test::get_all_nodes() {
   Json::Value res;
 
-  if (auto full_node = app_.lock()) {
-    auto nodes = full_node->getNetwork()->getAllNodes();
+  if (network_reader_.all_nodes) {
+    const auto nodes = network_reader_.all_nodes();
     res["nodes_count"] = Json::UInt64(nodes.size());
     res["nodes"] = Json::Value(Json::arrayValue);
-    for (auto const &n : nodes) {
+    for (const auto &n : nodes) {
       Json::Value node;
-      node["node_id"] = n.id().toString();
-      node["address"] = n.endpoint().address().to_string();
-      node["listen_port"] = Json::UInt64(n.endpoint().tcpPort());
+      node["node_id"] = n.node_id;
+      node["address"] = n.address;
+      node["listen_port"] = Json::UInt64(n.listen_port);
       res["nodes"].append(node);
     }
   }

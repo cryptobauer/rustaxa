@@ -1,6 +1,9 @@
 #pragma once
 
+#include <functional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "TestFace.h"
 #include "common/app_base.hpp"
@@ -22,10 +25,24 @@ struct TestTransactionApi {
   std::function<std::pair<bool, std::string>(const SharedTransaction&)> insert_transaction;
 };
 
+// TestNetworkReader is the Test RPC boundary for live network facts. The RPC
+// layer owns JSON formatting; the adapter supplies peer counts and node
+// endpoint views without exposing Network to public methods.
+struct TestNetworkNodeView {
+  std::string node_id;
+  std::string address;
+  uint64_t listen_port = 0;
+};
+
+struct TestNetworkReader {
+  std::function<uint64_t()> peer_count;
+  std::function<std::vector<TestNetworkNodeView>()> all_nodes;
+};
+
 class Test : public TestFace {
  public:
   explicit Test(const std::shared_ptr<taraxa::AppBase>& app, LiveStatusReader live_status = {},
-                TestTransactionApi transaction_api = {}, uint64_t chain_id = 0);
+                TestTransactionApi transaction_api = {}, uint64_t chain_id = 0, TestNetworkReader network_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"test", "1.0"}}; }
 
   virtual Json::Value get_sortition_change(const Json::Value& param1) override;
@@ -41,6 +58,7 @@ class Test : public TestFace {
   const uint64_t kChainId;
   LiveStatusReader live_status_;
   TestTransactionApi transaction_api_;
+  TestNetworkReader network_reader_;
 };
 
 }  // namespace taraxa::net

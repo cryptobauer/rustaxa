@@ -370,6 +370,34 @@ TEST_F(RPCTest, test_coin_transaction_uses_transaction_api) {
   ASSERT_TRUE(*insert_called);
 }
 
+TEST_F(RPCTest, test_network_reads_use_network_reader) {
+  auto peer_count_called = std::make_shared<bool>(false);
+  auto all_nodes_called = std::make_shared<bool>(false);
+
+  net::TestNetworkReader network_reader;
+  network_reader.peer_count = [peer_count_called] {
+    *peer_count_called = true;
+    return uint64_t(3);
+  };
+  network_reader.all_nodes = [all_nodes_called] {
+    *all_nodes_called = true;
+    return std::vector<net::TestNetworkNodeView>{{"node-a", "127.0.0.1", 10002}, {"node-b", "127.0.0.2", 10003}};
+  };
+
+  net::Test test_rpc(nullptr, {}, {}, 1, std::move(network_reader));
+
+  const auto peer_count = test_rpc.get_peer_count();
+  EXPECT_EQ(Json::UInt64(3), peer_count["value"].asUInt64());
+  ASSERT_TRUE(*peer_count_called);
+
+  const auto all_nodes = test_rpc.get_all_nodes();
+  EXPECT_EQ(Json::UInt64(2), all_nodes["nodes_count"].asUInt64());
+  EXPECT_EQ("node-a", all_nodes["nodes"][0]["node_id"].asString());
+  EXPECT_EQ("127.0.0.2", all_nodes["nodes"][1]["address"].asString());
+  EXPECT_EQ(Json::UInt64(10003), all_nodes["nodes"][1]["listen_port"].asUInt64());
+  ASSERT_TRUE(*all_nodes_called);
+}
+
 TEST_F(RPCTest, graphql_mutation_uses_transaction_api) {
   const auto trx = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
   auto insert_called = std::make_shared<bool>(false);
