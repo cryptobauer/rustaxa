@@ -209,6 +209,31 @@ impl ConsensusQueryApi {
             vdf_difficulty: vdf.difficulty,
         })
     }
+
+    /// Returns public DAG block views for a contiguous level window.
+    ///
+    /// The query reads level indexes and DAG block bytes from Rust storage and
+    /// materializes the same stable DTO as [`Self::dag_block_by_hash`]. Missing
+    /// block payloads referenced by a level index are skipped, matching the
+    /// legacy storage query behavior during transitional repair windows.
+    pub fn dag_blocks_by_level(
+        &self,
+        level: u64,
+        number_of_levels: u32,
+    ) -> Result<Vec<DagBlockView>> {
+        let hashes = self
+            .storage
+            .dag()
+            .hashes_at_level_range(level, number_of_levels)?;
+        let mut views = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            let view = self.dag_block_by_hash(hash.into())?;
+            if view.found {
+                views.push(view);
+            }
+        }
+        Ok(views)
+    }
 }
 
 fn h256_bytes(bytes: &[u8]) -> Result<H256> {
@@ -366,6 +391,10 @@ mod tests {
         assert_eq!(view.vdf_sol1, vec![0x22, 0x23]);
         assert_eq!(view.vdf_sol2, vec![0x33, 0x34]);
         assert_eq!(view.vdf_difficulty, 7);
+
+        let level_views = api.dag_blocks_by_level(5, 1).unwrap();
+        assert_eq!(level_views.len(), 1);
+        assert_eq!(level_views[0].hash, block_hash.0);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

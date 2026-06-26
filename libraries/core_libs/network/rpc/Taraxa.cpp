@@ -331,14 +331,13 @@ Json::Value Taraxa::taraxa_getDagBlockByLevel(const string& _blockLevel, bool _i
   try {
     auto app = tryGetApp();
 #ifdef RUSTAXA_ENABLE
-    const auto dag_queries = rustaxa::create_dag_storage_queries(app->getDB()->rustStorage());
-    const auto rust_blocks = dag_queries->get_dag_block_views_at_level(dev::jsToInt(_blockLevel), 1);
+    const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+    const auto rust_blocks = query_api->consensus_query_dag_blocks_by_level(dev::jsToInt(_blockLevel), 1);
     auto rust_res = Json::Value(Json::arrayValue);
     for (auto const& block : rust_blocks) {
       auto block_json = dagBlockPublicViewToJson(block);
-      auto period = app->getPbftManager()->getDagBlockPeriod(hashFromBridge(block.hash));
-      if (period.first) {
-        block_json["period"] = toJS(period.second);
+      if (block.finalized_period_found) {
+        block_json["period"] = toJS(block.finalized_period);
       } else {
         block_json["period"] = "-0x1";
       }

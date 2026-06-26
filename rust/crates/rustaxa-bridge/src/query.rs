@@ -100,6 +100,20 @@ impl BridgeConsensusQueryApi {
     ) -> Result<rustaxa_ffi::DagBlockPublicView, anyhow::Error> {
         Ok(dag_block_view_to_ffi(self.0.dag_block_by_hash(*hash)?))
     }
+
+    /// Returns stable DAG public block views for a contiguous level window.
+    pub fn consensus_query_dag_blocks_by_level(
+        &self,
+        level: u64,
+        number_of_levels: u32,
+    ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
+        Ok(self
+            .0
+            .dag_blocks_by_level(level, number_of_levels)?
+            .into_iter()
+            .map(dag_block_view_to_ffi)
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +256,10 @@ mod tests {
         assert_eq!(view.vdf_sol1, vec![0x22, 0x23]);
         assert_eq!(view.vdf_sol2, vec![0x33, 0x34]);
         assert_eq!(view.vdf_difficulty, 7);
+
+        let level_views = api.consensus_query_dag_blocks_by_level(5, 1).unwrap();
+        assert_eq!(level_views.len(), 1);
+        assert_eq!(level_views[0].hash, block_hash.0);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

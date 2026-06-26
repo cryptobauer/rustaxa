@@ -5033,6 +5033,11 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             hash: &[u8; 32],
         ) -> Result<DagBlockPublicView>;
+        pub fn consensus_query_dag_blocks_by_level(
+            self: &BridgeConsensusQueryApi,
+            level: u64,
+            number_of_levels: u32,
+        ) -> Result<Vec<DagBlockPublicView>>;
     }
 
     extern "Rust" {
