@@ -28,6 +28,8 @@ struct EthParams {
   std::function<rustaxa::TransactionReceiptPublicView(const h256&)> query_transaction_receipt;
   std::function<rust::Vec<rustaxa::TransactionReceiptPublicView>(EthBlockNumber)>
       query_transaction_receipts_by_block_number;
+  std::function<rustaxa::FinalChainBlockView(EthBlockNumber)> query_final_chain_block_by_number;
+  std::function<rustaxa::FinalChainBlockNumberLookup(const h256&)> query_final_chain_block_number_by_hash;
   std::function<EthBlockNumber()> query_final_chain_last_block_number;
   std::function<rust::Vec<uint64_t>(const std::array<uint8_t, 256>&, EthBlockNumber, EthBlockNumber)>
       query_blocks_with_bloom;

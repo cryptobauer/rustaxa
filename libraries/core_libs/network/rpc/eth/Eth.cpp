@@ -7,8 +7,8 @@
 #include <cstring>
 #include <stdexcept>
 
-#include "common/encoding_rlp.hpp"
 #include "LogFilter.hpp"
+#include "common/encoding_rlp.hpp"
 #include "common/rpc_utils.hpp"
 #include "common/types.hpp"
 #include "transaction/system_transaction.hpp"
@@ -73,7 +73,8 @@ std::shared_ptr<Transaction> materializeReceiptTransactionView(const rustaxa::Tr
   return transaction;
 }
 
-std::optional<TransactionLocationWithBlockHash> locationFromTransactionView(const rustaxa::TransactionPublicView& view) {
+std::optional<TransactionLocationWithBlockHash> locationFromTransactionView(
+    const rustaxa::TransactionPublicView& view) {
   if (!view.location_found || !view.block_hash_found) {
     return std::nullopt;
   }
@@ -112,6 +113,18 @@ std::vector<std::pair<ExtendedTransactionLocation, TransactionReceipt>> receiptV
     receipts.emplace_back(receiptLocationFromView(view), util::rlp_dec<TransactionReceipt>(dev::RLP(receipt_bytes)));
   }
   return receipts;
+}
+
+std::shared_ptr<BlockHeader> blockHeaderFromView(const rustaxa::FinalChainBlockView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+  auto header_bytes = bytesFromBridge(view.stored_header_rlp);
+  auto header = BlockHeader::fromRLP(dev::RLP(header_bytes));
+  if (header->hash != hashFromBridge(view.hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_ETH_BLOCK_HASH_MISMATCH");
+  }
+  return header;
 }
 }  // namespace
 #endif
@@ -340,6 +353,15 @@ class EthImpl : public Eth, EthParams {
   }
 
   Json::Value eth_getBlockByHash(const string& _blockHash, bool _includeTransactions) override {
+#ifdef RUSTAXA_ENABLE
+    if (query_final_chain_block_number_by_hash) {
+      auto lookup = query_final_chain_block_number_by_hash(jsToFixed<32>(_blockHash));
+      if (!lookup.found) {
+        return Json::Value();
+      }
+      return get_block_by_number(lookup.value, _includeTransactions);
+    }
+#endif
     if (auto blk_n = final_chain->blockNumber(jsToFixed<32>(_blockHash)); blk_n) {
       return get_block_by_number(*blk_n, _includeTransactions);
     }
@@ -347,6 +369,11 @@ class EthImpl : public Eth, EthParams {
   }
 
   Json::Value eth_getBlockByNumber(const string& _blockNumber, bool _includeTransactions) override {
+#ifdef RUSTAXA_ENABLE
+    if (query_final_chain_last_block_number && query_final_chain_block_by_number) {
+      return get_block_by_number(parse_blk_num_with_query(_blockNumber), _includeTransactions);
+    }
+#endif
     return get_block_by_number(parse_blk_num(_blockNumber), _includeTransactions);
   }
 
@@ -485,6 +512,35 @@ class EthImpl : public Eth, EthParams {
   void note_pending_transaction(const h256& trx_hash) override { watches_.new_transactions_.process_update(trx_hash); }
 
   Json::Value get_block_by_number(EthBlockNumber blk_n, bool include_transactions) {
+#ifdef RUSTAXA_ENABLE
+    if (query_final_chain_block_by_number && query_transaction_count_by_block_number &&
+        query_transaction_by_block_number_and_index) {
+      auto block_view = query_final_chain_block_by_number(blk_n);
+      auto block_header = blockHeaderFromView(block_view);
+      if (!block_header) {
+        return Json::Value();
+      }
+      auto ret = toJson(*block_header);
+      auto& trxs_json = ret["transactions"] = Json::Value(Json::arrayValue);
+      auto transaction_count = query_transaction_count_by_block_number(blk_n);
+      for (uint64_t trx_pos = 0; trx_pos < transaction_count; ++trx_pos) {
+        auto transaction_view = query_transaction_by_block_number_and_index(blk_n, trx_pos);
+        if (!transaction_view.found) {
+          throw std::runtime_error("CONSENSUS_QUERY_ETH_BLOCK_TRANSACTION_MISSING");
+        }
+        if (include_transactions) {
+          auto trx = materializeTransactionView(transaction_view);
+          if (!trx) {
+            throw std::runtime_error("CONSENSUS_QUERY_ETH_BLOCK_TRANSACTION_MATERIALIZE_MISSING");
+          }
+          trxs_json.append(toJson(*trx, locationFromTransactionView(transaction_view)));
+        } else {
+          trxs_json.append(toJS(hashFromBridge(transaction_view.hash)));
+        }
+      }
+      return ret;
+    }
+#endif
     auto blk_header = final_chain->blockHeader(blk_n);
     if (!blk_header) {
       return Json::Value();
@@ -620,7 +676,8 @@ class EthImpl : public Eth, EthParams {
 
 #ifdef RUSTAXA_ENABLE
   std::optional<Json::Value> get_logs_with_query(const LogFilter& filter) const {
-    if (!query_final_chain_last_block_number || !query_blocks_with_bloom || !query_transaction_receipts_by_block_number) {
+    if (!query_final_chain_last_block_number || !query_blocks_with_bloom ||
+        !query_transaction_receipts_by_block_number) {
       return std::nullopt;
     }
 
@@ -719,6 +776,13 @@ class EthImpl : public Eth, EthParams {
     auto ret = parse_blk_num_specific(blk_num_str);
     return ret ? *ret : final_chain->lastBlockNumber();
   }
+
+#ifdef RUSTAXA_ENABLE
+  EthBlockNumber parse_blk_num_with_query(const string& blk_num_str) {
+    auto ret = parse_blk_num_specific(blk_num_str);
+    return ret ? *ret : query_final_chain_last_block_number();
+  }
+#endif
 
   EthBlockNumber get_block_number_from_json(const Json::Value& json) {
     if (json.isObject()) {

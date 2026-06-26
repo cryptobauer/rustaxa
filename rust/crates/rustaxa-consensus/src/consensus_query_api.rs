@@ -58,6 +58,17 @@ pub struct QueryHashLookup {
     pub hash: [u8; 32],
 }
 
+/// Number lookup result returned by public query facade methods.
+///
+/// `found` is false when the requested durable row does not exist. When
+/// `found` is true, `value` contains the canonical unsigned block/period number
+/// decoded from Rust-owned storage bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QueryNumberLookup {
+    pub found: bool,
+    pub value: u64,
+}
+
 /// Stable public view of a finalized FinalChain block.
 ///
 /// The view combines Rust FinalChain lookup rows with the PBFT period-data hash
@@ -360,6 +371,29 @@ impl ConsensusQueryApi {
             stored_header_rlp,
             has_pbft_hash: pbft_hash.found,
             pbft_block_hash: pbft_hash.hash,
+        })
+    }
+
+    /// Returns the finalized FinalChain block number for `block_hash`.
+    ///
+    /// The lookup reads the Rust-owned hash-to-number index directly. Missing
+    /// hashes return `found == false`; malformed number bytes are errors so
+    /// public adapters surface storage inconsistency instead of falling back to
+    /// `FinalChain` in Rust mode.
+    pub fn final_chain_block_number_by_hash(
+        &self,
+        block_hash: [u8; 32],
+    ) -> Result<QueryNumberLookup> {
+        let Some(number_bytes) = self
+            .storage
+            .final_chain()
+            .block_number_by_hash(H256::from(block_hash))?
+        else {
+            return Ok(QueryNumberLookup::default());
+        };
+        Ok(QueryNumberLookup {
+            found: true,
+            value: decode_u64_le(&number_bytes, "CONSENSUS_QUERY_FINAL_CHAIN_BLOCK_NUMBER")?,
         })
     }
 
@@ -1595,6 +1629,19 @@ mod tests {
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
         assert_eq!(api.final_chain_last_block_number().unwrap(), 9);
+        assert_eq!(
+            api.final_chain_block_number_by_hash(block_hash.into())
+                .unwrap(),
+            QueryNumberLookup {
+                found: true,
+                value: 9
+            }
+        );
+        assert!(
+            !api.final_chain_block_number_by_hash([0x99; 32])
+                .unwrap()
+                .found
+        );
         assert_eq!(
             api.final_chain_blocks_with_bloom(query_bloom, 1, 9)
                 .unwrap(),

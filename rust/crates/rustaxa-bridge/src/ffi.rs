@@ -5052,6 +5052,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             number: u64,
         ) -> Result<FinalChainBlockView>;
+        pub fn consensus_query_final_chain_block_number_by_hash(
+            self: &BridgeConsensusQueryApi,
+            block_hash: &[u8; 32],
+        ) -> Result<FinalChainBlockNumberLookup>;
         pub fn consensus_query_final_chain_last_block_number(
             self: &BridgeConsensusQueryApi,
         ) -> Result<u64>;

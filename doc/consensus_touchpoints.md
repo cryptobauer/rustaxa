@@ -433,6 +433,7 @@ Implemented first slice:
   - `consensus_query_transaction_count_by_block_hash(block_hash) -> u64`
   - `consensus_query_transaction_receipt_by_hash(hash) -> TransactionReceiptPublicView`
   - `consensus_query_transaction_receipts_by_block_number(block_number) -> Vec<TransactionReceiptPublicView>`
+  - `consensus_query_final_chain_block_number_by_hash(block_hash) -> FinalChainBlockNumberLookup`
   - `consensus_query_final_chain_last_block_number() -> u64`
   - `consensus_query_final_chain_blocks_with_bloom(bloom, from, to) -> Vec<u64>`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
@@ -471,6 +472,9 @@ Implemented first slice:
 - `eth_getBlockReceipts` now uses `ConsensusQueryApi` in Rust mode for finalized regular-transaction receipt expansion
   instead of reading `FinalChain` block hashes, transaction vectors, block receipt lists, and per-transaction receipts
   directly.
+- `eth_getBlockByNumber` and `eth_getBlockByHash` now use `ConsensusQueryApi` in Rust mode for finalized block-header
+  views, hash-to-number resolution, transaction counts, and optional indexed transaction expansion instead of reading
+  `FinalChain` block headers, block-number indexes, transaction vectors, and transaction hashes directly.
 - `debug_getPeriodTransactionsWithReceipts` now uses the same `ConsensusQueryApi` block-receipts DTO in Rust mode
   instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
 - `eth_getLogs` and installed `eth_getFilterLogs` replay now use `ConsensusQueryApi` in Rust mode for latest finalized
@@ -479,9 +483,8 @@ Implemented first slice:
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing account-state, non-GraphQL expanded transaction routes, live subscription log delivery, debug log filtering,
-  and sync/status routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in
-  later slices.
+- Existing account-state, live subscription log delivery, debug log filtering, and sync/status routes remain
+  compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
 
 ## Consensus Internal
 

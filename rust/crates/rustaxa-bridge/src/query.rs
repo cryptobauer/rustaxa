@@ -14,6 +14,15 @@ fn query_hash_lookup_to_ffi(lookup: rustaxa_consensus::QueryHashLookup) -> rusta
     }
 }
 
+fn query_number_lookup_to_ffi(
+    lookup: rustaxa_consensus::QueryNumberLookup,
+) -> rustaxa_ffi::FinalChainBlockNumberLookup {
+    rustaxa_ffi::FinalChainBlockNumberLookup {
+        found: lookup.found,
+        value: lookup.value,
+    }
+}
+
 fn final_chain_block_view_to_ffi(
     view: rustaxa_consensus::FinalChainBlockView,
 ) -> rustaxa_ffi::FinalChainBlockView {
@@ -221,6 +230,16 @@ impl BridgeConsensusQueryApi {
     ) -> Result<rustaxa_ffi::FinalChainBlockView, anyhow::Error> {
         Ok(final_chain_block_view_to_ffi(
             self.0.final_chain_block_by_number(number)?,
+        ))
+    }
+
+    /// Returns the finalized FinalChain block number for a block hash.
+    pub fn consensus_query_final_chain_block_number_by_hash(
+        &self,
+        block_hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::FinalChainBlockNumberLookup, anyhow::Error> {
+        Ok(query_number_lookup_to_ffi(
+            self.0.final_chain_block_number_by_hash(*block_hash)?,
         ))
     }
 
@@ -689,6 +708,16 @@ mod tests {
         let lookup = api.consensus_query_pbft_block_hash_by_period(15).unwrap();
         assert!(lookup.found);
         assert_eq!(lookup.hash, view.pbft_block_hash);
+        let number_lookup = api
+            .consensus_query_final_chain_block_number_by_hash(&block_hash.0)
+            .unwrap();
+        assert!(number_lookup.found);
+        assert_eq!(number_lookup.value, 15);
+        assert!(
+            !api.consensus_query_final_chain_block_number_by_hash(&[0x99; 32])
+                .unwrap()
+                .found
+        );
         assert_eq!(
             api.consensus_query_final_chain_last_block_number().unwrap(),
             15
