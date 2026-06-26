@@ -132,6 +132,49 @@ class FinalChain {
 
  private:
   /**
+   * Thin adapter for the external EVM `StateAPI` client used by Rust-enabled FinalChain publication.
+   *
+   * Inputs are Rust bridge request DTOs plus the legacy C++ transaction/reward material that the external executor
+   * still requires. Outputs are Rust bridge report DTOs and temporary C++ receipts needed to preserve the public
+   * `FinalizationResult` surface. The adapter is the only Rust-mode finalization helper that may execute arbitrary EVM
+   * work, query bridge-contract state, distribute rewards in `StateAPI`, or commit `state_db/`; it does not publish
+   * Rust FinalChain storage or decide consensus session state.
+   */
+  class ExternalEvmStateApiClient {
+   public:
+    struct ExecutionOutcome {
+      rustaxa::FinalChainEvmExecutionReport report;
+      TransactionReceipts receipts;
+      std::vector<gas_t> transaction_gas_used;
+    };
+
+    struct RewardsOutcome {
+      rustaxa::FinalChainEvmRewardsReport report;
+    };
+
+    ExternalEvmStateApiClient(StateAPI& state_api, std::mutex& state_api_mutex);
+
+    rustaxa::FinalChainSystemTransactionPlanFact collectSystemTransactionFacts(
+        const rustaxa::FinalChainSystemTransactionRequest& request, bool is_pillar_block_period,
+        uint64_t block_gas_limit, const addr_t& bridge_contract_address);
+
+    ExecutionOutcome executeTransactions(const rustaxa::FinalChainEvmExecutionRequest& request,
+                                         const std::vector<SharedTransaction>& transactions, const addr_t& beneficiary,
+                                         uint64_t block_gas_limit, uint64_t timestamp);
+
+    RewardsOutcome distributeRewards(const rustaxa::FinalChainEvmRewardsRequest& request,
+                                     const std::vector<rewards::BlockStats>& rewards_stats);
+
+    rustaxa::FinalChainExternalEvmStateCommitResult commitState();
+
+    state_api::StateDescriptor lastCommittedStateDescriptor() const;
+
+   private:
+    StateAPI& state_api_;
+    std::mutex& state_api_mutex_;
+  };
+
+  /**
    * Collect bridge-contract facts and materialize Rust-planned system transactions for an external-EVM period.
    *
    * The C++ executor boundary still owns bridge-contract state queries and the `shouldFinalizeEpoch()` dry run. Rust
@@ -170,6 +213,7 @@ class FinalChain {
   uint32_t max_levels_per_period_ = 0;
   mutable std::mutex state_api_mutex_;
   StateAPI state_api_;
+  ExternalEvmStateApiClient external_evm_state_api_;
   rewards::Stats rewards_;
   std::atomic<uint64_t> num_executed_dag_blk_ = 0;
   std::atomic<uint64_t> num_executed_trx_ = 0;

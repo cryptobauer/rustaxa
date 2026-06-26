@@ -377,10 +377,10 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
       rust_execution_api_(rustaxa::create_consensus_execution_api()),
       state_api_([this](auto n) { return blockHash(n).value_or(ZeroHash()); }, config.genesis.state,
                  config.opts_final_chain, {db->stateDbStoragePath().string()}),
+      external_evm_state_api_(state_api_, state_api_mutex_),
       rewards_(
           config.genesis.pbft.committee_size, config.genesis.state.hardforks, db_,
-          [this](EthBlockNumber n) { return dposEligibleTotalVoteCount(n); },
-          recoverExternalEvmPendingPublication()),
+          [this](EthBlockNumber n) { return dposEligibleTotalVoteCount(n); }, recoverExternalEvmPendingPublication()),
       config_(config) {
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
   block_gas_limit_ = config.genesis.pbft.gas_limit;
@@ -390,12 +390,139 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
   num_executed_trx_ = execution_status.executed_transaction_count;
 }
 
-EthBlockNumber FinalChain::recoverExternalEvmPendingPublication() {
+FinalChain::ExternalEvmStateApiClient::ExternalEvmStateApiClient(StateAPI& state_api, std::mutex& state_api_mutex)
+    : state_api_(state_api), state_api_mutex_(state_api_mutex) {}
+
+rustaxa::FinalChainSystemTransactionPlanFact FinalChain::ExternalEvmStateApiClient::collectSystemTransactionFacts(
+    const rustaxa::FinalChainSystemTransactionRequest& request, bool is_pillar_block_period, uint64_t block_gas_limit,
+    const addr_t& bridge_contract_address) {
   state_api::StateDescriptor state_descriptor;
+  std::optional<state_api::Account> bridge_contract;
+  bool should_finalize = false;
+  uint64_t system_account_nonce = 0;
   {
     std::lock_guard lock(state_api_mutex_);
     state_descriptor = state_api_.get_last_committed_state_descriptor();
+    const auto last_committed_evm_block = state_descriptor.blk_num;
+    bridge_contract = state_api_.get_account(last_committed_evm_block, bridge_contract_address);
+    const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
+    if (is_pillar_block_period && bridge_contract_has_code) {
+      const static auto should_finalize_method = util::EncodingSolidity::packFunctionCall("shouldFinalizeEpoch()");
+      should_finalize = u256(state_api_
+                                 .dry_run_transaction(last_committed_evm_block,
+                                                      state_api::EVMBlock{dev::ZeroAddress, block_gas_limit, 0,
+                                                                          BlockHeader::difficulty()},
+                                                      state_api::EVMTransaction{
+                                                          dev::ZeroAddress,
+                                                          1,
+                                                          bridge_contract_address,
+                                                          state_api::ZeroAccount.nonce,
+                                                          0,
+                                                          10000000,
+                                                          should_finalize_method,
+                                                      })
+                                 .code_retval)
+                            .convert_to<bool>();
+      if (should_finalize) {
+        system_account_nonce = state_api_.get_account(last_committed_evm_block, kTaraxaSystemAccount)
+                                   .value_or(state_api::ZeroAccount)
+                                   .nonce.convert_to<uint64_t>();
+      }
+    }
   }
+  const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
+
+  rustaxa::FinalChainSystemTransactionPlanFact fact;
+  fact.request_id = request.request_id;
+  fact.period = request.period;
+  fact.is_pillar_block_period = is_pillar_block_period;
+  fact.bridge_contract_address = into_address_array(bridge_contract_address);
+  fact.bridge_contract_found = bridge_contract.has_value();
+  fact.bridge_contract_has_code = bridge_contract_has_code;
+  fact.should_finalize_epoch = should_finalize;
+  fact.system_account_nonce = system_account_nonce;
+  fact.block_gas_limit = block_gas_limit;
+  return fact;
+}
+
+FinalChain::ExternalEvmStateApiClient::ExecutionOutcome FinalChain::ExternalEvmStateApiClient::executeTransactions(
+    const rustaxa::FinalChainEvmExecutionRequest& request, const std::vector<SharedTransaction>& transactions,
+    const addr_t& beneficiary, uint64_t block_gas_limit, uint64_t timestamp) {
+  auto evm_trxs = to_evm_transactions(transactions);
+  std::vector<state_api::ExecutionResult> exec_results;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    exec_results =
+        state_api_.execute_transactions({beneficiary, block_gas_limit, timestamp, BlockHeader::difficulty()}, evm_trxs)
+            .execution_results;
+  }
+
+  ExecutionOutcome outcome;
+  outcome.receipts.reserve(exec_results.size());
+  outcome.transaction_gas_used.reserve(exec_results.size());
+  gas_t cumulative_gas_used = 0;
+  for (const auto& r : exec_results) {
+    LogEntries logs;
+    logs.reserve(r.logs.size());
+    std::transform(r.logs.cbegin(), r.logs.cend(), std::back_inserter(logs),
+                   [](const auto& l) { return LogEntry{l.address, l.topics, l.data}; });
+    outcome.transaction_gas_used.push_back(r.gas_used);
+    outcome.receipts.emplace_back(TransactionReceipt{
+        static_cast<uint8_t>(r.code_err.empty() && r.consensus_err.empty()),
+        r.gas_used,
+        cumulative_gas_used += r.gas_used,
+        std::move(logs),
+        r.new_contract_addr ? std::optional(r.new_contract_addr) : std::nullopt,
+    });
+  }
+  outcome.report = make_evm_execution_report(request, exec_results, outcome.receipts);
+  return outcome;
+}
+
+FinalChain::ExternalEvmStateApiClient::RewardsOutcome FinalChain::ExternalEvmStateApiClient::distributeRewards(
+    const rustaxa::FinalChainEvmRewardsRequest& request, const std::vector<rewards::BlockStats>& rewards_stats) {
+  h256 state_root;
+  u256 total_reward;
+  {
+    std::lock_guard lock(state_api_mutex_);
+    const auto& rewards_result = state_api_.distribute_rewards(rewards_stats);
+    state_root = rewards_result.state_root;
+    total_reward = rewards_result.total_reward;
+  }
+
+  RewardsOutcome outcome;
+  outcome.report.request_id = request.request_id;
+  outcome.report.period = request.period;
+  outcome.report.status = kFinalChainEvmRewardsReportStatusSuccess;
+  outcome.report.state_root = into_bytes_array(state_root);
+  outcome.report.total_reward = into_big_endian_vec(total_reward);
+  return outcome;
+}
+
+rustaxa::FinalChainExternalEvmStateCommitResult FinalChain::ExternalEvmStateApiClient::commitState() {
+  rustaxa::FinalChainExternalEvmStateCommitResult result;
+  result.status = kFinalChainEvmLifecycleStatusCommitted;
+  result.error_code = rust::String();
+  try {
+    std::lock_guard lock(state_api_mutex_);
+    state_api_.transition_state_commit();
+  } catch (const std::exception& e) {
+    result.status = kFinalChainEvmLifecycleStatusRejected;
+    result.error_code = rust::String(std::string("STATE_API_COMMIT_FAILED: ") + e.what());
+  } catch (...) {
+    result.status = kFinalChainEvmLifecycleStatusRejected;
+    result.error_code = rust::String("STATE_API_COMMIT_FAILED");
+  }
+  return result;
+}
+
+state_api::StateDescriptor FinalChain::ExternalEvmStateApiClient::lastCommittedStateDescriptor() const {
+  std::lock_guard lock(state_api_mutex_);
+  return state_api_.get_last_committed_state_descriptor();
+}
+
+EthBlockNumber FinalChain::recoverExternalEvmPendingPublication() {
+  const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
   auto recovery_report = rust_final_chain_.value()->recover_external_evm_pending_publication(
       state_descriptor.blk_num, into_bytes_array(state_descriptor.state_root));
   if (recovery_report.status == kFinalChainEvmPublicationStatusRejected) {
@@ -459,61 +586,10 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
 std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
     const rustaxa::FinalChainSystemTransactionRequest& request) {
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
-  state_api::StateDescriptor state_descriptor;
-  std::optional<state_api::Account> bridge_contract;
-  bool should_finalize = false;
-  uint64_t system_account_nonce = 0;
-  {
-    std::lock_guard lock(state_api_mutex_);
-    state_descriptor = state_api_.get_last_committed_state_descriptor();
-  }
-  const auto last_committed_evm_block = state_descriptor.blk_num;
   const auto is_pillar_block_period =
       config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
-
-  {
-    std::lock_guard lock(state_api_mutex_);
-    bridge_contract = state_api_.get_account(last_committed_evm_block, bridge_contract_address);
-    const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
-    if (is_pillar_block_period && bridge_contract_has_code) {
-      const static auto should_finalize_method = util::EncodingSolidity::packFunctionCall("shouldFinalizeEpoch()");
-      should_finalize =
-          u256(state_api_
-                   .dry_run_transaction(last_committed_evm_block,
-                                        state_api::EVMBlock{dev::ZeroAddress, block_gas_limit_, 0,
-                                                            BlockHeader::difficulty()},
-                                        state_api::EVMTransaction{
-                                            dev::ZeroAddress,
-                                            1,
-                                            bridge_contract_address,
-                                            state_api::ZeroAccount.nonce,
-                                            0,
-                                            10000000,
-                                            should_finalize_method,
-                                        })
-                   .code_retval)
-              .convert_to<bool>();
-      if (should_finalize) {
-        system_account_nonce =
-            state_api_.get_account(last_committed_evm_block, kTaraxaSystemAccount)
-                .value_or(state_api::ZeroAccount)
-                .nonce.convert_to<uint64_t>();
-      }
-    }
-  }
-  const auto bridge_contract_has_code = bridge_contract && bridge_contract->code_size;
-
-  rustaxa::FinalChainSystemTransactionPlanFact fact;
-  fact.request_id = request.request_id;
-  fact.period = request.period;
-  fact.is_pillar_block_period = is_pillar_block_period;
-  fact.bridge_contract_address = into_address_array(bridge_contract_address);
-  fact.bridge_contract_found = bridge_contract.has_value();
-  fact.bridge_contract_has_code = bridge_contract_has_code;
-  fact.should_finalize_epoch = should_finalize;
-  fact.system_account_nonce = system_account_nonce;
-  fact.block_gas_limit = block_gas_limit_;
-  auto plan = rustaxa::plan_external_evm_system_transactions(std::move(fact));
+  auto plan = rustaxa::plan_external_evm_system_transactions(external_evm_state_api_.collectSystemTransactionFacts(
+      request, is_pillar_block_period, block_gas_limit_, bridge_contract_address));
   if (plan.request_id != request.request_id || plan.period != request.period) {
     throw DbException("FinalChain::makeSystemTransactions Rust plan identity mismatch");
   }
@@ -557,63 +633,22 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize external EVM request transaction count mismatch");
   }
 
-  auto evm_trxs = to_evm_transactions(all_transactions);
-  std::vector<state_api::ExecutionResult> exec_results;
-  {
-    std::lock_guard lock(state_api_mutex_);
-    exec_results =
-        state_api_.execute_transactions({period_data.pbft_blk->getBeneficiary(), block_gas_limit_,
-                                         period_data.pbft_blk->getTimestamp(), BlockHeader::difficulty()},
-                                        evm_trxs)
-            .execution_results;
-  }
-
-  TransactionReceipts receipts;
-  receipts.reserve(exec_results.size());
-  std::vector<gas_t> transactions_gas_used;
-  transactions_gas_used.reserve(exec_results.size());
-  gas_t cumulative_gas_used = 0;
-  for (const auto& r : exec_results) {
-    LogEntries logs;
-    logs.reserve(r.logs.size());
-    std::transform(r.logs.cbegin(), r.logs.cend(), std::back_inserter(logs),
-                   [](const auto& l) { return LogEntry{l.address, l.topics, l.data}; });
-    transactions_gas_used.push_back(r.gas_used);
-    receipts.emplace_back(TransactionReceipt{
-        static_cast<uint8_t>(r.code_err.empty() && r.consensus_err.empty()),
-        r.gas_used,
-        cumulative_gas_used += r.gas_used,
-        std::move(logs),
-        r.new_contract_addr ? std::optional(r.new_contract_addr) : std::nullopt,
-    });
-  }
-
-  auto evm_report = make_evm_execution_report(step.evm_request, exec_results, receipts);
-  step = rust_execution_api_.value()->consensus_execution_report_execution_result(*session, std::move(evm_report));
+  auto execution = external_evm_state_api_.executeTransactions(step.evm_request, all_transactions,
+                                                               period_data.pbft_blk->getBeneficiary(), block_gas_limit_,
+                                                               period_data.pbft_blk->getTimestamp());
+  step =
+      rust_execution_api_.value()->consensus_execution_report_execution_result(*session, std::move(execution.report));
   if (step.action != kFinalChainExecutionActionDistributeExternalEvmRewards) {
     throw DbException("FinalChain::finalize expected external EVM rewards action, got " + std::to_string(step.action) +
                       ": " + std::string(step.error_code));
   }
 
   auto rewards_stats =
-      rewards_.processStatsForFinalChainPublication(period_data, blocks_per_year, transactions_gas_used);
-  h256 state_root;
-  u256 total_reward;
-  {
-    std::lock_guard lock(state_api_mutex_);
-    const auto& rewards_result = state_api_.distribute_rewards(rewards_stats.distribution_stats);
-    state_root = rewards_result.state_root;
-    total_reward = rewards_result.total_reward;
-  }
-
-  rustaxa::FinalChainEvmRewardsReport rewards_report;
-  rewards_report.request_id = step.evm_rewards_request.request_id;
-  rewards_report.period = step.evm_rewards_request.period;
-  rewards_report.status = kFinalChainEvmRewardsReportStatusSuccess;
-  rewards_report.state_root = into_bytes_array(state_root);
-  rewards_report.total_reward = into_big_endian_vec(total_reward);
-  auto commit_plan =
-      rust_execution_api_.value()->consensus_execution_report_rewards_result(*session, std::move(rewards_report));
+      rewards_.processStatsForFinalChainPublication(period_data, blocks_per_year, execution.transaction_gas_used);
+  auto rewards_execution =
+      external_evm_state_api_.distributeRewards(step.evm_rewards_request, rewards_stats.distribution_stats);
+  auto commit_plan = rust_execution_api_.value()->consensus_execution_report_rewards_result(
+      *session, std::move(rewards_execution.report));
   if (!commit_plan.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM commit plan failed: " +
                       std::string(commit_plan.error_code));
@@ -625,8 +660,8 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
                       std::to_string(publication_plan_step.action) + ": " +
                       std::string(publication_plan_step.error_code));
   }
-  auto publication_plan = rust_execution_api_.value()->consensus_execution_plan_publication(*rust_final_chain_.value(),
-                                                                                            *session);
+  auto publication_plan =
+      rust_execution_api_.value()->consensus_execution_plan_publication(*rust_final_chain_.value(), *session);
   if (!publication_plan.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM publication plan failed: " +
                       std::string(publication_plan.error_code));
@@ -664,44 +699,26 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM state commit intent rejected: " +
                       std::string(state_commit_intent.error_code));
   }
-  auto pending_publication_report =
-      rust_execution_api_.value()->consensus_execution_persist_pending_publication(*rust_final_chain_.value(),
-                                                                                  *session);
+  auto pending_publication_report = rust_execution_api_.value()->consensus_execution_persist_pending_publication(
+      *rust_final_chain_.value(), *session);
   if (pending_publication_report.status != kFinalChainEvmPublicationStatusApplied ||
       !pending_publication_report.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM pending publication marker failed: " +
                       std::string(pending_publication_report.error_code));
   }
 
-  rustaxa::FinalChainExternalEvmStateCommitResult state_commit_result;
-  state_commit_result.status = kFinalChainEvmLifecycleStatusCommitted;
-  state_commit_result.error_code = rust::String();
-  try {
-    state_api_.transition_state_commit();
-  } catch (const std::exception& e) {
-    state_commit_result.status = kFinalChainEvmLifecycleStatusRejected;
-    state_commit_result.error_code = rust::String(std::string("STATE_API_COMMIT_FAILED: ") + e.what());
-    auto rejected_decision =
-        rust_execution_api_.value()->consensus_execution_report_state_commit_result(*rust_final_chain_.value(), *session,
-                                                                                   std::move(state_commit_result));
+  auto state_commit_result = external_evm_state_api_.commitState();
+  if (state_commit_result.status != kFinalChainEvmLifecycleStatusCommitted) {
+    const auto error_code = std::string(state_commit_result.error_code);
+    auto rejected_decision = rust_execution_api_.value()->consensus_execution_report_state_commit_result(
+        *rust_final_chain_.value(), *session, std::move(state_commit_result));
     if (rejected_decision.status != kFinalChainEvmCommitDecisionRejected) {
       throw DbException("FinalChain::finalize Rust external EVM lifecycle unexpectedly accepted failed state commit");
     }
-    throw DbException("FinalChain::finalize StateAPI external EVM state commit failed: " + std::string(e.what()));
-  } catch (...) {
-    state_commit_result.status = kFinalChainEvmLifecycleStatusRejected;
-    state_commit_result.error_code = rust::String("STATE_API_COMMIT_FAILED");
-    auto rejected_decision =
-        rust_execution_api_.value()->consensus_execution_report_state_commit_result(*rust_final_chain_.value(), *session,
-                                                                                   std::move(state_commit_result));
-    if (rejected_decision.status != kFinalChainEvmCommitDecisionRejected) {
-      throw DbException("FinalChain::finalize Rust external EVM lifecycle unexpectedly accepted failed state commit");
-    }
-    throw DbException("FinalChain::finalize StateAPI external EVM state commit failed");
+    throw DbException("FinalChain::finalize StateAPI external EVM state commit failed: " + error_code);
   }
-  auto decision = rust_execution_api_.value()->consensus_execution_report_state_commit_result(*rust_final_chain_.value(),
-                                                                                             *session,
-                                                                                             std::move(state_commit_result));
+  auto decision = rust_execution_api_.value()->consensus_execution_report_state_commit_result(
+      *rust_final_chain_.value(), *session, std::move(state_commit_result));
   if (decision.status != kFinalChainEvmCommitDecisionReadyToPublish || !decision.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM lifecycle rejected: " + std::string(decision.error_code));
   }
@@ -741,7 +758,7 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
       },
       std::move(blk_header),
       std::move(all_transactions),
-      std::move(receipts),
+      std::move(execution.receipts),
   });
   block_finalized_emitter_.emit(result);
   return result;
@@ -1051,9 +1068,7 @@ vrf_wrapper::vrf_pk_t FinalChain::dposGetVrfKey(EthBlockNumber blk_n, const addr
 
 void FinalChain::prune(EthBlockNumber) { throw_unimplemented_final_chain_api("prune"); }
 
-void FinalChain::waitForFinalized() {
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
-}
+void FinalChain::waitForFinalized() { std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
 
 std::vector<state_api::ValidatorStake> FinalChain::dposValidatorsTotalStakes(EthBlockNumber blk_num) const {
   auto rust_stakes = rust_final_chain_.value()->get_dpos_validators_total_stakes(blk_num);
@@ -1103,23 +1118,23 @@ h256 FinalChain::getBridgeRoot(EthBlockNumber blk_num) const {
   {
     std::lock_guard lock(state_api_mutex_);
     const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
-  if (requested_block > state_descriptor.blk_num) {
-    const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
+    if (requested_block > state_descriptor.blk_num) {
+      const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
+      if (!bridge_contract || !bridge_contract->code_size) {
+        return ZeroHash();
+      }
+      throw DbException("FinalChain::getBridgeRoot requires committed external-EVM state for block " +
+                        std::to_string(requested_block));
+    }
+    const auto bridge_contract = state_api_.get_account(requested_block, bridge_contract_address);
     if (!bridge_contract || !bridge_contract->code_size) {
       return ZeroHash();
     }
-    throw DbException("FinalChain::getBridgeRoot requires committed external-EVM state for block " +
-                      std::to_string(requested_block));
-  }
-  const auto bridge_contract = state_api_.get_account(requested_block, bridge_contract_address);
-  if (!bridge_contract || !bridge_contract->code_size) {
-    return ZeroHash();
-  }
-  const auto block_header = blockHeader(requested_block);
-  if (!block_header) {
-    throw DbException("FinalChain::getBridgeRoot missing committed block header for block " +
-                      std::to_string(requested_block));
-  }
+    const auto block_header = blockHeader(requested_block);
+    if (!block_header) {
+      throw DbException("FinalChain::getBridgeRoot missing committed block header for block " +
+                        std::to_string(requested_block));
+    }
 
     result = state_api_.dry_run_transaction(
         block_header->number,
@@ -1142,23 +1157,23 @@ h256 FinalChain::getBridgeEpoch(EthBlockNumber blk_num) const {
   {
     std::lock_guard lock(state_api_mutex_);
     const auto state_descriptor = state_api_.get_last_committed_state_descriptor();
-  if (requested_block > state_descriptor.blk_num) {
-    const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
+    if (requested_block > state_descriptor.blk_num) {
+      const auto bridge_contract = state_api_.get_account(state_descriptor.blk_num, bridge_contract_address);
+      if (!bridge_contract || !bridge_contract->code_size) {
+        return ZeroHash();
+      }
+      throw DbException("FinalChain::getBridgeEpoch requires committed external-EVM state for block " +
+                        std::to_string(requested_block));
+    }
+    const auto bridge_contract = state_api_.get_account(requested_block, bridge_contract_address);
     if (!bridge_contract || !bridge_contract->code_size) {
       return ZeroHash();
     }
-    throw DbException("FinalChain::getBridgeEpoch requires committed external-EVM state for block " +
-                      std::to_string(requested_block));
-  }
-  const auto bridge_contract = state_api_.get_account(requested_block, bridge_contract_address);
-  if (!bridge_contract || !bridge_contract->code_size) {
-    return ZeroHash();
-  }
-  const auto block_header = blockHeader(requested_block);
-  if (!block_header) {
-    throw DbException("FinalChain::getBridgeEpoch missing committed block header for block " +
-                      std::to_string(requested_block));
-  }
+    const auto block_header = blockHeader(requested_block);
+    if (!block_header) {
+      throw DbException("FinalChain::getBridgeEpoch missing committed block header for block " +
+                        std::to_string(requested_block));
+    }
 
     result = state_api_.dry_run_transaction(
         block_header->number,

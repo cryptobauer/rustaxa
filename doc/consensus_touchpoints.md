@@ -310,6 +310,22 @@ Implemented first slice:
 - Native-only FinalChain commits still use the existing Rust session commit helper because they are not part of the
   external EVM/StateAPI boundary.
 
+Implemented second slice:
+
+- Shim-owned executor adapter: `FinalChain::ExternalEvmStateApiClient` in the Rust-mode FinalChain shim.
+- Rust-enabled `FinalChain::finalizeExternalEvm` now consumes adapter outcomes instead of calling `StateAPI` directly for:
+  - bridge-contract fact collection for Rust-planned system transactions
+  - arbitrary external EVM transaction execution
+  - external reward distribution
+  - staged `state_db/` commit
+  - committed-state descriptor reads used by pending-publication recovery
+- Direct `StateAPI::execute_transactions`, `StateAPI::distribute_rewards`, and `StateAPI::transition_state_commit` calls
+  are confined to the adapter. The consensus flow sees Rust bridge request/report/commit DTOs plus temporary public
+  `FinalizationResult` materialization.
+- The adapter remains intentionally C++ shim-owned because arbitrary EVM execution and `state_db/` mutation are still
+  external to the Rust consensus rewrite. It must not publish Rust FinalChain storage or decide session state; those stay
+  behind `ConsensusExecutionApi`.
+
 ### 3. Public Query API
 
 Purpose: serve RPC, GraphQL, plugins, debug, and CLI read paths without exposing consensus managers, storage internals,
