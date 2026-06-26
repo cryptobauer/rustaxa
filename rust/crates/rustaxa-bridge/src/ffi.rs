@@ -3747,6 +3747,11 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    struct FinalChainExternalEvmCommittedStateDescriptor {
+        period: u64,
+        state_root: [u8; 32],
+    }
+
     struct FinalChainExecutionStep {
         status: u8,
         action: u8,
@@ -7818,6 +7823,7 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusExecutionApi,
             final_chain: &BridgeFinalChain,
             publication_plan: &FinalChainExternalEvmPublicationPlan,
+            committed_state: FinalChainExternalEvmCommittedStateDescriptor,
         ) -> Result<FinalChainExternalEvmPublicationAuditReport>;
         pub fn final_chain_execution_session_commit(
             final_chain: &BridgeFinalChain,

@@ -1,11 +1,12 @@
 use crate::{
     FinalChain, FinalChainEvmExecutionReport, FinalChainEvmRewardsReport,
     FinalChainExecutionSession, FinalChainExecutionStep, FinalChainExternalEvmCommitDecision,
-    FinalChainExternalEvmCommitPlan, FinalChainExternalEvmPublicationAuditReport,
-    FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
-    FinalChainExternalEvmRewardsStatsUpdate, FinalChainExternalEvmStateCommitIntent,
-    FinalChainExternalEvmStateCommitRequest, FinalChainExternalEvmStateCommitResult,
-    FinalChainProposalPeriodDagLevelUpdate, FinalChainSystemTransactionReport,
+    FinalChainExternalEvmCommitPlan, FinalChainExternalEvmCommittedStateDescriptor,
+    FinalChainExternalEvmPublicationAuditReport, FinalChainExternalEvmPublicationPlan,
+    FinalChainExternalEvmPublicationReport, FinalChainExternalEvmRewardsStatsUpdate,
+    FinalChainExternalEvmStateCommitIntent, FinalChainExternalEvmStateCommitRequest,
+    FinalChainExternalEvmStateCommitResult, FinalChainProposalPeriodDagLevelUpdate,
+    FinalChainSystemTransactionReport,
     final_chain_execution_session_attach_external_evm_proposal_period_dag_level,
     final_chain_execution_session_attach_external_evm_rewards_stats,
     final_chain_execution_session_next,
@@ -199,17 +200,20 @@ impl ConsensusExecutionApi {
         final_chain_execution_session_publish_external_evm_publication(final_chain, session)
     }
 
-    /// Audits a publication plan against persisted Rust FinalChain storage.
+    /// Audits a publication plan against persisted Rust storage and external state.
     ///
     /// The audit is read-only and checks storage rows, indexes, receipts,
-    /// blooms, transaction mappings, and pending-marker state for the requested
-    /// publication. It is suitable for restart recovery validation and external
-    /// boundary smoke tests.
+    /// blooms, transaction mappings, pending-marker state, and the committed
+    /// external StateAPI descriptor for the requested publication. It is
+    /// suitable for restart recovery validation and external boundary smoke
+    /// tests.
     pub fn publication_audit(
         &self,
         final_chain: &FinalChain,
         publication_plan: FinalChainExternalEvmPublicationPlan,
+        committed_state: FinalChainExternalEvmCommittedStateDescriptor,
     ) -> Result<FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
-        final_chain.audit_external_evm_publication(publication_plan)
+        final_chain
+            .audit_external_evm_publication_with_committed_state(publication_plan, committed_state)
     }
 }

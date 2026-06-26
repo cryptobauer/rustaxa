@@ -264,8 +264,8 @@ Minimal DTOs:
   - committed descriptor.
   - status and diagnostic text.
 - `PublicationAudit`
-  - whether Rust storage publication, pending markers, committed `StateAPI` descriptor, transaction hash rows,
-    receipts, blooms, and `LAST_NUMBER` agree for the requested period.
+  - whether Rust storage publication, pending markers, committed `StateAPI` descriptor period/root, transaction hash
+    rows, receipts, blooms, and `LAST_NUMBER` agree for the requested period.
 
 Rules:
 
@@ -305,6 +305,9 @@ Implemented first slice:
 - A CXX-facing `FinalChainExternalEvmPublicationAuditReport` is now available through
   `consensus_execution_publication_audit`, making restart/publication verification part of the external execution facade
   instead of a test-only bridge helper.
+- The facade audit accepts the committed `StateAPI` descriptor and verifies the descriptor period and committed root
+  against the Rust publication plan before checking persisted FinalChain rows. The lower-level storage-only audit remains
+  available for Rust bridge tests that intentionally do not model the external state commit boundary.
 - The facade does not call `StateAPI`, execute EVM, mutate `state_db/`, read bridge-contract state, or own rewards
   execution. Those remain the external executor responsibilities for this section.
 - Native-only FinalChain commits still use the existing Rust session commit helper because they are not part of the

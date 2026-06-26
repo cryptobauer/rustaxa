@@ -12,10 +12,10 @@ use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_UNAVAILABLE_EXTERNAL_EVM_BOUNDARY,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED, FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED,
     FINAL_CHAIN_EVM_PUBLICATION_STATUS_REJECTED, FinalChainExternalEvmCommitDecision,
-    FinalChainExternalEvmPublicationAuditReport, FinalChainExternalEvmPublicationPlan,
-    FinalChainExternalEvmPublicationReport, FinalChainExternalEvmRewardsStatsUpdate,
-    FinalChainExternalEvmStateCommitIntent, final_chain_external_evm_commit_decision_id,
-    final_chain_external_evm_publication_plan_id,
+    FinalChainExternalEvmCommittedStateDescriptor, FinalChainExternalEvmPublicationAuditReport,
+    FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
+    FinalChainExternalEvmRewardsStatsUpdate, FinalChainExternalEvmStateCommitIntent,
+    final_chain_external_evm_commit_decision_id, final_chain_external_evm_publication_plan_id,
 };
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -1695,6 +1695,30 @@ impl FinalChain {
         &self,
         plan: FinalChainExternalEvmPublicationPlan,
     ) -> Result<FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
+        self.audit_external_evm_publication_inner(plan, None)
+    }
+
+    /// Audits an external-EVM publication plan against persisted FinalChain rows
+    /// and the committed external StateAPI descriptor.
+    ///
+    /// This is the execution-facade audit used at the external EVM boundary. It
+    /// performs every storage check from [`Self::audit_external_evm_publication`]
+    /// and also verifies that the external committed period matches the
+    /// publication period and the committed root matches the published block
+    /// header state root.
+    pub fn audit_external_evm_publication_with_committed_state(
+        &self,
+        plan: FinalChainExternalEvmPublicationPlan,
+        committed_state: FinalChainExternalEvmCommittedStateDescriptor,
+    ) -> Result<FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
+        self.audit_external_evm_publication_inner(plan, Some(committed_state))
+    }
+
+    fn audit_external_evm_publication_inner(
+        &self,
+        plan: FinalChainExternalEvmPublicationPlan,
+        committed_state: Option<FinalChainExternalEvmCommittedStateDescriptor>,
+    ) -> Result<FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
         let mut checked_fields = 0u64;
 
         macro_rules! ensure_audit {
@@ -1722,6 +1746,19 @@ impl FinalChain {
             plan.plan_id == final_chain_external_evm_publication_plan_id(&plan),
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PLAN_ID_MISMATCH",
         );
+        if let Some(committed_state) = committed_state {
+            ensure_audit!(
+                committed_state.period == plan.period,
+                "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATE_PERIOD_MISMATCH",
+            );
+            let planned_header = StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(
+                plan.stored_header_rlp.as_slice(),
+            ))?;
+            ensure_audit!(
+                H256::from(committed_state.state_root) == planned_header.state_root,
+                "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATE_ROOT_MISMATCH",
+            );
+        }
         ensure_audit!(
             self.last_block_number()? >= plan.period,
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_HEAD_BEFORE_PERIOD",

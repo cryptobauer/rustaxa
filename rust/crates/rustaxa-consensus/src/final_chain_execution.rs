@@ -539,13 +539,26 @@ pub struct FinalChainExternalEvmPublicationReport {
     pub error_code: String,
 }
 
+/// External state descriptor observed at the StateAPI/state-db boundary.
+///
+/// The descriptor is supplied by the external executor adapter after state DB
+/// commit or restart. Rust uses it only as a compact audit/recovery fact: the
+/// committed period must match the publication period and the committed root
+/// must match the post-rewards root accepted by the Rust execution session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalChainExternalEvmCommittedStateDescriptor {
+    pub period: u64,
+    pub state_root: [u8; 32],
+}
+
 /// Result of auditing an external-EVM publication plan against storage.
 ///
 /// The audit is read-only and is intended for parity and smoke coverage after
 /// live publication or restart recovery. It checks that the Rust-owned
 /// publication batch materialized the exact header, hash indexes, receipts,
-/// transaction indexes, bloom index leaf, system-transaction hash row, and
-/// pending-marker state described by the plan.
+/// transaction indexes, bloom index leaf, system-transaction hash row,
+/// pending-marker state, and optional external committed-state descriptor
+/// described by the plan.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmPublicationAuditReport {
     pub request_id: [u8; 32],

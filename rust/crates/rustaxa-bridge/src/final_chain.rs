@@ -639,6 +639,15 @@ fn external_evm_publication_audit_report_to_ffi(
     }
 }
 
+fn external_evm_committed_state_descriptor_from_ffi(
+    descriptor: rustaxa_ffi::FinalChainExternalEvmCommittedStateDescriptor,
+) -> rustaxa_consensus::FinalChainExternalEvmCommittedStateDescriptor {
+    rustaxa_consensus::FinalChainExternalEvmCommittedStateDescriptor {
+        period: descriptor.period,
+        state_root: descriptor.state_root,
+    }
+}
+
 fn commit_report_to_ffi(
     report: rustaxa_consensus::FinalChainExecutionCommitReport,
 ) -> rustaxa_ffi::FinalChainExecutionCommitReport {
@@ -992,11 +1001,13 @@ impl BridgeConsensusExecutionApi {
         &self,
         final_chain: &BridgeFinalChain,
         publication_plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+        committed_state: rustaxa_ffi::FinalChainExternalEvmCommittedStateDescriptor,
     ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
         Ok(external_evm_publication_audit_report_to_ffi(
             self.0.publication_audit(
                 &final_chain.0,
                 external_evm_publication_plan_from_ffi_ref(publication_plan),
+                external_evm_committed_state_descriptor_from_ffi(committed_state),
             )?,
         ))
     }
@@ -2258,10 +2269,18 @@ mod tests {
     fn assert_external_evm_publication_audit_matches_via_execution_api(
         api: &BridgeConsensusExecutionApi,
         final_chain: &BridgeFinalChain,
+        plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
         publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
     ) {
         let audit = api
-            .consensus_execution_publication_audit(final_chain, publication)
+            .consensus_execution_publication_audit(
+                final_chain,
+                publication,
+                rustaxa_ffi::FinalChainExternalEvmCommittedStateDescriptor {
+                    period: publication.period,
+                    state_root: plan.state_root,
+                },
+            )
             .expect("external EVM publication audit should run through execution API");
         assert_eq!(
             audit.status,
@@ -2273,10 +2292,29 @@ mod tests {
         assert_eq!(audit.block_hash, publication.block_hash);
         assert_eq!(
             audit.checked_fields,
-            14 + u64::from(publication.proposal_period_dag_level_update.has_update)
+            16 + u64::from(publication.proposal_period_dag_level_update.has_update)
                 + publication.transaction_publications.len() as u64 * 2
         );
         assert!(audit.error_code.is_empty());
+
+        let mismatched = api
+            .consensus_execution_publication_audit(
+                final_chain,
+                publication,
+                rustaxa_ffi::FinalChainExternalEvmCommittedStateDescriptor {
+                    period: publication.period,
+                    state_root: [0x44; 32],
+                },
+            )
+            .expect("external EVM publication audit should report descriptor mismatch");
+        assert_eq!(
+            mismatched.status,
+            rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MISMATCH
+        );
+        assert_eq!(
+            mismatched.error_code,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATE_ROOT_MISMATCH"
+        );
     }
 
     #[test]
@@ -2316,6 +2354,7 @@ mod tests {
         assert_external_evm_publication_audit_matches_via_execution_api(
             &api,
             &final_chain,
+            &plan,
             &publication,
         );
 
