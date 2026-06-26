@@ -162,6 +162,17 @@ fn dag_block_view_to_ffi(view: rustaxa_consensus::DagBlockView) -> rustaxa_ffi::
     }
 }
 
+fn transaction_view_to_ffi(
+    view: rustaxa_consensus::TransactionView,
+) -> rustaxa_ffi::TransactionPublicView {
+    rustaxa_ffi::TransactionPublicView {
+        found: view.found,
+        hash: view.hash,
+        source: view.source,
+        transaction_rlp: view.transaction_rlp,
+    }
+}
+
 /// Creates a stateless public consensus query facade.
 pub fn create_consensus_query_api(storage: &BridgeStorage) -> Box<BridgeConsensusQueryApi> {
     Box::new(BridgeConsensusQueryApi(
@@ -254,6 +265,14 @@ impl BridgeConsensusQueryApi {
             .map(dag_block_view_to_ffi)
             .collect())
     }
+
+    /// Returns a stable public transaction payload view by transaction hash.
+    pub fn consensus_query_transaction_by_hash(
+        &self,
+        hash: &[u8; 32],
+    ) -> Result<rustaxa_ffi::TransactionPublicView, anyhow::Error> {
+        Ok(transaction_view_to_ffi(self.0.transaction_by_hash(*hash)?))
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +319,21 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(votes_bundle_rlp, 1);
+        stream.out().to_vec()
+    }
+
+    fn period_data_with_transactions_rlp(transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
+        let mut transactions = RlpStream::new_list(transaction_rlps.len());
+        for transaction_rlp in transaction_rlps {
+            transactions.append_raw(transaction_rlp, 1);
+        }
+
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&transactions.out(), 1);
+        stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
     }
 
@@ -732,6 +766,82 @@ mod tests {
             .consensus_query_finalized_dag_blocks_by_period(8)
             .unwrap()
             .is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_transaction_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_transaction_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let pending_hash = H256::from_low_u64_be(1);
+        let finalized_hash = H256::from_low_u64_be(2);
+        let missing_hash = H256::from_low_u64_be(3);
+        let system_hash = H256::from_low_u64_be(4);
+
+        storage
+            .save_transaction(&pending_hash.0, vec![0x11])
+            .unwrap();
+        storage
+            .save_transaction_location(&finalized_hash.0, 8, 0, false)
+            .unwrap();
+        storage
+            .save_period_data(8, period_data_with_transactions_rlp(&[vec![0x22]]))
+            .unwrap();
+        storage
+            .save_transaction_location(&system_hash.0, 9, 0, true)
+            .unwrap();
+        storage
+            .save_system_transaction(&system_hash.0, vec![0x44])
+            .unwrap();
+
+        let pending = api
+            .consensus_query_transaction_by_hash(&pending_hash.0)
+            .unwrap();
+        assert!(pending.found);
+        assert_eq!(pending.hash, pending_hash.0);
+        assert_eq!(
+            pending.source,
+            rustaxa_consensus::STORED_TRANSACTION_SOURCE_PENDING
+        );
+        assert_eq!(pending.transaction_rlp, vec![0x11]);
+
+        let finalized = api
+            .consensus_query_transaction_by_hash(&finalized_hash.0)
+            .unwrap();
+        assert!(finalized.found);
+        assert_eq!(
+            finalized.source,
+            rustaxa_consensus::STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+        );
+        assert_eq!(finalized.transaction_rlp, vec![0x22]);
+
+        let system = api
+            .consensus_query_transaction_by_hash(&system_hash.0)
+            .unwrap();
+        assert!(system.found);
+        assert_eq!(
+            system.source,
+            rustaxa_consensus::STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM
+        );
+        assert_eq!(system.transaction_rlp, vec![0x44]);
+
+        let missing = api
+            .consensus_query_transaction_by_hash(&missing_hash.0)
+            .unwrap();
+        assert!(!missing.found);
+        assert_eq!(
+            missing.source,
+            rustaxa_consensus::STORED_TRANSACTION_SOURCE_MISSING
+        );
+        assert!(missing.transaction_rlp.is_empty());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

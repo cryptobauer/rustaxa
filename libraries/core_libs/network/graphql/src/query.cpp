@@ -2,6 +2,8 @@
 
 #include <libdevcore/CommonJS.h>
 
+#include <stdexcept>
+
 #include "graphql/account.hpp"
 #include "graphql/block.hpp"
 #include "graphql/log.hpp"
@@ -9,6 +11,7 @@
 #include "graphql/transaction.hpp"
 #include "graphql/types/current_state.hpp"
 #include "graphql/types/dag_block.hpp"
+#include "transaction/system_transaction.hpp"
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -20,8 +23,36 @@ namespace graphql::taraxa {
 
 #ifdef RUSTAXA_ENABLE
 namespace {
+constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
+constexpr uint8_t kConsensusQueryTransactionSourcePending = 1;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedRegular = 2;
+constexpr uint8_t kConsensusQueryTransactionSourceFinalizedSystem = 3;
+
 dev::h256 hashFromBridge(const std::array<uint8_t, 32>& hash) {
   return dev::h256(hash.data(), dev::h256::ConstructFromPointer);
+}
+
+dev::bytes bytesFromBridge(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
+std::shared_ptr<::taraxa::Transaction> materializeTransactionView(const rustaxa::TransactionPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<::taraxa::Transaction> transaction;
+  if (view.source == kConsensusQueryTransactionSourceFinalizedSystem) {
+    transaction = std::make_shared<::taraxa::SystemTransaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source == kConsensusQueryTransactionSourcePending ||
+             view.source == kConsensusQueryTransactionSourceFinalizedRegular) {
+    transaction = std::make_shared<::taraxa::Transaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source != kConsensusQueryTransactionSourceMissing) {
+    throw std::runtime_error("CONSENSUS_QUERY_TRANSACTION_UNKNOWN_SOURCE");
+  }
+
+  if (transaction && transaction->getHash() != hashFromBridge(view.hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_TRANSACTION_HASH_MISMATCH");
+  }
+  return transaction;
 }
 }  // namespace
 #endif
@@ -126,6 +157,16 @@ std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& f
 }
 
 std::shared_ptr<object::Transaction> Query::getTransaction(response::Value&& hashArg) const {
+#ifdef RUSTAXA_ENABLE
+  const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+  auto transaction = materializeTransactionView(
+      query_api->consensus_query_transaction_by_hash(::taraxa::trx_hash_t(hashArg.get<std::string>()).asArray()));
+  if (transaction) {
+    return std::make_shared<object::Transaction>(
+        std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction)));
+  }
+  return nullptr;
+#endif
   if (auto transaction = transaction_manager_->getTransaction(::taraxa::trx_hash_t(hashArg.get<std::string>()))) {
     return std::make_shared<object::Transaction>(
         std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction)));

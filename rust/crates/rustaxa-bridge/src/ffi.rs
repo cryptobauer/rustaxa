@@ -3826,6 +3826,14 @@ pub mod rustaxa_ffi {
         vdf_difficulty: u16,
     }
 
+    /// Public/query transaction payload view.
+    struct TransactionPublicView {
+        found: bool,
+        hash: [u8; 32],
+        source: u8,
+        transaction_rlp: Vec<u8>,
+    }
+
     struct DagCounterUpdate {
         hash: [u8; 32],
         level: u64,
@@ -5049,6 +5057,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             period: u64,
         ) -> Result<Vec<DagBlockPublicView>>;
+        pub fn consensus_query_transaction_by_hash(
+            self: &BridgeConsensusQueryApi,
+            hash: &[u8; 32],
+        ) -> Result<TransactionPublicView>;
     }
 
     extern "Rust" {

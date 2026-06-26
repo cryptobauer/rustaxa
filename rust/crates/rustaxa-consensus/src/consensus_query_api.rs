@@ -37,6 +37,12 @@ const PBFT_EXTRA_DATA_FIELDS: usize = 6;
 const PBFT_EXTRA_DATA_MAX_SIZE: usize = 1024;
 const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
+pub use crate::transaction_storage::{
+    STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
+    STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
+};
+use crate::transaction_storage::{StoredTransactionLookupRequest, load_stored_transactions};
+
 /// Hash lookup result returned by public query facade methods.
 ///
 /// `found` is false when the requested durable row does not exist. When
@@ -104,6 +110,20 @@ pub struct DagBlockView {
     pub vdf_sol1: Vec<u8>,
     pub vdf_sol2: Vec<u8>,
     pub vdf_difficulty: u16,
+}
+
+/// Stable public view of a transaction payload resolved by transaction hash.
+///
+/// The view carries canonical transaction RLP plus a source classification so
+/// public C++ adapters can materialize regular or system transaction objects at
+/// the formatting edge without calling `TransactionManager`. `found` is false
+/// when the hash is absent from both pending and finalized transaction storage.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransactionView {
+    pub found: bool,
+    pub hash: [u8; 32],
+    pub source: u8,
+    pub transaction_rlp: Vec<u8>,
 }
 
 /// Stable public view of optional PBFT block extra data.
@@ -451,6 +471,39 @@ impl ConsensusQueryApi {
                 .as_raw(),
             period,
         )
+    }
+
+    /// Returns a public transaction view by transaction hash.
+    ///
+    /// The query uses the Rust-owned transaction storage lookup rules shared
+    /// with `TransactionManager`: pending non-finalized payloads take
+    /// precedence, finalized regular transactions are loaded from period data,
+    /// and finalized system transactions are loaded from system-transaction
+    /// storage. The method returns canonical bytes and a source code only; it
+    /// does not materialize legacy C++ transaction objects or read receipts.
+    pub fn transaction_by_hash(&self, hash: [u8; 32]) -> Result<TransactionView> {
+        let requested_hash = H256::from(hash);
+        let mut lookups = load_stored_transactions(
+            &self.storage,
+            vec![StoredTransactionLookupRequest {
+                input_index: 0,
+                hash: requested_hash,
+            }],
+        )
+        .context("CONSENSUS_QUERY_TRANSACTION_LOOKUP")?;
+        let Some(lookup) = lookups.pop() else {
+            return Ok(TransactionView::default());
+        };
+        if lookup.input_index != 0 || lookup.hash != requested_hash {
+            anyhow::bail!("CONSENSUS_QUERY_TRANSACTION_LOOKUP_MISMATCH");
+        }
+
+        Ok(TransactionView {
+            found: lookup.found,
+            hash,
+            source: lookup.source,
+            transaction_rlp: lookup.tx_rlp,
+        })
     }
 }
 
@@ -832,6 +885,21 @@ mod tests {
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(votes_bundle_rlp, 1);
+        stream.out().to_vec()
+    }
+
+    fn period_data_with_transactions_rlp(transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
+        let mut transactions = RlpStream::new_list(transaction_rlps.len());
+        for transaction_rlp in transaction_rlps {
+            transactions.append_raw(transaction_rlp, 1);
+        }
+
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&transactions.out(), 1);
+        stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
     }
 
@@ -1217,6 +1285,63 @@ mod tests {
         let level_views = api.dag_blocks_by_level(5, 1).unwrap();
         assert_eq!(level_views.len(), 1);
         assert_eq!(level_views[0].hash, block_hash.0);
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_transaction_view_from_storage() {
+        let (path, storage) = test_storage("transaction_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let pending_hash = H256::from_low_u64_be(1);
+        let finalized_hash = H256::from_low_u64_be(2);
+        let missing_hash = H256::from_low_u64_be(3);
+        let system_hash = H256::from_low_u64_be(4);
+        storage
+            .transaction()
+            .write(pending_hash, &[0x11])
+            .expect("pending transaction should persist");
+        storage
+            .transaction()
+            .write_location(finalized_hash, 8, 0, false)
+            .expect("finalized transaction location should persist");
+        storage
+            .period()
+            .write(8, &period_data_with_transactions_rlp(&[vec![0x22]]))
+            .expect("period transaction payload should persist");
+        storage
+            .transaction()
+            .write_location(system_hash, 9, 0, true)
+            .expect("system transaction location should persist");
+        storage
+            .transaction()
+            .write_system(system_hash, &[0x44])
+            .expect("system transaction payload should persist");
+
+        let pending = api.transaction_by_hash(pending_hash.0).unwrap();
+        assert!(pending.found);
+        assert_eq!(pending.hash, pending_hash.0);
+        assert_eq!(pending.source, STORED_TRANSACTION_SOURCE_PENDING);
+        assert_eq!(pending.transaction_rlp, vec![0x11]);
+
+        let finalized = api.transaction_by_hash(finalized_hash.0).unwrap();
+        assert!(finalized.found);
+        assert_eq!(
+            finalized.source,
+            STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR
+        );
+        assert_eq!(finalized.transaction_rlp, vec![0x22]);
+
+        let system = api.transaction_by_hash(system_hash.0).unwrap();
+        assert!(system.found);
+        assert_eq!(system.source, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM);
+        assert_eq!(system.transaction_rlp, vec![0x44]);
+
+        let missing = api.transaction_by_hash(missing_hash.0).unwrap();
+        assert!(!missing.found);
+        assert_eq!(missing.source, STORED_TRANSACTION_SOURCE_MISSING);
+        assert!(missing.transaction_rlp.is_empty());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
