@@ -268,9 +268,9 @@ Json::Value Taraxa::taraxa_getNodeVersions() {
     std::multimap<std::string, std::pair<addr_t, uint64_t>> version_node_map;
     std::map<std::string, std::pair<uint32_t, uint32_t>> version_count;
 #ifdef RUSTAXA_ENABLE
-    const auto period_queries = rustaxa::create_period_storage_queries(db->rustStorage());
+    const auto query_api = rustaxa::create_consensus_query_api(db->rustStorage());
     for (uint64_t i = period; i > 0 && period - i < max_blocks_to_process; i--) {
-      const auto version_view = period_queries->get_pbft_node_version_view(i);
+      const auto version_view = query_api->consensus_query_pbft_node_version_by_period(i);
       if (!version_view.found) {
         break;
       }

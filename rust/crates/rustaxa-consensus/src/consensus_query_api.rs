@@ -148,6 +148,22 @@ pub struct PbftScheduleBlockView {
     pub dag_blocks_order: Vec<[u8; 32]>,
 }
 
+/// Stable public view of PBFT node-version facts.
+///
+/// The view is decoded from a finalized PBFT block embedded in `PeriodData`.
+/// It carries only the author and semantic-version fields needed by
+/// `taraxa_getNodeVersions`; the caller owns scan aggregation and JSON
+/// formatting. `found` is false when no period data exists for the requested
+/// period.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PbftNodeVersionView {
+    pub found: bool,
+    pub beneficiary: [u8; 20],
+    pub major_version: u16,
+    pub minor_version: u16,
+    pub patch_version: u16,
+}
+
 /// Public/query view for one pillar validator vote-count delta.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PillarBlockViewVoteCountChange {
@@ -235,6 +251,21 @@ impl ConsensusQueryApi {
             return Ok(PbftScheduleBlockView::default());
         }
         pbft_schedule_block_view_from_period_data(&period_data)
+    }
+
+    /// Returns PBFT author and semantic-version facts by finalized period.
+    ///
+    /// The query decodes the signed PBFT block and extra-data payload from
+    /// Rust-owned period storage. Missing period data returns `found == false`;
+    /// malformed PBFT bytes, unrecoverable author, or missing/invalid
+    /// extra-data is an error so public adapters keep their existing
+    /// invalid-params behavior instead of silently omitting a validator.
+    pub fn pbft_node_version_by_period(&self, period: u64) -> Result<PbftNodeVersionView> {
+        let period_data = self.storage.period().data_raw(period)?;
+        if period_data.is_empty() {
+            return Ok(PbftNodeVersionView::default());
+        }
+        pbft_node_version_view_from_period_data(&period_data)
     }
 
     /// Returns a finalized FinalChain block view by block number.
@@ -489,6 +520,42 @@ fn pbft_schedule_block_view_from_period_data(period_data: &[u8]) -> Result<PbftS
         has_extra_data: extra_data.found,
         extra_data,
         dag_blocks_order,
+    })
+}
+
+fn pbft_node_version_view_from_period_data(period_data: &[u8]) -> Result<PbftNodeVersionView> {
+    let period_rlp = Rlp::new(period_data);
+    let pbft_block = period_rlp
+        .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)
+        .context("CONSENSUS_QUERY_NODE_VERSION_PBFT_BLOCK")?;
+    let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(pbft_block.as_raw()))
+        .context("CONSENSUS_QUERY_NODE_VERSION_PBFT_METADATA")?;
+    let extra_data = if pbft_block
+        .item_count()
+        .context("CONSENSUS_QUERY_NODE_VERSION_PBFT_ITEM_COUNT")?
+        == 9
+    {
+        decode_pbft_extra_data(
+            pbft_block
+                .at(PBFT_EXTRA_DATA_POS)
+                .context("CONSENSUS_QUERY_NODE_VERSION_EXTRA_DATA")?
+                .data()
+                .context("CONSENSUS_QUERY_NODE_VERSION_EXTRA_DATA_BYTES")?,
+        )?
+    } else {
+        PbftBlockExtraDataView::default()
+    };
+    anyhow::ensure!(
+        extra_data.found,
+        "CONSENSUS_QUERY_NODE_VERSION_EXTRA_DATA_MISSING"
+    );
+
+    Ok(PbftNodeVersionView {
+        found: true,
+        beneficiary: metadata.author.into(),
+        major_version: extra_data.major_version,
+        minor_version: extra_data.minor_version,
+        patch_version: extra_data.patch_version,
     })
 }
 
@@ -782,6 +849,7 @@ mod tests {
         assert!(!api.final_chain_block_by_number(44).unwrap().found);
         assert!(!api.pbft_block_hash_by_period(44).unwrap().found);
         assert!(!api.pbft_schedule_block_by_period(44).unwrap().found);
+        assert!(!api.pbft_node_version_by_period(44).unwrap().found);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
@@ -832,6 +900,35 @@ mod tests {
             H256::from_low_u64_be(55).0
         );
         assert!(view.dag_blocks_order.is_empty());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_pbft_node_version_view_from_period_data() {
+        let (path, storage) = test_storage("node_version_view");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block_rlp(&signing_key);
+        storage
+            .period()
+            .write(7, &period_data_rlp(&pbft_block))
+            .unwrap();
+
+        let view = api.pbft_node_version_by_period(7).unwrap();
+
+        assert!(view.found);
+        assert_eq!(
+            view.beneficiary,
+            PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&pbft_block))
+                .unwrap()
+                .author
+                .0
+        );
+        assert_eq!(view.major_version, 1);
+        assert_eq!(view.minor_version, 2);
+        assert_eq!(view.patch_version, 3);
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

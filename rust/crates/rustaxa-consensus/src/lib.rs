@@ -43,7 +43,7 @@ pub use consensus_pipeline::{
 };
 pub use consensus_query_api::{
     ConsensusQueryApi, DagBlockView, FinalChainBlockView, PbftBlockExtraDataView,
-    PbftScheduleBlockView, PillarBlockDataView, PillarBlockViewSignature,
+    PbftNodeVersionView, PbftScheduleBlockView, PillarBlockDataView, PillarBlockViewSignature,
     PillarBlockViewVoteCountChange, QueryHashLookup,
 };
 pub use final_chain::FinalChain;

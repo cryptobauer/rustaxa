@@ -25,18 +25,13 @@ use rustaxa_consensus::{
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
 use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
-use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::dag::DagBlock;
-use rustaxa_types::PbftBlockMetadata;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 const DAG_BLOCKS_POS_IN_PERIOD_DATA: usize = 2;
-const PBFT_EXTRA_DATA_POS: usize = 7;
-const PBFT_EXTRA_DATA_FIELDS: usize = 6;
-const PBFT_EXTRA_DATA_MAX_SIZE: usize = 1024;
 const DAG_VDF_SORTITION_FIELDS: usize = 4;
 const DAG_VDF_PROOF_POS: usize = 0;
 const DAG_VDF_SOL1_POS: usize = 1;
@@ -795,55 +790,6 @@ impl BridgePeriodStorageQueries {
         })
     }
 
-    /// Returns PBFT beneficiary and node semantic-version facts for a finalized period.
-    ///
-    /// Inputs:
-    /// - `period`: finalized PBFT period scanned by `taraxa_getNodeVersions`.
-    ///
-    /// Outputs:
-    /// - `found == false` when no period data is stored, preserving the legacy
-    ///   scan-stop behavior when `getPbftBlock(period)` returned empty.
-    /// - Otherwise the recovered PBFT beneficiary and major/minor/patch values
-    ///   decoded from PBFT block extra data.
-    ///
-    /// Edge behavior:
-    /// - Malformed period data, unrecoverable PBFT author, or missing/invalid
-    ///   extra data returns an error so the existing RPC catch block maps the
-    ///   public query to invalid params instead of silently omitting a node.
-    pub fn get_pbft_node_version_view(
-        &self,
-        period: u64,
-    ) -> Result<rustaxa_ffi::PbftNodeVersionView, anyhow::Error> {
-        let period_data = self.get_period_data_raw(period)?;
-        if period_data.is_empty() {
-            return Ok(rustaxa_ffi::PbftNodeVersionView {
-                found: false,
-                beneficiary: [0; 20],
-                major_version: 0,
-                minor_version: 0,
-                patch_version: 0,
-            });
-        }
-
-        let period_rlp = Rlp::new(&period_data);
-        let pbft_block = period_rlp.at(PBFT_BLOCK_POS_IN_PERIOD_DATA)?;
-        let metadata = PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(pbft_block.as_raw()))?;
-        let extra_data = if pbft_block.item_count()? == 9 {
-            decode_pbft_extra_data(pbft_block.at(PBFT_EXTRA_DATA_POS)?.data()?)?
-        } else {
-            empty_pbft_extra_data_view()
-        };
-        anyhow::ensure!(extra_data.found, "PBFT block extra data missing or invalid");
-
-        Ok(rustaxa_ffi::PbftNodeVersionView {
-            found: true,
-            beneficiary: metadata.author.into(),
-            major_version: extra_data.major_version,
-            minor_version: extra_data.minor_version,
-            patch_version: extra_data.patch_version,
-        })
-    }
-
     /// Returns public/debug finalized DAG block views for one PBFT period.
     ///
     /// Inputs:
@@ -903,19 +849,6 @@ impl BridgePeriodStorageQueries {
     }
 }
 
-fn empty_pbft_extra_data_view() -> rustaxa_ffi::PbftBlockExtraDataView {
-    rustaxa_ffi::PbftBlockExtraDataView {
-        found: false,
-        major_version: 0,
-        minor_version: 0,
-        patch_version: 0,
-        net_version: 0,
-        node_implementation: String::new(),
-        has_pillar_block_hash: false,
-        pillar_block_hash: [0; 32],
-    }
-}
-
 fn empty_dag_block_public_view() -> rustaxa_ffi::DagBlockPublicView {
     rustaxa_ffi::DagBlockPublicView {
         found: false,
@@ -937,56 +870,6 @@ fn empty_dag_block_public_view() -> rustaxa_ffi::DagBlockPublicView {
         vdf_sol2: Vec::new(),
         vdf_difficulty: 0,
     }
-}
-
-fn decode_pbft_extra_data(
-    bytes: &[u8],
-) -> Result<rustaxa_ffi::PbftBlockExtraDataView, anyhow::Error> {
-    anyhow::ensure!(
-        bytes.len() <= PBFT_EXTRA_DATA_MAX_SIZE,
-        "PBFT block extra data exceeds maximum size"
-    );
-    let rlp = Rlp::new(bytes);
-    if rlp.item_count().ok() != Some(PBFT_EXTRA_DATA_FIELDS) {
-        return Ok(empty_pbft_extra_data_view());
-    }
-    let major_version = match rlp.val_at(0) {
-        Ok(value) => value,
-        Err(_) => return Ok(empty_pbft_extra_data_view()),
-    };
-    let minor_version = match rlp.val_at(1) {
-        Ok(value) => value,
-        Err(_) => return Ok(empty_pbft_extra_data_view()),
-    };
-    let patch_version = match rlp.val_at(2) {
-        Ok(value) => value,
-        Err(_) => return Ok(empty_pbft_extra_data_view()),
-    };
-    let net_version = match rlp.val_at(3) {
-        Ok(value) => value,
-        Err(_) => return Ok(empty_pbft_extra_data_view()),
-    };
-    let node_implementation = match rlp.val_at(4) {
-        Ok(value) => value,
-        Err(_) => return Ok(empty_pbft_extra_data_view()),
-    };
-    let pillar_block_hash = match rlp.at(5).and_then(|value| value.data()) {
-        Ok([]) => None,
-        Ok(data) if data.len() == 32 => Some(H256::from_slice(data)),
-        Ok(_) => return Ok(empty_pbft_extra_data_view()),
-        Err(_) => return Ok(empty_pbft_extra_data_view()),
-    };
-
-    Ok(rustaxa_ffi::PbftBlockExtraDataView {
-        found: true,
-        major_version,
-        minor_version,
-        patch_version,
-        net_version,
-        node_implementation,
-        has_pillar_block_hash: pillar_block_hash.is_some(),
-        pillar_block_hash: pillar_block_hash.unwrap_or_default().into(),
-    })
 }
 
 fn finalized_dag_block_views(

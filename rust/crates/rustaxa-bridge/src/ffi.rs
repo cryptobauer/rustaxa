@@ -5033,6 +5033,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             period: u64,
         ) -> Result<PbftScheduleBlockView>;
+        pub fn consensus_query_pbft_node_version_by_period(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+        ) -> Result<PbftNodeVersionView>;
         pub fn consensus_query_pillar_block_data_by_period(
             self: &BridgeConsensusQueryApi,
             period: u64,
@@ -7398,10 +7402,6 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodStorageQueries,
             period: u64,
         ) -> Result<HashLookup>;
-        pub fn get_pbft_node_version_view(
-            self: &BridgePeriodStorageQueries,
-            period: u64,
-        ) -> Result<PbftNodeVersionView>;
         pub fn get_period_dag_block_views(
             self: &BridgePeriodStorageQueries,
             period: u64,

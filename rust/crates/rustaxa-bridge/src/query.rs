@@ -85,6 +85,18 @@ fn pbft_schedule_block_view_to_ffi(
     }
 }
 
+fn pbft_node_version_view_to_ffi(
+    view: rustaxa_consensus::PbftNodeVersionView,
+) -> rustaxa_ffi::PbftNodeVersionView {
+    rustaxa_ffi::PbftNodeVersionView {
+        found: view.found,
+        beneficiary: view.beneficiary,
+        major_version: view.major_version,
+        minor_version: view.minor_version,
+        patch_version: view.patch_version,
+    }
+}
+
 fn pillar_vote_count_change_to_ffi(
     change: rustaxa_consensus::PillarBlockViewVoteCountChange,
 ) -> rustaxa_ffi::PillarBlockViewVoteCountChange {
@@ -185,6 +197,16 @@ impl BridgeConsensusQueryApi {
     ) -> Result<rustaxa_ffi::PbftScheduleBlockView, anyhow::Error> {
         Ok(pbft_schedule_block_view_to_ffi(
             self.0.pbft_schedule_block_by_period(period)?,
+        ))
+    }
+
+    /// Returns PBFT author and semantic-version facts by finalized period.
+    pub fn consensus_query_pbft_node_version_by_period(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::PbftNodeVersionView, anyhow::Error> {
+        Ok(pbft_node_version_view_to_ffi(
+            self.0.pbft_node_version_by_period(period)?,
         ))
     }
 
@@ -439,6 +461,48 @@ mod tests {
 
         assert!(
             !api.consensus_query_pbft_schedule_block_by_period(8)
+                .unwrap()
+                .found
+        );
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_pbft_node_version_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_node_version_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let signing_key = SigningKey::from_slice(&[9u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block_rlp(&signing_key);
+
+        storage
+            .save_period_data(7, period_data_rlp(&pbft_block))
+            .unwrap();
+
+        let view = api.consensus_query_pbft_node_version_by_period(7).unwrap();
+        assert!(view.found);
+        assert_eq!(
+            view.beneficiary,
+            rustaxa_types::PbftBlockMetadata::try_from(
+                rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(&pbft_block)
+            )
+            .unwrap()
+            .author
+            .0
+        );
+        assert_eq!(view.major_version, 1);
+        assert_eq!(view.minor_version, 2);
+        assert_eq!(view.patch_version, 3);
+
+        assert!(
+            !api.consensus_query_pbft_node_version_by_period(8)
                 .unwrap()
                 .found
         );

@@ -421,6 +421,7 @@ Implemented first slice:
   - `consensus_query_pbft_block_hash_by_period(period) -> HashLookup`
   - `consensus_query_final_chain_block_by_number(number) -> FinalChainBlockView`
   - `consensus_query_pbft_schedule_block_by_period(period) -> PbftScheduleBlockView`
+  - `consensus_query_pbft_node_version_by_period(period) -> PbftNodeVersionView`
   - `consensus_query_pillar_block_data_by_period(period) -> PillarBlockDataView`
   - `consensus_query_dag_block_by_hash(hash) -> DagBlockPublicView`
   - `consensus_query_dag_blocks_by_level(level, number_of_levels) -> Vec<DagBlockPublicView>`
@@ -428,6 +429,10 @@ Implemented first slice:
   hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
+- `taraxa_getNodeVersions` now uses `ConsensusQueryApi` for PBFT block author/version facts in Rust mode instead of
+  creating an endpoint-local period-storage query handle. The route intentionally leaves scan policy, version string
+  formatting, and DPoS vote-count aggregation in the public RPC layer until live FinalChain/state reads move behind a
+  dedicated query view.
 - `taraxa_getPillarBlockData` now uses `ConsensusQueryApi` for finalized pillar block facts and the following period's
   optimized pillar-vote bundle in Rust mode instead of creating an endpoint-local pillar storage query handle.
 - `taraxa_getDagBlockByHash` and `taraxa_getDagBlockByLevel` now use `ConsensusQueryApi` for DAG block facts and
