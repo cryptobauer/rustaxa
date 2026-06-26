@@ -465,7 +465,8 @@ Implemented first slice:
   instead of reading the live `DagManager`.
 - Taraxa RPC `taraxa_dagBlockLevel` and `taraxa_dagBlockPeriod` now use a dedicated `TaraxaDagStatusReader` fallback
   boundary for latest DAG level/proposal-period facts instead of reading `DagManager` directly from public methods.
-  Rust-mode production calls still prefer `ConsensusQueryApi::consensus_query_status` when app storage is available.
+  Rust-mode production calls and the default reader adapter now prefer `ConsensusQueryApi::consensus_query_status` when
+  app storage is available; direct `DagManager` reads are limited to the non-Rust compatibility fallback.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
   in Rust mode instead of creating an endpoint-local period-storage query handle.
 - Taraxa RPC legacy `taraxa_getScheduleBlockByPeriod` now uses a dedicated `TaraxaScheduleReader` callback bundle for
@@ -499,7 +500,8 @@ Implemented first slice:
   `taraxa_getDagBlockByLevel`.
 - Taraxa RPC legacy scalar persistent reads now use a dedicated `TaraxaPersistentReader` callback bundle for PBFT block
   hash lookup, chain stats, and period lambda instead of reading `DbStorage` or `FinalChain` directly from public
-  methods. Rust-mode production routes still prefer `ConsensusQueryApi` when app storage is available.
+  methods. Rust-mode production routes and the default reader adapter now prefer `ConsensusQueryApi` when app storage is
+  available; direct `DbStorage` and `FinalChain` reads are limited to the non-Rust compatibility fallback.
 - `debug_getPeriodDagBlocks` and GraphQL `periodDagBlocks` now use `ConsensusQueryApi` for finalized DAG block facts by
   PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. Rust-backed GraphQL DAG
   objects use the finalized-period facts carried by Rust DTOs and no longer fall back to live `PbftManager` period

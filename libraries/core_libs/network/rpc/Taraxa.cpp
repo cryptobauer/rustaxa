@@ -15,6 +15,7 @@
 #include "transaction/transaction_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/system_transaction.hpp"
 #endif
 
@@ -67,6 +68,10 @@ TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> a
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    return query_api->consensus_query_status().latest_dag_level;
+#endif
     return static_cast<uint64_t>(node->getDagManager()->getMaxLevel());
   };
   reader.latest_period = [app] {
@@ -74,6 +79,11 @@ TaraxaDagStatusReader makeTaraxaDagStatusReader(std::weak_ptr<taraxa::AppBase> a
     if (!node) {
       throw std::runtime_error("TARAXA_DAG_STATUS_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto status = query_api->consensus_query_status();
+    return status.latest_dag_period_found ? status.latest_dag_period : uint64_t(0);
+#endif
     return static_cast<uint64_t>(node->getDagManager()->getLatestPeriod());
   };
   return reader;
@@ -123,7 +133,15 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
     if (!node) {
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
-    const auto block = node->getDB()->getPbftBlock(period);  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto lookup = query_api->consensus_query_pbft_block_hash_by_period(period);
+    if (!lookup.found) {
+      return std::nullopt;
+    }
+    return blk_hash_t(lookup.hash.data(), blk_hash_t::ConstructFromPointer);
+#endif
+    const auto block = node->getDB()->getPbftBlock(period);
     if (!block) {
       return std::nullopt;
     }
@@ -134,10 +152,15 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
     if (!node) {
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto stats = query_api->consensus_query_chain_stats();
+    return TaraxaChainStatsView{stats.pbft_period, stats.dag_blocks_executed, stats.transactions_executed};
+#endif
     return TaraxaChainStatsView{
         node->getFinalChain()->lastBlockNumber(),
-        node->getDB()->getNumBlockExecuted(),        // RUSTAXA_QUERY_COMPAT_READ
-        node->getDB()->getNumTransactionExecuted(),  // RUSTAXA_QUERY_COMPAT_READ
+        node->getDB()->getNumBlockExecuted(),
+        node->getDB()->getNumTransactionExecuted(),
     };
   };
   reader.period_lambda = [app](uint64_t period) -> std::optional<uint64_t> {
@@ -145,7 +168,15 @@ TaraxaPersistentReader makeTaraxaPersistentReader(std::weak_ptr<taraxa::AppBase>
     if (!node) {
       throw std::runtime_error("TARAXA_PERSISTENT_READER_APP_EXPIRED");
     }
-    return node->getDB()->getPeriodLambda(period, false);  // RUSTAXA_QUERY_COMPAT_READ
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto period_lambda = query_api->consensus_query_period_lambda_by_period(period);
+    if (!period_lambda.found) {
+      return std::nullopt;
+    }
+    return period_lambda.value;
+#endif
+    return node->getDB()->getPeriodLambda(period, false);
   };
   return reader;
 }
