@@ -483,7 +483,8 @@ Implemented first slice:
   The debug endpoint still owns legacy JSON materialization for the returned vote objects.
 - Debug RPC previous-block cert-vote lookup now uses a dedicated `DebugPreviousBlockCertVotesReader` callback bundle for
   storage-backed vote lookup, temporary vote validation, and total eligible vote count. Public debug RPC formatting no
-  longer reaches through `DbStorage`, `VoteManager`, or `FinalChain` for this method.
+  longer reaches through `DbStorage`, `VoteManager`, or `FinalChain` for this method. The default reader uses
+  `ConsensusQueryApi` in Rust mode and keeps the direct storage read only as the non-Rust compatibility fallback.
 - `taraxa_getPillarBlockData` now uses `ConsensusQueryApi` for finalized pillar block facts and the following period's
   optimized pillar-vote bundle in Rust mode instead of creating an endpoint-local pillar storage query handle.
 - Taraxa RPC legacy fallback `taraxa_getPillarBlockData` now uses a dedicated `TaraxaPillarBlockDataReader` callback
@@ -508,7 +509,8 @@ Implemented first slice:
   lookup; legacy C++ DAG objects still use the manager compatibility path.
 - Debug RPC legacy fallback `debug_getPeriodDagBlocks` now uses a dedicated `DebugPeriodDagBlocksReader` callback bundle
   for finalized DAG block lookup instead of reading `DbStorage` directly from the public method. The default reader is
-  the remaining audited compatibility adapter and uses `ConsensusQueryApi` in Rust mode.
+  the remaining audited compatibility adapter and uses `ConsensusQueryApi` in Rust mode; direct `DbStorage`
+  materialization is limited to the non-Rust compatibility fallback.
 - GraphQL `dagBlock` and `dagBlocks` now use `ConsensusQueryApi` for DAG hash, latest-level, and paged level-window
   reads in Rust mode instead of creating endpoint-local DAG storage query handles. Rust-backed GraphQL DAG object
   transaction expansion now resolves transaction payloads through `ConsensusQueryApi::consensus_query_transaction_by_hash`
@@ -551,15 +553,17 @@ Implemented first slice:
   instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
 - Debug RPC legacy fallback `debug_getPeriodTransactionsWithReceipts` now uses a dedicated
   `DebugPeriodTransactionsReader` callback bundle for finalized transaction and receipt JSON materialization instead of
-  reading `DbStorage` or `FinalChain` directly from the public method.
+  reading `DbStorage` or `FinalChain` directly from the public method. The default reader uses `ConsensusQueryApi` in
+  Rust mode and keeps direct `DbStorage`/`FinalChain` materialization only as the non-Rust compatibility fallback.
 - `debug_traceTransaction`, `trace_replayTransaction`, and `trace_replayBlockTransactions` now use
   `ConsensusQueryApi` in Rust mode for finalized transaction location/count/indexed payload materialization instead of
   reading period transactions through `FinalChain` or `DbStorage`. EVM tracing, trace parameter handling, account nonce
   lookup for synthetic calls, and result formatting remain on the external FinalChain/StateAPI execution boundary.
 - Debug trace replay transaction acquisition now uses a dedicated `DebugTraceReplayReader` callback bundle: public
   replay RPC methods request only finalized transaction payloads, state-prefix transactions, or block transaction lists.
-  The default reader owns the temporary Rust `ConsensusQueryApi` and legacy FinalChain/DbStorage compatibility reads;
-  public RPC methods only convert DTOs for the external EVM trace executor.
+  The default reader owns the Rust `ConsensusQueryApi` route in Rust mode and keeps legacy FinalChain/DbStorage
+  compatibility reads only for the non-Rust fallback; public RPC methods only convert DTOs for the external EVM trace
+  executor.
 - `eth_getLogs` and installed `eth_getFilterLogs` replay now use `ConsensusQueryApi` in Rust mode for latest finalized
   block lookup, bloom-index candidate block lookup, and block receipt expansion instead of asking `FinalChain` for bloom
   matches and receipt rows directly. Websocket live subscription delivery uses the dedicated subscription API described
@@ -651,9 +655,10 @@ Implemented first slice:
   per-period DPoS yield, and total supply. Rust-mode `taraxa_getNodeVersions` now combines `ConsensusQueryApi` PBFT
   version facts with this external-state reader instead of reading DPoS vote counts through public `FinalChain` calls.
 - Debug trace execution now uses a dedicated `DebugTraceReader` callback bundle for external EVM trace execution,
-  account nonce lookup for synthetic calls, and latest finalized block resolution. The default production reader remains
-  FinalChain-backed because tracing executes on the external EVM/StateAPI boundary, but debug RPC methods no longer call
-  `FinalChain::trace`, `getAccount`, or `lastBlockNumber` directly.
+  account nonce lookup for synthetic calls, and latest finalized block resolution. Rust-mode latest-block resolution uses
+  `ConsensusQueryApi`; trace execution and account nonce lookup remain FinalChain-backed because they execute on the
+  external EVM/StateAPI boundary. Debug RPC methods no longer call `FinalChain::trace`, `getAccount`, or
+  `lastBlockNumber` directly.
 - Test RPC coin submission now uses a dedicated `TestTransactionApi` callback bundle for account nonce lookup and
   transaction insertion. The default adapter is still backed by FinalChain and TransactionManager because this test/admin
   command crosses the external account-state and mempool boundary, but `send_coin_transaction` and

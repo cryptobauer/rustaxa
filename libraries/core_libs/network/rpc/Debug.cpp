@@ -88,6 +88,10 @@ DebugTraceReader makeDebugTraceReader(std::weak_ptr<taraxa::AppBase> app) {
     if (!node) {
       throw std::runtime_error("DEBUG_TRACE_READER_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    return query_api->consensus_query_final_chain_last_block_number();
+#endif
     return node->getFinalChain()->lastBlockNumber();
   };
   return reader;
@@ -134,7 +138,7 @@ DebugPreviousBlockCertVotesReader makeDebugPreviousBlockCertVotesReader(std::wea
     }
     return view;
 #endif
-    auto votes = node->getDB()->getPeriodCertVotes(period);  // RUSTAXA_QUERY_COMPAT_READ
+    auto votes = node->getDB()->getPeriodCertVotes(period);
     if (votes.empty()) {
       return view;
     }
@@ -327,7 +331,7 @@ DebugPeriodDagBlocksReader makeDebugPeriodDagBlocksReader(std::weak_ptr<taraxa::
     return result;
 #endif
 
-    auto dags = node->getDB()->getFinalizedDagBlockByPeriod(period);  // RUSTAXA_QUERY_COMPAT_READ
+    auto dags = node->getDB()->getFinalizedDagBlockByPeriod(period);
     return util::transformToJsonParallel(dags, [&period](const auto& dag, auto) {
       auto block_json = dag->getJson();
       block_json["period"] = toJS(period);
@@ -375,7 +379,7 @@ DebugPeriodTransactionsReader makeDebugPeriodTransactionsReader(std::weak_ptr<ta
 #endif
 
     auto block_hash = final_chain->blockHash(period);
-    auto trxs = node->getDB()->getPeriodTransactions(period);  // RUSTAXA_QUERY_COMPAT_READ
+    auto trxs = node->getDB()->getPeriodTransactions(period);
     if (!trxs.has_value() || trxs->empty()) {
       return Json::Value(Json::arrayValue);
     }
@@ -444,11 +448,11 @@ DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase>
 #endif
 
     auto final_chain = node->getFinalChain();
-    auto loc = final_chain->transactionLocation(transaction_hash);  // RUSTAXA_QUERY_COMPAT_READ
+    auto loc = final_chain->transactionLocation(transaction_hash);
     if (!loc) {
       throw std::runtime_error("Transaction not found");
     }
-    auto block_transactions = final_chain->transactions(loc->period);  // RUSTAXA_QUERY_COMPAT_READ
+    auto block_transactions = final_chain->transactions(loc->period);
 
     DebugTraceReplayTransactionView view;
     view.state_transactions =
@@ -468,7 +472,7 @@ DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase>
     return materializeBlockTransactionsFromQuery(block_number, query_api);
 #endif
 
-    auto legacy_transactions = node->getDB()->getPeriodTransactions(block_number);  // RUSTAXA_QUERY_COMPAT_READ
+    auto legacy_transactions = node->getDB()->getPeriodTransactions(block_number);
     if (!legacy_transactions.has_value()) {
       return SharedTransactions{};
     }
