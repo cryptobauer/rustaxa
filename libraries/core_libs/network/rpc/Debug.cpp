@@ -60,6 +60,43 @@ std::shared_ptr<Transaction> materializeReceiptTransactionView(const rustaxa::Tr
   return transaction;
 }
 
+std::shared_ptr<Transaction> materializeTransactionView(const rustaxa::TransactionPublicView& view) {
+  if (!view.found) {
+    return nullptr;
+  }
+
+  std::shared_ptr<Transaction> transaction;
+  if (view.source == kConsensusQueryTransactionSourceFinalizedSystem) {
+    transaction = std::make_shared<SystemTransaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source == kConsensusQueryTransactionSourcePending ||
+             view.source == kConsensusQueryTransactionSourceFinalizedRegular) {
+    transaction = std::make_shared<Transaction>(bytesFromBridge(view.transaction_rlp));
+  } else if (view.source != kConsensusQueryTransactionSourceMissing) {
+    throw std::runtime_error("CONSENSUS_QUERY_DEBUG_TRANSACTION_UNKNOWN_SOURCE");
+  }
+
+  if (transaction && transaction->getHash() != hashFromBridge(view.hash)) {
+    throw std::runtime_error("CONSENSUS_QUERY_DEBUG_TRANSACTION_HASH_MISMATCH");
+  }
+  return transaction;
+}
+
+template <typename QueryApi>
+SharedTransactions materializeBlockTransactionsFromQuery(uint64_t block_number, const QueryApi& query_api) {
+  SharedTransactions transactions;
+  const auto transaction_count = query_api->consensus_query_transaction_count_by_block_number(block_number);
+  transactions.reserve(transaction_count);
+  for (uint64_t transaction_index = 0; transaction_index < transaction_count; ++transaction_index) {
+    auto transaction = materializeTransactionView(
+        query_api->consensus_query_transaction_by_block_number_and_index(block_number, transaction_index));
+    if (!transaction) {
+      throw std::runtime_error("CONSENSUS_QUERY_DEBUG_BLOCK_TRANSACTION_MISSING");
+    }
+    transactions.emplace_back(std::move(transaction));
+  }
+  return transactions;
+}
+
 rpc::eth::ExtendedTransactionLocation receiptLocationFromView(const rustaxa::TransactionReceiptPublicView& view) {
   if (!view.block_hash_found) {
     throw std::runtime_error("CONSENSUS_QUERY_DEBUG_RECEIPT_BLOCK_HASH_MISSING");
@@ -135,6 +172,24 @@ Debug::get_transaction_with_state(const std::string& transaction_hash) {
   }
 
   auto final_chain = node->getFinalChain();
+#ifdef RUSTAXA_ENABLE
+  {
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto target_view = query_api->consensus_query_transaction_by_hash(jsToFixed<32>(transaction_hash).asArray());
+    if (!target_view.found || !target_view.location_found) {
+      throw std::runtime_error("Transaction not found");
+    }
+    auto block_transactions = materializeBlockTransactionsFromQuery(target_view.block_number, query_api);
+    if (target_view.transaction_index >= block_transactions.size()) {
+      throw std::runtime_error("Transaction not found");
+    }
+
+    auto state_trxs =
+        SharedTransactions(block_transactions.begin(), block_transactions.begin() + target_view.transaction_index);
+    return {to_eth_trxs(state_trxs), to_eth_trx(block_transactions[target_view.transaction_index]),
+            target_view.block_number};
+  }
+#endif
   auto loc = final_chain->transactionLocation(jsToFixed<32>(transaction_hash));
   if (!loc) {
     throw std::runtime_error("Transaction not found");
@@ -175,14 +230,23 @@ Json::Value Debug::trace_replayBlockTransactions(const std::string& block_num, c
   const auto block = parse_blk_num(block_num);
   auto params = parse_tracking_parms(trace_params);
   if (auto node = app_.lock()) {
-    auto transactions = node->getDB()->getPeriodTransactions(block);  // RUSTAXA_QUERY_COMPAT_READ
-    if (!transactions.has_value() || transactions->empty()) {
+    SharedTransactions transactions;
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    transactions = materializeBlockTransactionsFromQuery(block, query_api);
+#else
+    auto legacy_transactions = node->getDB()->getPeriodTransactions(block);  // RUSTAXA_QUERY_COMPAT_READ
+    if (legacy_transactions.has_value()) {
+      transactions = *legacy_transactions;
+    }
+#endif
+    if (transactions.empty()) {
       return Json::Value(Json::arrayValue);
     }
-    if (only_transfers(*transactions)) {
+    if (only_transfers(transactions)) {
       return Json::Value(Json::arrayValue);
     }
-    std::vector<state_api::EVMTransaction> trxs = to_eth_trxs(*transactions);
+    std::vector<state_api::EVMTransaction> trxs = to_eth_trxs(transactions);
     return util::readJsonFromString(node->getFinalChain()->trace({}, std::move(trxs), block, std::move(params)));
   }
   return res;
