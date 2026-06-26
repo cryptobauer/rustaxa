@@ -8,6 +8,7 @@
 #include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
 #include "graphql/sync_state.hpp"
+#include "network/rpc/Debug.h"
 #include "network/subscriptions.hpp"
 #include "network/rpc/eth/Eth.h"
 #include "network/rpc/eth/LiveLogSubscription.hpp"
@@ -141,6 +142,36 @@ TEST_F(RPCTest, eth_filter_changes_uses_live_log_subscription_api) {
   EXPECT_EQ(dev::toJS(topic), changes[0]["topics"][0].asString());
   EXPECT_EQ(dev::toJS(block_hash), changes[0]["blockHash"].asString());
   EXPECT_EQ(dev::toJS(trx_hash), changes[0]["transactionHash"].asString());
+}
+
+TEST_F(RPCTest, debug_dpos_reads_use_debug_dpos_reader) {
+  const auto validator = addr_t::random();
+  auto stakes_called = std::make_shared<bool>(false);
+  auto delegated_called = std::make_shared<bool>(false);
+
+  net::DebugDposReader reader;
+  reader.validators_total_stakes = [stakes_called, validator](EthBlockNumber block_number) {
+    *stakes_called = true;
+    EXPECT_EQ(9, block_number);
+    return std::vector<state_api::ValidatorStake>{{validator, u256(1234)}};
+  };
+  reader.total_amount_delegated = [delegated_called](EthBlockNumber block_number) {
+    *delegated_called = true;
+    EXPECT_EQ(9, block_number);
+    return uint256_t(5678);
+  };
+  reader.eligible_total_vote_count = [](EthBlockNumber) { return 0; };
+
+  net::Debug debug_rpc(nullptr, 0, std::move(reader));
+
+  const auto stakes = debug_rpc.debug_dposValidatorTotalStakes(dev::toJS(9));
+  ASSERT_TRUE(*stakes_called);
+  ASSERT_EQ(1, stakes.size());
+  EXPECT_EQ("0x" + validator.toString(), stakes[0]["address"].asString());
+  EXPECT_EQ("1234", stakes[0]["total_stake"].asString());
+
+  EXPECT_EQ(dev::toJS(uint256_t(5678)), debug_rpc.debug_dposTotalAmountDelegated(dev::toJS(9)).asString());
+  ASSERT_TRUE(*delegated_called);
 }
 
 TEST_F(RPCTest, eth_estimateGas) {

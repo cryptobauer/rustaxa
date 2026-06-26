@@ -554,6 +554,10 @@ Implemented first slice:
   the subscription DTO, while websocket subscription matching and JSON-RPC delivery no longer traverse FinalChain header
   objects directly. Installed `eth_getFilterChanges` log watches use the same live-log subscription API for live
   execution-event matching before polling changes.
+- Debug DPoS reads now use a dedicated `DebugDposReader` callback bundle for eligible total vote count, validator total
+  stakes, and total delegated amount. The default production reader is still backed by the FinalChain external-state
+  adapter because DPoS state lives on the external EVM/StateAPI boundary, but debug RPC methods no longer assemble those
+  reads ad hoc from public `FinalChain` calls in Rust-mode query paths.
 
 ## Consensus Internal
 

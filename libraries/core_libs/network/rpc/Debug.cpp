@@ -23,6 +23,52 @@ using namespace taraxa;
 
 namespace taraxa::net {
 
+namespace {
+DebugDposReader makeDebugDposReader(std::weak_ptr<taraxa::AppBase> app) {
+  DebugDposReader reader;
+  reader.eligible_total_vote_count = [app](EthBlockNumber block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_DPOS_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->dposEligibleTotalVoteCount(block_number);
+  };
+  reader.validators_total_stakes = [app](EthBlockNumber block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_DPOS_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->dposValidatorsTotalStakes(block_number);
+  };
+  reader.total_amount_delegated = [app](EthBlockNumber block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_DPOS_READER_APP_EXPIRED");
+    }
+    return node->getFinalChain()->dposTotalAmountDelegated(block_number);
+  };
+  return reader;
+}
+
+void fillMissingDebugDposReaderCallbacks(DebugDposReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeDebugDposReader(std::move(app));
+  if (!reader.eligible_total_vote_count) {
+    reader.eligible_total_vote_count = std::move(defaults.eligible_total_vote_count);
+  }
+  if (!reader.validators_total_stakes) {
+    reader.validators_total_stakes = std::move(defaults.validators_total_stakes);
+  }
+  if (!reader.total_amount_delegated) {
+    reader.total_amount_delegated = std::move(defaults.total_amount_delegated);
+  }
+}
+}  // namespace
+
+Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader)
+    : app_(app), dpos_reader_(std::move(dpos_reader)), kGasLimit(gas_limit) {
+  fillMissingDebugDposReaderCallbacks(dpos_reader_, app_);
+}
+
 #ifdef RUSTAXA_ENABLE
 namespace {
 constexpr uint8_t kConsensusQueryTransactionSourceMissing = 0;
@@ -350,7 +396,6 @@ Json::Value Debug::debug_getPreviousBlockCertVotes(const std::string& _period) {
       BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
     }
 
-    auto final_chain = node->getFinalChain();
     auto vote_manager = node->getVoteManager();
 
     Json::Value res(Json::objectValue);
@@ -370,7 +415,7 @@ Json::Value Debug::debug_getPreviousBlockCertVotes(const std::string& _period) {
     }
 
     const uint64_t rust_total_dpos_votes_count =
-        final_chain->dposEligibleTotalVoteCount(cert_vote_view.certified_period - 1);
+        dpos_reader_.eligible_total_vote_count(cert_vote_view.certified_period - 1);
     res["total_votes_count"] = rust_total_dpos_votes_count;
     res["round"] = cert_vote_view.round;
     res["votes"] = util::transformToJsonParallel(rust_votes, [&](const auto& vote, auto) {
@@ -379,6 +424,7 @@ Json::Value Debug::debug_getPreviousBlockCertVotes(const std::string& _period) {
     });
     return res;
 #endif
+    auto final_chain = node->getFinalChain();
     auto votes = node->getDB()->getPeriodCertVotes(period);  // RUSTAXA_QUERY_COMPAT_READ
     if (votes.empty()) {
       return res;
@@ -402,16 +448,8 @@ Json::Value Debug::debug_getPreviousBlockCertVotes(const std::string& _period) {
 
 Json::Value Debug::debug_dposValidatorTotalStakes(const std::string& _period) {
   try {
-    auto node = app_.lock();
-    if (!node) {
-      BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
-    }
-
-    auto final_chain = node->getFinalChain();
-    auto vote_manager = node->getVoteManager();
-
     auto period = dev::jsToInt(_period);
-    auto validatorsStakes = final_chain->dposValidatorsTotalStakes(period);
+    auto validatorsStakes = dpos_reader_.validators_total_stakes(period);
 
     Json::Value res(Json::arrayValue);
 
@@ -429,15 +467,8 @@ Json::Value Debug::debug_dposValidatorTotalStakes(const std::string& _period) {
 
 Json::Value Debug::debug_dposTotalAmountDelegated(const std::string& _period) {
   try {
-    auto node = app_.lock();
-    if (!node) {
-      BOOST_THROW_EXCEPTION(JsonRpcException(Errors::ERROR_RPC_INTERNAL_ERROR));
-    }
-
-    auto final_chain = node->getFinalChain();
-
     auto period = dev::jsToInt(_period);
-    auto totalAmountDelegated = final_chain->dposTotalAmountDelegated(period);
+    auto totalAmountDelegated = dpos_reader_.total_amount_delegated(period);
 
     return toJS(totalAmountDelegated);
   } catch (...) {
