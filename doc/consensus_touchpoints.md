@@ -494,6 +494,8 @@ Implemented first slice:
   matches and receipt rows directly. Live subscription delivery still remains on the execution-event compatibility route.
 - `taraxa_getPeriodLambda` now uses `ConsensusQueryApi` in Rust mode for exact persisted dynamic-lambda lookup instead
   of reading the metadata column through `DbStorage` directly.
+- `taraxa_getChainStats` now uses `ConsensusQueryApi` in Rust mode for latest finalized period and executed
+  block/transaction counters instead of reading `FinalChain` and `DbStorage` directly.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.

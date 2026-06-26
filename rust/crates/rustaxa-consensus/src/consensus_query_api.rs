@@ -10,8 +10,8 @@ use anyhow::{Context, Result};
 use ethereum_types::{H160, H256};
 use rlp::Rlp;
 use rustaxa_storage::{
-    FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainLogBloom, Storage,
-    decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
+    FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainLogBloom, StatusField,
+    Storage, decode_final_chain_log_bloom_chunk, final_chain_log_bloom_chunk_id,
 };
 use rustaxa_types::PbftBlockMetadata;
 use rustaxa_types::codec::rlp::dag::{DagBlockRlp, FinalizedDagBlockBundleRlp};
@@ -79,6 +79,18 @@ pub struct QueryNumberLookup {
 pub struct QueryPeriodLambda {
     pub found: bool,
     pub value: u32,
+}
+
+/// Storage-backed public chain statistics view.
+///
+/// The view contains the three counters exposed by `taraxa_getChainStats`.
+/// Values default to zero when the corresponding storage row is absent,
+/// matching the Rust metadata repository and legacy genesis behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChainStatsView {
+    pub pbft_period: u64,
+    pub dag_blocks_executed: u64,
+    pub transactions_executed: u64,
 }
 
 /// Stable public view of a finalized FinalChain block.
@@ -438,6 +450,26 @@ impl ConsensusQueryApi {
                 None => QueryPeriodLambda::default(),
             },
         )
+    }
+
+    /// Returns the storage-backed public chain statistics view.
+    ///
+    /// This query keeps `taraxa_getChainStats` behind the public read facade
+    /// without injecting `FinalChain` or `DbStorage` into RPC code. The latest
+    /// finalized period comes from Rust FinalChain metadata, while executed DAG
+    /// block and transaction counters come from Rust status fields.
+    pub fn chain_stats(&self) -> Result<ChainStatsView> {
+        Ok(ChainStatsView {
+            pbft_period: self.final_chain_last_block_number()?,
+            dag_blocks_executed: self
+                .storage
+                .metadata()
+                .status_field(StatusField::ExecutedBlkCount as u8)?,
+            transactions_executed: self
+                .storage
+                .metadata()
+                .status_field(StatusField::ExecutedTrxCount as u8)?,
+        })
     }
 
     /// Returns finalized block numbers whose indexed bloom contains `bloom`.
@@ -1657,6 +1689,14 @@ mod tests {
         assert_eq!(lookup.hash, view.pbft_block_hash);
         assert_eq!(api.final_chain_last_block_number().unwrap(), 9);
         storage.metadata().write_period_lambda(9, 1234).unwrap();
+        storage
+            .metadata()
+            .write_status_field(StatusField::ExecutedBlkCount as u8, 21)
+            .unwrap();
+        storage
+            .metadata()
+            .write_status_field(StatusField::ExecutedTrxCount as u8, 34)
+            .unwrap();
         assert_eq!(
             api.period_lambda_by_period(9).unwrap(),
             QueryPeriodLambda {
@@ -1665,6 +1705,14 @@ mod tests {
             }
         );
         assert!(!api.period_lambda_by_period(10).unwrap().found);
+        assert_eq!(
+            api.chain_stats().unwrap(),
+            ChainStatsView {
+                pbft_period: 9,
+                dag_blocks_executed: 21,
+                transactions_executed: 34
+            }
+        );
         assert_eq!(
             api.final_chain_block_number_by_hash(block_hash.into())
                 .unwrap(),

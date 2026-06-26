@@ -381,6 +381,16 @@ Json::Value Taraxa::taraxa_getConfig() { return enc_json(tryGetApp()->getConfig(
 Json::Value Taraxa::taraxa_getChainStats() {
   Json::Value res;
   if (auto app = app_.lock()) {
+#ifdef RUSTAXA_ENABLE
+    {
+      const auto query_api = rustaxa::create_consensus_query_api(app->getDB()->rustStorage());
+      const auto stats = query_api->consensus_query_chain_stats();
+      res["pbft_period"] = Json::UInt64(stats.pbft_period);
+      res["dag_blocks_executed"] = Json::UInt64(stats.dag_blocks_executed);
+      res["transactions_executed"] = Json::UInt64(stats.transactions_executed);
+      return res;
+    }
+#endif
     res["pbft_period"] = Json::UInt64(app->getFinalChain()->lastBlockNumber());
     res["dag_blocks_executed"] = Json::UInt64(app->getDB()->getNumBlockExecuted());  // RUSTAXA_QUERY_COMPAT_READ
     res["transactions_executed"] =

@@ -30,6 +30,14 @@ fn period_lambda_to_ffi(lambda: rustaxa_consensus::QueryPeriodLambda) -> rustaxa
     }
 }
 
+fn chain_stats_view_to_ffi(view: rustaxa_consensus::ChainStatsView) -> rustaxa_ffi::ChainStatsView {
+    rustaxa_ffi::ChainStatsView {
+        pbft_period: view.pbft_period,
+        dag_blocks_executed: view.dag_blocks_executed,
+        transactions_executed: view.transactions_executed,
+    }
+}
+
 fn final_chain_block_view_to_ffi(
     view: rustaxa_consensus::FinalChainBlockView,
 ) -> rustaxa_ffi::FinalChainBlockView {
@@ -263,6 +271,13 @@ impl BridgeConsensusQueryApi {
         Ok(period_lambda_to_ffi(
             self.0.period_lambda_by_period(period)?,
         ))
+    }
+
+    /// Returns storage-backed public chain statistics.
+    pub fn consensus_query_chain_stats(
+        &self,
+    ) -> Result<rustaxa_ffi::ChainStatsView, anyhow::Error> {
+        Ok(chain_stats_view_to_ffi(self.0.chain_stats()?))
     }
 
     /// Returns finalized block numbers whose Rust FinalChain bloom index contains the query bloom.
@@ -740,6 +755,12 @@ mod tests {
             15
         );
         storage.save_period_lambda(15, 1234).unwrap();
+        storage
+            .save_status_field(rustaxa_storage::StatusField::ExecutedBlkCount as u8, 21)
+            .unwrap();
+        storage
+            .save_status_field(rustaxa_storage::StatusField::ExecutedTrxCount as u8, 34)
+            .unwrap();
         let period_lambda = api.consensus_query_period_lambda_by_period(15).unwrap();
         assert!(period_lambda.found);
         assert_eq!(period_lambda.value, 1234);
@@ -748,6 +769,10 @@ mod tests {
                 .unwrap()
                 .found
         );
+        let chain_stats = api.consensus_query_chain_stats().unwrap();
+        assert_eq!(chain_stats.pbft_period, 15);
+        assert_eq!(chain_stats.dag_blocks_executed, 21);
+        assert_eq!(chain_stats.transactions_executed, 34);
         assert_eq!(
             api.consensus_query_final_chain_blocks_with_bloom(&query_bloom, 1, 15)
                 .unwrap(),

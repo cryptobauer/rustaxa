@@ -451,6 +451,13 @@ pub mod rustaxa_ffi {
         value: u32,
     }
 
+    /// Storage-backed chain statistics for `taraxa_getChainStats`.
+    struct ChainStatsView {
+        pbft_period: u64,
+        dag_blocks_executed: u64,
+        transactions_executed: u64,
+    }
+
     struct PeriodRlp {
         period: u64,
         data: Vec<u8>,
@@ -5063,6 +5070,9 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             period: u64,
         ) -> Result<PeriodLambda>;
+        pub fn consensus_query_chain_stats(
+            self: &BridgeConsensusQueryApi,
+        ) -> Result<ChainStatsView>;
         pub fn consensus_query_final_chain_blocks_with_bloom(
             self: &BridgeConsensusQueryApi,
             bloom: &[u8; 256],
