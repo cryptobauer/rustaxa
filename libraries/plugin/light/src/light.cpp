@@ -54,7 +54,7 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
     }
     return std::optional<uint64_t>{lookup.value};
 #endif
-    return node->getDB()->getProposalPeriodForDagLevel(dag_level);  // RUSTAXA_QUERY_COMPAT_READ
+    return node->getDB()->getProposalPeriodForDagLevel(dag_level);
   };
   api.clear_history = [app](PbftPeriod end_period, uint64_t dag_level_to_keep, bool live_cleanup,
                             uint64_t periods_to_keep_non_block_data) {
