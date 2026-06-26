@@ -164,15 +164,15 @@ std::shared_ptr<object::Transaction> Query::getTransaction(response::Value&& has
   auto transaction = materializeTransactionView(transaction_view);
   if (transaction) {
     auto receipt_view = query_api->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
-    return std::make_shared<object::Transaction>(
-        std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction),
-                                      transaction_view, receipt_view));
+    return std::make_shared<object::Transaction>(std::make_shared<Transaction>(
+        final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction), transaction_view, receipt_view));
   }
   return nullptr;
 #endif
-  if (auto transaction = transaction_manager_->getTransaction(::taraxa::trx_hash_t(hashArg.get<std::string>()))) {
-    return std::make_shared<object::Transaction>(
-        std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction)));
+  if (auto legacy_transaction =
+          transaction_manager_->getTransaction(::taraxa::trx_hash_t(hashArg.get<std::string>()))) {
+    return std::make_shared<object::Transaction>(std::make_shared<Transaction>(
+        final_chain_, transaction_manager_, get_block_by_num_, std::move(legacy_transaction)));
   }
   return nullptr;
 }

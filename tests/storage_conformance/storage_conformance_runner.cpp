@@ -190,8 +190,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("proposal_period_missing",
                  optionalToString(toOptional(dag_queries->get_proposal_period_for_dag_level(100))));
   transcript.add("period_lambda_missing", optionalToString(toOptional(metadata_queries->get_period_lambda(7, false))));
-  transcript.add("rounds_count_dynamic_lambda_default",
-                 toString(metadata_queries->get_rounds_count_dynamic_lambda()));
+  transcript.add("rounds_count_dynamic_lambda_default", toString(metadata_queries->get_rounds_count_dynamic_lambda()));
   transcript.add("genesis_missing_before", toString(metadata_queries->get_genesis_hash().empty()));
 
   auto genesis_hash = h256Array(0xAB);
@@ -221,7 +220,6 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   // DAG missing + save/update/remove paths
   auto dag_hash_1 = h256Array(0x11);
   auto dag_hash_2 = h256Array(0x22);
-  auto dag_hash_3 = h256Array(0x33);
   auto dag_missing = h256Array(0xEE);
   auto dag_rlp = std::vector<uint8_t>{0xC0};
 
@@ -240,9 +238,8 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("dag_period_lookup_period", toString(dag_period.period));
   transcript.add("dag_period_lookup_position", toString(dag_period.position));
 
-  transcript.add("dag_counters_nonzero",
-                 toString(metadata_queries->get_status_field(kStatusFieldDagBlkCount) > 0 &&
-                          metadata_queries->get_status_field(kStatusFieldDagEdgeCount) > 0));
+  transcript.add("dag_counters_nonzero", toString(metadata_queries->get_status_field(kStatusFieldDagBlkCount) > 0 &&
+                                                  metadata_queries->get_status_field(kStatusFieldDagEdgeCount) > 0));
 
   storage->remove_dag_block(dag_hash_2);
   transcript.add("dag_removed_batch_hash", toString(!dag_queries->dag_block_in_db(dag_hash_2)));
@@ -297,7 +294,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("system_tx_lookup_nonempty", toString(!transaction_queries->get_system_transaction(sys_hash).empty()));
 
   storage->save_period_system_transactions_hashes(12, toRustVec(encodeSingleHashListRlp(sys_hash)));
-  auto period_sys_hashes = storage->get_period_system_transactions_hashes(12);
+  auto period_sys_hashes = transaction_queries->get_period_system_transactions_hashes(12);
   transcript.add("period_system_hashes_count", toString(period_sys_hashes.size() / 32));
 
   auto period_data_raw = std::vector<uint8_t>{0xC6, 0xC0, 0xC0, 0xC0, 0xE1, 0xC0, 0xC0};
