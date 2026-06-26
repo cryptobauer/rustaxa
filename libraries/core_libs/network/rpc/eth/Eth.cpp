@@ -497,8 +497,15 @@ class EthImpl : public Eth, EthParams {
   }
 
   Json::Value eth_syncing() override {
-    auto status = syncing_probe();
-    return status ? toJson(status) : Json::Value(false);
+    if (!live_status) {
+      return Json::Value(false);
+    }
+    const auto snapshot = live_status();
+    if (!snapshot.pbft_syncing) {
+      return Json::Value(false);
+    }
+
+    return toJson(SyncStatus{snapshot.pbft_chain_size, snapshot.pbft_chain_size, snapshot.pbft_sync_period});
   }
 
   Json::Value eth_chainId() override { return chain_id ? Json::Value(toJS(chain_id)) : Json::Value(); }

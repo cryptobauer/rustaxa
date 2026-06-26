@@ -23,6 +23,35 @@ using namespace taraxa;
 
 namespace taraxa::net {
 
+namespace {
+LiveStatusSnapshot collectLiveStatusSnapshot(const std::shared_ptr<taraxa::AppBase> &node) {
+  LiveStatusSnapshot snapshot;
+  const auto chain_size = node->getPbftChain()->getPbftChainSize();
+  const auto dpos_total_votes = node->getPbftManager()->getCurrentDposTotalVotesCount();
+  const auto dpos_node_votes = node->getPbftManager()->getCurrentNodeVotesCount();
+  const auto dpos_quorum = node->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
+
+  snapshot.pbft_syncing = node->getNetwork()->pbft_syncing();
+  snapshot.syncing_seconds = node->getNetwork()->syncTimeSeconds();
+  snapshot.peer_count = node->getNetwork()->getPeerCount();
+  snapshot.node_count = node->getNetwork()->getNodeCount();
+  snapshot.pbft_chain_size = chain_size;
+  snapshot.pbft_sync_period = node->getPbftManager()->pbftSyncingPeriod();
+  snapshot.pbft_round = node->getPbftManager()->getPbftRound();
+  snapshot.dpos_total_votes = dpos_total_votes.value_or(0);
+  snapshot.dpos_node_votes = dpos_node_votes.value_or(0);
+  snapshot.dpos_quorum = dpos_quorum.value_or(0);
+  snapshot.pbft_sync_queue_size = node->getPbftManager()->periodDataQueueSize();
+  snapshot.transaction_pool_size = node->getTransactionManager()->getTransactionPoolSize();
+  snapshot.nonfinalized_transaction_size = node->getTransactionManager()->getNonfinalizedTrxSize();
+  if (const auto peer = node->getNetwork()->getMaxChainPeer()) {
+    snapshot.max_peer_pbft_chain_size = peer->pbft_chain_size_.load();
+  }
+  snapshot.compatibility_network_status = node->getNetwork()->getStatus();
+  return snapshot;
+}
+}  // namespace
+
 Json::Value Test::get_sortition_change(const Json::Value &param1) {
   try {
     Json::Value res;
@@ -130,20 +159,17 @@ Json::Value Test::get_peer_count() {
 Json::Value Test::get_node_status() {
   Json::Value res;
   if (auto node = app_.lock()) {
-    const auto chain_size = node->getPbftChain()->getPbftChainSize();
-    const auto dpos_total_votes_opt = node->getPbftManager()->getCurrentDposTotalVotesCount();
-    const auto dpos_node_votes_opt = node->getPbftManager()->getCurrentNodeVotesCount();
-    const auto two_t_plus_one_opt = node->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
+    const auto live_status = live_status_ ? live_status_() : collectLiveStatusSnapshot(node);
 #ifdef RUSTAXA_ENABLE
     const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
     const auto chain_stats = query_api->consensus_query_chain_stats();
     const auto consensus_status = query_api->consensus_query_status();
 #endif
 
-    res["synced"] = !node->getNetwork()->pbft_syncing();
-    res["syncing_seconds"] = Json::UInt64(node->getNetwork()->syncTimeSeconds());
-    res["peer_count"] = Json::UInt64(node->getNetwork()->getPeerCount());
-    res["node_count"] = Json::UInt64(node->getNetwork()->getNodeCount());
+    res["synced"] = !live_status.pbft_syncing;
+    res["syncing_seconds"] = Json::UInt64(live_status.syncing_seconds);
+    res["peer_count"] = Json::UInt64(live_status.peer_count);
+    res["node_count"] = Json::UInt64(live_status.node_count);
 #ifdef RUSTAXA_ENABLE
     res["blk_executed"] = Json::UInt64(chain_stats.dag_blocks_executed);
     res["blk_count"] = Json::UInt64(chain_stats.dag_blocks_count);
@@ -160,16 +186,16 @@ Json::Value Test::get_node_status() {
 #else
     res["dag_level"] = Json::UInt64(node->getDagManager()->getMaxLevel());
 #endif
-    res["pbft_size"] = Json::UInt64(chain_size);
-    res["pbft_sync_period"] = Json::UInt64(node->getPbftManager()->pbftSyncingPeriod());
-    res["pbft_round"] = Json::UInt64(node->getPbftManager()->getPbftRound());
-    res["dpos_total_votes"] = Json::UInt64(dpos_total_votes_opt.has_value() ? *dpos_total_votes_opt : 0);
-    res["dpos_node_votes"] = Json::UInt64(dpos_node_votes_opt ? *dpos_node_votes_opt : 0);
-    res["dpos_quorum"] = Json::UInt64(two_t_plus_one_opt ? *two_t_plus_one_opt : 0);
-    res["pbft_sync_queue_size"] = Json::UInt64(node->getPbftManager()->periodDataQueueSize());
-    res["trx_pool_size"] = Json::UInt64(node->getTransactionManager()->getTransactionPoolSize());
-    res["trx_nonfinalized_size"] = Json::UInt64(node->getTransactionManager()->getNonfinalizedTrxSize());
-    res["network"] = node->getNetwork()->getStatus();
+    res["pbft_size"] = Json::UInt64(live_status.pbft_chain_size);
+    res["pbft_sync_period"] = Json::UInt64(live_status.pbft_sync_period);
+    res["pbft_round"] = Json::UInt64(live_status.pbft_round);
+    res["dpos_total_votes"] = Json::UInt64(live_status.dpos_total_votes);
+    res["dpos_node_votes"] = Json::UInt64(live_status.dpos_node_votes);
+    res["dpos_quorum"] = Json::UInt64(live_status.dpos_quorum);
+    res["pbft_sync_queue_size"] = Json::UInt64(live_status.pbft_sync_queue_size);
+    res["trx_pool_size"] = Json::UInt64(live_status.transaction_pool_size);
+    res["trx_nonfinalized_size"] = Json::UInt64(live_status.nonfinalized_transaction_size);
+    res["network"] = live_status.compatibility_network_status;
   }
   return res;
 }

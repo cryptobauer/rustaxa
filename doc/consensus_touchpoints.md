@@ -538,13 +538,18 @@ Implemented first slice:
   block count, persisted transaction count, and executed block/transaction counters instead of reading status counters
   through `DbStorage` or `TransactionManager`, and `ConsensusQueryApi::consensus_query_status` for storage-backed DAG
   level. Live network status, PBFT round/sync state, DPoS vote facts, PBFT queue size, transaction pool size, and
-  non-finalized transaction size remain live manager/network compatibility reads until a dedicated live status/sync DTO
-  owns those boundaries.
+  non-finalized transaction size are supplied through the shared live status snapshot described below.
+- ETH `eth_syncing`, GraphQL `syncing.highestBlock`, and Test RPC `get_node_status` now consume a shared
+  `LiveStatusReader` snapshot for live PBFT sync, peer progress, DPoS vote, queue, and transaction-pool facts. The
+  production adapter in the RPC plugin is the remaining audited compatibility point that reads live Network/PBFT/Vote/
+  TransactionManager state; public RPC and GraphQL routes format the snapshot alongside storage-backed
+  `ConsensusQueryApi` counters. Test RPC's legacy `network` object remains a compatibility payload on the snapshot until
+  peer details are typed.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Live subscription log delivery and live sync/status routes remain compatibility or typed-storage routes until they are
-  moved behind dedicated query APIs in later slices.
+- Live subscription log delivery remains on the execution-event compatibility route until it is moved behind a dedicated
+  subscription API in a later slice.
 
 ## Consensus Internal
 

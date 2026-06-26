@@ -13,6 +13,7 @@
 #include "network/rpc/jsonrpc_http_processor.hpp"
 #include "network/rpc/jsonrpc_ws_server.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
+#include "vote_manager/vote_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
@@ -52,6 +53,33 @@ void Rpc::start() {
   }
   std::shared_ptr<metrics::JsonRpcMetrics> jsonrpc_metrics;
   if (app()->getMetrics()) jsonrpc_metrics = app()->getMetrics()->getMetrics<metrics::JsonRpcMetrics>();
+  net::LiveStatusReader live_status_reader = [app = app()] {
+    net::LiveStatusSnapshot snapshot;
+    const auto chain_size = app->getPbftChain()->getPbftChainSize();
+    const auto dpos_total_votes = app->getPbftManager()->getCurrentDposTotalVotesCount();
+    const auto dpos_node_votes = app->getPbftManager()->getCurrentNodeVotesCount();
+    const auto dpos_quorum = app->getVoteManager()->getPbftTwoTPlusOne(chain_size, PbftVoteTypes::cert_vote);
+
+    snapshot.pbft_syncing = app->getNetwork()->pbft_syncing();
+    snapshot.syncing_seconds = app->getNetwork()->syncTimeSeconds();
+    snapshot.peer_count = app->getNetwork()->getPeerCount();
+    snapshot.node_count = app->getNetwork()->getNodeCount();
+    snapshot.pbft_chain_size = chain_size;
+    snapshot.pbft_sync_period = app->getPbftManager()->pbftSyncingPeriod();
+    snapshot.pbft_round = app->getPbftManager()->getPbftRound();
+    snapshot.dpos_total_votes = dpos_total_votes.value_or(0);
+    snapshot.dpos_node_votes = dpos_node_votes.value_or(0);
+    snapshot.dpos_quorum = dpos_quorum.value_or(0);
+    snapshot.pbft_sync_queue_size = app->getPbftManager()->periodDataQueueSize();
+    snapshot.transaction_pool_size = app->getTransactionManager()->getTransactionPoolSize();
+    snapshot.nonfinalized_transaction_size = app->getTransactionManager()->getNonfinalizedTrxSize();
+    if (const auto peer = app->getNetwork()->getMaxChainPeer()) {
+      snapshot.max_peer_pbft_chain_size = peer->pbft_chain_size_.load();
+    }
+    snapshot.compatibility_network_status = app->getNetwork()->getStatus();
+    return snapshot;
+  };
+
   // Inits rpc related members
   if (conf.network.rpc) {
     rpc_thread_pool_ = std::make_unique<util::ThreadPool>(conf.network.rpc->threads_num);
@@ -125,25 +153,13 @@ void Rpc::start() {
                                    dev::toJS(trx->rlp()), err_msg)));
       }
     };
-    eth_rpc_params.syncing_probe = [network = app()->getNetwork(), pbft_chain = app()->getPbftChain(),
-                                    pbft_mgr = app()->getPbftManager()] {
-      std::optional<net::rpc::eth::SyncStatus> ret;
-      if (!network->pbft_syncing()) {
-        return ret;
-      }
-      auto &status = ret.emplace();
-      // TODO clearly define Ethereum json-rpc "syncing" in Taraxa
-      status.current_block = pbft_chain->getPbftChainSize();
-      status.starting_block = status.current_block;
-      status.highest_block = pbft_mgr->pbftSyncingPeriod();
-      return ret;
-    };
+    eth_rpc_params.live_status = live_status_reader;
 
     auto eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
     std::shared_ptr<net::Test> test_json_rpc;
     if (enable_test_rpc_) {
       //  TODO Because this object refers to App, the lifecycle/dependency management is more complicated);
-      test_json_rpc = std::make_shared<net::Test>(app());
+      test_json_rpc = std::make_shared<net::Test>(app(), live_status_reader);
     }
 
     std::shared_ptr<net::Debug> debug_json_rpc;
@@ -242,7 +258,8 @@ void Rpc::start() {
           app()->getAddress(),
           std::make_shared<net::GraphQlHttpProcessor>(
               app()->getFinalChain(), app()->getDagManager(), app()->getPbftManager(), app()->getTransactionManager(),
-              app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id),
+              app()->getDB(), app()->getGasPricer(), as_weak(app()->getNetwork()), conf.genesis.chain_id,
+              live_status_reader),
           jsonrpc_metrics);
       graphql_http_->start();
     }

@@ -7,6 +7,7 @@
 
 #include "data.hpp"
 #include "final_chain/final_chain.hpp"
+#include "network/live_status.hpp"
 #include "network/rpc/EthFace.h"
 #include "watches.hpp"
 
@@ -53,7 +54,7 @@ struct EthParams {
   std::function<void(const std::shared_ptr<Transaction>& trx)> send_trx;
   std::function<u256()> gas_pricer = [] { return u256(0); };
   std::function<uint64_t()> get_earliest_block = [] { return uint64_t(0); };
-  std::function<std::optional<SyncStatus>()> syncing_probe = [] { return std::nullopt; };
+  ::taraxa::net::LiveStatusReader live_status;
   WatchesConfig watches_cfg;
 };
 

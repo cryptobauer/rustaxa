@@ -74,7 +74,7 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
              std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query storage owner.
              std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
-             uint64_t chain_id) noexcept
+             uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status) noexcept
     : final_chain_(std::move(final_chain)),
       dag_manager_(std::move(dag_manager)),
       pbft_manager_(std::move(pbft_manager)),
@@ -82,7 +82,8 @@ Query::Query(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
       db_(std::move(db)),  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query compatibility storage owner.
       gas_pricer_(std::move(gas_pricer)),
       network_(std::move(network)),
-      kChainId(chain_id) {
+      kChainId(chain_id),
+      live_status_(std::move(live_status)) {
   get_block_by_num_ = [&](::taraxa::EthBlockNumber num) {
     return getBlock(response::Value(static_cast<int>(num)), std::nullopt);
   };
@@ -253,9 +254,11 @@ std::shared_ptr<object::SyncState> Query::getSyncing() const {
   auto query_api = std::make_shared<decltype(rustaxa::create_consensus_query_api(db_->rustStorage()))>(
       rustaxa::create_consensus_query_api(db_->rustStorage()));
   return std::make_shared<object::SyncState>(std::make_shared<SyncState>(
-      final_chain_, network_, [query_api]() { return (*query_api)->consensus_query_final_chain_last_block_number(); }));
+      final_chain_, network_, [query_api]() { return (*query_api)->consensus_query_final_chain_last_block_number(); },
+      live_status_));
 #endif
-  return std::make_shared<object::SyncState>(std::make_shared<SyncState>(final_chain_, network_));
+  return std::make_shared<object::SyncState>(
+      std::make_shared<SyncState>(final_chain_, network_, std::function<uint64_t()>{}, live_status_));
 }
 
 response::Value Query::getChainID() const { return response::Value(dev::toJS(kChainId)); }

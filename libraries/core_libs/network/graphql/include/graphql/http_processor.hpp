@@ -4,6 +4,7 @@
 #include "final_chain/final_chain.hpp"
 #include "mutation.hpp"
 #include "network/http_server.hpp"
+#include "network/live_status.hpp"
 #include "network/network.hpp"
 #include "query.hpp"
 #include "subscription.hpp"
@@ -16,8 +17,8 @@ class GraphQlHttpProcessor final : public HttpProcessor {
                        std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                        std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                        std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ: GraphQL query owner.
-                       std::shared_ptr<::taraxa::GasPricer> gas_pricer,
-                       std::weak_ptr<::taraxa::Network> network, uint64_t chain_id);
+                       std::shared_ptr<::taraxa::GasPricer> gas_pricer, std::weak_ptr<::taraxa::Network> network,
+                       uint64_t chain_id, ::taraxa::net::LiveStatusReader live_status = {});
   Response process(const Request& request) override;
 
  private:

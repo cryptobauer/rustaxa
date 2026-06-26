@@ -5,12 +5,47 @@
 
 #include "common/encoding_rlp.hpp"
 #include "graphql/account.hpp"
+#include "graphql/sync_state.hpp"
 #include "network/rpc/eth/Eth.h"
 #include "test_util/samples.hpp"
 
 namespace taraxa::core_tests {
 
 struct RPCTest : NodesTest {};
+
+TEST_F(RPCTest, eth_syncing_uses_live_status_reader) {
+  auto eth_json_rpc = net::rpc::eth::NewEth(net::rpc::eth::EthParams{});
+  EXPECT_FALSE(eth_json_rpc->eth_syncing().asBool());
+
+  net::rpc::eth::EthParams eth_rpc_params;
+  eth_rpc_params.live_status = [] {
+    net::LiveStatusSnapshot snapshot;
+    snapshot.pbft_syncing = true;
+    snapshot.pbft_chain_size = 4;
+    snapshot.pbft_sync_period = 9;
+    return snapshot;
+  };
+  eth_json_rpc = net::rpc::eth::NewEth(std::move(eth_rpc_params));
+
+  const auto syncing = eth_json_rpc->eth_syncing();
+  EXPECT_EQ(dev::toJS(4), syncing["startingBlock"].asString());
+  EXPECT_EQ(dev::toJS(4), syncing["currentBlock"].asString());
+  EXPECT_EQ(dev::toJS(9), syncing["highestBlock"].asString());
+}
+
+TEST_F(RPCTest, graphql_syncing_uses_live_status_reader) {
+  graphql::taraxa::SyncState sync_state(
+      nullptr, {}, [] { return 6; },
+      [] {
+        net::LiveStatusSnapshot snapshot;
+        snapshot.max_peer_pbft_chain_size = 12;
+        return snapshot;
+      });
+
+  EXPECT_EQ(0, sync_state.getStartingBlock().get<int>());
+  EXPECT_EQ(6, sync_state.getCurrentBlock().get<int>());
+  EXPECT_EQ(12, sync_state.getHighestBlock().get<int>());
+}
 
 TEST_F(RPCTest, eth_estimateGas) {
   auto node_cfg = make_node_cfgs(1);

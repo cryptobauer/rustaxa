@@ -14,13 +14,14 @@ GraphQlHttpProcessor::GraphQlHttpProcessor(std::shared_ptr<::taraxa::final_chain
                                            std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                                            std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                                            std::shared_ptr<::taraxa::DbStorage> db,  // RUSTAXA_QUERY_COMPAT_READ:
-                                                                                    // GraphQL query owner.
+                                                                                     // GraphQL query owner.
                                            std::shared_ptr<::taraxa::GasPricer> gas_pricer,
-                                           std::weak_ptr<::taraxa::Network> network, uint64_t chain_id)
+                                           std::weak_ptr<::taraxa::Network> network, uint64_t chain_id,
+                                           ::taraxa::net::LiveStatusReader live_status)
     : HttpProcessor(),
-      query_(std::make_shared<graphql::taraxa::Query>(std::move(final_chain), std::move(dag_manager),
-                                                      std::move(pbft_manager), transaction_manager, std::move(db),
-                                                      std::move(gas_pricer), std::move(network), chain_id)),
+      query_(std::make_shared<graphql::taraxa::Query>(
+          std::move(final_chain), std::move(dag_manager), std::move(pbft_manager), transaction_manager, std::move(db),
+          std::move(gas_pricer), std::move(network), chain_id, std::move(live_status))),
       mutation_(std::make_shared<graphql::taraxa::Mutation>(transaction_manager)),
       subscription_(std::make_shared<graphql::taraxa::Subscription>()),
       operations_(query_, mutation_, subscription_) {}

@@ -8,10 +8,12 @@
 namespace graphql::taraxa {
 
 SyncState::SyncState(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-                     std::weak_ptr<::taraxa::Network> network, std::function<uint64_t()> current_block_query) noexcept
+                     std::weak_ptr<::taraxa::Network> network, std::function<uint64_t()> current_block_query,
+                     ::taraxa::net::LiveStatusReader live_status) noexcept
     : final_chain_(std::move(final_chain)),
       network_(std::move(network)),
-      current_block_query_(std::move(current_block_query)) {}
+      current_block_query_(std::move(current_block_query)),
+      live_status_(std::move(live_status)) {}
 
 response::Value SyncState::getStartingBlock() const noexcept { return response::Value(0); }
 
@@ -27,6 +29,18 @@ response::Value SyncState::getCurrentBlock() const noexcept {
 }
 
 response::Value SyncState::getHighestBlock() const noexcept {
+  if (live_status_) {
+    try {
+      const auto snapshot = live_status_();
+      if (snapshot.max_peer_pbft_chain_size) {
+        return response::Value(static_cast<int>(*snapshot.max_peer_pbft_chain_size));
+      }
+      return {};
+    } catch (const std::exception&) {
+      return {};
+    }
+  }
+
   auto net = network_.lock();
   if (!net) {
     return {};
