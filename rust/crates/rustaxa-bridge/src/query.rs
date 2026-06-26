@@ -241,6 +241,19 @@ impl BridgeConsensusQueryApi {
             .map(dag_block_view_to_ffi)
             .collect())
     }
+
+    /// Returns stable finalized DAG block views for one PBFT period.
+    pub fn consensus_query_finalized_dag_blocks_by_period(
+        &self,
+        period: u64,
+    ) -> Result<Vec<rustaxa_ffi::DagBlockPublicView>, anyhow::Error> {
+        Ok(self
+            .0
+            .finalized_dag_blocks_by_period(period)?
+            .into_iter()
+            .map(dag_block_view_to_ffi)
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -352,6 +365,75 @@ mod tests {
         block.append(&vec![0x44; 65]);
         block.append(&987u64);
         block.out().to_vec()
+    }
+
+    fn signed_finalized_dag_bundle_rlp() -> (Vec<u8>, Vec<u8>) {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11; 80]);
+        vdf.append(&vec![0x22, 0x23]);
+        vdf.append(&vec![0x33, 0x34]);
+        vdf.append(&7u16);
+        let transactions = vec![H256::from_low_u64_be(3), H256::from_low_u64_be(4)];
+        let signing_key = SigningKey::from_slice(&[0x42; 32]).unwrap();
+        let mut block = rustaxa_types::dag::DagBlock {
+            pivot: H256::from_low_u64_be(1),
+            level: 5,
+            timestamp: 123,
+            vdf: vdf.out().to_vec(),
+            tips: vec![H256::from_low_u64_be(2)],
+            transactions: transactions.clone(),
+            signature: [0; 65],
+            gas_estimation: 987,
+        };
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .unwrap();
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
+
+        let mut compact_block = RlpStream::new_list(7);
+        compact_block.append(&block.pivot);
+        compact_block.append(&block.level);
+        compact_block.append(&block.timestamp);
+        compact_block.append(&block.vdf);
+        compact_block.append_list(&block.tips);
+        compact_block.append(&block.signature.to_vec());
+        compact_block.append(&block.gas_estimation);
+
+        let mut bundle = RlpStream::new_list(3);
+        bundle.begin_list(transactions.len());
+        for transaction in &transactions {
+            bundle.append(transaction);
+        }
+        bundle.begin_list(1);
+        bundle.begin_list(transactions.len());
+        for idx in 0..transactions.len() {
+            bundle.append(&idx);
+        }
+        bundle.begin_list(1);
+        bundle.append_raw(&compact_block.out(), 1);
+
+        let mut canonical_block = RlpStream::new_list(8);
+        canonical_block.append(&block.pivot);
+        canonical_block.append(&block.level);
+        canonical_block.append(&block.timestamp);
+        canonical_block.append(&block.vdf);
+        canonical_block.append_list(&block.tips);
+        canonical_block.append_list(&block.transactions);
+        canonical_block.append(&block.signature.to_vec());
+        canonical_block.append(&block.gas_estimation);
+
+        (bundle.out().to_vec(), canonical_block.out().to_vec())
+    }
+
+    fn period_data_with_dag_bundle_rlp(dag_bundle_rlp: &[u8]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(dag_bundle_rlp, 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.out().to_vec()
     }
 
     fn keccak256(data: &[u8]) -> H256 {
@@ -616,6 +698,24 @@ mod tests {
         let level_views = api.consensus_query_dag_blocks_by_level(5, 1).unwrap();
         assert_eq!(level_views.len(), 1);
         assert_eq!(level_views[0].hash, block_hash.0);
+
+        let (dag_bundle, canonical_block) = signed_finalized_dag_bundle_rlp();
+        storage
+            .save_period_data(7, period_data_with_dag_bundle_rlp(&dag_bundle))
+            .unwrap();
+        let finalized_views = api
+            .consensus_query_finalized_dag_blocks_by_period(7)
+            .unwrap();
+        assert_eq!(finalized_views.len(), 1);
+        assert_eq!(finalized_views[0].hash, keccak256(&canonical_block).0);
+        assert_eq!(finalized_views[0].finalized_period, 7);
+        assert_eq!(finalized_views[0].finalized_position, 0);
+        assert_eq!(finalized_views[0].transactions.len(), 2);
+        assert_eq!(finalized_views[0].vdf_difficulty, 7);
+        assert!(api
+            .consensus_query_finalized_dag_blocks_by_period(8)
+            .unwrap()
+            .is_empty());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(temp_dir);

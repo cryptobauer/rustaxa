@@ -96,6 +96,10 @@ std::optional<response::Value> DagBlock::getPbftPeriod() const noexcept {
   }
 #ifdef RUSTAXA_ENABLE
   if (rust_dag_block_) {
+    if (rust_dag_block_->finalized_period_found) {
+      period_ = rust_dag_block_->finalized_period;
+      return {response::Value(static_cast<int>(*period_))};
+    }
     const auto [has_period, period] = pbft_manager_->getDagBlockPeriod(hashFromBridge(rust_dag_block_->hash));
     if (has_period) {
       period_ = period;
@@ -117,6 +121,10 @@ std::shared_ptr<object::Account> DagBlock::getAuthor() const noexcept {
 #ifdef RUSTAXA_ENABLE
   if (rust_dag_block_) {
     const auto sender = addressFromBridge(rust_dag_block_->sender);
+    if (rust_dag_block_->finalized_period_found) {
+      period_ = rust_dag_block_->finalized_period;
+      return std::make_shared<object::Account>(std::make_shared<Account>(final_chain_, sender, *period_));
+    }
     if (!period_) {
       const auto [has_period, period] = pbft_manager_->getDagBlockPeriod(hashFromBridge(rust_dag_block_->hash));
       if (has_period) {

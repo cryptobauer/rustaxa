@@ -197,8 +197,8 @@ Json::Value Debug::debug_getPeriodDagBlocks(const std::string& _period) {
 
     auto period = dev::jsToInt(_period);
 #ifdef RUSTAXA_ENABLE
-    const auto period_queries = rustaxa::create_period_storage_queries(node->getDB()->rustStorage());
-    const auto dag_views = period_queries->get_period_dag_block_views(period);
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto dag_views = query_api->consensus_query_finalized_dag_blocks_by_period(period);
     Json::Value res(Json::arrayValue);
     for (const auto& dag_view : dag_views) {
       res.append(dagBlockPublicViewToJson(dag_view, period));

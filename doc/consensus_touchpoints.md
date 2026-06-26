@@ -425,6 +425,7 @@ Implemented first slice:
   - `consensus_query_pillar_block_data_by_period(period) -> PillarBlockDataView`
   - `consensus_query_dag_block_by_hash(hash) -> DagBlockPublicView`
   - `consensus_query_dag_blocks_by_level(level, number_of_levels) -> Vec<DagBlockPublicView>`
+  - `consensus_query_finalized_dag_blocks_by_period(period) -> Vec<DagBlockPublicView>`
 - `taraxa_pbftBlockHashByPeriod` and GraphQL final-chain block composition now use `ConsensusQueryApi` for PBFT
   hash-by-period lookup in Rust mode instead of creating endpoint-local period-storage query handles.
 - `taraxa_getScheduleBlockByPeriod` now uses `ConsensusQueryApi` for PBFT schedule block facts and finalized DAG order
@@ -438,11 +439,15 @@ Implemented first slice:
 - `taraxa_getDagBlockByHash` and `taraxa_getDagBlockByLevel` now use `ConsensusQueryApi` for DAG block facts and
   finalized period/position lookup in Rust mode instead of creating endpoint-local DAG query handles and asking the live
   `PbftManager` for block period.
+- `debug_getPeriodDagBlocks` and GraphQL `periodDagBlocks` now use `ConsensusQueryApi` for finalized DAG block facts by
+  PBFT period in Rust mode instead of creating endpoint-local period-storage query handles. GraphQL DAG objects also use
+  the finalized-period facts carried by Rust DTOs before falling back to live PBFT-manager lookup for older routes.
 - The first `FinalChainBlockView` route returns finalized block number/hash, stored header roots, bloom/gas/reward facts,
   canonical stored-header bytes, and optional PBFT hash. It intentionally does not expand transactions, receipts, logs,
   account state, DPoS snapshots, or external `StateAPI` reads.
-- Existing DAG page/range beyond the public one-level route, transaction, receipt, account-state, and sync/status
-  routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in later slices.
+- Existing DAG page/range beyond the public one-level and finalized-period routes, transaction, receipt, account-state,
+  and sync/status routes remain compatibility or typed-storage routes until they are moved behind `ConsensusQueryApi` in
+  later slices.
 
 ## Consensus Internal
 

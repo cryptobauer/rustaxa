@@ -416,6 +416,29 @@ impl ConsensusQueryApi {
         }
         Ok(views)
     }
+
+    /// Returns finalized DAG block views embedded in one PBFT period.
+    ///
+    /// The query reads Rust-owned period data, reconstructs canonical DAG block
+    /// bytes from the compact finalized DAG bundle, and returns public DAG
+    /// views in bundle order. Missing period data returns an empty vector,
+    /// matching the legacy debug/GraphQL query behavior. Malformed period data
+    /// or DAG bundle bytes are returned as errors for public adapters to map to
+    /// their existing invalid-params behavior.
+    pub fn finalized_dag_blocks_by_period(&self, period: u64) -> Result<Vec<DagBlockView>> {
+        let period_data = self.storage.period().data_raw(period)?;
+        if period_data.is_empty() {
+            return Ok(Vec::new());
+        }
+        let period_rlp = Rlp::new(&period_data);
+        finalized_dag_block_views(
+            period_rlp
+                .at(DAG_BLOCKS_POS_IN_PERIOD_DATA)
+                .context("CONSENSUS_QUERY_PERIOD_DAG_BUNDLE")?
+                .as_raw(),
+            period,
+        )
+    }
 }
 
 fn h256_bytes(bytes: &[u8]) -> Result<H256> {
@@ -630,6 +653,79 @@ fn finalized_dag_hashes(dag_bundle_rlp: &[u8]) -> Result<Vec<[u8; 32]>> {
     Ok(out)
 }
 
+fn finalized_dag_block_views(dag_bundle_rlp: &[u8], period: u64) -> Result<Vec<DagBlockView>> {
+    let bundle = Rlp::new(dag_bundle_rlp);
+    if dag_bundle_is_empty(&bundle)? {
+        return Ok(Vec::new());
+    }
+    anyhow::ensure!(
+        bundle.item_count()? == 3,
+        "CONSENSUS_QUERY_INVALID_FINALIZED_DAG_BUNDLE_FIELD_COUNT"
+    );
+    let compact_blocks = bundle
+        .at(2)
+        .context("CONSENSUS_QUERY_FINALIZED_DAG_COMPACT_BLOCKS")?;
+    let finalized_bundle = FinalizedDagBlockBundleRlp::new(dag_bundle_rlp);
+    let mut out = Vec::with_capacity(compact_blocks.item_count()?);
+    for position in 0..compact_blocks.item_count()? {
+        let canonical = finalized_bundle
+            .canonical_block_rlp(position)
+            .context("CONSENSUS_QUERY_FINALIZED_DAG_CANONICAL_BLOCK")?;
+        out.push(finalized_dag_block_view_from_canonical_rlp(
+            &canonical,
+            period,
+            position as u32,
+        )?);
+    }
+    Ok(out)
+}
+
+fn finalized_dag_block_view_from_canonical_rlp(
+    block_rlp: &[u8],
+    period: u64,
+    position: u32,
+) -> Result<DagBlockView> {
+    let block = DagBlock::try_from(DagBlockRlp::new(block_rlp))
+        .context("CONSENSUS_QUERY_FINALIZED_DAG_BLOCK_DECODE")?;
+    let sender = block
+        .recover_sender()
+        .context("CONSENSUS_QUERY_FINALIZED_DAG_BLOCK_SENDER")?;
+    let (has_vdf, vdf_proof, vdf_sol1, vdf_sol2, vdf_difficulty) = if block.level > 0 {
+        let vdf = decode_vdf_sortition_payload(&block.vdf)
+            .context("CONSENSUS_QUERY_FINALIZED_DAG_BLOCK_VDF_DECODE")?;
+        (
+            true,
+            vdf.vrf_proof.to_vec(),
+            vdf.vdf_solution_proof,
+            vdf.vdf_solution_output,
+            vdf.difficulty,
+        )
+    } else {
+        (false, Vec::new(), Vec::new(), Vec::new(), 0)
+    };
+
+    Ok(DagBlockView {
+        found: true,
+        pivot: block.pivot.into(),
+        level: block.level,
+        tips: block.tips.into_iter().map(Into::into).collect(),
+        transactions: block.transactions.into_iter().map(Into::into).collect(),
+        trx_estimations: block.gas_estimation,
+        signature: block.signature.to_vec(),
+        hash: keccak256(block_rlp).into(),
+        sender: sender.into(),
+        timestamp: block.timestamp,
+        finalized_period_found: true,
+        finalized_period: period,
+        finalized_position: position,
+        has_vdf,
+        vdf_proof,
+        vdf_sol1,
+        vdf_sol2,
+        vdf_difficulty,
+    })
+}
+
 fn dag_bundle_is_empty(bundle: &Rlp<'_>) -> Result<bool> {
     if bundle.is_list() {
         return Ok(false);
@@ -788,6 +884,75 @@ mod tests {
         block.append(&vec![0x44; 65]);
         block.append(&987u64);
         block.out().to_vec()
+    }
+
+    fn signed_finalized_dag_bundle_rlp() -> (Vec<u8>, Vec<u8>) {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11; 80]);
+        vdf.append(&vec![0x22, 0x23]);
+        vdf.append(&vec![0x33, 0x34]);
+        vdf.append(&7u16);
+        let transactions = vec![H256::from_low_u64_be(3), H256::from_low_u64_be(4)];
+        let signing_key = SigningKey::from_slice(&[0x42; 32]).unwrap();
+        let mut block = DagBlock {
+            pivot: H256::from_low_u64_be(1),
+            level: 5,
+            timestamp: 123,
+            vdf: vdf.out().to_vec(),
+            tips: vec![H256::from_low_u64_be(2)],
+            transactions: transactions.clone(),
+            signature: [0; 65],
+            gas_estimation: 987,
+        };
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .unwrap();
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
+
+        let mut compact_block = RlpStream::new_list(7);
+        compact_block.append(&block.pivot);
+        compact_block.append(&block.level);
+        compact_block.append(&block.timestamp);
+        compact_block.append(&block.vdf);
+        compact_block.append_list(&block.tips);
+        compact_block.append(&block.signature.to_vec());
+        compact_block.append(&block.gas_estimation);
+
+        let mut bundle = RlpStream::new_list(3);
+        bundle.begin_list(transactions.len());
+        for transaction in &transactions {
+            bundle.append(transaction);
+        }
+        bundle.begin_list(1);
+        bundle.begin_list(transactions.len());
+        for idx in 0..transactions.len() {
+            bundle.append(&idx);
+        }
+        bundle.begin_list(1);
+        bundle.append_raw(&compact_block.out(), 1);
+
+        let mut canonical_block = RlpStream::new_list(8);
+        canonical_block.append(&block.pivot);
+        canonical_block.append(&block.level);
+        canonical_block.append(&block.timestamp);
+        canonical_block.append(&block.vdf);
+        canonical_block.append_list(&block.tips);
+        canonical_block.append_list(&block.transactions);
+        canonical_block.append(&block.signature.to_vec());
+        canonical_block.append(&block.gas_estimation);
+
+        (bundle.out().to_vec(), canonical_block.out().to_vec())
+    }
+
+    fn period_data_with_dag_bundle_rlp(dag_bundle_rlp: &[u8]) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(dag_bundle_rlp, 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.out().to_vec()
     }
 
     fn stored_header_rlp() -> Vec<u8> {
@@ -1023,6 +1188,44 @@ mod tests {
         let level_views = api.dag_blocks_by_level(5, 1).unwrap();
         assert_eq!(level_views.len(), 1);
         assert_eq!(level_views[0].hash, block_hash.0);
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn query_api_reads_finalized_dag_block_views_from_period_data() {
+        let (path, storage) = test_storage("finalized_dag_blocks_by_period");
+        let api = ConsensusQueryApi::new(storage.clone());
+        let (dag_bundle, canonical_block) = signed_finalized_dag_bundle_rlp();
+        storage
+            .period()
+            .write(7, &period_data_with_dag_bundle_rlp(&dag_bundle))
+            .unwrap();
+
+        let views = api.finalized_dag_blocks_by_period(7).unwrap();
+
+        assert_eq!(views.len(), 1);
+        let view = &views[0];
+        assert!(view.found);
+        assert_eq!(view.hash, keccak256(&canonical_block).0);
+        assert_eq!(view.pivot, H256::from_low_u64_be(1).0);
+        assert_eq!(view.level, 5);
+        assert_eq!(view.timestamp, 123);
+        assert_eq!(view.tips, vec![H256::from_low_u64_be(2).0]);
+        assert_eq!(
+            view.transactions,
+            vec![H256::from_low_u64_be(3).0, H256::from_low_u64_be(4).0]
+        );
+        assert_eq!(view.trx_estimations, 987);
+        assert!(view.finalized_period_found);
+        assert_eq!(view.finalized_period, 7);
+        assert_eq!(view.finalized_position, 0);
+        assert_eq!(view.vdf_proof, vec![0x11; 80]);
+        assert_eq!(view.vdf_sol1, vec![0x22, 0x23]);
+        assert_eq!(view.vdf_sol2, vec![0x33, 0x34]);
+        assert_eq!(view.vdf_difficulty, 7);
+        assert!(api.finalized_dag_blocks_by_period(8).unwrap().is_empty());
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

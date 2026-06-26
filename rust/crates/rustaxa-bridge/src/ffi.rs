@@ -5050,6 +5050,10 @@ pub mod rustaxa_ffi {
             level: u64,
             number_of_levels: u32,
         ) -> Result<Vec<DagBlockPublicView>>;
+        pub fn consensus_query_finalized_dag_blocks_by_period(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+        ) -> Result<Vec<DagBlockPublicView>>;
     }
 
     extern "Rust" {
@@ -7402,10 +7406,6 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodStorageQueries,
             period: u64,
         ) -> Result<HashLookup>;
-        pub fn get_period_dag_block_views(
-            self: &BridgePeriodStorageQueries,
-            period: u64,
-        ) -> Result<Vec<DagBlockPublicView>>;
         /// Typed period-by-PBFT-block hash lookup.
         pub fn get_period_from_pbft_hash(
             self: &BridgePeriodStorageQueries,

@@ -203,8 +203,8 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getPeriodDagBlocks(
     period = final_chain_->lastBlockNumber();
   }
 #ifdef RUSTAXA_ENABLE
-  const auto period_queries = rustaxa::create_period_storage_queries(db_->rustStorage());
-  auto rust_dag_blocks = period_queries->get_period_dag_block_views(period);
+  const auto query_api = rustaxa::create_consensus_query_api(db_->rustStorage());
+  auto rust_dag_blocks = query_api->consensus_query_finalized_dag_blocks_by_period(period);
   if (rust_dag_blocks.size()) {
     blocks.reserve(rust_dag_blocks.size());
     for (auto& block : rust_dag_blocks) {
