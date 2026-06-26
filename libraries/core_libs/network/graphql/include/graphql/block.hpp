@@ -42,11 +42,18 @@ class Block {
                  std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
                  const ::taraxa::blk_hash_t& pbft_block_hash,
                  std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept;
-  explicit Block(AccountStateReader account_reader, BlockTransactionReader transaction_reader,
-                 std::shared_ptr<::taraxa::TransactionManager> trx_manager,
-                 std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
-                 const ::taraxa::blk_hash_t& pbft_block_hash,
-                 std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept;
+  explicit Block(
+      AccountStateReader account_reader, BlockTransactionReader transaction_reader,
+      std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+      const ::taraxa::blk_hash_t& pbft_block_hash,
+      std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header
+#ifdef RUSTAXA_ENABLE
+      ,
+      std::function<uint64_t(::taraxa::EthBlockNumber)> transaction_count_query = {},
+      std::function<rustaxa::TransactionPublicView(::taraxa::EthBlockNumber, uint64_t)> transaction_query = {},
+      std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query = {}
+#endif
+      ) noexcept;
 
   response::Value getNumber() const noexcept;
   response::Value getHash() const noexcept;
@@ -78,8 +85,6 @@ class Block {
   response::Value getEstimateGas(CallData&& dataArg) const noexcept;
 
  private:
-  std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
-  std::shared_ptr<::taraxa::TransactionManager> trx_manager_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
   AccountStateReader account_reader_;
   BlockTransactionReader transaction_reader_;

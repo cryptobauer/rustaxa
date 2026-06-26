@@ -354,7 +354,7 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
     }
 
     return std::make_shared<object::Block>(std::make_shared<Block>(
-        final_chain_, transaction_manager_, get_block_by_num_, pbft_block_hash, block_header,
+        account_reader_, block_transaction_reader_, get_block_by_num_, pbft_block_hash, block_header,
         [query_api](::taraxa::EthBlockNumber block_number) {
           return (*query_api)->consensus_query_transaction_count_by_block_number(block_number);
         },
@@ -387,9 +387,8 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
 
   // Special case for genesis
   if (block_number == 0) [[unlikely]] {
-    return std::make_shared<object::Block>(std::make_shared<Block>(account_reader_, block_transaction_reader_,
-                                                                   transaction_manager_, get_block_by_num_,
-                                                                   ::taraxa::blk_hash_t(), block_header));
+    return std::make_shared<object::Block>(std::make_shared<Block>(
+        account_reader_, block_transaction_reader_, get_block_by_num_, ::taraxa::blk_hash_t(), block_header));
   }
 
   auto pbft_block_hash = block_reader_.pbft_hash_by_period(block_header->number);
@@ -398,8 +397,7 @@ std::shared_ptr<object::Block> Query::getBlock(std::optional<response::Value>&& 
     return nullptr;
   }
   return std::make_shared<object::Block>(std::make_shared<Block>(account_reader_, block_transaction_reader_,
-                                                                 transaction_manager_, get_block_by_num_,
-                                                                 *pbft_block_hash, block_header));
+                                                                 get_block_by_num_, *pbft_block_hash, block_header));
 }
 
 std::vector<std::shared_ptr<object::Block>> Query::getBlocks(response::Value&& fromArg,
@@ -456,8 +454,8 @@ std::shared_ptr<object::Transaction> Query::getTransaction(response::Value&& has
     if (transaction) {
       auto receipt_view = query_api->consensus_query_transaction_receipt_by_hash(transaction_hash.asArray());
       return std::make_shared<object::Transaction>(
-          std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction),
-                                        transaction_view, receipt_view));
+          std::make_shared<Transaction>(TransactionReceiptReader{}, account_reader_, get_block_by_num_,
+                                        std::move(transaction), transaction_view, receipt_view));
     }
     return nullptr;
   }
@@ -514,18 +512,16 @@ std::shared_ptr<object::DagBlock> Query::getDagBlock(std::optional<response::Val
           hash != ::taraxa::kNullBlockHash) {
         auto rust_dag_block = (*query_api)->consensus_query_dag_block_by_hash(hash.asArray());
         if (rust_dag_block.found) {
-          return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(std::move(rust_dag_block), final_chain_,
-                                                                               transaction_manager_, get_block_by_num_,
-                                                                               transaction_query, receipt_query));
+          return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
+              std::move(rust_dag_block), account_reader_, get_block_by_num_, transaction_query, receipt_query));
         }
       }
     } else {
       const auto status = (*query_api)->consensus_query_status();
       auto rust_dag_blocks = (*query_api)->consensus_query_dag_blocks_by_level(status.latest_dag_level, 1);
       for (auto& rust_dag_block : rust_dag_blocks) {
-        return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(std::move(rust_dag_block), final_chain_,
-                                                                             transaction_manager_, get_block_by_num_,
-                                                                             transaction_query, receipt_query));
+        return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
+            std::move(rust_dag_block), account_reader_, get_block_by_num_, transaction_query, receipt_query));
       }
     }
     return nullptr;
@@ -546,9 +542,9 @@ std::shared_ptr<object::DagBlock> Query::getDagBlock(std::optional<response::Val
     }
   }
   if (taraxa_dag_block) {
-    return std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-        account_reader_, dag_block_transaction_reader_, dag_block_period_reader_, std::move(taraxa_dag_block),
-        pbft_manager_, transaction_manager_, get_block_by_num_));
+    return std::make_shared<object::DagBlock>(
+        std::make_shared<DagBlock>(account_reader_, dag_block_transaction_reader_, dag_block_period_reader_,
+                                   std::move(taraxa_dag_block), get_block_by_num_));
   }
   return nullptr;
 }
@@ -571,7 +567,7 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getPeriodDagBlocks(
       blocks.reserve(rust_dag_blocks.size());
       for (auto& block : rust_dag_blocks) {
         blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-            std::move(block), final_chain_, transaction_manager_, get_block_by_num_,
+            std::move(block), account_reader_, get_block_by_num_,
             [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
               return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
             },
@@ -589,7 +585,7 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getPeriodDagBlocks(
     for (auto block : dag_blocks) {
       blocks.emplace_back(std::make_shared<object::DagBlock>(
           std::make_shared<DagBlock>(account_reader_, dag_block_transaction_reader_, dag_block_period_reader_,
-                                     std::move(block), pbft_manager_, transaction_manager_, get_block_by_num_)));
+                                     std::move(block), get_block_by_num_)));
     }
   }
   return blocks;
@@ -614,13 +610,12 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
       }
     }
 
-    auto addRustDagBlocks = [final_chain = final_chain_, transaction_manager = transaction_manager_,
-                             get_block_by_num = get_block_by_num_,
-                             query_api](auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
+    auto addRustDagBlocks = [account_reader = account_reader_, get_block_by_num = get_block_by_num_, query_api](
+                                auto& rust_dag_blocks, auto& result_dag_blocks) -> size_t {
       const auto added = rust_dag_blocks.size();
       for (auto& dag_block : rust_dag_blocks) {
         result_dag_blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
-            std::move(dag_block), final_chain, transaction_manager, get_block_by_num,
+            std::move(dag_block), account_reader, get_block_by_num,
             [query_api](const ::taraxa::trx_hash_t& transaction_hash) {
               return (*query_api)->consensus_query_transaction_by_hash(transaction_hash.asArray());
             },
@@ -669,13 +664,11 @@ std::vector<std::shared_ptr<object::DagBlock>> Query::getDagBlocks(std::optional
   }
 
   auto addDagBlocks = [account_reader = account_reader_, transaction_reader = dag_block_transaction_reader_,
-                       period_reader = dag_block_period_reader_, pbft_manager = pbft_manager_,
-                       transaction_manager = transaction_manager_, get_block_by_num = get_block_by_num_](
+                       period_reader = dag_block_period_reader_, get_block_by_num = get_block_by_num_](
                           auto taraxa_dag_blocks, auto& result_dag_blocks) -> size_t {
     for (auto& dag_block : taraxa_dag_blocks) {
-      result_dag_blocks.emplace_back(std::make_shared<object::DagBlock>(
-          std::make_shared<DagBlock>(account_reader, transaction_reader, period_reader, std::move(dag_block),
-                                     pbft_manager, transaction_manager, get_block_by_num)));
+      result_dag_blocks.emplace_back(std::make_shared<object::DagBlock>(std::make_shared<DagBlock>(
+          account_reader, transaction_reader, period_reader, std::move(dag_block), get_block_by_num)));
     }
 
     return taraxa_dag_blocks.size();

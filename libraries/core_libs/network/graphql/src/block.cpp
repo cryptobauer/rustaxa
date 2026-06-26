@@ -76,11 +76,44 @@ Block::Block(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
              std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query
 #endif
              ) noexcept
-    : final_chain_(std::move(final_chain)),
-      trx_manager_(std::move(trx_manager)),
-      get_block_by_num_(std::move(get_block_by_num)),
-      account_reader_(makeAccountStateReader(final_chain_)),
-      transaction_reader_(makeBlockTransactionReader(final_chain_)),
+    : get_block_by_num_(std::move(get_block_by_num)),
+      account_reader_(makeAccountStateReader(final_chain)),
+      transaction_reader_(makeBlockTransactionReader(final_chain)),
+      kPBftBlockHash(pbft_block_hash),
+      block_header_(std::move(block_header))
+#ifdef RUSTAXA_ENABLE
+      ,
+      transaction_count_query_(std::move(transaction_count_query)),
+      transaction_query_(std::move(transaction_query)),
+      receipt_query_(std::move(receipt_query))
+#endif
+{
+  (void)trx_manager;
+}
+
+Block::Block(AccountStateReader account_reader, std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+             std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+             const ::taraxa::blk_hash_t& pbft_block_hash,
+             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept
+    : Block(std::move(account_reader), BlockTransactionReader{}, std::move(get_block_by_num), pbft_block_hash,
+            std::move(block_header)) {
+  (void)trx_manager;
+}
+
+Block::Block(AccountStateReader account_reader, BlockTransactionReader transaction_reader,
+             std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
+             const ::taraxa::blk_hash_t& pbft_block_hash,
+             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header
+#ifdef RUSTAXA_ENABLE
+             ,
+             std::function<uint64_t(::taraxa::EthBlockNumber)> transaction_count_query,
+             std::function<rustaxa::TransactionPublicView(::taraxa::EthBlockNumber, uint64_t)> transaction_query,
+             std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query
+#endif
+             ) noexcept
+    : get_block_by_num_(std::move(get_block_by_num)),
+      account_reader_(std::move(account_reader)),
+      transaction_reader_(std::move(transaction_reader)),
       kPBftBlockHash(pbft_block_hash),
       block_header_(std::move(block_header))
 #ifdef RUSTAXA_ENABLE
@@ -91,25 +124,6 @@ Block::Block(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
 #endif
 {
 }
-
-Block::Block(AccountStateReader account_reader, std::shared_ptr<::taraxa::TransactionManager> trx_manager,
-             std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
-             const ::taraxa::blk_hash_t& pbft_block_hash,
-             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept
-    : Block(std::move(account_reader), BlockTransactionReader{}, std::move(trx_manager), std::move(get_block_by_num),
-            pbft_block_hash, std::move(block_header)) {}
-
-Block::Block(AccountStateReader account_reader, BlockTransactionReader transaction_reader,
-             std::shared_ptr<::taraxa::TransactionManager> trx_manager,
-             std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
-             const ::taraxa::blk_hash_t& pbft_block_hash,
-             std::shared_ptr<const ::taraxa::final_chain::BlockHeader> block_header) noexcept
-    : trx_manager_(std::move(trx_manager)),
-      get_block_by_num_(std::move(get_block_by_num)),
-      account_reader_(std::move(account_reader)),
-      transaction_reader_(std::move(transaction_reader)),
-      kPBftBlockHash(pbft_block_hash),
-      block_header_(std::move(block_header)) {}
 
 response::Value Block::getNumber() const noexcept { return response::Value(static_cast<int>(block_header_->number)); }
 
@@ -207,8 +221,9 @@ std::optional<std::vector<std::shared_ptr<object::Transaction>>> Block::getTrans
         return std::nullopt;
       }
       auto receipt_view = receipt_query_(transaction->getHash());
-      ret.emplace_back(std::make_shared<object::Transaction>(std::make_shared<Transaction>(
-          final_chain_, trx_manager_, get_block_by_num_, std::move(transaction), transaction_view, receipt_view)));
+      ret.emplace_back(std::make_shared<object::Transaction>(
+          std::make_shared<Transaction>(TransactionReceiptReader{}, account_reader_, get_block_by_num_,
+                                        std::move(transaction), transaction_view, receipt_view)));
     }
     return ret;
   }
@@ -224,7 +239,7 @@ std::optional<std::vector<std::shared_ptr<object::Transaction>>> Block::getTrans
   ret.reserve(transactions_.size());
   for (auto& t : transactions_) {
     ret.emplace_back(std::make_shared<object::Transaction>(
-        std::make_shared<Transaction>(final_chain_, trx_manager_, get_block_by_num_, t)));
+        std::make_shared<Transaction>(TransactionReceiptReader{}, account_reader_, get_block_by_num_, t)));
   }
   return ret;
 }
@@ -242,8 +257,9 @@ std::shared_ptr<object::Transaction> Block::getTransactionAt(response::IntType&&
       return nullptr;
     }
     auto receipt_view = receipt_query_(transaction->getHash());
-    return std::make_shared<object::Transaction>(std::make_shared<Transaction>(
-        final_chain_, trx_manager_, get_block_by_num_, std::move(transaction), transaction_view, receipt_view));
+    return std::make_shared<object::Transaction>(
+        std::make_shared<Transaction>(TransactionReceiptReader{}, account_reader_, get_block_by_num_,
+                                      std::move(transaction), transaction_view, receipt_view));
   }
 #endif
 
@@ -253,11 +269,11 @@ std::shared_ptr<object::Transaction> Block::getTransactionAt(response::IntType&&
     }
     if (!transactions_.size()) return nullptr;
   }
-  if (transactions_.size() < static_cast<size_t>(index)) {
+  if (transactions_.size() <= static_cast<size_t>(index)) {
     return nullptr;
   }
-  return std::make_shared<object::Transaction>(
-      std::make_shared<Transaction>(final_chain_, trx_manager_, get_block_by_num_, transactions_[index]));
+  return std::make_shared<object::Transaction>(std::make_shared<Transaction>(
+      TransactionReceiptReader{}, account_reader_, get_block_by_num_, transactions_[index]));
 }
 
 std::vector<std::shared_ptr<object::Log>> Block::getLogs(BlockFilterCriteria&&) const noexcept {

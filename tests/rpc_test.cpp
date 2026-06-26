@@ -948,7 +948,7 @@ TEST_F(RPCTest, graphql_transaction_uses_receipt_reader) {
     return std::optional<TransactionReceipt>(receipt);
   };
 
-  graphql::taraxa::Transaction transaction(std::move(reader), nullptr, [](EthBlockNumber) { return nullptr; }, trx);
+  graphql::taraxa::Transaction transaction(std::move(reader), [](EthBlockNumber) { return nullptr; }, trx);
 
   EXPECT_EQ(2, transaction.getIndex());
   EXPECT_EQ(1, transaction.getStatus()->get<int>());
@@ -1480,12 +1480,13 @@ TEST_F(RPCTest, graphql_block_transactions_use_transaction_reader) {
   header->number = 18;
 
   graphql::taraxa::Block block(
-      std::move(account_reader), std::move(transaction_reader), nullptr, [](EthBlockNumber) { return nullptr; },
-      blk_hash_t(2), header);
+      std::move(account_reader), std::move(transaction_reader), [](EthBlockNumber) { return nullptr; }, blk_hash_t(2),
+      header);
 
   EXPECT_EQ(1, block.getTransactionCount().value());
   const auto graphql_transaction = block.getTransactionAt(graphql::response::IntType(0));
   ASSERT_NE(nullptr, graphql_transaction);
+  EXPECT_EQ(nullptr, block.getTransactionAt(graphql::response::IntType(1)));
   ASSERT_TRUE(*count_called);
   ASSERT_TRUE(*transactions_called);
 }
@@ -1544,7 +1545,7 @@ TEST_F(RPCTest, graphql_dag_block_transactions_use_transaction_reader) {
   };
 
   graphql::taraxa::DagBlock graphql_dag_block(std::move(account_reader), std::move(transaction_reader),
-                                              std::move(dag_block), nullptr, nullptr,
+                                              graphql::taraxa::DagBlockPeriodReader{}, std::move(dag_block),
                                               [](EthBlockNumber) { return nullptr; });
 
   const auto transactions = graphql_dag_block.getTransactions();
@@ -1576,7 +1577,7 @@ TEST_F(RPCTest, graphql_dag_block_period_uses_period_reader) {
   };
 
   graphql::taraxa::DagBlock graphql_dag_block(std::move(account_reader), graphql::taraxa::DagBlockTransactionReader{},
-                                              std::move(period_reader), std::move(dag_block), nullptr, nullptr,
+                                              std::move(period_reader), std::move(dag_block),
                                               [](EthBlockNumber) { return nullptr; });
 
   const auto period = graphql_dag_block.getPbftPeriod();

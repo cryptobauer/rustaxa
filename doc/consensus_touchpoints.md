@@ -651,6 +651,11 @@ Implemented first slice:
   callback bundles for finalized head, DAG head, and highest-peer progress facts. Existing constructors still provide
   manager-backed compatibility adapters, but the GraphQL field resolvers no longer call FinalChain, DagManager, or
   Network directly.
+- GraphQL Rust-backed `Block`, `Transaction`, and `DagBlock` child object construction now passes account, transaction,
+  receipt, and period reader bundles plus `ConsensusQueryApi` callbacks instead of carrying broad
+  `FinalChain`/`TransactionManager`/`PbftManager` pointers through Rust-mode query results. Legacy compatibility
+  constructors still synthesize the same readers from managers for non-migrated call sites, but reader-backed child
+  objects no longer store unused manager payloads as query authority.
 - The light-node plugin now consumes a dedicated `LightHistoryApi` for finalized-block cleanup triggers, DAG cleanup
   facts, proposal-period lookup, history range deletion, and state DB pruning. The default adapter remains the audited
   compatibility point for live `DagManager`, `DbStorage`, and `FinalChain` access, while the plugin workflow only owns

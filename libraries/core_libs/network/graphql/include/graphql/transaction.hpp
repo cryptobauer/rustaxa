@@ -40,16 +40,19 @@ class Transaction final : public std::enable_shared_from_this<Transaction> {
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
   explicit Transaction(TransactionReceiptReader receipt_reader,
-                       std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
   explicit Transaction(TransactionReceiptReader receipt_reader, AccountStateReader account_reader,
-                       std::shared_ptr<::taraxa::TransactionManager> trx_manager,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction) noexcept;
 #ifdef RUSTAXA_ENABLE
   explicit Transaction(std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
                        std::shared_ptr<::taraxa::TransactionManager> trx_manager,
+                       std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
+                       std::shared_ptr<::taraxa::Transaction> transaction,
+                       const rustaxa::TransactionPublicView& transaction_view,
+                       const rustaxa::TransactionReceiptPublicView& receipt_view) noexcept;
+  explicit Transaction(TransactionReceiptReader receipt_reader, AccountStateReader account_reader,
                        std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)>,
                        std::shared_ptr<::taraxa::Transaction> transaction,
                        const rustaxa::TransactionPublicView& transaction_view,
@@ -76,8 +79,6 @@ class Transaction final : public std::enable_shared_from_this<Transaction> {
   response::Value getV() const noexcept;
 
  private:
-  std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
-  std::shared_ptr<::taraxa::TransactionManager> trx_manager_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
   std::shared_ptr<::taraxa::Transaction> transaction_;
   AccountStateReader account_reader_;

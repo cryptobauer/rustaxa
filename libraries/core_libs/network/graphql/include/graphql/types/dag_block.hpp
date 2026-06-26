@@ -47,13 +47,10 @@ class DagBlock {
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
   explicit DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
                     DagBlockPeriodReader period_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
-                    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
-                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept;
 #ifdef RUSTAXA_ENABLE
   explicit DagBlock(
-      rustaxa::DagBlockPublicView dag_block, std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-      std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+      rustaxa::DagBlockPublicView dag_block, AccountStateReader account_reader,
       std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
       std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_query,
       std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query) noexcept;
@@ -79,9 +76,6 @@ class DagBlock {
   AccountStateReader account_reader_;
   DagBlockTransactionReader transaction_reader_;
   DagBlockPeriodReader period_reader_;
-  std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain_;
-  std::shared_ptr<::taraxa::PbftManager> pbft_manager_;
-  std::shared_ptr<::taraxa::TransactionManager> transaction_manager_;
   std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num_;
 #ifdef RUSTAXA_ENABLE
   std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_query_;

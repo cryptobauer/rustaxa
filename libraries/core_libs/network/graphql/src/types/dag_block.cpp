@@ -85,51 +85,43 @@ DagBlock::DagBlock(std::shared_ptr<::taraxa::DagBlock> dag_block,
       account_reader_(makeAccountStateReader(final_chain)),
       transaction_reader_(makeDagBlockTransactionReader(transaction_manager)),
       period_reader_(makeDagBlockPeriodReader(pbft_manager)),
-      final_chain_(std::move(final_chain)),
-      pbft_manager_(std::move(pbft_manager)),
-      transaction_manager_(std::move(transaction_manager)),
-      get_block_by_num_(get_block_by_num) {}
+      get_block_by_num_(get_block_by_num) {
+  (void)pbft_manager;
+}
 
 DagBlock::DagBlock(AccountStateReader account_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
                    std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
     : DagBlock(std::move(account_reader), makeDagBlockTransactionReader(transaction_manager),
-               makeDagBlockPeriodReader(pbft_manager), std::move(dag_block), std::move(pbft_manager),
-               std::move(transaction_manager), std::move(get_block_by_num)) {}
+               makeDagBlockPeriodReader(pbft_manager), std::move(dag_block), std::move(get_block_by_num)) {}
 
 DagBlock::DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
                    std::shared_ptr<::taraxa::DagBlock> dag_block, std::shared_ptr<::taraxa::PbftManager> pbft_manager,
                    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
     : DagBlock(std::move(account_reader), std::move(transaction_reader), makeDagBlockPeriodReader(pbft_manager),
-               std::move(dag_block), std::move(pbft_manager), std::move(transaction_manager),
-               std::move(get_block_by_num)) {}
+               std::move(dag_block), std::move(get_block_by_num)) {
+  (void)transaction_manager;
+}
 
 DagBlock::DagBlock(AccountStateReader account_reader, DagBlockTransactionReader transaction_reader,
                    DagBlockPeriodReader period_reader, std::shared_ptr<::taraxa::DagBlock> dag_block,
-                   std::shared_ptr<::taraxa::PbftManager> pbft_manager,
-                   std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
                    std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num) noexcept
     : dag_block_(std::move(dag_block)),
       account_reader_(std::move(account_reader)),
       transaction_reader_(std::move(transaction_reader)),
       period_reader_(std::move(period_reader)),
-      pbft_manager_(std::move(pbft_manager)),
-      transaction_manager_(std::move(transaction_manager)),
       get_block_by_num_(std::move(get_block_by_num)) {}
 
 #ifdef RUSTAXA_ENABLE
 DagBlock::DagBlock(
-    rustaxa::DagBlockPublicView dag_block, std::shared_ptr<::taraxa::final_chain::FinalChain> final_chain,
-    std::shared_ptr<::taraxa::TransactionManager> transaction_manager,
+    rustaxa::DagBlockPublicView dag_block, AccountStateReader account_reader,
     std::function<std::shared_ptr<object::Block>(::taraxa::EthBlockNumber)> get_block_by_num,
     std::function<rustaxa::TransactionPublicView(const ::taraxa::trx_hash_t&)> transaction_query,
     std::function<rustaxa::TransactionReceiptPublicView(const ::taraxa::trx_hash_t&)> receipt_query) noexcept
     : rust_dag_block_(std::move(dag_block)),
-      account_reader_(makeAccountStateReader(final_chain)),
-      final_chain_(std::move(final_chain)),
-      transaction_manager_(std::move(transaction_manager)),
+      account_reader_(std::move(account_reader)),
       get_block_by_num_(std::move(get_block_by_num)),
       transaction_query_(std::move(transaction_query)),
       receipt_query_(std::move(receipt_query)) {}
@@ -276,8 +268,8 @@ std::optional<std::vector<std::shared_ptr<object::Transaction>>> DagBlock::getTr
       }
       auto receipt_view = receipt_query_(transaction->getHash());
       transactions_result.push_back(std::make_shared<object::Transaction>(
-          std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction),
-                                        transaction_view, receipt_view)));
+          std::make_shared<Transaction>(TransactionReceiptReader{}, account_reader_, get_block_by_num_,
+                                        std::move(transaction), transaction_view, receipt_view)));
     }
     return transactions_result;
   }
@@ -290,8 +282,8 @@ std::optional<std::vector<std::shared_ptr<object::Transaction>>> DagBlock::getTr
     if (!transaction) {
       return std::nullopt;
     }
-    transactions_result.push_back(std::make_shared<object::Transaction>(
-        std::make_shared<Transaction>(final_chain_, transaction_manager_, get_block_by_num_, std::move(transaction))));
+    transactions_result.push_back(std::make_shared<object::Transaction>(std::make_shared<Transaction>(
+        TransactionReceiptReader{}, account_reader_, get_block_by_num_, std::move(transaction))));
   }
 
   return transactions_result;
