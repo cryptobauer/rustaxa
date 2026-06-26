@@ -307,11 +307,6 @@ struct ValidatePbftBlockPillarVotesWithRustResult {
 };
 
 /**
- * Returns a stable string for a Rust bundle-planning status.
- */
-const char* validateSyncPillarVotesBundlePlanStatusString(ValidateSyncPillarVotesBundlePlanStatus status);
-
-/**
  * Returns a stable string for the pillar-chain shim-level synced validation status.
  */
 const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPillarVotesWithRustStatus status);

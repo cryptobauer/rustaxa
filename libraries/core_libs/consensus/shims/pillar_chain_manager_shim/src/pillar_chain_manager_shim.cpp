@@ -352,32 +352,6 @@ const char* pillarVoteRelevancePlanStatusString(PillarVoteRelevancePlanStatus st
   return "unknown";
 }
 
-const char* validateSyncPillarVotesBundlePlanStatusString(ValidateSyncPillarVotesBundlePlanStatus status) {
-  switch (status) {
-    case ValidateSyncPillarVotesBundlePlanStatus::kBundleValid:
-      return "valid";
-    case ValidateSyncPillarVotesBundlePlanStatus::kBundleEmpty:
-      return "empty bundle";
-    case ValidateSyncPillarVotesBundlePlanStatus::kVotePeriodMismatch:
-      return "vote period mismatch";
-    case ValidateSyncPillarVotesBundlePlanStatus::kVoteBlockHashMismatch:
-      return "vote block hash mismatch";
-    case ValidateSyncPillarVotesBundlePlanStatus::kPrevalidationFailed:
-      return "prevalidation failed";
-    case ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight:
-      return "zero weight";
-    case ValidateSyncPillarVotesBundlePlanStatus::kVoterConflict:
-      return "voter conflict";
-    case ValidateSyncPillarVotesBundlePlanStatus::kThresholdNotReached:
-      return "threshold not reached";
-    case ValidateSyncPillarVotesBundlePlanStatus::kWeightOverflow:
-      return "weight overflow";
-    case ValidateSyncPillarVotesBundlePlanStatus::kUnknown:
-      return "unknown";
-  }
-  return "unknown";
-}
-
 const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPillarVotesWithRustStatus status) {
   switch (status) {
     case ValidatePbftBlockPillarVotesWithRustStatus::kUnknown:

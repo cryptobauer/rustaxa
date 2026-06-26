@@ -103,7 +103,6 @@ constexpr uint8_t kPbftManagerRuntimeResultTransitionApplied = 3;
 constexpr uint8_t kPbftManagerRuntimeResultSleepApplied = 4;
 constexpr uint8_t kPbftManagerRuntimeResultExecutorError = 255;
 constexpr uint8_t kPbftManagerRuntimeSnapshotStatusReady = 0;
-constexpr uint8_t kPbftManagerStateActionStatusReady = 0;
 constexpr uint8_t kPbftManagerStateActionIntentProposeNewBlock = 1;
 constexpr uint8_t kPbftManagerStateActionIntentReproposePreviousRoundNextValue = 2;
 constexpr uint8_t kPbftManagerStateActionIntentIdentifyLeaderAndSoftVote = 3;
@@ -411,17 +410,6 @@ rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
   fact.already_next_voted_value = already_next_voted_value;
   fact.already_next_voted_null = already_next_voted_null_block_hash;
   return fact;
-}
-
-template <typename Logger>
-bool ensureStateActionPlanReady(const rustaxa::PbftManagerStateActionPlan &plan, Logger &log_er) {
-  if (plan.status == kPbftManagerStateActionStatusReady) {
-    return true;
-  }
-  LOG(log_er) << "Rust PBFT manager state-action planner rejected facts, status " << static_cast<uint32_t>(plan.status)
-              << ", error " << static_cast<std::string>(plan.error_code);
-  assert(false);
-  return false;
 }
 
 template <typename Executor, typename Logger>

@@ -1249,8 +1249,16 @@ TEST(RustPbftSyncTest, FinalizationResumeInspectorClassifiesCrashWindows) {
 
   resume = inspect_pbft_finalization_resume(*storage, plan.storage_write_intent, 100);
   EXPECT_EQ(resume.status, kPbftFinalizationResumeStatusNeedsDynamicLambda);
-  EXPECT_EQ(resume.replay_actions.size(), 1);
-  EXPECT_EQ(resume.replay_actions[0], kPbftFinalizationRuntimeActionApplyDynamicLambda);
+  {
+    const std::vector<uint8_t> replay_actions(resume.replay_actions.begin(), resume.replay_actions.end());
+    EXPECT_EQ(replay_actions, (std::vector<uint8_t>{
+                                  kPbftFinalizationRuntimeActionApplyDynamicLambda,
+                                  kPbftFinalizationRuntimeActionFinalizeFinalChain,
+                                  kPbftFinalizationRuntimeActionPersistExecutedStatus,
+                                  kPbftFinalizationRuntimeActionSetExecutedFlag,
+                                  kPbftFinalizationRuntimeActionAdvancePeriod,
+                              }));
+  }
 
   auto dynamic_lambda_stage = finalizationStorageStage(kPbftFinalizationStorageStageDynamicLambda);
   dynamic_lambda_stage.rounds_count_dynamic_lambda = 7;

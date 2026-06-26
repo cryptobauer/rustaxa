@@ -369,17 +369,19 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
   EXPECT_EQ(validator_page_addresses(by_owner.code_retval), (std::vector{first_validator}));
 }
 
-TEST_F(RustFinalChainTest, DposCallRejectsClaimSelectors) {
+TEST_F(RustFinalChainTest, DposCallTreatsMutatingSelectorsAsNoOps) {
   const auto validator_address = address(0x10);
   auto storage = create_storage(test_dir.string());
   auto final_chain = create_final_chain(*storage, 0, 0, genesis_accounts(), genesis_validators(validator_address),
                                         genesis_dpos_config());
 
   auto claim_rewards_outcome = final_chain->call(dpos_call(0, get_claim_rewards_input(validator_address)));
-  ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "Rust FinalChain::call unsupported DPoS selector 0xef5cfb8c");
+  ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "");
   EXPECT_EQ(std::string(claim_rewards_outcome.consensus_err), "");
+  EXPECT_TRUE(claim_rewards_outcome.code_retval.empty());
 
   auto claim_all_outcome = final_chain->call(dpos_call(0, get_claim_all_rewards_input()));
-  ASSERT_EQ(std::string(claim_all_outcome.code_err), "Rust FinalChain::call unsupported DPoS selector 0x0b83a727");
+  ASSERT_EQ(std::string(claim_all_outcome.code_err), "");
   EXPECT_EQ(std::string(claim_all_outcome.consensus_err), "");
+  EXPECT_TRUE(claim_all_outcome.code_retval.empty());
 }
