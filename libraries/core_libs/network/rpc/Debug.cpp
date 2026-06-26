@@ -165,24 +165,27 @@ void fillMissingDebugPeriodDagBlocksReaderCallbacks(DebugPeriodDagBlocksReader& 
                                                     std::weak_ptr<taraxa::AppBase> app);
 void fillMissingDebugPeriodTransactionsReaderCallbacks(DebugPeriodTransactionsReader& reader,
                                                        std::weak_ptr<taraxa::AppBase> app);
+void fillMissingDebugTraceReplayReaderCallbacks(DebugTraceReplayReader& reader, std::weak_ptr<taraxa::AppBase> app);
 }  // namespace
 
 Debug::Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader,
              DebugTraceReader trace_reader, DebugPreviousBlockCertVotesReader previous_cert_votes_reader,
              DebugPeriodDagBlocksReader period_dag_blocks_reader,
-             DebugPeriodTransactionsReader period_transactions_reader)
+             DebugPeriodTransactionsReader period_transactions_reader, DebugTraceReplayReader trace_replay_reader)
     : app_(app),
       dpos_reader_(std::move(dpos_reader)),
       trace_reader_(std::move(trace_reader)),
       previous_cert_votes_reader_(std::move(previous_cert_votes_reader)),
       period_dag_blocks_reader_(std::move(period_dag_blocks_reader)),
       period_transactions_reader_(std::move(period_transactions_reader)),
+      trace_replay_reader_(std::move(trace_replay_reader)),
       kGasLimit(gas_limit) {
   fillMissingDebugDposReaderCallbacks(dpos_reader_, app_);
   fillMissingDebugTraceReaderCallbacks(trace_reader_, app_);
   fillMissingDebugPreviousBlockCertVotesReaderCallbacks(previous_cert_votes_reader_, app_);
   fillMissingDebugPeriodDagBlocksReaderCallbacks(period_dag_blocks_reader_, app_);
   fillMissingDebugPeriodTransactionsReaderCallbacks(period_transactions_reader_, app_);
+  fillMissingDebugTraceReplayReaderCallbacks(trace_replay_reader_, app_);
 }
 
 #ifdef RUSTAXA_ENABLE
@@ -410,6 +413,79 @@ void fillMissingDebugPeriodTransactionsReaderCallbacks(DebugPeriodTransactionsRe
     reader.transactions_with_receipts_by_period = std::move(defaults.transactions_with_receipts_by_period);
   }
 }
+
+DebugTraceReplayReader makeDebugTraceReplayReader(std::weak_ptr<taraxa::AppBase> app) {
+  DebugTraceReplayReader reader;
+  reader.transaction_with_state_by_hash = [app](const trx_hash_t& transaction_hash) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_TRACE_REPLAY_READER_APP_EXPIRED");
+    }
+
+#ifdef RUSTAXA_ENABLE
+    {
+      const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+      const auto target_view = query_api->consensus_query_transaction_by_hash(transaction_hash.asArray());
+      if (!target_view.found || !target_view.location_found) {
+        throw std::runtime_error("Transaction not found");
+      }
+      auto block_transactions = materializeBlockTransactionsFromQuery(target_view.block_number, query_api);
+      if (target_view.transaction_index >= block_transactions.size()) {
+        throw std::runtime_error("Transaction not found");
+      }
+
+      DebugTraceReplayTransactionView view;
+      view.state_transactions =
+          SharedTransactions(block_transactions.begin(), block_transactions.begin() + target_view.transaction_index);
+      view.transaction = std::move(block_transactions[target_view.transaction_index]);
+      view.period = target_view.block_number;
+      return view;
+    }
+#endif
+
+    auto final_chain = node->getFinalChain();
+    auto loc = final_chain->transactionLocation(transaction_hash);  // RUSTAXA_QUERY_COMPAT_READ
+    if (!loc) {
+      throw std::runtime_error("Transaction not found");
+    }
+    auto block_transactions = final_chain->transactions(loc->period);  // RUSTAXA_QUERY_COMPAT_READ
+
+    DebugTraceReplayTransactionView view;
+    view.state_transactions =
+        SharedTransactions(block_transactions.begin(), block_transactions.begin() + loc->position);
+    view.transaction = std::move(block_transactions[loc->position]);
+    view.period = loc->period;
+    return view;
+  };
+  reader.transactions_by_block_number = [app](uint64_t block_number) {
+    auto node = app.lock();
+    if (!node) {
+      throw std::runtime_error("DEBUG_TRACE_REPLAY_READER_APP_EXPIRED");
+    }
+
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    return materializeBlockTransactionsFromQuery(block_number, query_api);
+#endif
+
+    auto legacy_transactions = node->getDB()->getPeriodTransactions(block_number);  // RUSTAXA_QUERY_COMPAT_READ
+    if (!legacy_transactions.has_value()) {
+      return SharedTransactions{};
+    }
+    return *legacy_transactions;
+  };
+  return reader;
+}
+
+void fillMissingDebugTraceReplayReaderCallbacks(DebugTraceReplayReader& reader, std::weak_ptr<taraxa::AppBase> app) {
+  auto defaults = makeDebugTraceReplayReader(std::move(app));
+  if (!reader.transaction_with_state_by_hash) {
+    reader.transaction_with_state_by_hash = std::move(defaults.transaction_with_state_by_hash);
+  }
+  if (!reader.transactions_by_block_number) {
+    reader.transactions_by_block_number = std::move(defaults.transactions_by_block_number);
+  }
+}
 }  // namespace
 
 Json::Value Debug::debug_traceCall(const Json::Value& call_params, const std::string& blk_num) {
@@ -425,51 +501,18 @@ Json::Value Debug::trace_call(const Json::Value& call_params, const Json::Value&
   return util::readJsonFromString(trace_reader_.trace({}, {to_eth_trx(call_params, block)}, block, std::move(params)));
 }
 
-std::tuple<std::vector<state_api::EVMTransaction>, state_api::EVMTransaction, uint64_t>
-Debug::get_transaction_with_state(const std::string& transaction_hash) {
-  auto node = app_.lock();
-  if (!node) {
-    return {};
-  }
-
-  auto final_chain = node->getFinalChain();
-#ifdef RUSTAXA_ENABLE
-  {
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto target_view = query_api->consensus_query_transaction_by_hash(jsToFixed<32>(transaction_hash).asArray());
-    if (!target_view.found || !target_view.location_found) {
-      throw std::runtime_error("Transaction not found");
-    }
-    auto block_transactions = materializeBlockTransactionsFromQuery(target_view.block_number, query_api);
-    if (target_view.transaction_index >= block_transactions.size()) {
-      throw std::runtime_error("Transaction not found");
-    }
-
-    auto state_trxs =
-        SharedTransactions(block_transactions.begin(), block_transactions.begin() + target_view.transaction_index);
-    return {to_eth_trxs(state_trxs), to_eth_trx(block_transactions[target_view.transaction_index]),
-            target_view.block_number};
-  }
-#endif
-  auto loc = final_chain->transactionLocation(jsToFixed<32>(transaction_hash));
-  if (!loc) {
-    throw std::runtime_error("Transaction not found");
-  }
-  auto block_transactions = final_chain->transactions(loc->period);
-
-  auto state_trxs = SharedTransactions(block_transactions.begin(), block_transactions.begin() + loc->position);
-
-  return {to_eth_trxs(state_trxs), to_eth_trx(block_transactions[loc->position]), loc->period};
-}
 Json::Value Debug::debug_traceTransaction(const std::string& transaction_hash) {
-  auto [state_trxs, trx, period] = get_transaction_with_state(transaction_hash);
-  return util::readJsonFromString(trace_reader_.trace({}, {trx}, period, std::nullopt));
+  auto replay = trace_replay_reader_.transaction_with_state_by_hash(jsToFixed<32>(transaction_hash));
+  return util::readJsonFromString(
+      trace_reader_.trace({}, {to_eth_trx(std::move(replay.transaction))}, replay.period, std::nullopt));
 }
 
 Json::Value Debug::trace_replayTransaction(const std::string& transaction_hash, const Json::Value& trace_params) {
   auto params = parse_tracking_parms(trace_params);
-  auto [state_trxs, trx, period] = get_transaction_with_state(transaction_hash);
-  return util::readJsonFromString(trace_reader_.trace(state_trxs, {trx}, period, std::move(params)));
+  auto replay = trace_replay_reader_.transaction_with_state_by_hash(jsToFixed<32>(transaction_hash));
+  return util::readJsonFromString(trace_reader_.trace(to_eth_trxs(replay.state_transactions),
+                                                      {to_eth_trx(std::move(replay.transaction))}, replay.period,
+                                                      std::move(params)));
 }
 
 bool only_transfers(const SharedTransactions& trxs) {
@@ -479,30 +522,17 @@ bool only_transfers(const SharedTransactions& trxs) {
 }
 
 Json::Value Debug::trace_replayBlockTransactions(const std::string& block_num, const Json::Value& trace_params) {
-  Json::Value res;
   const auto block = parse_blk_num(block_num);
   auto params = parse_tracking_parms(trace_params);
-  if (auto node = app_.lock()) {
-    SharedTransactions transactions;
-#ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    transactions = materializeBlockTransactionsFromQuery(block, query_api);
-#else
-    auto legacy_transactions = node->getDB()->getPeriodTransactions(block);  // RUSTAXA_QUERY_COMPAT_READ
-    if (legacy_transactions.has_value()) {
-      transactions = *legacy_transactions;
-    }
-#endif
-    if (transactions.empty()) {
-      return Json::Value(Json::arrayValue);
-    }
-    if (only_transfers(transactions)) {
-      return Json::Value(Json::arrayValue);
-    }
-    std::vector<state_api::EVMTransaction> trxs = to_eth_trxs(transactions);
-    return util::readJsonFromString(trace_reader_.trace({}, std::move(trxs), block, std::move(params)));
+  auto transactions = trace_replay_reader_.transactions_by_block_number(block);
+  if (transactions.empty()) {
+    return Json::Value(Json::arrayValue);
   }
-  return res;
+  if (only_transfers(transactions)) {
+    return Json::Value(Json::arrayValue);
+  }
+  std::vector<state_api::EVMTransaction> trxs = to_eth_trxs(transactions);
+  return util::readJsonFromString(trace_reader_.trace({}, std::move(trxs), block, std::move(params)));
 }
 
 Json::Value Debug::debug_getPeriodTransactionsWithReceipts(const std::string& _period) {

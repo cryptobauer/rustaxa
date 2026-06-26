@@ -379,6 +379,105 @@ TEST_F(RPCTest, debug_trace_call_uses_debug_trace_reader) {
   ASSERT_TRUE(*trace_called);
 }
 
+TEST_F(RPCTest, debug_trace_transaction_replay_uses_trace_replay_reader) {
+  const auto state_trx = samples::createSignedTrxSamples(1, 1, secret_t::random()).front();
+  const auto target_trx = samples::createSignedTrxSamples(2, 2, secret_t::random()).front();
+  auto replay_reader_calls = std::make_shared<int>(0);
+  auto trace_calls = std::make_shared<int>(0);
+
+  net::DebugTraceReplayReader replay_reader;
+  replay_reader.transaction_with_state_by_hash = [replay_reader_calls, state_trx,
+                                                  target_trx](const trx_hash_t& requested_hash) {
+    ++*replay_reader_calls;
+    EXPECT_EQ(target_trx->getHash(), requested_hash);
+    net::DebugTraceReplayTransactionView view;
+    view.state_transactions = {state_trx};
+    view.transaction = target_trx;
+    view.period = 21;
+    return view;
+  };
+  replay_reader.transactions_by_block_number = [](uint64_t) { return SharedTransactions{}; };
+
+  net::DebugTraceReader trace_reader;
+  trace_reader.trace = [trace_calls, state_trx, target_trx](std::vector<state_api::EVMTransaction> state_trxs,
+                                                            std::vector<state_api::EVMTransaction> trxs,
+                                                            EthBlockNumber block_number,
+                                                            std::optional<state_api::Tracing> tracing) {
+    ++*trace_calls;
+    EXPECT_EQ(1, trxs.size());
+    EXPECT_EQ(target_trx->getSender(), trxs.front().from);
+    EXPECT_EQ(target_trx->getNonce(), trxs.front().nonce);
+    EXPECT_EQ(21, block_number);
+    if (*trace_calls == 1) {
+      EXPECT_TRUE(state_trxs.empty());
+      EXPECT_FALSE(tracing.has_value());
+      return std::string(R"({"debug":true})");
+    }
+
+    EXPECT_EQ(1, state_trxs.size());
+    EXPECT_EQ(state_trx->getSender(), state_trxs.front().from);
+    EXPECT_TRUE(tracing.has_value());
+    if (tracing.has_value()) {
+      EXPECT_TRUE(tracing->trace);
+    }
+    return std::string(R"({"replay":true})");
+  };
+
+  net::Debug debug_rpc(nullptr, 1000000, {}, std::move(trace_reader), {}, {}, {}, std::move(replay_reader));
+
+  const auto debug_result = debug_rpc.debug_traceTransaction(dev::toJS(target_trx->getHash()));
+  EXPECT_TRUE(debug_result["debug"].asBool());
+
+  Json::Value trace_params(Json::arrayValue);
+  trace_params.append("trace");
+  const auto replay_result = debug_rpc.trace_replayTransaction(dev::toJS(target_trx->getHash()), trace_params);
+  EXPECT_TRUE(replay_result["replay"].asBool());
+  EXPECT_EQ(2, *replay_reader_calls);
+  EXPECT_EQ(2, *trace_calls);
+}
+
+TEST_F(RPCTest, trace_replay_block_transactions_uses_trace_replay_reader) {
+  auto transactions = samples::createSignedTrxSamples(1, 2, secret_t::random());
+  auto block_transactions_called = std::make_shared<bool>(false);
+  auto trace_called = std::make_shared<bool>(false);
+
+  net::DebugTraceReplayReader replay_reader;
+  replay_reader.transaction_with_state_by_hash = [](const trx_hash_t&) {
+    return net::DebugTraceReplayTransactionView{};
+  };
+  replay_reader.transactions_by_block_number = [block_transactions_called, transactions](uint64_t block_number) {
+    *block_transactions_called = true;
+    EXPECT_EQ(uint64_t(22), block_number);
+    return transactions;
+  };
+
+  net::DebugTraceReader trace_reader;
+  trace_reader.trace = [trace_called, transactions](std::vector<state_api::EVMTransaction> state_trxs,
+                                                    std::vector<state_api::EVMTransaction> trxs,
+                                                    EthBlockNumber block_number,
+                                                    std::optional<state_api::Tracing> tracing) {
+    *trace_called = true;
+    EXPECT_TRUE(state_trxs.empty());
+    EXPECT_EQ(transactions.size(), trxs.size());
+    EXPECT_EQ(22, block_number);
+    EXPECT_TRUE(tracing.has_value());
+    if (tracing.has_value()) {
+      EXPECT_TRUE(tracing->vmTrace);
+    }
+    return std::string(R"([{"block":true}])");
+  };
+
+  net::Debug debug_rpc(nullptr, 1000000, {}, std::move(trace_reader), {}, {}, {}, std::move(replay_reader));
+
+  Json::Value trace_params(Json::arrayValue);
+  trace_params.append("vmTrace");
+  const auto result = debug_rpc.trace_replayBlockTransactions(dev::toJS(uint64_t(22)), trace_params);
+  ASSERT_EQ(Json::ArrayIndex(1), result.size());
+  EXPECT_TRUE(result[0]["block"].asBool());
+  ASSERT_TRUE(*block_transactions_called);
+  ASSERT_TRUE(*trace_called);
+}
+
 TEST_F(RPCTest, taraxa_dpos_scalar_reads_use_taraxa_dpos_reader) {
   auto yield_called = std::make_shared<bool>(false);
   auto supply_called = std::make_shared<bool>(false);

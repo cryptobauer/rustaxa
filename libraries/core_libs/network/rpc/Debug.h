@@ -54,6 +54,24 @@ struct DebugTraceReader {
   std::function<EthBlockNumber()> latest_finalized_block_number;
 };
 
+// DebugTraceReplayTransactionView is the finalized transaction plus the
+// transactions that precede it in the same block. The state-prefix
+// transactions are supplied only to replay APIs that need EVM pre-state.
+struct DebugTraceReplayTransactionView {
+  std::vector<std::shared_ptr<Transaction>> state_transactions;
+  std::shared_ptr<Transaction> transaction;
+  uint64_t period = 0;
+};
+
+// DebugTraceReplayReader is the debug RPC boundary for finalized transaction
+// payloads used by trace replay. Rust mode resolves finalized transaction
+// payloads through ConsensusQueryApi inside the default adapter; the public
+// RPC methods only convert payloads for the external EVM trace executor.
+struct DebugTraceReplayReader {
+  std::function<DebugTraceReplayTransactionView(const trx_hash_t&)> transaction_with_state_by_hash;
+  std::function<std::vector<std::shared_ptr<Transaction>>(uint64_t)> transactions_by_block_number;
+};
+
 // DebugPreviousBlockCertVotesView is the debug RPC view of the previous-block
 // cert-vote bundle. Votes have already passed the compatibility validation
 // step in the reader; the public RPC method only formats the values.
@@ -104,7 +122,8 @@ class Debug : public DebugFace {
   explicit Debug(std::shared_ptr<taraxa::AppBase> app, uint64_t gas_limit, DebugDposReader dpos_reader = {},
                  DebugTraceReader trace_reader = {}, DebugPreviousBlockCertVotesReader previous_cert_votes_reader = {},
                  DebugPeriodDagBlocksReader period_dag_blocks_reader = {},
-                 DebugPeriodTransactionsReader period_transactions_reader = {});
+                 DebugPeriodTransactionsReader period_transactions_reader = {},
+                 DebugTraceReplayReader trace_replay_reader = {});
   virtual RPCModules implementedModules() const override { return RPCModules{RPCModule{"debug", "1.0"}}; }
 
   virtual Json::Value debug_traceTransaction(const std::string& param1) override;
@@ -126,8 +145,6 @@ class Debug : public DebugFace {
   EthBlockNumber parse_blk_num(const std::string& blk_num_str);
   state_api::Tracing parse_tracking_parms(const Json::Value& json) const;
   Address to_address(const std::string& s) const;
-  std::tuple<std::vector<state_api::EVMTransaction>, state_api::EVMTransaction, uint64_t> get_transaction_with_state(
-      const std::string& transaction_hash);
 
   std::weak_ptr<taraxa::AppBase> app_;
   DebugDposReader dpos_reader_;
@@ -135,6 +152,7 @@ class Debug : public DebugFace {
   DebugPreviousBlockCertVotesReader previous_cert_votes_reader_;
   DebugPeriodDagBlocksReader period_dag_blocks_reader_;
   DebugPeriodTransactionsReader period_transactions_reader_;
+  DebugTraceReplayReader trace_replay_reader_;
   const uint64_t kGasLimit = ((uint64_t)1 << 53) - 1;
 };
 

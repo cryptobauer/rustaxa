@@ -553,6 +553,10 @@ Implemented first slice:
   `ConsensusQueryApi` in Rust mode for finalized transaction location/count/indexed payload materialization instead of
   reading period transactions through `FinalChain` or `DbStorage`. EVM tracing, trace parameter handling, account nonce
   lookup for synthetic calls, and result formatting remain on the external FinalChain/StateAPI execution boundary.
+- Debug trace replay transaction acquisition now uses a dedicated `DebugTraceReplayReader` callback bundle: public
+  replay RPC methods request only finalized transaction payloads, state-prefix transactions, or block transaction lists.
+  The default reader owns the temporary Rust `ConsensusQueryApi` and legacy FinalChain/DbStorage compatibility reads;
+  public RPC methods only convert DTOs for the external EVM trace executor.
 - `eth_getLogs` and installed `eth_getFilterLogs` replay now use `ConsensusQueryApi` in Rust mode for latest finalized
   block lookup, bloom-index candidate block lookup, and block receipt expansion instead of asking `FinalChain` for bloom
   matches and receipt rows directly. Websocket live subscription delivery uses the dedicated subscription API described
