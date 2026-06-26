@@ -551,6 +551,18 @@ impl ConsensusQueryApi {
         )
     }
 
+    /// Returns the finalized proposal period mapped to a DAG level.
+    ///
+    /// This is the public-query route for light-node history cleanup. It reads
+    /// the Rust DAG index directly and returns an optional scalar instead of
+    /// exposing `DbStorage` or generic DAG storage queries to plugin code.
+    pub fn proposal_period_for_dag_level(&self, level: u64) -> Result<QueryNumberLookup> {
+        Ok(match self.storage.dag().proposal_period_at_level(level)? {
+            Some(value) => QueryNumberLookup { found: true, value },
+            None => QueryNumberLookup::default(),
+        })
+    }
+
     /// Returns the storage-backed public chain statistics view.
     ///
     /// This query keeps `taraxa_getChainStats` behind the public read facade
@@ -2023,6 +2035,14 @@ mod tests {
             }
         );
         assert!(!api.period_lambda_by_period(10).unwrap().found);
+        assert_eq!(
+            api.proposal_period_for_dag_level(5).unwrap(),
+            QueryNumberLookup {
+                found: true,
+                value: 8
+            }
+        );
+        assert!(!api.proposal_period_for_dag_level(6).unwrap().found);
         assert_eq!(
             api.sortition_params_change_by_period(8).unwrap(),
             SortitionParamsChangeView {

@@ -438,6 +438,7 @@ Implemented first slice:
   - `consensus_query_final_chain_last_block_number() -> u64`
   - `consensus_query_final_chain_blocks_with_bloom(bloom, from, to) -> Vec<u64>`
   - `consensus_query_period_lambda_by_period(period) -> PeriodLambda`
+  - `consensus_query_proposal_period_for_dag_level(level) -> FinalChainBlockNumberLookup`
   - `consensus_query_chain_stats() -> ChainStatsView`
   - `consensus_query_status() -> ConsensusStatusView`
   - `consensus_query_sortition_params_change_by_period(period) -> SortitionParamsChangeView`
@@ -687,6 +688,9 @@ Implemented first slice:
   facts, proposal-period lookup, history range deletion, and state DB pruning. The default adapter remains the audited
   compatibility point for live `DagManager`, `DbStorage`, and `FinalChain` access, while the plugin workflow only owns
   retention policy, scheduling, and logging.
+- Light-node proposal-period lookup now uses `ConsensusQueryApi::consensus_query_proposal_period_for_dag_level` in Rust
+  mode instead of reading the DAG-level proposal-period mapping directly through `DbStorage`. The legacy
+  `LightHistoryApi` adapter keeps the direct `DbStorage` read only as the non-Rust compatibility fallback.
 
 ## Consensus Internal
 

@@ -4,6 +4,10 @@
 #include "config/config.hpp"
 #include "dag/dag_manager.hpp"
 
+#ifdef RUSTAXA_ENABLE
+#include "rustaxa-bridge/ffi.rs.h"
+#endif
+
 namespace taraxa::plugin {
 
 namespace bpo = boost::program_options;
@@ -42,6 +46,14 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
     if (!node) {
       throw std::runtime_error("LIGHT_HISTORY_API_APP_EXPIRED");
     }
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto lookup = query_api->consensus_query_proposal_period_for_dag_level(dag_level);
+    if (!lookup.found) {
+      return std::optional<uint64_t>{};
+    }
+    return std::optional<uint64_t>{lookup.value};
+#endif
     return node->getDB()->getProposalPeriodForDagLevel(dag_level);  // RUSTAXA_QUERY_COMPAT_READ
   };
   api.clear_history = [app](PbftPeriod end_period, uint64_t dag_level_to_keep, bool live_cleanup,

@@ -5105,6 +5105,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             period: u64,
         ) -> Result<PeriodLambda>;
+        pub fn consensus_query_proposal_period_for_dag_level(
+            self: &BridgeConsensusQueryApi,
+            level: u64,
+        ) -> Result<FinalChainBlockNumberLookup>;
         pub fn consensus_query_chain_stats(
             self: &BridgeConsensusQueryApi,
         ) -> Result<ChainStatsView>;

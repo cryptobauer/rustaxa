@@ -324,6 +324,16 @@ impl BridgeConsensusQueryApi {
         ))
     }
 
+    /// Returns the finalized proposal period mapped to a DAG level.
+    pub fn consensus_query_proposal_period_for_dag_level(
+        &self,
+        level: u64,
+    ) -> Result<rustaxa_ffi::FinalChainBlockNumberLookup, anyhow::Error> {
+        Ok(query_number_lookup_to_ffi(
+            self.0.proposal_period_for_dag_level(level)?,
+        ))
+    }
+
     /// Returns storage-backed public chain statistics.
     pub fn consensus_query_chain_stats(
         &self,
@@ -922,6 +932,16 @@ mod tests {
         assert_eq!(period_lambda.value, 1234);
         assert!(
             !api.consensus_query_period_lambda_by_period(16)
+                .unwrap()
+                .found
+        );
+        let proposal_period = api
+            .consensus_query_proposal_period_for_dag_level(5)
+            .unwrap();
+        assert!(proposal_period.found);
+        assert_eq!(proposal_period.value, 12);
+        assert!(
+            !api.consensus_query_proposal_period_for_dag_level(6)
                 .unwrap()
                 .found
         );
