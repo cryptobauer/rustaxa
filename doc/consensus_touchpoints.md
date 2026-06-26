@@ -422,6 +422,7 @@ Implemented first slice:
   - `consensus_query_final_chain_block_by_number(number) -> FinalChainBlockView`
   - `consensus_query_pbft_schedule_block_by_period(period) -> PbftScheduleBlockView`
   - `consensus_query_pbft_node_version_by_period(period) -> PbftNodeVersionView`
+  - `consensus_query_pbft_previous_block_cert_votes_by_period(period) -> PbftPeriodCertVotesView`
   - `consensus_query_pillar_block_data_by_period(period) -> PillarBlockDataView`
   - `consensus_query_dag_block_by_hash(hash) -> DagBlockPublicView`
   - `consensus_query_dag_blocks_by_level(level, number_of_levels) -> Vec<DagBlockPublicView>`
@@ -461,6 +462,11 @@ Implemented first slice:
   creating an endpoint-local period-storage query handle. The route intentionally leaves scan policy, version string
   formatting, and DPoS vote-count aggregation in the public RPC layer until live FinalChain/state reads move behind a
   dedicated query view.
+- `debug_getPreviousBlockCertVotes` now uses `ConsensusQueryApi` in Rust mode for storage-backed optimized cert-vote
+  bundle lookup and canonical `PbftVote` RLP reconstruction instead of reading period data through `DbStorage` directly.
+  The debug endpoint still owns legacy JSON materialization, live `VoteManager::validateVote`, and
+  `FinalChain::dposEligibleTotalVoteCount` until vote-validation and DPoS snapshot facts move behind a dedicated query
+  boundary.
 - `taraxa_getPillarBlockData` now uses `ConsensusQueryApi` for finalized pillar block facts and the following period's
   optimized pillar-vote bundle in Rust mode instead of creating an endpoint-local pillar storage query handle.
 - `taraxa_getDagBlockByHash` and `taraxa_getDagBlockByLevel` now use `ConsensusQueryApi` for DAG block facts and

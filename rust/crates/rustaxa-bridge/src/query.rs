@@ -146,6 +146,32 @@ fn pbft_node_version_view_to_ffi(
     }
 }
 
+fn pbft_cert_vote_rlp_to_ffi(
+    vote: rustaxa_consensus::PbftCertVoteRlp,
+) -> rustaxa_ffi::PbftCertVoteRlp {
+    rustaxa_ffi::PbftCertVoteRlp {
+        vote_rlp: vote.vote_rlp,
+    }
+}
+
+fn pbft_period_cert_votes_view_to_ffi(
+    view: rustaxa_consensus::PbftPeriodCertVotesView,
+) -> rustaxa_ffi::PbftPeriodCertVotesView {
+    rustaxa_ffi::PbftPeriodCertVotesView {
+        found: view.found,
+        period: view.period,
+        certified_period: view.certified_period,
+        round: view.round,
+        step: view.step,
+        block_hash: view.block_hash,
+        votes: view
+            .votes
+            .into_iter()
+            .map(pbft_cert_vote_rlp_to_ffi)
+            .collect(),
+    }
+}
+
 fn pillar_vote_count_change_to_ffi(
     change: rustaxa_consensus::PillarBlockViewVoteCountChange,
 ) -> rustaxa_ffi::PillarBlockViewVoteCountChange {
@@ -352,6 +378,16 @@ impl BridgeConsensusQueryApi {
         ))
     }
 
+    /// Returns previous-block PBFT cert-vote bytes by finalized period.
+    pub fn consensus_query_pbft_previous_block_cert_votes_by_period(
+        &self,
+        period: u64,
+    ) -> Result<rustaxa_ffi::PbftPeriodCertVotesView, anyhow::Error> {
+        Ok(pbft_period_cert_votes_view_to_ffi(
+            self.0.pbft_previous_block_cert_votes_by_period(period)?,
+        ))
+    }
+
     /// Returns a stable pillar block-data public view by finalized pillar period.
     pub fn consensus_query_pillar_block_data_by_period(
         &self,
@@ -502,6 +538,63 @@ mod tests {
         stream.append_raw(pbft_block_rlp, 1);
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&dag_bundle.out(), 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&[0xC0], 1);
+        stream.out().to_vec()
+    }
+
+    fn canonical_pbft_vote_rlp(
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: H256,
+        proof: &[u8],
+        signature: &[u8],
+    ) -> Vec<u8> {
+        let mut sortition = RlpStream::new_list(4);
+        sortition.append(&period);
+        sortition.append(&round);
+        sortition.append(&step);
+        sortition.append(&proof);
+        let sortition_rlp = sortition.out().to_vec();
+
+        let mut vote = RlpStream::new_list(3);
+        vote.append(&block_hash);
+        vote.append(&sortition_rlp);
+        vote.append(&signature);
+        vote.out().to_vec()
+    }
+
+    fn optimized_vote_rlp(proof: &[u8], signature: &[u8]) -> Vec<u8> {
+        let mut vote = RlpStream::new_list(2);
+        vote.append(&proof);
+        vote.append(&signature);
+        vote.out().to_vec()
+    }
+
+    fn period_data_with_cert_votes_rlp(
+        block_hash: H256,
+        certified_period: u64,
+        round: u64,
+        step: u64,
+        optimized_vote_rlps: &[Vec<u8>],
+    ) -> Vec<u8> {
+        let mut votes = RlpStream::new_list(optimized_vote_rlps.len());
+        for vote_rlp in optimized_vote_rlps {
+            votes.append_raw(vote_rlp, 1);
+        }
+
+        let mut votes_bundle = RlpStream::new_list(5);
+        votes_bundle.append(&block_hash);
+        votes_bundle.append(&certified_period);
+        votes_bundle.append(&round);
+        votes_bundle.append(&step);
+        votes_bundle.append_raw(&votes.out(), 1);
+
+        let mut stream = RlpStream::new_list(5);
+        stream.append_raw(&[0xC0], 1);
+        stream.append_raw(&votes_bundle.out(), 1);
+        stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.append_raw(&[0xC0], 1);
         stream.out().to_vec()
@@ -968,6 +1061,56 @@ mod tests {
 
         assert!(
             !api.consensus_query_pbft_node_version_by_period(8)
+                .unwrap()
+                .found
+        );
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_consensus_query_api_reads_pbft_cert_vote_view() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "rustaxa_bridge_consensus_query_api_cert_votes_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let storage =
+            crate::storage::create_storage(temp_dir.to_str().expect("utf8 temp path")).unwrap();
+        let api = create_consensus_query_api(&storage);
+        let block_hash = H256::from_low_u64_be(42);
+        let proof = vec![0x77; 80];
+        let signature = vec![0x11; 65];
+        let optimized_vote = optimized_vote_rlp(&proof, &signature);
+        let expected_vote = canonical_pbft_vote_rlp(12, 3, 3, block_hash, &proof, &signature);
+
+        storage
+            .save_period_data(
+                13,
+                period_data_with_cert_votes_rlp(
+                    block_hash,
+                    12,
+                    3,
+                    3,
+                    std::slice::from_ref(&optimized_vote),
+                ),
+            )
+            .unwrap();
+
+        let view = api
+            .consensus_query_pbft_previous_block_cert_votes_by_period(13)
+            .unwrap();
+        assert!(view.found);
+        assert_eq!(view.period, 13);
+        assert_eq!(view.certified_period, 12);
+        assert_eq!(view.round, 3);
+        assert_eq!(view.step, 3);
+        assert_eq!(view.block_hash, block_hash.0);
+        assert_eq!(view.votes.len(), 1);
+        assert_eq!(view.votes[0].vote_rlp, expected_vote);
+        assert!(
+            !api.consensus_query_pbft_previous_block_cert_votes_by_period(14)
                 .unwrap()
                 .found
         );

@@ -437,6 +437,22 @@ pub mod rustaxa_ffi {
         patch_version: u16,
     }
 
+    /// Canonical PBFT vote bytes for public/debug query materialization.
+    struct PbftCertVoteRlp {
+        vote_rlp: Vec<u8>,
+    }
+
+    /// Previous-block PBFT cert votes decoded from finalized period data.
+    struct PbftPeriodCertVotesView {
+        found: bool,
+        period: u64,
+        certified_period: u64,
+        round: u64,
+        step: u64,
+        block_hash: [u8; 32],
+        votes: Vec<PbftCertVoteRlp>,
+    }
+
     /// Optional canonical hash lookup result.
     ///
     /// `found = false` means the backing storage row was absent. Decode and
@@ -5113,6 +5129,10 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusQueryApi,
             period: u64,
         ) -> Result<PbftNodeVersionView>;
+        pub fn consensus_query_pbft_previous_block_cert_votes_by_period(
+            self: &BridgeConsensusQueryApi,
+            period: u64,
+        ) -> Result<PbftPeriodCertVotesView>;
         pub fn consensus_query_pillar_block_data_by_period(
             self: &BridgeConsensusQueryApi,
             period: u64,

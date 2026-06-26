@@ -9,6 +9,7 @@
 #include "network/rpc/eth/data.hpp"
 #include "transaction/system_transaction.hpp"
 #include "transaction/transaction.hpp"
+#include "vote/pbft_vote.hpp"
 #include "vote_manager/vote_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
@@ -355,6 +356,29 @@ Json::Value Debug::debug_getPreviousBlockCertVotes(const std::string& _period) {
     Json::Value res(Json::objectValue);
 
     auto period = dev::jsToInt(_period);
+#ifdef RUSTAXA_ENABLE
+    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
+    const auto cert_vote_view = query_api->consensus_query_pbft_previous_block_cert_votes_by_period(period);
+    if (!cert_vote_view.found) {
+      return res;
+    }
+
+    std::vector<std::shared_ptr<PbftVote>> rust_votes;
+    rust_votes.reserve(cert_vote_view.votes.size());
+    for (const auto& vote_view : cert_vote_view.votes) {
+      rust_votes.emplace_back(std::make_shared<PbftVote>(bytesFromBridge(vote_view.vote_rlp)));
+    }
+
+    const uint64_t rust_total_dpos_votes_count =
+        final_chain->dposEligibleTotalVoteCount(cert_vote_view.certified_period - 1);
+    res["total_votes_count"] = rust_total_dpos_votes_count;
+    res["round"] = cert_vote_view.round;
+    res["votes"] = util::transformToJsonParallel(rust_votes, [&](const auto& vote, auto) {
+      vote_manager->validateVote(vote);
+      return vote->toJSON();
+    });
+    return res;
+#endif
     auto votes = node->getDB()->getPeriodCertVotes(period);  // RUSTAXA_QUERY_COMPAT_READ
     if (votes.empty()) {
       return res;
