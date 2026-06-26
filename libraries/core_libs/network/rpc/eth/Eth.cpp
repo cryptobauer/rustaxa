@@ -242,7 +242,14 @@ class EthImpl : public Eth, EthParams {
 
   Json::Value eth_accounts() override { return toJsonArray(vector{address}); }
 
-  string eth_blockNumber() override { return toJS(final_chain->lastBlockNumber()); }
+  string eth_blockNumber() override {
+#ifdef RUSTAXA_ENABLE
+    if (query_final_chain_last_block_number) {
+      return toJS(query_final_chain_last_block_number());
+    }
+#endif
+    return toJS(final_chain->lastBlockNumber());
+  }
 
   string eth_getBalance(const string& _address, const Json::Value& _json) override {
     const auto block_number = get_block_number_from_json(_json);

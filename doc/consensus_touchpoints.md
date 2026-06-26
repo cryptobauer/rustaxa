@@ -475,6 +475,8 @@ Implemented first slice:
 - `eth_getBlockByNumber` and `eth_getBlockByHash` now use `ConsensusQueryApi` in Rust mode for finalized block-header
   views, hash-to-number resolution, transaction counts, and optional indexed transaction expansion instead of reading
   `FinalChain` block headers, block-number indexes, transaction vectors, and transaction hashes directly.
+- `eth_blockNumber` now uses `ConsensusQueryApi` in Rust mode for the latest finalized block number instead of reading
+  `FinalChain` directly.
 - `debug_getPeriodTransactionsWithReceipts` now uses the same `ConsensusQueryApi` block-receipts DTO in Rust mode
   instead of reading period transactions and receipts through `DbStorage`/`FinalChain`.
 - `eth_getLogs` and installed `eth_getFilterLogs` replay now use `ConsensusQueryApi` in Rust mode for latest finalized
