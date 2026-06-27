@@ -1110,7 +1110,9 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   auto dag_seed_batch = create_storage_shim_batch(*storage);
   storage_shim_save_dag_block(*dag_seed_batch, h256(2), 1, bytes({0xda}), 1, 1);
   storage_shim_commit_batch(std::move(dag_seed_batch), false);
-  storage->save_transaction(h256(4), bytes({0xd0}));
+  auto tx_seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_transaction(*tx_seed_batch, h256(4), bytes({0xd0}));
+  storage_shim_commit_batch(std::move(tx_seed_batch), false);
   auto period_queries = periodQueries(storage);
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
@@ -1208,7 +1210,9 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   auto dag_seed_batch = create_storage_shim_batch(*storage);
   storage_shim_save_dag_block(*dag_seed_batch, h256(2), 1, bytes({0xda}), 1, 1);
   storage_shim_commit_batch(std::move(dag_seed_batch), false);
-  storage->save_transaction(h256(4), bytes({0xd0}));
+  auto tx_seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_transaction(*tx_seed_batch, h256(4), bytes({0xd0}));
+  storage_shim_commit_batch(std::move(tx_seed_batch), false);
   auto seed_batch = create_storage_shim_batch(*storage);
   storage_shim_save_extra_reward_vote(*seed_batch, h256(12), bytes({0xee}));
   storage_shim_commit_batch(std::move(seed_batch), false);

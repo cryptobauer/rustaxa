@@ -162,8 +162,10 @@ TEST_F(RustDagGraphTest, RuntimeNonFinalizedSyncSnapshotAndTransactionRlpLookup)
   const auto tx_hash_a = h256(17);
   const auto tx_hash_b = h256(18);
   const auto tx_hash_missing = h256(19);
-  storage->save_transaction(tx_hash_a, tx_payload({1, 2, 3}));
-  storage->save_transaction(tx_hash_b, tx_payload({4, 5, 6}));
+  auto tx_seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_transaction(*tx_seed_batch, tx_hash_a, tx_payload({1, 2, 3}));
+  storage_shim_save_transaction(*tx_seed_batch, tx_hash_b, tx_payload({4, 5, 6}));
+  storage_shim_commit_batch(std::move(tx_seed_batch), false);
 
   runtime->dag_manager_runtime_add_block(manager_block(6, 3, 4, 85));
   runtime->dag_manager_runtime_add_block(manager_block(2, 1, 2, 100));

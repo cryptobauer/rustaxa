@@ -7456,35 +7456,12 @@ pub mod rustaxa_ffi {
             source: u8,
         ) -> Result<LegacyTransactionInspection>;
 
-        pub fn save_transaction(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            trx_rlp: Vec<u8>,
-        ) -> Result<()>;
         /// Persists TransactionManager-accepted non-finalized transactions in one
         /// storage batch and writes the manager-owned `StatusDbField::TrxCount`.
         pub fn save_non_finalized_transactions(
             self: &BridgeStorage,
             transactions: Vec<NonFinalizedTransactionPayload>,
             transaction_count: u64,
-        ) -> Result<()>;
-        pub fn remove_transaction(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
-        pub fn save_transaction_location(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            period: u64,
-            position: u32,
-            is_system: bool,
-        ) -> Result<()>;
-        pub fn save_system_transaction(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            trx_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn save_period_system_transactions_hashes(
-            self: &BridgeStorage,
-            period: u64,
-            hashes_rlp: Vec<u8>,
         ) -> Result<()>;
 
         // FinalChain

@@ -177,7 +177,8 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
 - The storage-shim direct-mutator cleanup tracked in Slice 4 is complete for the audited single-write and aggregate-clear
   compatibility paths. The no-caller broad `BridgeStorage` CXX mutators for block-reward stats, cert-voted-block
   removal, own-vote removal, extra-reward-vote removal, and 2t+1 vote replacement have been deleted. Remaining broad
-  `BridgeStorage` mutators are compatibility-test/conformance debt until the public `BridgeStorage` facade is retired.
+  `BridgeStorage` mutators must be justified by live production bridge boundaries until the public `BridgeStorage`
+  facade is retired.
 - The no-caller broad `BridgeStorage::save_sortition_params_change` CXX mutator has been deleted. C++ `DbStorage`
   compatibility writes use the dedicated `storage_shim_save_sortition_params_change` batch appender, and Rust bridge
   tests seed sortition changes through native `rustaxa-storage` metadata writes.
@@ -208,6 +209,12 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   appenders or native Rust DAG repositories, so the broad CXX storage methods have been deleted.
 - The remaining callers of broad `BridgeStorage::save_period_data` now route through the dedicated storage-shim batch
   appender or native Rust period storage, so the broad CXX storage method has been deleted.
+- The remaining callers of broad `BridgeStorage::save_transaction`, `remove_transaction`, `save_transaction_location`,
+  `save_system_transaction`, and `save_period_system_transactions_hashes` now route through dedicated storage-shim batch
+  appenders or native Rust transaction repositories, so the broad CXX storage methods have been deleted.
+- `BridgeStorage::save_non_finalized_transactions` remains documented production debt: current transaction-manager
+  bridge paths still call it to persist accepted non-finalized transaction payloads and the manager-owned `TrxCount` in a
+  single Rust storage batch.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

@@ -1328,10 +1328,14 @@ mod tests {
         let system_hash = H256::from_low_u64_be(4);
 
         storage
-            .save_transaction(&pending_hash.0, vec![0x11])
+            .0
+            .transaction()
+            .write(pending_hash, &[0x11])
             .unwrap();
         storage
-            .save_transaction_location(&finalized_hash.0, 8, 0, false)
+            .0
+            .transaction()
+            .write_location(finalized_hash, 8, 0, false)
             .unwrap();
         storage
             .0
@@ -1339,10 +1343,14 @@ mod tests {
             .write(8, &period_data_with_transactions_rlp(&[vec![0x22]]))
             .unwrap();
         storage
-            .save_transaction_location(&system_hash.0, 9, 0, true)
+            .0
+            .transaction()
+            .write_location(system_hash, 9, 0, true)
             .unwrap();
         storage
-            .save_system_transaction(&system_hash.0, vec![0x44])
+            .0
+            .transaction()
+            .write_system(system_hash, &[0x44])
             .unwrap();
 
         let pending = api
@@ -1510,7 +1518,9 @@ mod tests {
         let receipt_rlp = vec![0x41];
 
         storage
-            .save_transaction_location(&trx_hash.0, 12, 0, false)
+            .0
+            .transaction()
+            .write_location(trx_hash, 12, 0, false)
             .unwrap();
         storage
             .0

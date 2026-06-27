@@ -290,20 +290,26 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto sys_hash = h256Array(0x53);
   auto tx_rlp = std::vector<uint8_t>{0xC0};
 
-  storage->save_transaction(tx_hash_1, toRustVec(tx_rlp));
-  storage->save_transaction(tx_hash_2, toRustVec(tx_rlp));
+  auto tx_seed_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_transaction(*tx_seed_batch, tx_hash_1, toRustVec(tx_rlp));
+  rustaxa::storage_shim_save_transaction(*tx_seed_batch, tx_hash_2, toRustVec(tx_rlp));
+  rustaxa::storage_shim_commit_batch(std::move(tx_seed_batch), false);
 
   transcript.add("tx_hash_1_in_db", toString(transaction_queries->transaction_in_db(tx_hash_1)));
   transcript.add("tx_hash_1_finalized_before", toString(transaction_queries->transaction_finalized(tx_hash_1)));
 
-  storage->save_transaction_location(tx_hash_1, 12, 0, false);
+  auto tx_location_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_transaction_location(*tx_location_batch, tx_hash_1, 12, 0, false);
+  rustaxa::storage_shim_commit_batch(std::move(tx_location_batch), false);
   transcript.add("tx_hash_1_finalized_after", toString(transaction_queries->transaction_finalized(tx_hash_1)));
   transcript.add("tx_hash_1_location_present",
                  toString(!transaction_queries->get_transaction_location(tx_hash_1).empty()));
   transcript.add("tx_hash_1_lookup_nonempty", toString(!transaction_queries->get_transaction(tx_hash_1).empty()));
   transcript.add("tx_period_map_size", toString(transaction_queries->get_all_transaction_period().size()));
 
-  storage->remove_transaction(tx_hash_2);
+  auto tx_remove_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_remove_transaction(*tx_remove_batch, tx_hash_2);
+  rustaxa::storage_shim_commit_batch(std::move(tx_remove_batch), false);
   transcript.add("tx_hash_2_removed", toString(!transaction_queries->transaction_in_db(tx_hash_2)));
   transcript.add("tx_nonfinalized_count", toString(transaction_queries->get_all_nonfinalized_transactions().size()));
   std::string tx_finalized_vector;
@@ -311,10 +317,15 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   tx_finalized_vector.push_back(transaction_queries->transaction_finalized(tx_hash_2) ? '1' : '0');
   transcript.add("tx_finalized_vector", tx_finalized_vector);
 
-  storage->save_system_transaction(sys_hash, toRustVec(tx_rlp));
+  auto system_tx_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_system_transaction(*system_tx_batch, sys_hash, toRustVec(tx_rlp));
+  rustaxa::storage_shim_commit_batch(std::move(system_tx_batch), false);
   transcript.add("system_tx_lookup_nonempty", toString(!transaction_queries->get_system_transaction(sys_hash).empty()));
 
-  storage->save_period_system_transactions_hashes(12, toRustVec(encodeSingleHashListRlp(sys_hash)));
+  auto period_system_hashes_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_period_system_transactions_hashes(*period_system_hashes_batch, 12,
+                                                               toRustVec(encodeSingleHashListRlp(sys_hash)));
+  rustaxa::storage_shim_commit_batch(std::move(period_system_hashes_batch), false);
   auto period_sys_hashes = transaction_queries->get_period_system_transactions_hashes(12);
   transcript.add("period_system_hashes_count", toString(period_sys_hashes.size() / 32));
 

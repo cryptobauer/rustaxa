@@ -4153,13 +4153,19 @@ mod tests {
                 .expect("persist block 4");
 
             storage
-                .save_transaction(&[1u8; 32], vec![0xA1, 0x01])
+                .0
+                .transaction()
+                .write(H256::from([1u8; 32]), &[0xA1, 0x01])
                 .expect("persist pending transaction 1");
             storage
-                .save_transaction(&[2u8; 32], vec![0xA2, 0x02])
+                .0
+                .transaction()
+                .write(H256::from([2u8; 32]), &[0xA2, 0x02])
                 .expect("persist pending transaction 2");
             storage
-                .save_transaction(&[3u8; 32], vec![0xA3, 0x03])
+                .0
+                .transaction()
+                .write(H256::from([3u8; 32]), &[0xA3, 0x03])
                 .expect("persist pending transaction 3");
 
             let payload = runtime
@@ -4220,7 +4226,9 @@ mod tests {
                 .expect("persist remaining block");
 
             storage
-                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .0
+                .transaction()
+                .write_location(H256::from([2u8; 32]), 7, 0, false)
                 .expect("mark tx2 as finalized");
 
             let payload = runtime
@@ -4296,7 +4304,9 @@ mod tests {
                 .expect("persist remaining block");
 
             storage
-                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .0
+                .transaction()
+                .write_location(H256::from([2u8; 32]), 7, 0, false)
                 .expect("mark tx2 as finalized");
 
             let payload = runtime
@@ -4492,16 +4502,24 @@ mod tests {
                 .expect("persist remaining block");
 
             storage
-                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .0
+                .transaction()
+                .write_location(H256::from([2u8; 32]), 7, 0, false)
                 .expect("mark tx2 as finalized");
             storage
-                .save_transaction(&[1u8; 32], vec![0xA1])
+                .0
+                .transaction()
+                .write(H256::from([1u8; 32]), &[0xA1])
                 .expect("persist expired pending tx1");
             storage
-                .save_transaction(&[2u8; 32], vec![0xA2])
+                .0
+                .transaction()
+                .write(H256::from([2u8; 32]), &[0xA2])
                 .expect("persist finalized pending tx2");
             storage
-                .save_transaction(&[3u8; 32], vec![0xA3])
+                .0
+                .transaction()
+                .write(H256::from([3u8; 32]), &[0xA3])
                 .expect("persist retained pending tx3");
 
             let payload = runtime

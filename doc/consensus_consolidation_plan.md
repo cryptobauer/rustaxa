@@ -520,6 +520,12 @@ Implementation status:
   appenders or native Rust DAG repositories, and the broad CXX mutators are deleted.
 - The remaining callers of broad `BridgeStorage::save_period_data` now seed through the dedicated storage-shim batch
   appender or native Rust period storage, and the broad CXX mutator is deleted.
+- The remaining callers of broad `BridgeStorage::save_transaction`, `remove_transaction`, `save_transaction_location`,
+  `save_system_transaction`, and `save_period_system_transactions_hashes` now seed through dedicated storage-shim batch
+  appenders or native Rust transaction repositories, and the broad CXX mutators are deleted.
+- `BridgeStorage::save_non_finalized_transactions` remains for now because transaction-manager production bridge paths
+  still use it as the atomic accepted-transaction write boundary for non-finalized transaction RLPs and `TrxCount`.
+  Retiring it belongs with the transaction-manager commit-path consolidation, not fixture cleanup.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

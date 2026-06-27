@@ -3374,11 +3374,15 @@ mod tests {
             .expect("recently-finalized payload initialization should move source");
 
         storage
-            .save_transaction(&[4u8; 32], vec![0x44])
+            .0
+            .transaction()
+            .write(H256::from([4u8; 32]), &[0x44])
             .expect("storage pending payload should persist");
 
         storage
-            .save_transaction_location(&[5u8; 32], 99, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([5u8; 32]), 99, 0, false)
             .expect("finalized location should persist");
         let mut txs = RlpStream::new_list(1);
         txs.append_raw(&[0x55], 1);
@@ -3453,7 +3457,9 @@ mod tests {
         let pbft_key = SigningKey::from_slice(&[0x35u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&pbft_key, 1, 1000);
         storage
-            .save_transaction_location(&transaction_hash, 1, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from(transaction_hash), 1, 0, false)
             .expect("proposal storage location should persist");
         storage
             .0
@@ -3797,7 +3803,9 @@ mod tests {
         );
 
         storage
-            .save_transaction_location(&[2u8; 32], 7, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([2u8; 32]), 7, 0, false)
             .expect("finalized hash should be persisted in trx period");
         runtime
             .transaction_manager_runtime_insert_non_finalized(
@@ -3858,7 +3866,9 @@ mod tests {
             .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
         storage
-            .save_transaction_location(&[4; 32], 1, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([4; 32]), 1, 0, false)
             .expect("finalized transaction location should persist");
 
         let out = save_transactions_from_dag_block(
@@ -3926,7 +3936,9 @@ mod tests {
             .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
         storage
-            .save_transaction_location(&[2; 32], 1, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([2; 32]), 1, 0, false)
             .expect("finalized transaction location should persist");
 
         let out = save_transactions_from_dag_block(
@@ -4364,13 +4376,17 @@ mod tests {
         .expect("storage should initialize");
 
         storage
-            .save_transaction(&[1u8; 32], vec![0x11])
+            .0
+            .transaction()
+            .write(H256::from([1u8; 32]), &[0x11])
             .expect("pending transaction should persist");
 
         // Persist finalized location metadata and tx-by-position data for hash 2 so lookup
         // exercises finalized fallback path after non-finalized miss.
         storage
-            .save_transaction_location(&[2u8; 32], 8, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([2u8; 32]), 8, 0, false)
             .expect("finalized location should persist");
 
         let mut txs = RlpStream::new_list(1);
@@ -4388,10 +4404,14 @@ mod tests {
             .write(8, &period_data.out().as_ref().to_vec())
             .expect("period data should persist");
         storage
-            .save_system_transaction(&[4u8; 32], vec![0x44])
+            .0
+            .transaction()
+            .write_system(H256::from([4u8; 32]), &[0x44])
             .expect("system transaction should persist");
         storage
-            .save_transaction_location(&[4u8; 32], 9, 0, true)
+            .0
+            .transaction()
+            .write_location(H256::from([4u8; 32]), 9, 0, true)
             .expect("system finalized location should persist");
 
         let out = transaction_manager_load_stored_transactions(
@@ -4478,13 +4498,19 @@ mod tests {
         .expect("storage should initialize");
 
         storage
-            .save_transaction(&[1u8; 32], vec![0x11])
+            .0
+            .transaction()
+            .write(H256::from([1u8; 32]), &[0x11])
             .expect("non-finalized transaction should persist");
         storage
-            .save_transaction(&[2u8; 32], vec![0x22])
+            .0
+            .transaction()
+            .write(H256::from([2u8; 32]), &[0x22])
             .expect("finalized stale entry should persist");
         storage
-            .save_transaction_location(&[2u8; 32], 11, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([2u8; 32]), 11, 0, false)
             .expect("stale finalized entry location should persist");
 
         let mut txs = RlpStream::new_list(1);
@@ -4540,7 +4566,9 @@ mod tests {
         let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
         let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
         storage
-            .save_transaction(&envelope.hash.0, tx_rlp.clone())
+            .0
+            .transaction()
+            .write(envelope.hash, &tx_rlp)
             .expect("non-finalized transaction should persist");
 
         let inputs = transaction_manager_load_nonfinalized_recovery_inputs(&storage)
@@ -4570,13 +4598,19 @@ mod tests {
             .hash
             .0;
         storage
-            .save_transaction(&live_hash, live_tx.clone())
+            .0
+            .transaction()
+            .write(H256::from(live_hash), &live_tx)
             .expect("non-finalized transaction should persist");
         storage
-            .save_transaction(&[2u8; 32], vec![0x22])
+            .0
+            .transaction()
+            .write(H256::from([2u8; 32]), &[0x22])
             .expect("stale transaction should persist");
         storage
-            .save_transaction_location(&[2u8; 32], 11, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([2u8; 32]), 11, 0, false)
             .expect("stale finalized location should persist");
 
         let mut runtime = create_transaction_manager_runtime_from_storage(
@@ -4731,7 +4765,9 @@ mod tests {
         )
         .expect("final chain should initialize");
         storage
-            .save_transaction_location(&[13u8; 32], 22, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([13u8; 32]), 22, 0, false)
             .expect("finalized location should persist");
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
@@ -5172,7 +5208,9 @@ mod tests {
         )
         .expect("final chain should initialize");
         storage
-            .save_transaction_location(&[2u8; 32], 7, 0, false)
+            .0
+            .transaction()
+            .write_location(H256::from([2u8; 32]), 7, 0, false)
             .expect("finalized hash should be persisted");
         let runtime = create_transaction_manager_runtime_from_storage(
             &storage,

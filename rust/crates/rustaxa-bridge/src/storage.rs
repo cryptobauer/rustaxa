@@ -1321,19 +1321,6 @@ impl BridgeStorage {
         )
     }
 
-    /// Batch-loads canonical transaction RLP payloads by hash through Rust
-    /// storage.
-    ///
-    /// Inputs are transaction hashes in caller-requested order. Each output entry
-    /// preserves that order and carries the queried hash, a presence flag,
-    /// whether the bytes came from finalized storage, and raw transaction RLP
-    /// bytes. Lookup mirrors the storage shim's hash lookup:
-    /// pending/non-finalized transactions first, then finalized transaction
-    /// location metadata, including system transactions.
-    pub fn save_transaction(&self, hash: &[u8; 32], trx_rlp: Vec<u8>) -> Result<(), anyhow::Error> {
-        self.0.transaction().write(H256::from(*hash), &trx_rlp)
-    }
-
     /// Persists TransactionManager-accepted non-finalized transactions with one
     /// atomic write batch and writes the manager-owned `StatusField::TrxCount`.
     ///
@@ -1358,42 +1345,6 @@ impl BridgeStorage {
                 .collect(),
             transaction_count,
         )
-    }
-
-    pub fn remove_transaction(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.transaction().remove(H256::from(*hash))
-    }
-
-    pub fn save_transaction_location(
-        &self,
-        hash: &[u8; 32],
-        period: u64,
-        position: u32,
-        is_system: bool,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .transaction()
-            .write_location(H256::from(*hash), period, position, is_system)
-    }
-
-    pub fn save_system_transaction(
-        &self,
-        hash: &[u8; 32],
-        trx_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .transaction()
-            .write_system(H256::from(*hash), &trx_rlp)
-    }
-
-    pub fn save_period_system_transactions_hashes(
-        &self,
-        period: u64,
-        hashes_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .transaction()
-            .write_period_system_hashes(period, &hashes_rlp)
     }
 }
 
@@ -1503,7 +1454,9 @@ mod tests {
             let system = vec![0xC1, 0xA3];
 
             storage
-                .save_transaction(&[1u8; 32], pending.clone())
+                .0
+                .transaction()
+                .write(H256::from([1u8; 32]), &pending)
                 .expect("pending transaction should save");
             storage
                 .0
@@ -1511,13 +1464,19 @@ mod tests {
                 .write(7, &period_data_rlp(std::slice::from_ref(&finalized)))
                 .expect("period data should save");
             storage
-                .save_transaction_location(&[2u8; 32], 7, 0, false)
+                .0
+                .transaction()
+                .write_location(H256::from([2u8; 32]), 7, 0, false)
                 .expect("regular finalized location should save");
             storage
-                .save_system_transaction(&[3u8; 32], system.clone())
+                .0
+                .transaction()
+                .write_system(H256::from([3u8; 32]), &system)
                 .expect("system transaction should save");
             storage
-                .save_transaction_location(&[3u8; 32], 8, 0, true)
+                .0
+                .transaction()
+                .write_location(H256::from([3u8; 32]), 8, 0, true)
                 .expect("system finalized location should save");
 
             let lookup = transaction_queries(&storage)
