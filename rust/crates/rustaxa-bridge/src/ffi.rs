@@ -2485,6 +2485,33 @@ pub mod rustaxa_ffi {
         signature_valid: bool,
     }
 
+    /// Canonical pillar-vote bytes supplied for one batch inspection pass.
+    struct PillarVoteRlpPayload {
+        vote_rlp: Vec<u8>,
+    }
+
+    /// Canonical pillar-vote bytes paired with externally supplied DPoS weight.
+    ///
+    /// C++ still owns the external FinalChain/StateAPI read that provides the
+    /// weight. Rust owns byte inspection and bundle planning once the weight is
+    /// supplied.
+    struct PillarVoteWeightedRlpPayload {
+        vote_rlp: Vec<u8>,
+        weight: u64,
+    }
+
+    /// Batch inspection result for canonical pillar-vote bytes.
+    ///
+    /// `status` values match `PillarVoteBundlePlan` where possible:
+    /// - `0` - all votes inspected and signatures are valid
+    /// - `1` - empty bundle
+    /// - `4` - malformed payload or invalid signature
+    struct PillarVoteBundleInspectionPlan {
+        status: u8,
+        inspections: Vec<PillarVoteInspection>,
+        first_bad_vote_hash: [u8; 32],
+    }
+
     /// Plain bundle fact consumed by the Rust planner for one planning pass.
     struct PillarVoteBundleFact {
         vote_hash: [u8; 32],
@@ -2523,6 +2550,16 @@ pub mod rustaxa_ffi {
         weight: u64,
     }
 
+    /// Lightweight accepted-vote fact with recovered voter identity.
+    ///
+    /// This is used by the weighted-RLP bundle API so C++ can materialize and
+    /// insert only the Rust-selected live vote payloads.
+    struct PillarVoteBundleAcceptedVoter {
+        vote_hash: [u8; 32],
+        weight: u64,
+        voter: [u8; 20],
+    }
+
     /// Lookup result with Rust-retained vote payloads for edge materialization.
     struct PillarVotesPayloadLookup {
         threshold_met: bool,
@@ -2546,6 +2583,18 @@ pub mod rustaxa_ffi {
     struct PillarVoteBundlePlan {
         status: u8,
         accepted_votes: Vec<PillarVoteBundleAcceptedVote>,
+        block_weight: u64,
+        selected_weight: u64,
+        first_bad_vote_hash: [u8; 32],
+    }
+
+    /// Result of planning canonical pillar-vote bytes after C++ supplies DPoS
+    /// weights from the external FinalChain boundary.
+    ///
+    /// `status` values match `PillarVoteBundlePlan`.
+    struct PillarVoteBundleWeightedPlan {
+        status: u8,
+        accepted_votes: Vec<PillarVoteBundleAcceptedVoter>,
         block_weight: u64,
         selected_weight: u64,
         first_bad_vote_hash: [u8; 32],
@@ -5594,6 +5643,15 @@ pub mod rustaxa_ffi {
             vote: PillarVotePayload,
         ) -> Result<bool>;
         pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
+        pub fn inspect_pillar_vote_bundle_rlps(
+            votes: Vec<PillarVoteRlpPayload>,
+        ) -> Result<PillarVoteBundleInspectionPlan>;
+        pub fn plan_pillar_vote_bundle_from_weighted_rlps(
+            votes: Vec<PillarVoteWeightedRlpPayload>,
+            expected_period: u64,
+            expected_block_hash: &[u8; 32],
+            threshold: u64,
+        ) -> Result<PillarVoteBundleWeightedPlan>;
         pub fn pillar_votes_is_unique_identity(
             self: &BridgePillarVotes,
             vote: PillarVoteIdentityPayload,

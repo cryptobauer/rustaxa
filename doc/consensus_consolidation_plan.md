@@ -479,6 +479,14 @@ Implementation notes:
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
+- `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` now routes synced bundle RLPs through
+  Rust-owned batch inspection and weighted planning APIs. C++ only performs the external FinalChain DPoS weight lookup in
+  one batched read, then passes canonical RLP bytes and weights back to Rust for signature validation, duplicate/conflict
+  checks, threshold selection, and accepted-voter materialization. The previous shim-local per-vote inspection/weight
+  loop and `getPillarVoteWeight()` helper are gone.
+- Custom-agent delegation was attempted for this Slice 6 increment (`cpp-pro` and `rust-engineer`), but the agent
+  backend rejected both starts due a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
+  using the `$implement-rustaxa-consensus-slice` workflow.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -493,8 +501,16 @@ Implementation notes:
 - Rebuilt `taraxad` via `cmake --build /build --target taraxad --parallel 12` to verify C++ shim/bridge signature integration.
 - Focused integration execution (`PbftManagerTest.pbft_manager_run_multi_nodes`) passed on this branch in the
   requested build configuration.
+- Additional validation for the pillar-chain sync bundle reduction:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_votes`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_votes`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarChainPlanningBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
-  `pillar_chain_manager_shim` orchestration loops are still present and remain the remaining Slice 6 work.
+  remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is one-loop reduction in those subsystems before Slice 6 can be marked complete.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter

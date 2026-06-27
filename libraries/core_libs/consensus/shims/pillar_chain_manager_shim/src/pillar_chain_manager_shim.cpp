@@ -282,25 +282,6 @@ bool pillarVoteExistsByLookup(const rustaxa::BridgePillarVotes& pillar_votes, co
   }
 }
 
-std::optional<uint64_t> getPillarVoteWeight(const std::shared_ptr<final_chain::FinalChain>& final_chain,
-                                            const addr_t& voter, PbftPeriod required_votes_period) {
-  try {
-    rustaxa::PbftFinalChainFactRequest request{};
-    request.period = required_votes_period - 1;
-    request.collect_address_vote_counts = true;
-    request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(voter)});
-
-    const auto facts = final_chain->collectPbftFinalChainFacts(std::move(request));
-    if (facts.address_facts.empty() || !finalChainFactReady(facts.address_facts[0].status) ||
-        facts.address_facts[0].vote_count == 0) {
-      return std::nullopt;
-    }
-    return facts.address_facts[0].vote_count;
-  } catch (const std::exception&) {
-    return std::nullopt;
-  }
-}
-
 rustaxa::PillarBlockLinkageFact toBridgeLinkageFact(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarBlock>& pillar_block,
                                                     const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
@@ -595,50 +576,51 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
     return {ValidateSyncPillarVotesBundlePlanStatus::kBundleEmpty, {}, 0, 0, {}, false};
   }
 
-  rust::Vec<rustaxa::PillarVoteBundleFact> facts;
-  facts.reserve(pillar_vote_rlps.size());
-
-  std::unordered_map<vote_hash_t, uint64_t> vote_weights;
-  vote_weights.reserve(pillar_vote_rlps.size());
-  std::unordered_map<vote_hash_t, addr_t> vote_recovered_voters;
-  vote_recovered_voters.reserve(pillar_vote_rlps.size());
-
+  rust::Vec<rustaxa::PillarVoteRlpPayload> rlp_payloads;
+  rlp_payloads.reserve(pillar_vote_rlps.size());
   for (const auto& vote_rlp : pillar_vote_rlps) {
-    rustaxa::PillarVoteInspection inspection;
-    try {
-      inspection = rustaxa::pillar_vote_inspect(toBridgeBytes(vote_rlp));
-    } catch (const std::exception&) {
-      return {ValidateSyncPillarVotesBundlePlanStatus::kPrevalidationFailed, {}, 0, 0, {}, false};
-    }
-
-    const auto vote_hash = fromBridgeHash(inspection.vote_hash);
-    if (!inspection.signature_valid) {
-      return {ValidateSyncPillarVotesBundlePlanStatus::kPrevalidationFailed, vote_hash, 0, 0, {}, false};
-    }
-
-    const auto voter = fromBridgeAddress(inspection.voter);
-    const auto weight = getPillarVoteWeight(final_chain, voter, required_votes_period);
-    if (!weight) {
-      return {ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight, vote_hash, 0, 0, {}, false};
-    }
-
-    vote_recovered_voters[vote_hash] = voter;
-
-    rustaxa::PillarVoteBundleFact fact{};
-    fact.vote_hash = inspection.vote_hash;
-    fact.block_hash = inspection.block_hash;
-    fact.voter = inspection.voter;
-    fact.period = inspection.period;
-    fact.weight = *weight;
-    fact.prevalidated = true;
-
-    facts.push_back(fact);
-    vote_weights[vote_hash] = *weight;
+    rustaxa::PillarVoteRlpPayload payload;
+    payload.vote_rlp = toRustBytes(vote_rlp);
+    rlp_payloads.push_back(std::move(payload));
   }
 
   try {
-    const auto plan = rustaxa::plan_pillar_vote_bundle(std::move(facts), required_votes_period,
-                                                       toBridgeHash(required_pillar_block_hash), required_threshold);
+    const auto inspection_plan = rustaxa::inspect_pillar_vote_bundle_rlps(std::move(rlp_payloads));
+    const auto inspection_status = toSyncPillarVotesBundlePlanStatus(inspection_plan.status);
+    if (inspection_status != ValidateSyncPillarVotesBundlePlanStatus::kBundleValid) {
+      return {inspection_status, fromBridgeHash(inspection_plan.first_bad_vote_hash), 0, 0, {}, false};
+    }
+
+    std::vector<addr_t> voters;
+    voters.reserve(inspection_plan.inspections.size());
+    for (const auto& inspection : inspection_plan.inspections) {
+      voters.push_back(fromBridgeAddress(inspection.voter));
+    }
+
+    const auto dpos_facts = collectPillarDposFacts(final_chain, required_votes_period - 1, false, voters);
+    if (dpos_facts.address_facts.size() != inspection_plan.inspections.size()) {
+      return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, {}, false};
+    }
+
+    rust::Vec<rustaxa::PillarVoteWeightedRlpPayload> weighted_payloads;
+    weighted_payloads.reserve(pillar_vote_rlps.size());
+    for (size_t idx = 0; idx < pillar_vote_rlps.size(); ++idx) {
+      const auto& address_fact = dpos_facts.address_facts[idx];
+      const auto& inspection = inspection_plan.inspections[idx];
+      if (!finalChainFactReady(address_fact.status) || address_fact.vote_count == 0) {
+        return {ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight, fromBridgeHash(inspection.vote_hash), 0, 0, {},
+                false};
+      }
+
+      rustaxa::PillarVoteWeightedRlpPayload payload;
+      payload.vote_rlp = toRustBytes(pillar_vote_rlps[idx]);
+      payload.weight = address_fact.vote_count;
+      weighted_payloads.push_back(std::move(payload));
+    }
+
+    const auto plan = rustaxa::plan_pillar_vote_bundle_from_weighted_rlps(
+        std::move(weighted_payloads), required_votes_period, toBridgeHash(required_pillar_block_hash),
+        required_threshold);
 
     const auto plan_status = toSyncPillarVotesBundlePlanStatus(plan.status);
     ValidateSyncPillarVotesBundleDeterministicallyResult result;
@@ -653,12 +635,8 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
 
     result.accepted_votes.reserve(plan.accepted_votes.size());
     for (const auto& accepted_vote : plan.accepted_votes) {
-      const auto accepted_vote_hash = fromBridgeHash(accepted_vote.vote_hash);
-      const auto recovered_voter_it = vote_recovered_voters.find(accepted_vote_hash);
-      if (!vote_weights.contains(accepted_vote_hash) || recovered_voter_it == vote_recovered_voters.end()) {
-        return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, accepted_vote_hash, 0, 0, {}, false};
-      }
-      result.accepted_votes.push_back({accepted_vote_hash, accepted_vote.weight, recovered_voter_it->second});
+      result.accepted_votes.push_back(
+          {fromBridgeHash(accepted_vote.vote_hash), accepted_vote.weight, fromBridgeAddress(accepted_vote.voter)});
     }
 
     result.valid = true;

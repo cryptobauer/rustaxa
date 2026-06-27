@@ -1,8 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
@@ -78,6 +80,15 @@ rust::Slice<const uint8_t> makeSlice(const taraxa::bytes& bytes) {
   return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
 }
 
+rust::Vec<uint8_t> makeBytes(const taraxa::bytes& bytes) {
+  rust::Vec<uint8_t> out;
+  out.reserve(bytes.size());
+  for (const auto byte : bytes) {
+    out.push_back(static_cast<uint8_t>(byte));
+  }
+  return out;
+}
+
 }  // namespace
 
 TEST(PillarVoteBundleBridgeTest, planPillarVoteBundleMatchesExpectedStatuses) {
@@ -148,6 +159,63 @@ TEST(PillarVoteBundleBridgeTest, planPillarVoteBundleRejectsSameVoterConflict) {
   EXPECT_EQ(plan.status, 6);
   EXPECT_EQ(plan.first_bad_vote_hash, makeHash(52));
   EXPECT_EQ(plan.block_weight, 0);
+}
+
+TEST(PillarVoteBundleBridgeTest, inspectPillarVoteBundleRlpsReturnsRecoveredVoters) {
+  const auto first_secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
+  const auto second_secret = taraxa::secret_t("0b8f2d8f2b753f9d6eebcc334d79c8d0e9cfdd4457f0327f3a30a2d8a7f1f7cd");
+  const taraxa::PbftPeriod period{123};
+  const taraxa::blk_hash_t block_hash{456};
+  const taraxa::PillarVote first_vote(first_secret, period, block_hash);
+  const taraxa::PillarVote second_vote(second_secret, period, block_hash);
+  rust::Vec<rustaxa::PillarVoteRlpPayload> votes;
+  votes.reserve(2);
+  rustaxa::PillarVoteRlpPayload first_payload;
+  first_payload.vote_rlp = makeBytes(first_vote.rlp());
+  votes.push_back(std::move(first_payload));
+  rustaxa::PillarVoteRlpPayload second_payload;
+  second_payload.vote_rlp = makeBytes(second_vote.rlp());
+  votes.push_back(std::move(second_payload));
+
+  const auto plan = rustaxa::inspect_pillar_vote_bundle_rlps(std::move(votes));
+
+  EXPECT_EQ(plan.status, 0);
+  ASSERT_EQ(plan.inspections.size(), 2);
+  EXPECT_EQ(plan.inspections[0].vote_hash, first_vote.getHash().asArray());
+  EXPECT_EQ(plan.inspections[0].voter, first_vote.getVoterAddr().asArray());
+  EXPECT_EQ(plan.inspections[1].vote_hash, second_vote.getHash().asArray());
+  EXPECT_EQ(plan.inspections[1].voter, second_vote.getVoterAddr().asArray());
+}
+
+TEST(PillarVoteBundleBridgeTest, planPillarVoteBundleFromWeightedRlpsReturnsAcceptedVoters) {
+  const auto first_secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
+  const auto second_secret = taraxa::secret_t("0b8f2d8f2b753f9d6eebcc334d79c8d0e9cfdd4457f0327f3a30a2d8a7f1f7cd");
+  const taraxa::PbftPeriod period{124};
+  const taraxa::blk_hash_t block_hash{457};
+  const taraxa::PillarVote first_vote(first_secret, period, block_hash);
+  const taraxa::PillarVote second_vote(second_secret, period, block_hash);
+  rust::Vec<rustaxa::PillarVoteWeightedRlpPayload> votes;
+  votes.reserve(2);
+  rustaxa::PillarVoteWeightedRlpPayload first_payload;
+  first_payload.vote_rlp = makeBytes(first_vote.rlp());
+  first_payload.weight = 4;
+  votes.push_back(std::move(first_payload));
+  rustaxa::PillarVoteWeightedRlpPayload second_payload;
+  second_payload.vote_rlp = makeBytes(second_vote.rlp());
+  second_payload.weight = 3;
+  votes.push_back(std::move(second_payload));
+
+  const auto plan =
+      rustaxa::plan_pillar_vote_bundle_from_weighted_rlps(std::move(votes), period, block_hash.asArray(), 7);
+
+  EXPECT_EQ(plan.status, 0);
+  EXPECT_EQ(plan.block_weight, 7);
+  EXPECT_EQ(plan.selected_weight, 7);
+  ASSERT_EQ(plan.accepted_votes.size(), 2);
+  EXPECT_EQ(plan.accepted_votes[0].weight + plan.accepted_votes[1].weight, 7);
+  std::vector<std::array<uint8_t, 20>> voters{plan.accepted_votes[0].voter, plan.accepted_votes[1].voter};
+  EXPECT_TRUE(std::find(voters.begin(), voters.end(), first_vote.getVoterAddr().asArray()) != voters.end());
+  EXPECT_TRUE(std::find(voters.begin(), voters.end(), second_vote.getVoterAddr().asArray()) != voters.end());
 }
 
 TEST(PillarVoteRelevanceBridgeTest, planPillarVoteRelevanceMatchesManagerPeriodRules) {

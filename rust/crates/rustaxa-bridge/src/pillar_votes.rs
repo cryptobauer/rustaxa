@@ -11,12 +11,13 @@
 //! to [`PillarVotes`].
 
 use crate::ffi::rustaxa_ffi::{
-    PillarVoteBundleAcceptedVote, PillarVoteBundleFact as FfiPillarVoteBundleFact,
-    PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteIdentityPayload,
-    PillarVoteInsertOutcome, PillarVoteInspection, PillarVotePayload, PillarVoteRecord,
-    PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
-    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteUniqueOutcome,
-    PillarVotesPayloadLookup,
+    PillarVoteBundleAcceptedVote, PillarVoteBundleAcceptedVoter,
+    PillarVoteBundleFact as FfiPillarVoteBundleFact, PillarVoteBundleInspectionPlan,
+    PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteBundleWeightedPlan,
+    PillarVoteIdentityPayload, PillarVoteInsertOutcome, PillarVoteInspection, PillarVotePayload,
+    PillarVoteRecord, PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
+    PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
+    PillarVoteUniqueOutcome, PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
 };
 use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
@@ -31,6 +32,12 @@ use rustaxa_consensus::{
     PillarVoteRelevancePlan as ConsensusPillarVoteRelevancePlan, PillarVotes, VerifiedPillarVote,
 };
 use rustaxa_types::PillarVote;
+use std::collections::HashMap;
+
+const PILLAR_VOTE_BUNDLE_STATUS_VALID: u8 = 0;
+const PILLAR_VOTE_BUNDLE_STATUS_EMPTY: u8 = 1;
+const PILLAR_VOTE_BUNDLE_STATUS_PREVALIDATION_FAILED: u8 = 4;
+const PILLAR_VOTE_BUNDLE_STATUS_ZERO_WEIGHT: u8 = 5;
 
 /// Creates an empty Rust pillar-vote registry for the C++ pillar-vote shim.
 pub fn create_pillar_votes_index() -> Box<BridgePillarVotes> {
@@ -118,6 +125,62 @@ pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection> {
     Ok(inspect_pillar_vote_from_rlp(vote_rlp)?.into())
 }
 
+/// Inspects one batch of canonical pillar-vote bytes before C++ performs the
+/// external FinalChain DPoS weight lookup.
+///
+/// Inputs:
+/// - `votes`: ordered canonical vote RLP payloads from the sync bundle.
+///
+/// Outputs:
+/// - Returns the recovered vote identity for every valid payload.
+/// - Returns a stable bundle status and first bad vote hash for empty,
+///   malformed, or invalid-signature input.
+///
+/// Invariants and edge behavior:
+/// - The returned `inspections` order matches the input order.
+/// - This function does not read FinalChain state and does not mutate the
+///   pillar-vote index.
+pub fn inspect_pillar_vote_bundle_rlps(
+    votes: Vec<PillarVoteRlpPayload>,
+) -> Result<PillarVoteBundleInspectionPlan> {
+    if votes.is_empty() {
+        return Ok(PillarVoteBundleInspectionPlan {
+            status: PILLAR_VOTE_BUNDLE_STATUS_EMPTY,
+            inspections: Vec::new(),
+            first_bad_vote_hash: [0; 32],
+        });
+    }
+
+    let mut inspections = Vec::with_capacity(votes.len());
+    for vote in votes {
+        let inspection = match inspect_pillar_vote_from_rlp(&vote.vote_rlp) {
+            Ok(inspection) => inspection,
+            Err(_) => {
+                return Ok(PillarVoteBundleInspectionPlan {
+                    status: PILLAR_VOTE_BUNDLE_STATUS_PREVALIDATION_FAILED,
+                    inspections: Vec::new(),
+                    first_bad_vote_hash: [0; 32],
+                })
+            }
+        };
+        let output = PillarVoteInspection::from(inspection);
+        if !output.signature_valid {
+            return Ok(PillarVoteBundleInspectionPlan {
+                status: PILLAR_VOTE_BUNDLE_STATUS_PREVALIDATION_FAILED,
+                inspections: Vec::new(),
+                first_bad_vote_hash: output.vote_hash,
+            });
+        }
+        inspections.push(output);
+    }
+
+    Ok(PillarVoteBundleInspectionPlan {
+        status: PILLAR_VOTE_BUNDLE_STATUS_VALID,
+        inspections,
+        first_bad_vote_hash: [0; 32],
+    })
+}
+
 /// Stateless planner entry point for one batch of plain pillar-vote facts.
 ///
 /// The input `facts` are plain, transport-level values to avoid forcing C++ to
@@ -136,6 +199,115 @@ pub fn plan_pillar_vote_bundle(
         .collect::<Vec<_>>();
 
     Ok(PillarVoteBundlePlanOutput::from(planner.plan(&facts)))
+}
+
+/// Plans one weighted synced pillar-vote bundle from canonical RLP bytes.
+///
+/// Inputs:
+/// - `votes`: ordered vote RLP payloads paired with DPoS weights supplied by
+///   C++ from the external FinalChain boundary.
+/// - `expected_period`, `expected_block_hash`, and `threshold`: deterministic
+///   consensus constraints for the bundle.
+///
+/// Outputs:
+/// - Returns the same aggregate status and weights as `plan_pillar_vote_bundle`.
+/// - Accepted votes include Rust-recovered voter identity so C++ can
+///   materialize only the selected live vote payloads.
+///
+/// Invariants and edge behavior:
+/// - Rust owns all RLP inspection, signature validation, duplicate/conflict
+///   detection, threshold selection, and accepted-vote ordering.
+/// - A zero externally supplied weight returns status `5` with the offending
+///   vote hash.
+/// - This function does not read FinalChain state and does not mutate the
+///   pillar-vote index.
+pub fn plan_pillar_vote_bundle_from_weighted_rlps(
+    votes: Vec<PillarVoteWeightedRlpPayload>,
+    expected_period: u64,
+    expected_block_hash: &[u8; 32],
+    threshold: u64,
+) -> Result<PillarVoteBundleWeightedPlan> {
+    if votes.is_empty() {
+        return Ok(PillarVoteBundleWeightedPlan {
+            status: PILLAR_VOTE_BUNDLE_STATUS_EMPTY,
+            accepted_votes: Vec::new(),
+            block_weight: 0,
+            selected_weight: 0,
+            first_bad_vote_hash: [0; 32],
+        });
+    }
+
+    let mut facts = Vec::with_capacity(votes.len());
+    let mut voters_by_hash = HashMap::with_capacity(votes.len());
+
+    for vote in votes {
+        let inspection = match inspect_pillar_vote_from_rlp(&vote.vote_rlp) {
+            Ok(inspection) => inspection,
+            Err(_) => {
+                return Ok(PillarVoteBundleWeightedPlan {
+                    status: PILLAR_VOTE_BUNDLE_STATUS_PREVALIDATION_FAILED,
+                    accepted_votes: Vec::new(),
+                    block_weight: 0,
+                    selected_weight: 0,
+                    first_bad_vote_hash: [0; 32],
+                })
+            }
+        };
+        let vote_hash = inspection.vote_hash;
+        if !inspection.signature_valid {
+            return Ok(PillarVoteBundleWeightedPlan {
+                status: PILLAR_VOTE_BUNDLE_STATUS_PREVALIDATION_FAILED,
+                accepted_votes: Vec::new(),
+                block_weight: 0,
+                selected_weight: 0,
+                first_bad_vote_hash: vote_hash.into(),
+            });
+        }
+        if vote.weight == 0 {
+            return Ok(PillarVoteBundleWeightedPlan {
+                status: PILLAR_VOTE_BUNDLE_STATUS_ZERO_WEIGHT,
+                accepted_votes: Vec::new(),
+                block_weight: 0,
+                selected_weight: 0,
+                first_bad_vote_hash: vote_hash.into(),
+            });
+        }
+
+        voters_by_hash.insert(vote_hash, inspection.voter);
+        facts.push(ConsensusPillarVoteFact {
+            vote_hash,
+            period: inspection.period,
+            block_hash: inspection.block_hash,
+            voter: inspection.voter,
+            weight: vote.weight,
+            prevalidated: true,
+        });
+    }
+
+    let planner =
+        PillarVoteBundlePlanner::new(expected_period, H256::from(*expected_block_hash), threshold);
+    let plan = planner.plan(&facts);
+    let accepted_votes = plan
+        .accepted_votes
+        .iter()
+        .map(|vote| PillarVoteBundleAcceptedVoter {
+            vote_hash: vote.vote_hash.into(),
+            weight: vote.weight,
+            voter: voters_by_hash
+                .get(&vote.vote_hash)
+                .copied()
+                .unwrap_or_default()
+                .into(),
+        })
+        .collect();
+
+    Ok(PillarVoteBundleWeightedPlan {
+        status: plan.status.as_u8(),
+        accepted_votes,
+        block_weight: plan.block_weight,
+        selected_weight: plan.selected_weight,
+        first_bad_vote_hash: plan.first_bad_vote_hash.into(),
+    })
 }
 
 /// Evaluates one pillar-vote relevance query and returns a deterministic reason.
@@ -676,6 +848,102 @@ mod tests {
         assert_eq!(plan.selected_weight, 0);
         assert!(plan.accepted_votes.is_empty());
         assert_eq!(plan.first_bad_vote_hash, hash_bytes(31));
+    }
+
+    #[test]
+    fn inspect_bundle_rlps_returns_ordered_vote_identities() {
+        let (first, first_voter) = signed_vote(0x21, 40, 1234);
+        let (second, second_voter) = signed_vote(0x22, 40, 1234);
+        let votes = vec![
+            PillarVoteRlpPayload {
+                vote_rlp: first.encode_rlp(),
+            },
+            PillarVoteRlpPayload {
+                vote_rlp: second.encode_rlp(),
+            },
+        ];
+
+        let plan = inspect_pillar_vote_bundle_rlps(votes).unwrap();
+
+        assert_eq!(plan.status, PILLAR_VOTE_BUNDLE_STATUS_VALID);
+        assert_eq!(plan.inspections.len(), 2);
+        assert_eq!(plan.inspections[0].vote_hash, first.hash(true).0);
+        assert_eq!(plan.inspections[0].voter, first_voter);
+        assert_eq!(plan.inspections[1].vote_hash, second.hash(true).0);
+        assert_eq!(plan.inspections[1].voter, second_voter);
+    }
+
+    #[test]
+    fn weighted_rlp_bundle_plans_selected_votes_with_voters() {
+        let (first, first_voter) = signed_vote(0x23, 40, 1234);
+        let (second, second_voter) = signed_vote(0x24, 40, 1234);
+        let (third, third_voter) = signed_vote(0x25, 40, 1234);
+        let expected_block_hash = H256::from_low_u64_be(1234).into();
+        let votes = vec![
+            PillarVoteWeightedRlpPayload {
+                vote_rlp: first.encode_rlp(),
+                weight: 4,
+            },
+            PillarVoteWeightedRlpPayload {
+                vote_rlp: second.encode_rlp(),
+                weight: 3,
+            },
+            PillarVoteWeightedRlpPayload {
+                vote_rlp: third.encode_rlp(),
+                weight: 2,
+            },
+        ];
+
+        let plan =
+            plan_pillar_vote_bundle_from_weighted_rlps(votes, 40, &expected_block_hash, 7).unwrap();
+
+        assert_eq!(plan.status, PILLAR_VOTE_BUNDLE_STATUS_VALID);
+        assert_eq!(plan.block_weight, 9);
+        assert_eq!(plan.selected_weight, 7);
+        assert_eq!(plan.accepted_votes.len(), 3);
+        let accepted = plan
+            .accepted_votes
+            .into_iter()
+            .map(|vote| (vote.vote_hash, vote.weight, vote.voter))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(accepted.contains(&(first.hash(true).0, 4, first_voter)));
+        assert!(accepted.contains(&(second.hash(true).0, 3, second_voter)));
+        assert!(accepted.contains(&(third.hash(true).0, 2, third_voter)));
+    }
+
+    #[test]
+    fn weighted_rlp_bundle_rejects_zero_external_weight() {
+        let (first, _) = signed_vote(0x26, 40, 1234);
+        let expected_block_hash = H256::from_low_u64_be(1234).into();
+        let votes = vec![PillarVoteWeightedRlpPayload {
+            vote_rlp: first.encode_rlp(),
+            weight: 0,
+        }];
+
+        let plan =
+            plan_pillar_vote_bundle_from_weighted_rlps(votes, 40, &expected_block_hash, 7).unwrap();
+
+        assert_eq!(plan.status, PILLAR_VOTE_BUNDLE_STATUS_ZERO_WEIGHT);
+        assert_eq!(plan.first_bad_vote_hash, first.hash(true).0);
+        assert!(plan.accepted_votes.is_empty());
+    }
+
+    #[test]
+    fn weighted_rlp_bundle_rejects_invalid_signature() {
+        let (mut first, _) = signed_vote(0x27, 40, 1234);
+        first.signature = [0; 65];
+        let expected_block_hash = H256::from_low_u64_be(1234).into();
+        let votes = vec![PillarVoteWeightedRlpPayload {
+            vote_rlp: first.encode_rlp(),
+            weight: 5,
+        }];
+
+        let plan =
+            plan_pillar_vote_bundle_from_weighted_rlps(votes, 40, &expected_block_hash, 7).unwrap();
+
+        assert_eq!(plan.status, PILLAR_VOTE_BUNDLE_STATUS_PREVALIDATION_FAILED);
+        assert_eq!(plan.first_bad_vote_hash, first.hash(true).0);
+        assert!(plan.accepted_votes.is_empty());
     }
 
     fn relevance_fact(
