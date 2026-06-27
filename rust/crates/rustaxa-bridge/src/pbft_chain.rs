@@ -1,6 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
     PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
-    PbftChainHeadPayload, PbftChainStorageRestore as FfiPbftChainStorageRestore,
+    PbftChainHeadPayload,
     PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
 };
@@ -11,7 +11,7 @@ use ethereum_types::H256;
 use rustaxa_consensus::pbft_chain::{
     load_pbft_block_from_storage, pbft_block_exists_in_storage,
     restore_pbft_chain_from_storage as domain_restore_pbft_chain_from_storage,
-    PbftBlockStorageLookup, PbftBlockValidation, PbftChain, PbftChainHead, PbftChainStorageRestore,
+    PbftBlockStorageLookup, PbftBlockValidation, PbftChain, PbftChainHead,
 };
 use rustaxa_storage::Storage;
 
@@ -61,13 +61,6 @@ pub fn create_pbft_chain_from_storage(
         storage: Some(storage.0.clone()),
         initialized_default: restored.initialized_default,
     }))
-}
-
-/// Restores PBFT-chain storage facts without constructing a bridge runtime.
-pub fn restore_pbft_chain_storage(
-    storage: &BridgeStorage,
-) -> Result<FfiPbftChainStorageRestore, anyhow::Error> {
-    Ok(domain_restore_pbft_chain_from_storage(storage.0.as_ref())?.into())
 }
 
 /// Returns whether Rust storage contains a finalized PBFT block hash.
@@ -272,15 +265,6 @@ impl From<PbftChainHead> for PbftChainHeadPayload {
             non_empty_size: value.non_empty_size,
             last_pbft_block_hash: value.last_pbft_block_hash.into(),
             last_non_null_anchor_hash: value.last_non_null_pbft_dag_anchor_hash.into(),
-        }
-    }
-}
-
-impl From<PbftChainStorageRestore> for FfiPbftChainStorageRestore {
-    fn from(value: PbftChainStorageRestore) -> Self {
-        Self {
-            head: value.head.into(),
-            initialized_default: value.initialized_default,
         }
     }
 }

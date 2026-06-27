@@ -1167,11 +1167,6 @@ pub mod rustaxa_ffi {
         last_non_null_anchor_hash: [u8; 32],
     }
 
-    struct PbftChainStorageRestore {
-        head: PbftChainHeadPayload,
-        initialized_default: bool,
-    }
-
     struct PbftBlockStorageLookup {
         found: bool,
         block_rlp: Vec<u8>,
@@ -4153,12 +4148,6 @@ pub mod rustaxa_ffi {
         non_finalized_min_difficulty: u32,
     }
 
-    struct DagReferenceMetadata {
-        hash: [u8; 32],
-        found: bool,
-        level: u64,
-    }
-
     struct DagPivotTipsValidation {
         ok: bool,
         expected_level: u64,
@@ -5114,12 +5103,6 @@ pub mod rustaxa_ffi {
             anchor: &[u8; 32],
             non_finalized_blocks: Vec<DagLevelHashes>,
         ) -> DagOrder;
-        pub fn dag_derive_frontier(ghost_path: Vec<DagHash>, leaves: Vec<DagHash>) -> DagFrontier;
-        pub fn dag_validate_pivot_tips_metadata(
-            block_level: u64,
-            pivot: DagReferenceMetadata,
-            tips: Vec<DagReferenceMetadata>,
-        ) -> DagPivotTipsValidation;
         pub fn dag_clear(self: &mut BridgeDagGraph);
         pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
 
@@ -5402,9 +5385,6 @@ pub mod rustaxa_ffi {
         pub fn create_pbft_chain_from_storage(
             storage: &BridgeStorage,
         ) -> Result<Box<BridgePbftChain>>;
-        pub fn restore_pbft_chain_storage(
-            storage: &BridgeStorage,
-        ) -> Result<PbftChainStorageRestore>;
         pub fn pbft_chain_block_exists(
             storage: &BridgeStorage,
             block_hash: &[u8; 32],
@@ -6078,10 +6058,6 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_runtime_transaction_count(
             self: &BridgeTransactionManagerRuntime,
         ) -> u64;
-        pub fn transaction_manager_runtime_is_transaction_known(
-            self: &BridgeTransactionManagerRuntime,
-            fact: TransactionManagerSidecarKnownFact,
-        ) -> Result<bool>;
         /// Returns Rust's known-transaction decision from runtime-owned queue and sidecar state.
         pub fn transaction_manager_runtime_is_transaction_known_hash(
             self: &BridgeTransactionManagerRuntime,

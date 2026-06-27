@@ -2097,14 +2097,6 @@ impl BridgeTransactionManagerRuntime {
             .collect())
     }
 
-    /// Returns Rust's known-transaction decision using runtime queue and sidecar state.
-    pub fn transaction_manager_runtime_is_transaction_known(
-        &self,
-        fact: TransactionManagerSidecarKnownFact,
-    ) -> Result<bool> {
-        self.transaction_manager_runtime_is_transaction_known_hash(&fact.hash)
-    }
-
     /// Returns Rust's known-transaction decision for a canonical hash.
     ///
     /// Production C++ shims call this hash-only API so queue membership and

@@ -136,7 +136,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   consolidation removes inherited base-path reliance.
 - `dag_manager_shim::getShared` and `getDagMutex` still forward to inherited `DagManagerOld` state with call-site TODOs;
   remove them only when DAG manager ownership/synchronization are shim- or Rust-owned instead of inherited from the
-  legacy base.
+  legacy base. `getDagMutex` cannot simply return the existing shim-owned order mutex because Rust-mode
+  `setDagBlockOrder` already locks that mutex internally after callers acquire `getDagMutex`, so that narrow swap would
+  deadlock finalization.
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards to `TransactionManagerOld`; the shim method returns
   the same inherited mutex through `TransactionManagerRustShimAccess`. The lock itself remains temporary inherited-state
   compatibility debt until transaction lifecycle synchronization moves into the Rust transaction runtime.

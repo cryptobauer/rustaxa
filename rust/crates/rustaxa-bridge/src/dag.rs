@@ -14,11 +14,11 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
     DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
     DagProposerVdfWaitReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
-    DagReferenceMetadata, DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan,
-    DagTransactionRlpLookup, DagVerifyAuthorizationInput, DagVerifyAuthorizationResult,
-    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
-    DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
+    DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
+    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport,
+    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
+    DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport, DagVerifyGasInput,
+    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
     DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
     DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
@@ -34,7 +34,7 @@ use rustaxa_consensus::dag::{
     collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
     dag_block_exists_in_storage, dag_manager_block_from_rlp as domain_dag_manager_block_from_rlp,
     dag_persistence_counters_from_storage, decide_dag_verify_vdf_dpos_authorization,
-    derive_frontier, ensure_proposal_period_mapping, finalize_dag_proposer_signed_block_intent,
+    ensure_proposal_period_mapping, finalize_dag_proposer_signed_block_intent,
     load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_add_block_effects,
     plan_dag_proposer_attempt, plan_dag_proposer_block_construction_from_storage,
     plan_dag_proposer_block_intent, plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset,
@@ -194,51 +194,6 @@ pub fn create_dag_manager_runtime_from_storage(
         proposer_retry_states: BTreeMap::new(),
         verify_block_session: None,
     }))
-}
-
-pub fn dag_derive_frontier(ghost_path: Vec<DagHash>, leaves: Vec<DagHash>) -> DagFrontier {
-    let ghost_path = ghost_path
-        .into_iter()
-        .map(|hash| H256::from(hash.hash))
-        .collect::<Vec<_>>();
-    let leaves = leaves
-        .into_iter()
-        .map(|hash| H256::from(hash.hash))
-        .collect::<Vec<_>>();
-    let frontier = derive_frontier(&ghost_path, &leaves);
-
-    DagFrontier {
-        pivot: frontier.pivot.into(),
-        tips: to_dag_hashes(frontier.tips),
-    }
-}
-
-pub fn dag_validate_pivot_tips_metadata(
-    block_level: u64,
-    pivot: DagReferenceMetadata,
-    tips: Vec<DagReferenceMetadata>,
-) -> DagPivotTipsValidation {
-    let pivot = ReferenceMetadata {
-        hash: H256::from(pivot.hash),
-        found: pivot.found,
-        level: pivot.level,
-    };
-    let tips = tips
-        .into_iter()
-        .map(|tip| ReferenceMetadata {
-            hash: H256::from(tip.hash),
-            found: tip.found,
-            level: tip.level,
-        })
-        .collect::<Vec<_>>();
-    let validation = validate_pivot_tips_metadata(block_level, pivot, &tips);
-
-    DagPivotTipsValidation {
-        ok: validation.ok,
-        expected_level: validation.expected_level,
-        level_matches: validation.level_matches,
-        missing_references: to_dag_hashes(validation.missing_references),
-    }
 }
 
 impl BridgeDagGraph {

@@ -588,6 +588,11 @@ Implementation status:
 - `BridgeDagManagerState` is deleted. The unused storage-free DAG manager state handle and its CXX methods were removed;
   live DAG manager state is owned by `BridgeDagManagerRuntime`, while standalone graph compatibility remains isolated in
   `BridgeDagGraph`.
+- No-caller CXX exports for standalone DAG helper planners (`dag_derive_frontier`,
+  `dag_validate_pivot_tips_metadata`), PBFT-chain storage restore (`restore_pbft_chain_storage`), and the old
+  fact-shaped transaction-manager runtime known check (`transaction_manager_runtime_is_transaction_known`) are deleted.
+  Live callers use runtime-owned DAG methods, `create_pbft_chain_from_storage`, and the hash-only transaction-manager
+  runtime known check instead.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
