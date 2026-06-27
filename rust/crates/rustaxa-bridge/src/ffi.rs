@@ -5869,14 +5869,6 @@ pub mod rustaxa_ffi {
             initial_transaction_count: u64,
             config: TransactionQueueConfig,
         ) -> Box<BridgeTransactionManagerRuntime>;
-        pub fn transaction_manager_runtime_pack_begin(
-            self: &mut BridgeTransactionManagerRuntime,
-            weight_limit: u64,
-            min_transaction_gas: u64,
-            proposal_period: u64,
-            estimate_gas_limit: u64,
-            last_block_number: u64,
-        ) -> Result<()>;
         pub fn transaction_manager_runtime_pack_begin_sharded(
             self: &mut BridgeTransactionManagerRuntime,
             weight_limit: u64,
@@ -5906,9 +5898,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             result: TransactionManagerGasEstimationResult,
         ) -> Result<bool>;
-        pub fn transaction_manager_runtime_gas_estimation_cache_size(
-            self: &BridgeTransactionManagerRuntime,
-        ) -> usize;
         pub fn transaction_manager_runtime_transaction_count(
             self: &BridgeTransactionManagerRuntime,
         ) -> u64;
@@ -5946,10 +5935,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             transition: TransactionManagerSidecarTransitionInput,
         ) -> Result<()>;
-        pub fn transaction_manager_runtime_insert_recovery_entries(
-            self: &mut BridgeTransactionManagerRuntime,
-            entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
-        ) -> Result<u64>;
         pub fn transaction_manager_runtime_queue_insert(
             self: &mut BridgeTransactionManagerRuntime,
             input: TransactionQueueInsertInput,

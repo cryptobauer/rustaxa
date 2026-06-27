@@ -602,6 +602,11 @@ Implementation status:
 - `BridgeTransactionManagerRuntime` CXX exports have been narrowed further: old no-caller sidecar lookup/finish/evict
   helpers, queue erase/get/order/known helpers, and sidecar size/remove helpers are deleted now that live
   `transaction_manager_shim` routing uses runtime-owned command and lookup APIs.
+- `BridgeTransactionManagerRuntime` no-caller transaction-manager exports are narrowed again:
+  `transaction_manager_runtime_pack_begin`, `transaction_manager_runtime_gas_estimation_cache_size`, and
+  `transaction_manager_runtime_insert_recovery_entries` are deleted from the CXX surface. Live C++ transaction packing
+  uses `transaction_manager_runtime_pack_begin_sharded`, gas-estimation cache behavior is observable through the planner
+  result, and non-finalized recovery uses the Rust-owned `transaction_manager_recover_nonfinalized_with_runtime` command.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.

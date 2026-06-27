@@ -211,6 +211,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeTransactionManagerRuntime` no-caller compatibility exports have been trimmed after the transaction-manager shim
   moved to runtime-owned command APIs. Deleted exports include old runtime sidecar lookup/finish/evict helpers, queue
   erase/get/order/known helpers, and sidecar size/remove helpers that had no C++ shim callers.
+- Additional no-caller `BridgeTransactionManagerRuntime` CXX exports are deleted:
+  `transaction_manager_runtime_pack_begin`, `transaction_manager_runtime_gas_estimation_cache_size`, and
+  `transaction_manager_runtime_insert_recovery_entries`. The live shim uses
+  `transaction_manager_runtime_pack_begin_sharded`, gas-estimation cache state is verified through planner outputs, and
+  recovery insertion is private Rust runtime behavior behind `transaction_manager_recover_nonfinalized_with_runtime`.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.

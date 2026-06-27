@@ -1495,9 +1495,7 @@ pub fn transaction_manager_recover_nonfinalized_with_runtime(
     let entries = transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
         transaction_manager_runtime_storage(runtime)?,
     )?;
-    runtime
-        .transaction_manager_runtime_insert_recovery_entries(entries)
-        .map(|_| ())
+    runtime.insert_recovery_entries(entries).map(|_| ())
 }
 
 /// Creates the Rust-owned TransactionManager runtime for Rust-enabled manager shims.
@@ -1554,31 +1552,6 @@ fn create_transaction_manager_runtime_inner(
 }
 
 impl BridgeTransactionManagerRuntime {
-    /// Begins one runtime-owned transaction packing session.
-    ///
-    /// The runtime snapshots ordered queue payloads up to the planner candidate
-    /// cap. C++ then asks Rust for one estimable candidate at a time and never
-    /// owns the deterministic candidate scan or accepted ordering.
-    pub fn transaction_manager_runtime_pack_begin(
-        &mut self,
-        weight_limit: u64,
-        min_transaction_gas: u64,
-        proposal_period: u64,
-        estimate_gas_limit: u64,
-        last_block_number: u64,
-    ) -> Result<()> {
-        self.transaction_manager_runtime_pack_begin_sharded(
-            weight_limit,
-            min_transaction_gas,
-            proposal_period,
-            estimate_gas_limit,
-            last_block_number,
-            1,
-            0,
-            1,
-        )
-    }
-
     /// Begins one runtime-owned transaction packing session for a DAG proposer shard.
     ///
     /// Sharding is applied before gas estimation using the legacy sender-prefix
@@ -1843,11 +1816,6 @@ impl BridgeTransactionManagerRuntime {
             .context("TM_RUNTIME_GAS_ESTIMATION_CACHE_STORE")
     }
 
-    /// Returns the number of retained gas-estimation cache entries.
-    pub fn transaction_manager_runtime_gas_estimation_cache_size(&self) -> usize {
-        self.sidecar.gas_estimation_cache_len()
-    }
-
     /// Returns the authoritative Rust-mode manager transaction count.
     pub fn transaction_manager_runtime_transaction_count(&self) -> u64 {
         self.sidecar.transaction_count()
@@ -2077,8 +2045,7 @@ impl BridgeTransactionManagerRuntime {
             .context("TM_RUNTIME_FINALIZED_TRANSITION")
     }
 
-    /// Inserts recovery payloads while skipping stale finalized entries.
-    pub fn transaction_manager_runtime_insert_recovery_entries(
+    fn insert_recovery_entries(
         &mut self,
         entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
     ) -> Result<u64> {
@@ -4749,7 +4716,7 @@ mod tests {
             .expect("queue insert should succeed");
 
         runtime
-            .transaction_manager_runtime_pack_begin(63_000, 21_000, 7, 0, 10)
+            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
             .expect("pack session should begin");
 
         let step = runtime
@@ -4825,7 +4792,7 @@ mod tests {
             .expect("proposable insert should succeed");
 
         runtime
-            .transaction_manager_runtime_pack_begin(63_000, 21_000, 7, 0, 10)
+            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
             .expect("pack session should begin");
 
         let first_step = runtime
@@ -4867,7 +4834,7 @@ mod tests {
 
         assert!(!runtime.transaction_manager_runtime_pack_abort());
         runtime
-            .transaction_manager_runtime_pack_begin(21_000, 21_000, 7, 0, 10)
+            .transaction_manager_runtime_pack_begin_sharded(21_000, 21_000, 7, 0, 10, 1, 0, 1)
             .expect("completed step session should be cleared");
     }
 
@@ -5015,7 +4982,7 @@ mod tests {
             .expect("cache store should succeed");
 
         runtime
-            .transaction_manager_runtime_pack_begin(63_000, 21_000, 7, 25_000, 10)
+            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 25_000, 10, 1, 0, 1)
             .expect("pack session should begin");
 
         let final_step = runtime
@@ -5061,7 +5028,7 @@ mod tests {
             )
             .expect("cache store should succeed");
         cached_runtime
-            .transaction_manager_runtime_pack_begin(63_000, 21_000, 7, 0, 10)
+            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
             .expect("cached pack session should begin");
         let cached_step = cached_runtime
             .transaction_manager_runtime_pack_request_next()
@@ -5116,10 +5083,6 @@ mod tests {
                 },
             )
             .expect("cache store should succeed"));
-        assert_eq!(
-            runtime.transaction_manager_runtime_gas_estimation_cache_size(),
-            1
-        );
 
         let hit = runtime
             .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {
