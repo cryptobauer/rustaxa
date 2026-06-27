@@ -7400,8 +7400,6 @@ pub mod rustaxa_ffi {
             period: u64,
             stats_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn clear_block_rewards_stats(self: &BridgeStorage) -> Result<()>;
-
         pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
         pub fn get_last_sortition_params(
             self: &BridgeMetadataStorageQueries,

@@ -1467,10 +1467,6 @@ impl BridgeStorage {
             .write_block_rewards_stats(period, &stats_rlp)
     }
 
-    pub fn clear_block_rewards_stats(&self) -> Result<(), anyhow::Error> {
-        self.0.metadata().clear_block_rewards_stats()
-    }
-
     pub fn save_cert_voted_block_in_round(
         &self,
         round: u64,

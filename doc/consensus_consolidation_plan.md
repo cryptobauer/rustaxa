@@ -279,8 +279,8 @@ Implementation notes:
   `rustaxa-storage` write-if-empty semantics without exposing the broad `BridgeStorage::set_genesis_hash` mutator to the
   C++ storage shim. The obsolete broad `BridgeStorage::set_genesis_hash` CXX export has been deleted.
 - Block-reward stats clearing now routes through a dedicated `storage_shim_clear_block_rewards_stats` API. Rust storage
-  still owns the aggregate row-by-row delete and native batch commit, while the broad
-  `BridgeStorage::clear_block_rewards_stats` method remains only for compatibility tests/conformance callers.
+  still owns the aggregate row-by-row delete and native batch commit. The obsolete broad
+  `BridgeStorage::clear_block_rewards_stats` CXX export has been deleted.
 - The tracked direct `BridgeStorage` mutator cleanup for storage-shim single-write and aggregate-clear compatibility
   paths is complete; remaining Slice 4 work should focus on original consensus modules that still call public
   `DbStorage::createWriteBatch()` / `commitWriteBatch()` APIs.
@@ -482,6 +482,9 @@ Implementation status:
   exercise `create_gas_pricer_from_storage` directly.
 - `BridgeStorage` CXX exports have been narrowed: the obsolete broad `set_genesis_hash` mutator is deleted because
   Rust-mode `DbStorage::setGenesisHash` uses the dedicated `storage_shim_set_genesis_hash` compatibility API.
+- `BridgeStorage` CXX exports have been narrowed further: the obsolete broad `clear_block_rewards_stats` mutator is
+  deleted because Rust-mode `DbStorage::deleteColumnData(block_rewards_stats)` uses the dedicated
+  `storage_shim_clear_block_rewards_stats` compatibility API.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 
