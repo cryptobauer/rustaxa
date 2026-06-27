@@ -496,6 +496,12 @@ Implementation notes:
   longer separately orchestrates the creation planner and vote-count planner before constructing a candidate block. The
   creation-only `plan_pillar_block_creation` CXX export and shell-only DTO are deleted; native Rust still owns the
   lower-level domain planner internally.
+- The no-caller plain-fact pillar-vote bundle CXX planner is deleted:
+  `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and
+  `plan_pillar_vote_bundle` are no longer bridge exports. Live pillar-chain sync keeps the canonical RLP boundary:
+  `inspect_pillar_vote_bundle_rlps` returns recovered voters for the one external FinalChain DPoS weight read, then
+  `plan_pillar_vote_bundle_from_weighted_rlps` owns weighted validation and selection. Native `rustaxa-consensus`
+  pillar-vote tests keep coverage for the plain domain planner.
 - `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
@@ -576,6 +582,10 @@ Implementation notes:
     `PillarBlock`/`PillarVote` materialization external.
   - `architect-reviewer`: recommended the no-caller plain-fact pillar-vote bundle planner as the next bridge-surface
     cleanup candidate and confirmed `BridgePillarVotes` plus pillar storage remain live for now.
+- Custom agent attempted for the plain-fact pillar-vote bundle cleanup:
+  - `rust-engineer`: requested to review hidden callsites and retained coverage, but the agent backend rejected the
+    start due to a GPT-5.3-Codex-Spark usage limit. Local implementation proceeded with call-site search evidence and
+    targeted Rust/C++ validation.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -678,6 +688,14 @@ Implementation notes:
   - The combined `pillar_chain_test` filter
     `PillarChainTest.pillar_blocks_create:PillarChainTest.votes_count_changes` failed on a `/tmp/taraxa0` RocksDB lock
     when the second test started in the same process; each focused test passed when run in isolation.
+- Additional validation for plain-fact pillar-vote bundle CXX API deletion:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_votes -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_votes -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
+  - `rg -n "plan_pillar_vote_bundle\\(|PillarVoteBundleFact|PillarVoteBundlePlan\\b|PillarVoteBundleAcceptedVote\\b|bundle_fact_to_consensus_fact|FfiPillarVoteBundleFact|PillarVoteBundlePlanOutput" rust/crates/rustaxa-bridge/src libraries tests -g'*.rs' -g'*.cpp' -g'*.hpp'` returned no matches.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is either the broader PBFT finalization executor cut that absorbs the remaining external-effect

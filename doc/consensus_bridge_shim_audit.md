@@ -323,6 +323,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   vote-count delta planning behind one Rust bridge call. The creation-only `plan_pillar_block_creation` CXX export and
   shell-only DTO are deleted. C++ still owns external FinalChain DPoS vote-count reads, temporary `PillarBlock`
   materialization, current-block storage payload materialization, and live manager mirrors.
+- The no-caller plain-fact pillar-vote bundle CXX planner is deleted:
+  `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and `plan_pillar_vote_bundle`.
+  Live pillar-chain sync uses canonical vote RLPs through `inspect_pillar_vote_bundle_rlps`, performs the one remaining
+  external FinalChain DPoS weight read in C++, then calls `plan_pillar_vote_bundle_from_weighted_rlps`. Native
+  `rustaxa-consensus` tests keep coverage for the plain domain planner.
 - The no-caller broad `apply_rewards_stats_storage_writes` CXX export is deleted. Live rewards-stat persistence uses the
   runtime-owned `rewards_stats_runtime_apply_storage_writes` method or the dedicated storage-shim batch appender.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for
