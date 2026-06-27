@@ -5042,11 +5042,6 @@ pub mod rustaxa_ffi {
             plan: &PbftFinalizationIntentPlan,
             report: PbftFinalizationLiveMutationReport,
         ) -> PbftFinalizationLiveMutationValidation;
-        pub fn inspect_pbft_finalization_resume(
-            storage: &BridgeStorage,
-            write_set: &PbftFinalizationStorageWritePlan,
-            final_chain_last_block: u64,
-        ) -> Result<PbftFinalizationResumePlan>;
         pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan;
         pub fn apply_pbft_finalization_storage_writes(
             storage: &BridgeStorage,

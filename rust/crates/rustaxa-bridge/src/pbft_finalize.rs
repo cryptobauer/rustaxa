@@ -40,7 +40,6 @@ use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
-    inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
@@ -388,36 +387,6 @@ pub fn abort_pbft_finalization_runtime_session(session: &mut BridgePbftFinalizat
         session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionFailed;
         session.state.error_code = "PBFT_FINALIZE_RUNTIME_ABORTED".to_string();
     }
-}
-
-/// Inspects Rust-owned finalized-period storage for a duplicate PBFT block and
-/// returns a durable resume classification.
-///
-/// Inputs:
-/// - `storage`: Rust storage bridge used by the C++ storage shim.
-/// - `write_set`: expected finalized-period write set for the duplicate block.
-/// - `final_chain_last_block`: C++ FinalChain durable height, which Rust cannot
-///   read from consensus storage.
-///
-/// Outputs:
-/// - A bridge-safe resume plan. The plan classifies whether primary PBFT
-///   finalization storage is complete, whether dynamic-lambda and executed
-///   status are durable, and which durable replay actions remain visible.
-///
-/// Edge behavior:
-/// - Mutable PBFT-head JSON is not used for conflict detection because startup
-///   may already have recovered the live PBFT chain from that head. Immutable
-///   hash-period, period-data, DAG-position, transaction-position, period
-///   lambda, and executed-status rows are checked exactly.
-/// - Storage conflicts are never repaired by this API.
-pub fn inspect_pbft_finalization_resume(
-    storage: &BridgeStorage,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-    final_chain_last_block: u64,
-) -> Result<FfiPbftFinalizationResumePlan> {
-    let write_set: PbftFinalizationStorageWriteIntent = write_set.into();
-    inspect_domain_pbft_finalization_resume(&storage.0, &write_set, final_chain_last_block)
-        .map(Into::into)
 }
 
 impl BridgePbftFinalizationRuntimeSession {
@@ -1625,9 +1594,15 @@ mod tests {
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
 
-            let missing = inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 9)
-                .expect("resume inspection should run");
-            assert_eq!(missing.status, 0);
+            let write_set: PbftFinalizationStorageWriteIntent = (&plan.storage_write_intent).into();
+            let missing = rustaxa_consensus::pbft_finalize::inspect_pbft_finalization_resume(
+                &storage.0, &write_set, 9,
+            )
+            .expect("resume inspection should run");
+            assert_eq!(
+                missing.status,
+                rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NotPersisted
+            );
             assert!(!missing.duplicate_classified);
 
             let primary = apply_pbft_finalization_storage_writes(
@@ -1639,11 +1614,24 @@ mod tests {
             .expect("primary stage should apply");
             assert_eq!(primary.status, APPLY_STATUS_APPLIED_TEST);
 
-            let needs_dynamic =
-                inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 9)
-                    .expect("resume inspection should run");
-            assert_eq!(needs_dynamic.status, 6);
-            assert_eq!(needs_dynamic.replay_actions, vec![8, 9, 10, 11, 12]);
+            let needs_dynamic = rustaxa_consensus::pbft_finalize::inspect_pbft_finalization_resume(
+                &storage.0, &write_set, 9,
+            )
+            .expect("resume inspection should run");
+            assert_eq!(
+                needs_dynamic.status,
+                rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+            );
+            assert_eq!(
+                needs_dynamic.replay_actions,
+                vec![
+                    PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                    PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                    PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                    PbftFinalizationRuntimeAction::SetExecutedFlag,
+                    PbftFinalizationRuntimeAction::AdvancePeriod,
+                ]
+            );
 
             let mut dynamic_stage = empty_stage(APPEND_STAGE_DYNAMIC_LAMBDA);
             dynamic_stage.rounds_count_dynamic_lambda = 7;
@@ -1658,10 +1646,23 @@ mod tests {
             assert_eq!(dynamic.status, APPLY_STATUS_APPLIED_TEST);
 
             let needs_final_chain =
-                inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 9)
-                    .expect("resume inspection should run");
-            assert_eq!(needs_final_chain.status, 2);
-            assert_eq!(needs_final_chain.replay_actions, vec![9, 10, 11, 12]);
+                rustaxa_consensus::pbft_finalize::inspect_pbft_finalization_resume(
+                    &storage.0, &write_set, 9,
+                )
+                .expect("resume inspection should run");
+            assert_eq!(
+                needs_final_chain.status,
+                rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsFinalChainReplay
+            );
+            assert_eq!(
+                needs_final_chain.replay_actions,
+                vec![
+                    PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                    PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                    PbftFinalizationRuntimeAction::SetExecutedFlag,
+                    PbftFinalizationRuntimeAction::AdvancePeriod,
+                ]
+            );
 
             let executed = apply_pbft_finalization_storage_writes(
                 &storage,
@@ -1672,10 +1673,14 @@ mod tests {
             .expect("executed stage should apply");
             assert_eq!(executed.status, APPLY_STATUS_APPLIED_TEST);
 
-            let complete =
-                inspect_pbft_finalization_resume(&storage, &plan.storage_write_intent, 10)
-                    .expect("resume inspection should run");
-            assert_eq!(complete.status, 1);
+            let complete = rustaxa_consensus::pbft_finalize::inspect_pbft_finalization_resume(
+                &storage.0, &write_set, 10,
+            )
+            .expect("resume inspection should run");
+            assert_eq!(
+                complete.status,
+                rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Complete
+            );
             assert!(complete.duplicate_classified);
             assert!(complete.complete);
             assert!(complete.replay_actions.is_empty());

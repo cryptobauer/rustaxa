@@ -203,6 +203,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted. Live DAG transaction availability and
   sync materialization use runtime-owned DAG APIs; the direct storage query had only a C++ bridge-test caller, with
   native Rust coverage retained for pending, finalized, system, and missing transaction RLP lookups.
+- The standalone `inspect_pbft_finalization_resume` CXX export is deleted. Live duplicate-finalization recovery enters
+  through `pbft_manager_runtime_inspect_finalization_resume`, which keeps storage ownership on
+  `BridgePbftManagerRuntime`; Rust tests call the native consensus resume inspector directly.
 - `BridgeTransactionQueue` CXX exports are narrowed to the methods used by `transaction_queue_shim`. The no-caller
   queue-only planning/hash-view exports `transaction_queue_erase_plan`, `transaction_queue_ordered_hashes`,
   `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and

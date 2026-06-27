@@ -588,6 +588,9 @@ Implementation status:
   DAG transaction availability and sync payload lookup continue through runtime-owned DAG APIs; the direct
   storage-query method only backed bridge-test scaffolding, and Rust bridge storage tests now cover pending, finalized,
   system, and missing transaction RLP lookup through the native helper.
+- The standalone `inspect_pbft_finalization_resume` CXX export is deleted. Production duplicate-finalization recovery
+  uses the runtime-owned `pbft_manager_runtime_inspect_finalization_resume` API from `pbft_manager_shim`, while Rust
+  bridge and native consensus tests exercise the native resume inspector directly.
 - The unused CXX `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` exports are deleted. Their wrapper
   modules only protected bridge-shaped test scaffolding; production C++ had no callsites, and native
   `rustaxa-consensus` vote pipeline/admission tests now own the behavior coverage.
@@ -787,6 +790,12 @@ Implementation status:
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_rlp_batch_lookup_reads_pending_finalized_system_and_missing`
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  Validation for this standalone PBFT finalization resume inspector export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge resume_inspector_classifies_primary_finalization_crash_windows`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus resume_inspector_classifies_storage_backed_duplicate_restart_windows`
+  - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
   Validation for this CXX export shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
