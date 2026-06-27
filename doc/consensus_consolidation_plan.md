@@ -464,9 +464,9 @@ Acceptance:
 - Completed in this pass: `FinalChain::rustFinalChainForRust()` accessor was removed from the
   `final_chain_shim`, eliminating the direct internal bridge-handle sharing point in FinalChain call-paths.
 
-- Current status: transaction, PBFT, and pillar manager runtime-heavy shims are still in progress under this slice. Slice 6
-  remains incomplete once these shims still own orchestration loops or sidecar/session state that is not a thin external
-  call boundary. No additional `RUSTAXA_ENABLE_*` runtime orchestration blocks have been removed from this pass.
+- Current status: the transaction manager packing path is now thin (`prepare` + single `finalize`) and does not keep shim-side
+  estimate-session loops. Slice 6 remains incomplete because `pbft_manager_shim` and `pillar_chain_manager_shim` still own
+  orchestration loops or session state that is not yet routed through one-shot Rust service calls.
 
 Implementation notes:
 
@@ -476,9 +476,9 @@ Implementation notes:
 - `dag_manager_shim` now moved `getShared()` and `getDagMutex()` off inherited `DagManagerOld` access and onto shim-owned
   state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
   callers now perform the lock sequencing directly.
-- `transaction_manager_shim` and `pbft_manager_shim` still route through shim-owned orchestration and session wiring,
-  especially for admission/packing/finalization flows. Their shrink opportunities are the next concrete work and require
-  deleting/rewiring shim-local orchestration before the slice can be marked complete.
+- `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
+  The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
+  reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -486,12 +486,16 @@ Implementation notes:
   `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge` plus
   `cargo check --manifest-path rust/Cargo.toml -p rustaxa-consensus --no-run`.
   All passed with no compiler or link-time failures.
+- Added targeted Rust checks for the new transaction-manager packing API path:
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_manager_runtime_pack_prepare` and
+  `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_manager::tests::bridge_transaction_manager_runtime_pack`.
+  Both passed.
+- Rebuilt `taraxad` via `cmake --build /build --target taraxad --parallel 12` to verify C++ shim/bridge signature integration.
 - Focused integration execution (`PbftManagerTest.pbft_manager_run_multi_nodes`) passed on this branch in the
   requested build configuration.
-- No new transport/network/VDF failures were introduced by the current slice state, but PBFT and Pillar manager
-  shim orchestration loops are still present and remain the remaining Slice 6 work.
-- The immediate follow-up is one-loop reduction per subsystem (`transaction_manager_shim` pack/admission/runtime and
-  `pbft_manager_shim` tick/finalization/state-action orchestration) before Slice 6 can be marked complete.
+- No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
+  `pillar_chain_manager_shim` orchestration loops are still present and remain the remaining Slice 6 work.
+- The immediate follow-up is one-loop reduction in those subsystems before Slice 6 can be marked complete.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 

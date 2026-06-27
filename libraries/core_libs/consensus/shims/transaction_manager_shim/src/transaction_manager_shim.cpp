@@ -594,28 +594,22 @@ class TransactionManagerRustShimAccess {
     std::lock_guard pack_lock(rust_manager.pack_mutex_);
     bool session_active = false;
     try {
-      {
-        std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-        rust_manager.runtime_->transaction_manager_runtime_pack_begin_sharded(
-            weight_limit, kMinTxGas, proposal_period, rust_manager.kEstimateGasLimit,
-            rustFinalChainLastBlockNumber(manager), total_shards, node_trx_shard, shard_period_interval);
-        session_active = true;
-      }
-
-      auto step = [&]() {
+      rustaxa::TransactionPackPreparedPlan prepare_plan = [&]() {
         std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
         try {
-          return rust_manager.runtime_->transaction_manager_runtime_pack_request_next();
+          return rust_manager.runtime_->transaction_manager_runtime_pack_prepare_sharded(
+              weight_limit, kMinTxGas, proposal_period, rust_manager.kEstimateGasLimit,
+              rustFinalChainLastBlockNumber(manager), total_shards, node_trx_shard, shard_period_interval);
         } catch (const std::exception& e) {
-          throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_STEP_FAILED: ") + e.what());
+          throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_PREPARE_FAILED: ") + e.what());
         }
       }();
-      if (!step.request_estimate) {
-        session_active = false;
-      }
+      session_active = true;
 
-      while (step.request_estimate) {
-        const auto& candidate = step.candidate;
+      rust::Vec<rustaxa::TransactionPackSessionEstimateInput> estimate_inputs;
+      estimate_inputs.reserve(prepare_plan.request_estimates.size());
+
+      for (const auto& candidate : prepare_plan.request_estimates) {
         if (!candidate.found) {
           throw std::runtime_error(
               "Rust transaction manager runtime requested estimation for a missing pack candidate");
@@ -632,19 +626,30 @@ class TransactionManagerRustShimAccess {
         estimate_input.gas_used = estimate.gas_used;
         estimate_input.last_block_number = rustFinalChainLastBlockNumber(manager);
         estimate_input.result_rlp = executionResultToBridgeBytes(estimate);
+        estimate_inputs.push_back(std::move(estimate_input));
+      }
 
-        step = [&]() {
+      rustaxa::TransactionPackSessionStep step = [&]() {
+        if (prepare_plan.request_estimates.empty()) {
+          return rustaxa::TransactionPackSessionStep{
+              .request_estimate = false,
+              .candidate = rustaxa::TransactionPackSessionCandidate{},
+              .selected_transactions = prepare_plan.selected_transactions,
+              .demoted_hashes = prepare_plan.demoted_hashes,
+              .stopped = prepare_plan.stopped,
+          };
+        }
+
+        return [&]() {
           std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
           try {
-            return rust_manager.runtime_->transaction_manager_runtime_pack_record_estimate_step(estimate_input);
+            return rust_manager.runtime_->transaction_manager_runtime_pack_finalize_with_estimates(estimate_inputs);
           } catch (const std::exception& e) {
-            throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_RECORD_ESTIMATE_FAILED: ") + e.what());
+            throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_FINALIZE_FAILED: ") + e.what());
           }
         }();
-        if (!step.request_estimate) {
-          session_active = false;
-        }
-      }
+      }();
+      session_active = false;
 
       TransactionManager::PackedProposalTransactions selected_payloads;
       selected_payloads.transaction_hashes.reserve(step.selected_transactions.size());

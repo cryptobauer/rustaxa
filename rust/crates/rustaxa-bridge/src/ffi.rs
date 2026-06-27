@@ -304,6 +304,8 @@ pub struct TransactionManagerRuntimePackSession {
     pub selected: Vec<(TransactionQueueEntry, u64)>,
     pub demoted_hashes: Vec<H256>,
     pub stopped: bool,
+    pub pending_estimate_candidates: Vec<TransactionQueueEntry>,
+    pub pending_estimate_index: usize,
 }
 
 #[cxx::bridge(namespace = "rustaxa")]
@@ -903,6 +905,18 @@ pub mod rustaxa_ffi {
     struct TransactionPackSessionStep {
         request_estimate: bool,
         candidate: TransactionPackSessionCandidate,
+        selected_transactions: Vec<TransactionPackSelectedTransaction>,
+        demoted_hashes: Vec<TransactionQueueHash>,
+        stopped: bool,
+    }
+
+    /// One-shot packing plan returned before C++ estimates are executed.
+    ///
+    /// `estimate_requests` contains candidates that require live gas estimation.
+    /// `selected_transactions` and `demoted_hashes` already include the
+    /// candidates resolved via declared gas or cache hits.
+    struct TransactionPackPreparedPlan {
+        request_estimates: Vec<TransactionPackSessionCandidate>,
         selected_transactions: Vec<TransactionPackSelectedTransaction>,
         demoted_hashes: Vec<TransactionQueueHash>,
         stopped: bool,
@@ -5237,12 +5251,27 @@ pub mod rustaxa_ffi {
             node_shard: u16,
             shard_period_interval: u64,
         ) -> Result<()>;
+        pub fn transaction_manager_runtime_pack_prepare_sharded(
+            self: &mut BridgeTransactionManagerRuntime,
+            weight_limit: u64,
+            min_transaction_gas: u64,
+            proposal_period: u64,
+            estimate_gas_limit: u64,
+            last_block_number: u64,
+            total_shards: u16,
+            node_shard: u16,
+            shard_period_interval: u64,
+        ) -> Result<TransactionPackPreparedPlan>;
         pub fn transaction_manager_runtime_pack_request_next(
             self: &mut BridgeTransactionManagerRuntime,
         ) -> Result<TransactionPackSessionStep>;
         pub fn transaction_manager_runtime_pack_record_estimate_step(
             self: &mut BridgeTransactionManagerRuntime,
             input: TransactionPackSessionEstimateInput,
+        ) -> Result<TransactionPackSessionStep>;
+        pub fn transaction_manager_runtime_pack_finalize_with_estimates(
+            self: &mut BridgeTransactionManagerRuntime,
+            inputs: Vec<TransactionPackSessionEstimateInput>,
         ) -> Result<TransactionPackSessionStep>;
         pub fn transaction_manager_runtime_pack_abort(
             self: &mut BridgeTransactionManagerRuntime,
