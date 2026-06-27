@@ -5,7 +5,7 @@
 #include "dag/dag_manager.hpp"
 
 #ifdef RUSTAXA_ENABLE
-#include "rustaxa-bridge/ffi.rs.h"
+#include "network/consensus_query.hpp"
 #endif
 
 namespace taraxa::plugin {
@@ -47,8 +47,11 @@ LightHistoryApi makeLightHistoryApi(std::weak_ptr<AppBase> app) {
       throw std::runtime_error("LIGHT_HISTORY_API_APP_EXPIRED");
     }
 #ifdef RUSTAXA_ENABLE
-    const auto query_api = rustaxa::create_consensus_query_api(node->getDB()->rustStorage());
-    const auto lookup = query_api->consensus_query_proposal_period_for_dag_level(dag_level);
+    const auto query_api = net::createConsensusQueryApi(node->getDB());
+    if (!query_api) {
+      throw std::runtime_error("LIGHT_HISTORY_API_QUERY_UNAVAILABLE");
+    }
+    const auto lookup = (*query_api)->consensus_query_proposal_period_for_dag_level(dag_level);
     if (!lookup.found) {
       return std::optional<uint64_t>{};
     }

@@ -125,7 +125,8 @@ Implementation status:
   - Test RPC default readers and public Rust-mode status/sortition methods
   - GraphQL `Query` consensus reader and compatibility block/DAG reader fallbacks
 - Endpoint-local construction of `rustaxa::create_consensus_query_api(...rustStorage())` has been removed from
-  `libraries/core_libs/network/rpc`, `libraries/core_libs/network/graphql`, and `libraries/plugin/rpc`.
+  `libraries/core_libs/network/rpc`, `libraries/core_libs/network/graphql`, `libraries/plugin/rpc`, and
+  `libraries/plugin/light`.
 - Compatibility reader bundles remain for non-Rust fallback, public formatting, live status, account/state reads,
   transaction submission, and external EVM/StateAPI boundaries.
 - Custom agents used:
