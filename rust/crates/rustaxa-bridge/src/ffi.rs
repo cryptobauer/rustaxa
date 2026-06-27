@@ -7381,10 +7381,6 @@ pub mod rustaxa_ffi {
             period: u64,
             period_lambda: u32,
         ) -> Result<()>;
-        pub fn save_rounds_count_dynamic_lambda(
-            self: &BridgeStorage,
-            rounds_count: u32,
-        ) -> Result<()>;
         pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
         pub fn get_last_sortition_params(
             self: &BridgeMetadataStorageQueries,

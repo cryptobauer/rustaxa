@@ -202,7 +202,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   storage->save_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue, true);
   storage->save_proposal_period_dag_levels_map(100, 50);
   storage->save_period_lambda(7, 42);
-  storage->save_rounds_count_dynamic_lambda(23);
+  auto dynamic_lambda_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_rounds_count_dynamic_lambda(*dynamic_lambda_batch, 23);
+  rustaxa::storage_shim_commit_batch(std::move(dynamic_lambda_batch), false);
 
   transcript.add("status_trx_count_after_save", toString(metadata_queries->get_status_field(kStatusFieldTrxCount)));
   transcript.add("pbft_mgr_field_round_after_save", toString(pbft_queries->get_pbft_mgr_field(kPbftMgrFieldRound)));
