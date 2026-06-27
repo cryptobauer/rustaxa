@@ -383,9 +383,9 @@ Implementation notes:
   runtime-owned planner through `pbft_manager_runtime_begin_pbft_sync_queue_drain`,
   `pbft_manager_runtime_pbft_sync_queue_drain_next`, and
   `pbft_manager_runtime_pbft_sync_queue_drain_report`.
-- `pbft_manager_shim` keeps a temporary sidecar deque for live `PeriodData`, `PbftVote`, and peer objects. Rust owns the
-  queue admission/order/pop/cleanup metadata; the sidecar deque should disappear when those payload model types move to
-  Rust.
+- `pbft_manager_shim` keeps a temporary sidecar deque for live `PeriodData` and peer objects only. Queue admission/order/
+  pop/cleanup metadata is owned by `pbft_manager_runtime_`; cert-vote payloads are now supplied in the pop plan and no
+  longer carried in the sidecar.
 - `vote_manager_shim::setNetwork` no longer forwards through `VoteManagerOld`; it writes the inherited protected network
   pointer directly. This removes one completed setter forwarding without changing the public C++ API.
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards through `TransactionManagerOld`; it is now a

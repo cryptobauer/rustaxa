@@ -355,7 +355,8 @@ Current snapshot after DAG proposer-session cursor consolidation:
   also deleted; bridge tests now cover the production constructor path directly.
 - `BridgePeriodDataQueue`, `period_data_queue_shim`, and `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` are retired. PBFT manager
   runtime owns period-data queue metadata through `pbft_manager_runtime_period_data_queue_*`; the C++ PBFT manager shim
-  temporarily owns live `PeriodData`, vote, and peer sidecars until those payload models move to Rust.
+  now temporarily owns only live `PeriodData` and peer sidecars, while cert-vote payloads are sourced directly from
+  `plan.previous_cert_vote_rlps` / `plan.cert_vote_rlps`.
 - `BridgePbftSyncQueueDrainSession` is retired. PBFT sync queue-drain planning is now owned by the long-lived
   `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_pbft_sync_queue_drain`,
   `pbft_manager_runtime_pbft_sync_queue_drain_next`, and

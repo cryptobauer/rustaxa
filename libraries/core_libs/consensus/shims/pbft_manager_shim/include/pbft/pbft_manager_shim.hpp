@@ -88,10 +88,9 @@ class PbftManager {
 
  public:
   PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-              rust::Box<rustaxa::BridgePbftManagerRuntime> pbft_manager_runtime,
-              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
-              std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
-              std::shared_ptr<final_chain::FinalChain> final_chain,
+              rust::Box<rustaxa::BridgePbftManagerRuntime> pbft_manager_runtime, std::shared_ptr<PbftChain> pbft_chain,
+              std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
+              std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
               std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
   ~PbftManager();
   PbftManager(const PbftManager &) = delete;
@@ -213,12 +212,12 @@ class PbftManager {
   /**
    * @brief Load the Rust-owned PBFT sync egress payload and sidecar attachment decision.
    *
-   * Inputs are packet-position facts and temporary C++ reward-vote sidecar facts from the network handler. Rust loads the
-   * canonical PeriodData bytes from rustaxa-storage and decides whether the caller should attach the reward-vote bundle.
-   * Transport, packet encoding, and vote sidecar materialization remain outside this storage boundary.
+   * Inputs are packet-position facts and temporary C++ reward-vote sidecar facts from the network handler. Rust loads
+   * the canonical PeriodData bytes from rustaxa-storage and decides whether the caller should attach the reward-vote
+   * bundle. Transport, packet encoding, and vote sidecar materialization remain outside this storage boundary.
    */
   PbftSyncEgressPayload getPbftSyncEgressPayload(PbftPeriod period, bool last_block, bool pbft_chain_synced,
-                                                bool reward_votes_present, PbftPeriod reward_votes_period) const;
+                                                 bool reward_votes_present, PbftPeriod reward_votes_period) const;
 
   /**
    * @brief Enable or disable PBFT sync snapshot creation through the Rust-mode PBFT manager boundary.
@@ -377,15 +376,15 @@ class PbftManager {
    * Applies the Rust-planned PBFT manager period-advance effect script.
    *
    * Inputs are the just-finalized PBFT-chain size and the accepted Rust reset-consensus transition plan. The method
-   * executes only the temporary compatibility effects still owned by the shim: timers, wallet eligibility, vote cleanup,
-   * and proposed-block cleanup. Rust remains the source of ordering and runtime snapshot updates, and every completed
-   * action is reported back to Rust before the final period cursor is committed.
+   * executes only the temporary compatibility effects still owned by the shim: timers, wallet eligibility, vote
+   * cleanup, and proposed-block cleanup. Rust remains the source of ordering and runtime snapshot updates, and every
+   * completed action is reported back to Rust before the final period cursor is committed.
    *
    * Returns false when Rust rejects the plan or resulting runtime period snapshot.
    */
   bool applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size);
   bool applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size,
-                                      const rustaxa::PbftManagerTransitionPlan& transition_plan);
+                                      const rustaxa::PbftManagerTransitionPlan &transition_plan);
 
   /**
    * @brief Check if there is 2t+1 cert votes for some valid block, if yes - push it into the chain
@@ -738,13 +737,11 @@ class PbftManager {
    * Live C++ sidecar for Rust-owned PBFT sync queue metadata.
    *
    * Rust owns entry ids, period admission, size, cleanup, and pop-source decisions inside `pbft_manager_runtime_`.
-   * The shim keeps live legacy objects here only until `PeriodData`, votes, and peer identity payloads are ported.
+   * The shim keeps live legacy objects here only until `PeriodData` and peer identity payloads are ported.
    */
   struct QueuedPeriodDataPayload {
     uint64_t entry_id = 0;
     PeriodData period_data;
-    std::vector<std::shared_ptr<PbftVote>> previous_block_cert_votes;
-    std::vector<std::shared_ptr<PbftVote>> current_block_cert_votes;
     dev::p2p::NodeID node_id;
   };
 
@@ -760,7 +757,6 @@ class PbftManager {
     std::vector<vote_hash_t> reward_vote_hashes;
     std::vector<bytes> pillar_vote_rlps;
     std::vector<bytes> transaction_rlps;
-    std::vector<bytes> cert_vote_rlps;
     std::vector<trx_hash_t> dag_transaction_hashes;
     std::vector<trx_hash_t> period_data_transaction_hashes;
     std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> period_data_transaction_identities;

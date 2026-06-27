@@ -594,11 +594,12 @@ std::vector<bytes> fromBridgeTransactionRlps(const rust::Vec<rustaxa::PeriodData
   return out;
 }
 
-std::vector<bytes> fromBridgePbftVoteRlps(const rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> &payloads) {
-  std::vector<bytes> out;
+std::vector<std::shared_ptr<PbftVote>> fromBridgePbftVotes(
+    const rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> &payloads) {
+  std::vector<std::shared_ptr<PbftVote>> out;
   out.reserve(payloads.size());
   for (const auto &payload : payloads) {
-    out.emplace_back(payload.vote_rlp.begin(), payload.vote_rlp.end());
+    out.push_back(std::make_shared<PbftVote>(bytes(payload.vote_rlp.begin(), payload.vote_rlp.end())));
   }
   return out;
 }
@@ -723,15 +724,6 @@ std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> toVerifyNo
 bool previousCertFirstVoteHasWeight(const PeriodData &period_data) {
   return !period_data.previous_block_cert_votes.empty() &&
          period_data.previous_block_cert_votes.front()->getWeight().has_value();
-}
-
-bool votesHaveWeights(const std::vector<std::shared_ptr<PbftVote>> &votes) {
-  for (const auto &vote : votes) {
-    if (!vote || !vote->getWeight().has_value()) {
-      return false;
-    }
-  }
-  return !votes.empty();
 }
 
 bool extraDataPillarBlockHashPresent(const std::shared_ptr<PbftBlock> &pbft_block) {
@@ -1020,23 +1012,8 @@ PbftManager::PoppedPeriodDataPayload PbftManager::popPeriodDataQueueWithMetadata
   }
 
   auto payload = popQueuedPeriodDataPayload(plan.entry_id);
-  if (!payload.previous_block_cert_votes.empty()) {
-    payload.period_data.previous_block_cert_votes = payload.previous_block_cert_votes;
-  }
-
-  std::vector<std::shared_ptr<PbftVote>> cert_votes;
-  if (plan.use_last_block_cert_votes) {
-    cert_votes = std::move(payload.current_block_cert_votes);
-  } else {
-    if (period_data_queue_payloads_.empty()) {
-      throw periodDataQueueError("Rust pop selected next-entry cert votes while C++ payload queue is empty");
-    }
-    if (period_data_queue_payloads_.front().entry_id != plan.next_entry_id) {
-      throw periodDataQueueMismatch("next payload mismatch", plan.next_entry_id,
-                                    period_data_queue_payloads_.front().entry_id);
-    }
-    cert_votes = period_data_queue_payloads_.front().previous_block_cert_votes;
-  }
+  payload.period_data.previous_block_cert_votes = fromBridgePbftVotes(plan.previous_cert_vote_rlps);
+  auto cert_votes = fromBridgePbftVotes(plan.cert_vote_rlps);
 
   return PoppedPeriodDataPayload{std::move(payload.period_data),
                                  std::move(cert_votes),
@@ -1049,7 +1026,6 @@ PbftManager::PoppedPeriodDataPayload PbftManager::popPeriodDataQueueWithMetadata
                                  fromBridgeTransactionHashes(plan.reward_vote_hashes),
                                  fromBridgePillarVoteRlps(plan.pillar_vote_rlps),
                                  fromBridgeTransactionRlps(plan.transaction_rlps),
-                                 fromBridgePbftVoteRlps(plan.cert_vote_rlps),
                                  fromBridgeTransactionHashes(plan.dag_transaction_hashes),
                                  fromBridgeTransactionHashes(plan.period_data_transaction_hashes),
                                  toVerifyNotFinalizedFacts(plan.period_data_transaction_identities),
@@ -1459,9 +1435,8 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
 
   try {
     const auto period = pbft_chain_->getPbftChainSize();
-    const auto facts = final_chain_->collectPbftFinalChainFacts(
-        makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, false, true,
-                                      std::move(eligible_addresses)));
+    const auto facts = final_chain_->collectPbftFinalChainFacts(makePbftFinalChainFactRequest(
+        period, kNullBlockHash, false, false, false, true, std::move(eligible_addresses)));
     uint64_t node_votes_count = 0;
     for (const auto &address_fact : facts.address_facts) {
       if (address_fact.status != kPbftSyncFactValid) {
@@ -4990,19 +4965,11 @@ void PbftManager::periodDataQueuePush(PeriodData &&period_data, dev::p2p::NodeID
     return;
   }
 
-  auto previous_block_cert_votes = period_data.previous_block_cert_votes;
-  if (!votesHaveWeights(previous_block_cert_votes) && !outcome.clear_existing && !period_data_queue_payloads_.empty() &&
-      votesHaveWeights(period_data_queue_payloads_.back().current_block_cert_votes)) {
-    previous_block_cert_votes = period_data_queue_payloads_.back().current_block_cert_votes;
-  }
-
   if (outcome.clear_existing) {
     period_data_queue_payloads_.clear();
   }
 
-  period_data_queue_payloads_.push_back(QueuedPeriodDataPayload{entry_id, std::move(period_data),
-                                                                std::move(previous_block_cert_votes),
-                                                                std::move(current_block_cert_votes), node_id});
+  period_data_queue_payloads_.push_back(QueuedPeriodDataPayload{entry_id, std::move(period_data), node_id});
   ++next_period_data_queue_entry_id_;
 }
 
