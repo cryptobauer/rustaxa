@@ -8,8 +8,8 @@ use crate::ffi::rustaxa_ffi::{
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
     DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
     DagProposerBlockIntentInput, DagProposerBlockIntentNowInput, DagProposerFrontierFacts,
-    DagProposerRetryStateSnapshot, DagProposerSessionStep, DagProposerSignedBlockIntent,
-    DagProposerSignedBlockIntentInput, DagProposerSigningReport, DagProposerStaleProofReport,
+    DagProposerSessionStep, DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput,
+    DagProposerSigningReport, DagProposerStaleProofReport,
     DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
     DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
     DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
@@ -24,10 +24,7 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
     DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
-use crate::ffi::{
-    BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeDagProposerRetryState,
-    BridgeStorage,
-};
+use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 #[cfg(test)]
@@ -80,9 +77,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
-
-#[cfg(test)]
-const DAG_PROPOSER_REASON_OK: u32 = 0;
 
 const DAG_VERIFY_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_VERIFY_SESSION_STATUS_COMPLETE: u8 = 1;
@@ -151,6 +145,7 @@ enum DagProposerSessionAction {
 pub struct DagProposerSession {
     action: DagProposerSessionAction,
     attempt: DagProposerAttemptPlan,
+    retry_key: [u8; 32],
     minimum_vdf_difficulty: u16,
     status: u8,
     reason_code: u32,
@@ -167,9 +162,9 @@ pub struct DagProposerSession {
 
 /// Rust-owned durable retry cursor for one configured DAG proposer wallet.
 ///
-/// C++ holds this as an opaque handle and may only snapshot it before creating
-/// a proposal session or apply a session step after Rust asks for a retry-state
-/// update. This keeps stale-VDF retry accounting out of the proposer shell.
+/// The DAG manager runtime keys this by proposer wallet VRF public key. It is
+/// read when a proposal session begins and updated atomically with terminal
+/// session steps that request retry-state changes.
 pub struct DagProposerRetryState {
     last_propose_level: u64,
     retry_count: u64,
@@ -211,6 +206,7 @@ pub fn create_dag_manager_runtime_from_storage(
         storage: storage.0.clone(),
         next_proposer_session_id: 1,
         proposer_sessions: BTreeMap::new(),
+        proposer_retry_states: BTreeMap::new(),
         verify_block_session: None,
     }))
 }
@@ -1043,8 +1039,21 @@ impl BridgeDagManagerRuntime {
     /// The cursor starts by running the existing Rust proposal-attempt planner. Non-continuing plans become terminal
     /// steps immediately; continuing plans request the live transaction-packing executor boundary. All later stages
     /// advance only through explicit C++ reports.
-    pub fn begin_proposer_session(&mut self, input: DagProposerAttemptInput) -> Result<u64> {
+    pub fn begin_proposer_session(&mut self, mut input: DagProposerAttemptInput) -> Result<u64> {
         let minimum_vdf_difficulty = input.sortition_params.difficulty_min;
+        let retry_key = input.wallet_vrf_public_key;
+        let retry_state =
+            self.proposer_retry_states
+                .entry(retry_key)
+                .or_insert(DagProposerRetryState {
+                    last_propose_level: 0,
+                    retry_count: 0,
+                    max_retry_count: input.max_retry_count,
+                });
+        retry_state.max_retry_count = input.max_retry_count;
+        input.last_propose_level = retry_state.last_propose_level;
+        input.retry_count = retry_state.retry_count;
+        input.max_retry_count = retry_state.max_retry_count;
         let attempt = self.dag_manager_runtime_plan_proposal_attempt(input)?;
         let action = if attempt.action == rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
             DagProposerSessionAction::PackTransactions
@@ -1068,6 +1077,7 @@ impl BridgeDagManagerRuntime {
             DagProposerSession {
                 action,
                 status,
+                retry_key,
                 reason_code: attempt.reason_code,
                 return_value: false,
                 update_retry_state: attempt.update_retry_state,
@@ -1671,10 +1681,7 @@ pub fn dag_manager_runtime_proposer_session_next(
         return dag_proposer_session_not_started_step();
     };
     let step = dag_proposer_session_step(session);
-    if dag_proposer_session_step_is_terminal(&step) {
-        runtime.proposer_sessions.remove(&session_id);
-    }
-    step
+    finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
 /// Reports live transaction-packing results to the runtime-owned DAG proposal cursor.
@@ -1730,10 +1737,7 @@ pub fn dag_manager_runtime_proposer_session_report_transactions(
             }
         }
     };
-    if dag_proposer_session_step_is_terminal(&step) {
-        runtime.proposer_sessions.remove(&session_id);
-    }
-    step
+    finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
 /// Reports VDF worker wait progress to the runtime-owned DAG proposal cursor.
@@ -1775,10 +1779,7 @@ pub fn dag_manager_runtime_proposer_session_report_vdf_wait(
             }
         }
     };
-    if dag_proposer_session_step_is_terminal(&step) {
-        runtime.proposer_sessions.remove(&session_id);
-    }
-    step
+    finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
 /// Reports VDF proof completion to the runtime-owned DAG proposal cursor.
@@ -1804,10 +1805,7 @@ pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
             dag_proposer_session_step(session)
         }
     };
-    if dag_proposer_session_step_is_terminal(&step) {
-        runtime.proposer_sessions.remove(&session_id);
-    }
-    step
+    finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
 /// Reports stale-proof recheck results to the runtime-owned DAG proposal cursor.
@@ -1845,10 +1843,7 @@ pub fn dag_manager_runtime_proposer_session_report_stale_proof(
             dag_proposer_session_step(session)
         }
     };
-    if dag_proposer_session_step_is_terminal(&step) {
-        runtime.proposer_sessions.remove(&session_id);
-    }
-    step
+    finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
 /// Reports signed-block materialization to the runtime-owned DAG proposal cursor.
@@ -1881,10 +1876,7 @@ pub fn dag_manager_runtime_proposer_session_report_signing(
             dag_proposer_session_step(session)
         }
     };
-    if dag_proposer_session_step_is_terminal(&step) {
-        runtime.proposer_sessions.remove(&session_id);
-    }
-    step
+    finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
 /// Reports `DagManager::addDagBlock` execution to the runtime-owned DAG proposal cursor.
@@ -1927,38 +1919,8 @@ pub fn dag_manager_runtime_proposer_session_report_add_block(
             dag_proposer_session_step(session)
         }
     };
-    if dag_proposer_session_step_is_terminal(&step) {
-        runtime.proposer_sessions.remove(&session_id);
-    }
-    step
+    finish_dag_proposer_session_step(runtime, session_id, step)
 }
-pub fn create_dag_proposer_retry_state(max_retry_count: u64) -> Box<BridgeDagProposerRetryState> {
-    Box::new(BridgeDagProposerRetryState {
-        state: DagProposerRetryState {
-            last_propose_level: 0,
-            retry_count: 0,
-            max_retry_count,
-        },
-    })
-}
-
-impl BridgeDagProposerRetryState {
-    pub fn dag_proposer_retry_state_snapshot(&self) -> DagProposerRetryStateSnapshot {
-        DagProposerRetryStateSnapshot {
-            last_propose_level: self.state.last_propose_level,
-            retry_count: self.state.retry_count,
-            max_retry_count: self.state.max_retry_count,
-        }
-    }
-
-    pub fn dag_proposer_retry_state_apply(&mut self, step: &DagProposerSessionStep) {
-        if step.update_retry_state {
-            self.state.last_propose_level = step.next_last_propose_level;
-            self.state.retry_count = step.next_retry_count;
-        }
-    }
-}
-
 /// Runs deterministic transaction availability decisions for DAG block
 /// verification.
 ///
@@ -2614,6 +2576,27 @@ fn invalid_dag_proposer_report(
     session.return_value = false;
     session.error_code = error_code.to_string();
     dag_proposer_session_step(session)
+}
+
+fn finish_dag_proposer_session_step(
+    runtime: &mut BridgeDagManagerRuntime,
+    session_id: u64,
+    step: DagProposerSessionStep,
+) -> DagProposerSessionStep {
+    if !dag_proposer_session_step_is_terminal(&step) {
+        return step;
+    }
+
+    if step.update_retry_state {
+        if let Some(session) = runtime.proposer_sessions.get(&session_id) {
+            if let Some(retry_state) = runtime.proposer_retry_states.get_mut(&session.retry_key) {
+                retry_state.last_propose_level = step.next_last_propose_level;
+                retry_state.retry_count = step.next_retry_count;
+            }
+        }
+    }
+    runtime.proposer_sessions.remove(&session_id);
+    step
 }
 
 fn dag_proposer_session_step_is_terminal(step: &DagProposerSessionStep) -> bool {
@@ -3568,63 +3551,6 @@ mod tests {
     }
 
     #[test]
-    fn dag_proposer_retry_state_applies_session_steps() {
-        let mut state = create_dag_proposer_retry_state(20);
-        let initial = state.dag_proposer_retry_state_snapshot();
-        assert_eq!(initial.last_propose_level, 0);
-        assert_eq!(initial.retry_count, 0);
-        assert_eq!(initial.max_retry_count, 20);
-
-        let mut step = DagProposerSessionStep {
-            status: DAG_PROPOSER_SESSION_STATUS_COMPLETE,
-            action: DAG_PROPOSER_SESSION_ACTION_NONE,
-            reason_code: DAG_PROPOSER_REASON_OK,
-            return_value: false,
-            update_retry_state: true,
-            next_last_propose_level: 7,
-            next_retry_count: 3,
-            frontier_pivot: [0; 32],
-            frontier_tips: Vec::new(),
-            proposal_level: 7,
-            proposal_period: 0,
-            last_finalized_period: 0,
-            vrf_input: Vec::new(),
-            vote_count: 0,
-            max_vote_count: 0,
-            vdf_difficulty: 0,
-            vdf_stale: false,
-            old_proposal: false,
-            vdf_message: Vec::new(),
-            selected_transaction_hashes: Vec::new(),
-            transaction_gas_estimations: Vec::new(),
-            transaction_request: DagProposerTransactionPackRequest {
-                proposal_period: 0,
-                weight_limit: 0,
-                total_transaction_shards: 1,
-                node_transaction_shard: 0,
-                shard_period_interval: 0,
-            },
-            record_proposed_block: false,
-            vdf_poll_interval_ms: 100,
-            stale_proof_sleep_ms: 1_000,
-            error_code: String::new(),
-        };
-        state.dag_proposer_retry_state_apply(&step);
-        let updated = state.dag_proposer_retry_state_snapshot();
-        assert_eq!(updated.last_propose_level, 7);
-        assert_eq!(updated.retry_count, 3);
-        assert_eq!(updated.max_retry_count, 20);
-
-        step.update_retry_state = false;
-        step.next_last_propose_level = 9;
-        step.next_retry_count = 5;
-        state.dag_proposer_retry_state_apply(&step);
-        let unchanged = state.dag_proposer_retry_state_snapshot();
-        assert_eq!(unchanged.last_propose_level, 7);
-        assert_eq!(unchanged.retry_count, 3);
-    }
-
-    #[test]
     fn dag_manager_runtime_proposer_session_orders_executor_reports() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_session");
 
@@ -3760,6 +3686,13 @@ mod tests {
             assert!(complete.update_retry_state);
             assert_eq!(complete.next_last_propose_level, 1);
             assert_eq!(complete.next_retry_count, 0);
+            let retry_state = runtime
+                .proposer_retry_states
+                .get(&vrf_key)
+                .expect("terminal step should persist retry state");
+            assert_eq!(retry_state.last_propose_level, 1);
+            assert_eq!(retry_state.retry_count, 0);
+            assert_eq!(retry_state.max_retry_count, 20);
 
             let after_complete =
                 dag_manager_runtime_proposer_session_next(&mut runtime, session_id);

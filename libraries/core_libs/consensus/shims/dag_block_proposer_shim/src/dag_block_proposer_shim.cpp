@@ -124,7 +124,6 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   if (proposal_period.has_value()) {
     sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);
   }
-  const auto retry_state = node_dag_proposer_data->retry_state->dag_proposer_retry_state_snapshot();
 
   rustaxa::DagProposerAttemptInput attempt_input;
   attempt_input.transaction_pool_size = trx_mgr_->getTransactionPoolSize();
@@ -141,9 +140,9 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   attempt_input.sortition_params = sortition_params;
   attempt_input.max_non_finalized_dag_blocks = kMaxNonFinalizedDagBlocks;
   attempt_input.max_non_finalized_dag_blocks_low_difficulty = kMaxNonFinalizedDagBlocksLowDifficulty;
-  attempt_input.last_propose_level = retry_state.last_propose_level;
-  attempt_input.retry_count = retry_state.retry_count;
-  attempt_input.max_retry_count = retry_state.max_retry_count;
+  attempt_input.last_propose_level = 0;
+  attempt_input.retry_count = 0;
+  attempt_input.max_retry_count = node_dag_proposer_data->max_num_tries;
   attempt_input.proposal_weight_limit = kDagProposeGasLimit;
   attempt_input.total_transaction_shards = total_trx_shards_;
   attempt_input.node_transaction_shard = node_dag_proposer_data->trx_shard;
@@ -151,9 +150,6 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   const auto proposer_session_id = dag_mgr_->beginProposerSession(std::move(attempt_input));
   auto step = dag_mgr_->proposerSessionNext(proposer_session_id);
-  auto apply_retry_state = [&node_dag_proposer_data](const rustaxa::DagProposerSessionStep& plan) {
-    node_dag_proposer_data->retry_state->dag_proposer_retry_state_apply(plan);
-  };
   auto fail_on_invalid_report = [](const rustaxa::DagProposerSessionStep& plan) {
     if (plan.status == kDagProposerSessionStatusInvalidReport) {
       throw std::runtime_error("Rust DAG proposer session rejected executor report: " + std::string(plan.error_code));
@@ -181,7 +177,6 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     if (plan.status != kDagProposerSessionStatusComplete) {
       return std::nullopt;
     }
-    apply_retry_state(plan);
     log_terminal_skip(plan);
     return plan.return_value;
   };

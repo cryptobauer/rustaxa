@@ -170,11 +170,9 @@ pub struct BridgeDagManagerRuntime {
     pub storage: Arc<Storage>,
     pub next_proposer_session_id: u64,
     pub proposer_sessions: std::collections::BTreeMap<u64, crate::dag::DagProposerSession>,
+    pub proposer_retry_states:
+        std::collections::BTreeMap<[u8; 32], crate::dag::DagProposerRetryState>,
     pub verify_block_session: Option<crate::dag::DagVerifyBlockSession>,
-}
-
-pub struct BridgeDagProposerRetryState {
-    pub state: crate::dag::DagProposerRetryState,
 }
 
 /// PBFT chain runtime wrapper. Pure state-only instances are used by unit tests
@@ -4382,13 +4380,6 @@ pub mod rustaxa_ffi {
         shard_period_interval: u64,
     }
 
-    /// Snapshot of Rust-owned durable retry cursor for one proposer wallet.
-    struct DagProposerRetryStateSnapshot {
-        last_propose_level: u64,
-        retry_count: u64,
-        max_retry_count: u64,
-    }
-
     /// Rust-planned transaction packing request for a DAG proposal attempt.
     struct DagProposerTransactionPackRequest {
         proposal_period: u64,
@@ -5392,17 +5383,6 @@ pub mod rustaxa_ffi {
             session_id: u64,
             report: DagProposerAddBlockReport,
         ) -> DagProposerSessionStep;
-        type BridgeDagProposerRetryState;
-        pub fn create_dag_proposer_retry_state(
-            max_retry_count: u64,
-        ) -> Box<BridgeDagProposerRetryState>;
-        pub fn dag_proposer_retry_state_snapshot(
-            self: &BridgeDagProposerRetryState,
-        ) -> DagProposerRetryStateSnapshot;
-        pub fn dag_proposer_retry_state_apply(
-            self: &mut BridgeDagProposerRetryState,
-            step: &DagProposerSessionStep,
-        );
         pub fn dag_verify_transaction_availability(
             input: DagVerifyTransactionAvailabilityInput,
         ) -> DagVerifyTransactionAvailabilityResult;
