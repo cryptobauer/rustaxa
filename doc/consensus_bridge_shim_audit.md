@@ -378,6 +378,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `pbft_manager_runtime_state_action_effect_session_next`, and
   `pbft_manager_runtime_state_action_effect_session_report`, so C++ no longer allocates a standalone bridge handle for
   this internal PBFT manager transcript.
+- Standalone PBFT state-action planners are retired from the CXX surface:
+  `plan_pbft_manager_state_action` and `plan_pbft_manager_state_action_effects` no longer exist.
+  Live C++ uses `pbft_manager_runtime_begin_state_action_effect_session` + next/report advancement for the same
+  transcript, with planner coverage kept in Rust bridge/runtime tests rather than bridge-surface planner functions.
 - `BridgePbftManagerRuntimeSession` is retired. The outer PBFT manager daemon-tick cursor is now owned by
   `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_session`, `pbft_manager_runtime_session_next`,
   `pbft_manager_runtime_session_report`, and `abort_pbft_manager_runtime_session`, so C++ no longer allocates a

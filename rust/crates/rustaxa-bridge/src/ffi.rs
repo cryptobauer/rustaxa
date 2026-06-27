@@ -1652,18 +1652,6 @@ pub mod rustaxa_ffi {
         already_next_voted_null: bool,
     }
 
-    /// Side-effect-free PBFT manager state-action plan for C++ execution.
-    struct PbftManagerStateActionPlan {
-        status: u8,
-        primary_intent: u8,
-        primary_hash: [u8; 32],
-        secondary_intent: u8,
-        secondary_hash: [u8; 32],
-        go_finish_state: bool,
-        loop_back_finish_state: bool,
-        error_code: String,
-    }
-
     /// One ordered PBFT manager state-action effect for C++ execution.
     struct PbftManagerStateActionEffect {
         intent: u8,
@@ -1671,15 +1659,6 @@ pub mod rustaxa_ffi {
         request_proposed_block_sidecar: bool,
         proposed_block_sidecar_hash: [u8; 32],
         proposed_block_sidecar_period: u64,
-    }
-
-    /// Ordered PBFT manager state-action effects planned by Rust.
-    struct PbftManagerStateActionEffectPlan {
-        status: u8,
-        effects: Vec<PbftManagerStateActionEffect>,
-        go_finish_state: bool,
-        loop_back_finish_state: bool,
-        error_code: String,
     }
 
     /// Report for one C++-executed PBFT manager state-action effect.
@@ -4955,12 +4934,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_eligible_wallet_period_wait(
             fact: PbftManagerEligibleWalletPeriodWaitFact,
         ) -> PbftManagerEligibleWalletPeriodWaitPlan;
-        pub fn plan_pbft_manager_state_action(
-            fact: PbftManagerStateActionFact,
-        ) -> PbftManagerStateActionPlan;
-        pub fn plan_pbft_manager_state_action_effects(
-            fact: PbftManagerStateActionFact,
-        ) -> PbftManagerStateActionEffectPlan;
         pub fn pbft_manager_runtime_begin_state_action_effect_session(
             runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerStateActionFact,

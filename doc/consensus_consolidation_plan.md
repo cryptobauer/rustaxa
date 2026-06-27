@@ -751,6 +751,13 @@ Implementation status:
   deleted lower-level planners and lambda lookup.
   Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
   PBFT manager standalone planner lane as a secondary cleanup candidate.
+- `plan_pbft_manager_state_action` and `plan_pbft_manager_state_action_effects` are deleted from the CXX surface.
+  Their behavior is covered through `BridgePbftManagerRuntime` state-action sessions (`begin`/`next`/`report`), and the
+  removed route no longer appears in `rust/crates/rustaxa-bridge/src/ffi.rs`.
+  `RustPbftSyncTest.ManagerStateActionEffectSessionRecordsFinishPollingTranscript` was migrated to session assertions only.
+  `bridge_runtime_owns_state_action_effect_session` and related session-level tests remain as coverage.
+  Custom agents used: `cpp-pro` confirmed no remaining C++ callsites; `rust-engineer` confirmed bridge/runtime test
+  coverage for ordered effects remains intact.
 - Direct PBFT sync admission and transaction-query planners are no longer CXX exports:
   `plan_pbft_sync_period_admission`, `plan_pbft_sync_transaction_query`, and their bridge-only fact/plan DTOs are
   deleted from the bridge surface. Live C++ uses the staged `plan_pbft_sync_process_period_data_runtime` API, whose

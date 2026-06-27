@@ -44,10 +44,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerStartupReplayRangeFact as FfiPbftManagerStartupReplayRangeFact,
     PbftManagerStartupReplayRangePlan as FfiPbftManagerStartupReplayRangePlan,
     PbftManagerStateActionEffect as FfiPbftManagerStateActionEffect,
-    PbftManagerStateActionEffectPlan as FfiPbftManagerStateActionEffectPlan,
     PbftManagerStateActionEffectReport as FfiPbftManagerStateActionEffectReport,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
-    PbftManagerStateActionPlan as FfiPbftManagerStateActionPlan,
     PbftManagerStateActionSessionStep as FfiPbftManagerStateActionSessionStep,
     PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
     PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
@@ -101,8 +99,6 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
     plan_pbft_manager_sleep_until_next_step as plan_domain_pbft_manager_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
-    plan_pbft_manager_state_action as plan_domain_pbft_manager_state_action,
-    plan_pbft_manager_state_action_effects as plan_domain_pbft_manager_state_action_effects,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
     report_pbft_manager_block_validation_session_check as report_domain_pbft_manager_block_validation_session_check,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
@@ -129,12 +125,12 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepFact,
     PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
-    PbftManagerStateActionEffect, PbftManagerStateActionEffectPlan,
-    PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
-    PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionPlan,
-    PbftManagerStateActionSessionStatus, PbftManagerStateActionSessionStep,
-    PbftManagerStorageStartupFact, PbftManagerTransitionFact, PbftManagerTransitionKind,
-    PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
+    PbftManagerStateActionEffect, PbftManagerStateActionEffectReport,
+    PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
+    PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
+    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
+    PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
+    PbftManagerTransitionStorageStatus,
 };
 use rustaxa_consensus::pbft_sync::{
     create_pbft_sync_queue_drain_session as create_domain_pbft_sync_queue_drain_session,
@@ -1282,31 +1278,6 @@ fn runtime_session_not_started_step() -> FfiPbftManagerRuntimeSessionStep {
     }
 }
 
-/// Plans one deterministic PBFT manager state action from compact C++ facts.
-pub fn plan_pbft_manager_state_action(
-    fact: FfiPbftManagerStateActionFact,
-) -> FfiPbftManagerStateActionPlan {
-    plan_domain_pbft_manager_state_action(fact.into()).into()
-}
-
-/// Plans one deterministic PBFT manager state action as ordered effects.
-///
-/// Inputs:
-/// - `fact`: compact manager state, timing, and vote-status facts sourced by C++.
-///
-/// Outputs:
-/// - An ordered effect list plus follow-up state flags for the C++ executor.
-///
-/// Invariants and edge behavior:
-/// - Rust owns the branch ordering and no-op decisions.
-/// - C++ executes only the returned effects in order and keeps live
-///   materialization, storage mutation, and network gossip outside the bridge.
-pub fn plan_pbft_manager_state_action_effects(
-    fact: FfiPbftManagerStateActionFact,
-) -> FfiPbftManagerStateActionEffectPlan {
-    plan_domain_pbft_manager_state_action_effects(fact.into()).into()
-}
-
 /// Starts a runtime-owned state-action effect session from compact C++ facts.
 ///
 /// Inputs:
@@ -1913,21 +1884,6 @@ impl From<PbftManagerEligibleWalletPeriodWaitPlan> for FfiPbftManagerEligibleWal
     }
 }
 
-impl From<PbftManagerStateActionPlan> for FfiPbftManagerStateActionPlan {
-    fn from(value: PbftManagerStateActionPlan) -> Self {
-        Self {
-            status: value.status.as_u8(),
-            primary_intent: value.primary_intent.as_u8(),
-            primary_hash: value.primary_hash,
-            secondary_intent: value.secondary_intent.as_u8(),
-            secondary_hash: value.secondary_hash,
-            go_finish_state: value.go_finish_state,
-            loop_back_finish_state: value.loop_back_finish_state,
-            error_code: value.error_code,
-        }
-    }
-}
-
 impl From<PbftManagerStateActionEffect> for FfiPbftManagerStateActionEffect {
     fn from(value: PbftManagerStateActionEffect) -> Self {
         Self {
@@ -1936,18 +1892,6 @@ impl From<PbftManagerStateActionEffect> for FfiPbftManagerStateActionEffect {
             request_proposed_block_sidecar: value.request_proposed_block_sidecar,
             proposed_block_sidecar_hash: value.proposed_block_sidecar_hash,
             proposed_block_sidecar_period: value.proposed_block_sidecar_period,
-        }
-    }
-}
-
-impl From<PbftManagerStateActionEffectPlan> for FfiPbftManagerStateActionEffectPlan {
-    fn from(value: PbftManagerStateActionEffectPlan) -> Self {
-        Self {
-            status: value.status.as_u8(),
-            effects: value.effects.into_iter().map(Into::into).collect(),
-            go_finish_state: value.go_finish_state,
-            loop_back_finish_state: value.loop_back_finish_state,
-            error_code: value.error_code,
         }
     }
 }
@@ -2262,11 +2206,6 @@ mod tests {
     const RESULT_STATE_DONE: u8 = 2;
     const RESULT_TRANSITION: u8 = 3;
     const RESULT_SLEEP: u8 = 4;
-    const STATE_ACTION_STATUS_READY: u8 = 0;
-    const STATE_ACTION_PROPOSE_NEW_BLOCK: u8 = 1;
-    const STATE_ACTION_CERT_VOTE_CURRENT_SOFT_VALUE: u8 = 5;
-    const STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE: u8 = 4;
-    const STATE_ACTION_NEXT_VOTE_CERT_BLOCK: u8 = 7;
     const STATE_ACTION_NEXT_VOTE_NULL_BLOCK: u8 = 8;
     const STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE: u8 = 10;
     const STATE_ACTION_SESSION_ACTIVE: u8 = 0;
@@ -2863,64 +2802,6 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_plans_state_action_intents_with_hash_payloads() {
-        let mut value_fact = state_fact(STATE_VALUE_PROPOSAL);
-        value_fact.has_previous_round_next_null = true;
-        let value_plan = plan_pbft_manager_state_action(value_fact);
-        assert_eq!(value_plan.status, STATE_ACTION_STATUS_READY);
-        assert_eq!(value_plan.primary_intent, STATE_ACTION_PROPOSE_NEW_BLOCK);
-
-        let mut filter_fact = state_fact(1);
-        filter_fact.has_previous_round_next_value = true;
-        let filter_plan = plan_pbft_manager_state_action(filter_fact);
-        assert_eq!(filter_plan.status, STATE_ACTION_STATUS_READY);
-        assert_eq!(
-            filter_plan.primary_intent,
-            STATE_ACTION_SOFT_VOTE_PREVIOUS_VALUE
-        );
-        assert_eq!(filter_plan.primary_hash, [0x44; 32]);
-
-        let mut certify_fact = state_fact(STATE_CERTIFY);
-        certify_fact.has_current_round_soft_value = true;
-        let certify_plan = plan_pbft_manager_state_action(certify_fact);
-        assert_eq!(certify_plan.status, STATE_ACTION_STATUS_READY);
-        assert_eq!(
-            certify_plan.primary_intent,
-            STATE_ACTION_CERT_VOTE_CURRENT_SOFT_VALUE
-        );
-        assert_eq!(certify_plan.primary_hash, [0x55; 32]);
-
-        let mut finish_fact = state_fact(3);
-        finish_fact.has_cert_voted_block = true;
-        let finish_plan = plan_pbft_manager_state_action(finish_fact);
-        assert_eq!(finish_plan.status, STATE_ACTION_STATUS_READY);
-        assert_eq!(
-            finish_plan.primary_intent,
-            STATE_ACTION_NEXT_VOTE_CERT_BLOCK
-        );
-        assert_eq!(finish_plan.primary_hash, [0x66; 32]);
-    }
-
-    #[test]
-    fn bridge_plans_state_action_effects_in_order() {
-        let mut finish_polling_fact = state_fact(4);
-        finish_polling_fact.current_round_lambda_ms = 1_000;
-        finish_polling_fact.has_current_round_soft_value = true;
-        finish_polling_fact.has_previous_round_next_null = true;
-
-        let plan = plan_pbft_manager_state_action_effects(finish_polling_fact);
-
-        assert_eq!(plan.status, STATE_ACTION_STATUS_READY);
-        assert_eq!(plan.effects.len(), 2);
-        assert_eq!(
-            plan.effects[0].intent,
-            STATE_ACTION_NEXT_VOTE_CURRENT_SOFT_VALUE
-        );
-        assert_eq!(plan.effects[0].hash, [0x55; 32]);
-        assert_eq!(plan.effects[1].intent, STATE_ACTION_NEXT_VOTE_NULL_BLOCK);
     }
 
     #[test]

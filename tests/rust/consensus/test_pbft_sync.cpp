@@ -133,7 +133,6 @@ constexpr uint8_t kPbftManagerRuntimeResultProgressRestart = 1;
 constexpr uint8_t kPbftManagerRuntimeResultStateDone = 2;
 constexpr uint8_t kPbftManagerRuntimeResultTransition = 3;
 constexpr uint8_t kPbftManagerRuntimeResultSleepApplied = 4;
-constexpr uint8_t kPbftManagerStateActionStatusReady = 0;
 constexpr uint8_t kPbftManagerStateActionNextVoteNullBlock = 8;
 constexpr uint8_t kPbftManagerStateActionNextVoteCurrentSoftValue = 10;
 constexpr uint8_t kPbftManagerStateActionSessionActive = 0;
@@ -700,10 +699,6 @@ TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTransc
   auto fact = makePbftManagerStateActionFact(4);
   fact.has_current_round_soft_value = true;
   fact.has_previous_round_next_null = true;
-
-  const auto plan = plan_pbft_manager_state_action_effects(fact);
-  ASSERT_EQ(plan.status, kPbftManagerStateActionStatusReady);
-  ASSERT_EQ(plan.effects.size(), 2);
 
   pbft_manager_runtime_begin_state_action_effect_session(*runtime, fact);
   std::vector<uint8_t> intents;
