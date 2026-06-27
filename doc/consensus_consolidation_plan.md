@@ -617,6 +617,12 @@ Implementation status:
   `TransactionManagerStoredTransactionRequest`, and `TransactionManagerStoredTransactionLookup` are deleted from the
   bridge surface. Live C++ lookup paths use the runtime-owned transaction view APIs that combine queue, sidecar, storage,
   and proposal-period filtering in one command.
+- Transaction-manager direct queue/sidecar test helpers are no longer CXX exports:
+  `transaction_manager_runtime_insert_non_finalized`, `transaction_manager_runtime_contains_non_finalized`,
+  `transaction_manager_runtime_contains_recently_finalized`, `transaction_manager_runtime_apply_finalized_transition`,
+  `transaction_manager_runtime_queue_insert`, `transaction_manager_runtime_insert_transaction_precheck`, and
+  `transaction_manager_runtime_queue_contains` are deleted from the bridge surface. Live C++ uses the runtime-owned
+  admission, initialization, lookup, cleanup, and size APIs instead.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.

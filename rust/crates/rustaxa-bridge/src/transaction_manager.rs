@@ -25,10 +25,10 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
     TransactionManagerPublicInsertResult, TransactionManagerRuntimeAdmissionOutcome,
     TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarTransitionInput,
-    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
-    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerSidecarLookupRequest, TransactionManagerTransactionView,
+    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
+    TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
@@ -90,6 +90,17 @@ struct TransactionManagerStoredTransactionLookup {
     source: u8,
     old_finalized: bool,
     tx_rlp: Vec<u8>,
+}
+
+#[cfg(test)]
+struct TransactionManagerSidecarHash {
+    hash: [u8; 32],
+}
+
+#[cfg(test)]
+struct TransactionManagerSidecarTransitionInput {
+    period: u64,
+    hashes: Vec<TransactionManagerSidecarHash>,
 }
 
 const TM_TRANSACTION_VIEW_SOURCE_MISSING: u8 = 0;
@@ -1890,7 +1901,8 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// Inserts or updates one live non-finalized sidecar payload.
-    pub fn transaction_manager_runtime_insert_non_finalized(
+    #[cfg(test)]
+    fn transaction_manager_runtime_insert_non_finalized(
         &mut self,
         input: TransactionManagerSidecarInsertInput,
     ) -> Result<()> {
@@ -1924,12 +1936,14 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// True when hash exists in non-finalized sidecar state.
-    pub fn transaction_manager_runtime_contains_non_finalized(&self, hash: &[u8; 32]) -> bool {
+    #[cfg(test)]
+    fn transaction_manager_runtime_contains_non_finalized(&self, hash: &[u8; 32]) -> bool {
         self.sidecar.contains_non_finalized(H256::from(*hash))
     }
 
     /// True when hash exists in recently-finalized sidecar state.
-    pub fn transaction_manager_runtime_contains_recently_finalized(&self, hash: &[u8; 32]) -> bool {
+    #[cfg(test)]
+    fn transaction_manager_runtime_contains_recently_finalized(&self, hash: &[u8; 32]) -> bool {
         self.sidecar.contains_recently_finalized(H256::from(*hash))
     }
 
@@ -1971,7 +1985,8 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.
-    pub fn transaction_manager_runtime_apply_finalized_transition(
+    #[cfg(test)]
+    fn transaction_manager_runtime_apply_finalized_transition(
         &mut self,
         transition: TransactionManagerSidecarTransitionInput,
     ) -> Result<()> {
@@ -2396,7 +2411,8 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// Returns true when the queue contains a transaction hash.
-    pub fn transaction_manager_runtime_queue_contains(&self, hash: &[u8; 32]) -> bool {
+    #[cfg(test)]
+    fn transaction_manager_runtime_queue_contains(&self, hash: &[u8; 32]) -> bool {
         self.queue.contains(H256::from(*hash))
     }
 
@@ -3360,9 +3376,7 @@ mod tests {
             .transaction_manager_runtime_apply_finalized_transition(
                 TransactionManagerSidecarTransitionInput {
                     period: 7,
-                    hashes: vec![crate::ffi::rustaxa_ffi::TransactionManagerSidecarHash {
-                        hash: [3; 32],
-                    }],
+                    hashes: vec![TransactionManagerSidecarHash { hash: [3; 32] }],
                 },
             )
             .expect("runtime finalized transition should succeed");

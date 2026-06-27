@@ -225,6 +225,12 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `transaction_manager_load_stored_transactions`, `transaction_manager_load_proposal_transactions_with_final_chain`,
   `TransactionManagerStoredTransactionRequest`, and `TransactionManagerStoredTransactionLookup`. C++ materialization
   remains behind `TransactionManager` facade methods backed by runtime-owned transaction view APIs.
+- Additional no-caller direct `BridgeTransactionManagerRuntime` queue/sidecar helpers are deleted:
+  `transaction_manager_runtime_insert_non_finalized`, `transaction_manager_runtime_contains_non_finalized`,
+  `transaction_manager_runtime_contains_recently_finalized`, `transaction_manager_runtime_apply_finalized_transition`,
+  `transaction_manager_runtime_queue_insert`, `transaction_manager_runtime_insert_transaction_precheck`, and
+  `transaction_manager_runtime_queue_contains`. Shared DTOs remain where live C++ high-level runtime commands still use
+  them, but the direct mutation/check methods are Rust-internal only.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.

@@ -3622,17 +3622,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
-    /// Canonical hash wrapper for sidecar transition lists.
-    struct TransactionManagerSidecarHash {
-        hash: [u8; 32],
-    }
-
-    /// One finalized transition payload for sidecar mutation.
-    struct TransactionManagerSidecarTransitionInput {
-        period: u64,
-        hashes: Vec<TransactionManagerSidecarHash>,
-    }
-
     /// Input transaction fact for runtime-owned DAG transaction persistence.
     ///
     /// Rust computes sidecar membership from `BridgeTransactionManagerRuntime`
@@ -5863,24 +5852,12 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
         ) -> Result<bool>;
-        pub fn transaction_manager_runtime_insert_non_finalized(
-            self: &mut BridgeTransactionManagerRuntime,
-            input: TransactionManagerSidecarInsertInput,
-        ) -> Result<()>;
         /// Inserts payloads and moves them into recently-finalized sidecar state in one Rust command.
         pub fn transaction_manager_runtime_initialize_recently_finalized_payloads(
             self: &mut BridgeTransactionManagerRuntime,
             period: u64,
             payloads: Vec<TransactionManagerSidecarInsertInput>,
         ) -> Result<()>;
-        pub fn transaction_manager_runtime_contains_non_finalized(
-            self: &BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-        ) -> bool;
-        pub fn transaction_manager_runtime_contains_recently_finalized(
-            self: &BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-        ) -> bool;
         pub fn transaction_manager_runtime_non_finalized_size(
             self: &BridgeTransactionManagerRuntime,
         ) -> usize;
@@ -5888,18 +5865,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<u64>;
-        pub fn transaction_manager_runtime_apply_finalized_transition(
-            self: &mut BridgeTransactionManagerRuntime,
-            transition: TransactionManagerSidecarTransitionInput,
-        ) -> Result<()>;
-        pub fn transaction_manager_runtime_queue_insert(
-            self: &mut BridgeTransactionManagerRuntime,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionQueueInsertOutcome>;
-        pub fn transaction_manager_runtime_insert_transaction_precheck(
-            self: &BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-        ) -> Result<TransactionManagerInsertTransactionOutcome>;
         /// Executes FinalChain-backed admission and returns a typed command report.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
             self: &mut BridgeTransactionManagerRuntime,
@@ -5938,10 +5903,6 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_runtime_queue_all_transaction_groups(
             self: &BridgeTransactionManagerRuntime,
         ) -> Vec<TransactionQueueTransactionGroup>;
-        pub fn transaction_manager_runtime_queue_contains(
-            self: &BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-        ) -> bool;
         pub fn transaction_manager_runtime_queue_size(
             self: &BridgeTransactionManagerRuntime,
         ) -> usize;
