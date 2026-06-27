@@ -186,6 +186,7 @@ class DagManager : public DagManagerOld {
   // updates and finalization-triggered Rust rebuilds.
   mutable std::shared_mutex rust_order_dag_blocks_mutex_;
   mutable std::shared_mutex rust_graphs_mutex_;
+  mutable std::shared_mutex dag_finalization_mutex_;
   std::unique_ptr<RustDagManagerGraphs> rust_graphs_;
 };
 

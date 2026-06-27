@@ -407,9 +407,7 @@ std::pair<blk_hash_t, std::vector<blk_hash_t>> DagManager::getRustFrontier() con
 
 std::shared_ptr<DagManager> DagManager::getShared() {
   try {
-    // TODO(rust-rewrite): migrate DagManager shared ownership to a shim-owned
-    // facade before removing inherited DagManagerOld shared_from_this state.
-    return std::static_pointer_cast<DagManager>(DagManagerOld::shared_from_this());
+    return std::static_pointer_cast<DagManager>(shared_from_this());
   } catch (std::bad_weak_ptr &e) {
     std::cerr << "DagManager: " << e.what() << std::endl;
     return nullptr;
@@ -417,7 +415,6 @@ std::shared_ptr<DagManager> DagManager::getShared() {
 }
 
 void DagManager::setNetwork(std::weak_ptr<Network> network) {
-  // TODO(rust-rewrite): migrate DagManager networking ownership to Rust instead of DagManagerOld.
   network_ = network;
   DagManagerOld::setNetwork(std::move(network));
 }
@@ -764,8 +761,6 @@ vec_blk_t DagManager::getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod peri
 }
 
 uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order) {
-  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
-
   try {
     {
       std::shared_lock graph_lock(rust_graphs_mutex_);
@@ -928,8 +923,7 @@ uint32_t DagManager::getNonFinalizedBlocksMinDifficulty() const {
 }
 
 std::shared_mutex &DagManager::getDagMutex() {
-  // TODO(rust-rewrite): migrate DagManager synchronization ownership to Rust instead of DagManagerOld.
-  return DagManagerOld::getDagMutex();
+  return dag_finalization_mutex_;
 }
 
 SortitionParamsManager &DagManager::sortitionParamsManager() { return sortition_params_manager_; }

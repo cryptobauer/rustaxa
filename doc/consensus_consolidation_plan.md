@@ -462,6 +462,9 @@ Implementation notes:
 - `final_chain_shim` now no longer exposes `rustFinalChainForRust()`; callers must route through explicit
   consensus/runtime APIs, which keeps FinalChain session ownership constrained to the shim constructor and execution
   boundary.
+- `dag_manager_shim` now moved `getShared()` and `getDagMutex()` off inherited `DagManagerOld` access and onto shim-owned
+  state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
+  callers now perform the lock sequencing directly.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
