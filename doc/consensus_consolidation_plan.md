@@ -648,6 +648,10 @@ Implementation status:
   tests now seed legacy `pbft_head` JSON through the storage shim and construct via `create_pbft_chain_from_storage`,
   matching the production shim path; the direct structured-head constructor remains Rust test-only for in-memory bridge
   unit coverage.
+- The direct `create_sortition_params_manager(SortitionRuntimeConfig, Vec<SortitionParamsChangePayload>)` CXX
+  constructor is no longer exported. C++ sortition bridge tests now construct through
+  `create_sortition_params_manager_from_storage`, matching the production shim path; the direct in-memory bridge
+  constructor wrapper has been deleted entirely.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.

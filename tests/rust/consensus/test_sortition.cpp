@@ -2,6 +2,9 @@
 
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <string>
+#include <string_view>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -24,20 +27,21 @@ SortitionRuntimeConfig runtime_config() {
   return config;
 }
 
-rust::Vec<SortitionParamsChangePayload> initial_changes() {
-  rust::Vec<SortitionParamsChangePayload> changes;
-  SortitionParamsChangePayload change;
-  change.period = 0;
-  change.interval_efficiency = 50 * 100;
-  change.threshold_upper = 2000;
-  changes.push_back(change);
-  return changes;
+rust::Box<BridgeSortitionParamsManager> create_manager(std::string_view name) {
+  const auto test_dir = std::filesystem::temp_directory_path() / std::string(name);
+  if (std::filesystem::exists(test_dir)) {
+    std::filesystem::remove_all(test_dir);
+  }
+  auto storage = create_storage(test_dir.string());
+  auto manager = create_sortition_params_manager_from_storage(runtime_config(), *storage);
+  std::filesystem::remove_all(test_dir);
+  return manager;
 }
 
 }  // namespace
 
 TEST(RustSortitionTest, ManagerEmitsThresholdChangeForInterval) {
-  auto manager = create_sortition_params_manager(runtime_config(), initial_changes());
+  auto manager = create_manager("rustaxa_consensus_sortition_threshold_change");
 
   auto first = manager->sortition_record_finalized_period(1, true, 25, 100, 1);
   EXPECT_FALSE(first.changed);
@@ -59,7 +63,7 @@ TEST(RustSortitionTest, ManagerEmitsThresholdChangeForInterval) {
 }
 
 TEST(RustSortitionTest, PreviewDoesNotPublishThresholdUntilCommit) {
-  auto manager = create_sortition_params_manager(runtime_config(), initial_changes());
+  auto manager = create_manager("rustaxa_consensus_sortition_preview_commit");
 
   auto first_preview = manager->sortition_preview_finalized_period(1, true, 25, 100, 1);
   EXPECT_FALSE(first_preview.changed);
@@ -85,7 +89,7 @@ TEST(RustSortitionTest, PreviewDoesNotPublishThresholdUntilCommit) {
 }
 
 TEST(RustSortitionTest, CommitRejectsPreviewMismatch) {
-  auto manager = create_sortition_params_manager(runtime_config(), initial_changes());
+  auto manager = create_manager("rustaxa_consensus_sortition_preview_mismatch");
   auto preview = manager->sortition_preview_finalized_period(1, true, 25, 100, 1);
   EXPECT_FALSE(preview.changed);
 
@@ -97,7 +101,7 @@ TEST(RustSortitionTest, CommitRejectsPreviewMismatch) {
 }
 
 TEST(RustSortitionTest, ParamsForPeriodAppliesStorageChangePayload) {
-  auto manager = create_sortition_params_manager(runtime_config(), initial_changes());
+  auto manager = create_manager("rustaxa_consensus_sortition_params_for_period");
   SortitionParamsChangePayload change;
   change.period = 10;
   change.interval_efficiency = 75 * 100;

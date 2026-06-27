@@ -6251,10 +6251,6 @@ pub mod rustaxa_ffi {
 
         type BridgeSortitionParamsManager;
 
-        pub fn create_sortition_params_manager(
-            config: SortitionRuntimeConfig,
-            params_changes: Vec<SortitionParamsChangePayload>,
-        ) -> Result<Box<BridgeSortitionParamsManager>>;
         pub fn create_sortition_params_manager_from_storage(
             config: SortitionRuntimeConfig,
             storage: &BridgeStorage,

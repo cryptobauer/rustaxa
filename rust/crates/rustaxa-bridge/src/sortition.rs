@@ -10,7 +10,6 @@ use rustaxa_consensus::sortition::{
     calculate_dag_efficiency, SortitionConfig, SortitionParams, SortitionParamsChange,
     SortitionParamsManager, VdfParams, VrfParams,
 };
-use std::collections::VecDeque;
 
 use crate::ffi::{rustaxa_ffi, BridgeSortitionParamsManager, BridgeStorage};
 
@@ -101,25 +100,6 @@ fn change_result(
 }
 
 impl BridgeSortitionParamsManager {
-    /// Creates a Rust sortition manager from persisted state supplied by C++.
-    ///
-    /// The changes must be ordered oldest to newest. If empty, Rust inserts the
-    /// period-zero default change in memory so C++ can read it through
-    /// `sortition_params_changes` and persist it with normal batch ownership.
-    pub fn create(
-        config: rustaxa_ffi::SortitionRuntimeConfig,
-        params_changes: Vec<rustaxa_ffi::SortitionParamsChangePayload>,
-    ) -> Result<Box<Self>> {
-        let params_changes = params_changes
-            .into_iter()
-            .map(SortitionParamsChange::from)
-            .collect::<VecDeque<_>>();
-        let manager = SortitionParamsManager::from_changes(config.into(), params_changes)
-            .context("create sortition params manager")?;
-
-        Ok(Box::new(Self { manager }))
-    }
-
     /// Creates a Rust sortition manager from Rust storage.
     ///
     /// Startup behavior mirrors the legacy C++ manager while keeping storage
@@ -457,14 +437,6 @@ impl BridgeSortitionParamsManager {
             },
         }
     }
-}
-
-/// Constructs a Rust sortition manager for C++ runtime wiring.
-pub fn create_sortition_params_manager(
-    config: rustaxa_ffi::SortitionRuntimeConfig,
-    params_changes: Vec<rustaxa_ffi::SortitionParamsChangePayload>,
-) -> Result<Box<BridgeSortitionParamsManager>> {
-    BridgeSortitionParamsManager::create(config, params_changes)
 }
 
 /// Constructs a Rust sortition manager by loading and replaying Rust storage.
