@@ -255,10 +255,8 @@ class VerifiedVotes {
    *
    * Invariants:
    * - Production-admitted votes are materialized from Rust-retained weighted
-   *   payload bytes, not from the temporary `live_votes_` sidecar map.
-   * - Compatibility/test helper inserts that do not retain weighted payloads
-   *   may still use `live_votes_` until those helpers are removed.
-   * - Missing both retained payload and compatibility sidecar is a hard error.
+   *   payload bytes.
+   * - Missing retained payload is a hard error.
    */
   std::vector<std::shared_ptr<PbftVote>> votes() const;
 
@@ -485,19 +483,17 @@ class VerifiedVotes {
   rustaxa::VerifiedVotePayload toBridgeVotePayload(const std::shared_ptr<PbftVote>& vote) const;
   std::shared_ptr<PbftVote> materializeWeightedPayload(const rustaxa::PbftVoteStorageRecord& record) const;
   std::shared_ptr<PbftVote> materializeVoteForSnapshot(const rustaxa::VerifiedVotePayload& vote_data) const;
-  const std::shared_ptr<PbftVote>& requireLiveVote(const vote_hash_t& vote_hash) const;
   VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
                                                        uint64_t total_weight,
                                                        bool allow_later_bucket_growth = false) const;
   VotesWithWeight requireInsertedVotesWithWeightLocked(const rustaxa::VerifiedVotePayload& vote_data,
-                                                       uint64_t total_weight, bool allow_later_bucket_growth,
-                                                       bool allow_live_sidecar_fallback) const;
+                                                       uint64_t total_weight,
+                                                       bool allow_later_bucket_growth = false) const;
   PeriodVerifiedVotesMap buildSnapshotState() const;
-  void pruneLiveVotesToSnapshotLocked();
 
+  std::shared_ptr<PbftVote> requireStoredVote(const vote_hash_t& vote_hash) const;
   mutable std::shared_mutex verified_votes_access_;
   mutable ::rust::Box<rustaxa::BridgeVerifiedVotes> rust_verified_votes_;
-  std::unordered_map<vote_hash_t, std::shared_ptr<PbftVote>> live_votes_;
 
   LOG_OBJECTS_DEFINE
 };

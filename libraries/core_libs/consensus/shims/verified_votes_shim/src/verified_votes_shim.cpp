@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <mutex>
 #include <stdexcept>
-#include <unordered_set>
 #include <utility>
 
 #include "common/constants.hpp"
@@ -77,31 +76,25 @@ std::shared_ptr<PbftVote> VerifiedVotes::materializeVoteForSnapshot(
     const rustaxa::VerifiedVotePayload& vote_data) const {
   const auto vote_hash = fromBridgeHash(vote_data.vote_hash);
   const auto payload_lookup = rust_verified_votes_->verified_votes_weighted_payload(vote_data.vote_hash);
-  if (payload_lookup.found) {
-    auto vote = materializeWeightedPayload(payload_lookup.vote);
-    if (vote->getBlockHash() != fromBridgeHash(vote_data.block_hash) || vote->getPeriod() != vote_data.period ||
-        vote->getRound() != vote_data.round || vote->getStep() != vote_data.step ||
-        static_cast<uint8_t>(vote->getType()) != vote_data.vote_type || *vote->getWeight() != vote_data.weight) {
-      throw verifiedVotesError("Rust retained weighted payload mismatches verified-vote metadata");
-    }
-    return vote;
-  }
-
-  // TODO(rustaxa): remove this compatibility fallback once low-level bridge test helpers stop inserting
-  // verified-vote metadata without retaining weighted payload bytes through the admission runtime.
-  const auto live_vote = live_votes_.find(vote_hash);
-  if (live_vote == live_votes_.end()) {
+  if (!payload_lookup.found) {
     throw verifiedVotesError("missing Rust retained weighted payload for vote " + vote_hash.hex().substr(0, 16));
   }
-  return live_vote->second;
+
+  auto vote = materializeWeightedPayload(payload_lookup.vote);
+  if (vote->getBlockHash() != fromBridgeHash(vote_data.block_hash) || vote->getPeriod() != vote_data.period ||
+      vote->getRound() != vote_data.round || vote->getStep() != vote_data.step ||
+      static_cast<uint8_t>(vote->getType()) != vote_data.vote_type || *vote->getWeight() != vote_data.weight) {
+    throw verifiedVotesError("Rust retained weighted payload mismatches verified-vote metadata");
+  }
+  return vote;
 }
 
-const std::shared_ptr<PbftVote>& VerifiedVotes::requireLiveVote(const vote_hash_t& vote_hash) const {
-  const auto found = live_votes_.find(vote_hash);
-  if (found == live_votes_.end()) {
-    throw verifiedVotesError("missing live vote sidecar for hash " + vote_hash.hex().substr(0, 16));
+std::shared_ptr<PbftVote> VerifiedVotes::requireStoredVote(const vote_hash_t& vote_hash) const {
+  const auto payload_lookup = rust_verified_votes_->verified_votes_weighted_payload(toBridgeHash(vote_hash));
+  if (!payload_lookup.found) {
+    throw verifiedVotesError("missing retained verified-vote payload for hash " + vote_hash.hex().substr(0, 16));
   }
-  return found->second;
+  return materializeWeightedPayload(payload_lookup.vote);
 }
 
 VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
@@ -116,13 +109,12 @@ VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const std::s
   vote_data.step = vote->getStep();
   vote_data.vote_type = static_cast<uint8_t>(vote->getType());
   vote_data.weight = requireVoteWeight(vote);
-  return requireInsertedVotesWithWeightLocked(vote_data, total_weight, allow_later_bucket_growth, true);
+  return requireInsertedVotesWithWeightLocked(vote_data, total_weight, allow_later_bucket_growth);
 }
 
 VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const rustaxa::VerifiedVotePayload& vote_data,
                                                                     uint64_t total_weight,
-                                                                    bool allow_later_bucket_growth,
-                                                                    bool allow_live_sidecar_fallback) const {
+                                                                    bool allow_later_bucket_growth) const {
   VotesWithWeight value{};
   const auto step_votes =
       rust_verified_votes_->verified_votes_get_step_votes(vote_data.period, vote_data.round, vote_data.step);
@@ -148,15 +140,10 @@ VotesWithWeight VerifiedVotes::requireInsertedVotesWithWeightLocked(const rustax
         value.votes.insert({hash, materializeWeightedPayload(payload_lookup.vote)});
         continue;
       }
-
-      // TODO(rustaxa): remove this compatibility fallback once low-level bridge test helpers stop inserting
-      // verified-vote metadata without retaining weighted payload bytes through the admission runtime.
-      if (allow_live_sidecar_fallback && live_votes_.find(hash) != live_votes_.end()) {
-        const auto live_vote = live_votes_.find(hash);
-        value.votes.insert({hash, live_vote->second});
-      } else if (vote_hash.hash == vote_data.vote_hash) {
+      if (vote_hash.hash == vote_data.vote_hash) {
         throw verifiedVotesError("Rust inserted current vote without retained weighted payload");
       }
+      throw verifiedVotesError("Rust inserted voted value without retained weighted payload lookup");
     }
     break;
   }
@@ -212,23 +199,6 @@ PeriodVerifiedVotesMap VerifiedVotes::buildSnapshotState() const {
   }
 
   return state;
-}
-
-void VerifiedVotes::pruneLiveVotesToSnapshotLocked() {
-  std::unordered_set<vote_hash_t> keep;
-  const auto snapshot = rust_verified_votes_->verified_votes_snapshot_votes();
-  keep.reserve(snapshot.size());
-  for (const auto& vote : snapshot) {
-    keep.insert(fromBridgeHash(vote.vote_hash));
-  }
-
-  for (auto it = live_votes_.begin(); it != live_votes_.end();) {
-    if (!keep.contains(it->first)) {
-      it = live_votes_.erase(it);
-    } else {
-      ++it;
-    }
-  }
 }
 
 VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr) : rust_verified_votes_(rustaxa::create_verified_votes_index()) {
@@ -369,8 +339,6 @@ std::optional<VotedBlock> VerifiedVotes::getTwoTPlusOneVotedBlock(PbftPeriod per
 std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
   std::shared_lock lock(verified_votes_access_);
-  // TODO(rustaxa): remove this compatibility materialization API once PBFT manager/finalization callers consume
-  // Rust-owned payload facts or optimized egress bytes directly.
   const auto lookup = rust_verified_votes_->verified_votes_get_two_t_plus_one_voted_block_payloads(
       period, round, static_cast<uint8_t>(type));
   if (!lookup.found) {
@@ -435,7 +403,6 @@ VerifiedVotes::RewardVotePayloadSelection VerifiedVotes::selectRewardVotePayload
 void VerifiedVotes::cleanupVotesByPeriod(PbftPeriod pbft_period) {
   std::scoped_lock lock(verified_votes_access_);
   rust_verified_votes_->verified_votes_cleanup_votes_by_period(pbft_period);
-  pruneLiveVotesToSnapshotLocked();
 }
 
 std::optional<std::shared_ptr<PbftVote>> VerifiedVotes::insertUniqueVoter(const std::shared_ptr<PbftVote>& vote) {
@@ -448,7 +415,7 @@ std::optional<std::shared_ptr<PbftVote>> VerifiedVotes::insertUniqueVoter(const 
     throw verifiedVotesError("Rust rejected unique voter insert without conflict hash");
   }
   const auto conflict_hash = fromBridgeHash(outcome.conflicting_vote_hash);
-  return requireLiveVote(conflict_hash);
+  return requireStoredVote(conflict_hash);
 }
 
 std::optional<VotesWithWeight> VerifiedVotes::insertVotedValue(const std::shared_ptr<PbftVote>& vote) {
@@ -458,7 +425,6 @@ std::optional<VotesWithWeight> VerifiedVotes::insertVotedValue(const std::shared
     return {};
   }
 
-  live_votes_[vote->getHash()] = vote;
   return requireInsertedVotesWithWeightLocked(vote, outcome.total_weight, false);
 }
 
@@ -469,14 +435,13 @@ VerifiedVotes::AtomicInsertOutcome VerifiedVotes::insertVerifiedVoteAtomic(const
   const auto outcome = rust_verified_votes_->verified_votes_insert_vote_atomic(payload);
   if (outcome.conflict_found) {
     const auto conflict_hash = fromBridgeHash(outcome.conflicting_vote_hash);
-    return AtomicInsertOutcome{requireLiveVote(conflict_hash), std::nullopt};
+    return AtomicInsertOutcome{requireStoredVote(conflict_hash), std::nullopt};
   }
 
   if (!outcome.inserted) {
     return AtomicInsertOutcome{std::nullopt, std::nullopt};
   }
 
-  live_votes_[vote->getHash()] = vote;
   return AtomicInsertOutcome{std::nullopt, requireInsertedVotesWithWeightLocked(vote, outcome.total_weight)};
 }
 
@@ -492,7 +457,7 @@ VerifiedVotes::AddVerifiedVoteOutcome VerifiedVotes::addVerifiedVoteWithThreshol
 
   if (outcome.conflict_found) {
     const auto conflict_hash = fromBridgeHash(outcome.conflicting_vote_hash);
-    result.conflicting_vote = requireLiveVote(conflict_hash);
+    result.conflicting_vote = requireStoredVote(conflict_hash);
     return result;
   }
 
@@ -500,7 +465,6 @@ VerifiedVotes::AddVerifiedVoteOutcome VerifiedVotes::addVerifiedVoteWithThreshol
     return result;
   }
 
-  live_votes_[vote->getHash()] = vote;
   result.votes_with_weight = requireInsertedVotesWithWeightLocked(vote, outcome.total_weight);
   return result;
 }

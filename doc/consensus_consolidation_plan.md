@@ -367,6 +367,10 @@ Implementation notes:
 
 - `period_data_queue_shim` is retired. Period-data queue metadata now lives in `BridgePbftManagerRuntime` and is exposed
   only through `pbft_manager_runtime_period_data_queue_*` methods used by `pbft_manager_shim`.
+- `verified_votes_shim` compatibility sidecar fallback was removed from snapshot and conflict-handling paths. The shim now
+  materializes vote state exclusively from Rust-retained weighted payloads for conflict resolution, snapshot rebuilds, and
+  threshold-weighted vote aggregation. `live_votes_` storage was deleted from production flow, and missing payloads now
+  fail fast rather than degrade into compatibility paths.
 - The standalone `BridgePeriodDataQueue` CXX handle, `create_period_data_queue` constructor, `period_data_queue_shim`
   overlay, `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` CMake/Makefile flag, and bridge/shim tests for the retired facade were
   deleted.
@@ -407,10 +411,12 @@ Implementation notes:
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge bridge_runtime_owns_pbft_sync_queue_drain_session`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_sync`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus period_data_queue`
-  - `cmake --build /build --target rust_consensus_tests --parallel 12`
-  - `cmake --build /build --target pbft_manager_test --parallel 12`
-  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.PeriodAdmissionPlan*:RustPbftSyncTest.ProcessPeriodRuntime*' --gtest_print_time=1`
-  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.propose_block_and_vote_broadcast' --gtest_print_time=1`
+- `cmake --build /build --target rust_consensus_tests --parallel 12`
+- `cmake --build /build --target verified_votes_shim_test --parallel 12`
+- `cmake --build /build --target pbft_manager_test --parallel 12`
+- `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.PeriodAdmissionPlan*:RustPbftSyncTest.ProcessPeriodRuntime*' --gtest_print_time=1`
+- `/build/bin/verified_votes_shim_test`
+- `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.propose_block_and_vote_broadcast' --gtest_print_time=1`
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - `scripts/rewrite_bridge_inventory_guard.sh`
   - `git diff --check`
