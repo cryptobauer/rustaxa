@@ -224,6 +224,12 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   native Rust storage delete batch, and only then mutates the Rust proposed-block index. The public batch loop in
   `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` is legacy/reference behavior when
   `RUSTAXA_ENABLE_PROPOSED_BLOCKS` enables the overlay, not remaining Rust-mode storage-shim debt.
+- `sortition_params_manager_shim` is the active Rust-mode route for sortition startup and finalized-period persistence.
+  It constructs `BridgeSortitionParamsManager` with `DbStorage::rustStorage()`, so the Rust runtime loads persisted
+  changes, persists the missing period-zero default change, reads period-specific parameters, and persists emitted
+  finalized-period changes through native Rust storage. The public batch block in
+  `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy/reference behavior when
+  `RUSTAXA_ENABLE_SORTITION_PARAMS` enables the overlay.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

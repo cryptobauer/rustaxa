@@ -291,6 +291,12 @@ Implementation notes:
   period/hash groups, commits one native Rust storage delete batch, and mutates the Rust index only after commit. The
   public batch loop in `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` remains legacy/reference behavior
   behind `RUSTAXA_ENABLE_PROPOSED_BLOCKS` and should not drive new storage-shim API expansion.
+- Sortition parameter persistence is closed for the current Rust-mode route. The active
+  `sortition_params_manager_shim` overlay constructs `BridgeSortitionParamsManager` from Rust storage, persists the
+  missing period-zero default change in Rust during startup, ignores the legacy `Batch&` argument in `pbftBlockPushed`,
+  and persists emitted finalized-period changes through the Rust runtime before live state is updated. The public batch
+  block in `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` remains legacy/reference behavior behind
+  `RUSTAXA_ENABLE_SORTITION_PARAMS`.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.
@@ -541,6 +547,10 @@ Implementation status:
   `RUSTAXA_ENABLE_PROPOSED_BLOCKS` is enabled; Rust-mode cleanup enters
   `BridgeProposedBlocks::proposed_blocks_cleanup_with_storage`, which commits the delete batch in native Rust storage
   before removing stale periods from the Rust index.
+- Sortition Rust-mode startup and finalized-period persistence are closed under the current overlay. The remaining public
+  `DbStorage` batch block in `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy-only when
+  `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled; Rust-mode construction and updates enter
+  `BridgeSortitionParamsManager` with an attached native Rust storage handle.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 
