@@ -330,8 +330,7 @@ rustaxa::DagVerifyBlockGasReport to_bridge_verify_block_gas_report(uint64_t bloc
 
 rustaxa::DagDposAuthorizationFacts rust_dag_authorization_facts(const final_chain::FinalChain &final_chain,
                                                                 PbftPeriod proposal_period, const addr_t &proposer) {
-  return final_chain.rustFinalChainForRust().get_dag_dpos_authorization_facts(static_cast<uint64_t>(proposal_period),
-                                                                              proposer.asArray());
+  return final_chain.dagDposAuthorizationFacts(proposal_period, proposer);
 }
 
 }  // namespace

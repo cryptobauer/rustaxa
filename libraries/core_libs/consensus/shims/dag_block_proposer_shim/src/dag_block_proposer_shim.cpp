@@ -100,11 +100,10 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
       trx_mgr_(std::move(trx_mgr)),
       final_chain_(std::move(final_chain)),
       nodes_dag_proposers_data_(),
-      kDagProposeGasLimit(
-          std::min(config.propose_dag_gas_limit,
-                   config.genesis.getGasLimits(final_chain_->rustFinalChainForRust().get_last_block_number()).first)),
-      kPbftGasLimit(config.genesis.getGasLimits(final_chain_->rustFinalChainForRust().get_last_block_number()).second),
-      kDagGasLimit(config.genesis.getGasLimits(final_chain_->rustFinalChainForRust().get_last_block_number()).first) {
+      kDagProposeGasLimit(std::min(config.propose_dag_gas_limit,
+                                   config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first)),
+      kPbftGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).second),
+      kDagGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first) {
   (void)key_manager;
   const auto& node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("DAG_PROPOSER");
@@ -118,8 +117,8 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
 bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData>& node_dag_proposer_data) {
   const auto frontier_facts = dag_mgr_->getProposerFrontierFacts();
   const auto proposal_period = dag_mgr_->getProposalPeriodForDagLevel(frontier_facts.propose_level);
-  const auto final_chain_facts = final_chain_->rustFinalChainForRust().get_dag_proposer_final_chain_facts(
-      proposal_period.has_value(), proposal_period.value_or(0), node_dag_proposer_data->wallet.node_addr.asArray());
+  const auto final_chain_facts =
+      final_chain_->dagProposerFinalChainFacts(proposal_period, node_dag_proposer_data->wallet.node_addr);
   rustaxa::SortitionRuntimeParams sortition_params{};
   if (proposal_period.has_value()) {
     sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);

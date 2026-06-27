@@ -108,6 +108,9 @@ class FinalChain {
   // Outputs are encoded in `rustaxa::DagDposAuthorizationFacts`; missing DPoS snapshots are represented as a status
   // value, while Rust bridge infrastructure failures still throw.
   rustaxa::DagDposAuthorizationFacts dagDposAuthorizationFacts(EthBlockNumber blk_num, addr_t const& addr) const;
+  rustaxa::PbftFinalChainFacts collectPbftFinalChainFacts(rustaxa::PbftFinalChainFactRequest request) const;
+  rustaxa::DagProposerFinalChainFacts dagProposerFinalChainFacts(std::optional<EthBlockNumber> proposal_period,
+                                                                const addr_t& proposer) const;
 
   uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
   uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;

@@ -248,7 +248,7 @@ uint64_t rustFinalChainLastBlockNumber(const std::shared_ptr<final_chain::FinalC
   if (!final_chain) {
     throw std::runtime_error("PBFT manager requires FinalChain for Rust FinalChain height facts");
   }
-  return final_chain->rustFinalChainForRust().get_last_block_number();
+  return final_chain->lastBlockNumber();
 }
 
 uint8_t toPbftManagerRuntimeState(PbftStates state) {
@@ -1414,7 +1414,7 @@ void PbftManager::waitForPeriodFinalization() {
 std::optional<uint64_t> PbftManager::getCurrentDposTotalVotesCount() const {
   try {
     const auto period = pbft_chain_->getPbftChainSize();
-    const auto facts = final_chain_->rustFinalChainForRust().collect_pbft_final_chain_facts(
+    const auto facts = final_chain_->collectPbftFinalChainFacts(
         makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, true, false));
     if (facts.has_total_vote_count && facts.total_vote_count_status == kPbftSyncFactValid) {
       return facts.total_vote_count;
@@ -1459,9 +1459,9 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
 
   try {
     const auto period = pbft_chain_->getPbftChainSize();
-    const auto facts =
-        final_chain_->rustFinalChainForRust().collect_pbft_final_chain_facts(makePbftFinalChainFactRequest(
-            period, kNullBlockHash, false, false, false, true, std::move(eligible_addresses)));
+    const auto facts = final_chain_->collectPbftFinalChainFacts(
+        makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, false, true,
+                                      std::move(eligible_addresses)));
     uint64_t node_votes_count = 0;
     for (const auto &address_fact : facts.address_facts) {
       if (address_fact.status != kPbftSyncFactValid) {
@@ -2887,7 +2887,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
     }
   }
 
-  const auto final_chain_facts = final_chain_->rustFinalChainForRust().collect_pbft_final_chain_facts(
+  const auto final_chain_facts = final_chain_->collectPbftFinalChainFacts(
       makePbftFinalChainFactRequest(current_pbft_period, kNullBlockHash, true, false, false, false));
 
   auto ghost = dag_mgr_->getGhostPath(last_period_dag_anchor_block_hash);
@@ -3008,7 +3008,7 @@ PbftStateRootValidation PbftManager::validateFinalChainHash(const std::shared_pt
   const auto period = pbft_block->getPeriod();
   const auto &pbft_block_hash = pbft_block->getBlockHash();
 
-  const auto facts = final_chain_->rustFinalChainForRust().collect_pbft_final_chain_facts(
+  const auto facts = final_chain_->collectPbftFinalChainFacts(
       makePbftFinalChainFactRequest(period, pbft_block->getFinalChainHash(), true, true, false, false));
   if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
     LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
@@ -4560,7 +4560,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   }
 
   auto validate_final_chain_hash_from_queue_metadata = [&]() {
-    const auto facts = final_chain_->rustFinalChainForRust().collect_pbft_final_chain_facts(
+    const auto facts = final_chain_->collectPbftFinalChainFacts(
         makePbftFinalChainFactRequest(block_period, final_chain_hash, true, true, false, false));
     if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
       LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
@@ -4887,7 +4887,7 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
 
 bool PbftManager::canParticipateInConsensus(PbftPeriod period, const addr_t &node_addr) const {
   try {
-    const auto facts = final_chain_->rustFinalChainForRust().collect_pbft_final_chain_facts(
+    const auto facts = final_chain_->collectPbftFinalChainFacts(
         makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, false, true, {node_addr}));
     if (!facts.address_facts.empty() && facts.address_facts[0].status == kPbftSyncFactValid) {
       return facts.address_facts[0].eligible;
@@ -5050,7 +5050,7 @@ void PbftManager::EligibleWallets::updateWalletsEligibility(
     addresses.emplace_back(wallet.second.node_addr);
   }
 
-  const auto facts = final_chain->rustFinalChainForRust().collect_pbft_final_chain_facts(
+  const auto facts = final_chain->collectPbftFinalChainFacts(
       makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, false, true, std::move(addresses)));
   assert(period <= facts.last_block_number + final_chain->delegationDelay());
   assert(facts.address_facts.size() == wallets_.size());

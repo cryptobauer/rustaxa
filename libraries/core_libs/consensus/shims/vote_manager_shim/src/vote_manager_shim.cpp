@@ -114,7 +114,7 @@ rustaxa::PbftFinalChainFacts collectPbftDposFacts(const std::shared_ptr<final_ch
   for (const auto& address : addresses) {
     request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(address)});
   }
-  return final_chain->rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
+  return final_chain->collectPbftFinalChainFacts(std::move(request));
 }
 
 bool finalChainFactReady(uint8_t status) { return status == kPbftFinalChainFactStatusReady; }

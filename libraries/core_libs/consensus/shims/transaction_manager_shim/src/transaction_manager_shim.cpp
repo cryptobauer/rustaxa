@@ -281,7 +281,7 @@ class TransactionManagerRustShimAccess {
     if (!manager.final_chain_) {
       throw std::runtime_error("TransactionManager requires FinalChain for Rust FinalChain height facts");
     }
-    return manager.final_chain_->rustFinalChainForRust().get_last_block_number();
+    return manager.final_chain_->lastBlockNumber();
   }
 
   static std::pair<bool, std::string> verifyTransaction(const TransactionManagerOld& manager,

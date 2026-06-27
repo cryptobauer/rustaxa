@@ -7,11 +7,8 @@ namespace taraxa {
 namespace {
 static const vrf_wrapper::vrf_pk_t kEmptyVrfKey;
 
-vrf_wrapper::vrf_pk_t fromRustVrfKey(const rust::Vec<uint8_t>& key) {
-  if (key.empty()) {
-    return {};
-  }
-  return vrf_wrapper::vrf_pk_t(dev::bytes(key.begin(), key.end()));
+vrf_wrapper::vrf_pk_t fromRustVrfKey(const vrf_wrapper::vrf_pk_t& key) {
+  return key;
 }
 }
 
@@ -27,9 +24,7 @@ std::shared_ptr<vrf_wrapper::vrf_pk_t> KeyManager::getVrfKey(EthBlockNumber blk_
   }
 
   auto read_key = [&](EthBlockNumber block_number) -> std::shared_ptr<vrf_wrapper::vrf_pk_t> {
-    auto key = fromRustVrfKey(
-        shim_final_chain_->rustFinalChainForRust().get_vrf_key_at_block(static_cast<uint64_t>(block_number),
-                                                                        addr.asArray()));
+    auto key = fromRustVrfKey(shim_final_chain_->dposGetVrfKey(block_number, addr));
     if (key == kEmptyVrfKey) {
       return nullptr;
     }

@@ -70,7 +70,7 @@ rustaxa::PbftFinalChainFacts collectPillarDposFacts(const std::shared_ptr<final_
   for (const auto& voter : voters) {
     request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(voter)});
   }
-  return final_chain->rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
+  return final_chain->collectPbftFinalChainFacts(std::move(request));
 }
 
 bool finalChainFactReady(uint8_t status) { return status == kPbftFinalChainFactStatusReady; }
@@ -190,13 +190,6 @@ rustaxa::PillarValidatorVoteCount toBridgeVoteCount(const state_api::ValidatorVo
   return out;
 }
 
-state_api::ValidatorVoteCount fromBridgeDposVoteCount(const rustaxa::DposValidatorVoteCount& vote_count) {
-  state_api::ValidatorVoteCount out{};
-  out.addr = fromBridgeAddress(vote_count.address);
-  out.vote_count = vote_count.vote_count;
-  return out;
-}
-
 rust::Vec<rustaxa::PillarValidatorVoteCount> toBridgeVoteCounts(
     const std::vector<state_api::ValidatorVoteCount>& vote_counts) {
   rust::Vec<rustaxa::PillarValidatorVoteCount> out;
@@ -209,11 +202,11 @@ rust::Vec<rustaxa::PillarValidatorVoteCount> toBridgeVoteCounts(
 
 std::vector<state_api::ValidatorVoteCount> loadPillarValidatorVoteCounts(
     const std::shared_ptr<final_chain::FinalChain>& final_chain, PbftPeriod period) {
-  auto rust_vote_counts = final_chain->rustFinalChainForRust().get_dpos_validators_eligible_vote_counts(period);
+  auto rust_vote_counts = final_chain->dposValidatorsEligibleVoteCounts(period);
   std::vector<state_api::ValidatorVoteCount> out;
   out.reserve(rust_vote_counts.size());
   for (const auto& vote_count : rust_vote_counts) {
-    out.push_back(fromBridgeDposVoteCount(vote_count));
+    out.push_back(vote_count);
   }
   return out;
 }
@@ -236,7 +229,7 @@ std::optional<uint64_t> getPillarVoteWeight(const std::shared_ptr<final_chain::F
     request.collect_address_vote_counts = true;
     request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(voter)});
 
-    const auto facts = final_chain->rustFinalChainForRust().collect_pbft_final_chain_facts(std::move(request));
+    const auto facts = final_chain->collectPbftFinalChainFacts(std::move(request));
     if (facts.address_facts.empty() || !finalChainFactReady(facts.address_facts[0].status) ||
         facts.address_facts[0].vote_count == 0) {
       return std::nullopt;

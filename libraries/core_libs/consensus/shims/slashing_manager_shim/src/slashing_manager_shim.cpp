@@ -30,15 +30,6 @@ std::array<uint8_t, 32> to_bridge_u256(const u256& value) {
   return out;
 }
 
-std::array<uint8_t, 32> to_bridge_account_balance(const rust::Vec<uint8_t>& value) {
-  std::array<uint8_t, 32> out{};
-  if (value.size() > out.size()) {
-    throw std::overflow_error("Rust FinalChain account balance cannot be represented in 32 bridge bytes");
-  }
-  std::copy(value.begin(), value.end(), out.begin() + (out.size() - value.size()));
-  return out;
-}
-
 u256 from_bridge_u256(const std::array<uint8_t, 32>& value) {
   return dev::fromBigEndian<u256>(dev::bytes(value.begin(), value.end()));
 }
@@ -91,10 +82,10 @@ rust::Vec<rustaxa::SlashingSubmitterFact> submitter_facts(const FullNodeConfig& 
     const auto& wallet = config.wallets[index];
     rustaxa::SlashingSubmitterFact fact{};
     fact.wallet_index = index;
-    const auto account = final_chain->rustFinalChainForRust().get_account(wallet.node_addr.asArray());
-    if (account.found) {
-      fact.nonce = to_bridge_u256(u256(account.nonce));
-      fact.balance = to_bridge_account_balance(account.balance);
+    const auto account = final_chain->getAccount(wallet.node_addr);
+    if (account.has_value()) {
+      fact.nonce = to_bridge_u256(account->nonce);
+      fact.balance = to_bridge_u256(account->balance);
     }
     facts.push_back(std::move(fact));
   }
