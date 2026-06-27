@@ -400,6 +400,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgePbftFinalizationRuntimeSession` is retired. Normal PBFT finalization and duplicate-finalization resume now use
   manager-owned begin/next/report/abort APIs on `BridgePbftManagerRuntime`; C++ still executes external side effects
   until a later manager-owned one-shot finalization operation absorbs the remaining coordinator loop.
+- The standalone `validate_pbft_finalization_live_mutation_report` CXX export and bridge-only
+  `PbftFinalizationLiveMutationValidation` DTO are deleted. External FinalChain/EVM, DAG, transaction-manager,
+  PBFT-chain, sortition, vote-manager, advance-period, and pillar executors now report their post-state facts through
+  `pbft_manager_runtime_report_finalization_live_mutation`, which validates the facts and advances the manager-owned
+  finalization cursor in one call.
 - Manager-owned PBFT finalization actions are now drained through
   `pbft_manager_runtime_drain_owned_finalization_actions`. The drain owns dynamic-lambda persistence/state and
   executed-status persistence/state inside `BridgePbftManagerRuntime`, while stopping at external FinalChain/EVM, DAG,

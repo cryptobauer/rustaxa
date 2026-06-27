@@ -9,6 +9,7 @@ use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup, PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
+    PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
@@ -1667,6 +1668,66 @@ pub fn pbft_manager_runtime_finalization_session_report_action(
     next_pbft_finalization_runtime_action(session).into()
 }
 
+/// Validates and reports one external PBFT finalization live mutation.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns the current
+///   finalization cursor.
+/// - `plan`: accepted finalization intent that defines the valid action
+///   transcript and expected post-state facts.
+/// - `report`: C++ executor facts for one external live mutation, such as
+///   FinalChain, DAG, transaction-manager, PBFT-chain, sortition, vote-manager,
+///   period advance, or pillar side effects.
+///
+/// Outputs:
+/// - Returns the next cursor step after validation and report submission.
+///
+/// Invariants and edge behavior:
+/// - This does not execute the external side effect; it only validates the facts
+///   C++ reports after execution.
+/// - Validation failures are submitted to the same manager-owned runtime cursor
+///   as action failures, so the session enters a terminal failed state with the
+///   validation error code.
+/// - Unknown actions and cursor mismatches are still handled by the shared
+///   `pbft_manager_runtime_finalization_session_report_action` contract.
+pub fn pbft_manager_runtime_report_finalization_live_mutation(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationIntentPlan,
+    report: FfiPbftFinalizationLiveMutationReport,
+) -> FfiPbftFinalizationRuntimeSessionStep {
+    let current_step = pbft_manager_runtime_finalization_session_next(runtime);
+    if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+        || !current_step.has_action
+    {
+        return current_step;
+    }
+
+    let validation = if PbftFinalizationRuntimeAction::from_u8(report.action).is_none() {
+        FfiPbftFinalizationRuntimeActionReport {
+            cursor: current_step.cursor,
+            action: report.action,
+            success: false,
+            status:
+                rustaxa_consensus::pbft_finalize::PbftFinalizationLiveMutationStatus::UnknownAction
+                    .as_u8(),
+            error_code: "PBFT_FINALIZE_LIVE_MUTATION_UNKNOWN_ACTION".to_string(),
+        }
+    } else {
+        let domain_plan = PbftFinalizationPlan::from(plan);
+        let validation =
+            validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report.into());
+        FfiPbftFinalizationRuntimeActionReport {
+            cursor: current_step.cursor,
+            action: validation.action.as_u8(),
+            success: validation.accepted,
+            status: validation.status.as_u8(),
+            error_code: validation.error_code,
+        }
+    };
+
+    pbft_manager_runtime_finalization_session_report_action(runtime, validation)
+}
+
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
 ///
 /// Inputs:
@@ -3083,6 +3144,63 @@ mod tests {
         period_data.out().to_vec()
     }
 
+    fn finalization_live_report(
+        action: PbftFinalizationRuntimeAction,
+    ) -> FfiPbftFinalizationLiveMutationReport {
+        FfiPbftFinalizationLiveMutationReport {
+            action: action.as_u8(),
+            block_period: 10,
+            pbft_block_hash: [7; 32],
+            anchor_hash: [4; 32],
+            dag_finalized_count: 2,
+            finalized_transaction_count: 1,
+            pbft_chain_size: 11,
+            pbft_chain_head_hash: [7; 32],
+            pbft_chain_last_anchor_hash: [4; 32],
+            reward_votes_period: 10,
+            reward_votes_round: 2,
+            reward_votes_block_hash: [7; 32],
+            reward_votes_extra_count: 0,
+            sortition_changed: true,
+            sortition_change_period: 10,
+            sortition_change_interval_efficiency: 2_500,
+            sortition_change_threshold_upper: 1_300,
+            sortition_current_threshold_upper: 1_300,
+            sortition_params_changes_count: 1,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 1_490,
+            executed_pbft_block: true,
+            manager_period: 11,
+            pillar_processed_period: 10,
+            pillar_request_period: 5,
+            anchor_dag_cache_count: 0,
+            final_chain_dispatched: true,
+            final_chain_blocks_per_year: 1_000,
+            final_chain_last_block: 10,
+        }
+    }
+
+    fn advance_finalization_cursor_to_action(
+        runtime: &mut BridgePbftManagerRuntime,
+        expected_action: PbftFinalizationRuntimeAction,
+    ) {
+        loop {
+            let step = pbft_manager_runtime_finalization_session_next(runtime);
+            assert!(step.has_action);
+            if step.action == expected_action.as_u8() {
+                break;
+            }
+            let next = pbft_manager_runtime_finalization_session_report(
+                runtime,
+                step.cursor,
+                step.action,
+                true,
+                0,
+            );
+            assert!(next.can_continue);
+        }
+    }
+
     #[test]
     fn manager_runtime_owns_finalization_cursor_and_completion() {
         let (_temp_dir, mut runtime) =
@@ -3112,6 +3230,56 @@ mod tests {
         assert_eq!(step.status, PbftFinalizationRuntimeStatus::Complete.as_u8());
         assert!(step.complete);
         assert_eq!(actions, vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn manager_runtime_validates_and_reports_external_finalization_mutations() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_live_report");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+        );
+
+        let accepted = pbft_manager_runtime_report_finalization_live_mutation(
+            &mut runtime,
+            &plan,
+            finalization_live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions),
+        );
+
+        assert_eq!(
+            accepted.status,
+            PbftFinalizationRuntimeStatus::Active.as_u8()
+        );
+        assert_eq!(
+            accepted.action,
+            PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8()
+        );
+
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+        );
+        let mut rejected_report =
+            finalization_live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions);
+        rejected_report.finalized_transaction_count = 0;
+        let rejected = pbft_manager_runtime_report_finalization_live_mutation(
+            &mut runtime,
+            &plan,
+            rejected_report,
+        );
+
+        assert_eq!(
+            rejected.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert_eq!(
+            rejected.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_TRANSACTION_COUNT_MISMATCH"
+        );
     }
 
     #[test]

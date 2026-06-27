@@ -510,6 +510,12 @@ Implementation notes:
   `BridgePbftManagerRuntime` state, validates the live mutation transcript, and returns a snapshot for C++ mirror
   fields. C++ still owns the external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager,
   advance-period, and pillar side effects until a later one-shot finalization operation absorbs those boundaries.
+- `pbft_manager_shim` normal finalization and duplicate-resume paths now report external live mutations through
+  `pbft_manager_runtime_report_finalization_live_mutation`. This manager-runtime API validates the C++ executor facts
+  against the accepted finalization plan and advances the manager-owned finalization cursor in one call, replacing the
+  standalone `validate_pbft_finalization_live_mutation_report` CXX export and bridge-only
+  `PbftFinalizationLiveMutationValidation` DTO. C++ still executes the external effects for now, but it no longer
+  performs a separate bridge validation step before reporting the cursor action.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -533,6 +539,12 @@ Implementation notes:
     vote-manager, pillar, and network boundaries.
   - `api-designer`: recommended evolving this into a manager-owned finalization executor API, with intent planning,
     begin/resume, step reporting, and external-effect reports grouped behind `BridgePbftManagerRuntime`.
+- Custom agent used for the PBFT finalization live-report consolidation:
+  - `api-designer`: recommended a broader manager-owned finalization boundary API that groups begin/resume, external
+    effect reports, cursor advancement, and completion reporting while keeping FinalChain/EVM, DAG, transaction-manager,
+    PBFT-chain, sortition, vote-manager, advance-period, and pillar execution external for now. This increment implements
+    the prerequisite manager-runtime live-report API and leaves the broader boundary API as the next PBFT finalization
+    cut.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -586,6 +598,7 @@ Implementation notes:
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `git diff --check`
   - `.githooks/pre-commit`
+  - `.githooks/pre-commit`
 - Additional validation for PBFT finalization owned-action drain:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
@@ -597,6 +610,18 @@ Implementation notes:
   - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.DynamicLambdaPlannerMatchesCactiAdjustmentPolicy:RustPbftSyncTest.FinalizationRuntime*:RustPbftSyncTest.FinalizationResumeRuntime*' --gtest_print_time=1`
   - `cmake --build /build --target pbft_manager_test --parallel 12`
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+- Additional validation for PBFT finalization live-report consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_validates_and_reports_external_finalization_mutations -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.FinalizationLiveMutationReportsAdvanceManagerRuntime:RustPbftSyncTest.FinalizationRuntime*:RustPbftSyncTest.FinalizationResumeRuntime*' --gtest_print_time=1`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `git diff --check`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is either the broader PBFT finalization executor cut that absorbs the remaining external-effect

@@ -19,7 +19,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
-    PbftFinalizationLiveMutationValidation as FfiPbftFinalizationLiveMutationValidation,
     PbftFinalizationPillarPreflightFact as FfiPbftFinalizationPillarPreflightFact,
     PbftFinalizationPillarPreflightPlan as FfiPbftFinalizationPillarPreflightPlan,
     PbftFinalizationPillarPreflightReport as FfiPbftFinalizationPillarPreflightReport,
@@ -42,15 +41,14 @@ use rustaxa_consensus::pbft_finalize::{
     plan_pbft_finalization_pillar_preflight as plan_domain_pbft_finalization_pillar_preflight,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_pillar_preflight as report_domain_pbft_finalization_pillar_preflight,
-    validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
-    PbftFinalizationLiveMutationValidation, PbftFinalizationPillarPreflightAction,
-    PbftFinalizationPillarPreflightFact, PbftFinalizationPillarPreflightPlan,
-    PbftFinalizationPillarPreflightReport, PbftFinalizationPillarPreflightStatus,
-    PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationResumePlan,
-    PbftFinalizationRuntimeAction, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
-    PbftFinalizationStorageWriteStage, PbftFinalizedPeriodApplyResult,
+    PbftFinalizationPillarPreflightAction, PbftFinalizationPillarPreflightFact,
+    PbftFinalizationPillarPreflightPlan, PbftFinalizationPillarPreflightReport,
+    PbftFinalizationPillarPreflightStatus, PbftFinalizationPlan, PbftFinalizationPositionedHash,
+    PbftFinalizationResumePlan, PbftFinalizationRuntimeAction, PbftFinalizationStatus,
+    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+    PbftFinalizedPeriodApplyResult,
 };
 #[cfg(test)]
 use rustaxa_storage::Column;
@@ -221,30 +219,6 @@ pub fn plan_pbft_finalization_runtime(
 ) -> FfiPbftFinalizationRuntimePlan {
     let domain_plan = PbftFinalizationPlan::from(plan);
     plan_domain_pbft_finalization_runtime(&domain_plan).into()
-}
-
-/// Validates a post-action live mutation report against the accepted Rust PBFT
-/// finalization plan.
-///
-/// C++ still executes the DAG, TransactionManager, and PBFT-chain shim calls, but
-/// the Rust planner verifies their post-state proofs before the PBFT runtime
-/// cursor is advanced.
-pub fn validate_pbft_finalization_live_mutation_report(
-    plan: &FfiPbftFinalizationIntentPlan,
-    report: FfiPbftFinalizationLiveMutationReport,
-) -> FfiPbftFinalizationLiveMutationValidation {
-    if PbftFinalizationRuntimeAction::from_u8(report.action).is_none() {
-        return FfiPbftFinalizationLiveMutationValidation {
-            accepted: false,
-            status:
-                rustaxa_consensus::pbft_finalize::PbftFinalizationLiveMutationStatus::UnknownAction
-                    .as_u8(),
-            action: report.action,
-            error_code: "PBFT_FINALIZE_LIVE_MUTATION_UNKNOWN_ACTION".to_string(),
-        };
-    }
-    let domain_plan = PbftFinalizationPlan::from(plan);
-    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report.into()).into()
 }
 
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
@@ -695,17 +669,6 @@ impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutatio
     }
 }
 
-impl From<PbftFinalizationLiveMutationValidation> for FfiPbftFinalizationLiveMutationValidation {
-    fn from(value: PbftFinalizationLiveMutationValidation) -> Self {
-        Self {
-            accepted: value.accepted,
-            status: value.status.as_u8(),
-            action: value.action.as_u8(),
-            error_code: value.error_code,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,8 +694,6 @@ mod tests {
     const APPLY_STATUS_MISSING_PAYLOAD_TEST: u8 = 3;
     const APPLY_STATUS_CONFLICT_TEST: u8 = 4;
     const EXECUTED_BLOCK_STATUS_FIELD: u8 = 0;
-    const LIVE_STATUS_ACCEPTED_TEST: u8 = 0;
-    const LIVE_STATUS_TRANSACTION_COUNT_MISMATCH_TEST: u8 = 8;
 
     fn fact() -> FfiPbftFinalizationIntentFact {
         FfiPbftFinalizationIntentFact {
@@ -946,122 +907,6 @@ mod tests {
             vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15]
         );
         assert!(runtime.error_code.is_empty());
-    }
-
-    #[test]
-    fn live_mutation_validation_maps_bridge_reports() {
-        let plan = plan_pbft_finalization_intent(fact());
-
-        let accepted = validate_pbft_finalization_live_mutation_report(
-            &plan,
-            FfiPbftFinalizationLiveMutationReport {
-                action: 5,
-                block_period: 10,
-                pbft_block_hash: [7; 32],
-                anchor_hash: [4; 32],
-                dag_finalized_count: 0,
-                finalized_transaction_count: 1,
-                pbft_chain_size: 0,
-                pbft_chain_head_hash: [0; 32],
-                pbft_chain_last_anchor_hash: [0; 32],
-                reward_votes_period: 10,
-                reward_votes_round: 2,
-                reward_votes_block_hash: [7; 32],
-                reward_votes_extra_count: 0,
-                sortition_changed: false,
-                sortition_change_period: 0,
-                sortition_change_interval_efficiency: 0,
-                sortition_change_threshold_upper: 0,
-                sortition_current_threshold_upper: 0,
-                sortition_params_changes_count: 0,
-                rounds_count_dynamic_lambda: 0,
-                dynamic_lambda: 1_490,
-                executed_pbft_block: true,
-                manager_period: 11,
-                pillar_processed_period: 10,
-                pillar_request_period: 5,
-                anchor_dag_cache_count: 0,
-                final_chain_dispatched: true,
-                final_chain_blocks_per_year: 500,
-                final_chain_last_block: 9,
-            },
-        );
-        assert!(accepted.accepted);
-        assert_eq!(accepted.status, LIVE_STATUS_ACCEPTED_TEST);
-
-        let rejected = validate_pbft_finalization_live_mutation_report(
-            &plan,
-            FfiPbftFinalizationLiveMutationReport {
-                action: 5,
-                block_period: 10,
-                pbft_block_hash: [7; 32],
-                anchor_hash: [4; 32],
-                dag_finalized_count: 0,
-                finalized_transaction_count: 0,
-                pbft_chain_size: 0,
-                pbft_chain_head_hash: [0; 32],
-                pbft_chain_last_anchor_hash: [0; 32],
-                reward_votes_period: 10,
-                reward_votes_round: 2,
-                reward_votes_block_hash: [7; 32],
-                reward_votes_extra_count: 0,
-                sortition_changed: false,
-                sortition_change_period: 0,
-                sortition_change_interval_efficiency: 0,
-                sortition_change_threshold_upper: 0,
-                sortition_current_threshold_upper: 0,
-                sortition_params_changes_count: 0,
-                rounds_count_dynamic_lambda: 0,
-                dynamic_lambda: 1_490,
-                executed_pbft_block: true,
-                manager_period: 11,
-                pillar_processed_period: 10,
-                pillar_request_period: 5,
-                anchor_dag_cache_count: 0,
-                final_chain_dispatched: true,
-                final_chain_blocks_per_year: 500,
-                final_chain_last_block: 9,
-            },
-        );
-        assert!(!rejected.accepted);
-        assert_eq!(rejected.status, LIVE_STATUS_TRANSACTION_COUNT_MISMATCH_TEST);
-
-        let reward_rejected = validate_pbft_finalization_live_mutation_report(
-            &plan,
-            FfiPbftFinalizationLiveMutationReport {
-                action: 3,
-                block_period: 10,
-                pbft_block_hash: [7; 32],
-                anchor_hash: [4; 32],
-                dag_finalized_count: 0,
-                finalized_transaction_count: 0,
-                pbft_chain_size: 0,
-                pbft_chain_head_hash: [0; 32],
-                pbft_chain_last_anchor_hash: [0; 32],
-                reward_votes_period: 10,
-                reward_votes_round: 2,
-                reward_votes_block_hash: [7; 32],
-                reward_votes_extra_count: 1,
-                sortition_changed: false,
-                sortition_change_period: 0,
-                sortition_change_interval_efficiency: 0,
-                sortition_change_threshold_upper: 0,
-                sortition_current_threshold_upper: 0,
-                sortition_params_changes_count: 0,
-                rounds_count_dynamic_lambda: 0,
-                dynamic_lambda: 1_490,
-                executed_pbft_block: true,
-                manager_period: 11,
-                pillar_processed_period: 10,
-                pillar_request_period: 5,
-                anchor_dag_cache_count: 0,
-                final_chain_dispatched: true,
-                final_chain_blocks_per_year: 500,
-                final_chain_last_block: 9,
-            },
-        );
-        assert!(!reward_rejected.accepted);
-        assert_eq!(reward_rejected.status, 12);
     }
 
     #[test]

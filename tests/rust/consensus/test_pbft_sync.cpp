@@ -93,8 +93,6 @@ constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
 constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
-constexpr uint8_t kPbftFinalizationLiveMutationStatusAccepted = 0;
-constexpr uint8_t kPbftFinalizationLiveMutationStatusDagCountMismatch = 7;
 constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
@@ -809,8 +807,17 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_EQ(plan.storage_write_intent.transaction_location_writes[0].position, 0);
 }
 
-TEST(RustPbftSyncTest, FinalizationLiveMutationReportsValidateAgainstPlan) {
+TEST(RustPbftSyncTest, FinalizationLiveMutationReportsAdvanceManagerRuntime) {
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  auto runtime = managerRuntimeForFinalizationSession();
+  pbft_manager_runtime_begin_finalization_session(*runtime, plan);
+
+  auto step = pbft_manager_runtime_finalization_session_next(*runtime);
+  while (step.has_action && step.action != kPbftFinalizationRuntimeActionSetDagOrder) {
+    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
+  }
+  ASSERT_TRUE(step.has_action);
+  ASSERT_EQ(step.action, kPbftFinalizationRuntimeActionSetDagOrder);
 
   PbftFinalizationLiveMutationReport report{};
   report.action = kPbftFinalizationRuntimeActionSetDagOrder;
@@ -819,16 +826,23 @@ TEST(RustPbftSyncTest, FinalizationLiveMutationReportsValidateAgainstPlan) {
   report.anchor_hash = h256(8);
   report.dag_finalized_count = 2;
 
-  auto validation = validate_pbft_finalization_live_mutation_report(plan, report);
-  EXPECT_TRUE(validation.accepted);
-  EXPECT_EQ(validation.status, kPbftFinalizationLiveMutationStatusAccepted);
-  EXPECT_EQ(validation.action, kPbftFinalizationRuntimeActionSetDagOrder);
+  auto next = pbft_manager_runtime_report_finalization_live_mutation(*runtime, plan, report);
+  EXPECT_EQ(next.status, kPbftFinalizationRuntimeStatusActive);
+  EXPECT_EQ(next.action, kPbftFinalizationRuntimeActionUpdateTransactions);
+
+  pbft_manager_runtime_begin_finalization_session(*runtime, plan);
+  step = pbft_manager_runtime_finalization_session_next(*runtime);
+  while (step.has_action && step.action != kPbftFinalizationRuntimeActionSetDagOrder) {
+    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
+  }
+  ASSERT_TRUE(step.has_action);
+  ASSERT_EQ(step.action, kPbftFinalizationRuntimeActionSetDagOrder);
 
   report.dag_finalized_count = 1;
-  validation = validate_pbft_finalization_live_mutation_report(plan, report);
-  EXPECT_FALSE(validation.accepted);
-  EXPECT_EQ(validation.status, kPbftFinalizationLiveMutationStatusDagCountMismatch);
-  EXPECT_EQ(std::string(validation.error_code), "PBFT_FINALIZE_LIVE_MUTATION_DAG_COUNT_MISMATCH");
+  next = pbft_manager_runtime_report_finalization_live_mutation(*runtime, plan, report);
+  EXPECT_EQ(next.status, kPbftFinalizationRuntimeStatusActionFailed);
+  EXPECT_FALSE(next.has_action);
+  EXPECT_EQ(std::string(next.error_code), "PBFT_FINALIZE_LIVE_MUTATION_DAG_COUNT_MISMATCH");
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentRejectsAlreadyPersistedBlock) {

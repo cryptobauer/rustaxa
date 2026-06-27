@@ -1997,14 +1997,6 @@ pub mod rustaxa_ffi {
         final_chain_last_block: u64,
     }
 
-    /// Result of validating a live PBFT finalization mutation report in Rust.
-    struct PbftFinalizationLiveMutationValidation {
-        accepted: bool,
-        status: u8,
-        action: u8,
-        error_code: String,
-    }
-
     /// Rust classification of durable PBFT finalization resume state.
     struct PbftFinalizationResumePlan {
         status: u8,
@@ -4999,6 +4991,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             report: PbftFinalizationRuntimeActionReport,
         ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn pbft_manager_runtime_report_finalization_live_mutation(
+            runtime: &mut BridgePbftManagerRuntime,
+            plan: &PbftFinalizationIntentPlan,
+            report: PbftFinalizationLiveMutationReport,
+        ) -> PbftFinalizationRuntimeSessionStep;
         pub fn pbft_manager_runtime_drain_owned_finalization_actions(
             runtime: &mut BridgePbftManagerRuntime,
             plan: &PbftFinalizationIntentPlan,
@@ -5078,10 +5075,6 @@ pub mod rustaxa_ffi {
             report: PbftManagerRuntimeActionReport,
         ) -> PbftManagerRuntimeSessionStep;
         pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime);
-        pub fn validate_pbft_finalization_live_mutation_report(
-            plan: &PbftFinalizationIntentPlan,
-            report: PbftFinalizationLiveMutationReport,
-        ) -> PbftFinalizationLiveMutationValidation;
         pub fn apply_pbft_finalization_storage_writes(
             storage: &BridgeStorage,
             write_set: &PbftFinalizationStorageWritePlan,
