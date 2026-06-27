@@ -1386,16 +1386,6 @@ impl BridgeStorage {
             .write_rounds_count_dynamic_lambda(rounds_count)
     }
 
-    pub fn save_cert_voted_block_in_round(
-        &self,
-        round: u64,
-        block_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .pbft()
-            .write_cert_voted_block_in_round(round, &block_rlp)
-    }
-
     pub fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<(), anyhow::Error> {
         self.0.pbft().write_manager_field(field, value)
     }

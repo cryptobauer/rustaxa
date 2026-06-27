@@ -7419,11 +7419,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftVoteStorageQueries,
         ) -> Result<Vec<VoteRlp>>;
         pub fn get_reward_votes(self: &BridgePbftVoteStorageQueries) -> Result<Vec<VoteRlp>>;
-        pub fn save_cert_voted_block_in_round(
-            self: &BridgeStorage,
-            round: u64,
-            block_rlp: Vec<u8>,
-        ) -> Result<()>;
         pub fn save_pbft_mgr_field(self: &BridgeStorage, field: u8, value: u32) -> Result<()>;
         pub fn save_pbft_mgr_status(self: &BridgeStorage, field: u8, value: bool) -> Result<()>;
         pub fn save_pbft_head(self: &BridgeStorage, hash: &[u8; 32], head: Vec<u8>) -> Result<()>;

@@ -2081,6 +2081,7 @@ mod tests {
         create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
     };
     use ethereum_types::H256;
+    use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
     use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
     use std::fs;
     use std::path::PathBuf;
@@ -3428,8 +3429,7 @@ mod tests {
             storage
                 .save_pbft_mgr_field(2, 1_500)
                 .expect("lambda seed should persist");
-            storage
-                .save_cert_voted_block_in_round(3, vec![0xC0])
+            save_cert_voted_block_in_round_storage(storage.0.as_ref(), 3, &[0xC0])
                 .expect("cert-voted block should persist");
 
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())

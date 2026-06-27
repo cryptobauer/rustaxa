@@ -201,8 +201,8 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   storage->save_pbft_mgr_field(1, 1);
   storage->save_pbft_mgr_status(2, true);
   storage->save_pbft_mgr_status(3, true);
-  storage->save_cert_voted_block_in_round(2, bytes({0xC0}));
   auto seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_cert_voted_block_in_round(*seed_batch, 2, bytes({0xC0}));
   storage_shim_save_own_verified_vote(*seed_batch, own_vote_hash, bytes({0x74}));
   storage_shim_commit_batch(std::move(seed_batch), false);
 

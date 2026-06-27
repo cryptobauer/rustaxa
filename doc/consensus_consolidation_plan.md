@@ -499,6 +499,9 @@ Implementation status:
 - The remaining test-only callers of broad `BridgeStorage::persist_pbft_vote_progress` and
   `BridgeStorage::clear_own_verified_votes` now use the narrower `BridgeVerifiedVotes` persistence facade, and the broad
   CXX methods are deleted from `BridgeStorage`.
+- The last test-only callers of broad `BridgeStorage::save_cert_voted_block_in_round` have been migrated to either the
+  dedicated `storage_shim_save_cert_voted_block_in_round` batch appender or native Rust PBFT manager storage helpers, and
+  the broad CXX mutator is deleted.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 
