@@ -26,7 +26,7 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::{
     BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeDagProposerRetryState,
-    BridgeDagProposerSession, BridgeDagVerifyBlockSession, BridgeStorage,
+    BridgeDagProposerSession, BridgeStorage,
 };
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
@@ -209,6 +209,7 @@ pub fn create_dag_manager_runtime_from_storage(
     Ok(Box::new(BridgeDagManagerRuntime {
         state: DagManagerState::new(to_h256(genesis), dag_expiry_limit)?,
         storage: storage.0.clone(),
+        verify_block_session: None,
     }))
 }
 
@@ -1394,16 +1395,13 @@ impl BridgeDagManagerRuntime {
         })
     }
 
-    /// Opens a Rust-owned ordered `DagManager::verifyBlock` session.
+    /// Opens a runtime-owned ordered `DagManager::verifyBlock` session.
     ///
     /// The runtime performs storage-backed prechecks immediately, then returns
     /// either a terminal reject/complete step or a transaction-query request.
     /// Later advancement happens only through explicit live-fact reports from
     /// the C++ executor boundary.
-    pub fn dag_manager_runtime_create_verify_block_session(
-        &self,
-        input: DagVerifyBlockSessionInput,
-    ) -> Result<Box<BridgeDagVerifyBlockSession>> {
+    pub fn begin_verify_block_session(&mut self, input: DagVerifyBlockSessionInput) -> Result<()> {
         let tips = input
             .tips
             .into_iter()
@@ -1434,171 +1432,205 @@ impl BridgeDagManagerRuntime {
             DagVerifyBlockSessionAction::Complete
         };
 
-        Ok(Box::new(BridgeDagVerifyBlockSession {
-            state: DagVerifyBlockSession {
-                action,
-                proposal_period: precheck.proposal_period,
-                expected_transactions,
-                reject_code: precheck.reject_code,
-                sender_eligible_vote_count: 0,
-                vdf_sortition_max_vote_count: 0,
-                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
-                error_code: String::new(),
-            },
-        }))
+        self.verify_block_session = Some(DagVerifyBlockSession {
+            action,
+            proposal_period: precheck.proposal_period,
+            expected_transactions,
+            reject_code: precheck.reject_code,
+            sender_eligible_vote_count: 0,
+            vdf_sortition_max_vote_count: 0,
+            eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+            error_code: String::new(),
+        });
+
+        Ok(())
     }
 }
 
-impl BridgeDagVerifyBlockSession {
-    pub fn dag_verify_block_session_next(&self) -> DagVerifyBlockSessionStep {
-        verify_block_session_step(&self.state)
-    }
+/// Opens a DAG block verification cursor inside the long-lived DAG manager runtime.
+///
+/// Inputs:
+/// - `runtime`: the DAG manager runtime that owns graph state, storage, and the temporary verification cursor.
+/// - `input`: compact block facts and supplied transaction hashes for one `DagManager::verifyBlock` call.
+///
+/// Outputs:
+/// - Replaces any previous runtime verification cursor. C++ drives the cursor with
+///   `dag_manager_runtime_verify_block_session_next` and report functions.
+///
+/// Invariants and edge behavior:
+/// - The verification cursor is DAG-manager implementation state and is not exported as a standalone CXX handle.
+/// - Starting a new verification replaces any incomplete previous cursor, matching the legacy per-call allocation
+///   behavior.
+pub fn dag_manager_runtime_begin_verify_block_session(
+    runtime: &mut BridgeDagManagerRuntime,
+    input: DagVerifyBlockSessionInput,
+) -> Result<()> {
+    runtime.begin_verify_block_session(input)
+}
 
-    pub fn dag_verify_block_session_report_transactions(
-        &mut self,
-        report: DagVerifyBlockTransactionReport,
-    ) -> DagVerifyBlockSessionStep {
-        if !matches!(
-            self.state.action,
-            DagVerifyBlockSessionAction::TransactionQuery(_)
-        ) {
-            return invalid_verify_block_report(
-                &mut self.state,
-                "DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_REPORT",
-            );
-        }
+/// Returns the next requested action for the runtime-owned DAG verification cursor.
+pub fn dag_manager_runtime_verify_block_session_next(
+    runtime: &mut BridgeDagManagerRuntime,
+) -> DagVerifyBlockSessionStep {
+    let Some(session) = runtime.verify_block_session.as_ref() else {
+        return verify_block_session_not_started_step();
+    };
+    verify_block_session_step(session)
+}
 
-        let availability = validate_dag_verify_transaction_availability(
-            DomainDagVerifyTransactionAvailabilityInput {
-                expected_transactions: self.state.expected_transactions,
-                resolved_transactions: report.resolved_transactions,
-            },
+/// Reports resolved transaction availability to the runtime-owned DAG verification cursor.
+pub fn dag_manager_runtime_verify_block_session_report_transactions(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagVerifyBlockTransactionReport,
+) -> DagVerifyBlockSessionStep {
+    let Some(session) = runtime.verify_block_session.as_mut() else {
+        return verify_block_session_not_started_step();
+    };
+    if !matches!(
+        session.action,
+        DagVerifyBlockSessionAction::TransactionQuery(_)
+    ) {
+        return invalid_verify_block_report(
+            session,
+            "DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_REPORT",
         );
-        if !availability.continue_validation {
-            return complete_verify_block_session(&mut self.state, availability.reject_code);
-        }
-
-        self.state.action = DagVerifyBlockSessionAction::AuthorizationFacts;
-        verify_block_session_step(&self.state)
     }
 
-    pub fn dag_verify_block_session_report_authorization(
-        &mut self,
-        report: DagVerifyBlockAuthorizationReport,
-    ) -> DagVerifyBlockSessionStep {
-        if !matches!(
-            self.state.action,
-            DagVerifyBlockSessionAction::AuthorizationFacts
-        ) {
-            return invalid_verify_block_report(
-                &mut self.state,
-                "DAG_VERIFY_SESSION_UNEXPECTED_AUTHORIZATION_REPORT",
-            );
-        }
-
-        self.state.sender_eligible_vote_count = report.sender_eligible_vote_count;
-        self.state.vdf_sortition_max_vote_count = report.vdf_sortition_max_vote_count;
-        self.state.eligibility_status = report.eligibility_status;
-
-        let dpos_status = if report.eligibility_status
-            == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-        {
-            rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-        } else {
-            rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
-        };
-        let decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
-            vrf_key_found: report.vrf_key_found,
-            sender_eligible_vote_count: report.sender_eligible_vote_count,
-            vdf_sortition_max_vote_count: report.vdf_sortition_max_vote_count,
-            vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
-            dpos_status,
+    let availability =
+        validate_dag_verify_transaction_availability(DomainDagVerifyTransactionAvailabilityInput {
+            expected_transactions: session.expected_transactions,
+            resolved_transactions: report.resolved_transactions,
         });
-        if !decision.continue_validation {
-            return complete_verify_block_session(&mut self.state, decision.reject_code);
-        }
-
-        self.state.action = DagVerifyBlockSessionAction::VdfSortition {
-            vote_count: decision.vote_count,
-            max_vote_count: decision.max_vote_count,
-        };
-        verify_block_session_step(&self.state)
+    if !availability.continue_validation {
+        return complete_verify_block_session(session, availability.reject_code);
     }
 
-    pub fn dag_verify_block_session_report_vdf(
-        &mut self,
-        report: DagVerifyBlockVdfReport,
-    ) -> DagVerifyBlockSessionStep {
-        if !matches!(
-            self.state.action,
-            DagVerifyBlockSessionAction::VdfSortition { .. }
-        ) {
-            return invalid_verify_block_report(
-                &mut self.state,
-                "DAG_VERIFY_SESSION_UNEXPECTED_VDF_REPORT",
-            );
-        }
+    session.action = DagVerifyBlockSessionAction::AuthorizationFacts;
+    verify_block_session_step(session)
+}
 
-        let dpos_status = if self.state.eligibility_status
-            == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-        {
-            rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-        } else {
-            rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
-        };
-        let vdf_decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
-            vrf_key_found: true,
-            sender_eligible_vote_count: self.state.sender_eligible_vote_count,
-            vdf_sortition_max_vote_count: self.state.vdf_sortition_max_vote_count,
-            vdf_status: report.vdf_status,
-            dpos_status,
-        });
-        if !vdf_decision.continue_validation {
-            return complete_verify_block_session(&mut self.state, vdf_decision.reject_code);
-        }
-
-        let dpos_decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
-            vrf_key_found: true,
-            sender_eligible_vote_count: self.state.sender_eligible_vote_count,
-            vdf_sortition_max_vote_count: self.state.vdf_sortition_max_vote_count,
-            vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
-            dpos_status: self.state.eligibility_status,
-        });
-        if !dpos_decision.continue_validation {
-            return complete_verify_block_session(&mut self.state, dpos_decision.reject_code);
-        }
-
-        self.state.action = DagVerifyBlockSessionAction::Gas;
-        verify_block_session_step(&self.state)
+/// Reports FinalChain authorization facts to the runtime-owned DAG verification cursor.
+pub fn dag_manager_runtime_verify_block_session_report_authorization(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagVerifyBlockAuthorizationReport,
+) -> DagVerifyBlockSessionStep {
+    let Some(session) = runtime.verify_block_session.as_mut() else {
+        return verify_block_session_not_started_step();
+    };
+    if !matches!(
+        session.action,
+        DagVerifyBlockSessionAction::AuthorizationFacts
+    ) {
+        return invalid_verify_block_report(
+            session,
+            "DAG_VERIFY_SESSION_UNEXPECTED_AUTHORIZATION_REPORT",
+        );
     }
 
-    pub fn dag_verify_block_session_report_gas(
-        &mut self,
-        report: DagVerifyBlockGasReport,
-    ) -> DagVerifyBlockSessionStep {
-        if !matches!(self.state.action, DagVerifyBlockSessionAction::Gas) {
-            return invalid_verify_block_report(
-                &mut self.state,
-                "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT",
-            );
-        }
+    session.sender_eligible_vote_count = report.sender_eligible_vote_count;
+    session.vdf_sortition_max_vote_count = report.vdf_sortition_max_vote_count;
+    session.eligibility_status = report.eligibility_status;
 
-        let result = validate_dag_verify_gas(DomainDagVerifyGasInput {
-            block_gas_estimation: report.block_gas_estimation,
-            estimated_transactions_weight: report.estimated_transactions_weight,
-            dag_gas_limit: report.dag_gas_limit,
-            pbft_gas_limit: report.pbft_gas_limit,
-            tip_gas_estimations: report
-                .tip_gas_estimations
-                .into_iter()
-                .map(|tip| DagTipGas {
-                    found: tip.found,
-                    gas_estimation: tip.gas_estimation,
-                })
-                .collect(),
-        });
-        complete_verify_block_session(&mut self.state, result.reject_code)
+    let dpos_status = if report.eligibility_status
+        == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+    {
+        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+    } else {
+        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
+    };
+    let decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
+        vrf_key_found: report.vrf_key_found,
+        sender_eligible_vote_count: report.sender_eligible_vote_count,
+        vdf_sortition_max_vote_count: report.vdf_sortition_max_vote_count,
+        vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_NOT_CHECKED,
+        dpos_status,
+    });
+    if !decision.continue_validation {
+        return complete_verify_block_session(session, decision.reject_code);
     }
+
+    session.action = DagVerifyBlockSessionAction::VdfSortition {
+        vote_count: decision.vote_count,
+        max_vote_count: decision.max_vote_count,
+    };
+    verify_block_session_step(session)
+}
+
+/// Reports VDF verification status to the runtime-owned DAG verification cursor.
+pub fn dag_manager_runtime_verify_block_session_report_vdf(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagVerifyBlockVdfReport,
+) -> DagVerifyBlockSessionStep {
+    let Some(session) = runtime.verify_block_session.as_mut() else {
+        return verify_block_session_not_started_step();
+    };
+    if !matches!(
+        session.action,
+        DagVerifyBlockSessionAction::VdfSortition { .. }
+    ) {
+        return invalid_verify_block_report(session, "DAG_VERIFY_SESSION_UNEXPECTED_VDF_REPORT");
+    }
+
+    let dpos_status = if session.eligibility_status
+        == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+    {
+        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
+    } else {
+        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
+    };
+    let vdf_decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
+        vrf_key_found: true,
+        sender_eligible_vote_count: session.sender_eligible_vote_count,
+        vdf_sortition_max_vote_count: session.vdf_sortition_max_vote_count,
+        vdf_status: report.vdf_status,
+        dpos_status,
+    });
+    if !vdf_decision.continue_validation {
+        return complete_verify_block_session(session, vdf_decision.reject_code);
+    }
+
+    let dpos_decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
+        vrf_key_found: true,
+        sender_eligible_vote_count: session.sender_eligible_vote_count,
+        vdf_sortition_max_vote_count: session.vdf_sortition_max_vote_count,
+        vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
+        dpos_status: session.eligibility_status,
+    });
+    if !dpos_decision.continue_validation {
+        return complete_verify_block_session(session, dpos_decision.reject_code);
+    }
+
+    session.action = DagVerifyBlockSessionAction::Gas;
+    verify_block_session_step(session)
+}
+
+/// Reports gas facts to the runtime-owned DAG verification cursor.
+pub fn dag_manager_runtime_verify_block_session_report_gas(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagVerifyBlockGasReport,
+) -> DagVerifyBlockSessionStep {
+    let Some(session) = runtime.verify_block_session.as_mut() else {
+        return verify_block_session_not_started_step();
+    };
+    if !matches!(session.action, DagVerifyBlockSessionAction::Gas) {
+        return invalid_verify_block_report(session, "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT");
+    }
+
+    let result = validate_dag_verify_gas(DomainDagVerifyGasInput {
+        block_gas_estimation: report.block_gas_estimation,
+        estimated_transactions_weight: report.estimated_transactions_weight,
+        dag_gas_limit: report.dag_gas_limit,
+        pbft_gas_limit: report.pbft_gas_limit,
+        tip_gas_estimations: report
+            .tip_gas_estimations
+            .into_iter()
+            .map(|tip| DagTipGas {
+                found: tip.found,
+                gas_estimation: tip.gas_estimation,
+            })
+            .collect(),
+    });
+    complete_verify_block_session(session, result.reject_code)
 }
 
 impl BridgeDagProposerSession {
@@ -2581,6 +2613,20 @@ fn invalid_verify_block_report(
         vote_count: 0,
         max_vote_count: 0,
         error_code: session.error_code.clone(),
+    }
+}
+
+fn verify_block_session_not_started_step() -> DagVerifyBlockSessionStep {
+    DagVerifyBlockSessionStep {
+        status: DAG_VERIFY_SESSION_STATUS_INVALID_REPORT,
+        action: DAG_VERIFY_SESSION_ACTION_NONE,
+        complete: true,
+        reject_code: 0,
+        proposal_period: 0,
+        query_hashes: Vec::new(),
+        vote_count: 0,
+        max_vote_count: 0,
+        error_code: "DAG_VERIFY_SESSION_NOT_STARTED".to_string(),
     }
 }
 
@@ -3657,14 +3703,15 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
                 .expect("mapping write should succeed");
 
-            let mut session = runtime
-                .dag_manager_runtime_create_verify_block_session(DagVerifyBlockSessionInput {
+            dag_manager_runtime_begin_verify_block_session(
+                &mut runtime,
+                DagVerifyBlockSessionInput {
                     block_level: 5,
                     pivot: [1u8; 32],
                     tips: vec![],
@@ -3673,23 +3720,26 @@ mod tests {
                         DagTransactionHash { hash: [3u8; 32] },
                     ],
                     supplied_transaction_hashes: vec![DagTransactionHash { hash: [3u8; 32] }],
-                })
-                .expect("session should initialize");
+                },
+            )
+            .expect("session should initialize");
 
-            let first = session.dag_verify_block_session_next();
+            let first = dag_manager_runtime_verify_block_session_next(&mut runtime);
             assert_eq!(first.status, DAG_VERIFY_SESSION_STATUS_ACTIVE);
             assert_eq!(first.action, DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY);
             assert_eq!(first.proposal_period, 7);
             assert_eq!(first.query_hashes[0].hash, [2u8; 32]);
 
-            let auth = session.dag_verify_block_session_report_transactions(
+            let auth = dag_manager_runtime_verify_block_session_report_transactions(
+                &mut runtime,
                 DagVerifyBlockTransactionReport {
                     resolved_transactions: 2,
                 },
             );
             assert_eq!(auth.action, DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS);
 
-            let vdf = session.dag_verify_block_session_report_authorization(
+            let vdf = dag_manager_runtime_verify_block_session_report_authorization(
+                &mut runtime,
                 DagVerifyBlockAuthorizationReport {
                     vrf_key_found: true,
                     sender_eligible_vote_count: 11,
@@ -3701,33 +3751,42 @@ mod tests {
             assert_eq!(vdf.vote_count, 11);
             assert_eq!(vdf.max_vote_count, 33);
 
-            let gas = session.dag_verify_block_session_report_vdf(DagVerifyBlockVdfReport {
-                vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
-            });
+            let gas = dag_manager_runtime_verify_block_session_report_vdf(
+                &mut runtime,
+                DagVerifyBlockVdfReport {
+                    vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
+                },
+            );
             assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
 
-            let complete = session.dag_verify_block_session_report_gas(DagVerifyBlockGasReport {
-                block_gas_estimation: 10,
-                estimated_transactions_weight: 10,
-                dag_gas_limit: 20,
-                pbft_gas_limit: 100,
-                tip_gas_estimations: vec![],
-            });
+            let complete = dag_manager_runtime_verify_block_session_report_gas(
+                &mut runtime,
+                DagVerifyBlockGasReport {
+                    block_gas_estimation: 10,
+                    estimated_transactions_weight: 10,
+                    dag_gas_limit: 20,
+                    pbft_gas_limit: 100,
+                    tip_gas_estimations: vec![],
+                },
+            );
             assert!(complete.complete);
             assert_eq!(complete.status, DAG_VERIFY_SESSION_STATUS_COMPLETE);
             assert_eq!(complete.reject_code, 0);
 
-            let mut missing_session = runtime
-                .dag_manager_runtime_create_verify_block_session(DagVerifyBlockSessionInput {
+            dag_manager_runtime_begin_verify_block_session(
+                &mut runtime,
+                DagVerifyBlockSessionInput {
                     block_level: 5,
                     pivot: [1u8; 32],
                     tips: vec![],
                     block_transaction_hashes: vec![DagTransactionHash { hash: [4u8; 32] }],
                     supplied_transaction_hashes: vec![],
-                })
-                .expect("missing session should initialize");
-            let _ = missing_session.dag_verify_block_session_next();
-            let missing = missing_session.dag_verify_block_session_report_transactions(
+                },
+            )
+            .expect("missing session should initialize");
+            let _ = dag_manager_runtime_verify_block_session_next(&mut runtime);
+            let missing = dag_manager_runtime_verify_block_session_report_transactions(
+                &mut runtime,
                 DagVerifyBlockTransactionReport {
                     resolved_transactions: 0,
                 },

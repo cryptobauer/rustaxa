@@ -469,16 +469,22 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     return std::make_pair(VerifyBlockReturnType::Verified, std::move(all_block_trxs));
   };
 
-  auto verify_session = [&]() {
-    std::shared_lock lock(rust_graphs_mutex_);
+  auto begin_verify_session = [&]() {
+    std::unique_lock lock(rust_graphs_mutex_);
     // Rust bridge/storage failures intentionally propagate as exceptions: they
     // are infrastructure errors, while consensus-invalid blocks are returned as
     // explicit reject codes.
-    return rust_graphs_->runtime->dag_manager_runtime_create_verify_block_session(
-        to_bridge_verify_block_session_input(blk, trxs));
-  }();
+    rustaxa::dag_manager_runtime_begin_verify_block_session(*rust_graphs_->runtime,
+                                                            to_bridge_verify_block_session_input(blk, trxs));
+  };
+  auto next_verify_step = [&]() {
+    std::unique_lock lock(rust_graphs_mutex_);
+    return rustaxa::dag_manager_runtime_verify_block_session_next(*rust_graphs_->runtime);
+  };
 
-  auto step = verify_session->dag_verify_block_session_next();
+  begin_verify_session();
+
+  auto step = next_verify_step();
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }
@@ -516,7 +522,11 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
 
   rustaxa::DagVerifyBlockTransactionReport transaction_report;
   transaction_report.resolved_transactions = all_block_trxs.size();
-  step = verify_session->dag_verify_block_session_report_transactions(std::move(transaction_report));
+  {
+    std::unique_lock lock(rust_graphs_mutex_);
+    step = rustaxa::dag_manager_runtime_verify_block_session_report_transactions(*rust_graphs_->runtime,
+                                                                                 std::move(transaction_report));
+  }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }
@@ -525,8 +535,11 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   }
 
   const auto authorization_facts = rust_dag_authorization_facts(*final_chain_, proposal_period, blk->getSender());
-  step = verify_session->dag_verify_block_session_report_authorization(
-      to_bridge_verify_block_authorization_report(authorization_facts));
+  {
+    std::unique_lock lock(rust_graphs_mutex_);
+    step = rustaxa::dag_manager_runtime_verify_block_session_report_authorization(
+        *rust_graphs_->runtime, to_bridge_verify_block_authorization_report(authorization_facts));
+  }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }
@@ -548,7 +561,10 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   }
   rustaxa::DagVerifyBlockVdfReport vdf_report;
   vdf_report.vdf_status = vdf_status;
-  step = verify_session->dag_verify_block_session_report_vdf(std::move(vdf_report));
+  {
+    std::unique_lock lock(rust_graphs_mutex_);
+    step = rustaxa::dag_manager_runtime_verify_block_session_report_vdf(*rust_graphs_->runtime, std::move(vdf_report));
+  }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }
@@ -568,9 +584,13 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
         rust_graphs_->runtime->dag_manager_runtime_tip_gas_estimations(to_bridge_dag_hashes(blk->getTips()));
   }
 
-  step = verify_session->dag_verify_block_session_report_gas(
-      to_bridge_verify_block_gas_report(blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit,
-                                        pbft_gas_limit, std::move(tip_gas_estimations)));
+  {
+    std::unique_lock lock(rust_graphs_mutex_);
+    step = rustaxa::dag_manager_runtime_verify_block_session_report_gas(
+        *rust_graphs_->runtime,
+        to_bridge_verify_block_gas_report(blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit,
+                                          pbft_gas_limit, std::move(tip_gas_estimations)));
+  }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }

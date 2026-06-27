@@ -573,6 +573,10 @@ Implementation status:
 - `BridgePbftManagerBlockValidationSession` is deleted. PBFT block validation planning is now a cursor inside
   `BridgePbftManagerRuntime`, so `pbft_manager_shim` no longer creates a standalone bridge handle for validation
   checks.
+- `BridgeDagVerifyBlockSession` is deleted. DAG block verification still reports live external facts from C++ for
+  transaction lookup, FinalChain authorization, VDF verification, and gas estimation, but the ordered cursor now lives
+  inside `BridgeDagManagerRuntime` through runtime-owned begin/next/report functions. `dag_manager_shim::verifyBlock`
+  no longer allocates a standalone bridge session handle.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also

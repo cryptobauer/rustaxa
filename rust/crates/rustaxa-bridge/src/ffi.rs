@@ -168,10 +168,7 @@ pub struct BridgeDagManagerState(pub DagManagerState);
 pub struct BridgeDagManagerRuntime {
     pub state: DagManagerState,
     pub storage: Arc<Storage>,
-}
-
-pub struct BridgeDagVerifyBlockSession {
-    pub state: crate::dag::DagVerifyBlockSession,
+    pub verify_block_session: Option<crate::dag::DagVerifyBlockSession>,
 }
 
 pub struct BridgeDagProposerSession {
@@ -5340,28 +5337,27 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             block: DagVerifyPrecheckBlock,
         ) -> Result<DagVerifyPrecheckResult>;
-        pub fn dag_manager_runtime_create_verify_block_session(
-            self: &BridgeDagManagerRuntime,
+        pub fn dag_manager_runtime_begin_verify_block_session(
+            runtime: &mut BridgeDagManagerRuntime,
             input: DagVerifyBlockSessionInput,
-        ) -> Result<Box<BridgeDagVerifyBlockSession>>;
-        type BridgeDagVerifyBlockSession;
-        pub fn dag_verify_block_session_next(
-            self: &BridgeDagVerifyBlockSession,
+        ) -> Result<()>;
+        pub fn dag_manager_runtime_verify_block_session_next(
+            runtime: &mut BridgeDagManagerRuntime,
         ) -> DagVerifyBlockSessionStep;
-        pub fn dag_verify_block_session_report_transactions(
-            self: &mut BridgeDagVerifyBlockSession,
+        pub fn dag_manager_runtime_verify_block_session_report_transactions(
+            runtime: &mut BridgeDagManagerRuntime,
             report: DagVerifyBlockTransactionReport,
         ) -> DagVerifyBlockSessionStep;
-        pub fn dag_verify_block_session_report_authorization(
-            self: &mut BridgeDagVerifyBlockSession,
+        pub fn dag_manager_runtime_verify_block_session_report_authorization(
+            runtime: &mut BridgeDagManagerRuntime,
             report: DagVerifyBlockAuthorizationReport,
         ) -> DagVerifyBlockSessionStep;
-        pub fn dag_verify_block_session_report_vdf(
-            self: &mut BridgeDagVerifyBlockSession,
+        pub fn dag_manager_runtime_verify_block_session_report_vdf(
+            runtime: &mut BridgeDagManagerRuntime,
             report: DagVerifyBlockVdfReport,
         ) -> DagVerifyBlockSessionStep;
-        pub fn dag_verify_block_session_report_gas(
-            self: &mut BridgeDagVerifyBlockSession,
+        pub fn dag_manager_runtime_verify_block_session_report_gas(
+            runtime: &mut BridgeDagManagerRuntime,
             report: DagVerifyBlockGasReport,
         ) -> DagVerifyBlockSessionStep;
         type BridgeDagProposerSession;
