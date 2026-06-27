@@ -6231,10 +6231,6 @@ pub mod rustaxa_ffi {
             self: &BridgeGasPricer,
             gas_prices: Vec<GasPricerGasPrice>,
         ) -> Result<()>;
-        pub fn gas_pricer_init_from_storage(
-            self: &BridgeGasPricer,
-            storage: &BridgeStorage,
-        ) -> Result<()>;
 
         // Consensus slashing proof planner
 

@@ -278,6 +278,24 @@ Acceptance:
 - Equivalent Rust or bridge-level tests remain for moved behavior.
 - `make cpp-intersection-list` does not grow from unnecessary original upstream edits.
 
+Implementation notes:
+
+- No small shim directory has been retired yet.
+- The next actual Slice 5 target should be `period_data_queue_shim`: move period-data queue ownership into the PBFT
+  manager Rust runtime, keep live `PeriodData` / `PbftVote` sidecars shim-local until those model types move, then
+  delete `BridgePeriodDataQueue`, the standalone shim overlay, and `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
+- Full `gas_pricer_shim` removal is not valid yet. Removing the overlay would route Rust-enabled builds back to the
+  legacy C++ implementation instead of preserving Rust ownership. A future removal must first replace the C++ public
+  facade with a native transaction/final-chain runtime API or a narrower external query API. The first gas-pricer cleanup
+  was therefore recorded as a Slice 8 CXX surface shrink instead of a Slice 5 shim retirement.
+- Custom agents used:
+  - `rust-engineer`: confirmed Slice 5 bridge handles are still required by C++ public facade surfaces and recommended
+    gas-pricer narrowing instead of handle deletion.
+  - `cpp-pro`: mapped small-shim CMake/removal candidates; its full `gas_pricer_shim` deletion recommendation was
+    rejected because it would re-center Rust-mode pricing in legacy C++.
+  - `architect-reviewer`: recommended retiring `period_data_queue_shim` by moving queue ownership into the PBFT manager
+    runtime, with sidecar lockstep and PBFT sync drain behavior as the primary risks.
+
 ## Slice 6: Consolidate Runtime-Heavy Shims into Rust Application Services
 
 Purpose: shrink the large shims that still orchestrate Rust runtimes from C++ and carry too much consensus logic.
@@ -368,6 +386,8 @@ Implementation status:
 - The guard compares CXX `type Bridge*;` exports in `rust/crates/rustaxa-bridge/src/ffi.rs` to the exported-handle table
   in `doc/consensus_bridge_shim_audit.md`, fails on undocumented exported handles, and warns on stale audit rows after
   deletions.
+- `BridgeGasPricer` CXX exports have been narrowed: `gas_pricer_init_from_storage` is no longer exported because
+  Rust-mode storage history restoration is owned by `create_gas_pricer_from_storage`.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

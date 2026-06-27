@@ -73,10 +73,11 @@ impl BridgeGasPricer {
         Ok(())
     }
 
-    /// Restores finalized-block history directly from Rust storage.
+    /// Restores finalized-block history directly from Rust storage for bridge tests.
     ///
-    /// The deterministic storage walk is owned by `rustaxa-consensus`; the
-    /// bridge only adapts the shared storage handle and oracle lock.
+    /// Production CXX callers restore history through `create_gas_pricer_from_storage`, keeping storage injection
+    /// construction-time-only.
+    #[cfg(test)]
     pub fn gas_pricer_init_from_storage(&self, storage: &BridgeStorage) -> Result<()> {
         self.lock()?.restore_from_storage(storage.0.as_ref())
     }
