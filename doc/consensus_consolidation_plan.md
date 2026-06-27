@@ -485,6 +485,9 @@ Implementation status:
 - `BridgeStorage` CXX exports have been narrowed further: the obsolete broad `clear_block_rewards_stats` mutator is
   deleted because Rust-mode `DbStorage::deleteColumnData(block_rewards_stats)` uses the dedicated
   `storage_shim_clear_block_rewards_stats` compatibility API.
+- Additional unused broad `BridgeStorage` CXX mutators have been deleted after dedicated storage-shim paths became the
+  production route: `save_block_rewards_stats`, `remove_cert_voted_block_in_round`, `remove_own_verified_vote`,
+  `remove_extra_reward_vote`, and `replace_two_t_plus_one_votes`.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

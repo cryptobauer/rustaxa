@@ -7395,11 +7395,6 @@ pub mod rustaxa_ffi {
             self: &BridgeStorage,
             rounds_count: u32,
         ) -> Result<()>;
-        pub fn save_block_rewards_stats(
-            self: &BridgeStorage,
-            period: u64,
-            stats_rlp: Vec<u8>,
-        ) -> Result<()>;
         pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
         pub fn get_last_sortition_params(
             self: &BridgeMetadataStorageQueries,
@@ -7441,14 +7436,6 @@ pub mod rustaxa_ffi {
             self: &BridgeStorage,
             hash: &[u8; 32],
             vote_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn remove_cert_voted_block_in_round(self: &BridgeStorage) -> Result<()>;
-        pub fn remove_own_verified_vote(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
-        pub fn remove_extra_reward_vote(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
-        pub fn replace_two_t_plus_one_votes(
-            self: &BridgeStorage,
-            vote_type: u8,
-            votes_bundle_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn save_extra_reward_vote(
             self: &BridgeStorage,

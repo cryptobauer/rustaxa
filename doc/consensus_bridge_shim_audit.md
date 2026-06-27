@@ -175,8 +175,9 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   `BridgeStorage::clear_block_rewards_stats` mutator from the C++ shim. The obsolete broad
   `BridgeStorage::clear_block_rewards_stats` CXX export has been deleted; only the dedicated storage-shim helper remains.
 - The storage-shim direct-mutator cleanup tracked in Slice 4 is complete for the audited single-write and aggregate-clear
-  compatibility paths. Remaining broad `BridgeStorage` mutators are compatibility-test/conformance debt until the public
-  `BridgeStorage` facade is retired.
+  compatibility paths. The no-caller broad `BridgeStorage` CXX mutators for block-reward stats, cert-voted-block
+  removal, own-vote removal, extra-reward-vote removal, and 2t+1 vote replacement have been deleted. Remaining broad
+  `BridgeStorage` mutators are compatibility-test/conformance debt until the public `BridgeStorage` facade is retired.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

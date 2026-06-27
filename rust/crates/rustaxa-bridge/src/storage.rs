@@ -14,7 +14,6 @@ use rlp::Rlp;
 use rustaxa_consensus::{
     clear_own_verified_votes as domain_clear_own_verified_votes,
     persist_pbft_vote_progress as domain_persist_pbft_vote_progress,
-    remove_extra_reward_votes as domain_remove_extra_reward_votes,
     save_non_finalized_transactions as domain_save_non_finalized_transactions,
     save_own_verified_vote as domain_save_own_verified_vote, NonFinalizedTransactionStoragePayload,
     PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle,
@@ -1457,16 +1456,6 @@ impl BridgeStorage {
             .write_rounds_count_dynamic_lambda(rounds_count)
     }
 
-    pub fn save_block_rewards_stats(
-        &self,
-        period: u64,
-        stats_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .metadata()
-            .write_block_rewards_stats(period, &stats_rlp)
-    }
-
     pub fn save_cert_voted_block_in_round(
         &self,
         round: u64,
@@ -1499,45 +1488,6 @@ impl BridgeStorage {
             DomainPbftVoteStorageRecord {
                 hash: H256::from(*hash),
                 vote_rlp,
-            },
-        )?)
-    }
-
-    pub fn remove_cert_voted_block_in_round(&self) -> Result<(), anyhow::Error> {
-        self.0.pbft().remove_cert_voted_block_in_round()
-    }
-
-    pub fn remove_own_verified_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        require_pbft_vote_persistence_applied(domain_clear_own_verified_votes(
-            &self.0,
-            vec![H256::from(*hash)],
-        )?)
-    }
-
-    pub fn remove_extra_reward_vote(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        require_pbft_vote_persistence_applied(domain_remove_extra_reward_votes(
-            &self.0,
-            vec![H256::from(*hash)],
-        )?)
-    }
-
-    pub fn replace_two_t_plus_one_votes(
-        &self,
-        vote_type: u8,
-        votes_bundle_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        require_pbft_vote_persistence_applied(domain_persist_pbft_vote_progress(
-            &self.0,
-            DomainPbftVoteProgressPersistenceWrite {
-                extra_reward_vote: None,
-                two_t_plus_one_bundle: Some(DomainPbftTwoTPlusOneVoteBundle {
-                    kind: vote_type,
-                    period: 0,
-                    round: 0,
-                    step: 0,
-                    block_hash: H256::zero(),
-                    votes_bundle_rlp,
-                }),
             },
         )?)
     }
@@ -1763,12 +1713,12 @@ mod tests {
                     .expect("storage should initialize");
             let metadata = metadata_queries(&storage);
 
-            storage
-                .save_block_rewards_stats(3, vec![0xC1, 0xA3])
-                .expect("first stats row should save");
-            storage
-                .save_block_rewards_stats(7, vec![0xC1, 0xA7])
-                .expect("second stats row should save");
+            let mut batch = create_storage_shim_batch(&storage);
+            storage_shim_save_block_rewards_stats(&mut batch, 3, vec![0xC1, 0xA3])
+                .expect("first stats row should stage");
+            storage_shim_save_block_rewards_stats(&mut batch, 7, vec![0xC1, 0xA7])
+                .expect("second stats row should stage");
+            storage_shim_commit_batch(batch, false).expect("stats rows should commit");
             assert_eq!(metadata.get_blocks_rewards_stats().unwrap().len(), 2);
 
             storage_shim_clear_block_rewards_stats(&storage)
