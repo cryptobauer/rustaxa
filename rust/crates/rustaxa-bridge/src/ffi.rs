@@ -15,7 +15,6 @@ use crate::pbft_vote_payload::*;
 use crate::pbft_vote_pipeline::*;
 use crate::pbft_vote_progress::*;
 use crate::pbft_vote_validation::*;
-use crate::period_data_queue::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
@@ -256,6 +255,7 @@ pub struct BridgePbftManagerProposalSession {
 pub struct BridgePbftManagerRuntime {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
     pub storage: Arc<Storage>,
+    pub period_data_queue: PeriodDataQueue,
 }
 
 pub struct BridgePbftVotePipelineSession {
@@ -269,8 +269,6 @@ pub struct BridgePbftVoteAdmissionSession {
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
-
-pub struct BridgePeriodDataQueue(pub PeriodDataQueue);
 
 /// Rust-owned verified-votes runtime used by the C++ VoteManager shim.
 ///
@@ -5717,6 +5715,55 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_snapshot(
             runtime: &BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSnapshot;
+        pub fn pbft_manager_runtime_period_data_queue_period(
+            runtime: &BridgePbftManagerRuntime,
+        ) -> u64;
+        pub fn pbft_manager_runtime_period_data_queue_syncing_period(
+            runtime: &BridgePbftManagerRuntime,
+            pbft_chain_size: u64,
+        ) -> u64;
+        pub fn pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
+            runtime: &BridgePbftManagerRuntime,
+            current_period: u64,
+            chain_last_hash: [u8; 32],
+        ) -> [u8; 32];
+        pub fn pbft_manager_runtime_period_data_queue_size(
+            runtime: &BridgePbftManagerRuntime,
+        ) -> usize;
+        pub fn pbft_manager_runtime_period_data_queue_empty(
+            runtime: &BridgePbftManagerRuntime,
+        ) -> bool;
+        pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &mut BridgePbftManagerRuntime);
+        pub fn pbft_manager_runtime_period_data_queue_push(
+            runtime: &mut BridgePbftManagerRuntime,
+            entry_id: u64,
+            period: u64,
+            block_hash: [u8; 32],
+            prev_block_hash: [u8; 32],
+            pivot_hash: [u8; 32],
+            final_chain_hash: [u8; 32],
+            reward_vote_hashes: Vec<PbftSyncTransactionHash>,
+            pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
+            transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
+            previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
+            dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
+            period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+            period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
+            previous_cert_votes_present: bool,
+            previous_cert_first_vote_has_weight: bool,
+            pillar_votes_present: bool,
+            extra_data_present: bool,
+            extra_data_pillar_block_hash_present: bool,
+            max_pbft_size: u64,
+            current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
+        ) -> Result<PeriodDataQueuePushOutcome>;
+        pub fn pbft_manager_runtime_period_data_queue_pop(
+            runtime: &mut BridgePbftManagerRuntime,
+        ) -> Result<PeriodDataQueuePopPlan>;
+        pub fn pbft_manager_runtime_period_data_queue_clean_old_data(
+            runtime: &mut BridgePbftManagerRuntime,
+            period: u64,
+        ) -> Vec<PeriodDataQueueEntryRef>;
         pub fn plan_pbft_manager_startup_replay_ranges(
             fact: PbftManagerStartupReplayRangeFact,
         ) -> PbftManagerStartupReplayRangePlan;
@@ -6096,55 +6143,6 @@ pub mod rustaxa_ffi {
             plan: &RewardsStatsProcessResult,
             sync: bool,
         ) -> Result<RewardsStatsApplyResult>;
-
-        // Consensus period-data queue
-
-        type BridgePeriodDataQueue;
-
-        pub fn create_period_data_queue() -> Box<BridgePeriodDataQueue>;
-        pub fn period_data_queue_period(self: &BridgePeriodDataQueue) -> u64;
-        pub fn period_data_queue_syncing_period(
-            self: &BridgePeriodDataQueue,
-            pbft_chain_size: u64,
-        ) -> u64;
-        pub fn period_data_queue_last_block_hash_or_chain(
-            self: &BridgePeriodDataQueue,
-            current_period: u64,
-            chain_last_hash: [u8; 32],
-        ) -> [u8; 32];
-        pub fn period_data_queue_size(self: &BridgePeriodDataQueue) -> usize;
-        pub fn period_data_queue_empty(self: &BridgePeriodDataQueue) -> bool;
-        pub fn period_data_queue_clear(self: &mut BridgePeriodDataQueue);
-        pub fn period_data_queue_push(
-            self: &mut BridgePeriodDataQueue,
-            entry_id: u64,
-            period: u64,
-            block_hash: [u8; 32],
-            prev_block_hash: [u8; 32],
-            pivot_hash: [u8; 32],
-            final_chain_hash: [u8; 32],
-            reward_vote_hashes: Vec<PbftSyncTransactionHash>,
-            pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
-            transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
-            previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-            dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-            period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-            period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
-            previous_cert_votes_present: bool,
-            previous_cert_first_vote_has_weight: bool,
-            pillar_votes_present: bool,
-            extra_data_present: bool,
-            extra_data_pillar_block_hash_present: bool,
-            max_pbft_size: u64,
-            current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-        ) -> Result<PeriodDataQueuePushOutcome>;
-        pub fn period_data_queue_pop(
-            self: &mut BridgePeriodDataQueue,
-        ) -> Result<PeriodDataQueuePopPlan>;
-        pub fn period_data_queue_clean_old_data(
-            self: &mut BridgePeriodDataQueue,
-            period: u64,
-        ) -> Vec<PeriodDataQueueEntryRef>;
 
         // Consensus transaction queue
 

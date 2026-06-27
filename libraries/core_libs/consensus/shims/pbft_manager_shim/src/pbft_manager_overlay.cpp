@@ -39,6 +39,7 @@ constexpr uint8_t kPbftSyncFactValid = 0;
 constexpr uint8_t kPbftSyncFactInvalid = 1;
 constexpr uint8_t kPbftSyncFactNotRequired = 2;
 constexpr uint8_t kPbftSyncFactNotChecked = 3;
+constexpr uint8_t kLegacyTransactionSourceRegular = 0;
 
 constexpr uint8_t kPbftSyncStatusBlockAlreadyInChain = 1;
 constexpr uint8_t kPbftSyncStatusStalePeriod = 2;
@@ -565,6 +566,180 @@ trx_hash_t fromBridgeTransactionHash(const std::array<uint8_t, 32> &hash) {
   return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
 }
 
+std::runtime_error periodDataQueueError(const std::string &message) {
+  return std::runtime_error("PBFT manager period-data queue: " + message);
+}
+
+std::runtime_error periodDataQueueMismatch(const std::string &message, uint64_t expected, uint64_t actual) {
+  return periodDataQueueError(message + " expected entry " + std::to_string(expected) + ", got " +
+                              std::to_string(actual));
+}
+
+std::vector<bytes> fromBridgePillarVoteRlps(const rust::Vec<rustaxa::PeriodDataQueuePillarVotePayload> &payloads) {
+  std::vector<bytes> out;
+  out.reserve(payloads.size());
+  for (const auto &payload : payloads) {
+    out.emplace_back(payload.vote_rlp.begin(), payload.vote_rlp.end());
+  }
+  return out;
+}
+
+std::vector<bytes> fromBridgeTransactionRlps(const rust::Vec<rustaxa::PeriodDataQueueTransactionPayload> &payloads) {
+  std::vector<bytes> out;
+  out.reserve(payloads.size());
+  for (const auto &payload : payloads) {
+    out.emplace_back(payload.transaction_rlp.begin(), payload.transaction_rlp.end());
+  }
+  return out;
+}
+
+std::vector<bytes> fromBridgePbftVoteRlps(const rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> &payloads) {
+  std::vector<bytes> out;
+  out.reserve(payloads.size());
+  for (const auto &payload : payloads) {
+    out.emplace_back(payload.vote_rlp.begin(), payload.vote_rlp.end());
+  }
+  return out;
+}
+
+std::vector<trx_hash_t> dagTransactionHashes(const PeriodData &period_data) {
+  std::vector<trx_hash_t> hashes;
+  for (const auto &dag_block : period_data.dag_blocks) {
+    for (const auto &trx_hash : dag_block->getTrxs()) {
+      hashes.emplace_back(trx_hash);
+    }
+  }
+  return hashes;
+}
+
+std::vector<trx_hash_t> periodDataTransactionHashes(const PeriodData &period_data) {
+  std::vector<trx_hash_t> hashes;
+  hashes.reserve(period_data.transactions.size());
+  for (const auto &transaction : period_data.transactions) {
+    hashes.emplace_back(transaction->getHash());
+  }
+  return hashes;
+}
+
+rust::Vec<rustaxa::PeriodDataQueueTransactionPayload> periodDataTransactionRlps(const PeriodData &period_data) {
+  rust::Vec<rustaxa::PeriodDataQueueTransactionPayload> payloads;
+  payloads.reserve(period_data.transactions.size());
+  for (const auto &transaction : period_data.transactions) {
+    if (!transaction) {
+      throw periodDataQueueError("cannot push period data with a null transaction");
+    }
+    rustaxa::PeriodDataQueueTransactionPayload payload;
+    payload.transaction_rlp = toBridgeBytes(transaction->rlp());
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
+rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> pbftVoteRlps(
+    const std::vector<std::shared_ptr<PbftVote>> &votes) {
+  rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> payloads;
+  payloads.reserve(votes.size());
+  for (const auto &vote : votes) {
+    if (!vote) {
+      throw periodDataQueueError("cannot push period data with a null PBFT cert vote");
+    }
+    rustaxa::PeriodDataQueuePbftVotePayload payload;
+    payload.vote_rlp = toBridgeBytes(vote->rlp(true, vote->getWeight().has_value()));
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
+rust::Vec<rustaxa::PeriodDataQueuePillarVotePayload> pillarVoteRlps(const PeriodData &period_data) {
+  rust::Vec<rustaxa::PeriodDataQueuePillarVotePayload> payloads;
+  if (!period_data.pillar_votes_.has_value()) {
+    return payloads;
+  }
+
+  payloads.reserve(period_data.pillar_votes_->size());
+  for (const auto &vote : *period_data.pillar_votes_) {
+    if (!vote) {
+      throw periodDataQueueError("cannot push period data with a null pillar vote");
+    }
+    rustaxa::PeriodDataQueuePillarVotePayload payload;
+    payload.vote_rlp = toBridgeBytes(vote->rlp());
+    payloads.push_back(std::move(payload));
+  }
+  return payloads;
+}
+
+std::vector<vote_hash_t> rewardVoteHashes(const PeriodData &period_data) {
+  return period_data.pbft_blk->getRewardVotes();
+}
+
+rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIdentities(
+    const PeriodData &period_data) {
+  rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> identities;
+  identities.reserve(period_data.transactions.size());
+
+  uint64_t input_index = 0;
+  for (const auto &transaction : period_data.transactions) {
+    if (!transaction) {
+      throw periodDataQueueError("cannot push period data with a null transaction");
+    }
+    rustaxa::LegacyTransactionInspection inspection;
+    try {
+      inspection =
+          rustaxa::inspect_legacy_transaction_rlp(toBridgeBytes(transaction->rlp()), kLegacyTransactionSourceRegular);
+    } catch (const std::exception &e) {
+      throw periodDataQueueError(std::string("transaction identity inspection failed: ") + e.what());
+    }
+    if (trx_hash_t(inspection.hash.data(), trx_hash_t::ConstructFromPointer) != transaction->getHash()) {
+      throw periodDataQueueError("transaction identity inspection returned mismatched hash");
+    }
+    if (!inspection.sender_found) {
+      throw periodDataQueueError("transaction identity inspection returned no recovered sender");
+    }
+
+    rustaxa::PeriodDataQueueTransactionIdentity identity;
+    identity.input_index = input_index++;
+    identity.hash = inspection.hash;
+    identity.transaction_nonce = inspection.nonce;
+    identity.sender = inspection.sender;
+    identities.push_back(identity);
+  }
+  return identities;
+}
+
+rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> toVerifyNotFinalizedFacts(
+    const rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> &identities) {
+  rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
+  facts.reserve(identities.size());
+  for (const auto &identity : identities) {
+    rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
+    fact.input_index = identity.input_index;
+    fact.hash = identity.hash;
+    fact.transaction_nonce = identity.transaction_nonce;
+    fact.sender = identity.sender;
+    facts.push_back(fact);
+  }
+  return facts;
+}
+
+bool previousCertFirstVoteHasWeight(const PeriodData &period_data) {
+  return !period_data.previous_block_cert_votes.empty() &&
+         period_data.previous_block_cert_votes.front()->getWeight().has_value();
+}
+
+bool votesHaveWeights(const std::vector<std::shared_ptr<PbftVote>> &votes) {
+  for (const auto &vote : votes) {
+    if (!vote || !vote->getWeight().has_value()) {
+      return false;
+    }
+  }
+  return !votes.empty();
+}
+
+bool extraDataPillarBlockHashPresent(const std::shared_ptr<PbftBlock> &pbft_block) {
+  const auto extra_data = pbft_block->getExtraData();
+  return extra_data.has_value() && extra_data->getPillarBlockHash().has_value();
+}
+
 SharedTransactions materializeTransactionsFromQueuedRlps(const std::vector<bytes> &transaction_rlps,
                                                          const std::vector<trx_hash_t> &expected_hashes) {
   if (transaction_rlps.size() != expected_hashes.size()) {
@@ -815,6 +990,98 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
 }
 
 PbftManager::~PbftManager() { stop(); }
+
+PbftManager::QueuedPeriodDataPayload PbftManager::popQueuedPeriodDataPayload(uint64_t expected_entry_id) {
+  if (period_data_queue_payloads_.empty()) {
+    throw periodDataQueueError("Rust pop selected an entry while C++ payload queue is empty");
+  }
+  if (period_data_queue_payloads_.front().entry_id != expected_entry_id) {
+    throw periodDataQueueMismatch("front payload mismatch", expected_entry_id,
+                                  period_data_queue_payloads_.front().entry_id);
+  }
+
+  auto payload = std::move(period_data_queue_payloads_.front());
+  period_data_queue_payloads_.pop_front();
+  return payload;
+}
+
+PbftManager::PoppedPeriodDataPayload PbftManager::popPeriodDataQueueWithMetadata() {
+  std::unique_lock lock(period_data_queue_access_);
+  if (!pbft_manager_runtime_.has_value()) {
+    throw periodDataQueueError("PBFT manager runtime is not initialized");
+  }
+
+  rustaxa::PeriodDataQueuePopPlan plan;
+  try {
+    plan = rustaxa::pbft_manager_runtime_period_data_queue_pop(*pbft_manager_runtime_.value());
+  } catch (const std::exception &e) {
+    throw periodDataQueueError(e.what());
+  } catch (...) {
+    throw periodDataQueueError("Rust pop failed");
+  }
+
+  auto payload = popQueuedPeriodDataPayload(plan.entry_id);
+  if (!payload.previous_block_cert_votes.empty()) {
+    payload.period_data.previous_block_cert_votes = payload.previous_block_cert_votes;
+  }
+
+  std::vector<std::shared_ptr<PbftVote>> cert_votes;
+  if (plan.use_last_block_cert_votes) {
+    cert_votes = std::move(payload.current_block_cert_votes);
+  } else {
+    if (period_data_queue_payloads_.empty()) {
+      throw periodDataQueueError("Rust pop selected next-entry cert votes while C++ payload queue is empty");
+    }
+    if (period_data_queue_payloads_.front().entry_id != plan.next_entry_id) {
+      throw periodDataQueueMismatch("next payload mismatch", plan.next_entry_id,
+                                    period_data_queue_payloads_.front().entry_id);
+    }
+    cert_votes = period_data_queue_payloads_.front().previous_block_cert_votes;
+  }
+
+  return PoppedPeriodDataPayload{std::move(payload.period_data),
+                                 std::move(cert_votes),
+                                 payload.node_id,
+                                 plan.entry_period,
+                                 blk_hash_t(plan.block_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 blk_hash_t(plan.prev_block_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 blk_hash_t(plan.pivot_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 blk_hash_t(plan.final_chain_hash.data(), blk_hash_t::ConstructFromPointer),
+                                 fromBridgeTransactionHashes(plan.reward_vote_hashes),
+                                 fromBridgePillarVoteRlps(plan.pillar_vote_rlps),
+                                 fromBridgeTransactionRlps(plan.transaction_rlps),
+                                 fromBridgePbftVoteRlps(plan.cert_vote_rlps),
+                                 fromBridgeTransactionHashes(plan.dag_transaction_hashes),
+                                 fromBridgeTransactionHashes(plan.period_data_transaction_hashes),
+                                 toVerifyNotFinalizedFacts(plan.period_data_transaction_identities),
+                                 plan.previous_cert_votes_present,
+                                 plan.previous_cert_first_vote_has_weight,
+                                 plan.pillar_votes_present,
+                                 plan.extra_data_present,
+                                 plan.extra_data_pillar_block_hash_present};
+}
+
+void PbftManager::clearPeriodDataQueueSidecars() {
+  std::unique_lock lock(period_data_queue_access_);
+  if (!pbft_manager_runtime_.has_value()) {
+    throw periodDataQueueError("PBFT manager runtime is not initialized");
+  }
+  rustaxa::pbft_manager_runtime_period_data_queue_clear(*pbft_manager_runtime_.value());
+  period_data_queue_payloads_.clear();
+  next_period_data_queue_entry_id_ = 1;
+}
+
+void PbftManager::cleanOldPeriodDataQueueSidecars(uint64_t period) {
+  std::unique_lock lock(period_data_queue_access_);
+  if (!pbft_manager_runtime_.has_value()) {
+    throw periodDataQueueError("PBFT manager runtime is not initialized");
+  }
+  const auto removed_entries =
+      rustaxa::pbft_manager_runtime_period_data_queue_clean_old_data(*pbft_manager_runtime_.value(), period);
+  for (const auto &removed_entry : removed_entries) {
+    (void)popQueuedPeriodDataPayload(removed_entry.entry_id);
+  }
+}
 
 void PbftManager::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }
 
@@ -3051,7 +3318,7 @@ void PbftManager::pushSyncedPbftBlocksIntoChain() {
     }
 
     if (step.action == kPbftSyncQueueDrainActionCleanOldData) {
-      sync_queue_.cleanOldData(step.clean_before_period);
+      cleanOldPeriodDataQueueSidecars(step.clean_before_period);
       if (!report_step(step, true, false)) {
         break;
       }
@@ -4172,7 +4439,11 @@ void PbftManager::processPillarBlock(PbftPeriod current_pbft_chain_size) {
   }
 }
 
-PbftPeriod PbftManager::pbftSyncingPeriod() const { return sync_queue_.syncingPeriod(pbft_chain_->getPbftChainSize()); }
+PbftPeriod PbftManager::pbftSyncingPeriod() const {
+  std::shared_lock lock(period_data_queue_access_);
+  return rustaxa::pbft_manager_runtime_period_data_queue_syncing_period(*pbft_manager_runtime_.value(),
+                                                                        pbft_chain_->getPbftChainSize());
+}
 
 PbftManager::PbftSyncEgressPayload PbftManager::getPbftSyncEgressPayload(PbftPeriod period, bool last_block,
                                                                          bool pbft_chain_synced,
@@ -4197,7 +4468,7 @@ void PbftManager::setPbftSyncSnapshotCreationEnabled(bool enabled) {
 }
 
 std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> PbftManager::processPeriodData() {
-  auto popped_period_data = sync_queue_.popWithMetadata();
+  auto popped_period_data = popPeriodDataQueueWithMetadata();
   auto period_data = std::move(popped_period_data.period_data);
   auto cert_votes = std::move(popped_period_data.cert_votes);
   const auto node_id = popped_period_data.node_id;
@@ -4258,7 +4529,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   assert(net);  // Should never happen
   auto apply_rust_admission_side_effects = [&]() {
     if (admission_plan.clear_sync_queue) {
-      sync_queue_.clear();
+      clearPeriodDataQueueSidecars();
     }
     if (admission_plan.report_malicious_peer) {
       net->handleMaliciousSyncPeer(node_id);
@@ -4636,13 +4907,23 @@ std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> PbftManager::getPr
 }
 
 blk_hash_t PbftManager::lastPbftBlockHashFromQueueOrChain() {
-  return sync_queue_.lastBlockHashOrChain(getPbftPeriod(), pbft_chain_->getLastPbftBlockHash());
+  std::shared_lock lock(period_data_queue_access_);
+  const auto hash = rustaxa::pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
+      *pbft_manager_runtime_.value(), getPbftPeriod(), pbft_chain_->getLastPbftBlockHash().asArray());
+  return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
 }
 
-bool PbftManager::periodDataQueueEmpty() const { return sync_queue_.empty(); }
+bool PbftManager::periodDataQueueEmpty() const {
+  std::shared_lock lock(period_data_queue_access_);
+  return rustaxa::pbft_manager_runtime_period_data_queue_empty(*pbft_manager_runtime_.value());
+}
 
 void PbftManager::periodDataQueuePush(PeriodData &&period_data, dev::p2p::NodeID const &node_id,
                                       std::vector<std::shared_ptr<PbftVote>> &&current_block_cert_votes) {
+  if (!period_data.pbft_blk) {
+    throw periodDataQueueError("cannot push period data without a PBFT block");
+  }
+
   const auto period = period_data.pbft_blk->getPeriod();
 
   // Only do parallel transactions retrieve for blocks bigger than 100 transactions
@@ -4665,14 +4946,65 @@ void PbftManager::periodDataQueuePush(PeriodData &&period_data, dev::p2p::NodeID
     }
   }
 
-  if (!sync_queue_.push(std::move(period_data), node_id, pbft_chain_->getPbftChainSize(),
-                        std::move(current_block_cert_votes))) {
-    LOG(log_er_) << "Trying to push period data with " << period << " period, but current period is "
-                 << sync_queue_.getPeriod();
+  const auto reward_vote_hashes = rewardVoteHashes(period_data);
+  auto pillar_vote_rlps = pillarVoteRlps(period_data);
+  auto transaction_rlps = periodDataTransactionRlps(period_data);
+  auto previous_cert_vote_rlps = pbftVoteRlps(period_data.previous_block_cert_votes);
+  auto current_block_cert_vote_rlps = pbftVoteRlps(current_block_cert_votes);
+  const auto dag_transaction_hashes = dagTransactionHashes(period_data);
+  const auto period_data_transaction_hashes = periodDataTransactionHashes(period_data);
+  auto period_data_transaction_identities = periodDataTransactionIdentities(period_data);
+  const auto previous_cert_votes_present = !period_data.previous_block_cert_votes.empty();
+  const auto previous_cert_first_vote_has_weight = previousCertFirstVoteHasWeight(period_data);
+  const auto pillar_votes_present = period_data.pillar_votes_.has_value();
+  const auto extra_data_present = period_data.pbft_blk->getExtraData().has_value();
+  const auto extra_data_pillar_block_hash_present = extraDataPillarBlockHashPresent(period_data.pbft_blk);
+
+  std::unique_lock lock(period_data_queue_access_);
+  const auto entry_id = next_period_data_queue_entry_id_;
+  rustaxa::PeriodDataQueuePushOutcome outcome;
+  try {
+    outcome = rustaxa::pbft_manager_runtime_period_data_queue_push(
+        *pbft_manager_runtime_.value(), entry_id, period, period_data.pbft_blk->getBlockHash().asArray(),
+        period_data.pbft_blk->getPrevBlockHash().asArray(), period_data.pbft_blk->getPivotDagBlockHash().asArray(),
+        period_data.pbft_blk->getFinalChainHash().asArray(), toBridgeTransactionHashes(reward_vote_hashes),
+        std::move(pillar_vote_rlps), std::move(transaction_rlps), std::move(previous_cert_vote_rlps),
+        toBridgeTransactionHashes(dag_transaction_hashes), toBridgeTransactionHashes(period_data_transaction_hashes),
+        std::move(period_data_transaction_identities), previous_cert_votes_present, previous_cert_first_vote_has_weight,
+        pillar_votes_present, extra_data_present, extra_data_pillar_block_hash_present, pbft_chain_->getPbftChainSize(),
+        std::move(current_block_cert_vote_rlps));
+  } catch (const std::exception &e) {
+    throw periodDataQueueError(e.what());
+  } catch (...) {
+    throw periodDataQueueError("Rust push failed");
   }
+
+  if (!outcome.accepted) {
+    LOG(log_er_) << "Trying to push period data with " << period << " period, but current period is "
+                 << rustaxa::pbft_manager_runtime_period_data_queue_period(*pbft_manager_runtime_.value());
+    return;
+  }
+
+  auto previous_block_cert_votes = period_data.previous_block_cert_votes;
+  if (!votesHaveWeights(previous_block_cert_votes) && !outcome.clear_existing && !period_data_queue_payloads_.empty() &&
+      votesHaveWeights(period_data_queue_payloads_.back().current_block_cert_votes)) {
+    previous_block_cert_votes = period_data_queue_payloads_.back().current_block_cert_votes;
+  }
+
+  if (outcome.clear_existing) {
+    period_data_queue_payloads_.clear();
+  }
+
+  period_data_queue_payloads_.push_back(QueuedPeriodDataPayload{
+      entry_id, std::move(period_data), std::move(previous_block_cert_votes), std::move(current_block_cert_votes),
+      node_id});
+  ++next_period_data_queue_entry_id_;
 }
 
-size_t PbftManager::periodDataQueueSize() const { return sync_queue_.size(); }
+size_t PbftManager::periodDataQueueSize() const {
+  std::shared_lock lock(period_data_queue_access_);
+  return rustaxa::pbft_manager_runtime_period_data_queue_size(*pbft_manager_runtime_.value());
+}
 
 bool PbftManager::checkBlockWeight(const std::vector<std::shared_ptr<DagBlock>> &dag_blocks, PbftPeriod period) const {
   const u256 total_weight =

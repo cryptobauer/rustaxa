@@ -280,10 +280,16 @@ Acceptance:
 
 Implementation notes:
 
-- No small shim directory has been retired yet.
-- The next actual Slice 5 target should be `period_data_queue_shim`: move period-data queue ownership into the PBFT
-  manager Rust runtime, keep live `PeriodData` / `PbftVote` sidecars shim-local until those model types move, then
-  delete `BridgePeriodDataQueue`, the standalone shim overlay, and `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
+- `period_data_queue_shim` is retired. Period-data queue metadata now lives in `BridgePbftManagerRuntime` and is exposed
+  only through `pbft_manager_runtime_period_data_queue_*` methods used by `pbft_manager_shim`.
+- The standalone `BridgePeriodDataQueue` CXX handle, `create_period_data_queue` constructor, `period_data_queue_shim`
+  overlay, `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` CMake/Makefile flag, and bridge/shim tests for the retired facade were
+  deleted.
+- `pbft_manager_shim` keeps a temporary sidecar deque for live `PeriodData`, `PbftVote`, and peer objects. Rust owns the
+  queue admission/order/pop/cleanup metadata; the sidecar deque should disappear when those payload model types move to
+  Rust.
+- Replacement bridge coverage is in the Rust `rustaxa-bridge` PBFT manager runtime test for period-data queue metadata,
+  plus the existing Rust `rustaxa-consensus` period-data queue domain tests.
 - Full `gas_pricer_shim` removal is not valid yet. Removing the overlay would route Rust-enabled builds back to the
   legacy C++ implementation instead of preserving Rust ownership. A future removal must first replace the C++ public
   facade with a native transaction/final-chain runtime API or a narrower external query API. The first gas-pricer cleanup
@@ -295,6 +301,21 @@ Implementation notes:
     rejected because it would re-center Rust-mode pricing in legacy C++.
   - `architect-reviewer`: recommended retiring `period_data_queue_shim` by moving queue ownership into the PBFT manager
     runtime, with sidecar lockstep and PBFT sync drain behavior as the primary risks.
+  - `reviewer`: reviewed the final period-data queue consolidation for stale references, sidecar risks, and validation
+    coverage before closeout.
+- Validation run:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge bridge_runtime_owns_period_data_queue_metadata`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus period_data_queue`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.PeriodAdmissionPlan*:RustPbftSyncTest.ProcessPeriodRuntime*' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.propose_block_and_vote_broadcast' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `git diff --check`
+  - `.githooks/pre-commit`
 
 ## Slice 6: Consolidate Runtime-Heavy Shims into Rust Application Services
 

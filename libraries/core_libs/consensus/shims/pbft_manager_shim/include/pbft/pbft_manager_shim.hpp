@@ -1,6 +1,8 @@
 #pragma once
 
+#include <deque>
 #include <optional>
+#include <shared_mutex>
 #include <string_view>
 #include <thread>
 
@@ -9,7 +11,7 @@
 #include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
 #include "network/network.hpp"
-#include "pbft/period_data_queue.hpp"
+#include "pbft/period_data.hpp"
 #include "pbft/proposed_blocks.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
@@ -732,7 +734,51 @@ class PbftManager {
   std::condition_variable stop_cv_;
   std::mutex stop_mtx_;
 
-  PeriodDataQueue sync_queue_;
+  /**
+   * Live C++ sidecar for Rust-owned PBFT sync queue metadata.
+   *
+   * Rust owns entry ids, period admission, size, cleanup, and pop-source decisions inside `pbft_manager_runtime_`.
+   * The shim keeps live legacy objects here only until `PeriodData`, votes, and peer identity payloads are ported.
+   */
+  struct QueuedPeriodDataPayload {
+    uint64_t entry_id = 0;
+    PeriodData period_data;
+    std::vector<std::shared_ptr<PbftVote>> previous_block_cert_votes;
+    std::vector<std::shared_ptr<PbftVote>> current_block_cert_votes;
+    dev::p2p::NodeID node_id;
+  };
+
+  struct PoppedPeriodDataPayload {
+    PeriodData period_data;
+    std::vector<std::shared_ptr<PbftVote>> cert_votes;
+    dev::p2p::NodeID node_id;
+    uint64_t period = 0;
+    blk_hash_t block_hash;
+    blk_hash_t prev_block_hash;
+    blk_hash_t pivot_hash;
+    blk_hash_t final_chain_hash;
+    std::vector<vote_hash_t> reward_vote_hashes;
+    std::vector<bytes> pillar_vote_rlps;
+    std::vector<bytes> transaction_rlps;
+    std::vector<bytes> cert_vote_rlps;
+    std::vector<trx_hash_t> dag_transaction_hashes;
+    std::vector<trx_hash_t> period_data_transaction_hashes;
+    ::rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> period_data_transaction_identities;
+    bool previous_cert_votes_present = false;
+    bool previous_cert_first_vote_has_weight = false;
+    bool pillar_votes_present = false;
+    bool extra_data_present = false;
+    bool extra_data_pillar_block_hash_present = false;
+  };
+
+  QueuedPeriodDataPayload popQueuedPeriodDataPayload(uint64_t expected_entry_id);
+  PoppedPeriodDataPayload popPeriodDataQueueWithMetadata();
+  void clearPeriodDataQueueSidecars();
+  void cleanOldPeriodDataQueueSidecars(uint64_t period);
+
+  mutable std::shared_mutex period_data_queue_access_;
+  std::deque<QueuedPeriodDataPayload> period_data_queue_payloads_;
+  uint64_t next_period_data_queue_entry_id_{1};
 
   // Proposed blocks based on received propose votes
   ProposedBlocks proposed_blocks_;

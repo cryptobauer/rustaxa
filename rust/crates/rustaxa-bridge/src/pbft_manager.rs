@@ -52,12 +52,23 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
     PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
     PbftManagerTransitionRuntimeApplyResult as FfiPbftManagerTransitionRuntimeApplyResult,
+    PeriodDataQueueEntryRef as FfiPeriodDataQueueEntryRef,
+    PeriodDataQueuePbftVotePayload as FfiPeriodDataQueuePbftVotePayload,
+    PeriodDataQueuePillarVotePayload as FfiPeriodDataQueuePillarVotePayload,
+    PeriodDataQueuePopPlan as FfiPeriodDataQueuePopPlan,
+    PeriodDataQueuePushOutcome as FfiPeriodDataQueuePushOutcome,
+    PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
+    PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
     PeriodLambda as FfiPeriodLambda,
 };
 use crate::ffi::{
     BridgePbftManagerBlockValidationSession, BridgePbftManagerProposalSession,
     BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession,
     BridgePbftManagerStateActionEffectSession, BridgeStorage,
+};
+use crate::period_data_queue::{
+    bridge_period_data_queue_clean_old_data, bridge_period_data_queue_pop,
+    bridge_period_data_queue_push,
 };
 use anyhow::anyhow;
 use rustaxa_consensus::dag::dag_block_period_from_storage;
@@ -127,6 +138,7 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
     PbftManagerTransitionStorageStatus,
 };
+use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
@@ -223,6 +235,7 @@ pub fn create_pbft_manager_runtime_from_storage(
     Ok(Box::new(BridgePbftManagerRuntime {
         state: runtime,
         storage: storage.0.clone(),
+        period_data_queue: PeriodDataQueue::new(),
     }))
 }
 
@@ -271,6 +284,116 @@ pub fn pbft_manager_runtime_snapshot(
     runtime: &BridgePbftManagerRuntime,
 ) -> FfiPbftManagerRuntimeSnapshot {
     runtime.state.snapshot().into()
+}
+
+/// Returns the current PBFT sync period-data queue marker from PBFT manager runtime state.
+///
+/// The queue is intentionally live/in-memory state: restart behavior remains the legacy
+/// non-persistent sync queue contract while ownership moves out of the standalone CXX bridge handle.
+pub fn pbft_manager_runtime_period_data_queue_period(runtime: &BridgePbftManagerRuntime) -> u64 {
+    runtime.period_data_queue.period()
+}
+
+/// Returns the queue-aware PBFT syncing period from PBFT manager runtime state.
+pub fn pbft_manager_runtime_period_data_queue_syncing_period(
+    runtime: &BridgePbftManagerRuntime,
+    pbft_chain_size: u64,
+) -> u64 {
+    runtime.period_data_queue.syncing_period(pbft_chain_size)
+}
+
+/// Returns the queue-selected PBFT chain-link hash, or the supplied PBFT-chain hash.
+pub fn pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
+    runtime: &BridgePbftManagerRuntime,
+    current_period: u64,
+    chain_last_hash: [u8; 32],
+) -> [u8; 32] {
+    runtime
+        .period_data_queue
+        .last_block_hash_or_chain(current_period, ethereum_types::H256::from(chain_last_hash))
+        .into()
+}
+
+/// Returns the processable PBFT sync queue size from PBFT manager runtime state.
+pub fn pbft_manager_runtime_period_data_queue_size(runtime: &BridgePbftManagerRuntime) -> usize {
+    runtime.period_data_queue.size()
+}
+
+/// Returns whether PBFT manager runtime queue metadata is empty.
+pub fn pbft_manager_runtime_period_data_queue_empty(runtime: &BridgePbftManagerRuntime) -> bool {
+    runtime.period_data_queue.is_empty()
+}
+
+/// Clears PBFT manager runtime queue metadata.
+pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &mut BridgePbftManagerRuntime) {
+    runtime.period_data_queue.clear();
+}
+
+/// Pushes one period-data payload reference into PBFT manager runtime queue metadata.
+///
+/// C++ remains the temporary owner of live `PeriodData`, `PbftVote`, and peer sidecars.
+/// Rust owns the compact queue ordering, admission, cleanup, and pop-source decisions.
+pub fn pbft_manager_runtime_period_data_queue_push(
+    runtime: &mut BridgePbftManagerRuntime,
+    entry_id: u64,
+    period: u64,
+    block_hash: [u8; 32],
+    prev_block_hash: [u8; 32],
+    pivot_hash: [u8; 32],
+    final_chain_hash: [u8; 32],
+    reward_vote_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
+    pillar_vote_rlps: Vec<FfiPeriodDataQueuePillarVotePayload>,
+    transaction_rlps: Vec<FfiPeriodDataQueueTransactionPayload>,
+    previous_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
+    dag_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
+    period_data_transaction_hashes: Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash>,
+    period_data_transaction_identities: Vec<FfiPeriodDataQueueTransactionIdentity>,
+    previous_cert_votes_present: bool,
+    previous_cert_first_vote_has_weight: bool,
+    pillar_votes_present: bool,
+    extra_data_present: bool,
+    extra_data_pillar_block_hash_present: bool,
+    max_pbft_size: u64,
+    current_block_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
+) -> anyhow::Result<FfiPeriodDataQueuePushOutcome> {
+    bridge_period_data_queue_push(
+        &mut runtime.period_data_queue,
+        entry_id,
+        period,
+        block_hash,
+        prev_block_hash,
+        pivot_hash,
+        final_chain_hash,
+        reward_vote_hashes,
+        pillar_vote_rlps,
+        transaction_rlps,
+        previous_cert_vote_rlps,
+        dag_transaction_hashes,
+        period_data_transaction_hashes,
+        period_data_transaction_identities,
+        previous_cert_votes_present,
+        previous_cert_first_vote_has_weight,
+        pillar_votes_present,
+        extra_data_present,
+        extra_data_pillar_block_hash_present,
+        max_pbft_size,
+        current_block_cert_vote_rlps,
+    )
+}
+
+/// Pops one PBFT sync queue metadata entry from PBFT manager runtime state.
+pub fn pbft_manager_runtime_period_data_queue_pop(
+    runtime: &mut BridgePbftManagerRuntime,
+) -> anyhow::Result<FfiPeriodDataQueuePopPlan> {
+    bridge_period_data_queue_pop(&mut runtime.period_data_queue)
+}
+
+/// Removes stale PBFT sync queue metadata entries from PBFT manager runtime state.
+pub fn pbft_manager_runtime_period_data_queue_clean_old_data(
+    runtime: &mut BridgePbftManagerRuntime,
+    period: u64,
+) -> Vec<FfiPeriodDataQueueEntryRef> {
+    bridge_period_data_queue_clean_old_data(&mut runtime.period_data_queue, period)
 }
 
 /// Plans PBFT manager startup replay ranges from C++ live height facts.
@@ -2048,6 +2171,63 @@ mod tests {
         std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), nanos))
     }
 
+    fn queue_hash(seed: u8) -> [u8; 32] {
+        [seed; 32]
+    }
+
+    fn queue_transaction_hashes(
+        seeds: &[u8],
+    ) -> Vec<crate::ffi::rustaxa_ffi::PbftSyncTransactionHash> {
+        seeds
+            .iter()
+            .map(|seed| crate::ffi::rustaxa_ffi::PbftSyncTransactionHash {
+                hash: queue_hash(*seed),
+            })
+            .collect()
+    }
+
+    fn queue_pillar_vote_rlps(seeds: &[u8]) -> Vec<FfiPeriodDataQueuePillarVotePayload> {
+        seeds
+            .iter()
+            .map(|seed| FfiPeriodDataQueuePillarVotePayload {
+                vote_rlp: vec![*seed, seed.wrapping_add(1)],
+            })
+            .collect()
+    }
+
+    fn queue_transaction_rlps(seeds: &[u8]) -> Vec<FfiPeriodDataQueueTransactionPayload> {
+        seeds
+            .iter()
+            .map(|seed| FfiPeriodDataQueueTransactionPayload {
+                transaction_rlp: vec![*seed, seed.wrapping_add(1)],
+            })
+            .collect()
+    }
+
+    fn queue_pbft_vote_rlps(seeds: &[u8]) -> Vec<FfiPeriodDataQueuePbftVotePayload> {
+        seeds
+            .iter()
+            .map(|seed| FfiPeriodDataQueuePbftVotePayload {
+                vote_rlp: vec![*seed, seed.wrapping_add(1)],
+            })
+            .collect()
+    }
+
+    fn queue_transaction_identities(seeds: &[u8]) -> Vec<FfiPeriodDataQueueTransactionIdentity> {
+        seeds
+            .iter()
+            .enumerate()
+            .map(
+                |(input_index, seed)| FfiPeriodDataQueueTransactionIdentity {
+                    input_index: input_index as u64,
+                    hash: queue_hash(*seed),
+                    transaction_nonce: queue_hash(seed.wrapping_add(1)),
+                    sender: [seed.wrapping_add(2); 20],
+                },
+            )
+            .collect()
+    }
+
     fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
         create_pbft_storage_queries(storage)
     }
@@ -2399,6 +2579,140 @@ mod tests {
         period_data.append_raw(&bundle.out(), 1);
         period_data.begin_list(0);
         period_data.out().to_vec()
+    }
+
+    #[test]
+    fn bridge_runtime_owns_period_data_queue_metadata() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_period_data_queue");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .save_pbft_mgr_field(2, 500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should initialize");
+
+            let first = pbft_manager_runtime_period_data_queue_push(
+                &mut runtime,
+                11,
+                1,
+                queue_hash(0x11),
+                queue_hash(0xa1),
+                queue_hash(0xb1),
+                queue_hash(0xe1),
+                queue_transaction_hashes(&[0xf1]),
+                queue_pillar_vote_rlps(&[0xa1]),
+                queue_transaction_rlps(&[0xb1]),
+                queue_pbft_vote_rlps(&[]),
+                queue_transaction_hashes(&[0xc1]),
+                queue_transaction_hashes(&[0xd1]),
+                queue_transaction_identities(&[0xd1]),
+                false,
+                false,
+                false,
+                false,
+                false,
+                0,
+                queue_pbft_vote_rlps(&[0x81]),
+            )
+            .expect("first push should succeed");
+            assert!(first.accepted);
+            assert!(!first.clear_existing);
+            assert_eq!(pbft_manager_runtime_period_data_queue_period(&runtime), 1);
+            assert_eq!(
+                pbft_manager_runtime_period_data_queue_syncing_period(&runtime, 5),
+                5
+            );
+            assert_eq!(pbft_manager_runtime_period_data_queue_size(&runtime), 1);
+
+            let second = pbft_manager_runtime_period_data_queue_push(
+                &mut runtime,
+                22,
+                2,
+                queue_hash(0x22),
+                queue_hash(0xa2),
+                queue_hash(0xb2),
+                queue_hash(0xe2),
+                queue_transaction_hashes(&[0xf2]),
+                queue_pillar_vote_rlps(&[0xa2]),
+                queue_transaction_rlps(&[0xb2]),
+                queue_pbft_vote_rlps(&[0x92]),
+                queue_transaction_hashes(&[0xc2]),
+                queue_transaction_hashes(&[0xd2]),
+                queue_transaction_identities(&[0xd2]),
+                true,
+                false,
+                true,
+                true,
+                false,
+                0,
+                queue_pbft_vote_rlps(&[0x82]),
+            )
+            .expect("second push should succeed");
+            assert!(second.accepted);
+            assert_eq!(
+                pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
+                    &runtime,
+                    1,
+                    queue_hash(0xee)
+                ),
+                queue_hash(0x22)
+            );
+
+            let first_pop = pbft_manager_runtime_period_data_queue_pop(&mut runtime)
+                .expect("first pop should produce a handoff");
+            assert_eq!(first_pop.entry_id, 11);
+            assert_eq!(first_pop.entry_period, 1);
+            assert_eq!(first_pop.block_hash, queue_hash(0x11));
+            assert_eq!(first_pop.cert_vote_rlps[0].vote_rlp, vec![0x92, 0x93]);
+            assert!(!first_pop.use_last_block_cert_votes);
+            assert_eq!(first_pop.next_entry_id, 22);
+            assert_eq!(first_pop.effective_size, 1);
+
+            let second_pop = pbft_manager_runtime_period_data_queue_pop(&mut runtime)
+                .expect("second pop should produce a handoff");
+            assert_eq!(second_pop.entry_id, 22);
+            assert_eq!(second_pop.cert_vote_rlps[0].vote_rlp, vec![0x82, 0x83]);
+            assert!(second_pop.use_last_block_cert_votes);
+            assert!(pbft_manager_runtime_period_data_queue_empty(&runtime));
+            assert_eq!(pbft_manager_runtime_period_data_queue_period(&runtime), 0);
+
+            pbft_manager_runtime_period_data_queue_push(
+                &mut runtime,
+                33,
+                6,
+                queue_hash(0x33),
+                queue_hash(0xa3),
+                queue_hash(0xb3),
+                queue_hash(0xe3),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                false,
+                false,
+                false,
+                false,
+                false,
+                4,
+                queue_pbft_vote_rlps(&[0x83]),
+            )
+            .expect("empty queue backfill should succeed");
+            let removed = pbft_manager_runtime_period_data_queue_clean_old_data(&mut runtime, 7);
+            assert_eq!(removed.len(), 1);
+            assert_eq!(removed[0].entry_id, 33);
+            assert!(pbft_manager_runtime_period_data_queue_empty(&runtime));
+
+            pbft_manager_runtime_period_data_queue_clear(&mut runtime);
+            assert_eq!(pbft_manager_runtime_period_data_queue_period(&runtime), 0);
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

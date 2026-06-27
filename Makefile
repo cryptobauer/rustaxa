@@ -17,7 +17,7 @@ CPP_INTERSECTION_HEAD?=main
 CPP_INTERSECTION_EXCLUDES?=':(exclude)rust/**' ':(exclude).devcontainer/**' ':(exclude).github/**' ':(exclude).gitignore' ':(exclude)Makefile' ':(exclude)AGENTS.md' ':(exclude)PLAN.md'
 CPP_INTERSECTION_PATCH?=$(BUILD_OUTPUT_DIR)/cpp-reference-intersection.patch
 RUST_MANIFEST?=rust/Cargo.toml
-REWRITE_CONSENSUS_TESTS?=rust_consensus_tests dag_test dag_block_test dag_shim_test pbft_chain_test pbft_chain_shim_test proposed_blocks_shim_test period_data_queue_shim_test pbft_manager_test vote_test pillar_chain_test rewards_stats_test
+REWRITE_CONSENSUS_TESTS?=rust_consensus_tests dag_test dag_block_test dag_shim_test pbft_chain_test pbft_chain_shim_test proposed_blocks_shim_test pbft_manager_test vote_test pillar_chain_test rewards_stats_test
 REWRITE_FINAL_CHAIN_TESTS?=final_chain_test state_api_test rpc_test
 
 define require_cmake_build
@@ -72,7 +72,6 @@ configure: ## Configure the project locally.
 		-DRUSTAXA_ENABLE_SORTITION_PARAMS=ON \
 		-DRUSTAXA_ENABLE_PBFT_CHAIN=ON \
 		-DRUSTAXA_ENABLE_PROPOSED_BLOCKS=ON \
-		-DRUSTAXA_ENABLE_PERIOD_DATA_QUEUE=ON \
 		-DRUSTAXA_ENABLE_VERIFIED_VOTES=ON \
 		-DRUSTAXA_ENABLE_PILLAR_VOTES=ON \
 		-DRUSTAXA_ENABLE_TRANSACTION_QUEUE=ON \

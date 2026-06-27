@@ -29,7 +29,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | `BridgePbftSyncQueueDrainSession`, `create_pbft_sync_queue_drain_session` | PBFT sync tests and PBFT manager plumbing | Obsolete scaffold | Delete after PBFT sync queue draining is represented as Rust runtime state/effects instead of a CXX helper session. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_*` | Vote pipeline/admission/validation/generation/progress/ingress/event/payload helpers | Vote manager shim, network API tests, PBFT/vote tests | Internal Rust route | Collapse bridge helpers into native Rust vote pipeline modules. Keep only network-facing vote payload/effect adapters until the network/tarcap API owns that boundary. |
 | `rust/crates/rustaxa-bridge/src/verified_votes.rs` | `BridgeVerifiedVotes`, `create_verified_votes_index`, storage attach | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after vote manager no longer needs a C++ `VerifiedVotes` facade and Rust vote state attaches to storage internally. |
-| `rust/crates/rustaxa-bridge/src/period_data_queue.rs` | `BridgePeriodDataQueue`, `create_period_data_queue` | `period_data_queue_shim` | C++ public compatibility facade | Delete after PBFT period-data intake/queue behavior is owned by Rust runtime and external callers pass typed period data through native APIs. |
+| `rust/crates/rustaxa-bridge/src/period_data_queue.rs` | Internal conversion helpers only; no exported CXX handle | `pbft_manager.rs` | Internal Rust route | Delete the helper module after PBFT manager runtime can construct period-data queue facts directly from native Rust payload models instead of C++ sidecars. |
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | `BridgeProposedBlocks`, `create_proposed_blocks_index*` | `proposed_blocks_shim`, `dag_manager_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after proposed-block tracking is part of Rust PBFT/DAG runtime and C++ no longer asks for metadata/materialized proposed blocks. |
 | `rust/crates/rustaxa-bridge/src/rewards_stats.rs` | `BridgeRewardsStatsRuntime`, `create_rewards_stats_runtime` | `rewards_stats_shim`, finalization/reward tests | C++ public compatibility facade | Delete C++ facade once rewards stats publication and storage writes are driven from Rust finalization. |
 | `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | `BridgePillarChainStorage`, `create_pillar_chain_storage` | `storage_shim`, `pillar_chain_manager_shim` | C++ public compatibility facade | Keep as a narrow storage handle while pillar C++ facade exists. Delete after pillar chain storage access is native Rust-owned. |
@@ -80,7 +80,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgePbftVoteAdmissionSession` | `pbft_vote_admission.rs` | Vote admission paths/tests | Internal Rust route | Vote admission is Rust pipeline behavior behind network/effect API only. |
 | `BridgePbftVoteValidationRuntime` | `pbft_vote_validation.rs` | Vote manager/tests | Internal Rust route | Vote validation is private Rust vote runtime behavior. |
 | `BridgeVerifiedVotes` | `verified_votes.rs` | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Verified vote state is private Rust vote-manager state. |
-| `BridgePeriodDataQueue` | `period_data_queue.rs` | `period_data_queue_shim` | C++ public compatibility facade | Period-data intake is Rust runtime state/effects. |
 | `BridgeProposedBlocks` | `proposed_blocks.rs` | `proposed_blocks_shim`, DAG/vote manager shims | C++ public compatibility facade | Proposed-block tracking is private Rust PBFT/DAG runtime state. |
 | `BridgeRewardsStatsRuntime` | `rewards_stats.rs` | `rewards_stats_shim`, storage shim batch append | C++ public compatibility facade | Rewards stats writes/reads are driven from Rust finalization without C++ facade/batch passing. |
 | `BridgePillarChainStorage` | `pillar_chain.rs` | `storage_shim`, `pillar_chain_manager_shim` | C++ public compatibility facade | Pillar chain storage is native Rust-owned. |
@@ -105,7 +104,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `key_manager_shim` | Key manager compatibility | App/bootstrap/key manager users | External boundary | Keep until key ownership is redesigned; not a consensus-internal deletion target. |
 | `pbft_chain_shim` | PBFT chain facade | PBFT manager and tests | C++ public compatibility facade | Delete after PBFT chain state becomes private to Rust PBFT manager/runtime. |
 | `pbft_manager_shim` | PBFT manager Rust runtime facade | App bootstrap and consensus loop | Internal Rust route | Collapse into native Rust PBFT runtime and remove C++ orchestration once network/EVM/storage external APIs are thin. |
-| `period_data_queue_shim` | Period-data queue compatibility | PBFT sync/finalization paths | C++ public compatibility facade | Delete after period-data queue is Rust runtime state, not a C++ facade. |
 | `pillar_chain_manager_shim` | Pillar chain manager compatibility | App/consensus pillar paths | C++ public compatibility facade | Delete after pillar chain runtime/storage is native Rust-owned. |
 | `pillar_votes_shim` | Pillar vote index/admission facade | Pillar vote processing and tests | C++ public compatibility facade | Delete after pillar vote pipeline is native Rust. |
 | `proposed_blocks_shim` | Proposed block tracking facade | DAG manager, vote manager, PBFT paths | C++ public compatibility facade | Delete after proposed-block tracking is folded into Rust PBFT/DAG runtime. |
@@ -139,7 +137,7 @@ rg -n '^mod [a-z0-9_]+;' rust/crates/rustaxa-bridge/src/lib.rs
 rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 ```
 
-Current snapshot after Slice 2:
+Current snapshot after Slice 5 period-data queue retirement:
 
 - `Old::` forwarding remains in `dag_manager_shim`, `dag_shim`, `transaction_manager_shim`, and `vote_manager_shim`.
 - `consensus_network_queue_*` no longer remains in bridge, FFI, latest tarcap network code, Rust consensus network API,
@@ -155,6 +153,9 @@ Current snapshot after Slice 2:
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call.
+- `BridgePeriodDataQueue`, `period_data_queue_shim`, and `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` are retired. PBFT manager
+  runtime owns period-data queue metadata through `pbft_manager_runtime_period_data_queue_*`; the C++ PBFT manager shim
+  temporarily owns live `PeriodData`, vote, and peer sidecars until those payload models move to Rust.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

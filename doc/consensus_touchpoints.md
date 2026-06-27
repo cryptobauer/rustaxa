@@ -733,7 +733,7 @@ shimmed toward Rust, or can reasonably continue moving into Rust as part of the 
    - `libraries/core_libs/consensus/shims/pbft_manager_shim/`
    - `libraries/core_libs/consensus/shims/pbft_chain_shim/`
    - `libraries/core_libs/consensus/shims/proposed_blocks_shim/`
-   - `libraries/core_libs/consensus/shims/period_data_queue_shim/`
+   - Period-data queue metadata is now owned by the PBFT manager Rust runtime; the standalone queue shim was retired.
    - `rust/crates/rustaxa-consensus/src/pbft_manager.rs`
    - `rust/crates/rustaxa-consensus/src/pbft_chain.rs`
    - `rust/crates/rustaxa-consensus/src/pbft_sync.rs`

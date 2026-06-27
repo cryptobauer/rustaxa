@@ -888,7 +888,9 @@ The current Rust consensus footprint is broad but still incomplete:
    `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under
    `RUSTAXA_ENABLE_PBFT_CHAIN`; proposed-block membership, validity flags, RLP snapshots, and cleanup planning route
    through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
-   decisions, and cleanup planning route through Rust under `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE`.
+   decisions, and cleanup planning now live inside the PBFT manager Rust runtime. The standalone period-data queue CXX
+   handle, shim overlay, and module flag have been retired; C++ keeps only temporary live sidecars for `PeriodData`,
+   vote, and peer objects.
 9. Continue shrinking the Rust-mode `PbftManager` overlay into Rust services for candidate validation and ordered
    state-action scripts. The first grouped leader-candidate planner owns proposal candidate status derivation,
    mark-valid commands, and deterministic leader ranking; the C++ overlay only supplies live block lookup/validation

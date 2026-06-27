@@ -3,140 +3,101 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueuePillarVotePayload, PeriodDataQueuePopPlan, PeriodDataQueuePushOutcome,
     PeriodDataQueueTransactionIdentity, PeriodDataQueueTransactionPayload,
 };
-use crate::ffi::BridgePeriodDataQueue;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 
-/// Creates an empty Rust period-data queue metadata store for PBFT syncing.
-pub fn create_period_data_queue() -> Box<BridgePeriodDataQueue> {
-    Box::new(BridgePeriodDataQueue(PeriodDataQueue::new()))
+/// Pushes one CXX-safe period-data queue payload into a Rust-owned queue.
+///
+/// The PBFT manager runtime owns the queue metadata. C++ temporarily retains
+/// live `PeriodData`/vote sidecars and passes compact facts through this helper
+/// until those payload model types move to Rust.
+pub(crate) fn bridge_period_data_queue_push(
+    queue: &mut PeriodDataQueue,
+    entry_id: u64,
+    period: u64,
+    block_hash: [u8; 32],
+    prev_block_hash: [u8; 32],
+    pivot_hash: [u8; 32],
+    final_chain_hash: [u8; 32],
+    reward_vote_hashes: Vec<PbftSyncTransactionHash>,
+    pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
+    transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
+    previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
+    dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
+    period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+    period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
+    previous_cert_votes_present: bool,
+    previous_cert_first_vote_has_weight: bool,
+    pillar_votes_present: bool,
+    extra_data_present: bool,
+    extra_data_pillar_block_hash_present: bool,
+    max_pbft_size: u64,
+    current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
+) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
+    Ok(queue
+        .push(
+            entry_id,
+            period,
+            ethereum_types::H256::from(block_hash),
+            ethereum_types::H256::from(prev_block_hash),
+            ethereum_types::H256::from(pivot_hash),
+            ethereum_types::H256::from(final_chain_hash),
+            bridge_hashes_to_h256(reward_vote_hashes),
+            pillar_vote_rlps
+                .into_iter()
+                .map(|payload| payload.vote_rlp)
+                .collect(),
+            transaction_rlps
+                .into_iter()
+                .map(|payload| payload.transaction_rlp)
+                .collect(),
+            pbft_vote_rlps_to_vec(previous_cert_vote_rlps),
+            dag_transaction_hashes
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+            period_data_transaction_hashes
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+            period_data_transaction_identities
+                .into_iter()
+                .map(|identity| {
+                    rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity {
+                        input_index: identity.input_index,
+                        hash: ethereum_types::H256::from(identity.hash),
+                        transaction_nonce: identity.transaction_nonce,
+                        sender: identity.sender,
+                    }
+                })
+                .collect(),
+            previous_cert_votes_present,
+            previous_cert_first_vote_has_weight,
+            pillar_votes_present,
+            extra_data_present,
+            extra_data_pillar_block_hash_present,
+            max_pbft_size,
+            pbft_vote_rlps_to_vec(current_block_cert_vote_rlps),
+        )?
+        .into())
 }
 
-impl BridgePeriodDataQueue {
-    /// Returns the current queue period marker.
-    pub fn period_data_queue_period(&self) -> u64 {
-        self.0.period()
-    }
+/// Pops one CXX-safe handoff plan from a Rust-owned period-data queue.
+pub(crate) fn bridge_period_data_queue_pop(
+    queue: &mut PeriodDataQueue,
+) -> Result<PeriodDataQueuePopPlan, anyhow::Error> {
+    Ok(queue.pop()?.into())
+}
 
-    /// Returns the queue-aware PBFT syncing period for network status.
-    pub fn period_data_queue_syncing_period(&self, pbft_chain_size: u64) -> u64 {
-        self.0.syncing_period(pbft_chain_size)
-    }
-
-    /// Returns the Rust-owned queue hash decision or the supplied PBFT-chain hash.
-    pub fn period_data_queue_last_block_hash_or_chain(
-        &self,
-        current_period: u64,
-        chain_last_hash: [u8; 32],
-    ) -> [u8; 32] {
-        self.0
-            .last_block_hash_or_chain(current_period, ethereum_types::H256::from(chain_last_hash))
-            .into()
-    }
-
-    /// Returns processable queue size under legacy cert-vote visibility rules.
-    pub fn period_data_queue_size(&self) -> usize {
-        self.0.size()
-    }
-
-    /// Returns true when queue metadata has no entries.
-    pub fn period_data_queue_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Clears all Rust queue metadata.
-    pub fn period_data_queue_clear(&mut self) {
-        self.0.clear();
-    }
-
-    /// Attempts to push one C++ payload reference into Rust queue metadata.
-    pub fn period_data_queue_push(
-        &mut self,
-        entry_id: u64,
-        period: u64,
-        block_hash: [u8; 32],
-        prev_block_hash: [u8; 32],
-        pivot_hash: [u8; 32],
-        final_chain_hash: [u8; 32],
-        reward_vote_hashes: Vec<PbftSyncTransactionHash>,
-        pillar_vote_rlps: Vec<PeriodDataQueuePillarVotePayload>,
-        transaction_rlps: Vec<PeriodDataQueueTransactionPayload>,
-        previous_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_identities: Vec<PeriodDataQueueTransactionIdentity>,
-        previous_cert_votes_present: bool,
-        previous_cert_first_vote_has_weight: bool,
-        pillar_votes_present: bool,
-        extra_data_present: bool,
-        extra_data_pillar_block_hash_present: bool,
-        max_pbft_size: u64,
-        current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
-    ) -> Result<PeriodDataQueuePushOutcome, anyhow::Error> {
-        Ok(self
-            .0
-            .push(
-                entry_id,
-                period,
-                ethereum_types::H256::from(block_hash),
-                ethereum_types::H256::from(prev_block_hash),
-                ethereum_types::H256::from(pivot_hash),
-                ethereum_types::H256::from(final_chain_hash),
-                bridge_hashes_to_h256(reward_vote_hashes),
-                pillar_vote_rlps
-                    .into_iter()
-                    .map(|payload| payload.vote_rlp)
-                    .collect(),
-                transaction_rlps
-                    .into_iter()
-                    .map(|payload| payload.transaction_rlp)
-                    .collect(),
-                pbft_vote_rlps_to_vec(previous_cert_vote_rlps),
-                dag_transaction_hashes
-                    .into_iter()
-                    .map(|hash| ethereum_types::H256::from(hash.hash))
-                    .collect(),
-                period_data_transaction_hashes
-                    .into_iter()
-                    .map(|hash| ethereum_types::H256::from(hash.hash))
-                    .collect(),
-                period_data_transaction_identities
-                    .into_iter()
-                    .map(|identity| {
-                        rustaxa_consensus::period_data_queue::PeriodDataQueueTransactionIdentity {
-                            input_index: identity.input_index,
-                            hash: ethereum_types::H256::from(identity.hash),
-                            transaction_nonce: identity.transaction_nonce,
-                            sender: identity.sender,
-                        }
-                    })
-                    .collect(),
-                previous_cert_votes_present,
-                previous_cert_first_vote_has_weight,
-                pillar_votes_present,
-                extra_data_present,
-                extra_data_pillar_block_hash_present,
-                max_pbft_size,
-                pbft_vote_rlps_to_vec(current_block_cert_vote_rlps),
-            )?
-            .into())
-    }
-
-    /// Pops one queue metadata entry and returns the C++ payload handoff plan.
-    pub fn period_data_queue_pop(&mut self) -> Result<PeriodDataQueuePopPlan, anyhow::Error> {
-        Ok(self.0.pop()?.into())
-    }
-
-    /// Removes old queue metadata and returns removed C++ payload ids.
-    pub fn period_data_queue_clean_old_data(
-        &mut self,
-        period: u64,
-    ) -> Vec<PeriodDataQueueEntryRef> {
-        self.0
-            .clean_old_data(period)
-            .into_iter()
-            .map(Into::into)
-            .collect()
-    }
+/// Cleans old entries from a Rust-owned period-data queue.
+pub(crate) fn bridge_period_data_queue_clean_old_data(
+    queue: &mut PeriodDataQueue,
+    period: u64,
+) -> Vec<PeriodDataQueueEntryRef> {
+    queue
+        .clean_old_data(period)
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 impl From<rustaxa_consensus::period_data_queue::PeriodDataQueueEntryRef>
