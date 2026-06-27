@@ -246,6 +246,13 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `DagManagerRuntimeSyncSnapshot`. Live C++ DAG sync materialization uses
   `dag_manager_runtime_non_finalized_sync_payload`; Rust bridge/domain tests keep the lower-level selection and snapshot
   coverage without exposing those helpers to C++.
+- Standalone DAG verification and add-block helper functions are deleted from the CXX surface:
+  `dag_verify_transaction_availability`, `dag_plan_verify_transaction_query`,
+  `dag_plan_non_finalized_transaction_query`, `dag_plan_expired_transaction_cleanup`, `dag_verify_vdf_prepare`,
+  `dag_verify_authorization`, `dag_decide_vdf_dpos_authorization`, `dag_verify_vdf_sortition`,
+  `dag_plan_add_block_effects`, and `dag_verify_gas`. The live DAG manager shim now reaches those decisions through
+  runtime-owned `BridgeDagManagerRuntime` methods, with only `dag_verify_vdf_sortition_from_block` retained as the
+  temporary direct VDF verification boundary.
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is deleted from the CXX surface. The live proposed-block shim uses
   `proposed_blocks_snapshot_entries`, which carries the block payload and validation flag; grouped hash snapshots remain
   Rust-only test coverage.

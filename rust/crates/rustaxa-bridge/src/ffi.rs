@@ -3714,11 +3714,6 @@ pub mod rustaxa_ffi {
         purge_transaction_queue: bool,
     }
 
-    /// Transaction hashes for one DAG block, preserving block-local order.
-    struct DagBlockTransactionRefs {
-        transaction_hashes: Vec<DagTransactionHash>,
-    }
-
     /// Finalization hint for one transaction referenced by an expired DAG block.
     struct DagExpiredTransactionFact {
         hash: [u8; 32],
@@ -3734,16 +3729,6 @@ pub mod rustaxa_ffi {
         /// Transaction facts grouped by discovered order across expired DAG blocks.
         expired_transaction_facts: Vec<DagExpiredTransactionFact>,
         /// Unique hashes that should be removed from non-finalized storage.
-        remove_hashes: Vec<DagTransactionHash>,
-    }
-
-    /// Query plan returned for additional DAG transaction lookups.
-    struct DagTransactionQueryPlan {
-        query_hashes: Vec<DagTransactionHash>,
-    }
-
-    /// Cleanup plan returned for non-finalized transaction removals.
-    struct DagExpiredTransactionCleanupPlan {
         remove_hashes: Vec<DagTransactionHash>,
     }
 
@@ -3855,70 +3840,6 @@ pub mod rustaxa_ffi {
         gas_estimation: u64,
     }
 
-    /// C++-originated payload for Rust transaction availability decisions.
-    struct DagVerifyTransactionAvailabilityInput {
-        expected_transactions: u64,
-        resolved_transactions: u64,
-    }
-
-    /// Rust transaction availability decision.
-    struct DagVerifyTransactionAvailabilityResult {
-        continue_validation: bool,
-        reject_code: u32,
-    }
-
-    /// C++-originated payload for Rust VDF verification preparation.
-    struct DagVerifyVdfPrepareInput {
-        vrf_key_found: bool,
-        eligible_vote_count: u64,
-        vdf_max_vote_count: u64,
-    }
-
-    /// Rust VDF verification preparation result.
-    struct DagVerifyVdfPrepareResult {
-        continue_validation: bool,
-        reject_code: u32,
-        reason_code: u32,
-        vote_count: u64,
-        max_vote_count: u64,
-    }
-
-    /// C++-originated payload for Rust authorization decisions.
-    struct DagVerifyAuthorizationInput {
-        vdf_valid: bool,
-        dpos_snapshot_available: bool,
-        dpos_eligible: bool,
-    }
-
-    /// Rust authorization decision.
-    struct DagVerifyAuthorizationResult {
-        continue_validation: bool,
-        reject_code: u32,
-        reason_code: u32,
-    }
-
-    /// C++-originated payload for Rust DAG VDF sortition verification.
-    struct DagVerifyVdfSortitionInput {
-        /// Canonical DAG block RLP bytes.
-        block_rlp: Vec<u8>,
-        /// VDF message used for Wesolowski proof verification.
-        vdf_input: Vec<u8>,
-        /// Runtime sortition parameters for this proposal period.
-        sortition_params: SortitionRuntimeParams,
-        /// Optional legacy path input: precomputed VRF output (64 bytes).
-        ///
-        /// Rust uses `vrf_public_key` + `vrf_input` when both are provided.
-        vrf_output: Vec<u8>,
-        /// Embedded VRF public key (32 bytes) for direct Rust verification.
-        vrf_public_key: Vec<u8>,
-        /// Canonical VRF message used to verify the DAG embedded VRF proof.
-        vrf_input: Vec<u8>,
-        /// Sender-eligible vote count for threshold normalization.
-        sender_eligible_vote_count: u64,
-        /// Period-effective maximum vote count for normalization denominator.
-        vdf_sortition_max_vote_count: u64,
-    }
-
     /// Rust DAG VDF sortition verification result.
     struct DagVerifyVdfSortitionResult {
         vdf_status: u8,
@@ -3943,15 +3864,6 @@ pub mod rustaxa_ffi {
         sender_eligible_vote_count: u64,
         /// Period-effective maximum vote count for normalization denominator.
         vdf_sortition_max_vote_count: u64,
-    }
-
-    /// C++-originated VDF and DPoS facts for Rust authorization decisions.
-    struct DagVerifyVdfDposFacts {
-        vrf_key_found: bool,
-        sender_eligible_vote_count: u64,
-        vdf_sortition_max_vote_count: u64,
-        vdf_status: u8,
-        dpos_status: u8,
     }
 
     /// Rust-collected DPoS and VRF facts for DAG authorization.
@@ -4185,17 +4097,6 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    /// Facts used by Rust to plan one DAG add-block execution.
-    struct DagAddBlockEffectInput {
-        save: bool,
-        proposed: bool,
-        block_exists: bool,
-        block_level: u64,
-        dag_expiry_level: u64,
-        references_available: bool,
-        missing_references: Vec<DagHash>,
-    }
-
     /// Compact block facts used by the Rust DAG manager runtime to plan one
     /// add-block execution from runtime-owned graph state.
     struct DagAddBlockRuntimeInput {
@@ -4219,30 +4120,6 @@ pub mod rustaxa_ffi {
         gossip: bool,
         proposed: bool,
         missing_references: Vec<DagHash>,
-    }
-
-    /// Rust VDF and DPoS authorization decision.
-    struct DagVerifyVdfDposDecision {
-        continue_validation: bool,
-        reject_code: u32,
-        reason_code: u32,
-        vote_count: u64,
-        max_vote_count: u64,
-    }
-
-    /// C++-originated payload for Rust gas verification decisions.
-    struct DagVerifyGasInput {
-        block_gas_estimation: u64,
-        estimated_transactions_weight: u64,
-        dag_gas_limit: u64,
-        pbft_gas_limit: u64,
-        tip_gas_estimations: Vec<DagTipGas>,
-    }
-
-    /// Rust gas verification decision.
-    struct DagVerifyGasResult {
-        continue_validation: bool,
-        reject_code: u32,
     }
 
     struct DagManagerBlock {
@@ -4936,39 +4813,15 @@ pub mod rustaxa_ffi {
             session_id: u64,
             report: DagProposerAddBlockReport,
         ) -> DagProposerSessionStep;
-        pub fn dag_verify_transaction_availability(
-            input: DagVerifyTransactionAvailabilityInput,
-        ) -> DagVerifyTransactionAvailabilityResult;
         pub fn dag_plan_proposer_worker_command(
             input: DagProposerWorkerCommandInput,
         ) -> DagProposerWorkerCommand;
-        /// Plans verifyBlock transaction queries from block hashes and already-supplied
-        /// hashes.
-        pub fn dag_plan_verify_transaction_query(
-            block_transaction_hashes: Vec<DagTransactionHash>,
-            supplied_transaction_hashes: Vec<DagTransactionHash>,
-        ) -> DagTransactionQueryPlan;
-        /// Plans unique transaction hashes needed from non-finalized DAG blocks.
-        pub fn dag_plan_non_finalized_transaction_query(
-            blocks: Vec<DagBlockTransactionRefs>,
-        ) -> DagTransactionQueryPlan;
-        /// Plans non-finalized transaction removals after expired DAG block
-        /// finalization, excluding finalized and still-retained hashes.
-        pub fn dag_plan_expired_transaction_cleanup(
-            expired_candidates: Vec<DagExpiredTransactionFact>,
-            retained_transaction_refs: Vec<DagTransactionHash>,
-        ) -> DagExpiredTransactionCleanupPlan;
         /// Builds a compact finalization cleanup payload from plan candidates.
         pub fn dag_manager_runtime_expired_transaction_cleanup_payload(
             self: &BridgeDagManagerRuntime,
             expired_hashes: Vec<DagHash>,
             remaining_hashes: Vec<DagHash>,
         ) -> Result<DagExpiredTransactionCleanupPayload>;
-        pub fn dag_verify_vdf_prepare(input: DagVerifyVdfPrepareInput)
-            -> DagVerifyVdfPrepareResult;
-        pub fn dag_verify_vdf_sortition(
-            input: DagVerifyVdfSortitionInput,
-        ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_verify_vdf_sortition_from_block(
             input: DagVerifyVdfSortitionFromBlockInput,
         ) -> Result<DagVerifyVdfSortitionResult>;
@@ -4984,14 +4837,6 @@ pub mod rustaxa_ffi {
             input: DagProposerSignedBlockIntentInput,
         ) -> Result<DagProposerSignedBlockIntent>;
         pub fn dag_manager_block_from_rlp(block_rlp: Vec<u8>) -> Result<DagManagerBlock>;
-        pub fn dag_plan_add_block_effects(input: DagAddBlockEffectInput) -> DagAddBlockEffectPlan;
-        pub fn dag_verify_authorization(
-            input: DagVerifyAuthorizationInput,
-        ) -> DagVerifyAuthorizationResult;
-        pub fn dag_decide_vdf_dpos_authorization(
-            facts: DagVerifyVdfDposFacts,
-        ) -> DagVerifyVdfDposDecision;
-        pub fn dag_verify_gas(input: DagVerifyGasInput) -> Result<DagVerifyGasResult>;
 
         // Consensus PBFT chain
 
