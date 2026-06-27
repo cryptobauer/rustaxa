@@ -129,14 +129,20 @@ class DagManager : public DagManagerOld {
    * C++ executes only requested live effects and reports their results before
    * the Rust DAG runtime cursor advances.
    */
-  void beginProposerSession(rustaxa::DagProposerAttemptInput input);
-  rustaxa::DagProposerSessionStep proposerSessionNext();
-  rustaxa::DagProposerSessionStep reportProposerTransactions(rustaxa::DagProposerTransactionPackReport report);
-  rustaxa::DagProposerSessionStep reportProposerVdfWait(rustaxa::DagProposerVdfWaitReport report);
-  rustaxa::DagProposerSessionStep reportProposerVdfProof(rustaxa::DagProposerVdfProofReport report);
-  rustaxa::DagProposerSessionStep reportProposerStaleProof(rustaxa::DagProposerStaleProofReport report);
-  rustaxa::DagProposerSessionStep reportProposerSigning(rustaxa::DagProposerSigningReport report);
-  rustaxa::DagProposerSessionStep reportProposerAddBlock(rustaxa::DagProposerAddBlockReport report);
+  uint64_t beginProposerSession(rustaxa::DagProposerAttemptInput input);
+  rustaxa::DagProposerSessionStep proposerSessionNext(uint64_t session_id);
+  rustaxa::DagProposerSessionStep reportProposerTransactions(uint64_t session_id,
+                                                             rustaxa::DagProposerTransactionPackReport report);
+  rustaxa::DagProposerSessionStep reportProposerVdfWait(uint64_t session_id,
+                                                        rustaxa::DagProposerVdfWaitReport report);
+  rustaxa::DagProposerSessionStep reportProposerVdfProof(uint64_t session_id,
+                                                         rustaxa::DagProposerVdfProofReport report);
+  rustaxa::DagProposerSessionStep reportProposerStaleProof(uint64_t session_id,
+                                                           rustaxa::DagProposerStaleProofReport report);
+  rustaxa::DagProposerSessionStep reportProposerSigning(uint64_t session_id,
+                                                        rustaxa::DagProposerSigningReport report);
+  rustaxa::DagProposerSessionStep reportProposerAddBlock(uint64_t session_id,
+                                                         rustaxa::DagProposerAddBlockReport report);
   /**
    * Resolves the proposal period for a DAG level through the Rust DAG runtime.
    *

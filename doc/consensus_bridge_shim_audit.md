@@ -278,9 +278,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   longer allocates a standalone bridge handle for `DagManager::verifyBlock`.
 - `BridgeDagProposerSession` is retired. DAG proposal attempts still have C++ executor boundaries for live transaction
   packing, async VDF proof work, block signing/materialization, and `addDagBlock`, but the ordered proposal cursor now
-  lives inside `BridgeDagManagerRuntime` through `dag_manager_runtime_begin_proposer_session`,
-  `dag_manager_runtime_proposer_session_next`, and `dag_manager_runtime_proposer_session_report_*`, so
-  `DagBlockProposer` no longer allocates a standalone bridge handle for each attempt.
+  lives inside `BridgeDagManagerRuntime` as a keyed per-attempt cursor through
+  `dag_manager_runtime_begin_proposer_session`, `dag_manager_runtime_proposer_session_next`, and
+  `dag_manager_runtime_proposer_session_report_*`, so `DagBlockProposer` no longer allocates a standalone bridge handle
+  for each attempt while still preserving concurrent per-wallet proposal attempts.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

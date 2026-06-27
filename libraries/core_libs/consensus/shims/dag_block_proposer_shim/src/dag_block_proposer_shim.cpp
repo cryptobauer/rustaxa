@@ -149,8 +149,8 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   attempt_input.node_transaction_shard = node_dag_proposer_data->trx_shard;
   attempt_input.shard_period_interval = kShardProposePeriodInterval;
 
-  dag_mgr_->beginProposerSession(std::move(attempt_input));
-  auto step = dag_mgr_->proposerSessionNext();
+  const auto proposer_session_id = dag_mgr_->beginProposerSession(std::move(attempt_input));
+  auto step = dag_mgr_->proposerSessionNext(proposer_session_id);
   auto apply_retry_state = [&node_dag_proposer_data](const rustaxa::DagProposerSessionStep& plan) {
     node_dag_proposer_data->retry_state->dag_proposer_retry_state_apply(plan);
   };
@@ -214,7 +214,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   for (const auto estimation : transaction_payloads.gas_estimations) {
     transaction_report.transaction_gas_estimations.push_back(estimation);
   }
-  step = dag_mgr_->reportProposerTransactions(std::move(transaction_report));
+  step = dag_mgr_->reportProposerTransactions(proposer_session_id, std::move(transaction_report));
   if (auto done = finish_if_complete(step)) {
     return *done;
   }
@@ -247,7 +247,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
     rustaxa::DagProposerVdfWaitReport wait_report;
     wait_report.latest_proposal_level = latest_level;
-    const auto wait_step = dag_mgr_->reportProposerVdfWait(std::move(wait_report));
+    const auto wait_step = dag_mgr_->reportProposerVdfWait(proposer_session_id, std::move(wait_report));
     fail_on_invalid_report(wait_step);
     if (wait_step.action == kDagProposerSessionActionCancelVdf) {
       cancellation_token = true;
@@ -276,14 +276,14 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   rustaxa::DagProposerVdfProofReport proof_report;
   proof_report.proof_ok = true;
-  step = dag_mgr_->reportProposerVdfProof(std::move(proof_report));
+  step = dag_mgr_->reportProposerVdfProof(proposer_session_id, std::move(proof_report));
   fail_on_invalid_report(step);
 
   if (step.action == kDagProposerSessionActionStaleProofSleep) {
     thisThreadSleepForMilliSeconds(step.stale_proof_sleep_ms);
     rustaxa::DagProposerStaleProofReport stale_report;
     stale_report.latest_proposal_level = dag_mgr_->getProposerFrontierFacts().propose_level;
-    step = dag_mgr_->reportProposerStaleProof(std::move(stale_report));
+    step = dag_mgr_->reportProposerStaleProof(proposer_session_id, std::move(stale_report));
     if (auto done = finish_if_complete(step)) {
       return *done;
     }
@@ -300,7 +300,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
                                                  node_dag_proposer_data->wallet.node_secret);
   rustaxa::DagProposerSigningReport signing_report;
   signing_report.signature_ready = true;
-  step = dag_mgr_->reportProposerSigning(std::move(signing_report));
+  step = dag_mgr_->reportProposerSigning(proposer_session_id, std::move(signing_report));
   fail_on_invalid_report(step);
   if (auto done = finish_if_complete(step)) {
     return *done;
@@ -313,7 +313,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   const auto proposed_transaction_count = selected_transaction_hashes.size();
   auto add_report = dag_mgr_->addDagBlockRlp(std::move(signed_block), selected_transaction_hashes,
                                              std::move(transaction_payloads.transaction_rlps), true);
-  step = dag_mgr_->reportProposerAddBlock(std::move(add_report));
+  step = dag_mgr_->reportProposerAddBlock(proposer_session_id, std::move(add_report));
   if (step.record_proposed_block) {
     LOG(log_nf_) << node_dag_proposer_data->wallet.node_addr << " proposed new DAG block " << proposed_block_hash
                  << ", pivot " << from_bridge_hash(step.frontier_pivot) << ", txs num " << proposed_transaction_count;

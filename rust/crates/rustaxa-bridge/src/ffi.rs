@@ -168,7 +168,8 @@ pub struct BridgeDagManagerState(pub DagManagerState);
 pub struct BridgeDagManagerRuntime {
     pub state: DagManagerState,
     pub storage: Arc<Storage>,
-    pub proposer_session: Option<crate::dag::DagProposerSession>,
+    pub next_proposer_session_id: u64,
+    pub proposer_sessions: std::collections::BTreeMap<u64, crate::dag::DagProposerSession>,
     pub verify_block_session: Option<crate::dag::DagVerifyBlockSession>,
 }
 
@@ -5313,7 +5314,7 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_begin_proposer_session(
             runtime: &mut BridgeDagManagerRuntime,
             input: DagProposerAttemptInput,
-        ) -> Result<()>;
+        ) -> Result<u64>;
         pub fn dag_manager_runtime_ensure_proposal_period_mapping(
             self: &BridgeDagManagerRuntime,
             level: u64,
@@ -5359,29 +5360,36 @@ pub mod rustaxa_ffi {
         ) -> DagVerifyBlockSessionStep;
         pub fn dag_manager_runtime_proposer_session_next(
             runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_transactions(
             runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
             report: DagProposerTransactionPackReport,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_vdf_wait(
             runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
             report: DagProposerVdfWaitReport,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
             runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
             report: DagProposerVdfProofReport,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_stale_proof(
             runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
             report: DagProposerStaleProofReport,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_signing(
             runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
             report: DagProposerSigningReport,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_add_block(
             runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
             report: DagProposerAddBlockReport,
         ) -> DagProposerSessionStep;
         type BridgeDagProposerRetryState;
