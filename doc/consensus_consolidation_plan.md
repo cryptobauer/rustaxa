@@ -605,6 +605,9 @@ Implementation status:
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.
+- `BridgeTransactionManagerAdmissionExecution` is deleted as a CXX handle. The unused explicit execute/commit DAG-save
+  script and bridge-only test are gone; `save_transactions_from_dag_block_with_runtime` preserves storage-first ordering
+  inside the runtime-owned method.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also

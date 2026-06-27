@@ -16,22 +16,21 @@ use crate::ffi::rustaxa_ffi::{
     DagTransactionSaveRuntimeFact, DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
     FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
     FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
-    NonFinalizedTransactionPayload, TransactionManagerAdmissionCommandReport,
-    TransactionManagerAdmissionResult, TransactionManagerAdmissionShellIntent,
-    TransactionManagerDagSaveCommandReport, TransactionManagerFilterAction,
-    TransactionManagerFinalChainAdmissionFact, TransactionManagerFinalizedStatusCommandReport,
-    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
-    TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
-    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
-    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
-    TransactionManagerRecoveryEntry, TransactionManagerRuntimeAdmissionOutcome,
-    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarRecoveryInsertInput,
-    TransactionManagerSidecarTransitionInput, TransactionManagerStoredTransactionLookup,
-    TransactionManagerStoredTransactionRequest, TransactionManagerTransactionView,
-    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedRuntimeFact,
+    TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
+    TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
+    TransactionManagerFilterAction, TransactionManagerFinalChainAdmissionFact,
+    TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
+    TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
+    TransactionManagerHashCommand, TransactionManagerInsertTransactionFact,
+    TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
+    TransactionManagerPublicInsertResult, TransactionManagerRecoveryEntry,
+    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarLookupRequest,
+    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
+    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
+    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
+    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
@@ -40,8 +39,8 @@ use crate::ffi::rustaxa_ffi::{
     TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
-    BridgeFinalChain, BridgeStorage, BridgeTransactionManagerAdmissionExecution,
-    BridgeTransactionManagerRuntime, TransactionManagerRuntimePackSession,
+    BridgeFinalChain, BridgeStorage, BridgeTransactionManagerRuntime,
+    TransactionManagerRuntimePackSession,
 };
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
@@ -665,11 +664,11 @@ pub fn save_transactions_from_dag_block(
     })
 }
 
-/// Executes one runtime admission pass and returns explicit storage and live-state effects.
-pub fn transaction_manager_runtime_execute_admission(
-    runtime: &BridgeTransactionManagerRuntime,
+/// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
+pub fn save_transactions_from_dag_block_with_runtime(
+    runtime: &mut BridgeTransactionManagerRuntime,
     facts: Vec<DagTransactionSaveSidecarFact>,
-) -> Result<Box<BridgeTransactionManagerAdmissionExecution>> {
+) -> Result<DagTransactionSaveOutcome> {
     let storage = transaction_manager_runtime_storage(runtime)?;
     let plan = plan_transactions_from_dag_block(
         facts
@@ -691,10 +690,8 @@ pub fn transaction_manager_runtime_execute_admission(
         |hash| transaction_finalized(storage, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
     )?;
 
-    let mut accepted: Vec<DagTransactionSaveAccepted> =
-        Vec::with_capacity(plan.accepted_transactions.len());
-    let mut accepted_payloads: Vec<NonFinalizedTransactionPayload> =
-        Vec::with_capacity(plan.accepted_transactions.len());
+    let mut accepted = Vec::with_capacity(plan.accepted_transactions.len());
+    let mut accepted_payloads = Vec::with_capacity(plan.accepted_transactions.len());
 
     for payload in &plan.accepted_transactions {
         accepted.push(DagTransactionSaveAccepted {
@@ -702,75 +699,31 @@ pub fn transaction_manager_runtime_execute_admission(
             hash: payload.hash.0,
             erased_from_queue: false,
         });
-        accepted_payloads.push(NonFinalizedTransactionPayload {
-            hash: payload.hash.0,
+        accepted_payloads.push(NonFinalizedTransactionStoragePayload {
+            hash: payload.hash,
             trx_rlp: payload.trx_rlp.clone(),
         });
     }
 
-    Ok(Box::new(BridgeTransactionManagerAdmissionExecution {
-        accepted,
-        accepted_payloads,
-        target_transaction_count: plan.target_transaction_count,
-    }))
-}
-
-/// Commits one runtime admission execution script with storage-first ordering.
-#[allow(clippy::boxed_local)]
-pub fn transaction_manager_runtime_commit_admission(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    execution: Box<BridgeTransactionManagerAdmissionExecution>,
-) -> Result<DagTransactionSaveOutcome> {
-    let BridgeTransactionManagerAdmissionExecution {
-        accepted,
-        accepted_payloads,
-        target_transaction_count,
-    } = *execution;
-
     if !accepted_payloads.is_empty() {
-        let storage = transaction_manager_runtime_storage(runtime)?;
-        let storage_payloads: Vec<NonFinalizedTransactionStoragePayload> = accepted_payloads
-            .iter()
-            .map(|payload| NonFinalizedTransactionPayload {
-                hash: payload.hash,
-                trx_rlp: payload.trx_rlp.clone(),
-            })
-            .map(|payload| NonFinalizedTransactionStoragePayload {
-                hash: H256::from(payload.hash),
-                trx_rlp: payload.trx_rlp,
-            })
-            .collect();
-        save_non_finalized_transactions(storage, storage_payloads, target_transaction_count)?;
+        save_non_finalized_transactions(storage, accepted_payloads, plan.target_transaction_count)?;
     }
 
-    let mut accepted = accepted;
-    for accepted_entry in &mut accepted {
-        accepted_entry.erased_from_queue = runtime.queue.erase(H256::from(accepted_entry.hash));
-    }
-
-    for payload in accepted_payloads {
+    for (accepted_entry, payload) in accepted.iter_mut().zip(plan.accepted_transactions) {
+        accepted_entry.erased_from_queue = runtime.queue.erase(payload.hash);
         runtime
             .sidecar
-            .insert_non_finalized(H256::from(payload.hash), payload.trx_rlp)
+            .insert_non_finalized(payload.hash, payload.trx_rlp)
             .context("TM_RUNTIME_DAG_TX_INSERT")?;
     }
     runtime
         .sidecar
-        .set_transaction_count(target_transaction_count);
+        .set_transaction_count(plan.target_transaction_count);
 
     Ok(DagTransactionSaveOutcome {
         accepted,
-        target_transaction_count,
+        target_transaction_count: plan.target_transaction_count,
     })
-}
-
-/// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
-pub fn save_transactions_from_dag_block_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    facts: Vec<DagTransactionSaveSidecarFact>,
-) -> Result<DagTransactionSaveOutcome> {
-    let execution = transaction_manager_runtime_execute_admission(runtime, facts)?;
-    transaction_manager_runtime_commit_admission(runtime, execution)
 }
 
 /// Applies DAG transaction persistence and returns a typed command report.
@@ -3647,53 +3600,6 @@ mod tests {
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should remain"),
             7
-        );
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_admission_execute_is_side_effect_free_until_commit() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_execute");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            7,
-            TransactionQueueConfig { max_size: 16 },
-        );
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("queue seed should succeed");
-
-        let execution = transaction_manager_runtime_execute_admission(
-            &runtime,
-            vec![dag_tx_sidecar_fact(0, 1, 5, 4, 0x11)],
-        )
-        .expect("runtime admission execute should succeed");
-
-        assert!(runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(!runtime.transaction_manager_runtime_contains_non_finalized(&[1; 32]));
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[1; 32])
-                .expect("storage read should succeed"),
-            Vec::<u8>::new()
-        );
-
-        let out = transaction_manager_runtime_commit_admission(&mut runtime, execution)
-            .expect("runtime admission commit should succeed");
-        assert_eq!(out.accepted.len(), 1);
-        assert!(out.accepted[0].erased_from_queue);
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(runtime.transaction_manager_runtime_contains_non_finalized(&[1; 32]));
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[1; 32])
-                .expect("storage write should persist"),
-            vec![0x11]
         );
 
         let _ = fs::remove_dir_all(temp_dir);
