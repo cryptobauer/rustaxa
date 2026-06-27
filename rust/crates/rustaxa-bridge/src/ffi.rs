@@ -6027,10 +6027,6 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
         ) -> bool;
-        pub fn transaction_manager_runtime_lookup_ordered_payloads(
-            self: &BridgeTransactionManagerRuntime,
-            requests: Vec<TransactionManagerSidecarLookupRequest>,
-        ) -> Result<TransactionManagerSidecarLookupPlan>;
         pub fn transaction_manager_runtime_non_finalized_size(
             self: &BridgeTransactionManagerRuntime,
         ) -> usize;
@@ -6042,10 +6038,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             transition: TransactionManagerSidecarTransitionInput,
         ) -> Result<()>;
-        pub fn transaction_manager_runtime_evict_stale_recently_finalized(
-            self: &mut BridgeTransactionManagerRuntime,
-            stale_period: u64,
-        ) -> u64;
         pub fn transaction_manager_runtime_insert_recovery_entries(
             self: &mut BridgeTransactionManagerRuntime,
             entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
@@ -6057,10 +6049,6 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_runtime_insert_transaction_precheck(
             self: &BridgeTransactionManagerRuntime,
             hash: &[u8; 32],
-        ) -> Result<TransactionManagerInsertTransactionOutcome>;
-        pub fn transaction_manager_runtime_finish_insert_transaction(
-            self: &BridgeTransactionManagerRuntime,
-            fact: TransactionManagerInsertTransactionFact,
         ) -> Result<TransactionManagerInsertTransactionOutcome>;
         /// Executes FinalChain-backed admission and returns a typed command report.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
@@ -6092,23 +6080,11 @@ pub mod rustaxa_ffi {
             final_chain_fact: TransactionManagerFinalChainAdmissionFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
-        pub fn transaction_manager_runtime_queue_erase(
-            self: &mut BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-        ) -> bool;
-        pub fn transaction_manager_runtime_queue_get_transaction(
-            self: &BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-        ) -> TransactionQueueStoredTransaction;
         /// Resolves requested hashes against Rust-owned live queue payloads only.
         pub fn transaction_manager_runtime_queue_lookup_transaction_views(
             self: &BridgeTransactionManagerRuntime,
             requests: Vec<TransactionManagerTransactionViewRequest>,
         ) -> Result<Vec<TransactionManagerTransactionView>>;
-        pub fn transaction_manager_runtime_queue_ordered_transactions(
-            self: &BridgeTransactionManagerRuntime,
-            count: u64,
-        ) -> Vec<TransactionQueueStoredTransaction>;
         pub fn transaction_manager_runtime_queue_all_transaction_groups(
             self: &BridgeTransactionManagerRuntime,
         ) -> Vec<TransactionQueueTransactionGroup>;
@@ -6129,10 +6105,6 @@ pub mod rustaxa_ffi {
             apply_block_finalized: bool,
             block_number: u64,
         ) -> Result<TransactionManagerRuntimeQueueCleanupPlan>;
-        pub fn transaction_manager_runtime_queue_mark_transaction_known(
-            self: &mut BridgeTransactionManagerRuntime,
-            hash: &[u8; 32],
-        ) -> bool;
         pub fn transaction_manager_runtime_queue_transactions_dropped(
             self: &BridgeTransactionManagerRuntime,
         ) -> bool;
@@ -6181,17 +6153,10 @@ pub mod rustaxa_ffi {
             self: &BridgeTransactionManagerSidecar,
             hash: &[u8; 32],
         ) -> bool;
-        pub fn transaction_manager_sidecar_non_finalized_size(
-            self: &BridgeTransactionManagerSidecar,
-        ) -> usize;
         pub fn transaction_manager_sidecar_lookup_ordered_payloads(
             self: &BridgeTransactionManagerSidecar,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<TransactionManagerSidecarLookupPlan>;
-        pub fn transaction_manager_sidecar_remove_non_finalized(
-            self: &mut BridgeTransactionManagerSidecar,
-            requests: Vec<TransactionManagerSidecarLookupRequest>,
-        ) -> Result<u64>;
         pub fn transaction_manager_sidecar_apply_finalized_transition(
             self: &mut BridgeTransactionManagerSidecar,
             transition: TransactionManagerSidecarTransitionInput,

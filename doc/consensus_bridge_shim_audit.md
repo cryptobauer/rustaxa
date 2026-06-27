@@ -210,6 +210,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and
   `transaction_queue_block_finalized_plan` have been deleted from the CXX surface. Native `rustaxa-consensus`
   transaction queue tests keep the internal planner coverage.
+- `BridgeTransactionManagerRuntime` and `BridgeTransactionManagerSidecar` no-caller compatibility exports have been
+  trimmed after the transaction-manager shim moved to runtime-owned command APIs. Deleted exports include old runtime
+  sidecar lookup/finish/evict helpers, queue erase/get/order/known helpers, and sidecar size/remove helpers that had no
+  C++ shim callers.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for
   both pending-storage-row deletion and sidecar removal. Rust commits the native storage delete batch first and then
   mutates live sidecar state, matching the legacy C++ behavior without exposing public `DbStorage` batch usage in

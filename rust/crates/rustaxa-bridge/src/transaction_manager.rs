@@ -2236,34 +2236,6 @@ impl BridgeTransactionManagerRuntime {
         self.sidecar.contains_recently_finalized(H256::from(*hash))
     }
 
-    /// Returns ordered sidecar payload lookups for C++ materialization.
-    pub fn transaction_manager_runtime_lookup_ordered_payloads(
-        &self,
-        requests: Vec<TransactionManagerSidecarLookupRequest>,
-    ) -> Result<TransactionManagerSidecarLookupPlan> {
-        let lookups = self
-            .sidecar
-            .lookup_payloads_ordered(
-                requests
-                    .iter()
-                    .map(|request| (request.input_index, H256::from(request.hash)))
-                    .collect(),
-            )
-            .context("TM_RUNTIME_LOOKUP_ORDERED")?;
-        Ok(TransactionManagerSidecarLookupPlan {
-            lookups: lookups
-                .into_iter()
-                .map(|lookup| TransactionManagerSidecarLookup {
-                    input_index: lookup.input_index,
-                    hash: lookup.hash.0,
-                    found: lookup.found,
-                    source: lookup.source,
-                    trx_rlp: lookup.trx_rlp,
-                })
-                .collect(),
-        })
-    }
-
     /// Returns current non-finalized sidecar size.
     pub fn transaction_manager_runtime_non_finalized_size(&self) -> usize {
         self.sidecar.non_finalized_size()
@@ -2316,15 +2288,6 @@ impl BridgeTransactionManagerRuntime {
                     .collect::<Vec<_>>(),
             )
             .context("TM_RUNTIME_FINALIZED_TRANSITION")
-    }
-
-    /// Evicts stale recently-finalized entries for one computed stale period.
-    pub fn transaction_manager_runtime_evict_stale_recently_finalized(
-        &mut self,
-        stale_period: u64,
-    ) -> u64 {
-        self.sidecar
-            .evict_recently_finalized_stale_period(stale_period) as u64
     }
 
     /// Inserts recovery payloads while skipping stale finalized entries.
@@ -2394,20 +2357,6 @@ impl BridgeTransactionManagerRuntime {
             has_finalized_period: false,
             finalized_period: 0,
         })
-    }
-
-    /// Finishes public `insertTransaction` status selection after a caller supplies finalized-location facts.
-    ///
-    /// This is intentionally read-only and remains for lower-level parity tests
-    /// and callers that have already completed fact sourcing. Rust-mode
-    /// TransactionManager production paths use the FinalChain- or storage-backed
-    /// admission helpers so no C++ storage completion is required after mutation.
-    pub fn transaction_manager_runtime_finish_insert_transaction(
-        &self,
-        fact: TransactionManagerInsertTransactionFact,
-    ) -> Result<TransactionManagerInsertTransactionOutcome> {
-        let _ = self;
-        transaction_manager_insert_transaction(fact)
     }
 
     /// Executes TransactionManager admission using account/finalization facts
@@ -2742,32 +2691,6 @@ impl BridgeTransactionManagerRuntime {
         ))
     }
 
-    /// Removes one queued transaction by hash.
-    pub fn transaction_manager_runtime_queue_erase(&mut self, hash: &[u8; 32]) -> bool {
-        self.queue.erase(H256::from(*hash))
-    }
-
-    /// Returns one queued transaction payload by hash.
-    pub fn transaction_manager_runtime_queue_get_transaction(
-        &self,
-        hash: &[u8; 32],
-    ) -> TransactionQueueStoredTransaction {
-        runtime_queue_stored_transaction_from_entry(self.queue.transaction(H256::from(*hash)))
-    }
-
-    /// Returns proposer-ordered transaction payloads.
-    pub fn transaction_manager_runtime_queue_ordered_transactions(
-        &self,
-        count: u64,
-    ) -> Vec<TransactionQueueStoredTransaction> {
-        self.queue
-            .ordered_transactions(count)
-            .into_iter()
-            .map(Some)
-            .map(runtime_queue_stored_transaction_from_entry)
-            .collect()
-    }
-
     /// Returns proposer transaction payloads grouped by sender and nonce order.
     pub fn transaction_manager_runtime_queue_all_transaction_groups(
         &self,
@@ -2829,14 +2752,6 @@ impl BridgeTransactionManagerRuntime {
                 finalized_account_purged,
             ),
         })
-    }
-
-    /// Marks one hash in the Rust-owned known-admission cache.
-    pub fn transaction_manager_runtime_queue_mark_transaction_known(
-        &mut self,
-        hash: &[u8; 32],
-    ) -> bool {
-        self.queue.mark_transaction_known(H256::from(*hash))
     }
 
     /// Returns true while the overflow/drop observation window remains active.
@@ -2926,27 +2841,6 @@ impl BridgeTransactionManagerSidecar {
                 })
                 .collect(),
         })
-    }
-
-    /// Returns current non-finalized sidecar size.
-    pub fn transaction_manager_sidecar_non_finalized_size(&self) -> usize {
-        self.0.non_finalized_size()
-    }
-
-    /// Removes requested non-finalized sidecar payloads and returns the removal count.
-    pub fn transaction_manager_sidecar_remove_non_finalized(
-        &mut self,
-        requests: Vec<TransactionManagerSidecarLookupRequest>,
-    ) -> Result<u64> {
-        let mut removed = 0u64;
-        for request in requests {
-            let hash = H256::from(request.hash);
-            ensure!(!hash.is_zero(), "sidecar removal hash cannot be zero");
-            if self.0.remove_non_finalized(hash) {
-                removed += 1;
-            }
-        }
-        Ok(removed)
     }
 
     /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.
