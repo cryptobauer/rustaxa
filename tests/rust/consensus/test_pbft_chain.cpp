@@ -31,12 +31,6 @@ TEST_F(RustPbftChainTest, UpdatesHeadStateForNonNullAndNullAnchors) {
   auto chain = create_pbft_chain(head(1, 0, 11, 0));
   EXPECT_FALSE(chain->pbft_chain_initialized_default());
 
-  auto projected = chain->pbft_chain_project_update(h256(12), h256(99));
-  EXPECT_EQ(projected.size, 2);
-  EXPECT_EQ(projected.non_empty_size, 1);
-  EXPECT_EQ(projected.last_pbft_block_hash, h256(12));
-  EXPECT_EQ(projected.last_non_null_anchor_hash, h256(99));
-
   auto current = chain->pbft_chain_head();
   EXPECT_EQ(current.size, 1);
   EXPECT_EQ(current.last_pbft_block_hash, h256(11));

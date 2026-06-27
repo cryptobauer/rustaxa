@@ -5185,11 +5185,6 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftBlockStorageLookup>;
         pub fn pbft_chain_initialized_default(self: &BridgePbftChain) -> bool;
         pub fn pbft_chain_head(self: &BridgePbftChain) -> PbftChainHeadPayload;
-        pub fn pbft_chain_project_update(
-            self: &BridgePbftChain,
-            block_hash: &[u8; 32],
-            anchor_hash: &[u8; 32],
-        ) -> Result<PbftChainHeadPayload>;
         pub fn pbft_chain_project_legacy_json_head(
             self: &BridgePbftChain,
             block_hash: &[u8; 32],

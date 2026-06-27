@@ -641,6 +641,9 @@ Implementation status:
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is no longer a CXX export. Production C++ uses
   `proposed_blocks_snapshot_entries`, which preserves validation flags and payloads needed by the shim facade; grouped
   hash snapshots remain Rust test-only coverage.
+- `BridgePbftChain::pbft_chain_project_update` is no longer a CXX export. The non-mutating append projection is covered
+  by native `rustaxa-consensus` PBFT-chain tests, while live C++ bridge callers use `pbft_chain_update`,
+  `pbft_chain_update_for_finalization`, or the retained legacy JSON projection facade.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.

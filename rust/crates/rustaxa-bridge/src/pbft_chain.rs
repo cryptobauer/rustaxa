@@ -77,18 +77,6 @@ impl BridgePbftChain {
         self.state.head().into()
     }
 
-    /// Returns a non-mutating preview of appending a PBFT block.
-    pub fn pbft_chain_project_update(
-        &self,
-        block_hash: &[u8; 32],
-        anchor_hash: &[u8; 32],
-    ) -> Result<PbftChainHeadPayload, anyhow::Error> {
-        Ok(self
-            .state
-            .project_update(H256::from(*block_hash), H256::from(*anchor_hash))?
-            .into())
-    }
-
     /// Returns a non-mutating preview for the legacy persisted-head JSON path.
     pub fn pbft_chain_project_legacy_json_head(
         &self,

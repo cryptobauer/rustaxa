@@ -249,6 +249,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is deleted from the CXX surface. The live proposed-block shim uses
   `proposed_blocks_snapshot_entries`, which carries the block payload and validation flag; grouped hash snapshots remain
   Rust-only test coverage.
+- `BridgePbftChain::pbft_chain_project_update` is deleted from the CXX surface. Native `rustaxa-consensus` tests cover
+  the non-mutating projection helper, and live C++ bridge callers use `pbft_chain_update`,
+  `pbft_chain_update_for_finalization`, or `pbft_chain_project_legacy_json_head`.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.
