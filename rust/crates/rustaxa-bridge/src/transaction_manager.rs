@@ -12,9 +12,8 @@
 //! pointers or gas estimation.
 
 use crate::ffi::rustaxa_ffi::{
-    DagTransactionSaveAccepted, DagTransactionSaveFact, DagTransactionSaveOutcome,
-    DagTransactionSaveRuntimeFact, DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
-    FinalizedTransactionStatusAction, FinalizedTransactionStatusFact,
+    DagTransactionSaveAccepted, DagTransactionSaveOutcome, DagTransactionSaveSidecarFact,
+    FinalizedTransactionFilterPlan, FinalizedTransactionStatusAction,
     FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
     TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
     TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
@@ -28,7 +27,6 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerSidecarLookupRequest, TransactionManagerTransactionView,
     TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
     TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedRuntimeFact,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
@@ -47,7 +45,7 @@ use rustaxa_consensus::transaction_manager::{
     plan_exclude_finalized_transactions as plan_exclude_finalized_transactions_from_storage,
     plan_finalized_transactions_status, plan_insert_transaction, plan_transactions_from_dag_block,
     plan_validated_insert, plan_verify_transaction,
-    DagTransactionSaveFact as ConsensusDagTransactionSaveFact, DagTransactionSavePayload,
+    DagTransactionSaveFact as ConsensusDagTransactionSaveFact,
     FinalizedTransactionFilterFact as ConsensusFinalizedTransactionFilterFact,
     FinalizedTransactionFilterPlan as ConsensusFinalizedTransactionFilterPlan,
     FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
@@ -595,39 +593,6 @@ fn runtime_queue_account_nonce_facts_from_final_chain(
         .collect()
 }
 
-fn final_chain_account_lookup(
-    final_chain: &BridgeFinalChain,
-    sender: &[u8; 20],
-) -> Result<(bool, U256, U256)> {
-    let lookup = final_chain
-        .get_account(sender)
-        .context("TM_FINAL_CHAIN_ACCOUNT_LOOKUP_FAILED")?;
-    let account_nonce = U256::from(lookup.nonce);
-    let account_balance = if lookup.found {
-        U256::from_big_endian(&lookup.balance)
-    } else {
-        U256::zero()
-    };
-    Ok((lookup.found, account_nonce, account_balance))
-}
-
-fn final_chain_transaction_period_lookup(
-    final_chain: &BridgeFinalChain,
-    hash: &[u8; 32],
-) -> Result<Option<u64>> {
-    let location = final_chain
-        .get_transaction_location(hash)
-        .context("TM_FINAL_CHAIN_TRANSACTION_LOCATION_LOOKUP_FAILED")?;
-    if location.is_empty() {
-        return Ok(None);
-    }
-    let rlp = rlp::Rlp::new(&location);
-    let period = rlp
-        .val_at::<u64>(0)
-        .context("TM_FINAL_CHAIN_TRANSACTION_LOCATION_PERIOD")?;
-    Ok(Some(period))
-}
-
 fn transaction_manager_runtime_storage(
     runtime: &BridgeTransactionManagerRuntime,
 ) -> Result<&Storage> {
@@ -635,58 +600,6 @@ fn transaction_manager_runtime_storage(
         .storage
         .as_deref()
         .context("TM_RUNTIME_STORAGE_UNAVAILABLE")
-}
-
-/// Plans and persists accepted transactions for one incoming DAG block.
-///
-/// This call is storage-complete: accepted payloads are written with one atomic
-/// batch through `save_non_finalized_transactions`, and `target_transaction_count`
-/// is returned for C++ cache-state bookkeeping.
-pub fn save_transactions_from_dag_block(
-    storage: &BridgeStorage,
-    current_transaction_count: u64,
-    facts: Vec<DagTransactionSaveFact>,
-) -> Result<DagTransactionSaveOutcome> {
-    let plan = plan_transactions_from_dag_block(
-        facts
-            .into_iter()
-            .map(consensus_fact_from_ffi_fact)
-            .collect(),
-        current_transaction_count,
-        |hash| transaction_finalized(&storage.0, hash).context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED"),
-    )?;
-
-    let mut accepted: Vec<DagTransactionSaveAccepted> =
-        Vec::with_capacity(plan.accepted_transactions.len());
-    let mut accepted_payloads: Vec<NonFinalizedTransactionStoragePayload> =
-        Vec::with_capacity(plan.accepted_transactions.len());
-
-    for DagTransactionSavePayload {
-        input_index,
-        hash,
-        trx_rlp,
-    } in plan.accepted_transactions
-    {
-        accepted.push(DagTransactionSaveAccepted {
-            input_index,
-            hash: hash.0,
-            erased_from_queue: false,
-        });
-        accepted_payloads.push(NonFinalizedTransactionStoragePayload { hash, trx_rlp });
-    }
-
-    if !accepted_payloads.is_empty() {
-        save_non_finalized_transactions(
-            &storage.0,
-            accepted_payloads,
-            plan.target_transaction_count,
-        )?;
-    }
-
-    Ok(DagTransactionSaveOutcome {
-        accepted,
-        target_transaction_count: plan.target_transaction_count,
-    })
 }
 
 /// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
@@ -758,87 +671,6 @@ pub fn save_transactions_from_dag_block_command_report_with_runtime(
 ) -> Result<TransactionManagerDagSaveCommandReport> {
     let outcome = save_transactions_from_dag_block_with_runtime(runtime, facts)?;
     Ok(dag_save_command_report(&outcome))
-}
-
-/// Plans and persists accepted DAG-block transactions through the Rust runtime
-/// with sender account nonces sourced from latest FinalChain state.
-pub fn save_transactions_from_dag_block_with_runtime_and_final_chain(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    final_chain: &BridgeFinalChain,
-    facts: Vec<DagTransactionSaveRuntimeFact>,
-) -> Result<DagTransactionSaveOutcome> {
-    let sidecar_facts = facts
-        .into_iter()
-        .map(|fact| {
-            let (_, account_nonce, _) = final_chain_account_lookup(final_chain, &fact.sender)?;
-            Ok(DagTransactionSaveSidecarFact {
-                input_index: fact.input_index,
-                hash: fact.hash,
-                trx_rlp: fact.trx_rlp,
-                transaction_nonce: fact.transaction_nonce,
-                sender_account_nonce: account_nonce.to_big_endian(),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    save_transactions_from_dag_block_with_runtime(runtime, sidecar_facts)
-}
-
-/// Returns transaction-manager DAG persistence as typed command actions.
-pub fn save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-    runtime: &mut BridgeTransactionManagerRuntime,
-    final_chain: &BridgeFinalChain,
-    facts: Vec<DagTransactionSaveRuntimeFact>,
-) -> Result<TransactionManagerDagSaveCommandReport> {
-    let outcome =
-        save_transactions_from_dag_block_with_runtime_and_final_chain(runtime, final_chain, facts)?;
-    Ok(dag_save_command_report(&outcome))
-}
-
-/// Plans finalized-transaction status transitions for one period.
-///
-/// This call is storage-bound for the `StatusDbField::TrxCount` counter only.
-/// The counter persists only when the finalized transaction list is non-empty,
-/// matching existing Rust-side storage behavior for conditional status updates.
-pub fn update_finalized_transactions_status(
-    storage: &BridgeStorage,
-    period: u64,
-    retention_window: u64,
-    current_transaction_count: u64,
-    facts: Vec<FinalizedTransactionStatusFact>,
-) -> Result<FinalizedTransactionStatusPlan> {
-    let plan: ConsensusFinalizedTransactionStatusPlan = plan_finalized_transactions_status(
-        facts
-            .into_iter()
-            .map(consensus_finalized_status_fact_from_ffi_fact)
-            .collect(),
-        current_transaction_count,
-        period,
-        retention_window,
-    )?;
-
-    if !plan.accepted_transactions.is_empty() {
-        save_transaction_count(&storage.0, plan.target_transaction_count)
-            .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
-    }
-
-    Ok(FinalizedTransactionStatusPlan {
-        accepted: plan
-            .accepted_transactions
-            .into_iter()
-            .map(|action| FinalizedTransactionStatusAction {
-                input_index: action.input_index,
-                hash: action.hash.0,
-                removed_non_finalized: action.removed_non_finalized,
-                mark_transaction_known: true,
-                erase_from_queue: true,
-                erased_from_queue: false,
-            })
-            .collect(),
-        target_transaction_count: plan.target_transaction_count,
-        stale_period: plan.stale_period.unwrap_or(0),
-        has_stale_period: plan.stale_period.is_some(),
-        purge_transaction_queue: plan.purge_transactions,
-    })
 }
 
 /// Plans and applies finalized transaction status updates through the Rust manager runtime.
@@ -1318,48 +1150,6 @@ fn keccak256(data: &[u8]) -> H256 {
     hasher.update(data);
     hasher.finalize(&mut output);
     H256::from(output)
-}
-
-/// Verifies transaction hashes against Rust runtime sidecars with sender nonce
-/// sourced from latest FinalChain state when storage lookup is safe.
-pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-    runtime: &BridgeTransactionManagerRuntime,
-    final_chain: &BridgeFinalChain,
-    facts: Vec<TransactionManagerVerifyNotFinalizedRuntimeFact>,
-) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
-    let storage = transaction_manager_runtime_storage(runtime)?;
-    for fact in facts {
-        let hash = H256::from(fact.hash);
-        ensure!(
-            !hash.is_zero(),
-            "finalized verification transaction hash cannot be zero"
-        );
-        if runtime.sidecar.contains_recently_finalized(hash) {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_RECENT_SIDECAR,
-            });
-        }
-        let (_, sender_nonce, _) = final_chain_account_lookup(final_chain, &fact.sender)?;
-        if sender_nonce >= U256::from_big_endian(&fact.transaction_nonce)
-            && transaction_finalized(storage, hash).context("TM_VERIFY_FINALIZED_LOOKUP")?
-        {
-            return Ok(TransactionManagerVerifyNotFinalizedOutcome {
-                is_finalized: true,
-                input_index: fact.input_index,
-                hash: hash.0,
-                source: TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE,
-            });
-        }
-    }
-    Ok(TransactionManagerVerifyNotFinalizedOutcome {
-        is_finalized: false,
-        input_index: 0,
-        hash: [0; 32],
-        source: TM_VERIFY_NOT_FINALIZED_SOURCE_NONE,
-    })
 }
 
 /// Verifies transaction hashes against Rust runtime sidecars with sender nonce
@@ -2062,84 +1852,6 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// Executes TransactionManager admission using account/finalization facts
-    /// sourced from FinalChain.
-    ///
-    /// Account and finalized-location reads complete before queue mutation so
-    /// lookup failures cannot partially admit a transaction into Rust runtime
-    /// state.
-    fn transaction_manager_runtime_execute_transaction_admission_with_final_chain(
-        &mut self,
-        final_chain: &BridgeFinalChain,
-        fact: TransactionManagerValidatedInsertRuntimeFact,
-        mut input: TransactionQueueInsertInput,
-    ) -> Result<TransactionManagerRuntimeAdmissionOutcome> {
-        ensure!(
-            input.hash == fact.tx_hash,
-            "TM_RUNTIME_VALIDATED_INSERT_HASH_MISMATCH"
-        );
-        ensure!(
-            input.nonce == fact.transaction_nonce,
-            "TM_RUNTIME_VALIDATED_INSERT_NONCE_MISMATCH"
-        );
-        ensure!(
-            input.gas == fact.gas_limit,
-            "TM_RUNTIME_VALIDATED_INSERT_GAS_MISMATCH"
-        );
-        let hash = H256::from(fact.tx_hash);
-        let (account_found, account_nonce, account_balance) =
-            final_chain_account_lookup(final_chain, &fact.sender)?;
-        let finalized_period = final_chain_transaction_period_lookup(final_chain, &fact.tx_hash)?;
-        let plan = plan_validated_insert(ConsensusTransactionManagerValidatedInsertFact {
-            tx_hash: hash,
-            transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
-            transaction_cost: U256::from_big_endian(&fact.transaction_cost),
-            gas_limit: fact.gas_limit,
-            propose_dag_gas_limit: fact.propose_dag_gas_limit,
-            insert_non_proposable: fact.insert_non_proposable,
-            in_non_finalized_cache: self.sidecar.contains_non_finalized(hash),
-            in_recently_finalized_cache: self.sidecar.contains_recently_finalized(hash),
-            account_found,
-            account_nonce,
-            account_balance,
-        })?;
-
-        let queue_outcome = if plan.should_insert_queue {
-            input.proposable = plan.queue_proposable;
-            self.transaction_manager_runtime_queue_insert(input)?
-        } else {
-            TransactionQueueInsertOutcome {
-                status: queue_status_to_ffi(plan.status),
-                inserted_hash_found: false,
-                inserted_hash: [0; 32],
-                demoted_hashes: Vec::new(),
-                overflow_removed_hashes: Vec::new(),
-            }
-        };
-        let insert_outcome =
-            transaction_manager_insert_transaction(TransactionManagerInsertTransactionFact {
-                tx_hash: fact.tx_hash,
-                hash_known: false,
-                queue_status: queue_outcome.status,
-                has_finalized_period: finalized_period.is_some(),
-                finalized_period: finalized_period.unwrap_or_default(),
-            })?;
-
-        Ok(TransactionManagerRuntimeAdmissionOutcome {
-            insert_status: insert_outcome.status,
-            transaction_status: queue_outcome.status,
-            requires_finalized_lookup: false,
-            finalized_period_known: insert_outcome.finalized_period_known,
-            finalized_period: insert_outcome.finalized_period,
-            emit_transaction_added: plan.emit_transaction_added
-                && queue_outcome.status == TransactionQueueInsertStatus::Inserted as u8,
-            inserted_hash_found: queue_outcome.inserted_hash_found,
-            inserted_hash: queue_outcome.inserted_hash,
-            demoted_hashes: queue_outcome.demoted_hashes,
-            overflow_removed_hashes: queue_outcome.overflow_removed_hashes,
-        })
-    }
-
-    /// Executes TransactionManager admission using account/finalization facts
     /// supplied by the C++ external-EVM boundary.
     ///
     /// The deterministic admission decision, queue mutation, and public status
@@ -2215,26 +1927,6 @@ impl BridgeTransactionManagerRuntime {
         })
     }
 
-    /// Executes FinalChain-backed admission and returns a typed command report.
-    pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
-        &mut self,
-        final_chain: &BridgeFinalChain,
-        fact: TransactionManagerValidatedInsertRuntimeFact,
-        input: TransactionQueueInsertInput,
-    ) -> Result<TransactionManagerAdmissionCommandReport> {
-        let outcome = self
-            .transaction_manager_runtime_execute_transaction_admission_with_final_chain(
-                final_chain,
-                fact,
-                input,
-            )?;
-        ensure!(
-            !outcome.requires_finalized_lookup,
-            "TM_RUNTIME_FINAL_CHAIN_ADMISSION_LOOKUP_INCOMPLETE"
-        );
-        Ok(admission_command_report(&outcome))
-    }
-
     /// Executes fact-backed admission and returns a typed command report.
     pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
         &mut self,
@@ -2249,77 +1941,6 @@ impl BridgeTransactionManagerRuntime {
                 input,
             )?;
         Ok(admission_command_report(&outcome))
-    }
-
-    /// Executes public insert precheck, verification, and FinalChain-backed admission.
-    pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
-        &mut self,
-        final_chain: &BridgeFinalChain,
-        verify_fact: TransactionManagerVerifyTransactionFact,
-        admission_fact: TransactionManagerValidatedInsertRuntimeFact,
-        input: TransactionQueueInsertInput,
-    ) -> Result<TransactionManagerPublicAdmissionCommandReport> {
-        let tx_hash = verify_fact.tx_hash;
-        let verification_chain_id = verify_fact.chain_id;
-        let verification_expected_chain_id = verify_fact.expected_chain_id;
-        ensure!(
-            tx_hash == admission_fact.tx_hash,
-            "TM_RUNTIME_PUBLIC_INSERT_VERIFY_HASH_MISMATCH"
-        );
-        let precheck = self.transaction_manager_runtime_insert_transaction_precheck(&tx_hash)?;
-        if precheck.status != TM_INSERT_TRANSACTION_STATUS_ACCEPTED {
-            return Ok(public_precheck_rejected_command_report(
-                precheck,
-                &verify_fact,
-            ));
-        }
-
-        let verify_outcome = transaction_manager_verify_transaction(verify_fact)?;
-        if verify_outcome.status != TM_VERIFY_TRANSACTION_STATUS_ACCEPTED {
-            let verify_fact = TransactionManagerVerifyTransactionFact {
-                tx_hash,
-                chain_id: verification_chain_id,
-                expected_chain_id: verification_expected_chain_id,
-                gas_limit: 0,
-                max_gas_limit: 0,
-                last_block_number: 0,
-                cornus_active: false,
-                intrinsic_gas_covered: true,
-                signature_valid: true,
-                gas_price: [0; 32],
-                minimum_gas_price: [0; 32],
-            };
-            return Ok(public_verification_rejected_command_report(
-                verify_outcome.status,
-                &verify_fact,
-            ));
-        }
-
-        let admission = self
-            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
-                final_chain,
-                admission_fact,
-                input,
-            )?;
-        let public_result = public_insert_admission_result(&admission.admission);
-        Ok(public_admission_command_report(
-            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED,
-            &TransactionManagerVerifyTransactionFact {
-                tx_hash,
-                chain_id: verification_chain_id,
-                expected_chain_id: verification_expected_chain_id,
-                gas_limit: 0,
-                max_gas_limit: 0,
-                last_block_number: 0,
-                cornus_active: false,
-                intrinsic_gas_covered: true,
-                signature_valid: true,
-                gas_price: [0; 32],
-                minimum_gas_price: [0; 32],
-            },
-            admission,
-            public_result,
-        ))
     }
 
     /// Executes public insert precheck, verification, and fact-backed admission.
@@ -2479,18 +2100,6 @@ impl BridgeTransactionManagerRuntime {
     }
 }
 
-fn consensus_fact_from_ffi_fact(fact: DagTransactionSaveFact) -> ConsensusDagTransactionSaveFact {
-    ConsensusDagTransactionSaveFact {
-        input_index: fact.input_index,
-        hash: H256::from(fact.hash),
-        trx_rlp: fact.trx_rlp,
-        transaction_nonce: U256::from_big_endian(&fact.transaction_nonce),
-        sender_account_nonce: U256::from_big_endian(&fact.sender_account_nonce),
-        in_non_finalized_cache: fact.in_non_finalized_cache,
-        in_recently_finalized_cache: fact.in_recently_finalized_cache,
-    }
-}
-
 fn consensus_verify_transaction_fact_from_ffi_fact(
     fact: TransactionManagerVerifyTransactionFact,
 ) -> ConsensusTransactionManagerVerifyTransactionFact {
@@ -2548,16 +2157,6 @@ fn queue_status_from_ffi(status: u8) -> Result<TransactionQueueInsertStatus> {
             anyhow::bail!("unknown transaction queue status: {}", status)
         }
     })
-}
-
-fn consensus_finalized_status_fact_from_ffi_fact(
-    fact: FinalizedTransactionStatusFact,
-) -> ConsensusFinalizedTransactionStatusFact {
-    ConsensusFinalizedTransactionStatusFact {
-        input_index: fact.input_index,
-        hash: H256::from(fact.hash),
-        in_non_finalized_cache: fact.in_non_finalized_cache,
-    }
 }
 
 #[cfg(test)]
@@ -3099,26 +2698,6 @@ mod tests {
         let _ = fs::remove_dir_all(temp_dir);
     }
 
-    fn dag_tx_fact(
-        input_index: u64,
-        hash: u8,
-        tx_nonce: u64,
-        sender_nonce: u64,
-        in_non_finalized_cache: bool,
-        in_recently_finalized_cache: bool,
-        rlp: u8,
-    ) -> DagTransactionSaveFact {
-        DagTransactionSaveFact {
-            input_index,
-            hash: [hash; 32],
-            trx_rlp: vec![rlp],
-            transaction_nonce: u256_bytes(tx_nonce),
-            sender_account_nonce: u256_bytes(sender_nonce),
-            in_non_finalized_cache,
-            in_recently_finalized_cache,
-        }
-    }
-
     fn dag_tx_sidecar_fact(
         input_index: u64,
         hash: u8,
@@ -3135,36 +2714,8 @@ mod tests {
         }
     }
 
-    fn dag_tx_runtime_fact(
-        input_index: u64,
-        hash: u8,
-        tx_nonce: u64,
-        sender: [u8; 20],
-        rlp: u8,
-    ) -> DagTransactionSaveRuntimeFact {
-        DagTransactionSaveRuntimeFact {
-            input_index,
-            hash: [hash; 32],
-            trx_rlp: vec![rlp],
-            transaction_nonce: u256_bytes(tx_nonce),
-            sender,
-        }
-    }
-
     fn u256_bytes(value: u64) -> [u8; 32] {
         U256::from(value).to_big_endian()
-    }
-
-    fn finalized_status_fact(
-        input_index: u64,
-        hash: u8,
-        in_non_finalized_cache: bool,
-    ) -> FinalizedTransactionStatusFact {
-        FinalizedTransactionStatusFact {
-            input_index,
-            hash: [hash; 32],
-            in_non_finalized_cache,
-        }
     }
 
     fn verify_fact(
@@ -3211,22 +2762,6 @@ mod tests {
         }
     }
 
-    fn validated_insert_runtime_fact(
-        tx_hash: u8,
-        sender: [u8; 20],
-        insert_non_proposable: bool,
-    ) -> TransactionManagerValidatedInsertRuntimeFact {
-        TransactionManagerValidatedInsertRuntimeFact {
-            tx_hash: [tx_hash; 32],
-            sender,
-            transaction_nonce: u256_bytes(1),
-            transaction_cost: u256_bytes(10),
-            gas_limit: 21_000,
-            propose_dag_gas_limit: 100_000,
-            insert_non_proposable,
-        }
-    }
-
     fn runtime_queue_input(hash: u8, proposable: bool) -> TransactionQueueInsertInput {
         TransactionQueueInsertInput {
             hash: [hash; 32],
@@ -3257,20 +2792,6 @@ mod tests {
             tx_rlp: vec![0xaa, 0xbb, 0xcc],
             proposable,
             last_block_number: 0,
-        }
-    }
-
-    fn verify_not_finalized_runtime_fact(
-        input_index: u64,
-        hash: u8,
-        transaction_nonce: u64,
-        sender: [u8; 20],
-    ) -> TransactionManagerVerifyNotFinalizedRuntimeFact {
-        TransactionManagerVerifyNotFinalizedRuntimeFact {
-            input_index,
-            hash: [hash; 32],
-            transaction_nonce: u256_bytes(transaction_nonce),
-            sender,
         }
     }
 
@@ -3408,118 +2929,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_save_transactions_from_dag_block_persists_accepted_hashes_and_count() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_save_dag");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 7)
-            .expect("status field seed should persist");
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([4; 32]), 1, 0, false)
-            .expect("finalized transaction location should persist");
-
-        let out = save_transactions_from_dag_block(
-            &storage,
-            7,
-            vec![
-                dag_tx_fact(0, 1, 5, 4, false, false, 11),
-                dag_tx_fact(1, 1, 5, 4, false, false, 12),
-                dag_tx_fact(2, 2, 5, 4, true, false, 21),
-                dag_tx_fact(3, 3, 5, 4, false, true, 31),
-                dag_tx_fact(4, 4, 5, 11, false, false, 41),
-                dag_tx_fact(5, 5, 2, 1, false, false, 51),
-            ],
-        )
-        .expect("dag transactions from block should save");
-
-        assert_eq!(
-            out.accepted
-                .iter()
-                .map(|entry| (entry.input_index, entry.hash))
-                .collect::<Vec<_>>(),
-            vec![(0, [1; 32]), (5, [5; 32])]
-        );
-        assert_eq!(out.target_transaction_count, 9);
-
-        assert_eq!(
-            metadata_queries(&storage)
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should persist"),
-            9,
-        );
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[1u8; 32])
-                .expect("transaction should persist"),
-            vec![11]
-        );
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[5u8; 32])
-                .expect("transaction should persist"),
-            vec![51]
-        );
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[2u8; 32])
-                .expect("non-accepted transaction should be missing"),
-            Vec::<u8>::new()
-        );
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_save_transactions_from_dag_block_skips_all_when_no_new_accepts() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_transaction_manager_save_dag_skip");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 7)
-            .expect("status field seed should persist");
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([2; 32]), 1, 0, false)
-            .expect("finalized transaction location should persist");
-
-        let out = save_transactions_from_dag_block(
-            &storage,
-            7,
-            vec![
-                dag_tx_fact(0, 1, 5, 4, true, false, 11),
-                dag_tx_fact(1, 2, 5, 8, false, false, 21),
-                dag_tx_fact(2, 3, 5, 4, false, true, 31),
-            ],
-        )
-        .expect("skip-only list should not fail");
-
-        assert!(out.accepted.is_empty());
-        assert_eq!(out.target_transaction_count, 7);
-        assert_eq!(
-            metadata_queries(&storage)
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should remain"),
-            7
-        );
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn bridge_save_transactions_from_dag_block_with_runtime_uses_admission_commit_path() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_wrapper");
         let storage = crate::storage::create_storage(
@@ -3551,170 +2960,6 @@ mod tests {
                 .get_status_field(StatusField::TrxCount as u8)
                 .expect("status field should persist"),
             8
-        );
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_save_transactions_from_dag_block_with_runtime_and_final_chain_sources_sender_nonce() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_fc");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [8; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![1],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            7,
-            TransactionQueueConfig { max_size: 16 },
-        );
-        let out = save_transactions_from_dag_block_with_runtime_and_final_chain(
-            &mut runtime,
-            &final_chain,
-            vec![dag_tx_runtime_fact(0, 1, 1, sender, 0x33)],
-        )
-        .expect("runtime final-chain DAG admission should succeed");
-        assert_eq!(out.accepted.len(), 1);
-        assert_eq!(out.target_transaction_count, 8);
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[1; 32])
-                .expect("accepted transaction should persist"),
-            vec![0x33]
-        );
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_save_transactions_from_dag_block_command_report_with_runtime_and_final_chain_maps_actions(
-    ) {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_fc_command_report");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("final chain should initialize");
-        let sender = [8; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![1],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            7,
-            TransactionQueueConfig { max_size: 16 },
-        );
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("queue seed should succeed");
-
-        let report = save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-            &mut runtime,
-            &final_chain,
-            vec![dag_tx_runtime_fact(0, 1, 1, sender, 0x33)],
-        )
-        .expect("runtime final-chain DAG command report should execute");
-
-        assert_eq!(report.queue_erased.len(), 1);
-        assert_eq!(report.queue_erased[0].hash, [1; 32]);
-        assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 8);
-        assert_eq!(
-            metadata_queries(&storage)
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should persist"),
-            8
-        );
-        assert_eq!(
-            transaction_queries(&storage)
-                .get_transaction(&[1; 32])
-                .expect("accepted transaction should persist"),
-            vec![0x33]
-        );
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_update_finalized_transactions_status_plans_and_persists_count_when_non_empty() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_update_finalized_status");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 7)
-            .expect("status field seed should persist");
-
-        let out = update_finalized_transactions_status(
-            &storage,
-            200,
-            10,
-            7,
-            vec![
-                finalized_status_fact(0, 1, false),
-                finalized_status_fact(1, 2, true),
-                finalized_status_fact(2, 3, false),
-            ],
-        )
-        .expect("finalized status plan should be computed");
-
-        assert_eq!(
-            out.accepted
-                .iter()
-                .map(|entry| (entry.input_index, entry.hash))
-                .collect::<Vec<_>>(),
-            vec![(0, [1; 32]), (1, [2; 32]), (2, [3; 32])]
-        );
-        assert_eq!(out.target_transaction_count, 9);
-        assert_eq!(out.stale_period, 190);
-        assert!(out.has_stale_period);
-        assert!(out.purge_transaction_queue);
-        assert_eq!(
-            metadata_queries(&storage)
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should persist"),
-            9,
         );
 
         let _ = fs::remove_dir_all(temp_dir);
@@ -3841,36 +3086,6 @@ mod tests {
         assert!(report.finalized_account_purged.is_empty());
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 7);
         assert!(runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_update_finalized_transactions_status_skips_status_persistence_when_no_inputs() {
-        let temp_dir =
-            unique_temp_dir("rustaxa_bridge_transaction_manager_update_finalized_status_skip");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 11)
-            .expect("status field seed should persist");
-
-        let out = update_finalized_transactions_status(&storage, 200, 10, 11, vec![])
-            .expect("empty finalized list should still plan");
-
-        assert!(out.accepted.is_empty());
-        assert_eq!(out.target_transaction_count, 11);
-        assert_eq!(
-            metadata_queries(&storage)
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should remain unchanged"),
-            11,
-        );
-
         let _ = fs::remove_dir_all(temp_dir);
     }
 
@@ -4131,323 +3346,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_admission_with_final_chain_command_report_sets_finalized_period(
-    ) {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_period_fc_report");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [6; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![1],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([13u8; 32]), 22, 0, false)
-            .expect("finalized location should persist");
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-        let report = runtime
-            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
-                &final_chain,
-                validated_insert_runtime_fact(13, sender, false),
-                runtime_queue_input(13, false),
-            )
-            .expect("runtime final-chain command report should execute");
-        assert!(report.admission.present);
-        assert_eq!(
-            report.admission.insert_status,
-            TM_INSERT_TRANSACTION_STATUS_ALREADY_FINALIZED
-        );
-        assert!(!report.admission.requires_finalized_lookup);
-        assert!(report.admission.finalized_period_known);
-        assert_eq!(report.admission.finalized_period, 22);
-        assert!(!report.inserted_hash_found);
-        assert!(!report.transaction_added_hash_found);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_admission_with_final_chain_command_report_includes_status(
-    ) {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_fc_report");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [6; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![20],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-        let report = runtime
-            .transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
-                &final_chain,
-                validated_insert_runtime_fact(15, sender, false),
-                runtime_queue_input(15, false),
-            )
-            .expect("runtime admission final-chain report should execute");
-
-        assert!(report.admission.present);
-        assert_eq!(
-            report.admission.insert_status,
-            TM_INSERT_TRANSACTION_STATUS_ACCEPTED
-        );
-        assert_eq!(
-            report.admission.transaction_status,
-            TransactionQueueInsertStatus::Inserted as u8
-        );
-        assert!(report.inserted_hash_found);
-        assert_eq!(report.inserted_hash, [15; 32]);
-        assert!(report.transaction_added_hash_found);
-        assert_eq!(report.transaction_added_hash, [15; 32]);
-        assert!(runtime.transaction_manager_runtime_queue_contains(&[15; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_public_admission_command_report_accepts_transaction() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_public_admission_accept");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [6; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![20],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-        let report = runtime
-            .transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
-                &final_chain,
-                verify_fact(17, 1, 1, 21_000, 100_000, false, true, true, 2, 1, 1),
-                validated_insert_runtime_fact(17, sender, false),
-                runtime_queue_input_for_sender(17, sender, 1, false),
-            )
-            .expect("runtime public admission report should execute");
-
-        assert_eq!(
-            report.verification_status,
-            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED
-        );
-        assert_eq!(report.verification_chain_id, 1);
-        assert_eq!(report.verification_expected_chain_id, 1);
-        assert!(report.public_result.accepted);
-        assert_eq!(report.public_result.message, "");
-        assert!(report.admission.admission.present);
-        assert_eq!(
-            report.admission.admission.insert_status,
-            TM_INSERT_TRANSACTION_STATUS_ACCEPTED
-        );
-        assert_eq!(
-            report.admission.admission.transaction_status,
-            TransactionQueueInsertStatus::Inserted as u8
-        );
-        assert!(report.admission.inserted_hash_found);
-        assert_eq!(report.admission.inserted_hash, [17; 32]);
-        assert!(report.admission.transaction_added_hash_found);
-        assert_eq!(report.admission.transaction_added_hash, [17; 32]);
-        assert_eq!(report.admission.shell_intents.len(), 2);
-        assert_eq!(
-            report.admission.shell_intents[0].kind,
-            TM_ADMISSION_SHELL_INTENT_LOG_INSERTED
-        );
-        assert_eq!(report.admission.shell_intents[0].hash, [17; 32]);
-        assert_eq!(
-            report.admission.shell_intents[1].kind,
-            TM_ADMISSION_SHELL_INTENT_EMIT_TRANSACTION_ADDED
-        );
-        assert_eq!(report.admission.shell_intents[1].hash, [17; 32]);
-        assert!(runtime.transaction_manager_runtime_queue_contains(&[17; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_public_admission_command_report_short_circuits_known() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_public_admission_known");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [7; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![20],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
-                18, sender, 1, true,
-            ))
-            .expect("queue insert should succeed");
-        assert!(
-            runtime
-                .transaction_manager_runtime_is_transaction_known_hash(&[18; 32])
-                .expect("hash-only runtime knownness should compute"),
-            "runtime knownness must derive queue membership without caller-supplied facts"
-        );
-
-        let report = runtime
-            .transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
-                &final_chain,
-                verify_fact(18, 9, 1, 21_000, 100_000, false, true, true, 2, 1, 1),
-                validated_insert_runtime_fact(18, sender, false),
-                runtime_queue_input_for_sender(18, sender, 1, false),
-            )
-            .expect("runtime public known report should execute");
-
-        assert_eq!(
-            report.verification_status,
-            TM_VERIFY_TRANSACTION_STATUS_ACCEPTED
-        );
-        assert!(!report.public_result.accepted);
-        assert_eq!(
-            report.public_result.message,
-            "Transaction already in transactions pool"
-        );
-        assert!(report.admission.admission.present);
-        assert_eq!(
-            report.admission.admission.insert_status,
-            TM_INSERT_TRANSACTION_STATUS_ALREADY_KNOWN
-        );
-        assert_eq!(report.admission.admission.transaction_status, 0);
-        assert!(!report.admission.inserted_hash_found);
-        assert!(!report.admission.transaction_added_hash_found);
-        assert!(report.admission.shell_intents.is_empty());
-        assert!(runtime.transaction_manager_runtime_queue_contains(&[18; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_public_admission_command_report_returns_verify_message() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_public_admission_verify_reject");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [8; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![20],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-
-        let report = runtime
-            .transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
-                &final_chain,
-                verify_fact(19, 9, 1, 21_000, 100_000, false, true, true, 2, 1, 1),
-                validated_insert_runtime_fact(19, sender, false),
-                runtime_queue_input_for_sender(19, sender, 1, false),
-            )
-            .expect("runtime public verify rejection report should execute");
-
-        assert_eq!(
-            report.verification_status,
-            TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH
-        );
-        assert!(!report.public_result.accepted);
-        assert_eq!(report.public_result.message, "chain_id mismatch 9 1");
-        assert!(!report.admission.admission.present);
-        assert!(!report.admission.inserted_hash_found);
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[19; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn bridge_transaction_manager_runtime_queue_block_finalized_returns_expired_hashes() {
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 16 });
@@ -4571,61 +3469,6 @@ mod tests {
         );
         assert!(runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
 
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_transaction_manager_verify_not_finalized_with_runtime_and_final_chain_gates_lookup() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_verify_not_finalized_fc");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [5; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![1],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        storage
-            .0
-            .transaction()
-            .write_location(H256::from([2u8; 32]), 7, 0, false)
-            .expect("finalized hash should be persisted");
-        let runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            0,
-            TransactionQueueConfig { max_size: 8 },
-        );
-        let out = transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-            &runtime,
-            &final_chain,
-            vec![
-                verify_not_finalized_runtime_fact(0, 1, 10, sender),
-                verify_not_finalized_runtime_fact(1, 2, 0, sender),
-            ],
-        )
-        .expect("final-chain gated verify should execute");
-        assert!(out.is_finalized);
-        assert_eq!(out.input_index, 1);
-        assert_eq!(out.hash, [2; 32]);
-        assert_eq!(out.source, TM_VERIFY_NOT_FINALIZED_SOURCE_STORAGE);
         let _ = fs::remove_dir_all(temp_dir);
     }
 

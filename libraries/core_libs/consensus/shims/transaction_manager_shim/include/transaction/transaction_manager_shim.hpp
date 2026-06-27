@@ -219,7 +219,7 @@ class TransactionManager : public TransactionManagerOld {
    *   hash for the supplied facts.
    */
   rustaxa::TransactionManagerVerifyNotFinalizedOutcome verifyTransactionsNotFinalizedDetailed(
-      ::rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> &&facts);
+      std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> &&facts);
 
   /**
    * Materialize DAG block transactions from live C++ views and Rust-backed storage.

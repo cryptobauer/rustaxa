@@ -1009,7 +1009,8 @@ class TransactionManagerRustShimAccess {
   }
 
   static rustaxa::TransactionManagerVerifyNotFinalizedOutcome verifyTransactionsNotFinalizedDetailed(
-      const TransactionManager& manager, rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
+      const TransactionManager& manager,
+      std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
     if (!manager.final_chain_) {
       throw DbException("RUST_STORAGE_TX_VERIFY_NOT_FINALIZED_FAILED: FinalChain is required for transaction facts");
     }
@@ -1363,7 +1364,7 @@ bool TransactionManager::verifyTransactionsNotFinalized(const SharedTransactions
 }
 
 rustaxa::TransactionManagerVerifyNotFinalizedOutcome TransactionManager::verifyTransactionsNotFinalizedDetailed(
-    rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
+    std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact>&& facts) {
   return TransactionManagerRustShimAccess::verifyTransactionsNotFinalizedDetailed(*this, std::move(facts));
 }
 

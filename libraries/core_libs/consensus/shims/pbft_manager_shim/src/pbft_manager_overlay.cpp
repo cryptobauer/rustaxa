@@ -705,9 +705,9 @@ rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIden
   return identities;
 }
 
-rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> toVerifyNotFinalizedFacts(
+std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> toVerifyNotFinalizedFacts(
     const rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> &identities) {
-  rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
+  std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
   facts.reserve(identities.size());
   for (const auto &identity : identities) {
     rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;

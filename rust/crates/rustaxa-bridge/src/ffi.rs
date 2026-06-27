@@ -3634,31 +3634,6 @@ pub mod rustaxa_ffi {
         sender_account_nonce: [u8; 32],
     }
 
-    /// Input transaction fact for runtime DAG persistence with sender account
-    /// facts sourced by Rust from latest FinalChain state.
-    struct DagTransactionSaveRuntimeFact {
-        input_index: u64,
-        hash: [u8; 32],
-        trx_rlp: Vec<u8>,
-        transaction_nonce: [u8; 32],
-        sender: [u8; 20],
-    }
-
-    /// Input transaction fact for Rust planning of `TransactionManager::saveTransactionsFromDagBlock`.
-    ///
-    /// The caller supplies live C++ cache and FinalChain nonce facts. Rust owns
-    /// duplicate filtering, nonce-gated finalized-storage lookup, persistence,
-    /// and target count planning.
-    struct DagTransactionSaveFact {
-        input_index: u64,
-        hash: [u8; 32],
-        trx_rlp: Vec<u8>,
-        transaction_nonce: [u8; 32],
-        sender_account_nonce: [u8; 32],
-        in_non_finalized_cache: bool,
-        in_recently_finalized_cache: bool,
-    }
-
     /// Accepted DAG transaction pointer for C++ live sidecar updates.
     struct DagTransactionSaveAccepted {
         input_index: u64,
@@ -3670,13 +3645,6 @@ pub mod rustaxa_ffi {
     struct DagTransactionSaveOutcome {
         accepted: Vec<DagTransactionSaveAccepted>,
         target_transaction_count: u64,
-    }
-
-    /// Input finalized transaction fact for Rust planning of finalized status updates.
-    struct FinalizedTransactionStatusFact {
-        input_index: u64,
-        hash: [u8; 32],
-        in_non_finalized_cache: bool,
     }
 
     /// One finalized transaction action returned from Rust status planning.
@@ -3708,7 +3676,9 @@ pub mod rustaxa_ffi {
     }
 
     /// Input for Rust runtime `verifyTransactionsNotFinalized` decisions with
-    /// sender account facts sourced from FinalChain.
+    /// sender account facts sourced by the C++ external-EVM boundary before
+    /// calling the fact-backed Rust verifier.
+    #[allow(dead_code)]
     struct TransactionManagerVerifyNotFinalizedRuntimeFact {
         input_index: u64,
         hash: [u8; 32],
@@ -5865,13 +5835,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<u64>;
-        /// Executes FinalChain-backed admission and returns a typed command report.
-        pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            fact: TransactionManagerValidatedInsertRuntimeFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerAdmissionCommandReport>;
         /// Executes admission with FinalChain facts supplied by the C++ external-EVM boundary.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
             self: &mut BridgeTransactionManagerRuntime,
@@ -5879,14 +5842,6 @@ pub mod rustaxa_ffi {
             final_chain_fact: TransactionManagerFinalChainAdmissionFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerAdmissionCommandReport>;
-        /// Executes public insertTransaction verification and admission as one Rust-owned command.
-        pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            verify_fact: TransactionManagerVerifyTransactionFact,
-            admission_fact: TransactionManagerValidatedInsertRuntimeFact,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
         /// Executes public insertTransaction verification and fact-backed admission as one Rust-owned command.
         pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
             self: &mut BridgeTransactionManagerRuntime,
@@ -5910,12 +5865,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionManagerRuntime,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
-        pub fn transaction_manager_runtime_queue_cleanup_with_final_chain(
-            self: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            apply_block_finalized: bool,
-            block_number: u64,
-        ) -> Result<TransactionManagerRuntimeQueueCleanupPlan>;
         pub fn transaction_manager_runtime_queue_transactions_dropped(
             self: &BridgeTransactionManagerRuntime,
         ) -> bool;
@@ -5954,22 +5903,6 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgeTransactionManagerRuntime,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
-        pub fn save_transactions_from_dag_block_with_runtime_and_final_chain(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            facts: Vec<DagTransactionSaveRuntimeFact>,
-        ) -> Result<DagTransactionSaveOutcome>;
-        /// Applies DAG transaction persistence and returns a typed command report.
-        pub fn save_transactions_from_dag_block_command_report_with_runtime_and_final_chain(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            facts: Vec<DagTransactionSaveRuntimeFact>,
-        ) -> Result<TransactionManagerDagSaveCommandReport>;
-        pub fn save_transactions_from_dag_block(
-            storage: &BridgeStorage,
-            current_transaction_count: u64,
-            facts: Vec<DagTransactionSaveFact>,
-        ) -> Result<DagTransactionSaveOutcome>;
         pub fn update_finalized_transactions_status_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             period: u64,
@@ -5991,13 +5924,6 @@ pub mod rustaxa_ffi {
             retention_window: u64,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
         ) -> Result<TransactionManagerFinalizedStatusCommandReport>;
-        pub fn update_finalized_transactions_status(
-            storage: &BridgeStorage,
-            period: u64,
-            retention_window: u64,
-            current_transaction_count: u64,
-            facts: Vec<FinalizedTransactionStatusFact>,
-        ) -> Result<FinalizedTransactionStatusPlan>;
         /// Builds deterministic TransactionManager::verifyTransaction admission plan.
         pub fn transaction_manager_verify_transaction(
             fact: TransactionManagerVerifyTransactionFact,
@@ -6006,11 +5932,6 @@ pub mod rustaxa_ffi {
             runtime: &BridgeTransactionManagerRuntime,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<FinalizedTransactionFilterPlan>;
-        pub fn transaction_manager_verify_not_finalized_with_runtime_and_final_chain(
-            runtime: &BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
-            facts: Vec<TransactionManagerVerifyNotFinalizedRuntimeFact>,
-        ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         pub fn transaction_manager_verify_not_finalized_with_runtime(
             runtime: &BridgeTransactionManagerRuntime,
             facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,

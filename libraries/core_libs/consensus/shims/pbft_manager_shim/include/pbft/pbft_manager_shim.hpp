@@ -763,7 +763,7 @@ class PbftManager {
     std::vector<bytes> cert_vote_rlps;
     std::vector<trx_hash_t> dag_transaction_hashes;
     std::vector<trx_hash_t> period_data_transaction_hashes;
-    ::rust::Vec<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> period_data_transaction_identities;
+    std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> period_data_transaction_identities;
     bool previous_cert_votes_present = false;
     bool previous_cert_first_vote_has_weight = false;
     bool pillar_votes_present = false;

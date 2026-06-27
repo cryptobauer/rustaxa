@@ -231,6 +231,16 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `transaction_manager_runtime_queue_insert`, `transaction_manager_runtime_insert_transaction_precheck`, and
   `transaction_manager_runtime_queue_contains`. Shared DTOs remain where live C++ high-level runtime commands still use
   them, but the direct mutation/check methods are Rust-internal only.
+- Older no-caller transaction-manager FinalChain-backed shortcuts are deleted from the CXX bridge surface:
+  `transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report`,
+  `transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report`,
+  `transaction_manager_runtime_queue_cleanup_with_final_chain`,
+  `save_transactions_from_dag_block_with_runtime_and_final_chain`,
+  `save_transactions_from_dag_block_command_report_with_runtime_and_final_chain`,
+  `save_transactions_from_dag_block`, `update_finalized_transactions_status`, and
+  `transaction_manager_verify_not_finalized_with_runtime_and_final_chain`. Live C++ uses fact-backed admission commands,
+  runtime-owned DAG-save command reports, and the finalized-status high-level runtime command; the remaining Rust helpers
+  are module-local behavior coverage rather than exported compatibility API.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.
