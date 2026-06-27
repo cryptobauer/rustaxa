@@ -3358,7 +3358,9 @@ mod tests {
                 .save_dag_block_period(&dag_hash, 12, 4)
                 .expect("DAG period should persist");
             storage
-                .save_pbft_block_period(&pbft_hash, 9)
+                .0
+                .period()
+                .write_pbft_period(H256::from(pbft_hash), 9)
                 .expect("PBFT period index should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");

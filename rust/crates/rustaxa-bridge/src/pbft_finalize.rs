@@ -1771,7 +1771,9 @@ mod tests {
             assert!(!result.wrote_pbft_head);
 
             storage
-                .save_pbft_block_period(&[7; 32], 99)
+                .0
+                .period()
+                .write_pbft_period(H256::from([7; 32]), 99)
                 .expect("conflicting PBFT block period should seed");
             let plan = plan_pbft_finalization_intent(fact());
             let result = apply_pbft_finalization_storage_writes(

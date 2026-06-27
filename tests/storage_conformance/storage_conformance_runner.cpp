@@ -249,7 +249,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   // Period by PBFT hash mapping
   auto pbft_hash = h256Array(0x44);
   auto pbft_missing = h256Array(0x45);
-  storage->save_pbft_block_period(pbft_hash, 99);
+  auto pbft_period_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_pbft_block_period(*pbft_period_batch, pbft_hash, 99);
+  rustaxa::storage_shim_commit_batch(std::move(pbft_period_batch), false);
   auto pbft_lookup = period_queries->get_period_from_pbft_hash(pbft_hash);
   auto pbft_missing_lookup = period_queries->get_period_from_pbft_hash(pbft_missing);
   transcript.add("pbft_period_lookup_found", toString(pbft_lookup.found));

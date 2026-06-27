@@ -7375,11 +7375,6 @@ pub mod rustaxa_ffi {
             period: u64,
             period_data_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn save_pbft_block_period(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            period: u64,
-        ) -> Result<()>;
         pub fn save_status_field(self: &BridgeStorage, field: u8, value: u64) -> Result<()>;
         pub fn save_period_lambda(
             self: &BridgeStorage,

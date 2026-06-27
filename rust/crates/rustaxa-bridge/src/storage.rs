@@ -1364,14 +1364,6 @@ impl BridgeStorage {
         self.0.period().write(period, &period_data_rlp)
     }
 
-    pub fn save_pbft_block_period(
-        &self,
-        hash: &[u8; 32],
-        period: u64,
-    ) -> Result<(), anyhow::Error> {
-        self.0.period().write_pbft_period(H256::from(*hash), period)
-    }
-
     pub fn save_status_field(&self, field: u8, value: u64) -> Result<(), anyhow::Error> {
         self.0.metadata().write_status_field(field, value)
     }
