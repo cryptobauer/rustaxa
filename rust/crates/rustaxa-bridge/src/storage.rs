@@ -8,6 +8,7 @@ use crate::ffi::BridgePeriodStorageQueries;
 use crate::ffi::BridgeStorage;
 use crate::ffi::BridgeStorageBatch;
 use crate::ffi::BridgeTransactionStorageQueries;
+#[cfg(test)]
 use anyhow::Context;
 use ethereum_types::H256;
 use rlp::Rlp;
@@ -586,23 +587,6 @@ impl BridgeTransactionStorageQueries {
                 rustaxa_ffi::HashPeriod { hash: h, period }
             })
             .collect())
-    }
-
-    /// Batch-fetches transaction RLP payloads by hash from Rust storage.
-    ///
-    /// Inputs are canonical transaction hashes in caller-requested order. Outputs
-    /// preserve that order and mark whether a payload was found.
-    pub fn get_transaction_rlps_by_hashes(
-        &self,
-        hashes: Vec<rustaxa_ffi::DagTransactionHash>,
-    ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
-        transaction_rlp_lookups(
-            &self.storage,
-            hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-        )
     }
 }
 
@@ -1224,7 +1208,8 @@ pub fn storage_shim_commit_batch(
 /// transactions first, then finalized transaction-location metadata, including system
 /// transactions. Missing hashes are returned as `found = false` rather than errors;
 /// storage/codec failures are propagated with stable context labels.
-pub(crate) fn transaction_rlp_lookups(
+#[cfg(test)]
+fn transaction_rlp_lookups(
     storage: &Storage,
     hashes: Vec<H256>,
 ) -> Result<Vec<rustaxa_ffi::DagTransactionRlpLookup>, anyhow::Error> {
@@ -1292,10 +1277,6 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
-    }
-
-    fn tx_hash(byte: u8) -> rustaxa_ffi::DagTransactionHash {
-        rustaxa_ffi::DagTransactionHash { hash: [byte; 32] }
     }
 
     fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
@@ -1404,14 +1385,16 @@ mod tests {
                 .write_location(H256::from([3u8; 32]), 8, 0, true)
                 .expect("system finalized location should save");
 
-            let lookup = transaction_queries(&storage)
-                .get_transaction_rlps_by_hashes(vec![
-                    tx_hash(1),
-                    tx_hash(2),
-                    tx_hash(3),
-                    tx_hash(4),
-                ])
-                .expect("batch lookup should succeed");
+            let lookup = transaction_rlp_lookups(
+                &storage.0,
+                vec![
+                    H256::from([1u8; 32]),
+                    H256::from([2u8; 32]),
+                    H256::from([3u8; 32]),
+                    H256::from([4u8; 32]),
+                ],
+            )
+            .expect("batch lookup should succeed");
 
             assert_eq!(lookup.len(), 4);
             assert_eq!(lookup[0].hash, [1u8; 32]);

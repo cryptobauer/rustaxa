@@ -584,6 +584,10 @@ Implementation status:
   identified it as an orphan export, and the remaining Rust bridge query fixtures now seed FinalChain lookup rows through
   native `rustaxa-storage` `FinalChainStore::write_conformance_lookup_rows` test setup instead of a broad storage bridge
   mutator.
+- `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted from the CXX bridge surface. Production
+  DAG transaction availability and sync payload lookup continue through runtime-owned DAG APIs; the direct
+  storage-query method only backed bridge-test scaffolding, and Rust bridge storage tests now cover pending, finalized,
+  system, and missing transaction RLP lookup through the native helper.
 - The unused CXX `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` exports are deleted. Their wrapper
   modules only protected bridge-shaped test scaffolding; production C++ had no callsites, and native
   `rustaxa-consensus` vote pipeline/admission tests now own the behavior coverage.
@@ -777,6 +781,11 @@ Implementation status:
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge query::tests::bridge_consensus_query_api_reads_public_block_view`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge query::tests::bridge_consensus_query_api_reads_indexed_transaction_view`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge query::tests::bridge_consensus_query_api_reads_transaction_receipt`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  Validation for this transaction-RLP storage-query export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_rlp_batch_lookup_reads_pending_finalized_system_and_missing`
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
   Validation for this CXX export shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`

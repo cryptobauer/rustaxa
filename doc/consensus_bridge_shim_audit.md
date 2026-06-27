@@ -200,6 +200,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeStorage::seed_final_chain_conformance_lookup_rows` is deleted. It had no production C++ callsites; Rust bridge
   query fixtures that still need exact FinalChain lookup rows seed them through native `rustaxa-storage`
   `FinalChainStore::write_conformance_lookup_rows` test setup.
+- `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted. Live DAG transaction availability and
+  sync materialization use runtime-owned DAG APIs; the direct storage query had only a C++ bridge-test caller, with
+  native Rust coverage retained for pending, finalized, system, and missing transaction RLP lookups.
 - `BridgeTransactionQueue` CXX exports are narrowed to the methods used by `transaction_queue_shim`. The no-caller
   queue-only planning/hash-view exports `transaction_queue_erase_plan`, `transaction_queue_ordered_hashes`,
   `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and

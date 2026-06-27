@@ -6028,11 +6028,6 @@ pub mod rustaxa_ffi {
         pub fn get_all_nonfinalized_transactions(
             self: &BridgeTransactionStorageQueries,
         ) -> Result<Vec<TxRlp>>;
-        /// Batch-fetches transaction RLP payloads by hash from Rust storage.
-        pub fn get_transaction_rlps_by_hashes(
-            self: &BridgeTransactionStorageQueries,
-            hashes: Vec<DagTransactionHash>,
-        ) -> Result<Vec<DagTransactionRlpLookup>>;
         pub fn get_all_transaction_period(
             self: &BridgeTransactionStorageQueries,
         ) -> Result<Vec<HashPeriod>>;

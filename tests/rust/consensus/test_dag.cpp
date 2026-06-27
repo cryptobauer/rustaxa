@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstdint>
-#include <filesystem>
 #include <utility>
 #include <vector>
 
@@ -47,22 +46,6 @@ class RustDagGraphTest : public ::testing::Test {
     return out;
   }
 
-  static rust::Vec<uint8_t> tx_payload(std::initializer_list<uint8_t> bytes) {
-    rust::Vec<uint8_t> out;
-    out.reserve(bytes.size());
-    for (auto byte : bytes) {
-      out.push_back(byte);
-    }
-    return out;
-  }
-
-  static std::vector<uint8_t> byte_vector(const rust::Vec<uint8_t>& bytes) {
-    return std::vector<uint8_t>(bytes.begin(), bytes.end());
-  }
-
-  static rust::Box<BridgeTransactionStorageQueries> transaction_queries(const rust::Box<BridgeStorage>& storage) {
-    return create_transaction_storage_queries(*storage);
-  }
 };
 
 TEST_F(RustDagGraphTest, BasicGraphOperationsMatchDagTestFixtures) {
@@ -118,39 +101,4 @@ TEST_F(RustDagGraphTest, ComputeOrderMatchesConfluxPeriodFourFixture) {
   const auto missing = graph->dag_compute_order(h256(99), non_finalized({8, 9, 10, 11}));
   EXPECT_FALSE(missing.found);
   EXPECT_TRUE(missing.hashes.empty());
-}
-
-TEST_F(RustDagGraphTest, RuntimeTransactionRlpLookupUsesRustStorage) {
-  const auto test_dir = std::filesystem::temp_directory_path() / "rustaxa_consensus_dag_runtime_snapshot_tx_rlp";
-  if (std::filesystem::exists(test_dir)) {
-    std::filesystem::remove_all(test_dir);
-  }
-
-  auto storage = create_storage(test_dir.string());
-
-  const auto tx_hash_a = h256(17);
-  const auto tx_hash_b = h256(18);
-  const auto tx_hash_missing = h256(19);
-  auto tx_seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_transaction(*tx_seed_batch, tx_hash_a, tx_payload({1, 2, 3}));
-  storage_shim_save_transaction(*tx_seed_batch, tx_hash_b, tx_payload({4, 5, 6}));
-  storage_shim_commit_batch(std::move(tx_seed_batch), false);
-
-  const auto trxs = transaction_queries(storage)->get_transaction_rlps_by_hashes({
-      rustaxa::DagTransactionHash{tx_hash_a},
-      rustaxa::DagTransactionHash{tx_hash_b},
-      rustaxa::DagTransactionHash{tx_hash_missing},
-  });
-  ASSERT_EQ(trxs.size(), 3u);
-  EXPECT_TRUE(trxs[0].found);
-  EXPECT_TRUE(trxs[1].found);
-  EXPECT_FALSE(trxs[2].found);
-  EXPECT_EQ(trxs[0].hash, tx_hash_a);
-  EXPECT_EQ(trxs[1].hash, tx_hash_b);
-  EXPECT_EQ(trxs[2].hash, tx_hash_missing);
-  EXPECT_EQ(byte_vector(trxs[0].tx_rlp), (std::vector<uint8_t>{1, 2, 3}));
-  EXPECT_EQ(byte_vector(trxs[1].tx_rlp), (std::vector<uint8_t>{4, 5, 6}));
-  EXPECT_TRUE(trxs[2].tx_rlp.empty());
-
-  std::filesystem::remove_all(test_dir);
 }
