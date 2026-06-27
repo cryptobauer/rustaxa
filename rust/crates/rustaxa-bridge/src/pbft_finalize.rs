@@ -26,28 +26,24 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationPillarPreflightReport as FfiPbftFinalizationPillarPreflightReport,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
-    PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
     PbftFinalizationRuntimePlan as FfiPbftFinalizationRuntimePlan,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
-use crate::ffi::{BridgePbftFinalizationRuntimeSession, BridgeStorage};
+use crate::ffi::BridgeStorage;
 #[cfg(test)]
 use crate::storage::create_period_storage_queries;
 use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
-    next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
     plan_pbft_finalization_pillar_preflight as plan_domain_pbft_finalization_pillar_preflight,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_pillar_preflight as report_domain_pbft_finalization_pillar_preflight,
-    report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
-    start_pbft_finalization_runtime,
     validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
@@ -55,8 +51,7 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationPillarPreflightFact, PbftFinalizationPillarPreflightPlan,
     PbftFinalizationPillarPreflightReport, PbftFinalizationPillarPreflightStatus,
     PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationResumePlan,
-    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
-    PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+    PbftFinalizationRuntimeAction, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage, PbftFinalizedPeriodApplyResult,
 };
 #[cfg(test)]
@@ -230,132 +225,6 @@ pub fn plan_pbft_finalization_runtime(
     plan_domain_pbft_finalization_runtime(&domain_plan).into()
 }
 
-/// Creates a Rust-owned PBFT finalization runtime session.
-///
-/// The session owns the runtime cursor. C++ can only request the next action and
-/// report whether that action succeeded. The existing one-shot runtime plan
-/// remains available for compatibility tests and callers that only need to
-/// inspect action order.
-pub fn create_pbft_finalization_runtime_session(
-    plan: &FfiPbftFinalizationIntentPlan,
-) -> Box<BridgePbftFinalizationRuntimeSession> {
-    let domain_plan = PbftFinalizationPlan::from(plan);
-    let runtime_plan = plan_domain_pbft_finalization_runtime(&domain_plan);
-    Box::new(BridgePbftFinalizationRuntimeSession {
-        state: start_pbft_finalization_runtime(&runtime_plan),
-    })
-}
-
-/// Creates a Rust-owned runtime session for a durable PBFT finalization resume
-/// plan.
-///
-/// The returned session uses the same next/report cursor contract as normal
-/// finalization. Its action script is the resume plan's storage-derived replay
-/// actions, so C++ can only execute the bounded tail that Rust classified as
-/// safe from durable facts.
-pub fn create_pbft_finalization_resume_runtime_session(
-    plan: &FfiPbftFinalizationResumePlan,
-) -> Box<BridgePbftFinalizationRuntimeSession> {
-    let domain_plan = PbftFinalizationResumePlan::from(plan);
-    Box::new(BridgePbftFinalizationRuntimeSession {
-        state: start_pbft_finalization_resume_runtime(&domain_plan),
-    })
-}
-
-/// Returns the next action requested by a Rust-owned PBFT finalization runtime
-/// session without advancing the cursor.
-pub fn pbft_finalization_runtime_session_next(
-    session: &mut BridgePbftFinalizationRuntimeSession,
-) -> FfiPbftFinalizationRuntimeSessionStep {
-    next_pbft_finalization_runtime_action(&session.state).into()
-}
-
-/// Reports one C++-executed action back to the Rust-owned runtime session.
-///
-/// `cursor` and `action` must match the current Rust-planned step. On success
-/// the Rust cursor advances. On failure or mismatch the session enters a
-/// terminal failure state and returns no further action.
-pub fn pbft_finalization_runtime_session_report(
-    session: &mut BridgePbftFinalizationRuntimeSession,
-    cursor: u32,
-    action: u8,
-    success: bool,
-    action_status: u8,
-) -> FfiPbftFinalizationRuntimeSessionStep {
-    let step = next_pbft_finalization_runtime_action(&session.state);
-    if step.action_index != cursor {
-        session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
-        session.state.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
-        return next_pbft_finalization_runtime_action(&session.state).into();
-    }
-
-    let Some(action) = PbftFinalizationRuntimeAction::from_u8(action) else {
-        session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
-        session.state.error_code = "PBFT_FINALIZE_RUNTIME_UNKNOWN_ACTION".to_string();
-        return next_pbft_finalization_runtime_action(&session.state).into();
-    };
-
-    let error_code = if success {
-        String::new()
-    } else {
-        format!("PBFT_FINALIZE_RUNTIME_ACTION_STATUS_{action_status}")
-    };
-    let state = session.state.clone();
-    session.state = report_pbft_finalization_runtime_action(
-        state,
-        PbftFinalizationRuntimeActionResult {
-            action,
-            success,
-            status: action_status,
-            error_code,
-        },
-    );
-    next_pbft_finalization_runtime_action(&session.state).into()
-}
-
-/// Reports one structured PBFT finalization action result back to the Rust-owned
-/// runtime session.
-///
-/// This entrypoint preserves action-specific error codes in the Rust terminal
-/// state. The legacy scalar-status report API remains as a compatibility wrapper
-/// for callers that only need generic status-code errors.
-pub fn pbft_finalization_runtime_session_report_action(
-    session: &mut BridgePbftFinalizationRuntimeSession,
-    report: FfiPbftFinalizationRuntimeActionReport,
-) -> FfiPbftFinalizationRuntimeSessionStep {
-    let step = next_pbft_finalization_runtime_action(&session.state);
-    if step.action_index != report.cursor {
-        session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
-        session.state.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
-        return next_pbft_finalization_runtime_action(&session.state).into();
-    }
-
-    let Some(action) = PbftFinalizationRuntimeAction::from_u8(report.action) else {
-        session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
-        session.state.error_code = "PBFT_FINALIZE_RUNTIME_UNKNOWN_ACTION".to_string();
-        return next_pbft_finalization_runtime_action(&session.state).into();
-    };
-
-    let error_code = if report.success {
-        String::new()
-    } else if report.error_code.is_empty() {
-        format!("PBFT_FINALIZE_RUNTIME_ACTION_STATUS_{}", report.status)
-    } else {
-        report.error_code.to_string()
-    };
-    let state = session.state.clone();
-    session.state = report_pbft_finalization_runtime_action(
-        state,
-        PbftFinalizationRuntimeActionResult {
-            action,
-            success: report.success,
-            status: report.status,
-            error_code,
-        },
-    );
-    next_pbft_finalization_runtime_action(&session.state).into()
-}
-
 /// Validates a post-action live mutation report against the accepted Rust PBFT
 /// finalization plan.
 ///
@@ -378,51 +247,6 @@ pub fn validate_pbft_finalization_live_mutation_report(
     }
     let domain_plan = PbftFinalizationPlan::from(plan);
     validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report.into()).into()
-}
-
-/// Aborts a Rust-owned PBFT finalization runtime session after C++ gives up on
-/// the mixed executor path.
-pub fn abort_pbft_finalization_runtime_session(session: &mut BridgePbftFinalizationRuntimeSession) {
-    if session.state.runtime_status == PbftFinalizationRuntimeStatus::Active {
-        session.state.runtime_status = PbftFinalizationRuntimeStatus::ActionFailed;
-        session.state.error_code = "PBFT_FINALIZE_RUNTIME_ABORTED".to_string();
-    }
-}
-
-impl BridgePbftFinalizationRuntimeSession {
-    /// Returns the next action requested by this Rust-owned PBFT finalization
-    /// runtime session without advancing the cursor.
-    pub fn pbft_finalization_runtime_session_next(
-        &mut self,
-    ) -> FfiPbftFinalizationRuntimeSessionStep {
-        pbft_finalization_runtime_session_next(self)
-    }
-
-    /// Reports one C++-executed action back to this Rust-owned PBFT
-    /// finalization runtime session.
-    pub fn pbft_finalization_runtime_session_report(
-        &mut self,
-        cursor: u32,
-        action: u8,
-        success: bool,
-        action_status: u8,
-    ) -> FfiPbftFinalizationRuntimeSessionStep {
-        pbft_finalization_runtime_session_report(self, cursor, action, success, action_status)
-    }
-
-    /// Reports one structured action result back to this Rust-owned PBFT
-    /// finalization runtime session.
-    pub fn pbft_finalization_runtime_session_report_action(
-        &mut self,
-        report: FfiPbftFinalizationRuntimeActionReport,
-    ) -> FfiPbftFinalizationRuntimeSessionStep {
-        pbft_finalization_runtime_session_report_action(self, report)
-    }
-
-    /// Aborts this runtime session after C++ gives up on the mixed executor path.
-    pub fn abort_pbft_finalization_runtime_session(&mut self) {
-        abort_pbft_finalization_runtime_session(self);
-    }
 }
 
 /// C++/Rust bridge entry for Cacti dynamic-lambda calculation.
@@ -1178,76 +1002,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_session_tracks_cursor_and_completion_for_bridge() {
-        let plan = plan_pbft_finalization_intent(fact());
-        let mut session = create_pbft_finalization_runtime_session(&plan);
-
-        let step = pbft_finalization_runtime_session_next(&mut session);
-        assert_eq!(step.status, RUNTIME_STATUS_ACTIVE);
-        assert!(step.has_action);
-        assert_eq!(step.cursor, 0);
-        assert_eq!(step.action, 0);
-        assert!(!step.complete);
-
-        let step = pbft_finalization_runtime_session_report(&mut session, 0, 0, true, 0);
-        assert_eq!(step.status, RUNTIME_STATUS_ACTIVE);
-        assert_eq!(step.cursor, 1);
-        assert_eq!(step.action, 14);
-
-        let mut cursor = step.cursor;
-        let mut action = step.action;
-        loop {
-            let next =
-                pbft_finalization_runtime_session_report(&mut session, cursor, action, true, 0);
-            if next.complete {
-                assert_eq!(next.status, RUNTIME_STATUS_COMPLETE);
-                assert!(!next.has_action);
-                break;
-            }
-            cursor = next.cursor;
-            action = next.action;
-        }
-    }
-
-    #[test]
-    fn runtime_session_stops_on_failed_or_mismatched_report() {
-        let plan = plan_pbft_finalization_intent(fact());
-        let mut session = create_pbft_finalization_runtime_session(&plan);
-
-        let failed = pbft_finalization_runtime_session_report(&mut session, 0, 0, false, 77);
-        assert_eq!(failed.status, 4);
-        assert!(!failed.has_action);
-        assert_eq!(failed.cursor, 0);
-        assert_eq!(failed.error_code, "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_77");
-
-        let mut session = create_pbft_finalization_runtime_session(&plan);
-        let mismatch = pbft_finalization_runtime_session_report(&mut session, 1, 0, true, 0);
-        assert_eq!(mismatch.status, 3);
-        assert!(!mismatch.has_action);
-        assert_eq!(mismatch.error_code, "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
-    }
-
-    #[test]
-    fn runtime_session_preserves_structured_action_error_codes() {
-        let plan = plan_pbft_finalization_intent(fact());
-        let mut session = create_pbft_finalization_runtime_session(&plan);
-
-        let failed = pbft_finalization_runtime_session_report_action(
-            &mut session,
-            FfiPbftFinalizationRuntimeActionReport {
-                cursor: 0,
-                action: 0,
-                success: false,
-                status: 7,
-                error_code: "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED".to_string(),
-            },
-        );
-
-        assert_eq!(failed.status, 4);
-        assert_eq!(failed.error_code, "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED");
-    }
-
-    #[test]
     fn live_mutation_validation_maps_bridge_reports() {
         let plan = plan_pbft_finalization_intent(fact());
 
@@ -1361,35 +1115,6 @@ mod tests {
         );
         assert!(!reward_rejected.accepted);
         assert_eq!(reward_rejected.status, 12);
-    }
-
-    #[test]
-    fn resume_runtime_session_drives_storage_derived_tail_actions() {
-        let resume = FfiPbftFinalizationResumePlan {
-            status: 2,
-            duplicate_classified: true,
-            complete: false,
-            replay_actions: vec![9, 10, 11, 12],
-            error_code: "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY".to_string(),
-        };
-        let mut session = create_pbft_finalization_resume_runtime_session(&resume);
-
-        let mut step = pbft_finalization_runtime_session_next(&mut session);
-        let mut actions = Vec::new();
-        while step.has_action {
-            actions.push(step.action);
-            step = pbft_finalization_runtime_session_report(
-                &mut session,
-                step.cursor,
-                step.action,
-                true,
-                0,
-            );
-        }
-
-        assert_eq!(actions, vec![9, 10, 11, 12]);
-        assert!(step.complete);
-        assert_eq!(step.status, RUNTIME_STATUS_COMPLETE);
     }
 
     #[test]

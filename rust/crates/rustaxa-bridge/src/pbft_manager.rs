@@ -7,7 +7,10 @@
 
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup, PbftFinalizationHash as FfiPbftFinalizationHash,
+    PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
+    PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
+    PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
@@ -74,7 +77,12 @@ use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
     load_pbft_finalization_last_period_lambda as load_domain_pbft_finalization_last_period_lambda,
-    PbftFinalizationStorageWriteIntent,
+    next_pbft_finalization_runtime_action,
+    plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
+    report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
+    start_pbft_finalization_runtime, PbftFinalizationPlan, PbftFinalizationResumePlan,
+    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
+    PbftFinalizationRuntimeStatus, PbftFinalizationStorageWriteIntent,
 };
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
@@ -238,6 +246,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         state_action_effect_session: None,
         runtime_session: None,
         proposal_session: None,
+        finalization_runtime_session: None,
     }))
 }
 
@@ -1465,6 +1474,141 @@ pub fn plan_pbft_manager_transition(
     plan_domain_pbft_manager_transition(fact.into()).into()
 }
 
+fn pbft_finalization_session_missing_step() -> FfiPbftFinalizationRuntimeSessionStep {
+    FfiPbftFinalizationRuntimeSessionStep {
+        status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
+        cursor: 0,
+        action: 255,
+        has_action: false,
+        complete: false,
+        can_continue: false,
+        error_code: "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED".to_string(),
+    }
+}
+
+/// Starts a PBFT finalization runtime cursor inside the long-lived PBFT manager runtime.
+///
+/// Inputs are the accepted finalization intent plan already built by the C++
+/// compatibility shim. The manager runtime stores the Rust cursor so C++ no
+/// longer owns a standalone bridge session handle; subsequent next/report calls
+/// operate on this manager-owned session. Starting a new session replaces any
+/// incomplete prior finalization cursor.
+pub fn pbft_manager_runtime_begin_finalization_session(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationIntentPlan,
+) {
+    let domain_plan = PbftFinalizationPlan::from(plan);
+    let runtime_plan = plan_domain_pbft_finalization_runtime(&domain_plan);
+    runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(&runtime_plan));
+}
+
+/// Starts a durable duplicate-finalization resume cursor inside the PBFT manager runtime.
+///
+/// The resume cursor replays only the bounded action tail classified from
+/// durable storage facts. C++ still executes live FinalChain, manager, and
+/// pillar side effects, but the action cursor and terminal status stay on the
+/// existing manager runtime.
+pub fn pbft_manager_runtime_begin_finalization_resume_session(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationResumePlan,
+) {
+    let domain_plan = PbftFinalizationResumePlan::from(plan);
+    runtime.finalization_runtime_session =
+        Some(start_pbft_finalization_resume_runtime(&domain_plan));
+}
+
+/// Returns the next manager-owned PBFT finalization action without advancing the cursor.
+pub fn pbft_manager_runtime_finalization_session_next(
+    runtime: &mut BridgePbftManagerRuntime,
+) -> FfiPbftFinalizationRuntimeSessionStep {
+    let Some(session) = runtime.finalization_runtime_session.as_ref() else {
+        return pbft_finalization_session_missing_step();
+    };
+    next_pbft_finalization_runtime_action(session).into()
+}
+
+/// Reports one scalar action result to the manager-owned finalization cursor.
+///
+/// `cursor` and `action` must match the current Rust-planned step. Success
+/// advances the cursor; failure, cursor mismatch, or unknown action moves the
+/// session into a terminal status and returns that terminal step.
+pub fn pbft_manager_runtime_finalization_session_report(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    action: u8,
+    success: bool,
+    action_status: u8,
+) -> FfiPbftFinalizationRuntimeSessionStep {
+    let error_code = if success {
+        String::new()
+    } else {
+        format!("PBFT_FINALIZE_RUNTIME_ACTION_STATUS_{action_status}")
+    };
+    let report = FfiPbftFinalizationRuntimeActionReport {
+        cursor,
+        action,
+        success,
+        status: action_status,
+        error_code,
+    };
+    pbft_manager_runtime_finalization_session_report_action(runtime, report)
+}
+
+/// Reports one structured action result to the manager-owned finalization cursor.
+///
+/// This preserves action-specific error codes while keeping the cursor state on
+/// `BridgePbftManagerRuntime`. The session remains available for inspection
+/// after terminal statuses until C++ explicitly aborts it or starts the next
+/// finalization session.
+pub fn pbft_manager_runtime_finalization_session_report_action(
+    runtime: &mut BridgePbftManagerRuntime,
+    report: FfiPbftFinalizationRuntimeActionReport,
+) -> FfiPbftFinalizationRuntimeSessionStep {
+    let Some(session) = runtime.finalization_runtime_session.as_mut() else {
+        return pbft_finalization_session_missing_step();
+    };
+
+    let step = next_pbft_finalization_runtime_action(session);
+    if step.action_index != report.cursor {
+        session.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+        session.error_code = "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string();
+        return next_pbft_finalization_runtime_action(session).into();
+    }
+
+    let Some(action) = PbftFinalizationRuntimeAction::from_u8(report.action) else {
+        session.runtime_status = PbftFinalizationRuntimeStatus::ActionMismatch;
+        session.error_code = "PBFT_FINALIZE_RUNTIME_UNKNOWN_ACTION".to_string();
+        return next_pbft_finalization_runtime_action(session).into();
+    };
+
+    let error_code = if report.success {
+        String::new()
+    } else if report.error_code.is_empty() {
+        format!("PBFT_FINALIZE_RUNTIME_ACTION_STATUS_{}", report.status)
+    } else {
+        report.error_code.to_string()
+    };
+    let state = session.clone();
+    *session = report_pbft_finalization_runtime_action(
+        state,
+        PbftFinalizationRuntimeActionResult {
+            action,
+            success: report.success,
+            status: report.status,
+            error_code,
+        },
+    );
+    next_pbft_finalization_runtime_action(session).into()
+}
+
+/// Drops the manager-owned PBFT finalization runtime cursor.
+///
+/// C++ calls this after early failures or after terminal verification fails so
+/// the next finalization attempt cannot accidentally observe stale cursor state.
+pub fn abort_pbft_manager_runtime_finalization_session(runtime: &mut BridgePbftManagerRuntime) {
+    runtime.finalization_runtime_session = None;
+}
+
 impl From<FfiPbftManagerRuntimeTickFact> for PbftManagerRuntimeTickFact {
     fn from(value: FfiPbftManagerRuntimeTickFact) -> Self {
         Self {
@@ -2097,6 +2241,7 @@ impl From<PbftManagerAdvancePeriodActionReportResult>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
     use crate::storage::{
@@ -2597,6 +2742,53 @@ mod tests {
         }
     }
 
+    fn finalization_fact() -> FfiPbftFinalizationIntentFact {
+        FfiPbftFinalizationIntentFact {
+            block_hash: [7; 32],
+            pbft_head_hash: [8; 32],
+            block_period: 10,
+            block_prev_hash: [3; 32],
+            chain_last_hash: [3; 32],
+            chain_last_period: 9,
+            block_in_chain: false,
+            pivot_dag_anchor_hash: [4; 32],
+            has_pillar_block: false,
+            pillar_block_finalized: false,
+            request_dynamic_lambda_update: true,
+            cert_vote_count: 3,
+            sample_cert_vote_block_hash: [7; 32],
+            sample_cert_vote_period: 10,
+            sample_cert_vote_round: 2,
+            sample_cert_vote_step: 5,
+            block_lambda: 1_500,
+            last_saved_period_lambda_found: false,
+            last_saved_period_lambda: 0,
+            dynamic_blocks_per_year: 1_000,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 1_490,
+            dpos_blocks_per_year: 500,
+            pbft_head_payload: br#"{"last":true}"#.to_vec(),
+            period_data_rlp: vec![0xc0],
+            ordered_dag_block_hashes: vec![
+                FfiPbftFinalizationHash { hash: [1; 32] },
+                FfiPbftFinalizationHash { hash: [2; 32] },
+            ],
+            ordered_transaction_hashes: vec![FfiPbftFinalizationHash { hash: [3; 32] }],
+            process_pillar_block_after_advance: false,
+        }
+    }
+
+    fn runtime_for_finalization_test(name: &str) -> (PathBuf, Box<BridgePbftManagerRuntime>) {
+        let temp_dir = unique_temp_dir(name);
+        let storage = create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+            .expect("storage should initialize");
+        let mut startup = startup_fact();
+        startup.cacti_active_at_chain_size = false;
+        let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
+            .expect("runtime should initialize");
+        (temp_dir, runtime)
+    }
+
     fn empty_finalized_dag_period_data_rlp() -> Vec<u8> {
         let ordered_transaction_hashes = rlp::RlpStream::new_list(0);
         let transaction_indexes = rlp::RlpStream::new_list(0);
@@ -2612,6 +2804,121 @@ mod tests {
         period_data.append_raw(&bundle.out(), 1);
         period_data.begin_list(0);
         period_data.out().to_vec()
+    }
+
+    #[test]
+    fn manager_runtime_owns_finalization_cursor_and_completion() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_cursor");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+
+        let mut step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        assert_eq!(step.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert!(step.has_action);
+        assert_eq!(step.cursor, 0);
+        assert_eq!(step.action, 0);
+        assert!(!step.complete);
+
+        let mut actions = Vec::new();
+        while step.has_action {
+            actions.push(step.action);
+            step = pbft_manager_runtime_finalization_session_report(
+                &mut runtime,
+                step.cursor,
+                step.action,
+                true,
+                0,
+            );
+        }
+
+        assert_eq!(step.status, PbftFinalizationRuntimeStatus::Complete.as_u8());
+        assert!(step.complete);
+        assert_eq!(actions, vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+
+    #[test]
+    fn manager_runtime_finalization_cursor_stops_on_failure_or_mismatch() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_failure");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+
+        let failed =
+            pbft_manager_runtime_finalization_session_report(&mut runtime, 0, 0, false, 77);
+        assert_eq!(
+            failed.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert!(!failed.has_action);
+        assert_eq!(failed.cursor, 0);
+        assert_eq!(failed.error_code, "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_77");
+
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        let mismatch =
+            pbft_manager_runtime_finalization_session_report(&mut runtime, 1, 0, true, 0);
+        assert_eq!(
+            mismatch.status,
+            PbftFinalizationRuntimeStatus::ActionMismatch.as_u8()
+        );
+        assert!(!mismatch.has_action);
+        assert_eq!(mismatch.error_code, "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
+    }
+
+    #[test]
+    fn manager_runtime_finalization_cursor_preserves_structured_error_codes() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_error_code");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+
+        let failed = pbft_manager_runtime_finalization_session_report_action(
+            &mut runtime,
+            FfiPbftFinalizationRuntimeActionReport {
+                cursor: 0,
+                action: 0,
+                success: false,
+                status: 7,
+                error_code: "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED".to_string(),
+            },
+        );
+
+        assert_eq!(
+            failed.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert_eq!(failed.error_code, "PBFT_FINALIZE_DAG_ORDER_APPLY_FAILED");
+    }
+
+    #[test]
+    fn manager_runtime_finalization_resume_cursor_replays_tail_actions() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_resume");
+        let resume = FfiPbftFinalizationResumePlan {
+            status: 2,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: vec![9, 10, 11, 12],
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY".to_string(),
+        };
+        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
+
+        let mut step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let mut actions = Vec::new();
+        while step.has_action {
+            actions.push(step.action);
+            step = pbft_manager_runtime_finalization_session_report(
+                &mut runtime,
+                step.cursor,
+                step.action,
+                true,
+                0,
+            );
+        }
+
+        assert_eq!(actions, vec![9, 10, 11, 12]);
+        assert!(step.complete);
+        assert_eq!(step.status, PbftFinalizationRuntimeStatus::Complete.as_u8());
     }
 
     #[test]

@@ -382,6 +382,14 @@ rust::Box<BridgePbftManagerRuntime> managerRuntimeForTick(PbftManagerRuntimeTick
   return runtime;
 }
 
+rust::Box<BridgePbftManagerRuntime> managerRuntimeForFinalizationSession() {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_session");
+  auto storage = create_storage(test_dir.string());
+  auto startup_fact = makePbftManagerStartupFact();
+  startup_fact.cacti_active_at_chain_size = false;
+  return create_pbft_manager_runtime_from_storage(*storage, startup_fact);
+}
+
 rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
   rust::Vec<uint8_t> out;
   out.reserve(values.size());
@@ -925,9 +933,10 @@ TEST(RustPbftSyncTest, FinalizationRuntimePlanOrdersMixedExecutorActions) {
 
 TEST(RustPbftSyncTest, FinalizationRuntimeSessionOwnsCursorAndCompletion) {
   const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
-  auto session = create_pbft_finalization_runtime_session(intent);
+  auto runtime = managerRuntimeForFinalizationSession();
+  pbft_manager_runtime_begin_finalization_session(*runtime, intent);
 
-  auto step = session->pbft_finalization_runtime_session_next();
+  auto step = pbft_manager_runtime_finalization_session_next(*runtime);
   EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusActive);
   EXPECT_TRUE(step.has_action);
   EXPECT_EQ(step.cursor, 0);
@@ -937,7 +946,7 @@ TEST(RustPbftSyncTest, FinalizationRuntimeSessionOwnsCursorAndCompletion) {
   std::vector<uint8_t> actions;
   while (step.has_action) {
     actions.push_back(step.action);
-    step = session->pbft_finalization_runtime_session_report(step.cursor, step.action, true, 0);
+    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
   }
 
   EXPECT_TRUE(step.complete);
@@ -960,18 +969,21 @@ TEST(RustPbftSyncTest, FinalizationRuntimeSessionOwnsCursorAndCompletion) {
 
 TEST(RustPbftSyncTest, FinalizationRuntimeSessionStopsOnFailureOrMismatch) {
   const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
-  auto session = create_pbft_finalization_runtime_session(intent);
+  auto runtime = managerRuntimeForFinalizationSession();
+  pbft_manager_runtime_begin_finalization_session(*runtime, intent);
 
   auto failed =
-      session->pbft_finalization_runtime_session_report(0, kPbftFinalizationRuntimeActionPrimaryStorage, false, 77);
+      pbft_manager_runtime_finalization_session_report(*runtime, 0, kPbftFinalizationRuntimeActionPrimaryStorage, false,
+                                                       77);
   EXPECT_EQ(failed.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(failed.has_action);
   EXPECT_EQ(failed.cursor, 0);
   EXPECT_EQ(std::string(failed.error_code), "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_77");
 
-  session = create_pbft_finalization_runtime_session(intent);
+  pbft_manager_runtime_begin_finalization_session(*runtime, intent);
   auto mismatch =
-      session->pbft_finalization_runtime_session_report(1, kPbftFinalizationRuntimeActionPrimaryStorage, true, 0);
+      pbft_manager_runtime_finalization_session_report(*runtime, 1, kPbftFinalizationRuntimeActionPrimaryStorage, true,
+                                                       0);
   EXPECT_EQ(mismatch.status, kPbftFinalizationRuntimeStatusActionMismatch);
   EXPECT_FALSE(mismatch.has_action);
   EXPECT_EQ(std::string(mismatch.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
@@ -987,13 +999,14 @@ TEST(RustPbftSyncTest, FinalizationResumeRuntimeSessionOwnsTailReplayCursor) {
   resume.replay_actions.push_back(kPbftFinalizationRuntimeActionSetExecutedFlag);
   resume.replay_actions.push_back(kPbftFinalizationRuntimeActionAdvancePeriod);
   resume.error_code = "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY";
-  auto session = create_pbft_finalization_resume_runtime_session(resume);
+  auto runtime = managerRuntimeForFinalizationSession();
+  pbft_manager_runtime_begin_finalization_resume_session(*runtime, resume);
 
-  auto step = session->pbft_finalization_runtime_session_next();
+  auto step = pbft_manager_runtime_finalization_session_next(*runtime);
   std::vector<uint8_t> actions;
   while (step.has_action) {
     actions.push_back(step.action);
-    step = session->pbft_finalization_runtime_session_report(step.cursor, step.action, true, 0);
+    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
   }
 
   EXPECT_TRUE(step.complete);

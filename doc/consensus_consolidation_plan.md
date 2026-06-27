@@ -465,9 +465,10 @@ Acceptance:
   `final_chain_shim`, eliminating the direct internal bridge-handle sharing point in FinalChain call-paths.
 
 - Current status: the transaction manager packing path is now thin (`prepare` + single `finalize`) and does not keep shim-side
-  estimate-session loops. PBFT block validation no longer stores a bridge runtime cursor. Slice 6 remains incomplete
-  because `pbft_manager_shim` finalization/lifecycle paths and `pillar_chain_manager_shim` still own orchestration loops
-  or session state that is not yet routed through one-shot Rust service calls.
+  estimate-session loops. PBFT block validation no longer stores a bridge runtime cursor. PBFT finalization and duplicate
+  resume no longer allocate a standalone CXX `BridgePbftFinalizationRuntimeSession`; their cursors now live on
+  `BridgePbftManagerRuntime`. Slice 6 remains incomplete because `pbft_manager_shim` finalization/lifecycle paths and
+  `pillar_chain_manager_shim` still own orchestration loops that are not yet routed through one-shot Rust service calls.
 
 Implementation notes:
 
@@ -489,12 +490,22 @@ Implementation notes:
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
   `BridgePbftManagerRuntime` while C++ performs external PBFT-chain, FinalChain, vote, pillar, and DAG checks.
+- `pbft_manager_shim` finalization and duplicate-resume paths now start, step, report, and abort finalization runtime
+  cursors through `BridgePbftManagerRuntime`. The standalone `BridgePbftFinalizationRuntimeSession` handle and CXX
+  create/next/report/abort exports are deleted. C++ still executes the external FinalChain/EVM, DAG, transaction,
+  PBFT-chain, sortition, vote-manager, and pillar side effects for this cut; the next PBFT finalization slice should
+  replace the remaining shim-side finalization coordinator with a one-shot manager-owned operation.
 - Custom-agent delegation was attempted for this Slice 6 increment (`cpp-pro` and `rust-engineer`), but the agent
   backend rejected both starts due a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
   using the `$implement-rustaxa-consensus-slice` workflow.
 - Custom-agent delegation was attempted again for the PBFT block-validation cursor removal (`cpp-pro` and
   `rust-engineer`); both attempts hit the same GPT-5.3-Codex-Spark usage limit, so the local implementation path
   continued.
+- Custom agents used for the PBFT finalization session-handle consolidation:
+  - `architect-reviewer`: recommended folding the standalone finalization runtime session into
+    `BridgePbftManagerRuntime` before broader pillar-chain ownership work.
+  - `api-designer`: confirmed the larger follow-up API should be a manager-owned finalization operation while keeping
+    FinalChain/EVM, pillar, DAG, transaction, PBFT-chain, and network side effects external.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -526,6 +537,15 @@ Implementation notes:
   - `cmake --build /build --target pbft_manager_test --parallel 12`
   - `/build/bin/rust_consensus_tests --gtest_filter='*PbftManager*:*PBFT*:*Pbft*' --gtest_print_time=1`
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes:PbftManagerTest.*sync*:PbftManagerTest.*pbft_block*' --gtest_print_time=1`
+- Additional validation for PBFT finalization session-handle consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge runtime_planner_maps_ordered_finalization_actions -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.FinalizationRuntime*:RustPbftSyncTest.FinalizationResumeRuntime*:RustPbftSyncTest.FinalizationRuntimePlanOrdersMixedExecutorActions' --gtest_print_time=1`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is one-loop reduction in those subsystems before Slice 6 can be marked complete.

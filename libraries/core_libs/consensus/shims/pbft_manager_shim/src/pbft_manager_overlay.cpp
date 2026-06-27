@@ -3575,16 +3575,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       } else if (resume_plan.status == kPbftFinalizationResumeStatusNeedsDynamicLambdaPersistence ||
                  resume_plan.status == kPbftFinalizationResumeStatusNeedsFinalChainReplay ||
                  resume_plan.status == kPbftFinalizationResumeStatusNeedsExecutedStatusPersistence) {
-        auto resume_runtime_session = rustaxa::create_pbft_finalization_resume_runtime_session(resume_plan);
+        rustaxa::pbft_manager_runtime_begin_finalization_resume_session(*pbft_manager_runtime_.value(), resume_plan);
         auto begin_resume_action = [&](uint8_t expected_action, rustaxa::PbftFinalizationRuntimeSessionStep &step) {
-          step = resume_runtime_session->pbft_finalization_runtime_session_next();
+          step = rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value());
           if (!step.has_action || step.action != expected_action ||
               step.status != kPbftFinalizationRuntimeStatusActive) {
             LOG(log_er_) << "Rust PBFT finalization resume expected action " << static_cast<uint32_t>(expected_action)
                          << " for block " << pbft_block_hash << ", period " << block_pbft_period << ", got action "
                          << static_cast<uint32_t>(step.action) << ", status " << static_cast<uint32_t>(step.status)
                          << ", error " << static_cast<std::string>(step.error_code);
-            resume_runtime_session->abort_pbft_finalization_runtime_session();
+            rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
             return false;
           }
           return true;
@@ -3597,7 +3597,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           report.success = success;
           report.status = action_status;
           report.error_code = std::move(error_code);
-          const auto next_step = resume_runtime_session->pbft_finalization_runtime_session_report_action(report);
+          const auto next_step =
+              rustaxa::pbft_manager_runtime_finalization_session_report_action(*pbft_manager_runtime_.value(), report);
           if (!success || (next_step.status != kPbftFinalizationRuntimeStatusActive &&
                            next_step.status != kPbftFinalizationRuntimeStatusComplete)) {
             LOG(log_er_) << "Rust PBFT finalization resume action " << static_cast<uint32_t>(step.action)
@@ -3686,14 +3687,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
         }
 
-        if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
+        if (rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value()).action ==
             kPbftFinalizationRuntimeActionFinalizeFinalChain) {
           const auto final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
           if (final_chain_last_block + 1 != block_pbft_period) {
             LOG(log_er_) << "Rust PBFT finalization resume refused non-sequential FinalChain replay for block "
                          << pbft_block_hash << ", period " << block_pbft_period << ", FinalChain last block "
                          << final_chain_last_block;
-            resume_runtime_session->abort_pbft_finalization_runtime_session();
+            rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
             return false;
           }
           if (!begin_resume_action(kPbftFinalizationRuntimeActionFinalizeFinalChain, resume_step)) {
@@ -3727,7 +3728,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
         }
 
-        if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
+        if (rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value()).action ==
             kPbftFinalizationRuntimeActionPersistExecutedStatus) {
           if (!begin_resume_action(kPbftFinalizationRuntimeActionPersistExecutedStatus, resume_step)) {
             return false;
@@ -3759,7 +3760,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
         }
 
-        if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
+        if (rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value()).action ==
             kPbftFinalizationRuntimeActionSetExecutedFlag) {
           if (!begin_resume_action(kPbftFinalizationRuntimeActionSetExecutedFlag, resume_step)) {
             return false;
@@ -3816,7 +3817,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
         }
 
-        if (resume_runtime_session->pbft_finalization_runtime_session_next().action ==
+        if (rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value()).action ==
             kPbftFinalizationRuntimeActionProcessPillarBlock) {
           if (!begin_resume_action(kPbftFinalizationRuntimeActionProcessPillarBlock, resume_step)) {
             return false;
@@ -3846,14 +3847,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
         }
 
-        const auto final_resume_step = resume_runtime_session->pbft_finalization_runtime_session_next();
+        const auto final_resume_step =
+            rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value());
         if (!final_resume_step.complete || final_resume_step.status != kPbftFinalizationRuntimeStatusComplete) {
           LOG(log_er_) << "Rust PBFT finalization resume runtime did not complete for block " << pbft_block_hash
                        << ", period " << block_pbft_period << ", status "
                        << static_cast<uint32_t>(final_resume_step.status) << ", action "
                        << static_cast<uint32_t>(final_resume_step.action) << ", error "
                        << static_cast<std::string>(final_resume_step.error_code);
-          resume_runtime_session->abort_pbft_finalization_runtime_session();
+          rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
           return false;
         }
         resume_executed = true;
@@ -3887,15 +3889,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                  << block_pbft_period;
     return false;
   }
-  auto finalization_runtime_session = rustaxa::create_pbft_finalization_runtime_session(finalization_plan);
+  rustaxa::pbft_manager_runtime_begin_finalization_session(*pbft_manager_runtime_.value(), finalization_plan);
   auto begin_runtime_action = [&](uint8_t expected_action, rustaxa::PbftFinalizationRuntimeSessionStep &step) {
-    step = finalization_runtime_session->pbft_finalization_runtime_session_next();
+    step = rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value());
     if (!step.has_action || step.action != expected_action || step.status != kPbftFinalizationRuntimeStatusActive) {
       LOG(log_er_) << "Rust PBFT finalization runtime expected action " << static_cast<uint32_t>(expected_action)
                    << " for block " << pbft_block_hash << ", period " << block_pbft_period << ", got action "
                    << static_cast<uint32_t>(step.action) << ", status " << static_cast<uint32_t>(step.status)
                    << ", error " << static_cast<std::string>(step.error_code);
-      finalization_runtime_session->abort_pbft_finalization_runtime_session();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     return true;
@@ -3908,7 +3910,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     report.success = success;
     report.status = action_status;
     report.error_code = success ? "" : "PBFT_FINALIZE_RUNTIME_ACTION_FAILED";
-    const auto next_step = finalization_runtime_session->pbft_finalization_runtime_session_report_action(report);
+    const auto next_step =
+        rustaxa::pbft_manager_runtime_finalization_session_report_action(*pbft_manager_runtime_.value(), report);
     if (!success) {
       LOG(log_er_) << "Rust PBFT finalization runtime action " << static_cast<uint32_t>(step.action)
                    << " failed for block " << pbft_block_hash << ", period " << block_pbft_period << ", status "
@@ -3934,7 +3937,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     report.success = success;
     report.status = action_status;
     report.error_code = std::move(error_code);
-    const auto next_step = finalization_runtime_session->pbft_finalization_runtime_session_report_action(report);
+    const auto next_step =
+        rustaxa::pbft_manager_runtime_finalization_session_report_action(*pbft_manager_runtime_.value(), report);
     if (!success) {
       LOG(log_er_) << "Rust PBFT finalization runtime action " << static_cast<uint32_t>(step.action)
                    << " failed for block " << pbft_block_hash << ", period " << block_pbft_period << ", status "
@@ -4360,13 +4364,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
   }
 
-  const auto final_runtime_step = finalization_runtime_session->pbft_finalization_runtime_session_next();
+  const auto final_runtime_step =
+      rustaxa::pbft_manager_runtime_finalization_session_next(*pbft_manager_runtime_.value());
   if (!final_runtime_step.complete || final_runtime_step.status != kPbftFinalizationRuntimeStatusComplete) {
     LOG(log_er_) << "Rust PBFT finalization runtime did not complete for block " << pbft_block_hash << ", period "
                  << block_pbft_period << ", status " << static_cast<uint32_t>(final_runtime_step.status) << ", action "
                  << static_cast<uint32_t>(final_runtime_step.action) << ", error "
                  << static_cast<std::string>(final_runtime_step.error_code);
-    finalization_runtime_session->abort_pbft_finalization_runtime_session();
+    rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
     return false;
   }
 

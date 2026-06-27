@@ -189,10 +189,6 @@ pub struct BridgeRewardsStatsRuntime {
     pub storage: Arc<Storage>,
 }
 
-pub struct BridgePbftFinalizationRuntimeSession {
-    pub state: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState,
-}
-
 /// Pillar-chain storage wrapper used by the C++ manager shim.
 ///
 /// The wrapper owns a cloned Rust storage handle so production pillar-chain
@@ -228,6 +224,8 @@ pub struct BridgePbftManagerRuntime {
         Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
     pub runtime_session: Option<rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession>,
     pub proposal_session: Option<rustaxa_consensus::pbft_manager::PbftManagerProposalSession>,
+    pub finalization_runtime_session:
+        Option<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState>,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -4792,10 +4790,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_finalization_runtime(
             plan: &PbftFinalizationIntentPlan,
         ) -> PbftFinalizationRuntimePlan;
-        type BridgePbftFinalizationRuntimeSession;
-        pub fn create_pbft_finalization_runtime_session(
-            plan: &PbftFinalizationIntentPlan,
-        ) -> Box<BridgePbftFinalizationRuntimeSession>;
         type BridgePbftManagerRuntime;
         pub fn create_pbft_manager_runtime_from_storage(
             storage: &BridgeStorage,
@@ -4972,6 +4966,31 @@ pub mod rustaxa_ffi {
             write_set: &PbftFinalizationStorageWritePlan,
             final_chain_last_block: u64,
         ) -> Result<PbftFinalizationResumePlan>;
+        pub fn pbft_manager_runtime_begin_finalization_session(
+            runtime: &mut BridgePbftManagerRuntime,
+            plan: &PbftFinalizationIntentPlan,
+        );
+        pub fn pbft_manager_runtime_begin_finalization_resume_session(
+            runtime: &mut BridgePbftManagerRuntime,
+            plan: &PbftFinalizationResumePlan,
+        );
+        pub fn pbft_manager_runtime_finalization_session_next(
+            runtime: &mut BridgePbftManagerRuntime,
+        ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn pbft_manager_runtime_finalization_session_report(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            action: u8,
+            success: bool,
+            action_status: u8,
+        ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn pbft_manager_runtime_finalization_session_report_action(
+            runtime: &mut BridgePbftManagerRuntime,
+            report: PbftFinalizationRuntimeActionReport,
+        ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn abort_pbft_manager_runtime_finalization_session(
+            runtime: &mut BridgePbftManagerRuntime,
+        );
         pub fn pbft_manager_runtime_apply_finalization_storage_writes(
             runtime: &BridgePbftManagerRuntime,
             write_set: &PbftFinalizationStorageWritePlan,
@@ -5036,23 +5055,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_transition(
             fact: PbftManagerTransitionFact,
         ) -> PbftManagerTransitionPlan;
-        pub fn create_pbft_finalization_resume_runtime_session(
-            plan: &PbftFinalizationResumePlan,
-        ) -> Box<BridgePbftFinalizationRuntimeSession>;
-        pub fn pbft_finalization_runtime_session_next(
-            self: &mut BridgePbftFinalizationRuntimeSession,
-        ) -> PbftFinalizationRuntimeSessionStep;
-        pub fn pbft_finalization_runtime_session_report(
-            self: &mut BridgePbftFinalizationRuntimeSession,
-            cursor: u32,
-            action: u8,
-            success: bool,
-            action_status: u8,
-        ) -> PbftFinalizationRuntimeSessionStep;
-        pub fn pbft_finalization_runtime_session_report_action(
-            self: &mut BridgePbftFinalizationRuntimeSession,
-            report: PbftFinalizationRuntimeActionReport,
-        ) -> PbftFinalizationRuntimeSessionStep;
         pub fn pbft_manager_runtime_session_next(
             runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSessionStep;
@@ -5060,9 +5062,6 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             report: PbftManagerRuntimeActionReport,
         ) -> PbftManagerRuntimeSessionStep;
-        pub fn abort_pbft_finalization_runtime_session(
-            self: &mut BridgePbftFinalizationRuntimeSession,
-        );
         pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime);
         pub fn validate_pbft_finalization_live_mutation_report(
             plan: &PbftFinalizationIntentPlan,
