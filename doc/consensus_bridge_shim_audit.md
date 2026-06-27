@@ -186,6 +186,9 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
 - The remaining test-only callers of broad `BridgeStorage::save_own_verified_vote` now seed through either
   `storage_shim_save_own_verified_vote` or native Rust PBFT vote persistence helpers, so the broad CXX mutator has been
   deleted.
+- The remaining test-only callers of broad `BridgeStorage::persist_pbft_vote_progress` and
+  `BridgeStorage::clear_own_verified_votes` now route through the narrower `BridgeVerifiedVotes` persistence facade, so
+  those broad CXX storage methods have been deleted.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

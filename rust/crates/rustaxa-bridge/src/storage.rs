@@ -12,14 +12,8 @@ use anyhow::Context;
 use ethereum_types::H256;
 use rlp::Rlp;
 use rustaxa_consensus::{
-    clear_own_verified_votes as domain_clear_own_verified_votes,
-    persist_pbft_vote_progress as domain_persist_pbft_vote_progress,
     save_non_finalized_transactions as domain_save_non_finalized_transactions,
     NonFinalizedTransactionStoragePayload,
-    PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle,
-    PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
-    PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
-    PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
 };
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
@@ -28,51 +22,6 @@ use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
-
-fn pbft_vote_persistence_from_domain(
-    value: DomainPbftVotePersistenceResult,
-) -> rustaxa_ffi::PbftVotePersistenceResult {
-    rustaxa_ffi::PbftVotePersistenceResult {
-        status: value.status.as_u8(),
-        applied_writes: value.applied_writes,
-        error_code: value.error_code,
-    }
-}
-
-fn vote_storage_record_to_domain(
-    value: rustaxa_ffi::PbftVoteStorageRecord,
-) -> DomainPbftVoteStorageRecord {
-    DomainPbftVoteStorageRecord {
-        hash: H256::from(value.hash),
-        vote_rlp: value.vote_rlp,
-    }
-}
-
-fn two_t_plus_one_bundle_to_domain(
-    value: rustaxa_ffi::PbftTwoTPlusOneVoteBundle,
-) -> DomainPbftTwoTPlusOneVoteBundle {
-    DomainPbftTwoTPlusOneVoteBundle {
-        kind: value.kind,
-        period: value.period,
-        round: value.round,
-        step: value.step,
-        block_hash: H256::from(value.block_hash),
-        votes_bundle_rlp: value.votes_bundle_rlp,
-    }
-}
-
-fn vote_progress_write_to_domain(
-    value: rustaxa_ffi::PbftVoteProgressPersistenceWrite,
-) -> DomainPbftVoteProgressPersistenceWrite {
-    DomainPbftVoteProgressPersistenceWrite {
-        extra_reward_vote: value
-            .has_extra_reward_vote
-            .then(|| vote_storage_record_to_domain(value.extra_reward_vote)),
-        two_t_plus_one_bundle: value
-            .has_two_t_plus_one_bundle
-            .then(|| two_t_plus_one_bundle_to_domain(value.two_t_plus_one_bundle)),
-    }
-}
 
 pub fn create_storage(path: &str) -> Result<Box<BridgeStorage>, anyhow::Error> {
     let path_buf = PathBuf::from(path);
@@ -1457,55 +1406,6 @@ impl BridgeStorage {
 
     pub fn save_pbft_head(&self, hash: &[u8; 32], head: Vec<u8>) -> Result<(), anyhow::Error> {
         self.0.pbft().write_head(H256::from(*hash), &head)
-    }
-
-    /// Persists VoteManager durable effects for one accepted PBFT vote.
-    ///
-    /// Inputs:
-    /// - `write`: optional extra reward-vote record and optional latest-round
-    ///   2t+1 vote bundle selected by the VoteManager progress planner.
-    ///
-    /// Outputs:
-    /// - A bridge result with `status = 0` on success or `status = 1` plus a
-    ///   stable error code on validation/storage failure.
-    ///
-    /// Invariants and edge behavior:
-    /// - Both optional effects are applied through one Rust storage batch.
-    /// - 2t+1 bundle replacement is delete-plus-put atomic.
-    /// - Vote bytes are persisted as provided by C++ and are not decoded into
-    ///   C++ vote objects in Rust storage.
-    pub fn persist_pbft_vote_progress(
-        &self,
-        write: rustaxa_ffi::PbftVoteProgressPersistenceWrite,
-    ) -> Result<rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
-        Ok(pbft_vote_persistence_from_domain(
-            domain_persist_pbft_vote_progress(&self.0, vote_progress_write_to_domain(write))?,
-        ))
-    }
-
-    /// Clears VoteManager own-vote rows through a Rust-owned storage batch.
-    ///
-    /// Inputs:
-    /// - `vote_hashes`: exact latest-round own-vote keys to delete.
-    ///
-    /// Outputs:
-    /// - A bridge result with `status = 0` after the Rust-owned batch commits
-    ///   or `status = 1` plus a stable error code if storage rejects the write.
-    ///
-    /// Invariants and edge behavior:
-    /// - The bridge does not expose or consume a C++ batch id for this path.
-    /// - Missing keys are RocksDB delete no-ops, matching legacy semantics.
-    pub fn clear_own_verified_votes(
-        &self,
-        vote_hashes: Vec<rustaxa_ffi::PbftFinalizationHash>,
-    ) -> Result<rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
-        let hashes = vote_hashes
-            .into_iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect();
-        Ok(pbft_vote_persistence_from_domain(
-            domain_clear_own_verified_votes(&self.0, hashes)?,
-        ))
     }
 
     /// Batch-loads canonical transaction RLP payloads by hash through Rust

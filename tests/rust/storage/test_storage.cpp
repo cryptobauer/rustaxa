@@ -53,6 +53,12 @@ class StorageTest : public ::testing::Test {
     return create_dag_storage_queries(*storage);
   }
 
+  static rust::Box<BridgeVerifiedVotes> verifiedVotes(const rust::Box<BridgeStorage>& storage) {
+    auto votes = create_verified_votes_index();
+    votes->verified_votes_attach_storage(*storage);
+    return votes;
+  }
+
   std::filesystem::path test_dir;
 };
 
@@ -112,7 +118,7 @@ TEST_F(StorageTest, PersistPbftVoteProgressGroupsRewardAndTwoTPlusOneWrites) {
   write.two_t_plus_one_bundle.block_hash = h256(0x55);
   write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0xC2, 0x01, 0x02});
 
-  auto result = storage->persist_pbft_vote_progress(write);
+  auto result = verifiedVotes(storage)->verified_votes_persist_pbft_vote_progress(write);
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 2u);
   EXPECT_TRUE(result.error_code.empty());
@@ -136,7 +142,7 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsInvalidTwoTPlusOneKind) {
   write.two_t_plus_one_bundle.kind = 99;
   write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0xC1, 0x01});
 
-  auto result = storage->persist_pbft_vote_progress(write);
+  auto result = verifiedVotes(storage)->verified_votes_persist_pbft_vote_progress(write);
   EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
   EXPECT_FALSE(result.error_code.empty());
   auto vote_queries = voteQueries(storage);
@@ -151,7 +157,7 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsMalformedTwoTPlusOneBundle) {
   write.two_t_plus_one_bundle.kind = 0;
   write.two_t_plus_one_bundle.votes_bundle_rlp = bytes({0x01});
 
-  auto result = storage->persist_pbft_vote_progress(write);
+  auto result = verifiedVotes(storage)->verified_votes_persist_pbft_vote_progress(write);
   EXPECT_EQ(result.status, kPbftVotePersistenceRejected);
   EXPECT_FALSE(result.error_code.empty());
   auto vote_queries = voteQueries(storage);
@@ -169,7 +175,7 @@ TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
 
   rust::Vec<PbftFinalizationHash> vote_hashes;
   vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
-  auto result = storage->clear_own_verified_votes(std::move(vote_hashes));
+  auto result = verifiedVotes(storage)->verified_votes_clear_own_verified_votes(std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
@@ -180,7 +186,7 @@ TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsMissingVotesAsNoOpDeletes) {
 
   rust::Vec<PbftFinalizationHash> vote_hashes;
   vote_hashes.push_back(PbftFinalizationHash{h256(0x77)});
-  auto result = storage->clear_own_verified_votes(std::move(vote_hashes));
+  auto result = verifiedVotes(storage)->verified_votes_clear_own_verified_votes(std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
   auto vote_queries = voteQueries(storage);
