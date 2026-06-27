@@ -567,13 +567,14 @@ PillarVoteValidationPlan inspectPillarVoteWithRust(const std::shared_ptr<PillarV
 ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBundleDeterministically(
     const std::vector<bytes>& pillar_vote_rlps, PbftPeriod required_votes_period,
     const blk_hash_t& required_pillar_block_hash, uint64_t required_threshold,
-    const std::shared_ptr<final_chain::FinalChain>& final_chain) {
+    const std::shared_ptr<final_chain::FinalChain>& final_chain,
+    ::rust::Box<rustaxa::BridgePillarVotes>& pillar_votes) {
   if (!final_chain || required_votes_period == 0) {
-    return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, {}, false};
+    return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, false, {}, false};
   }
 
   if (pillar_vote_rlps.empty()) {
-    return {ValidateSyncPillarVotesBundlePlanStatus::kBundleEmpty, {}, 0, 0, {}, false};
+    return {ValidateSyncPillarVotesBundlePlanStatus::kBundleEmpty, {}, 0, 0, false, {}, false};
   }
 
   rust::Vec<rustaxa::PillarVoteRlpPayload> rlp_payloads;
@@ -588,7 +589,7 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
     const auto inspection_plan = rustaxa::inspect_pillar_vote_bundle_rlps(std::move(rlp_payloads));
     const auto inspection_status = toSyncPillarVotesBundlePlanStatus(inspection_plan.status);
     if (inspection_status != ValidateSyncPillarVotesBundlePlanStatus::kBundleValid) {
-      return {inspection_status, fromBridgeHash(inspection_plan.first_bad_vote_hash), 0, 0, {}, false};
+      return {inspection_status, fromBridgeHash(inspection_plan.first_bad_vote_hash), 0, 0, false, {}, false};
     }
 
     std::vector<addr_t> voters;
@@ -599,7 +600,7 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
 
     const auto dpos_facts = collectPillarDposFacts(final_chain, required_votes_period - 1, false, voters);
     if (dpos_facts.address_facts.size() != inspection_plan.inspections.size()) {
-      return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, {}, false};
+      return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, false, {}, false};
     }
 
     rust::Vec<rustaxa::PillarVoteWeightedRlpPayload> weighted_payloads;
@@ -608,8 +609,8 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
       const auto& address_fact = dpos_facts.address_facts[idx];
       const auto& inspection = inspection_plan.inspections[idx];
       if (!finalChainFactReady(address_fact.status) || address_fact.vote_count == 0) {
-        return {ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight, fromBridgeHash(inspection.vote_hash), 0, 0, {},
-                false};
+        return {ValidateSyncPillarVotesBundlePlanStatus::kZeroWeight, fromBridgeHash(inspection.vote_hash), 0, 0, false,
+                {}, false};
       }
 
       rustaxa::PillarVoteWeightedRlpPayload payload;
@@ -618,7 +619,7 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
       weighted_payloads.push_back(std::move(payload));
     }
 
-    const auto plan = rustaxa::plan_pillar_vote_bundle_from_weighted_rlps(
+    const auto plan = pillar_votes->pillar_votes_apply_weighted_rlp_bundle(
         std::move(weighted_payloads), required_votes_period, toBridgeHash(required_pillar_block_hash),
         required_threshold);
 
@@ -628,21 +629,17 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
     result.first_bad_vote_hash = fromBridgeHash(plan.first_bad_vote_hash);
     result.block_weight = plan.block_weight;
     result.selected_weight = plan.selected_weight;
+    result.insert_failed = plan.insert_failed;
+    result.insert_failed_vote_hash = fromBridgeHash(plan.insert_failed_vote_hash);
 
     if (plan_status != ValidateSyncPillarVotesBundlePlanStatus::kBundleValid) {
       return result;
     }
 
-    result.accepted_votes.reserve(plan.accepted_votes.size());
-    for (const auto& accepted_vote : plan.accepted_votes) {
-      result.accepted_votes.push_back(
-          {fromBridgeHash(accepted_vote.vote_hash), accepted_vote.weight, fromBridgeAddress(accepted_vote.voter)});
-    }
-
-    result.valid = true;
+    result.valid = !plan.insert_failed;
     return result;
   } catch (const std::exception&) {
-    return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, {}, false};
+    return {ValidateSyncPillarVotesBundlePlanStatus::kUnknown, {}, 0, 0, false, {}, false};
   }
 }
 
@@ -1132,46 +1129,8 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
   return add_plan.validator_vote_count;
 }
 
-bool PillarChainManager::addPlannedVerifiedPillarVoteForRust(const std::shared_ptr<PillarVote>& vote,
-                                                            uint64_t period_threshold, uint64_t validator_vote_count,
-                                                            const addr_t& recovered_voter) {
-  if (!vote || period_threshold == 0 || validator_vote_count == 0) {
-    LOG(log_er_) << "Unable to add planned pillar vote: missing vote, zero threshold, or zero validator vote count";
-    return false;
-  }
-
-  if (!pillar_votes_->pillar_votes_period_data_initialized(vote->getPeriod())) {
-    pillar_votes_->pillar_votes_init_period_data(vote->getPeriod(), period_threshold);
-  }
-
-  rustaxa::PillarVoteInsertOutcome insert_outcome;
-  try {
-    insert_outcome =
-        pillar_votes_->pillar_votes_insert_vote(toBridgeVotePayload(vote, recovered_voter, validator_vote_count));
-  } catch (const std::exception& e) {
-    LOG(log_er_) << "Unable to insert planned pillar vote " << vote->getHash() << " for period " << vote->getPeriod()
-                 << ", validator " << recovered_voter << ": " << e.what();
-    return false;
-  }
-  if (insert_outcome.conflict_found) {
-    LOG(log_er_) << "Unable to insert planned pillar vote " << vote->getHash() << " for period " << vote->getPeriod()
-                 << " in Rust sync path";
-    return false;
-  }
-  if (!insert_outcome.accepted && !insert_outcome.duplicate) {
-    LOG(log_er_) << "Unable to insert planned pillar vote " << vote->getHash() << " for period " << vote->getPeriod()
-                 << " due to invalid Rust insert outcome";
-    return false;
-  }
-
-  LOG(log_nf_) << "Inserted planned pillar vote " << vote->getHash() << " for block " << vote->getBlockHash()
-               << ", period " << vote->getPeriod();
-  return true;
-}
-
 ValidatePbftBlockPillarVotesWithRustResult PillarChainManager::validatePbftBlockPillarVotesWithRust(
-    PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps,
-    const std::optional<std::vector<std::shared_ptr<PillarVote>>>& live_pillar_votes) {
+    PbftPeriod required_votes_period, const std::vector<bytes>& pillar_vote_rlps) {
   if (pillar_vote_rlps.empty()) {
     return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes, 0, {}, 0, 0};
   }
@@ -1191,45 +1150,17 @@ ValidatePbftBlockPillarVotesWithRustResult PillarChainManager::validatePbftBlock
 
   const auto sync_plan = validateSyncPillarVotesBundleDeterministically(
       pillar_vote_rlps, required_votes_period, current_pillar_block->getHash(), *pillar_consensus_threshold,
-      final_chain_);
+      final_chain_, pillar_votes_);
   if (!sync_plan.valid) {
-    ValidatePbftBlockPillarVotesWithRustStatus status = ValidatePbftBlockPillarVotesWithRustStatus::kPlanRejected;
-    if (sync_plan.plan_status == ValidateSyncPillarVotesBundlePlanStatus::kUnknown) {
+    auto status = ValidatePbftBlockPillarVotesWithRustStatus::kPlanRejected;
+    if (sync_plan.insert_failed) {
+      status = ValidatePbftBlockPillarVotesWithRustStatus::kInsertFailed;
+    } else if (sync_plan.plan_status == ValidateSyncPillarVotesBundlePlanStatus::kUnknown) {
       status = ValidatePbftBlockPillarVotesWithRustStatus::kBridgeError;
     }
-    return {status, toSyncPillarVotesBundlePlanStatusCode(sync_plan.plan_status), sync_plan.first_bad_vote_hash,
+    const auto bad_vote_hash = sync_plan.insert_failed ? sync_plan.insert_failed_vote_hash : sync_plan.first_bad_vote_hash;
+    return {status, toSyncPillarVotesBundlePlanStatusCode(sync_plan.plan_status), bad_vote_hash,
             sync_plan.block_weight, sync_plan.selected_weight};
-  }
-
-  std::unordered_map<vote_hash_t, std::shared_ptr<PillarVote>> vote_by_hash;
-  if (!live_pillar_votes.has_value() || live_pillar_votes->empty()) {
-    return {ValidatePbftBlockPillarVotesWithRustStatus::kAcceptedVoteMissing,
-            toSyncPillarVotesBundlePlanStatusCode(sync_plan.plan_status), sync_plan.first_bad_vote_hash,
-            sync_plan.block_weight, sync_plan.selected_weight};
-  }
-  vote_by_hash.reserve(live_pillar_votes->size());
-  for (const auto& vote : *live_pillar_votes) {
-    if (!vote) {
-      return {ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarVotes, 0, {}, 0, 0};
-    }
-    vote_by_hash[vote->getHash()] = vote;
-  }
-
-  for (const auto& accepted_vote : sync_plan.accepted_votes) {
-    const auto& vote_hash = accepted_vote.vote_hash;
-    const auto vote_it = vote_by_hash.find(vote_hash);
-    if (vote_it == vote_by_hash.end()) {
-      return {ValidatePbftBlockPillarVotesWithRustStatus::kAcceptedVoteMissing,
-              toSyncPillarVotesBundlePlanStatusCode(sync_plan.plan_status), vote_hash, sync_plan.block_weight,
-              sync_plan.selected_weight};
-    }
-
-    if (!addPlannedVerifiedPillarVoteForRust(vote_it->second, *pillar_consensus_threshold, accepted_vote.weight,
-                                             accepted_vote.recovered_voter)) {
-      return {ValidatePbftBlockPillarVotesWithRustStatus::kInsertFailed,
-              toSyncPillarVotesBundlePlanStatusCode(sync_plan.plan_status), vote_hash, sync_plan.block_weight,
-              sync_plan.selected_weight};
-    }
   }
 
   return {ValidatePbftBlockPillarVotesWithRustStatus::kValid,

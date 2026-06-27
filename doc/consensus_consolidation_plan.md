@@ -500,8 +500,16 @@ Implementation notes:
   `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and
   `plan_pillar_vote_bundle` are no longer bridge exports. Live pillar-chain sync keeps the canonical RLP boundary:
   `inspect_pillar_vote_bundle_rlps` returns recovered voters for the one external FinalChain DPoS weight read, then
-  `plan_pillar_vote_bundle_from_weighted_rlps` owns weighted validation and selection. Native `rustaxa-consensus`
-  pillar-vote tests keep coverage for the plain domain planner.
+  `BridgePillarVotes::pillar_votes_apply_weighted_rlp_bundle` owns weighted validation, threshold initialization,
+  selected-vote insertion, and duplicate/idempotent apply classification. Native `rustaxa-consensus` pillar-vote tests
+  keep coverage for the plain domain planner.
+- The old weighted synced-pillar-vote planner bridge is deleted:
+  `plan_pillar_vote_bundle_from_weighted_rlps`, `PillarVoteBundleWeightedPlan`, and
+  `PillarVoteBundleAcceptedVoter` are no longer CXX exports. `pillar_chain_manager_shim` no longer maps accepted hashes
+  back to live `PillarVote` sidecars and no longer calls `addPlannedVerifiedPillarVoteForRust`; the sync validation path
+  passes canonical weighted RLPs into the `BridgePillarVotes` apply API and receives only aggregate status, weights, and
+  insertion failure facts. C++ still owns the one external FinalChain DPoS weight read until a broader pillar-chain
+  runtime owns that port.
 - `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
@@ -705,6 +713,16 @@ Implementation notes:
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
   - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
   - `rg -n "plan_pillar_vote_bundle\\(|PillarVoteBundleFact|PillarVoteBundlePlan\\b|PillarVoteBundleAcceptedVote\\b|bundle_fact_to_consensus_fact|FfiPillarVoteBundleFact|PillarVoteBundlePlanOutput" rust/crates/rustaxa-bridge/src libraries tests -g'*.rs' -g'*.cpp' -g'*.hpp'` returned no matches.
+- Additional validation for synced pillar-vote apply API consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_votes -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_votes -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `rg -n "plan_pillar_vote_bundle_from_weighted_rlps|addPlannedVerifiedPillarVoteForRust|ValidateSyncPillarVotesBundleAcceptedVote|live_pillar_votes|PillarVoteBundleWeightedPlan|PillarVoteBundleAcceptedVoter" libraries tests/rust/consensus rust/crates/rustaxa-bridge/src -g'*.rs' -g'*.cpp' -g'*.hpp'` returned no matches.
 - Additional validation for PBFT finalization cursor helper privacy:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`

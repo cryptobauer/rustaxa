@@ -120,7 +120,7 @@ TEST(PillarVoteBundleBridgeTest, inspectPillarVoteBundleRlpsReturnsRecoveredVote
   EXPECT_EQ(plan.inspections[1].voter, second_vote.getVoterAddr().asArray());
 }
 
-TEST(PillarVoteBundleBridgeTest, planPillarVoteBundleFromWeightedRlpsReturnsAcceptedVoters) {
+TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcceptedVotes) {
   const auto first_secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
   const auto second_secret = taraxa::secret_t("0b8f2d8f2b753f9d6eebcc334d79c8d0e9cfdd4457f0327f3a30a2d8a7f1f7cd");
   const taraxa::PbftPeriod period{124};
@@ -138,17 +138,21 @@ TEST(PillarVoteBundleBridgeTest, planPillarVoteBundleFromWeightedRlpsReturnsAcce
   second_payload.weight = 3;
   votes.push_back(std::move(second_payload));
 
+  auto pillar_votes = rustaxa::create_pillar_votes_index();
   const auto plan =
-      rustaxa::plan_pillar_vote_bundle_from_weighted_rlps(std::move(votes), period, block_hash.asArray(), 7);
+      pillar_votes->pillar_votes_apply_weighted_rlp_bundle(std::move(votes), period, block_hash.asArray(), 7);
 
   EXPECT_EQ(plan.status, 0);
   EXPECT_EQ(plan.block_weight, 7);
   EXPECT_EQ(plan.selected_weight, 7);
-  ASSERT_EQ(plan.accepted_votes.size(), 2);
-  EXPECT_EQ(plan.accepted_votes[0].weight + plan.accepted_votes[1].weight, 7);
-  std::vector<std::array<uint8_t, 20>> voters{plan.accepted_votes[0].voter, plan.accepted_votes[1].voter};
-  EXPECT_TRUE(std::find(voters.begin(), voters.end(), first_vote.getVoterAddr().asArray()) != voters.end());
-  EXPECT_TRUE(std::find(voters.begin(), voters.end(), second_vote.getVoterAddr().asArray()) != voters.end());
+  EXPECT_FALSE(plan.insert_failed);
+  EXPECT_EQ(plan.applied_votes, 2);
+
+  const auto lookup = pillar_votes->pillar_votes_get_verified_vote_payloads(period, block_hash.asArray(), true);
+  EXPECT_TRUE(lookup.threshold_met);
+  EXPECT_EQ(lookup.selected_weight, 7);
+  ASSERT_EQ(lookup.votes.size(), 2);
+  EXPECT_EQ(lookup.votes[0].weight + lookup.votes[1].weight, 7);
 }
 
 TEST(PillarVoteRelevanceBridgeTest, planPillarVoteRelevanceMatchesManagerPeriodRules) {

@@ -2510,7 +2510,7 @@ pub mod rustaxa_ffi {
 
     /// Batch inspection result for canonical pillar-vote bytes.
     ///
-    /// `status` values match `PillarVoteBundleWeightedPlan` where possible:
+    /// `status` values match `PillarVoteBundleApplyPlan` where possible:
     /// - `0` - all votes inspected and signatures are valid
     /// - `1` - empty bundle
     /// - `4` - malformed payload or invalid signature
@@ -2541,16 +2541,6 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
-    /// Lightweight accepted-vote fact with recovered voter identity.
-    ///
-    /// This is used by the weighted-RLP bundle API so C++ can materialize and
-    /// insert only the Rust-selected live vote payloads.
-    struct PillarVoteBundleAcceptedVoter {
-        vote_hash: [u8; 32],
-        weight: u64,
-        voter: [u8; 20],
-    }
-
     /// Lookup result with Rust-retained vote payloads for edge materialization.
     struct PillarVotesPayloadLookup {
         threshold_met: bool,
@@ -2559,25 +2549,19 @@ pub mod rustaxa_ffi {
         votes: Vec<PillarVoteRecord>,
     }
 
-    /// Result of planning canonical pillar-vote bytes after C++ supplies DPoS
-    /// weights from the external FinalChain boundary.
+    /// Result of validating and applying canonical pillar-vote bytes.
     ///
-    /// `status` values:
-    /// - `0` - valid
-    /// - `1` - empty bundle
-    /// - `2` - vote period mismatch
-    /// - `3` - vote block hash mismatch
-    /// - `4` - prevalidation failed
-    /// - `5` - zero vote weight
-    /// - `6` - voter conflict
-    /// - `7` - threshold not reached
-    /// - `8` - weight overflow
-    struct PillarVoteBundleWeightedPlan {
+    /// C++ supplies DPoS weights from the external FinalChain boundary. Rust
+    /// owns byte inspection, weighted bundle planning, period-threshold
+    /// initialization, and selected-vote insertion into `BridgePillarVotes`.
+    struct PillarVoteBundleApplyPlan {
         status: u8,
-        accepted_votes: Vec<PillarVoteBundleAcceptedVoter>,
         block_weight: u64,
         selected_weight: u64,
         first_bad_vote_hash: [u8; 32],
+        insert_failed: bool,
+        insert_failed_vote_hash: [u8; 32],
+        applied_votes: u64,
     }
 
     /// Input facts for one pillar-vote relevance check.
@@ -5579,12 +5563,6 @@ pub mod rustaxa_ffi {
         pub fn inspect_pillar_vote_bundle_rlps(
             votes: Vec<PillarVoteRlpPayload>,
         ) -> Result<PillarVoteBundleInspectionPlan>;
-        pub fn plan_pillar_vote_bundle_from_weighted_rlps(
-            votes: Vec<PillarVoteWeightedRlpPayload>,
-            expected_period: u64,
-            expected_block_hash: &[u8; 32],
-            threshold: u64,
-        ) -> Result<PillarVoteBundleWeightedPlan>;
         pub fn pillar_votes_is_unique_identity(
             self: &BridgePillarVotes,
             vote: PillarVoteIdentityPayload,
@@ -5597,6 +5575,13 @@ pub mod rustaxa_ffi {
             self: &mut BridgePillarVotes,
             vote: PillarVotePayload,
         ) -> Result<PillarVoteInsertOutcome>;
+        pub fn pillar_votes_apply_weighted_rlp_bundle(
+            self: &mut BridgePillarVotes,
+            votes: Vec<PillarVoteWeightedRlpPayload>,
+            expected_period: u64,
+            expected_block_hash: &[u8; 32],
+            threshold: u64,
+        ) -> Result<PillarVoteBundleApplyPlan>;
         pub fn pillar_votes_get_verified_vote_payloads(
             self: &BridgePillarVotes,
             period: u64,
