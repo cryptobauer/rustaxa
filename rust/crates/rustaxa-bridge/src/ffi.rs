@@ -226,6 +226,7 @@ pub struct BridgePbftManagerRuntime {
     pub proposal_session: Option<rustaxa_consensus::pbft_manager::PbftManagerProposalSession>,
     pub finalization_runtime_session:
         Option<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState>,
+    pub finalization_runtime_plan: Option<rustaxa_consensus::pbft_finalize::PbftFinalizationPlan>,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -1955,21 +1956,45 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Structured report for one PBFT finalization runtime action.
-    struct PbftFinalizationRuntimeActionReport {
-        cursor: u32,
-        action: u8,
-        success: bool,
-        status: u8,
-        error_code: String,
-    }
-
     /// Post-action facts for Rust validation of live PBFT finalization mutations.
     struct PbftFinalizationLiveMutationReport {
         action: u8,
         block_period: u64,
         pbft_block_hash: [u8; 32],
         anchor_hash: [u8; 32],
+        dag_finalized_count: u64,
+        finalized_transaction_count: u64,
+        pbft_chain_size: u64,
+        pbft_chain_head_hash: [u8; 32],
+        pbft_chain_last_anchor_hash: [u8; 32],
+        reward_votes_period: u64,
+        reward_votes_round: u64,
+        reward_votes_block_hash: [u8; 32],
+        reward_votes_extra_count: u64,
+        sortition_changed: bool,
+        sortition_change_period: u64,
+        sortition_change_interval_efficiency: u16,
+        sortition_change_threshold_upper: u16,
+        sortition_current_threshold_upper: u16,
+        sortition_params_changes_count: u64,
+        rounds_count_dynamic_lambda: u32,
+        dynamic_lambda: u32,
+        executed_pbft_block: bool,
+        manager_period: u64,
+        pillar_processed_period: u64,
+        pillar_request_period: u64,
+        anchor_dag_cache_count: u64,
+        final_chain_dispatched: bool,
+        final_chain_blocks_per_year: u32,
+        final_chain_last_block: u64,
+    }
+
+    /// External PBFT finalization effect report from the C++ executor.
+    struct PbftFinalizationExternalEffectReport {
+        action: u8,
+        success: bool,
+        status: u8,
+        error_code: String,
         dag_finalized_count: u64,
         finalized_transaction_count: u64,
         pbft_chain_size: u64,
@@ -4935,17 +4960,10 @@ pub mod rustaxa_ffi {
             plan: &PbftFinalizationIntentPlan,
             resume: &PbftFinalizationResumePlan,
         ) -> Result<PbftManagerFinalizationBoundary>;
-        pub fn pbft_manager_runtime_report_finalization_live_mutation_boundary(
+        pub fn pbft_manager_runtime_report_finalization_external_effect_boundary(
             runtime: &mut BridgePbftManagerRuntime,
-            plan: &PbftFinalizationIntentPlan,
-            report: PbftFinalizationLiveMutationReport,
+            report: PbftFinalizationExternalEffectReport,
         ) -> Result<PbftManagerFinalizationBoundary>;
-        pub fn pbft_manager_runtime_report_finalization_failure_boundary(
-            runtime: &mut BridgePbftManagerRuntime,
-            action: u8,
-            action_status: u8,
-            error_code: String,
-        ) -> PbftManagerFinalizationBoundary;
         pub fn abort_pbft_manager_runtime_finalization_session(
             runtime: &mut BridgePbftManagerRuntime,
         );

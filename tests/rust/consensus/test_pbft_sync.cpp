@@ -804,16 +804,14 @@ TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
   auto boundary = pbft_manager_runtime_begin_finalization_boundary(
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
 
-  PbftFinalizationLiveMutationReport report{};
+  PbftFinalizationExternalEffectReport report{};
   report.action = boundary.action;
-  report.block_period = 101;
-  report.pbft_block_hash = h256(9);
-  report.anchor_hash = h256(8);
+  report.success = true;
   report.sortition_changed = true;
   report.sortition_change_period = 999;
   report.sortition_params_changes_count = 1;
 
-  boundary = pbft_manager_runtime_report_finalization_live_mutation_boundary(*runtime, plan, report);
+  boundary = pbft_manager_runtime_report_finalization_external_effect_boundary(*runtime, report);
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_FALSE(boundary.can_continue);
@@ -910,8 +908,12 @@ TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  boundary = pbft_manager_runtime_report_finalization_failure_boundary(
-      *runtime, kPbftFinalizationRuntimeActionCommitSortitionRuntime, 77, "TEST_EXTERNAL_FAILURE");
+  PbftFinalizationExternalEffectReport report{};
+  report.action = kPbftFinalizationRuntimeActionCommitSortitionRuntime;
+  report.success = false;
+  report.status = 77;
+  report.error_code = "TEST_EXTERNAL_FAILURE";
+  boundary = pbft_manager_runtime_report_finalization_external_effect_boundary(*runtime, report);
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_EQ(std::string(boundary.error_code), "TEST_EXTERNAL_FAILURE");

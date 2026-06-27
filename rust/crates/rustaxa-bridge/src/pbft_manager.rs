@@ -7,11 +7,11 @@
 
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup, PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
+    PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport,
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
-    PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
@@ -254,6 +254,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         runtime_session: None,
         proposal_session: None,
         finalization_runtime_session: None,
+        finalization_runtime_plan: None,
     }))
 }
 
@@ -1450,6 +1451,14 @@ struct FinalizationOwnedActionDrainState {
     last_storage_status: u8,
 }
 
+struct FinalizationRuntimeActionReport {
+    cursor: u32,
+    action: u8,
+    success: bool,
+    status: u8,
+    error_code: String,
+}
+
 impl FinalizationOwnedActionDrainState {
     fn new() -> Self {
         Self {
@@ -1535,10 +1544,18 @@ fn finalization_boundary_from_drain(
 
 fn drain_finalization_boundary(
     runtime: &mut BridgePbftManagerRuntime,
-    plan: &FfiPbftFinalizationIntentPlan,
 ) -> anyhow::Result<FfiPbftManagerFinalizationBoundary> {
-    pbft_manager_runtime_drain_owned_finalization_actions(runtime, plan)
+    pbft_manager_runtime_drain_owned_finalization_actions(runtime)
         .map(finalization_boundary_from_drain)
+}
+
+fn stored_finalization_plan(
+    runtime: &BridgePbftManagerRuntime,
+) -> anyhow::Result<PbftFinalizationPlan> {
+    runtime
+        .finalization_runtime_plan
+        .clone()
+        .ok_or_else(|| anyhow!("PBFT_FINALIZE_RUNTIME_PLAN_NOT_STARTED"))
 }
 
 fn base_finalization_live_report(
@@ -1578,6 +1595,46 @@ fn base_finalization_live_report(
     }
 }
 
+fn external_effect_live_report(
+    report: FfiPbftFinalizationExternalEffectReport,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> anyhow::Result<FfiPbftFinalizationLiveMutationReport> {
+    let Some(action) = PbftFinalizationRuntimeAction::from_u8(report.action) else {
+        return Err(anyhow!("PBFT_FINALIZE_EXTERNAL_EFFECT_UNKNOWN_ACTION"));
+    };
+    Ok(FfiPbftFinalizationLiveMutationReport {
+        action: action.as_u8(),
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash.0,
+        anchor_hash: write_set.anchor_hash.0,
+        dag_finalized_count: report.dag_finalized_count,
+        finalized_transaction_count: report.finalized_transaction_count,
+        pbft_chain_size: report.pbft_chain_size,
+        pbft_chain_head_hash: report.pbft_chain_head_hash,
+        pbft_chain_last_anchor_hash: report.pbft_chain_last_anchor_hash,
+        reward_votes_period: report.reward_votes_period,
+        reward_votes_round: report.reward_votes_round,
+        reward_votes_block_hash: report.reward_votes_block_hash,
+        reward_votes_extra_count: report.reward_votes_extra_count,
+        sortition_changed: report.sortition_changed,
+        sortition_change_period: report.sortition_change_period,
+        sortition_change_interval_efficiency: report.sortition_change_interval_efficiency,
+        sortition_change_threshold_upper: report.sortition_change_threshold_upper,
+        sortition_current_threshold_upper: report.sortition_current_threshold_upper,
+        sortition_params_changes_count: report.sortition_params_changes_count,
+        rounds_count_dynamic_lambda: report.rounds_count_dynamic_lambda,
+        dynamic_lambda: report.dynamic_lambda,
+        executed_pbft_block: report.executed_pbft_block,
+        manager_period: report.manager_period,
+        pillar_processed_period: report.pillar_processed_period,
+        pillar_request_period: report.pillar_request_period,
+        anchor_dag_cache_count: report.anchor_dag_cache_count,
+        final_chain_dispatched: report.final_chain_dispatched,
+        final_chain_blocks_per_year: report.final_chain_blocks_per_year,
+        final_chain_last_block: report.final_chain_last_block,
+    })
+}
+
 /// Starts a PBFT finalization runtime cursor inside the long-lived PBFT manager runtime.
 ///
 /// Inputs are the accepted finalization intent plan already built by the C++
@@ -1592,6 +1649,7 @@ fn pbft_manager_runtime_begin_finalization_session(
     let domain_plan = PbftFinalizationPlan::from(plan);
     let runtime_plan = plan_domain_pbft_finalization_runtime(&domain_plan);
     runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(&runtime_plan));
+    runtime.finalization_runtime_plan = Some(domain_plan);
 }
 
 /// Starts a durable duplicate-finalization resume cursor inside the PBFT manager runtime.
@@ -1637,7 +1695,7 @@ fn pbft_manager_runtime_finalization_session_report(
     } else {
         format!("PBFT_FINALIZE_RUNTIME_ACTION_STATUS_{action_status}")
     };
-    let report = FfiPbftFinalizationRuntimeActionReport {
+    let report = FinalizationRuntimeActionReport {
         cursor,
         action,
         success,
@@ -1655,7 +1713,7 @@ fn pbft_manager_runtime_finalization_session_report(
 /// finalization session.
 fn pbft_manager_runtime_finalization_session_report_action(
     runtime: &mut BridgePbftManagerRuntime,
-    report: FfiPbftFinalizationRuntimeActionReport,
+    report: FinalizationRuntimeActionReport,
 ) -> FfiPbftFinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_mut() else {
         return pbft_finalization_session_missing_step();
@@ -1718,18 +1776,17 @@ fn pbft_manager_runtime_finalization_session_report_action(
 ///   `pbft_manager_runtime_finalization_session_report_action` contract.
 fn pbft_manager_runtime_report_finalization_live_mutation(
     runtime: &mut BridgePbftManagerRuntime,
-    plan: &FfiPbftFinalizationIntentPlan,
     report: FfiPbftFinalizationLiveMutationReport,
-) -> FfiPbftFinalizationRuntimeSessionStep {
+) -> anyhow::Result<FfiPbftFinalizationRuntimeSessionStep> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
     if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
         || !current_step.has_action
     {
-        return current_step;
+        return Ok(current_step);
     }
 
     let validation = if PbftFinalizationRuntimeAction::from_u8(report.action).is_none() {
-        FfiPbftFinalizationRuntimeActionReport {
+        FinalizationRuntimeActionReport {
             cursor: current_step.cursor,
             action: report.action,
             success: false,
@@ -1739,10 +1796,10 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
             error_code: "PBFT_FINALIZE_LIVE_MUTATION_UNKNOWN_ACTION".to_string(),
         }
     } else {
-        let domain_plan = PbftFinalizationPlan::from(plan);
+        let domain_plan = stored_finalization_plan(runtime)?;
         let validation =
             validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report.into());
-        FfiPbftFinalizationRuntimeActionReport {
+        FinalizationRuntimeActionReport {
             cursor: current_step.cursor,
             action: validation.action.as_u8(),
             success: validation.accepted,
@@ -1751,7 +1808,9 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
         }
     };
 
-    pbft_manager_runtime_finalization_session_report_action(runtime, validation)
+    Ok(pbft_manager_runtime_finalization_session_report_action(
+        runtime, validation,
+    ))
 }
 
 /// Starts normal PBFT finalization and advances to the first external boundary.
@@ -1805,7 +1864,7 @@ pub fn pbft_manager_runtime_begin_finalization_boundary(
     let accepted = apply_result.status.is_success();
     let next_step = pbft_manager_runtime_finalization_session_report_action(
         runtime,
-        FfiPbftFinalizationRuntimeActionReport {
+        FinalizationRuntimeActionReport {
             cursor: current_step.cursor,
             action: current_step.action,
             success: accepted,
@@ -1821,7 +1880,7 @@ pub fn pbft_manager_runtime_begin_finalization_boundary(
         ));
     }
 
-    drain_finalization_boundary(runtime, plan)
+    drain_finalization_boundary(runtime)
 }
 
 /// Starts duplicate PBFT finalization resume and advances to the next external boundary.
@@ -1844,31 +1903,62 @@ pub fn pbft_manager_runtime_begin_finalization_resume_boundary(
     plan: &FfiPbftFinalizationIntentPlan,
     resume: &FfiPbftFinalizationResumePlan,
 ) -> anyhow::Result<FfiPbftManagerFinalizationBoundary> {
+    runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(plan));
     pbft_manager_runtime_begin_finalization_resume_session(runtime, resume);
-    drain_finalization_boundary(runtime, plan)
+    drain_finalization_boundary(runtime)
 }
 
-/// Reports one external live mutation and advances to the next boundary.
+/// Reports one external finalization effect and advances to the next boundary.
 ///
 /// Inputs:
 /// - `runtime`: manager runtime that owns the finalization cursor.
-/// - `plan`: accepted finalization intent used to validate post-state facts.
-/// - `report`: external executor post-state facts for the current action.
+/// - `report`: external executor success/failure plus post-state facts for the
+///   current action.
 ///
 /// Outputs:
-/// - Returns the next external action after Rust validates the report and drains
-///   any manager-owned actions that immediately follow it.
+/// - Returns the terminal failure boundary, or the next external action after
+///   Rust validates the success report and drains any manager-owned actions that
+///   immediately follow it.
 ///
 /// Invariants and edge behavior:
-/// - Validation failure is reported to the cursor and returned as a terminal
-///   boundary.
+/// - Failure, validation failure, unknown action, and cursor mismatch are
+///   reported to the same manager-owned finalization cursor.
 /// - External side effects are never executed here.
-pub fn pbft_manager_runtime_report_finalization_live_mutation_boundary(
+pub fn pbft_manager_runtime_report_finalization_external_effect_boundary(
     runtime: &mut BridgePbftManagerRuntime,
-    plan: &FfiPbftFinalizationIntentPlan,
-    report: FfiPbftFinalizationLiveMutationReport,
+    report: FfiPbftFinalizationExternalEffectReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationBoundary> {
-    let next_step = pbft_manager_runtime_report_finalization_live_mutation(runtime, plan, report);
+    if !report.success {
+        let current_step = pbft_manager_runtime_finalization_session_next(runtime);
+        if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+            || !current_step.has_action
+        {
+            return Ok(finalization_boundary_from_step(
+                runtime,
+                current_step,
+                String::new(),
+            ));
+        }
+        let next_step = pbft_manager_runtime_finalization_session_report_action(
+            runtime,
+            FinalizationRuntimeActionReport {
+                cursor: current_step.cursor,
+                action: report.action,
+                success: false,
+                status: report.status,
+                error_code: report.error_code,
+            },
+        );
+        return Ok(finalization_boundary_from_step(
+            runtime,
+            next_step,
+            String::new(),
+        ));
+    }
+
+    let plan = stored_finalization_plan(runtime)?;
+    let live_report = external_effect_live_report(report, &plan.storage_write_intent)?;
+    let next_step = pbft_manager_runtime_report_finalization_live_mutation(runtime, live_report)?;
     if next_step.status != PbftFinalizationRuntimeStatus::Active.as_u8() || !next_step.can_continue
     {
         return Ok(finalization_boundary_from_step(
@@ -1877,46 +1967,7 @@ pub fn pbft_manager_runtime_report_finalization_live_mutation_boundary(
             String::new(),
         ));
     }
-    drain_finalization_boundary(runtime, plan)
-}
-
-/// Reports an externally executed PBFT finalization action failure.
-///
-/// Inputs:
-/// - `runtime`: manager runtime that owns the finalization cursor.
-/// - `action`: action that C++ attempted to execute.
-/// - `action_status`: stable executor status code.
-/// - `error_code`: stable error code for logs and tests.
-///
-/// Outputs:
-/// - Returns the terminal boundary after the failure is recorded.
-///
-/// Invariants and edge behavior:
-/// - The cursor is read inside Rust so C++ does not pass cursor indexes across
-///   the boundary.
-pub fn pbft_manager_runtime_report_finalization_failure_boundary(
-    runtime: &mut BridgePbftManagerRuntime,
-    action: u8,
-    action_status: u8,
-    error_code: String,
-) -> FfiPbftManagerFinalizationBoundary {
-    let current_step = pbft_manager_runtime_finalization_session_next(runtime);
-    if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
-        || !current_step.has_action
-    {
-        return finalization_boundary_from_step(runtime, current_step, String::new());
-    }
-    let next_step = pbft_manager_runtime_finalization_session_report_action(
-        runtime,
-        FfiPbftFinalizationRuntimeActionReport {
-            cursor: current_step.cursor,
-            action,
-            success: false,
-            status: action_status,
-            error_code,
-        },
-    );
-    finalization_boundary_from_step(runtime, next_step, String::new())
+    drain_finalization_boundary(runtime)
 }
 
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
@@ -1943,10 +1994,9 @@ pub fn pbft_manager_runtime_report_finalization_failure_boundary(
 ///   centralized.
 fn pbft_manager_runtime_drain_owned_finalization_actions(
     runtime: &mut BridgePbftManagerRuntime,
-    plan: &FfiPbftFinalizationIntentPlan,
 ) -> anyhow::Result<FfiPbftManagerFinalizationOwnedActionDrainResult> {
-    let domain_plan = PbftFinalizationPlan::from(plan);
-    let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
+    let domain_plan = stored_finalization_plan(runtime)?;
+    let write_set = domain_plan.storage_write_intent.clone();
     let mut drain = FinalizationOwnedActionDrainState::new();
 
     loop {
@@ -1975,8 +2025,8 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
             PbftFinalizationRuntimeAction::ApplyDynamicLambda => {
                 let mut stage = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
                 stage.rounds_count_dynamic_lambda =
-                    plan.storage_write_intent.rounds_count_dynamic_lambda;
-                stage.dynamic_lambda = plan.storage_write_intent.dynamic_lambda;
+                    domain_plan.storage_write_intent.rounds_count_dynamic_lambda;
+                stage.dynamic_lambda = domain_plan.storage_write_intent.dynamic_lambda;
                 let apply_result = apply_domain_pbft_finalization_storage_writes(
                     runtime.storage.as_ref(),
                     &write_set,
@@ -1987,7 +2037,7 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                 if !apply_result.status.is_success() {
                     let next_step = pbft_manager_runtime_finalization_session_report_action(
                         runtime,
-                        FfiPbftFinalizationRuntimeActionReport {
+                        FinalizationRuntimeActionReport {
                             cursor: current_step.cursor,
                             action: current_step.action,
                             success: false,
@@ -2004,8 +2054,8 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                 }
 
                 runtime.state.apply_committed_dynamic_lambda(
-                    plan.storage_write_intent.rounds_count_dynamic_lambda,
-                    plan.storage_write_intent.dynamic_lambda,
+                    domain_plan.storage_write_intent.rounds_count_dynamic_lambda,
+                    domain_plan.storage_write_intent.dynamic_lambda,
                 );
                 drain.has_snapshot = true;
                 let validation =
@@ -2026,7 +2076,7 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                 let error_code = validation.error_code;
                 let next_step = pbft_manager_runtime_finalization_session_report_action(
                     runtime,
-                    FfiPbftFinalizationRuntimeActionReport {
+                    FinalizationRuntimeActionReport {
                         cursor: current_step.cursor,
                         action: current_step.action,
                         success: accepted,
@@ -2056,7 +2106,7 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                 let accepted = apply_result.status.is_success();
                 let next_step = pbft_manager_runtime_finalization_session_report_action(
                     runtime,
-                    FfiPbftFinalizationRuntimeActionReport {
+                    FinalizationRuntimeActionReport {
                         cursor: current_step.cursor,
                         action: current_step.action,
                         success: accepted,
@@ -2077,7 +2127,7 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
             }
             PbftFinalizationRuntimeAction::SetExecutedFlag => {
                 runtime.state.apply_committed_finalization_executed_status(
-                    plan.storage_write_intent.executed_pbft_status,
+                    domain_plan.storage_write_intent.executed_pbft_status,
                 );
                 drain.has_snapshot = true;
                 let validation =
@@ -2093,7 +2143,7 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                 let error_code = validation.error_code;
                 let next_step = pbft_manager_runtime_finalization_session_report_action(
                     runtime,
-                    FfiPbftFinalizationRuntimeActionReport {
+                    FinalizationRuntimeActionReport {
                         cursor: current_step.cursor,
                         action: current_step.action,
                         success: accepted,
@@ -2130,6 +2180,7 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
 /// the next finalization attempt cannot accidentally observe stale cursor state.
 pub fn abort_pbft_manager_runtime_finalization_session(runtime: &mut BridgePbftManagerRuntime) {
     runtime.finalization_runtime_session = None;
+    runtime.finalization_runtime_plan = None;
 }
 
 impl From<(PbftDynamicLambdaPlan, bool, u32)> for FfiPbftManagerFinalizationDynamicLambdaPlan {
@@ -3436,9 +3487,9 @@ mod tests {
 
         let accepted = pbft_manager_runtime_report_finalization_live_mutation(
             &mut runtime,
-            &plan,
             finalization_live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions),
-        );
+        )
+        .expect("live mutation report should validate");
 
         assert_eq!(
             accepted.status,
@@ -3457,11 +3508,9 @@ mod tests {
         let mut rejected_report =
             finalization_live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions);
         rejected_report.finalized_transaction_count = 0;
-        let rejected = pbft_manager_runtime_report_finalization_live_mutation(
-            &mut runtime,
-            &plan,
-            rejected_report,
-        );
+        let rejected =
+            pbft_manager_runtime_report_finalization_live_mutation(&mut runtime, rejected_report)
+                .expect("live mutation report should validate");
 
         assert_eq!(
             rejected.status,
@@ -3503,9 +3552,8 @@ mod tests {
                 assert!(next.can_continue);
             }
 
-            let dynamic =
-                pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
-                    .expect("dynamic-lambda drain should run");
+            let dynamic = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
+                .expect("dynamic-lambda drain should run");
             assert_eq!(dynamic.drained_actions, 1);
             assert!(dynamic.applied_dynamic_lambda);
             assert!(dynamic.has_snapshot);
@@ -3539,9 +3587,8 @@ mod tests {
                 PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8()
             );
 
-            let executed =
-                pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
-                    .expect("executed-status drain should run");
+            let executed = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
+                .expect("executed-status drain should run");
             assert_eq!(executed.drained_actions, 2);
             assert!(executed.persisted_executed_status);
             assert!(executed.set_executed_flag);
@@ -3595,7 +3642,7 @@ mod tests {
 
         let failed = pbft_manager_runtime_finalization_session_report_action(
             &mut runtime,
-            FfiPbftFinalizationRuntimeActionReport {
+            FinalizationRuntimeActionReport {
                 cursor: 0,
                 action: 0,
                 success: false,
@@ -3665,11 +3712,11 @@ mod tests {
                 ],
                 error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
             };
+            runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
             pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
 
-            let drained =
-                pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
-                    .expect("resume owned-action drain should run");
+            let drained = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
+                .expect("resume owned-action drain should run");
 
             assert_eq!(drained.drained_actions, 2);
             assert!(drained.persisted_executed_status);
@@ -3702,9 +3749,10 @@ mod tests {
             replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8()],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
         };
+        runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
         pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
 
-        let rejected = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
+        let rejected = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
             .expect("rejected owned-action drain should report through result");
 
         assert_eq!(rejected.drained_actions, 0);

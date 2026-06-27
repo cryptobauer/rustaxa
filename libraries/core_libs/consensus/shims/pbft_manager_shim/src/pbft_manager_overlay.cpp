@@ -138,6 +138,51 @@ constexpr uint8_t kPbftManagerAdvancePeriodActionSetVoteManagerPeriodRound = 2;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetPeriodTimer = 5;
+
+rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectReport(
+    const rustaxa::PbftFinalizationLiveMutationReport &report) {
+  rustaxa::PbftFinalizationExternalEffectReport external_report{};
+  external_report.action = report.action;
+  external_report.success = true;
+  external_report.status = 0;
+  external_report.dag_finalized_count = report.dag_finalized_count;
+  external_report.finalized_transaction_count = report.finalized_transaction_count;
+  external_report.pbft_chain_size = report.pbft_chain_size;
+  external_report.pbft_chain_head_hash = report.pbft_chain_head_hash;
+  external_report.pbft_chain_last_anchor_hash = report.pbft_chain_last_anchor_hash;
+  external_report.reward_votes_period = report.reward_votes_period;
+  external_report.reward_votes_round = report.reward_votes_round;
+  external_report.reward_votes_block_hash = report.reward_votes_block_hash;
+  external_report.reward_votes_extra_count = report.reward_votes_extra_count;
+  external_report.sortition_changed = report.sortition_changed;
+  external_report.sortition_change_period = report.sortition_change_period;
+  external_report.sortition_change_interval_efficiency = report.sortition_change_interval_efficiency;
+  external_report.sortition_change_threshold_upper = report.sortition_change_threshold_upper;
+  external_report.sortition_current_threshold_upper = report.sortition_current_threshold_upper;
+  external_report.sortition_params_changes_count = report.sortition_params_changes_count;
+  external_report.rounds_count_dynamic_lambda = report.rounds_count_dynamic_lambda;
+  external_report.dynamic_lambda = report.dynamic_lambda;
+  external_report.executed_pbft_block = report.executed_pbft_block;
+  external_report.manager_period = report.manager_period;
+  external_report.pillar_processed_period = report.pillar_processed_period;
+  external_report.pillar_request_period = report.pillar_request_period;
+  external_report.anchor_dag_cache_count = report.anchor_dag_cache_count;
+  external_report.final_chain_dispatched = report.final_chain_dispatched;
+  external_report.final_chain_blocks_per_year = report.final_chain_blocks_per_year;
+  external_report.final_chain_last_block = report.final_chain_last_block;
+  return external_report;
+}
+
+rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectFailure(uint8_t action,
+                                                                                   uint8_t action_status,
+                                                                                   const std::string &error_code) {
+  rustaxa::PbftFinalizationExternalEffectReport external_report{};
+  external_report.action = action;
+  external_report.success = false;
+  external_report.status = action_status;
+  external_report.error_code = error_code;
+  return external_report;
+}
 constexpr uint8_t kPbftManagerAdvancePeriodActionUpdateWalletEligibility = 6;
 constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupVotes = 7;
 constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupProposedBlocks = 8;
@@ -3595,16 +3640,17 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           return true;
         };
         auto report_resume_failure = [&](uint8_t action) {
-          const auto boundary = rustaxa::pbft_manager_runtime_report_finalization_failure_boundary(
-              *pbft_manager_runtime_.value(), action, 255, "PBFT_FINALIZE_RESUME_ACTION_FAILED");
+          const auto boundary = rustaxa::pbft_manager_runtime_report_finalization_external_effect_boundary(
+              *pbft_manager_runtime_.value(),
+              makeFinalizationExternalEffectFailure(action, 255, "PBFT_FINALIZE_RESUME_ACTION_FAILED"));
           apply_resume_boundary_snapshot(boundary);
         };
         auto report_resume_live_mutation = [&](const char *context,
                                                const rustaxa::PbftFinalizationLiveMutationReport &report,
                                                rustaxa::PbftManagerFinalizationBoundary &boundary) {
           try {
-            boundary = rustaxa::pbft_manager_runtime_report_finalization_live_mutation_boundary(
-                *pbft_manager_runtime_.value(), finalization_plan, report);
+            boundary = rustaxa::pbft_manager_runtime_report_finalization_external_effect_boundary(
+                *pbft_manager_runtime_.value(), makeFinalizationExternalEffectReport(report));
           } catch (const std::exception &e) {
             LOG(log_er_) << "Rust PBFT finalization resume boundary report threw for block " << pbft_block_hash
                          << ", period " << block_pbft_period << ", context " << context << ": " << e.what();
@@ -3760,15 +3806,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return true;
   };
   auto report_failure_boundary = [&](uint8_t action) {
-    const auto boundary = rustaxa::pbft_manager_runtime_report_finalization_failure_boundary(
-        *pbft_manager_runtime_.value(), action, 255, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED");
+    const auto boundary = rustaxa::pbft_manager_runtime_report_finalization_external_effect_boundary(
+        *pbft_manager_runtime_.value(),
+        makeFinalizationExternalEffectFailure(action, 255, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED"));
     apply_boundary_snapshot(boundary);
   };
   auto report_live_mutation = [&](const char *context, const rustaxa::PbftFinalizationLiveMutationReport &report,
                                   rustaxa::PbftManagerFinalizationBoundary &boundary) {
     try {
-      boundary = rustaxa::pbft_manager_runtime_report_finalization_live_mutation_boundary(
-          *pbft_manager_runtime_.value(), finalization_plan, report);
+      boundary = rustaxa::pbft_manager_runtime_report_finalization_external_effect_boundary(
+          *pbft_manager_runtime_.value(), makeFinalizationExternalEffectReport(report));
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context " << context << ": " << e.what();

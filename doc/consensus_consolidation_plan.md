@@ -539,17 +539,25 @@ Implementation notes:
 - `pbft_manager_shim` normal finalization and duplicate-resume paths now use manager-owned finalization boundary APIs:
   `pbft_manager_runtime_begin_finalization_boundary`,
   `pbft_manager_runtime_begin_finalization_resume_boundary`,
-  `pbft_manager_runtime_report_finalization_live_mutation_boundary`, and
-  `pbft_manager_runtime_report_finalization_failure_boundary`. Rust owns cursor setup, primary storage apply through the
-  runtime storage handle, live mutation validation, manager-owned action drains, and final completion classification.
-  C++ still prepares primary storage stages under the existing DAG/transaction locks and still executes external
-  sortition, reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain/EVM, advance-period, and pillar
-  side effects before reporting facts back to Rust. The CXX exports for `plan_pbft_finalization_runtime`,
+  and `pbft_manager_runtime_report_finalization_external_effect_boundary`. Rust owns cursor setup, primary storage apply
+  through the runtime storage handle, live mutation validation, manager-owned action drains, final completion
+  classification, and the retained finalization plan used by later external-effect reports. C++ still prepares primary
+  storage stages under the existing DAG/transaction locks and still executes external sortition, reward-vote, DAG,
+  transaction-manager, PBFT-chain, anchor-cache, FinalChain/EVM, advance-period, and pillar side effects before reporting
+  facts back to Rust. The CXX exports for `plan_pbft_finalization_runtime`,
   `pbft_manager_runtime_finalization_session_next`, `pbft_manager_runtime_finalization_session_report`,
   `pbft_manager_runtime_finalization_session_report_action`,
   `pbft_manager_runtime_report_finalization_live_mutation`,
+  `pbft_manager_runtime_report_finalization_live_mutation_boundary`,
+  `pbft_manager_runtime_report_finalization_failure_boundary`,
   `pbft_manager_runtime_drain_owned_finalization_actions`, and
   `pbft_manager_runtime_apply_finalization_storage_writes` are deleted.
+- The finalization external-effect report boundary now uses one CXX API for both success and failure:
+  `PbftFinalizationExternalEffectReport` carries the boundary action, success flag, executor status/error, and
+  action-specific observed facts. Rust derives the base finalization identity (`block_period`, PBFT block hash, and
+  anchor hash) from the plan retained inside `BridgePbftManagerRuntime`, so C++ no longer passes the accepted
+  `PbftFinalizationIntentPlan` back into every report call. `PbftFinalizationRuntimeActionReport` is now a private Rust
+  helper, not a CXX DTO.
 - The legacy Rust bridge-crate finalization cursor primitives
   `pbft_manager_runtime_begin_finalization_session`,
   `pbft_manager_runtime_begin_finalization_resume_session`,
@@ -603,6 +611,12 @@ Implementation notes:
   - `rust-engineer`: requested to review hidden callsites and retained coverage, but the agent backend rejected the
     start due to a GPT-5.3-Codex-Spark usage limit. Local implementation proceeded with call-site search evidence and
     targeted Rust/C++ validation.
+- Custom agents used for the PBFT finalization external-effect boundary consolidation:
+  - `api-designer`: recommended collapsing success and failure reports into one
+    `BridgePbftManagerRuntime` external-effect boundary API while keeping FinalChain/EVM, DAG, transaction-manager,
+    PBFT-chain, sortition, vote-manager, advance-period, pillar, and network execution external.
+  - `architect-reviewer`: recommended single pillar-vote admission as the next pillar-chain candidate after this PBFT
+    slice; this remains the preferred follow-up before introducing a broad `BridgePillarChainRuntime`.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -691,6 +705,16 @@ Implementation notes:
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `git diff --check`
   - `.githooks/pre-commit`
+- Additional validation for PBFT finalization external-effect boundary consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus finalization_live_mutation -- --nocapture`
+    returned zero matching tests; the bridge and C++ boundary tests below cover the changed CXX API.
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.Finalization*Boundary*' --gtest_print_time=1`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
 - Additional validation for pillar-chain creation consolidation:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
