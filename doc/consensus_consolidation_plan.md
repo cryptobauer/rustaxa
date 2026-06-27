@@ -279,9 +279,11 @@ Implementation notes:
 - Cert-voted block writes now have a native `rustaxa-storage` in-batch writer that preserves the legacy `[round, block]`
   RLP wrapper while allowing the C++ storage shim to stage the write through `BridgeStorageBatch` instead of calling the
   broad `BridgeStorage` mutator directly.
-- Remaining direct `BridgeStorage` mutators in `storage_shim` are `clear_block_rewards_stats` and `set_genesis_hash`.
-  They do not yet have low-risk typed batch equivalents: block-reward clearing is an aggregate clear path, and genesis
-  hash has write-if-empty semantics.
+- Genesis-hash writes now route through a dedicated `storage_shim_set_genesis_hash` API that preserves
+  `rustaxa-storage` write-if-empty semantics without exposing the broad `BridgeStorage::set_genesis_hash` mutator to the
+  C++ storage shim.
+- The remaining direct `BridgeStorage` mutator in `storage_shim` is `clear_block_rewards_stats`. It does not yet have a
+  low-risk typed batch equivalent because block-reward clearing is an aggregate clear path.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.

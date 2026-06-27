@@ -250,7 +250,7 @@ const rustaxa::BridgeStorage& DbStorage::rustStorage() const { return *rust_stor
 
 void DbStorage::setGenesisHash(const h256& genesis_hash) {
   auto bytes = into_bytes_array(genesis_hash);
-  rust_storage_.value()->set_genesis_hash(bytes);
+  rustaxa::storage_shim_set_genesis_hash(*rust_storage_.value(), bytes);
 }
 
 std::optional<h256> DbStorage::getGenesisHash() {

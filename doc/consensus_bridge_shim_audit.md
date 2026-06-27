@@ -155,9 +155,11 @@ Current snapshot after Slice 5 period-data queue retirement:
   PBFT heads, own verified votes, 2t+1 vote bundles, extra reward votes, proposal-period DAG-level mappings, and
   cert-voted block writes/removal now stage typed `storage_shim_*` writes through `BridgeStorageBatch` and immediately
   commit the Rust-owned batch.
-- Remaining direct `BridgeStorage` mutators in `storage_shim` are expected only for `clear_block_rewards_stats` and
-  `set_genesis_hash` until those aggregate/write-if-empty paths have native typed batch support or move behind a
-  narrower Rust service.
+- Genesis-hash writes now use `storage_shim_set_genesis_hash`, a dedicated storage-shim API that preserves the
+  `rustaxa-storage` write-if-empty behavior while avoiding the broad `BridgeStorage::set_genesis_hash` mutator from the
+  C++ shim.
+- The remaining direct `BridgeStorage` mutator in `storage_shim` is expected only for `clear_block_rewards_stats` until
+  that aggregate clear path has native typed batch support or moves behind a narrower Rust service.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

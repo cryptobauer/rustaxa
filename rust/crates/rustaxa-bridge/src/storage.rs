@@ -890,6 +890,18 @@ pub fn storage_shim_save_block_rewards_stats(
     )
 }
 
+/// Writes the genesis hash through the storage shim boundary.
+///
+/// The storage repository owns the legacy single-value key and write-once
+/// behavior. The C++ shim supplies the already validated 32-byte hash from its
+/// public `DbStorage` compatibility API.
+pub fn storage_shim_set_genesis_hash(
+    storage: &BridgeStorage,
+    hash: &[u8; 32],
+) -> Result<(), anyhow::Error> {
+    storage.0.metadata().set_genesis_hash_if_empty(hash)
+}
+
 /// Appends a typed PBFT manager numeric-field write to a Rust-owned storage shim batch.
 ///
 /// The C++ shim supplies legacy enum discriminants and values; `rustaxa-storage`
@@ -1715,6 +1727,28 @@ mod tests {
         period_data.append_raw(&transactions.out(), 1);
         period_data.append_raw(&[0xC0], 1);
         period_data.out().to_vec()
+    }
+
+    #[test]
+    fn storage_shim_genesis_hash_preserves_write_once_behavior() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_storage_genesis_hash");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let metadata = metadata_queries(&storage);
+
+            assert!(metadata.get_genesis_hash().unwrap().is_empty());
+
+            storage_shim_set_genesis_hash(&storage, &[0xAB; 32])
+                .expect("first genesis hash should persist");
+            assert_eq!(metadata.get_genesis_hash().unwrap(), vec![0xAB; 32]);
+
+            storage_shim_set_genesis_hash(&storage, &[0xCD; 32])
+                .expect("second genesis hash should be a no-op");
+            assert_eq!(metadata.get_genesis_hash().unwrap(), vec![0xAB; 32]);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
