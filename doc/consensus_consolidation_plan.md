@@ -41,19 +41,18 @@ conflict resolution, validation, deletion of obsolete scaffolding, and the final
 
 ## Current Cleanup Pressure Points
 
-- `rust/crates/rustaxa-bridge/src/lib.rs` still exposes many per-feature bridge modules that mirror Rust consensus
-  modules one-to-one.
-- `rust/crates/rustaxa-bridge/src/ffi.rs` still contains broad storage query/batch APIs and many module-specific bridge
-  handles beyond the three external facades.
+- `rust/crates/rustaxa-bridge/src/lib.rs` exports are mostly boundary-facing Rust modules plus narrow internal runtime helpers.
+  Remaining cleanup pressure is deleting temporary shims and session handles after native Rust owners are complete.
+- `rust/crates/rustaxa-bridge/src/ffi.rs` exports a reduced `Bridge*` surface; remaining pressure is deleting internal
+  compatibility helpers once their upstream C++ callers are fully folded into Rust runtimes.
 - `libraries/core_libs/consensus/shims/*` contains many overlay classes that should become thin C++ public facades or
   disappear once their public API is no longer needed in Rust mode.
 - `rust/crates/rustaxa-consensus/src/network_api.rs` no longer exposes the temporary CXX
   `consensus_network_queue_*` bridge helpers. Remaining cleanup pressure is internal effect-drain plumbing, especially
   PBFT vote gossip through `drain_work` / `report_effect_results` while tarcap still owns transport execution.
-- RPC and GraphQL now use `ConsensusQueryApi`, but many endpoints construct query APIs from `node->getDB()->rustStorage()`
-  locally instead of receiving one injected public-query handle.
-- Some Rust consensus APIs still accept `BridgeStorage`, `BridgeFinalChain`, or bridge runtime handles where they should
-  accept native Rust storage/final-chain ports inside Rust and only convert at CXX entry points.
+- RPC/GraphQL now use the shared injected `ConsensusQueryApi` construction path at app/plugin boundaries.
+- The primary residual work is to keep all non-boundary consensus behavior in native Rust and ensure adapters remain
+  thin and explicit.
 
 ## Slice 0: Baseline Audit and Deletion Map
 
