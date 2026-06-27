@@ -1515,7 +1515,8 @@ impl BridgeFinalChain {
         let mut session = BridgeFinalChainExecutionSession {
             state: rustaxa_consensus::create_final_chain_execution_session(request),
         };
-        let step = session.final_chain_execution_session_next()?;
+        let execution_api = create_consensus_execution_api()?;
+        let step = execution_api.consensus_execution_next_execution_request(&mut session)?;
         if step.action != FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE {
             anyhow::bail!(
                 "Rust FinalChain execution runtime rejected finalize request: {}",
