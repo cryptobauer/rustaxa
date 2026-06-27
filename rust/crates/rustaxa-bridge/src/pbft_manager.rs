@@ -2592,7 +2592,9 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(2, 500)
+                .0
+                .pbft()
+                .write_manager_field(2, 500)
                 .expect("lambda seed should persist");
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should initialize");
@@ -3018,19 +3020,29 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 2)
+                .0
+                .pbft()
+                .write_manager_field(0, 2)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 2)
+                .0
+                .pbft()
+                .write_manager_field(1, 2)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             storage
-                .save_pbft_mgr_status(0, true)
+                .0
+                .pbft()
+                .write_manager_status(0, true)
                 .expect("executed status should persist");
             storage
-                .save_pbft_mgr_status(2, true)
+                .0
+                .pbft()
+                .write_manager_status(2, true)
                 .expect("next value status should persist");
 
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
@@ -3060,10 +3072,14 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
 
             let error = match create_pbft_manager_runtime_from_storage(&storage, startup_fact()) {
@@ -3088,19 +3104,29 @@ mod tests {
                     .expect("storage should initialize");
             let own_hash = [0xBC; 32];
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             storage
-                .save_pbft_mgr_status(2, true)
+                .0
+                .pbft()
+                .write_manager_status(2, true)
                 .expect("soft next status should persist");
             storage
-                .save_pbft_mgr_status(3, true)
+                .0
+                .pbft()
+                .write_manager_status(3, true)
                 .expect("null next status should persist");
             save_own_verified_vote(
                 &storage.0,
@@ -3152,16 +3178,24 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             storage
-                .save_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, true)
+                .0
+                .pbft()
+                .write_manager_status(PBFT_MGR_STATUS_EXECUTED_BLOCK, true)
                 .expect("executed status should persist");
 
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
@@ -3194,7 +3228,9 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
@@ -3237,13 +3273,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
@@ -3278,7 +3320,9 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
@@ -3306,7 +3350,9 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
@@ -3344,13 +3390,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let dag_hash = [0xDA; 32];
             let pbft_hash = [0xBE; 32];
@@ -3393,7 +3445,9 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             storage
                 .0
@@ -3425,13 +3479,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             save_cert_voted_block_in_round_storage(storage.0.as_ref(), 3, &[0xC0])
                 .expect("cert-voted block should persist");
@@ -3497,13 +3557,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
@@ -3578,13 +3644,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             create_pillar_chain_storage(&storage)
                 .pillar_chain_storage_apply_own_vote(vec![0xC0])
@@ -3609,7 +3681,9 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let period_data = empty_finalized_dag_period_data_rlp();
             storage
@@ -3678,13 +3752,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
@@ -3767,13 +3847,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
 
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())

@@ -752,13 +752,19 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_pbft_mgr_field(0, 1)
+                .0
+                .pbft()
+                .write_manager_field(0, 1)
                 .expect("round seed should persist");
             storage
-                .save_pbft_mgr_field(1, 1)
+                .0
+                .pbft()
+                .write_manager_field(1, 1)
                 .expect("step seed should persist");
             storage
-                .save_pbft_mgr_field(2, 1_500)
+                .0
+                .pbft()
+                .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             storage
                 .save_period_data(9, vec![0xC8, 0xC0, 0xC1])

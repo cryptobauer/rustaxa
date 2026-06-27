@@ -919,16 +919,24 @@ mod tests {
             .unwrap();
         storage.save_proposal_period_dag_levels_map(5, 12).unwrap();
         storage
-            .save_status_field(rustaxa_storage::StatusField::ExecutedBlkCount as u8, 21)
+            .0
+            .metadata()
+            .write_status_field(rustaxa_storage::StatusField::ExecutedBlkCount as u8, 21)
             .unwrap();
         storage
-            .save_status_field(rustaxa_storage::StatusField::ExecutedTrxCount as u8, 34)
+            .0
+            .metadata()
+            .write_status_field(rustaxa_storage::StatusField::ExecutedTrxCount as u8, 34)
             .unwrap();
         storage
-            .save_status_field(rustaxa_storage::StatusField::DagBlkCount as u8, 55)
+            .0
+            .metadata()
+            .write_status_field(rustaxa_storage::StatusField::DagBlkCount as u8, 55)
             .unwrap();
         storage
-            .save_status_field(rustaxa_storage::StatusField::TrxCount as u8, 89)
+            .0
+            .metadata()
+            .write_status_field(rustaxa_storage::StatusField::TrxCount as u8, 89)
             .unwrap();
         let period_lambda = api.consensus_query_period_lambda_by_period(15).unwrap();
         assert!(period_lambda.found);

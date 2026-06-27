@@ -3847,7 +3847,9 @@ mod tests {
         .expect("storage should initialize");
 
         storage
-            .save_status_field(StatusField::TrxCount as u8, 7)
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
         storage
             .save_transaction_location(&[4; 32], 1, 0, false)
@@ -3913,7 +3915,9 @@ mod tests {
         .expect("storage should initialize");
 
         storage
-            .save_status_field(StatusField::TrxCount as u8, 7)
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
         storage
             .save_transaction_location(&[2; 32], 1, 0, false)
@@ -4151,7 +4155,9 @@ mod tests {
         .expect("storage should initialize");
 
         storage
-            .save_status_field(StatusField::TrxCount as u8, 7)
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
 
         let out = update_finalized_transactions_status(
@@ -4199,7 +4205,9 @@ mod tests {
         .expect("storage should initialize");
 
         storage
-            .save_status_field(StatusField::TrxCount as u8, 7)
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
 
         let mut runtime = create_transaction_manager_runtime_from_storage(
@@ -4320,7 +4328,9 @@ mod tests {
         .expect("storage should initialize");
 
         storage
-            .save_status_field(StatusField::TrxCount as u8, 11)
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 11)
             .expect("status field seed should persist");
 
         let out = update_finalized_transactions_status(&storage, 200, 10, 11, vec![])

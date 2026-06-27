@@ -197,9 +197,11 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   rustaxa::storage_shim_set_genesis_hash(*storage, genesis_hash);
   transcript.add("genesis_after_set_len", toString(metadata_queries->get_genesis_hash().size()));
 
-  storage->save_status_field(kStatusFieldTrxCount, 11);
-  storage->save_pbft_mgr_field(kPbftMgrFieldRound, 17);
-  storage->save_pbft_mgr_status(kPbftMgrStatusNextVotedSoftValue, true);
+  auto status_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_status_field(*status_batch, kStatusFieldTrxCount, 11);
+  rustaxa::storage_shim_save_pbft_mgr_field(*status_batch, kPbftMgrFieldRound, 17);
+  rustaxa::storage_shim_save_pbft_mgr_status(*status_batch, kPbftMgrStatusNextVotedSoftValue, true);
+  rustaxa::storage_shim_commit_batch(std::move(status_batch), false);
   storage->save_proposal_period_dag_levels_map(100, 50);
   auto period_lambda_batch = rustaxa::create_storage_shim_batch(*storage);
   rustaxa::storage_shim_save_period_lambda(*period_lambda_batch, 7, 42);

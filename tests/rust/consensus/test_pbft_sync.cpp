@@ -732,11 +732,13 @@ TEST(RustPbftSyncTest, ManagerRuntimeRejectsCursorMismatch) {
 TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_startup_snapshot");
   auto storage = create_storage(test_dir.string());
-  storage->save_pbft_mgr_field(kPbftMgrFieldRound, 2);
-  storage->save_pbft_mgr_field(kPbftMgrFieldStep, 2);
-  storage->save_pbft_mgr_field(kPbftMgrFieldLambda, 1'500);
-  storage->save_pbft_mgr_status(kPbftMgrStatusExecutedBlock, true);
-  storage->save_pbft_mgr_status(kPbftMgrStatusNextVotedValue, true);
+  auto seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldRound, 2);
+  storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldStep, 2);
+  storage_shim_save_pbft_mgr_field(*seed_batch, kPbftMgrFieldLambda, 1'500);
+  storage_shim_save_pbft_mgr_status(*seed_batch, kPbftMgrStatusExecutedBlock, true);
+  storage_shim_save_pbft_mgr_status(*seed_batch, kPbftMgrStatusNextVotedValue, true);
+  storage_shim_commit_batch(std::move(seed_batch), false);
 
   const auto runtime = create_pbft_manager_runtime_from_storage(*storage, makePbftManagerStartupFact());
   const auto snapshot = pbft_manager_runtime_snapshot(*runtime);

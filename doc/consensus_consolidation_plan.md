@@ -512,6 +512,9 @@ Implementation status:
   `storage_shim_save_rounds_count_dynamic_lambda`, and the broad CXX mutator is deleted.
 - The remaining callers of broad `BridgeStorage::save_period_lambda` now seed through either
   `storage_shim_save_period_lambda` or native Rust metadata storage, and the broad CXX mutator is deleted.
+- The remaining callers of broad `BridgeStorage::save_status_field`, `save_pbft_mgr_field`, and
+  `save_pbft_mgr_status` now seed through dedicated storage-shim batch appenders or native Rust storage repositories,
+  and the broad CXX mutators are deleted.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

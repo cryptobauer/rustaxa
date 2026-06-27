@@ -1364,18 +1364,6 @@ impl BridgeStorage {
         self.0.period().write(period, &period_data_rlp)
     }
 
-    pub fn save_status_field(&self, field: u8, value: u64) -> Result<(), anyhow::Error> {
-        self.0.metadata().write_status_field(field, value)
-    }
-
-    pub fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<(), anyhow::Error> {
-        self.0.pbft().write_manager_field(field, value)
-    }
-
-    pub fn save_pbft_mgr_status(&self, field: u8, value: bool) -> Result<(), anyhow::Error> {
-        self.0.pbft().write_manager_status(field, value)
-    }
-
     /// Batch-loads canonical transaction RLP payloads by hash through Rust
     /// storage.
     ///
@@ -1614,7 +1602,9 @@ mod tests {
 
             let existing_tx_count = 3u64;
             storage
-                .save_status_field(
+                .0
+                .metadata()
+                .write_status_field(
                     rustaxa_storage::StatusField::TrxCount as u8,
                     existing_tx_count,
                 )

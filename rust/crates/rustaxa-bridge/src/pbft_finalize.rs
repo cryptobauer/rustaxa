@@ -1995,7 +1995,9 @@ mod tests {
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
             storage
-                .save_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD, false)
+                .0
+                .pbft()
+                .write_manager_status(EXECUTED_BLOCK_STATUS_FIELD, false)
                 .expect("previous executed status should seed");
             let status_result = apply_pbft_finalization_storage_writes(
                 &storage,
