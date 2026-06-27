@@ -493,6 +493,9 @@ Implementation status:
   the dedicated `storage_shim_save_sortition_params_change` batch appender.
 - The last C++ test fixture caller of broad `BridgeStorage::save_extra_reward_vote` has been migrated to the dedicated
   `storage_shim_save_extra_reward_vote` batch appender, and the broad CXX mutator is deleted.
+- The remaining test-only callers of broad `BridgeStorage::save_own_verified_vote` have been migrated to either the
+  dedicated `storage_shim_save_own_verified_vote` batch appender or native `rustaxa-consensus` vote persistence helpers,
+  and the broad CXX mutator is deleted.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

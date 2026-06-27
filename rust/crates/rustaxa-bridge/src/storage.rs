@@ -15,9 +15,9 @@ use rustaxa_consensus::{
     clear_own_verified_votes as domain_clear_own_verified_votes,
     persist_pbft_vote_progress as domain_persist_pbft_vote_progress,
     save_non_finalized_transactions as domain_save_non_finalized_transactions,
-    save_own_verified_vote as domain_save_own_verified_vote, NonFinalizedTransactionStoragePayload,
+    NonFinalizedTransactionStoragePayload,
     PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle,
-    PbftVotePersistenceResult as DomainPbftVotePersistenceResult, PbftVotePersistenceStatus,
+    PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
     PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
     PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
 };
@@ -37,15 +37,6 @@ fn pbft_vote_persistence_from_domain(
         applied_writes: value.applied_writes,
         error_code: value.error_code,
     }
-}
-
-fn require_pbft_vote_persistence_applied(
-    result: DomainPbftVotePersistenceResult,
-) -> Result<(), anyhow::Error> {
-    if result.status == PbftVotePersistenceStatus::Applied {
-        return Ok(());
-    }
-    Err(anyhow::anyhow!(result.error_code))
 }
 
 fn vote_storage_record_to_domain(
@@ -1466,20 +1457,6 @@ impl BridgeStorage {
 
     pub fn save_pbft_head(&self, hash: &[u8; 32], head: Vec<u8>) -> Result<(), anyhow::Error> {
         self.0.pbft().write_head(H256::from(*hash), &head)
-    }
-
-    pub fn save_own_verified_vote(
-        &self,
-        hash: &[u8; 32],
-        vote_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        require_pbft_vote_persistence_applied(domain_save_own_verified_vote(
-            &self.0,
-            DomainPbftVoteStorageRecord {
-                hash: H256::from(*hash),
-                vote_rlp,
-            },
-        )?)
     }
 
     /// Persists VoteManager durable effects for one accepted PBFT vote.

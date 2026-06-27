@@ -2080,6 +2080,8 @@ mod tests {
     use crate::storage::{
         create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
     };
+    use ethereum_types::H256;
+    use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3099,9 +3101,14 @@ mod tests {
             storage
                 .save_pbft_mgr_status(3, true)
                 .expect("null next status should persist");
-            storage
-                .save_own_verified_vote(&own_hash, vec![0xC0])
-                .expect("own vote should persist");
+            save_own_verified_vote(
+                &storage.0,
+                PbftVoteStorageRecord {
+                    hash: H256::from(own_hash),
+                    vote_rlp: vec![0xC0],
+                },
+            )
+            .expect("own vote should persist");
 
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
