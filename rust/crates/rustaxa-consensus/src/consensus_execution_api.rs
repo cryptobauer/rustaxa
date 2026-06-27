@@ -13,6 +13,7 @@ use crate::{
     final_chain_execution_session_persist_external_evm_pending_publication,
     final_chain_execution_session_plan_external_evm_commit,
     final_chain_execution_session_plan_external_evm_publication,
+    final_chain_execution_session_prepare_external_evm_state_commit,
     final_chain_execution_session_publish_external_evm_publication,
     final_chain_execution_session_report_evm,
     final_chain_execution_session_report_external_evm_state_commit_result,
@@ -105,6 +106,27 @@ impl ConsensusExecutionApi {
         session: &mut FinalChainExecutionSession,
     ) -> FinalChainExternalEvmPublicationPlan {
         final_chain_execution_session_plan_external_evm_publication(final_chain, session)
+    }
+
+    /// Builds the entire external-EVM publication preparation bundle.
+    ///
+    /// This performs publication plan derivation, reward-stat/proposal-period
+    /// plan attachment, state-commit request authorization, and pending
+    /// publication marker persistence. Callers use the returned intent after
+    /// `StateAPI::transition_state_commit()`.
+    pub fn prepare_external_evm_state_commit(
+        &self,
+        final_chain: &FinalChain,
+        session: &mut FinalChainExecutionSession,
+        rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+        proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
+    ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
+        final_chain_execution_session_prepare_external_evm_state_commit(
+            final_chain,
+            session,
+            rewards_stats_update,
+            proposal_period_update,
+        )
     }
 
     /// Attaches rewards-stat storage facts to the pending publication plan.

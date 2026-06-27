@@ -24,8 +24,6 @@ constexpr uint8_t kFinalChainExecutionActionExecuteExternalEvm = 2;
 constexpr uint8_t kFinalChainExecutionActionReject = 3;
 constexpr uint8_t kFinalChainExecutionActionDistributeExternalEvmRewards = 4;
 constexpr uint8_t kFinalChainExecutionActionProvideSystemTransactions = 5;
-constexpr uint8_t kFinalChainExecutionActionPlanExternalEvmPublication = 6;
-constexpr uint8_t kFinalChainExecutionActionRequestExternalEvmStateCommit = 8;
 constexpr uint8_t kFinalChainExecutionActionPublishExternalEvmStorage = 9;
 constexpr uint8_t kFinalChainEvmReportStatusSuccess = 0;
 constexpr uint8_t kFinalChainEvmRewardsReportStatusSuccess = 0;
@@ -717,58 +715,17 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM commit plan failed: " +
                       std::string(commit_plan.error_code));
   }
-
-  auto publication_plan_step = rust_execution_api_.value()->consensus_execution_next_execution_request(*session);
-  if (publication_plan_step.action != kFinalChainExecutionActionPlanExternalEvmPublication) {
-    throw DbException("FinalChain::finalize expected external EVM publication plan action, got " +
-                      std::to_string(publication_plan_step.action) + ": " +
-                      std::string(publication_plan_step.error_code));
-  }
-  auto publication_plan =
-      rust_execution_api_.value()->consensus_execution_plan_publication(*rust_final_chain_.value(), *session);
-  if (!publication_plan.error_code.empty()) {
-    throw DbException("FinalChain::finalize Rust external EVM publication plan failed: " +
-                      std::string(publication_plan.error_code));
-  }
-  publication_plan = rust_execution_api_.value()->consensus_execution_attach_rewards_stats(
-      *session, std::move(rewards_stats.storage_update));
-  if (!publication_plan.error_code.empty()) {
-    throw DbException("FinalChain::finalize Rust external EVM rewards-stats plan failed: " +
-                      std::string(publication_plan.error_code));
-  }
-  rustaxa::FinalChainProposalPeriodDagLevelUpdate proposal_period_update;
-  if (anchor) {
-    proposal_period_update.has_update = true;
-    proposal_period_update.level = anchor->getLevel() + max_levels_per_period_;
-  } else {
-    proposal_period_update.has_update = false;
-    proposal_period_update.level = 0;
-  }
-  publication_plan = rust_execution_api_.value()->consensus_execution_attach_proposal_period_dag_level(
-      *session, std::move(proposal_period_update));
-  if (!publication_plan.error_code.empty()) {
-    throw DbException("FinalChain::finalize Rust external EVM proposal-period mapping plan failed: " +
-                      std::string(publication_plan.error_code));
-  }
-  auto state_commit_step = rust_execution_api_.value()->consensus_execution_next_execution_request(*session);
-  if (state_commit_step.action != kFinalChainExecutionActionRequestExternalEvmStateCommit) {
-    throw DbException("FinalChain::finalize expected external EVM state commit request action, got " +
-                      std::to_string(state_commit_step.action) + ": " + std::string(state_commit_step.error_code));
-  }
-
-  auto state_commit_intent = rust_execution_api_.value()->consensus_execution_next_state_commit_request(
-      *session, commit_plan, publication_plan);
+  auto state_commit_intent = rust_execution_api_.value()->consensus_execution_prepare_external_evm_state_commit(
+      *rust_final_chain_.value(),
+      *session,
+      std::move(rewards_stats.storage_update),
+      rustaxa::FinalChainProposalPeriodDagLevelUpdate{
+          .has_update = !!anchor,
+          .level = anchor ? anchor->getLevel() + max_levels_per_period_ : 0});
   if (state_commit_intent.status != kFinalChainEvmStateCommitIntentReadyToCommit ||
       !state_commit_intent.error_code.empty()) {
-    throw DbException("FinalChain::finalize Rust external EVM state commit intent rejected: " +
+    throw DbException("FinalChain::finalize Rust external EVM state commit intent failed: " +
                       std::string(state_commit_intent.error_code));
-  }
-  auto pending_publication_report = rust_execution_api_.value()->consensus_execution_persist_pending_publication(
-      *rust_final_chain_.value(), *session);
-  if (pending_publication_report.status != kFinalChainEvmPublicationStatusApplied ||
-      !pending_publication_report.error_code.empty()) {
-    throw DbException("FinalChain::finalize Rust external EVM pending publication marker failed: " +
-                      std::string(pending_publication_report.error_code));
   }
 
   auto state_commit_result = external_evm_state_api_.commitState();

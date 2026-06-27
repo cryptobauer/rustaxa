@@ -479,6 +479,17 @@ Acceptance:
 - The execution adapter has no `DbStorage` publication or FinalChain storage responsibilities.
 - External EVM tests and final-chain Rust bridge tests pass.
 
+Implementation status:
+
+- Slice 7 is complete: consensus-facing C++ `FinalChain::finalizeExternalEvm` now uses one-shot
+  `consensus_execution_prepare_external_evm_state_commit`, collapsing external publication planning, rewards-stat/proposal-period
+  attachments, state-commit intent derivation, and pending-publication marker persistence into a single API boundary call.
+- `BridgeConsensusExecutionApi` now exposes the one-shot bridge method in
+  `rust/crates/rustaxa-bridge/src/final_chain.rs`, and it is declared in
+  `rust/crates/rustaxa-bridge/src/ffi.rs`.
+- `ConsensusExecutionApi` adds a matching `prepare_external_evm_state_commit` facade method that delegates to
+  `final_chain_execution_session_prepare_external_evm_state_commit`.
+
 ## Slice 8: Shrink CXX FFI Surface and Module Flags
 
 Purpose: make the bridge small enough to audit.

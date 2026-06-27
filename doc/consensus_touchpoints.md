@@ -306,6 +306,11 @@ Implementation status:
 - `ConsensusExecutionApi` is intentionally stateless. C++ still passes the live `BridgeFinalChain` and
   `BridgeFinalChainExecutionSession` handles, while Rust owns request identity, report validation, publication plans,
   pending marker handling, storage publication, and publication audit decisions.
+- `FinalChain::finalizeExternalEvm` now uses one dedicated API call, `prepare_external_evm_state_commit`, that executes the
+  remaining publication-prep flow (plan, rewards-stat attach, proposal-period mapping, intent derivation, marker persistence)
+  before external-state commit.
+- `Slice 7` is now implemented: Rust owns the external-EVM prep/decision/finalization flow from `finalizeExternalEvm` through
+  the one-shot API.
 - A CXX-facing `FinalChainExternalEvmPublicationAuditReport` is now available through
   `consensus_execution_publication_audit`, making restart/publication verification part of the external execution facade
   instead of a test-only bridge helper.

@@ -6277,6 +6277,13 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationPlan>;
+        pub fn consensus_execution_prepare_external_evm_state_commit(
+            self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
+            session: &mut BridgeFinalChainExecutionSession,
+            rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+            proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
+        ) -> Result<FinalChainExternalEvmStateCommitIntent>;
         pub fn consensus_execution_attach_rewards_stats(
             self: &BridgeConsensusExecutionApi,
             session: &mut BridgeFinalChainExecutionSession,

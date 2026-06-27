@@ -105,6 +105,7 @@ pub use final_chain_execution::{
     final_chain_execution_session_persist_external_evm_pending_publication,
     final_chain_execution_session_plan_external_evm_commit,
     final_chain_execution_session_plan_external_evm_publication,
+    final_chain_execution_session_prepare_external_evm_state_commit,
     final_chain_execution_session_publish_external_evm_publication,
     final_chain_execution_session_report_evm,
     final_chain_execution_session_report_external_evm_lifecycle,

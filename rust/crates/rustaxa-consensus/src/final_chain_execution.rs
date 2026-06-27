@@ -1159,6 +1159,99 @@ pub fn final_chain_execution_session_request_external_evm_state_commit(
     intent
 }
 
+/// Prepares the external-EVM publication state-commit lane in one step.
+///
+/// The helper owns publication planning, optional rewards-stat/proposal-period plan
+/// attachment, state-commit approval, and pending-publication marker persistence.
+/// It returns the Rust state-commit intent that must be reported after the C++
+/// side confirms `StateAPI::transition_state_commit()`.
+pub fn final_chain_execution_session_prepare_external_evm_state_commit(
+    final_chain: &FinalChain,
+    session: &mut FinalChainExecutionSession,
+    rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
+    proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
+) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
+    let publication_plan =
+        final_chain_execution_session_plan_external_evm_publication(final_chain, session);
+    if !publication_plan.error_code.is_empty() {
+        return Err(anyhow::anyhow!(
+            "FINAL_CHAIN_EVM_PUBLICATION_PLAN_PREPARE_FAILED: {}",
+            publication_plan.error_code
+        ));
+    }
+
+    let publication_plan = final_chain_execution_session_attach_external_evm_rewards_stats(
+        session,
+        rewards_stats_update,
+    );
+    if !publication_plan.error_code.is_empty() {
+        return Err(anyhow::anyhow!(
+            "FINAL_CHAIN_EVM_PUBLICATION_REWARDS_STATS_PREPARE_FAILED: {}",
+            publication_plan.error_code
+        ));
+    }
+
+    let publication_plan =
+        final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
+            session,
+            proposal_period_update,
+        );
+    if !publication_plan.error_code.is_empty() {
+        return Err(anyhow::anyhow!(
+            "FINAL_CHAIN_EVM_PROPOSAL_PERIOD_MAPPING_PREPARE_FAILED: {}",
+            publication_plan.error_code
+        ));
+    }
+
+    let state_commit_request_step = final_chain_execution_session_next(session);
+    if state_commit_request_step.action
+        != FINAL_CHAIN_EXECUTION_ACTION_REQUEST_EXTERNAL_EVM_STATE_COMMIT
+    {
+        return Err(anyhow::anyhow!(
+            "FINAL_CHAIN_EVM_STATE_COMMIT_UNEXPECTED_AFTER_PUBLICATION_PLAN: {}",
+            state_commit_request_step.action
+        ));
+    }
+
+    let commit_plan = session
+        .external_evm_commit_plan
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_EVM_STATE_COMMIT_WITHOUT_COMMIT_PLAN"))?;
+
+    let state_commit_request = FinalChainExternalEvmStateCommitRequest {
+        request_id: publication_plan.request_id,
+        plan_id: publication_plan.plan_id,
+        period: publication_plan.period,
+        post_execution_state_root: commit_plan.post_execution_state_root,
+        post_rewards_state_root: commit_plan.state_root,
+        publication_block_hash: publication_plan.block_hash,
+    };
+
+    let intent = final_chain_execution_session_request_external_evm_state_commit(
+        session,
+        state_commit_request,
+    );
+    if intent.status != FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_READY_TO_COMMIT {
+        return Err(anyhow::anyhow!("{}", intent.error_code));
+    }
+
+    let pending_publication_report =
+        final_chain_execution_session_persist_external_evm_pending_publication(
+            final_chain,
+            session,
+        )?;
+    if pending_publication_report.status != FINAL_CHAIN_EVM_PUBLICATION_STATUS_APPLIED
+        || !pending_publication_report.error_code.is_empty()
+    {
+        return Err(anyhow::anyhow!(
+            "FINAL_CHAIN_EVM_PENDING_PUBLICATION_PREPARE_FAILED: {}",
+            pending_publication_report.error_code
+        ));
+    }
+
+    Ok(intent)
+}
+
 /// Validates external EVM staged-state lifecycle facts and returns the final
 /// Rust commit decision.
 ///
