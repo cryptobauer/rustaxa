@@ -250,16 +250,6 @@ pub struct BridgeVerifiedVotes {
     pub storage: Option<Arc<Storage>>,
 }
 
-/// Compatibility runtime for older PBFT vote validation bridge tests.
-///
-/// Production Rust-mode `VoteManager` routing uses `BridgeVerifiedVotes`, whose
-/// `PbftVoteAdmissionRuntime` owns validation replay protection, threshold
-/// caching, verified-vote metadata, and retained vote payloads together.
-pub struct BridgePbftVoteValidationRuntime {
-    pub replay_cache: Mutex<rustaxa_consensus::PbftVoteReplayCache>,
-    pub threshold_runtime: Mutex<rustaxa_consensus::PbftTwoTPlusOneThresholdRuntime>,
-}
-
 pub struct BridgePillarVotes(pub PillarVotes);
 
 /// Bridge wrapper for the Rust sortition parameter manager.
@@ -6587,23 +6577,6 @@ pub mod rustaxa_ffi {
             committee_size: u64,
             number_of_proposers: u64,
         ) -> Result<u64>;
-        type BridgePbftVoteValidationRuntime;
-        pub fn create_pbft_vote_validation_runtime(
-            max_size: usize,
-            delete_step: usize,
-        ) -> Box<BridgePbftVoteValidationRuntime>;
-        pub fn pbft_vote_replay_contains(
-            self: &BridgePbftVoteValidationRuntime,
-            vote_hash: &[u8; 32],
-        ) -> bool;
-        pub fn pbft_vote_replay_insert(
-            self: &BridgePbftVoteValidationRuntime,
-            vote_hash: &[u8; 32],
-        ) -> bool;
-        pub fn pbft_two_t_plus_one_threshold(
-            self: &BridgePbftVoteValidationRuntime,
-            fact: PbftTwoTPlusOneThresholdFact,
-        ) -> PbftTwoTPlusOneThresholdPlan;
         pub fn pbft_vote_validation_plan(
             fact: PbftVoteValidationFact,
         ) -> Result<PbftVoteValidationPlan>;

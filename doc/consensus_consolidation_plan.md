@@ -593,6 +593,9 @@ Implementation status:
   fact-shaped transaction-manager runtime known check (`transaction_manager_runtime_is_transaction_known`) are deleted.
   Live callers use runtime-owned DAG methods, `create_pbft_chain_from_storage`, and the hash-only transaction-manager
   runtime known check instead.
+- `BridgePbftVoteValidationRuntime` is deleted. The standalone validation replay/threshold runtime had no external C++
+  callsites and only protected older bridge tests; production Rust-mode vote validation uses `BridgeVerifiedVotes`, whose
+  admission runtime owns replay protection, threshold caching, verified-vote metadata, and retained payloads together.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
