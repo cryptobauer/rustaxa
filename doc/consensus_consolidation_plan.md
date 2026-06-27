@@ -480,6 +480,19 @@ Implementation notes:
   especially for admission/packing/finalization flows. Their shrink opportunities are the next concrete work and require
   deleting/rewiring shim-local orchestration before the slice can be marked complete.
 
+### Slice 6 validation checkpoint (2026-06-27)
+
+- Ran `cmake --build /build --target pbft_manager_test --parallel 12` and
+  `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge` plus
+  `cargo check --manifest-path rust/Cargo.toml -p rustaxa-consensus --no-run`.
+  All passed with no compiler or link-time failures.
+- Focused integration execution (`PbftManagerTest.pbft_manager_run_multi_nodes`) passed on this branch in the
+  requested build configuration.
+- No new transport/network/VDF failures were introduced by the current slice state, but PBFT and Pillar manager
+  shim orchestration loops are still present and remain the remaining Slice 6 work.
+- The immediate follow-up is one-loop reduction per subsystem (`transaction_manager_shim` pack/admission/runtime and
+  `pbft_manager_shim` tick/finalization/state-action orchestration) before Slice 6 can be marked complete.
+
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
 Purpose: keep the EVM boundary external while removing consensus logic and storage publication from the C++ adapter.
