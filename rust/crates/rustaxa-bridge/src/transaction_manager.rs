@@ -26,7 +26,6 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerPublicInsertResult, TransactionManagerRuntimeAdmissionOutcome,
     TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
     TransactionManagerSidecarLookupRequest, TransactionManagerSidecarTransitionInput,
-    TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
     TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
     TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
     TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedRuntimeFact,
@@ -77,6 +76,21 @@ use rustaxa_consensus::transaction_storage::{
 use rustaxa_storage::Storage;
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::time::{Duration, Instant};
+
+#[derive(Debug)]
+struct TransactionManagerStoredTransactionRequest {
+    input_index: u64,
+    hash: [u8; 32],
+}
+
+#[derive(Debug)]
+struct TransactionManagerStoredTransactionLookup {
+    hash: [u8; 32],
+    found: bool,
+    source: u8,
+    old_finalized: bool,
+    tx_rlp: Vec<u8>,
+}
 
 const TM_TRANSACTION_VIEW_SOURCE_MISSING: u8 = 0;
 const TM_TRANSACTION_VIEW_SOURCE_QUEUE: u8 = 1;
@@ -1094,21 +1108,6 @@ fn bounded_transaction_view_count(requests_len: usize, max_count: u64) -> usize 
     }
 }
 
-/// Resolves transaction hashes through TransactionManager storage rules.
-///
-/// Inputs are ordered requests from C++ after live transaction caches miss.
-/// Outputs preserve request order, echo `input_index` and `hash`, classify the
-/// storage source, and carry canonical transaction RLP bytes for C++ object
-/// materialization. Missing hashes are returned as `source = 0` instead of
-/// errors. Storage backend failures, malformed transaction-location RLP, and
-/// malformed period data return `anyhow::Error` with stable context labels.
-pub fn transaction_manager_load_stored_transactions(
-    storage: &BridgeStorage,
-    requests: Vec<TransactionManagerStoredTransactionRequest>,
-) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
-    transaction_manager_load_stored_transactions_from_storage(&storage.0, requests)
-}
-
 fn transaction_manager_load_stored_transactions_from_storage(
     storage: &Storage,
     requests: Vec<TransactionManagerStoredTransactionRequest>,
@@ -1126,7 +1125,6 @@ fn transaction_manager_load_stored_transactions_from_storage(
         .into_iter()
         .map(|lookup| {
             Ok(TransactionManagerStoredTransactionLookup {
-                input_index: lookup.input_index,
                 hash: lookup.hash.0,
                 found: lookup.found,
                 source: lookup.source,
@@ -1135,28 +1133,6 @@ fn transaction_manager_load_stored_transactions_from_storage(
             })
         })
         .collect()
-}
-
-/// Resolves storage-backed proposal transactions and filters finalized hits
-/// against Rust FinalChain account state at the proposal period.
-///
-/// The generic storage lookup contract remains byte-oriented. This proposal
-/// path additionally verifies the stored RLP hash, inspects the legacy
-/// transaction sender and nonce in Rust, and returns old finalized
-/// transactions as data misses with `old_finalized = true` so C++ only
-/// materializes accepted payloads.
-pub fn transaction_manager_load_proposal_transactions_with_final_chain(
-    storage: &BridgeStorage,
-    final_chain: &BridgeFinalChain,
-    proposal_period: u64,
-    requests: Vec<TransactionManagerStoredTransactionRequest>,
-) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
-    transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
-        &storage.0,
-        final_chain,
-        proposal_period,
-        requests,
-    )
 }
 
 fn transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
@@ -2793,8 +2769,8 @@ mod tests {
             )
             .expect("finalization should create block-scoped account snapshot");
 
-        let before = transaction_manager_load_proposal_transactions_with_final_chain(
-            &storage,
+        let before = transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
+            &storage.0,
             &final_chain,
             0,
             vec![TransactionManagerStoredTransactionRequest {
@@ -2807,8 +2783,8 @@ mod tests {
         assert!(!before[0].old_finalized);
         assert_eq!(before[0].tx_rlp, transaction_rlp);
 
-        let after = transaction_manager_load_proposal_transactions_with_final_chain(
-            &storage,
+        let after = transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
+            &storage.0,
             &final_chain,
             1,
             vec![TransactionManagerStoredTransactionRequest {
@@ -3932,8 +3908,8 @@ mod tests {
             .write_location(H256::from([4u8; 32]), 9, 0, true)
             .expect("system finalized location should persist");
 
-        let out = transaction_manager_load_stored_transactions(
-            &storage,
+        let out = transaction_manager_load_stored_transactions_from_storage(
+            &storage.0,
             vec![
                 TransactionManagerStoredTransactionRequest {
                     input_index: 7,
@@ -3957,22 +3933,13 @@ mod tests {
 
         let out = out
             .into_iter()
-            .map(|entry| {
-                (
-                    entry.input_index,
-                    entry.hash,
-                    entry.found,
-                    entry.source,
-                    entry.tx_rlp,
-                )
-            })
+            .map(|entry| (entry.hash, entry.found, entry.source, entry.tx_rlp))
             .collect::<Vec<_>>();
 
         assert_eq!(out.len(), 4);
         assert_eq!(
             out[0],
             (
-                7,
                 [2u8; 32],
                 true,
                 TM_STORED_TX_SOURCE_FINALIZED_REGULAR,
@@ -3982,7 +3949,6 @@ mod tests {
         assert_eq!(
             out[1],
             (
-                8,
                 [3u8; 32],
                 false,
                 TM_STORED_TX_SOURCE_MISSING,
@@ -3991,12 +3957,11 @@ mod tests {
         );
         assert_eq!(
             out[2],
-            (9, [1u8; 32], true, TM_STORED_TX_SOURCE_PENDING, vec![0x11])
+            ([1u8; 32], true, TM_STORED_TX_SOURCE_PENDING, vec![0x11])
         );
         assert_eq!(
             out[3],
             (
-                10,
                 [4u8; 32],
                 true,
                 TM_STORED_TX_SOURCE_FINALIZED_SYSTEM,

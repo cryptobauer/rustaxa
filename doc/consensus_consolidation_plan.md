@@ -612,6 +612,11 @@ Implementation status:
   `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput` are deleted from the bridge
   surface. C++ recovery uses the single high-level `transaction_manager_recover_nonfinalized_with_runtime` command while
   Rust bridge tests exercise native recovery helpers directly.
+- Transaction-manager storage lookup helpers are no longer CXX exports:
+  `transaction_manager_load_stored_transactions`, `transaction_manager_load_proposal_transactions_with_final_chain`,
+  `TransactionManagerStoredTransactionRequest`, and `TransactionManagerStoredTransactionLookup` are deleted from the
+  bridge surface. Live C++ lookup paths use the runtime-owned transaction view APIs that combine queue, sidecar, storage,
+  and proposal-period filtering in one command.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.

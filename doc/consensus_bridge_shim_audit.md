@@ -221,6 +221,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput`. The only C++ recovery boundary is
   now `transaction_manager_recover_nonfinalized_with_runtime`, which keeps storage scan, stale-row cleanup, payload
   validation, and sidecar rebuild inside Rust-owned runtime code.
+- The bridge-test-only transaction-manager stored-lookup exports and DTOs are deleted:
+  `transaction_manager_load_stored_transactions`, `transaction_manager_load_proposal_transactions_with_final_chain`,
+  `TransactionManagerStoredTransactionRequest`, and `TransactionManagerStoredTransactionLookup`. C++ materialization
+  remains behind `TransactionManager` facade methods backed by runtime-owned transaction view APIs.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.
