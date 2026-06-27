@@ -394,6 +394,16 @@ std::filesystem::path uniqueTempDir(const std::string& name) {
   return path;
 }
 
+rust::Box<BridgePbftManagerRuntime> managerRuntimeForTick(PbftManagerRuntimeTickFact tick) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_runtime_session");
+  auto storage = create_storage(test_dir.string());
+  auto startup_fact = makePbftManagerStartupFact();
+  startup_fact.cacti_active_at_chain_size = false;
+  auto runtime = create_pbft_manager_runtime_from_storage(*storage, startup_fact);
+  pbft_manager_runtime_begin_session(*runtime, tick);
+  return runtime;
+}
+
 rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
   rust::Vec<uint8_t> out;
   out.reserve(values.size());
@@ -543,10 +553,9 @@ TEST(RustPbftSyncTest, ProcessPeriodRuntimeRecordsAcceptTranscript) {
   fact.pillar_votes_status = kPbftSyncFactValid;
   plan = plan_pbft_sync_process_period_data_runtime(fact);
 
-  EXPECT_EQ(checks,
-            (std::vector<uint8_t>{kPbftSyncNextCheckValidateFinalChainHash, kPbftSyncNextCheckCheckRewardVotes,
-                                  kPbftSyncNextCheckValidateCertVotes, kPbftSyncNextCheckCheckTransactions,
-                                  kPbftSyncNextCheckValidatePillarVotes}));
+  EXPECT_EQ(checks, (std::vector<uint8_t>{kPbftSyncNextCheckValidateFinalChainHash, kPbftSyncNextCheckCheckRewardVotes,
+                                          kPbftSyncNextCheckValidateCertVotes, kPbftSyncNextCheckCheckTransactions,
+                                          kPbftSyncNextCheckValidatePillarVotes}));
   EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionAccept);
   EXPECT_EQ(plan.next_check, kPbftSyncNextCheckNone);
   EXPECT_TRUE(plan.accept_period_data);
@@ -580,11 +589,11 @@ TEST(RustPbftSyncTest, ProcessPeriodRuntimeWaitsAndAccepts) {
 }
 
 TEST(RustPbftSyncTest, ManagerRuntimeOrdersOneValueProposalTick) {
-  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
+  auto runtime = managerRuntimeForTick(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
   std::vector<uint8_t> actions;
 
   while (true) {
-    auto step = session->pbft_manager_runtime_session_next();
+    auto step = pbft_manager_runtime_session_next(*runtime);
     if (!step.has_action) {
       EXPECT_EQ(step.status, kPbftManagerRuntimeStatusComplete);
       EXPECT_TRUE(step.complete);
@@ -602,7 +611,7 @@ TEST(RustPbftSyncTest, ManagerRuntimeOrdersOneValueProposalTick) {
     } else if (step.action == kPbftManagerRuntimeActionSleepUntilNextStep) {
       result = kPbftManagerRuntimeResultSleepApplied;
     }
-    step = session->pbft_manager_runtime_session_report(managerRuntimeReport(step.cursor, step.action, result));
+    step = pbft_manager_runtime_session_report(*runtime, managerRuntimeReport(step.cursor, step.action, result));
     EXPECT_TRUE(step.can_continue);
   }
 
@@ -618,19 +627,19 @@ TEST(RustPbftSyncTest, ManagerRuntimeOrdersOneValueProposalTick) {
 }
 
 TEST(RustPbftSyncTest, ManagerRuntimeCompletesWithRestartOnCertPushProgress) {
-  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
+  auto runtime = managerRuntimeForTick(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
 
-  auto step = session->pbft_manager_runtime_session_next();
+  auto step = pbft_manager_runtime_session_next(*runtime);
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionProcessSyncedBlocks);
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionMaybeBroadcastVotes);
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionTryPushCertVotesBlock);
 
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultProgressRestart));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultProgressRestart));
 
   EXPECT_EQ(step.status, kPbftManagerRuntimeStatusComplete);
   EXPECT_TRUE(step.complete);
@@ -638,24 +647,24 @@ TEST(RustPbftSyncTest, ManagerRuntimeCompletesWithRestartOnCertPushProgress) {
 }
 
 TEST(RustPbftSyncTest, ManagerRuntimeAdvanceRoundCandidateRequestsResetEffect) {
-  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
+  auto runtime = managerRuntimeForTick(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
 
-  auto step = session->pbft_manager_runtime_session_next();
+  auto step = pbft_manager_runtime_session_next(*runtime);
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionProcessSyncedBlocks);
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionMaybeBroadcastVotes);
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionTryPushCertVotesBlock);
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress));
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionTryAdvanceRound);
 
   auto report = managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress);
   report.has_new_round = true;
   report.new_round = 5;
-  step = session->pbft_manager_runtime_session_report(std::move(report));
+  step = pbft_manager_runtime_session_report(*runtime, std::move(report));
 
   ASSERT_EQ(step.status, kPbftManagerRuntimeStatusActive);
   ASSERT_TRUE(step.has_action);
@@ -663,8 +672,8 @@ TEST(RustPbftSyncTest, ManagerRuntimeAdvanceRoundCandidateRequestsResetEffect) {
   EXPECT_TRUE(step.has_target_round);
   EXPECT_EQ(step.target_round, 5);
 
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultTransition));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultTransition));
 
   EXPECT_EQ(step.status, kPbftManagerRuntimeStatusComplete);
   EXPECT_TRUE(step.complete);
@@ -672,21 +681,21 @@ TEST(RustPbftSyncTest, ManagerRuntimeAdvanceRoundCandidateRequestsResetEffect) {
 }
 
 TEST(RustPbftSyncTest, ManagerRuntimeRejectsNonIncreasingAdvanceRoundCandidate) {
-  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
+  auto runtime = managerRuntimeForTick(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
 
-  auto step = session->pbft_manager_runtime_session_next();
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress));
+  auto step = pbft_manager_runtime_session_next(*runtime);
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress));
   ASSERT_EQ(step.action, kPbftManagerRuntimeActionTryAdvanceRound);
 
   auto report = managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultNoProgress);
   report.has_new_round = true;
   report.new_round = 2;
-  step = session->pbft_manager_runtime_session_report(std::move(report));
+  step = pbft_manager_runtime_session_report(*runtime, std::move(report));
 
   EXPECT_EQ(step.status, kPbftManagerRuntimeStatusInvalidReport);
   EXPECT_FALSE(step.can_continue);
@@ -694,15 +703,15 @@ TEST(RustPbftSyncTest, ManagerRuntimeRejectsNonIncreasingAdvanceRoundCandidate) 
 }
 
 TEST(RustPbftSyncTest, ManagerRuntimeCertifyReportSelectsFinishTransition) {
-  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateCertify));
+  auto runtime = managerRuntimeForTick(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateCertify));
 
   while (true) {
-    auto step = session->pbft_manager_runtime_session_next();
+    auto step = pbft_manager_runtime_session_next(*runtime);
     ASSERT_TRUE(step.has_action);
     if (step.action == kPbftManagerRuntimeActionRunCertify) {
       auto report = managerRuntimeReport(step.cursor, step.action, kPbftManagerRuntimeResultStateDone);
       report.go_finish_state = true;
-      step = session->pbft_manager_runtime_session_report(std::move(report));
+      step = pbft_manager_runtime_session_report(*runtime, std::move(report));
       EXPECT_EQ(step.status, kPbftManagerRuntimeStatusActive);
       EXPECT_EQ(step.action, kPbftManagerRuntimeActionTransitionToFinish);
       break;
@@ -713,16 +722,16 @@ TEST(RustPbftSyncTest, ManagerRuntimeCertifyReportSelectsFinishTransition) {
         step.action == kPbftManagerRuntimeActionTryAdvanceRound) {
       result = kPbftManagerRuntimeResultNoProgress;
     }
-    session->pbft_manager_runtime_session_report(managerRuntimeReport(step.cursor, step.action, result));
+    pbft_manager_runtime_session_report(*runtime, managerRuntimeReport(step.cursor, step.action, result));
   }
 }
 
 TEST(RustPbftSyncTest, ManagerRuntimeRejectsCursorMismatch) {
-  auto session = create_pbft_manager_runtime_session(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
-  auto step = session->pbft_manager_runtime_session_next();
+  auto runtime = managerRuntimeForTick(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
+  auto step = pbft_manager_runtime_session_next(*runtime);
 
-  step = session->pbft_manager_runtime_session_report(
-      managerRuntimeReport(step.cursor + 1, step.action, kPbftManagerRuntimeResultStateDone));
+  step = pbft_manager_runtime_session_report(
+      *runtime, managerRuntimeReport(step.cursor + 1, step.action, kPbftManagerRuntimeResultStateDone));
 
   EXPECT_EQ(step.status, kPbftManagerRuntimeStatusActionMismatch);
   EXPECT_FALSE(step.can_continue);

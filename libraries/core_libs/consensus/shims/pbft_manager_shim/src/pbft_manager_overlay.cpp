@@ -636,8 +636,7 @@ rust::Vec<rustaxa::PeriodDataQueueTransactionPayload> periodDataTransactionRlps(
   return payloads;
 }
 
-rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> pbftVoteRlps(
-    const std::vector<std::shared_ptr<PbftVote>> &votes) {
+rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> pbftVoteRlps(const std::vector<std::shared_ptr<PbftVote>> &votes) {
   rust::Vec<rustaxa::PeriodDataQueuePbftVotePayload> payloads;
   payloads.reserve(votes.size());
   for (const auto &vote : votes) {
@@ -673,8 +672,7 @@ std::vector<vote_hash_t> rewardVoteHashes(const PeriodData &period_data) {
   return period_data.pbft_blk->getRewardVotes();
 }
 
-rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIdentities(
-    const PeriodData &period_data) {
+rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIdentities(const PeriodData &period_data) {
   rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> identities;
   identities.reserve(period_data.transactions.size());
 
@@ -1143,7 +1141,7 @@ void PbftManager::run() {
     fact.has_eligible_wallet = has_eligible_wallet;
     fact.polling_interval_ms = static_cast<uint64_t>(kPollingIntervalMs.count());
 
-    auto runtime_session = rustaxa::create_pbft_manager_runtime_session(fact);
+    rustaxa::pbft_manager_runtime_begin_session(*pbft_manager_runtime_.value(), fact);
     auto report_action = [&](const rustaxa::PbftManagerRuntimeSessionStep &step, uint8_t result, bool success = true,
                              const std::string &error_code = "", bool has_new_round = false, PbftRound new_round = 0) {
       const auto current_period = getPbftPeriod();
@@ -1160,7 +1158,7 @@ void PbftManager::run() {
       report.has_new_round = has_new_round;
       report.new_round = new_round;
       report.error_code = error_code;
-      return runtime_session->pbft_manager_runtime_session_report(std::move(report));
+      return rustaxa::pbft_manager_runtime_session_report(*pbft_manager_runtime_.value(), std::move(report));
     };
     auto apply_delay_transition = [&](uint8_t kind) {
       const auto transition_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
@@ -1190,7 +1188,7 @@ void PbftManager::run() {
 
     bool restart_loop = false;
     while (!stopped_) {
-      auto step = runtime_session->pbft_manager_runtime_session_next();
+      auto step = rustaxa::pbft_manager_runtime_session_next(*pbft_manager_runtime_.value());
       if (step.status == kPbftManagerRuntimeStatusComplete || step.complete) {
         restart_loop = step.restart_loop;
         break;
@@ -1199,7 +1197,7 @@ void PbftManager::run() {
       if (step.status != kPbftManagerRuntimeStatusActive || !step.has_action) {
         LOG(log_er_) << "Rust PBFT manager runtime rejected tick " << step.tick_id << ", status "
                      << static_cast<uint32_t>(step.status) << ", error " << static_cast<std::string>(step.error_code);
-        runtime_session->abort_pbft_manager_runtime_session();
+        rustaxa::abort_pbft_manager_runtime_session(*pbft_manager_runtime_.value());
         assert(false);
         restart_loop = true;
         break;
@@ -1211,7 +1209,7 @@ void PbftManager::run() {
         LOG(log_dg_) << "Rust PBFT manager runtime action " << static_cast<uint32_t>(step.action)
                      << " no longer matches Rust PBFT state " << static_cast<uint32_t>(action_state)
                      << "; restarting daemon loop";
-        runtime_session->abort_pbft_manager_runtime_session();
+        rustaxa::abort_pbft_manager_runtime_session(*pbft_manager_runtime_.value());
         restart_loop = true;
         break;
       }
@@ -1324,7 +1322,7 @@ void PbftManager::run() {
         LOG(log_er_) << "Rust PBFT manager runtime failed tick " << step.tick_id << ", status "
                      << static_cast<uint32_t>(step.status) << ", action " << static_cast<uint32_t>(step.action)
                      << ", error " << static_cast<std::string>(step.error_code);
-        runtime_session->abort_pbft_manager_runtime_session();
+        rustaxa::abort_pbft_manager_runtime_session(*pbft_manager_runtime_.value());
         assert(false);
         restart_loop = true;
         break;
@@ -4997,9 +4995,9 @@ void PbftManager::periodDataQueuePush(PeriodData &&period_data, dev::p2p::NodeID
     period_data_queue_payloads_.clear();
   }
 
-  period_data_queue_payloads_.push_back(QueuedPeriodDataPayload{
-      entry_id, std::move(period_data), std::move(previous_block_cert_votes), std::move(current_block_cert_votes),
-      node_id});
+  period_data_queue_payloads_.push_back(QueuedPeriodDataPayload{entry_id, std::move(period_data),
+                                                                std::move(previous_block_cert_votes),
+                                                                std::move(current_block_cert_votes), node_id});
   ++next_period_data_queue_entry_id_;
 }
 

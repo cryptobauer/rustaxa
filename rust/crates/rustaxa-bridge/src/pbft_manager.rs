@@ -66,7 +66,7 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::{
     BridgePbftManagerBlockValidationSession, BridgePbftManagerProposalSession,
-    BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, BridgeStorage,
+    BridgePbftManagerRuntime, BridgeStorage,
 };
 use crate::period_data_queue::{
     bridge_period_data_queue_clean_old_data, bridge_period_data_queue_pop,
@@ -131,8 +131,8 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerProposalSessionStep, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,
     PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeTickFact, PbftManagerSleepFact, PbftManagerSleepPlan,
-    PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
+    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepFact,
+    PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
     PbftManagerStateActionEffect, PbftManagerStateActionEffectPlan,
     PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionPlan,
@@ -247,6 +247,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         period_data_queue: PeriodDataQueue::new(),
         pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
         state_action_effect_session: None,
+        runtime_session: None,
     }))
 }
 
@@ -1153,29 +1154,50 @@ pub fn pbft_manager_runtime_apply_finalization_storage_writes(
     ))
 }
 
-/// Creates an owned PBFT manager runtime session from one daemon-tick fact bundle.
-pub fn create_pbft_manager_runtime_session(
+/// Starts a runtime-owned PBFT manager daemon-tick session.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns the temporary tick
+///   cursor.
+/// - `fact`: compact C++ daemon-loop facts for one PBFT manager tick.
+///
+/// Outputs:
+/// - Replaces any previous runtime session cursor. C++ drives the cursor with
+///   `pbft_manager_runtime_session_next` and
+///   `pbft_manager_runtime_session_report`.
+///
+/// Invariants and edge behavior:
+/// - The tick session is PBFT-manager implementation state and is not exported
+///   as a standalone CXX handle.
+/// - Starting a new tick replaces any incomplete previous tick, matching the
+///   legacy per-loop allocation behavior.
+pub fn pbft_manager_runtime_begin_session(
+    runtime: &mut BridgePbftManagerRuntime,
     fact: FfiPbftManagerRuntimeTickFact,
-) -> Box<BridgePbftManagerRuntimeSession> {
-    Box::new(BridgePbftManagerRuntimeSession {
-        state: create_domain_pbft_manager_runtime_session(fact.into()),
-    })
+) {
+    runtime.runtime_session = Some(create_domain_pbft_manager_runtime_session(fact.into()));
 }
 
-/// Returns the next requested action for this PBFT manager runtime session.
+/// Returns the next requested action for the runtime-owned tick session.
 pub fn pbft_manager_runtime_session_next(
-    session: &mut BridgePbftManagerRuntimeSession,
+    runtime: &mut BridgePbftManagerRuntime,
 ) -> FfiPbftManagerRuntimeSessionStep {
-    next_pbft_manager_runtime_action(&session.state).into()
+    let Some(session) = runtime.runtime_session.as_ref() else {
+        return runtime_session_not_started_step();
+    };
+    next_pbft_manager_runtime_action(session).into()
 }
 
-/// Reports one C++-executed action back to the PBFT manager runtime session.
+/// Reports one C++-executed action back to the runtime-owned tick session.
 pub fn pbft_manager_runtime_session_report(
-    session: &mut BridgePbftManagerRuntimeSession,
+    runtime: &mut BridgePbftManagerRuntime,
     report: FfiPbftManagerRuntimeActionReport,
 ) -> FfiPbftManagerRuntimeSessionStep {
-    session.state = report_pbft_manager_runtime_action(session.state.clone(), report.into());
-    pbft_manager_runtime_session_next(session)
+    let Some(session) = runtime.runtime_session.take() else {
+        return runtime_session_not_started_step();
+    };
+    runtime.runtime_session = Some(report_pbft_manager_runtime_action(session, report.into()));
+    pbft_manager_runtime_session_next(runtime)
 }
 
 /// Plans whether the C++ PBFT manager shell should wait before the next step.
@@ -1238,9 +1260,28 @@ pub fn plan_pbft_manager_eligible_wallet_period_wait(
     plan_domain_pbft_manager_eligible_wallet_period_wait(fact.into()).into()
 }
 
-/// Aborts this PBFT manager runtime session.
-pub fn abort_pbft_manager_runtime_session(session: &mut BridgePbftManagerRuntimeSession) {
-    session.state = abort_domain_pbft_manager_runtime_session(session.state.clone());
+/// Aborts the runtime-owned PBFT manager tick session.
+pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime) {
+    if let Some(session) = runtime.runtime_session.take() {
+        runtime.runtime_session = Some(abort_domain_pbft_manager_runtime_session(session));
+    }
+}
+
+fn runtime_session_not_started_step() -> FfiPbftManagerRuntimeSessionStep {
+    FfiPbftManagerRuntimeSessionStep {
+        status: PbftManagerRuntimeStatus::ContractError.as_u8(),
+        cursor: 0,
+        action: ACTION_NO_ACTION,
+        has_action: false,
+        complete: true,
+        restart_loop: false,
+        has_target_round: false,
+        target_round: 0,
+        sleep_ms: 0,
+        tick_id: 0,
+        can_continue: false,
+        error_code: "PBFT_MANAGER_RUNTIME_SESSION_NOT_STARTED".to_owned(),
+    }
 }
 
 /// Plans one deterministic PBFT manager state action from compact C++ facts.
@@ -1463,26 +1504,6 @@ pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
 ) -> FfiPbftManagerTransitionPlan {
     plan_domain_pbft_manager_transition(fact.into()).into()
-}
-
-impl BridgePbftManagerRuntimeSession {
-    /// Returns the next requested action for this runtime session.
-    pub fn pbft_manager_runtime_session_next(&mut self) -> FfiPbftManagerRuntimeSessionStep {
-        pbft_manager_runtime_session_next(self)
-    }
-
-    /// Reports one action after C++ executes it.
-    pub fn pbft_manager_runtime_session_report(
-        &mut self,
-        report: FfiPbftManagerRuntimeActionReport,
-    ) -> FfiPbftManagerRuntimeSessionStep {
-        pbft_manager_runtime_session_report(self, report)
-    }
-
-    /// Aborts this runtime session.
-    pub fn abort_pbft_manager_runtime_session(&mut self) {
-        abort_pbft_manager_runtime_session(self)
-    }
 }
 
 impl BridgePbftManagerProposalSession {
@@ -2371,13 +2392,24 @@ mod tests {
         }
     }
 
+    fn runtime_for_tick(tick: FfiPbftManagerRuntimeTickFact) -> Box<BridgePbftManagerRuntime> {
+        let temp_path = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_session");
+        let storage =
+            crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
+        let mut startup = startup_fact();
+        startup.cacti_active_at_chain_size = false;
+        let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup).unwrap();
+        pbft_manager_runtime_begin_session(&mut runtime, tick);
+        runtime
+    }
+
     #[test]
     fn bridge_session_maps_tick_fact_into_stable_action_order() {
-        let mut session = create_pbft_manager_runtime_session(fact(STATE_VALUE_PROPOSAL));
+        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
 
         let mut seen = Vec::new();
         loop {
-            let step = pbft_manager_runtime_session_next(&mut session);
+            let step = pbft_manager_runtime_session_next(&mut runtime);
             if !step.has_action {
                 break;
             }
@@ -2394,7 +2426,7 @@ mod tests {
                 _ => RESULT_TRANSITION,
             };
             let _ = pbft_manager_runtime_session_report(
-                &mut session,
+                &mut runtime,
                 report(step.cursor, step.action, result),
             );
         }
@@ -2415,13 +2447,13 @@ mod tests {
 
     #[test]
     fn bridge_session_uses_certify_report_flag_for_next_action() {
-        let mut session = create_pbft_manager_runtime_session(fact(STATE_CERTIFY));
+        let mut runtime = runtime_for_tick(fact(STATE_CERTIFY));
         loop {
-            let step = pbft_manager_runtime_session_next(&mut session);
+            let step = pbft_manager_runtime_session_next(&mut runtime);
             if step.action == ACTION_RUN_CERTIFY {
                 let mut action_report = report(step.cursor, step.action, RESULT_STATE_DONE);
                 action_report.go_finish_state = true;
-                let next = pbft_manager_runtime_session_report(&mut session, action_report);
+                let next = pbft_manager_runtime_session_report(&mut runtime, action_report);
                 assert_eq!(next.action, ACTION_TRANSITION_FINISH);
                 break;
             }
@@ -2431,7 +2463,7 @@ mod tests {
                 RESULT_STATE_DONE
             };
             let _ = pbft_manager_runtime_session_report(
-                &mut session,
+                &mut runtime,
                 report(step.cursor, step.action, result),
             );
         }
@@ -2439,20 +2471,20 @@ mod tests {
 
     #[test]
     fn bridge_session_completes_with_restart_loop_on_cert_progress() {
-        let mut session = create_pbft_manager_runtime_session(fact(STATE_VALUE_PROPOSAL));
+        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
         for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST] {
-            let step = pbft_manager_runtime_session_next(&mut session);
+            let step = pbft_manager_runtime_session_next(&mut runtime);
             assert_eq!(step.action, expected);
             let _ = pbft_manager_runtime_session_report(
-                &mut session,
+                &mut runtime,
                 report(step.cursor, expected, RESULT_STATE_DONE),
             );
         }
 
-        let step = pbft_manager_runtime_session_next(&mut session);
+        let step = pbft_manager_runtime_session_next(&mut runtime);
         assert_eq!(step.action, ACTION_TRY_CERT);
         let complete = pbft_manager_runtime_session_report(
-            &mut session,
+            &mut runtime,
             report(step.cursor, ACTION_TRY_CERT, RESULT_PROGRESS_RESTART),
         );
 
@@ -2462,9 +2494,9 @@ mod tests {
 
     #[test]
     fn bridge_session_emits_reset_effect_for_round_advance_candidate() {
-        let mut session = create_pbft_manager_runtime_session(fact(STATE_VALUE_PROPOSAL));
+        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
         for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST, ACTION_TRY_CERT] {
-            let step = pbft_manager_runtime_session_next(&mut session);
+            let step = pbft_manager_runtime_session_next(&mut runtime);
             assert_eq!(step.action, expected);
             let result = if expected == ACTION_TRY_CERT {
                 RESULT_CONTINUE
@@ -2472,24 +2504,24 @@ mod tests {
                 RESULT_STATE_DONE
             };
             let _ = pbft_manager_runtime_session_report(
-                &mut session,
+                &mut runtime,
                 report(step.cursor, expected, result),
             );
         }
 
-        let step = pbft_manager_runtime_session_next(&mut session);
+        let step = pbft_manager_runtime_session_next(&mut runtime);
         assert_eq!(step.action, ACTION_TRY_ROUND);
         let mut action_report = report(step.cursor, ACTION_TRY_ROUND, RESULT_CONTINUE);
         action_report.has_new_round = true;
         action_report.new_round = 6;
-        let reset = pbft_manager_runtime_session_report(&mut session, action_report);
+        let reset = pbft_manager_runtime_session_report(&mut runtime, action_report);
 
         assert_eq!(reset.action, ACTION_RESET_CONSENSUS);
         assert!(reset.has_target_round);
         assert_eq!(reset.target_round, 6);
 
         let complete = pbft_manager_runtime_session_report(
-            &mut session,
+            &mut runtime,
             report(reset.cursor, ACTION_RESET_CONSENSUS, RESULT_TRANSITION),
         );
         assert!(complete.complete);
@@ -2500,25 +2532,25 @@ mod tests {
     fn bridge_session_returns_ineligible_polling_sleep_ms() {
         let mut tick = fact(STATE_VALUE_PROPOSAL);
         tick.polling_interval_ms = 250;
-        let mut session = create_pbft_manager_runtime_session(tick);
+        let mut runtime = runtime_for_tick(tick);
         for expected in [ACTION_PROCESS_SYNCED, ACTION_BROADCAST, ACTION_TRY_CERT] {
-            let step = pbft_manager_runtime_session_next(&mut session);
+            let step = pbft_manager_runtime_session_next(&mut runtime);
             let result = if expected == ACTION_TRY_CERT {
                 RESULT_CONTINUE
             } else {
                 RESULT_STATE_DONE
             };
             let _ = pbft_manager_runtime_session_report(
-                &mut session,
+                &mut runtime,
                 report(step.cursor, expected, result),
             );
         }
 
-        let step = pbft_manager_runtime_session_next(&mut session);
+        let step = pbft_manager_runtime_session_next(&mut runtime);
         assert_eq!(step.action, ACTION_TRY_ROUND);
         let mut action_report = report(step.cursor, ACTION_TRY_ROUND, RESULT_CONTINUE);
         action_report.has_eligible_wallet = false;
-        let sleep = pbft_manager_runtime_session_report(&mut session, action_report);
+        let sleep = pbft_manager_runtime_session_report(&mut runtime, action_report);
 
         assert_eq!(sleep.action, ACTION_SLEEP_INELIGIBLE);
         assert_eq!(sleep.sleep_ms, 250);
@@ -2526,10 +2558,10 @@ mod tests {
 
     #[test]
     fn bridge_session_detects_cursor_mismatch() {
-        let mut session = create_pbft_manager_runtime_session(fact(STATE_VALUE_PROPOSAL));
-        let step = pbft_manager_runtime_session_next(&mut session);
+        let mut runtime = runtime_for_tick(fact(STATE_VALUE_PROPOSAL));
+        let step = pbft_manager_runtime_session_next(&mut runtime);
         let failed = pbft_manager_runtime_session_report(
-            &mut session,
+            &mut runtime,
             report(step.cursor + 1, step.action, RESULT_STATE_DONE),
         );
 

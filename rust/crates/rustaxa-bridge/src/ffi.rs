@@ -208,10 +208,6 @@ pub struct BridgePbftFinalizationRuntimeSession {
     pub state: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState,
 }
 
-pub struct BridgePbftManagerRuntimeSession {
-    pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession,
-}
-
 /// Pillar-chain storage wrapper used by the C++ manager shim.
 ///
 /// The wrapper owns a cloned Rust storage handle so production pillar-chain
@@ -253,6 +249,7 @@ pub struct BridgePbftManagerRuntime {
     pub pbft_sync_queue_drain_session: rustaxa_consensus::pbft_sync::PbftSyncQueueDrainSession,
     pub state_action_effect_session:
         Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
+    pub runtime_session: Option<rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession>,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -5747,10 +5744,10 @@ pub mod rustaxa_ffi {
             stages: Vec<PbftFinalizationStorageWriteStage>,
             sync: bool,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
-        type BridgePbftManagerRuntimeSession;
-        pub fn create_pbft_manager_runtime_session(
+        pub fn pbft_manager_runtime_begin_session(
+            runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerRuntimeTickFact,
-        ) -> Box<BridgePbftManagerRuntimeSession>;
+        );
         pub fn plan_pbft_manager_sleep_until_next_step(
             fact: PbftManagerSleepFact,
         ) -> PbftManagerSleepPlan;
@@ -5844,16 +5841,16 @@ pub mod rustaxa_ffi {
             report: PbftFinalizationRuntimeActionReport,
         ) -> PbftFinalizationRuntimeSessionStep;
         pub fn pbft_manager_runtime_session_next(
-            self: &mut BridgePbftManagerRuntimeSession,
+            runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSessionStep;
         pub fn pbft_manager_runtime_session_report(
-            self: &mut BridgePbftManagerRuntimeSession,
+            runtime: &mut BridgePbftManagerRuntime,
             report: PbftManagerRuntimeActionReport,
         ) -> PbftManagerRuntimeSessionStep;
         pub fn abort_pbft_finalization_runtime_session(
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
-        pub fn abort_pbft_manager_runtime_session(self: &mut BridgePbftManagerRuntimeSession);
+        pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime);
         pub fn pbft_manager_proposal_session_next(
             self: &mut BridgePbftManagerProposalSession,
         ) -> PbftManagerProposalSessionStep;

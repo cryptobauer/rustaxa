@@ -565,6 +565,8 @@ Implementation status:
 - `BridgePbftManagerStateActionEffectSession` is deleted. The C++ PBFT manager shim still executes live vote/block
   side effects, but the ordered state-action transcript is now a cursor inside `BridgePbftManagerRuntime`, reducing the
   PBFT manager CXX session surface by one internal handle.
+- `BridgePbftManagerRuntimeSession` is deleted. The outer PBFT manager daemon-loop transcript is now a cursor inside
+  `BridgePbftManagerRuntime`, so the scheduler no longer creates a standalone bridge handle each tick.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
