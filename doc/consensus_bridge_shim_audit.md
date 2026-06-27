@@ -371,12 +371,14 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `plan_pbft_sync_process_period_data_runtime`, proposal/block-validation runtime sessions, and
   `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests keep coverage for the
   deleted lower-level planners and lambda lookup.
-- Direct FinalChain execution-session step/report/publication CXX exports are retired. Live C++ drives external EVM and
-  `StateAPI` through `BridgeConsensusExecutionApi`; the CXX surface now keeps only session creation/commit plus
-  dedicated execution API methods and retained pending-publication recovery/publication compatibility calls. The
-  Rust-internal session wrappers still back bridge tests, and are tracked as the next wrapper-retirement cleanup before
-  deleting their bridge-only DTOs. The native-only compatibility finalizer now uses `BridgeConsensusExecutionApi` for
-  its pre-commit step and keeps only `final_chain_execution_session_commit` as the terminal commit boundary.
+- Lower-level FinalChain execution API helpers that were superseded by the one-shot
+  `consensus_execution_prepare_external_evm_state_commit` call are retired from the CXX surface:
+  `consensus_execution_plan_publication`, `consensus_execution_attach_rewards_stats`,
+  `consensus_execution_attach_proposal_period_dag_level`, `consensus_execution_next_state_commit_request`,
+  `consensus_execution_persist_pending_publication`, and `consensus_execution_publication_audit`. Live C++ drives
+  external EVM and `StateAPI` through the remaining `BridgeConsensusExecutionApi` methods; the CXX surface still keeps
+  session creation/commit plus the minimal step/report/publish methods called by `final_chain_shim`. Remaining
+  Rust-internal wrappers are tracked as follow-up bridge-test cleanup before their DTOs can be deleted.
 - `BridgeDagVerifyBlockSession` is retired. DAG block verification still has C++ executor boundaries for transaction
   lookup, FinalChain authorization facts, VDF verification, and gas estimation, but the ordered verification cursor now
   lives inside `BridgeDagManagerRuntime` through `dag_manager_runtime_begin_verify_block_session`,

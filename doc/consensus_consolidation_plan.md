@@ -729,14 +729,25 @@ Implementation status:
   deleted lower-level planners and lambda lookup.
   Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
   PBFT manager standalone planner lane as a secondary cleanup candidate.
-- Direct FinalChain execution-session step/report/publication helpers are no longer CXX exports. The live
-  `final_chain_shim` path uses `BridgeConsensusExecutionApi` for external-EVM/`StateAPI` interaction, while the CXX
-  bridge keeps only session creation/commit, the dedicated execution API, and retained pending-publication
-  recovery/publication compatibility calls. The native-only compatibility finalizer now uses `BridgeConsensusExecutionApi`
-  for its pre-commit step and keeps only `final_chain_execution_session_commit` as the terminal commit boundary. The
-  remaining Rust-internal wrapper methods and their bridge-only DTOs are bridge-test-only follow-up Slice 8/9 cleanup.
+- Lower-level FinalChain execution API helpers that were superseded by the one-shot
+  `consensus_execution_prepare_external_evm_state_commit` call are no longer CXX exports:
+  `consensus_execution_plan_publication`, `consensus_execution_attach_rewards_stats`,
+  `consensus_execution_attach_proposal_period_dag_level`, `consensus_execution_next_state_commit_request`,
+  `consensus_execution_persist_pending_publication`, and `consensus_execution_publication_audit`. The live
+  `final_chain_shim` path still uses `BridgeConsensusExecutionApi` for external-EVM/`StateAPI` interaction, and the CXX
+  bridge keeps session creation/commit plus the minimal step/report/publish methods that are still called by that
+  external execution adapter. The remaining Rust-internal wrapper methods and bridge-only DTOs are follow-up Slice 8/9
+  cleanup once bridge tests move to native consensus APIs.
   Custom agents used: `rust-engineer` confirmed the live C++ route and identified the remaining Rust-internal wrapper
   callsites that must be migrated before deleting the implementation helpers.
+  Validation for this CXX export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`
+  - `cmake --build /build --target final_chain_test --parallel 12`
+  - `/build/bin/final_chain_test --gtest_filter='FinalChainTest.*' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `git diff --check`
 - Additional no-caller CXX exports are deleted after callsite audit showed they were bridge-test scaffolding only:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use

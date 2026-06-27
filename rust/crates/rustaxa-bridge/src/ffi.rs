@@ -3265,21 +3265,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    struct FinalChainExternalEvmPublicationAuditReport {
-        request_id: [u8; 32],
-        plan_id: [u8; 32],
-        period: u64,
-        block_hash: [u8; 32],
-        checked_fields: u64,
-        status: u8,
-        error_code: String,
-    }
-
-    struct FinalChainExternalEvmCommittedStateDescriptor {
-        period: u64,
-        state_root: [u8; 32],
-    }
-
     struct FinalChainExecutionStep {
         status: u8,
         action: u8,
@@ -6296,11 +6281,6 @@ pub mod rustaxa_ffi {
             session: &mut BridgeFinalChainExecutionSession,
             report: FinalChainEvmRewardsReport,
         ) -> Result<FinalChainExternalEvmCommitPlan>;
-        pub fn consensus_execution_plan_publication(
-            self: &BridgeConsensusExecutionApi,
-            final_chain: &BridgeFinalChain,
-            session: &mut BridgeFinalChainExecutionSession,
-        ) -> Result<FinalChainExternalEvmPublicationPlan>;
         pub fn consensus_execution_prepare_external_evm_state_commit(
             self: &BridgeConsensusExecutionApi,
             final_chain: &BridgeFinalChain,
@@ -6308,27 +6288,6 @@ pub mod rustaxa_ffi {
             rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
             proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
         ) -> Result<FinalChainExternalEvmStateCommitIntent>;
-        pub fn consensus_execution_attach_rewards_stats(
-            self: &BridgeConsensusExecutionApi,
-            session: &mut BridgeFinalChainExecutionSession,
-            rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
-        ) -> Result<FinalChainExternalEvmPublicationPlan>;
-        pub fn consensus_execution_attach_proposal_period_dag_level(
-            self: &BridgeConsensusExecutionApi,
-            session: &mut BridgeFinalChainExecutionSession,
-            update: FinalChainProposalPeriodDagLevelUpdate,
-        ) -> Result<FinalChainExternalEvmPublicationPlan>;
-        pub fn consensus_execution_next_state_commit_request(
-            self: &BridgeConsensusExecutionApi,
-            session: &mut BridgeFinalChainExecutionSession,
-            commit_plan: &FinalChainExternalEvmCommitPlan,
-            publication_plan: &FinalChainExternalEvmPublicationPlan,
-        ) -> Result<FinalChainExternalEvmStateCommitIntent>;
-        pub fn consensus_execution_persist_pending_publication(
-            self: &BridgeConsensusExecutionApi,
-            final_chain: &BridgeFinalChain,
-            session: &mut BridgeFinalChainExecutionSession,
-        ) -> Result<FinalChainExternalEvmPublicationReport>;
         pub fn consensus_execution_report_state_commit_result(
             self: &BridgeConsensusExecutionApi,
             final_chain: &BridgeFinalChain,
@@ -6340,12 +6299,6 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationReport>;
-        pub fn consensus_execution_publication_audit(
-            self: &BridgeConsensusExecutionApi,
-            final_chain: &BridgeFinalChain,
-            publication_plan: &FinalChainExternalEvmPublicationPlan,
-            committed_state: FinalChainExternalEvmCommittedStateDescriptor,
-        ) -> Result<FinalChainExternalEvmPublicationAuditReport>;
         pub fn final_chain_execution_session_commit(
             final_chain: &BridgeFinalChain,
             session: Box<BridgeFinalChainExecutionSession>,
