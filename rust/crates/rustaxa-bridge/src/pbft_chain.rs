@@ -24,6 +24,7 @@ const PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN: u8 = 6;
 ///
 /// The bridge intentionally receives structured state instead of raw JSON so C++ can preserve the legacy JsonCpp
 /// formatting used for persisted `pbft_head` records.
+#[cfg(test)]
 pub fn create_pbft_chain(
     head: PbftChainHeadPayload,
 ) -> Result<Box<BridgePbftChain>, anyhow::Error> {

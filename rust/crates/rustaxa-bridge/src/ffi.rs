@@ -5171,7 +5171,6 @@ pub mod rustaxa_ffi {
 
         type BridgePbftChain;
 
-        pub fn create_pbft_chain(head: PbftChainHeadPayload) -> Result<Box<BridgePbftChain>>;
         pub fn create_pbft_chain_from_storage(
             storage: &BridgeStorage,
         ) -> Result<Box<BridgePbftChain>>;

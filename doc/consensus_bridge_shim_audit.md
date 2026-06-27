@@ -252,6 +252,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgePbftChain::pbft_chain_project_update` is deleted from the CXX surface. Native `rustaxa-consensus` tests cover
   the non-mutating projection helper, and live C++ bridge callers use `pbft_chain_update`,
   `pbft_chain_update_for_finalization`, or `pbft_chain_project_legacy_json_head`.
+- The direct structured-head `create_pbft_chain(PbftChainHeadPayload)` constructor is deleted from the CXX surface. C++
+  bridge tests now seed legacy `pbft_head` JSON through the storage-shim batch API and use
+  `create_pbft_chain_from_storage`, which is the same constructor path used by the live `pbft_chain_shim`.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.

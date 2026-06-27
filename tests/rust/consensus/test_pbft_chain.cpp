@@ -3,6 +3,11 @@
 #include <array>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <string_view>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -16,24 +21,56 @@ class RustPbftChainTest : public ::testing::Test {
     return hash;
   }
 
-  static PbftChainHeadPayload head(uint64_t size, uint64_t non_empty_size, uint8_t last_block, uint8_t last_anchor) {
-    PbftChainHeadPayload payload{};
-    payload.head_hash = h256(0);
-    payload.size = size;
-    payload.non_empty_size = non_empty_size;
-    payload.last_pbft_block_hash = h256(last_block);
-    payload.last_non_null_anchor_hash = h256(last_anchor);
-    return payload;
+  static std::string hash_json(uint8_t last_byte) {
+    std::ostringstream out;
+    out << "0x";
+    for (size_t i = 0; i < 31; ++i) {
+      out << "00";
+    }
+    out << std::hex << std::setw(2) << std::setfill('0') << static_cast<unsigned>(last_byte);
+    return out.str();
+  }
+
+  static std::string head_json(uint64_t size, uint64_t non_empty_size, uint8_t last_block) {
+    std::ostringstream out;
+    out << R"({"head_hash":")" << hash_json(0) << R"(","size":)" << size << R"(,"non_empty_size":)" << non_empty_size
+        << R"(,"last_pbft_block_hash":")" << hash_json(last_block) << R"("})";
+    return out.str();
+  }
+
+  static rust::Vec<uint8_t> bytes(std::string_view input) {
+    rust::Vec<uint8_t> out;
+    out.reserve(input.size());
+    for (auto ch : input) {
+      out.push_back(static_cast<uint8_t>(ch));
+    }
+    return out;
+  }
+
+  static rust::Box<BridgePbftChain> create_chain(std::string_view name, uint64_t size, uint64_t non_empty_size,
+                                                 uint8_t last_block) {
+    const auto test_dir = std::filesystem::temp_directory_path() / std::string(name);
+    if (std::filesystem::exists(test_dir)) {
+      std::filesystem::remove_all(test_dir);
+    }
+    auto storage = create_storage(test_dir.string());
+    auto batch = create_storage_shim_batch(*storage);
+    const auto head = head_json(size, non_empty_size, last_block);
+    storage_shim_save_pbft_head(*batch, h256(0), bytes(head));
+    storage_shim_commit_batch(std::move(batch), false);
+    auto chain = create_pbft_chain_from_storage(*storage);
+    std::filesystem::remove_all(test_dir);
+    return chain;
   }
 };
 
 TEST_F(RustPbftChainTest, UpdatesHeadStateForNonNullAndNullAnchors) {
-  auto chain = create_pbft_chain(head(1, 0, 11, 0));
+  auto chain = create_chain("rustaxa_consensus_pbft_chain_update", 1, 0, 0);
   EXPECT_FALSE(chain->pbft_chain_initialized_default());
 
   auto current = chain->pbft_chain_head();
   EXPECT_EQ(current.size, 1);
-  EXPECT_EQ(current.last_pbft_block_hash, h256(11));
+  EXPECT_EQ(current.last_pbft_block_hash, h256(0));
 
   current = chain->pbft_chain_update(h256(12), h256(99));
   EXPECT_EQ(current.size, 2);
@@ -49,28 +86,28 @@ TEST_F(RustPbftChainTest, UpdatesHeadStateForNonNullAndNullAnchors) {
 }
 
 TEST_F(RustPbftChainTest, ProjectsLegacyJsonHeadWithoutMutatingCurrentHead) {
-  auto chain = create_pbft_chain(head(4, 2, 44, 77));
+  auto chain = create_chain("rustaxa_consensus_pbft_chain_legacy_projection", 4, 2, 0);
 
   auto projected = chain->pbft_chain_project_legacy_json_head(h256(45), true);
   EXPECT_EQ(projected.size, 5);
   EXPECT_EQ(projected.non_empty_size, 3);
   EXPECT_EQ(projected.last_pbft_block_hash, h256(45));
-  EXPECT_EQ(projected.last_non_null_anchor_hash, h256(77));
+  EXPECT_EQ(projected.last_non_null_anchor_hash, h256(0));
 
   auto current = chain->pbft_chain_head();
   EXPECT_EQ(current.size, 4);
   EXPECT_EQ(current.non_empty_size, 2);
-  EXPECT_EQ(current.last_pbft_block_hash, h256(44));
+  EXPECT_EQ(current.last_pbft_block_hash, h256(0));
 }
 
 TEST_F(RustPbftChainTest, ReportsPeriodAndPreviousHashValidationFailures) {
-  auto chain = create_pbft_chain(head(3, 2, 33, 22));
+  auto chain = create_chain("rustaxa_consensus_pbft_chain_validation", 3, 2, 0);
 
-  auto valid = chain->pbft_chain_validate_block(4, h256(33));
+  auto valid = chain->pbft_chain_validate_block(4, h256(0));
   EXPECT_TRUE(valid.ok);
   EXPECT_EQ(valid.code, 0);
 
-  auto period_mismatch = chain->pbft_chain_validate_block(5, h256(33));
+  auto period_mismatch = chain->pbft_chain_validate_block(5, h256(0));
   EXPECT_FALSE(period_mismatch.ok);
   EXPECT_EQ(period_mismatch.code, 1);
   EXPECT_EQ(period_mismatch.expected_period, 4);
@@ -79,10 +116,10 @@ TEST_F(RustPbftChainTest, ReportsPeriodAndPreviousHashValidationFailures) {
   auto prev_hash_mismatch = chain->pbft_chain_validate_block(4, h256(99));
   EXPECT_FALSE(prev_hash_mismatch.ok);
   EXPECT_EQ(prev_hash_mismatch.code, 2);
-  EXPECT_EQ(prev_hash_mismatch.expected_prev_hash, h256(33));
+  EXPECT_EQ(prev_hash_mismatch.expected_prev_hash, h256(0));
   EXPECT_EQ(prev_hash_mismatch.actual_prev_hash, h256(99));
 }
 
 TEST_F(RustPbftChainTest, RejectsImpossibleRecoveredHead) {
-  EXPECT_THROW((void)create_pbft_chain(head(1, 2, 11, 0)), std::exception);
+  EXPECT_THROW((void)create_chain("rustaxa_consensus_pbft_chain_invalid_head", 1, 2, 0), std::exception);
 }
