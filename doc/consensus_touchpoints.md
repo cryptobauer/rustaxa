@@ -116,8 +116,8 @@ Rules:
     `kDagSyncPacket = 6`, `kTransactionPacket = 7`, `kGetPbftSyncPacket = 10`, `kPbftSyncPacket = 11`,
     `kGetDagSyncPacket = 12`, `kPillarVotePacket = 13`, `kGetPillarVotesBundlePacket = 14`,
     `kPillarVotesBundlePacket = 15`, `kPbftBlocksBundlePacket = 16`) into a bounded Rust-owned ingress arena.
-  - It exposes effect-drain and effect-result-reporting contracts used by the Rust-enabled vote, DAG block, PBFT blocks
-    bundle, and transaction packet handlers.
+  - It exposes effect-drain and effect-result-reporting contracts currently used for PBFT vote peer-visible follow-up
+    and gossip effects.
   - Rust-enabled `TaraxaCapability::interpretCapabilityPacket` now shadow-submits peer-gated canonical packet bytes
     directly to `BridgeConsensusNetworkApi` before the legacy tarcap thread-pool enqueue.
   - Shadow ingress is non-authoritative: unsupported packet types are rejected by the API, accepted packet bytes are
@@ -131,8 +131,8 @@ Rules:
     `NetworkIngressDecision` and queue `REQUEST_SYNC`, `REPORT_PEER`, and `DISCONNECT_PEER` effects for
     `drain_work` / `report_effect_results`.
   - Accepted PBFT vote packets now enter deterministic admission directly in `ExtVotesPacketHandler` via
-    `vote_mgr_->addVerifiedVoteWithReport`, eliminating the temporary `consensus_network_queue_pbft_vote_admission_request_effects`
-    hop for this decision boundary. Tarcap still uses network effect draining/reports for peer-visible follow-up actions.
+    `vote_mgr_->addVerifiedVoteWithReport`, eliminating the former queue bridge hop for this decision boundary. Tarcap
+    still uses network effect draining/reports for peer-visible follow-up actions.
   - Rust-enabled single-vote and vote-bundle handling no longer perform direct `VoteManager::voteAlreadyValidated`
     pre-checks outside the common admission path; duplicate/non-admitted votes flow through the same direct
     Rust-managed admission/reporting path in tarcap's vote handlers.
@@ -140,8 +140,8 @@ Rules:
     `addVerifiedVoteWithReport` admission.
   - Accepted PBFT vote packets with attached PBFT block sidecars now call `pbft_mgr_->processProposedBlock` directly and
     mark that PBFT block as known directly on the peer; no temporary vote/block `MARK_PEER_KNOWN` queue path is used.
-  - Accepted PBFT vote gossip can now queue `GOSSIP_PACKET` through
-    `consensus_network_queue_pbft_vote_gossip_effects`; tarcap executes the effect with existing peer filtering,
+  - Accepted PBFT vote gossip now requests `GOSSIP_PACKET` through
+    `consensus_network_gossip_pbft_vote`; tarcap executes the effect with existing peer filtering,
     optional block-sidecar packet wrapping, send policy, and peer known-cache updates instead of calling
     `PbftManager::gossipVote` in Rust-enabled latest vote handling.
   - Get-next-votes egress now runs directly in `GetNextVotesBundlePacketHandler`: tarcap supplies the local previous PBFT
@@ -155,18 +155,17 @@ Rules:
   - PBFT blocks bundle proposed-block intake now runs directly in `PbftBlocksBundlePacketHandler`: tarcap supplies each proposed
     block from the packet to `PbftManager` for direct processing.
   - Transaction packet admission now executes directly in `TransactionPacketHandler` against `TransactionManager` for
-    verification and insertion, eliminating the temporary `consensus_network_queue_transaction_admission_request_effects`
-    executor hop. The handler now reports validation and overflow handling directly through existing peer telemetry.
-  - DAG block intake now bypasses `consensus_network_queue_dag_block_admission_request_effects`; tarcap decodes packet
-    data and calls `onNewBlockReceived` directly so `DagManager` verifies and inserts the block using the existing local DAG
-    path.
-  - DAG sync block intake now bypasses `consensus_network_queue_dag_sync_block_admission_request_effects`; tarcap decodes
-    packet data and verifies/adds each DAG block directly in `DagSyncPacketHandler` using `DagManager`.
+    verification and insertion, eliminating the former queue bridge executor hop. The handler now reports validation and
+    overflow handling directly through existing peer telemetry.
+  - DAG block intake now bypasses its former queue bridge helper; tarcap decodes packet data and calls
+    `onNewBlockReceived` directly so `DagManager` verifies and inserts the block using the existing local DAG path.
+  - DAG sync block intake now bypasses its former queue bridge helper; tarcap decodes packet data and verifies/adds each
+    DAG block directly in `DagSyncPacketHandler` using `DagManager`.
   - Get-DAG-sync egress now runs directly in `GetDagSyncPacketHandler`: tarcap supplies the requesting peer period and
     requested DAG block hashes before directly reading non-finalized blocks/transactions, updating peer sync state,
     materializing `DagSyncPacket`, and sending it.
-  - PBFT sync finalized-period intake now bypasses `consensus_network_queue_pbft_sync_period_data_admission_request_effects`;
-    tarcap validates and queues period data directly in `PbftSyncPacketHandler` through `PbftManager::periodDataQueuePush`.
+  - PBFT sync finalized-period intake now bypasses its former queue bridge helper; tarcap validates and queues period
+    data directly in `PbftSyncPacketHandler` through `PbftManager::periodDataQueuePush`.
   - Pillar vote and pillar votes bundle member admission now runs directly in tarcap handlers: tarcap supplies canonical pillar
     vote facts and calls `PillarChainManager::validatePillarVote` plus `addVerifiedPillarVote` directly, then marks the vote
     known on the peer.
@@ -206,9 +205,9 @@ Rules:
   - Network effect result reports now echo typed effect identity fields, and Rust rejects mismatched reports before
     accepting acknowledgements. This keeps temporary executor work visible instead of treating an `effect_id` alone as
     proof that the intended action ran.
-  - This is still not the final production route: accepted PBFT vote gossip still uses the temporary
-    `consensus_network_queue_pbft_vote_gossip_effects` / `NetworkEffect` queue so Rust can request gossip while tarcap
-    owns peer filtering, packet wrapping, and transport execution.
+  - This is still not the final production route: accepted PBFT vote gossip still uses
+    `consensus_network_gossip_pbft_vote` backed by the `NetworkEffect` drain/report path so Rust can request gossip
+    while tarcap owns peer filtering, packet wrapping, and transport execution.
   - Status packet ingress still performs pending-peer lookup and peer-state materialization in tarcap. Status egress
     still reads local PBFT/DAG snapshot facts directly until the facade is injected with Rust-owned local status
     snapshot state.

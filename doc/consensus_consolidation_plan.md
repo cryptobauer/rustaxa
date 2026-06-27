@@ -47,8 +47,9 @@ conflict resolution, validation, deletion of obsolete scaffolding, and the final
   handles beyond the three external facades.
 - `libraries/core_libs/consensus/shims/*` contains many overlay classes that should become thin C++ public facades or
   disappear once their public API is no longer needed in Rust mode.
-- `rust/crates/rustaxa-consensus/src/network_api.rs` still contains temporary `queue_*_effects` helpers for packet
-  behaviors that now mostly execute directly in tarcap or consensus managers.
+- `rust/crates/rustaxa-consensus/src/network_api.rs` no longer exposes the temporary CXX
+  `consensus_network_queue_*` bridge helpers. Remaining cleanup pressure is internal effect-drain plumbing, especially
+  PBFT vote gossip through `drain_work` / `report_effect_results` while tarcap still owns transport execution.
 - RPC and GraphQL now use `ConsensusQueryApi`, but many endpoints construct query APIs from `node->getDB()->rustStorage()`
   locally instead of receiving one injected public-query handle.
 - Some Rust consensus APIs still accept `BridgeStorage`, `BridgeFinalChain`, or bridge runtime handles where they should
@@ -163,7 +164,8 @@ Initial removal candidates:
 
 Keep for now:
 
-- PBFT vote gossip effects while tarcap owns peer filtering, packet wrapping, and transport.
+- PBFT vote gossip as a direct network/tarcap bridge command backed by `NetworkEffect` drain/report while tarcap owns
+  peer filtering, packet wrapping, and transport.
 - Status, PBFT sync-start, pending-DAG, and max-chain peer-selection planners until the network facade owns a live
   status snapshot port.
 
@@ -172,6 +174,31 @@ Acceptance:
 - `ConsensusNetworkApi` no longer exposes queue helpers for behaviors that execute synchronously in tarcap.
 - Effect result acknowledgement remains only for effects the network actually executes.
 - `test_network_api.cpp` coverage describes current production semantics, not retired scaffolding.
+
+Implementation status:
+
+- Complete for bridge-helper retirement.
+- Removed the CXX `consensus_network_queue_*` methods and queue-only DTOs from
+  `rust/crates/rustaxa-bridge/src/ffi.rs` and `rust/crates/rustaxa-bridge/src/network.rs`.
+- Removed matching stale bridge tests from `tests/rust/consensus/test_network_api.cpp`.
+- Removed Rust-internal record/admission queue DTOs, helper methods, and unit tests from
+  `rust/crates/rustaxa-consensus/src/network_api.rs`.
+- PBFT vote gossip now enters through `consensus_network_gossip_pbft_vote` / `gossip_pbft_vote`; this is the remaining
+  direct external network command using `NetworkEffect` drain/report until tarcap transport can be narrowed further.
+- Custom agents used:
+  - `api-designer`: reviewed the minimal network/tarcap API shape and recommended deleting queue-named bridge exports.
+  - `architect-reviewer`: reviewed boundary ownership and confirmed the remaining direct gossip/effect boundary is the
+    right temporary external seam.
+  - `rust-engineer`: mapped Rust bridge/domain queue helpers and tests for deletion.
+  - `cpp-pro`: confirmed production C++ callsites and reviewed the C++ rename/bridge-test risk.
+- Validation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus network_api`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge network`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='ConsensusNetworkApiBridgeTest.*' --gtest_print_time=1`
+  - `git diff --check`
 
 ## Slice 3: Collapse Storage Bridge Queries into Native Rust Ports
 
@@ -356,7 +383,8 @@ Acceptance:
 
 1. Slice 0: audit table and closeout checks.
 2. Slice 1: query API injection, because it is the lowest-risk repeated bridge construction cleanup.
-3. Slice 2: network effect queue retirement, because `doc/consensus_touchpoints.md` already names many obsolete helpers.
+3. Slice 2: network effect queue bridge retirement is complete; future network cleanup belongs to internal effect-queue
+   narrowing and Slice 8/9 bridge/FFI cleanup.
 4. Slice 3 and Slice 4 together where possible: move Rust storage access native first, then thin the C++ storage shim.
 5. Slice 5: remove small completed shims in independent commits.
 6. Slice 7: finish execution adapter contraction while preserving the external EVM boundary.

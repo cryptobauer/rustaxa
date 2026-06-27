@@ -94,7 +94,7 @@ void VotePacketHandler::process(const threadpool::PacketData &packet_data, const
     effects.vote_hash = vote_hash.asArray();
     effects.source_payload_id = 0;
     effects.gossip_vote = true;
-    (void)queuePbftVoteGossipEffects(effects);
+    (void)gossipPbftVote(effects);
     executeConsensusNetworkEffects(16, packet.vote, pbft_block);
   }
 #else

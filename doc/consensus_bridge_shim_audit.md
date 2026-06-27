@@ -20,7 +20,7 @@ removing each item.
 | --- | --- | --- | --- | --- |
 | `rust/crates/rustaxa-bridge/src/storage.rs` | `BridgeStorage`, `BridgeStorageBatch`, `Bridge*StorageQueries`, `create_storage`, `create_*_storage_queries`, `create_storage_shim_batch` | `storage_shim`, storage conformance tests, consensus shims that bootstrap native Rust storage handles | C++ public compatibility facade | Delete broad `BridgeStorage` read/write methods and `BridgeStorageBatch` once storage shim callers use narrow Rust storage runtimes or native Rust crates directly. Keep only app/bootstrap creation until C++ `DbStorage` facade is retired. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, `create_consensus_query_api` | `network/consensus_query.hpp`, RPC/GraphQL, `plugin/light`, Rust tests | External boundary | Keep as the public query facade for RPC/GraphQL/light clients. Narrow remaining storage-backed reads into this facade, then remove direct external construction except approved app/bootstrap points. |
-| `rust/crates/rustaxa-bridge/src/network.rs` | `BridgeConsensusNetworkApi`, `create_consensus_network_api`, `consensus_network_queue_*` methods | Latest tarcap handlers, `tests/rust/consensus/test_network_api.cpp` | External boundary | Replace queue-specific bridge methods with the dedicated network/tarcap API from the consolidation plan. Delete `consensus_network_queue_*` after tarcap callers use typed ingress/egress APIs directly. |
+| `rust/crates/rustaxa-bridge/src/network.rs` | `BridgeConsensusNetworkApi`, `create_consensus_network_api`, ingress/planner/drain/report methods, `consensus_network_gossip_pbft_vote` | Latest tarcap handlers, `tests/rust/consensus/test_network_api.cpp` | External boundary | Queue-named bridge helpers are deleted. Keep narrowing the direct network/tarcap facade until only packet ingress, deterministic planners, gossip/send/sync/report effects, and result reporting remain. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | `BridgeFinalChain`, `BridgeFinalChainExecutionSession`, `BridgeConsensusExecutionApi`, `create_final_chain*`, `create_final_chain_execution_session`, `create_consensus_execution_api` | `final_chain_shim`, transaction manager runtime, consensus execution adapters | External boundary | Keep EVM/execution boundary while EVM remains out of scope. Move consensus fact reads to Rust FinalChain ports and delete bridge paths that only materialize C++ facts for Rust consensus. |
 | `rust/crates/rustaxa-bridge/src/dag.rs` | `BridgeDagGraph`, `BridgeDagManagerState`, `BridgeDagManagerRuntime`, `BridgeDagVerifyBlockSession`, `BridgeDagProposerSession`, `BridgeDagProposerRetryState` | `dag_shim`, `dag_manager_shim`, DAG tests | C++ public compatibility facade | Remove graph/state compatibility handles after DAG public callers stop needing C++ graph aliases. Keep runtime/session handles only until DAG manager shim can be replaced by native Rust consensus/DAG ownership. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | `BridgePbftChain`, `create_pbft_chain*` | `pbft_chain_shim`, PBFT manager/runtime tests | C++ public compatibility facade | Delete once PBFT chain public C++ facade is no longer required or PBFT manager owns chain state natively in Rust. |
@@ -49,7 +49,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | Handle | Implementing module | Current consumers | Classification | Delete or narrow when |
 | --- | --- | --- | --- | --- |
 | `BridgeConsensusQueryApi` | `query.rs` | RPC/GraphQL via `network/consensus_query.hpp`, light plugin, Rust tests | External boundary | Public query clients use one minimal facade and direct storage construction is limited to API construction points. |
-| `BridgeConsensusNetworkApi` | `network.rs` | Latest tarcap packet handlers, network API tests | External boundary | Tarcap uses a dedicated minimal network API and `consensus_network_queue_*` methods are deleted. |
+| `BridgeConsensusNetworkApi` | `network.rs` | Latest tarcap packet handlers, network API tests | External boundary | Queue helpers are deleted. Keep the minimal network facade until PBFT vote gossip/effect execution can be narrowed further or absorbed by a transport-specific API. |
 | `BridgeConsensusExecutionApi` | `final_chain.rs` | Consensus execution/EVM adapters | External boundary | EVM/StateAPI boundary is replaced or execution facts move into a dedicated Rust execution API. |
 | `BridgeFinalChain` | `final_chain.rs` | `final_chain_shim`, transaction manager/finalization adapters | External boundary | Consensus fact reads no longer materialize through C++; EVM-only execution remains behind a thinner API. |
 | `BridgeFinalChainExecutionSession` | `final_chain.rs` | FinalChain execution shim/tests | External boundary | Execution session is replaced by the dedicated EVM/execution adapter API. |
@@ -138,11 +138,13 @@ rg -n '^mod [a-z0-9_]+;' rust/crates/rustaxa-bridge/src/lib.rs
 rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 ```
 
-Current Slice 0 snapshot:
+Current snapshot after Slice 2:
 
 - `Old::` forwarding remains in `dag_manager_shim`, `dag_shim`, `transaction_manager_shim`, and `vote_manager_shim`.
-- `consensus_network_queue_*` remains in `rustaxa-bridge/src/network.rs`, `rustaxa-bridge/src/ffi.rs`,
-  `tests/rust/consensus/test_network_api.cpp`, and latest tarcap vote gossip handling.
+- `consensus_network_queue_*` no longer remains in bridge, FFI, latest tarcap network code, Rust consensus network API,
+  or network API tests. Keep the closeout check above as a regression guard with empty output expected.
+- Remaining live network effect execution is PBFT vote gossip through `consensus_network_gossip_pbft_vote` and
+  `drain_work` / `report_effect_results` while tarcap owns peer filtering, packet wrapping, and transport.
 - Direct public query API construction from `rustStorage()` remains at `network/consensus_query.hpp`, which is the approved
   helper construction point after Slice 1. RPC/GraphQL and `plugin/light/src/light.cpp` route through that helper.
 - `BridgeStorage` remains in bridge storage/query/runtime constructors, storage shim, Rust bridge tests, and shim-owned

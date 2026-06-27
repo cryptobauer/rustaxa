@@ -920,134 +920,12 @@ pub mod rustaxa_ffi {
         request_period: u64,
     }
 
-    /// Accepted PBFT vote network effects supplied after admission.
-    struct NetworkPbftVoteAdmissionEffects {
-        peer_id: [u8; 64],
-        vote_hash: [u8; 32],
-        source_payload_id: u64,
-        mark_vote_known: bool,
-    }
-
-    /// Accepted PBFT vote admission request supplied after ingress planning.
-    struct NetworkPbftVoteAdmissionRequestEffects {
-        peer_id: [u8; 64],
-        vote_hash: [u8; 32],
-        source_payload_id: u64,
-        admit_vote: bool,
-    }
-
-    /// Accepted PBFT block sidecar network effects supplied after admission.
-    struct NetworkPbftBlockAdmissionEffects {
-        peer_id: [u8; 64],
-        block_hash: [u8; 32],
-        source_payload_id: u64,
-        mark_block_known: bool,
-    }
-
-    /// Accepted PBFT vote gossip effects supplied after admission.
+    /// PBFT vote gossip request supplied after admission.
     struct NetworkPbftVoteGossipEffects {
         peer_id: [u8; 64],
         vote_hash: [u8; 32],
         source_payload_id: u64,
         gossip_vote: bool,
-    }
-
-    /// PBFT next-votes bundle egress request supplied by network/tarcap.
-    struct NetworkPbftNextVotesBundleEgressRequestEffects {
-        peer_id: [u8; 64],
-        period: u64,
-        round: u64,
-        source_payload_id: u64,
-        request_bundle: bool,
-    }
-
-    /// PBFT sync egress request supplied by network/tarcap.
-    struct NetworkPbftSyncEgressRequestEffects {
-        peer_id: [u8; 64],
-        from_period: u64,
-        blocks_to_transfer: u64,
-        pbft_chain_synced: bool,
-        source_payload_id: u64,
-        request_sync: bool,
-    }
-
-    /// Pillar votes bundle egress request supplied by network/tarcap.
-    struct NetworkPillarVotesBundleEgressRequestEffects {
-        peer_id: [u8; 64],
-        period: u64,
-        pillar_block_hash: [u8; 32],
-        source_payload_id: u64,
-        request_bundle: bool,
-    }
-
-    /// DAG sync egress request supplied by network/tarcap.
-    struct NetworkDagSyncEgressRequestEffects {
-        peer_id: [u8; 64],
-        peer_period: u64,
-        requested_block_hashes: Vec<DagHash>,
-        source_payload_id: u64,
-        request_blocks: bool,
-    }
-
-    /// Proposed PBFT block sidecar effects supplied after vote admission.
-    struct NetworkPbftProposedBlockSidecarEffects {
-        peer_id: [u8; 64],
-        period: u64,
-        block_hash: [u8; 32],
-        pivot_hash: [u8; 32],
-        block_rlp: Vec<u8>,
-        source_payload_id: u64,
-        record_block: bool,
-    }
-
-    /// PBFT sync period-data admission request supplied by network/tarcap.
-    struct NetworkPbftSyncPeriodDataAdmissionRequestEffects {
-        peer_id: [u8; 64],
-        block_hash: [u8; 32],
-        period: u64,
-        period_data_rlp: Vec<u8>,
-        current_block_cert_vote_count: u64,
-        source_payload_id: u64,
-        admit_period_data: bool,
-    }
-
-    /// Pillar vote admission request supplied by network/tarcap.
-    struct NetworkPillarVoteAdmissionRequestEffects {
-        peer_id: [u8; 64],
-        vote_hash: [u8; 32],
-        period: u64,
-        vote_rlp: Vec<u8>,
-        source_payload_id: u64,
-        admit_vote: bool,
-    }
-
-    /// Pillar vote validation request supplied by network/tarcap.
-    struct NetworkPillarVoteValidationRequestEffects {
-        peer_id: [u8; 64],
-        vote_hash: [u8; 32],
-        period: u64,
-        vote_rlp: Vec<u8>,
-        source_payload_id: u64,
-        validate_vote: bool,
-    }
-
-    /// Transaction admission request supplied by network/tarcap.
-    struct NetworkTransactionAdmissionRequestEffects {
-        peer_id: [u8; 64],
-        transaction_hash: [u8; 32],
-        transaction_rlp: Vec<u8>,
-        source_payload_id: u64,
-        admit_transaction: bool,
-    }
-
-    /// DAG block admission request supplied by network/tarcap.
-    struct NetworkDagBlockAdmissionRequestEffects {
-        peer_id: [u8; 64],
-        block_hash: [u8; 32],
-        block_rlp: Vec<u8>,
-        transaction_count: u64,
-        source_payload_id: u64,
-        admit_block: bool,
     }
 
     /// Gas-estimation request supplied before C++ may call FinalChain/EVM.
@@ -5255,77 +5133,9 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusNetworkApi,
             facts: NetworkPendingDagBlocksRequestFacts,
         ) -> Result<NetworkPendingDagBlocksRequestPlan>;
-        pub fn consensus_network_queue_pbft_vote_admission_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftVoteAdmissionEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_vote_admission_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftVoteAdmissionRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_block_admission_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftBlockAdmissionEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_vote_gossip_effects(
+        pub fn consensus_network_gossip_pbft_vote(
             self: &BridgeConsensusNetworkApi,
             effects: NetworkPbftVoteGossipEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_next_votes_bundle_egress_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftNextVotesBundleEgressRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_sync_egress_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftSyncEgressRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pillar_votes_bundle_egress_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPillarVotesBundleEgressRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_dag_sync_egress_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkDagSyncEgressRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_proposed_block_sidecar_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftProposedBlockSidecarEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_proposed_block_bundle_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftProposedBlockSidecarEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pbft_sync_period_data_admission_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPbftSyncPeriodDataAdmissionRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pillar_vote_admission_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPillarVoteAdmissionRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pillar_vote_bundle_member_admission_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPillarVoteAdmissionRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pillar_vote_validation_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPillarVoteValidationRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_pillar_vote_bundle_member_validation_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkPillarVoteValidationRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_transaction_admission_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkTransactionAdmissionRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_dag_block_admission_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkDagBlockAdmissionRequestEffects,
-        ) -> Result<NetworkIngressDecision>;
-        pub fn consensus_network_queue_dag_sync_block_admission_request_effects(
-            self: &BridgeConsensusNetworkApi,
-            effects: NetworkDagBlockAdmissionRequestEffects,
         ) -> Result<NetworkIngressDecision>;
 
         type WesolowskiVdf;

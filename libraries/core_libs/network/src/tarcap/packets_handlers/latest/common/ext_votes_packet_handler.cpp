@@ -344,10 +344,10 @@ rustaxa::NetworkIngressDecision ExtVotesPacketHandler::ingestPbftVoteBundleMembe
   return rust_consensus_network_api_->api->consensus_network_ingest_pbft_vote_bundle_member(reference, vote, context);
 }
 
-rustaxa::NetworkIngressDecision ExtVotesPacketHandler::queuePbftVoteGossipEffects(
+rustaxa::NetworkIngressDecision ExtVotesPacketHandler::gossipPbftVote(
     const rustaxa::NetworkPbftVoteGossipEffects &effects) {
   assert(rust_consensus_network_api_);
-  return rust_consensus_network_api_->api->consensus_network_queue_pbft_vote_gossip_effects(effects);
+  return rust_consensus_network_api_->api->consensus_network_gossip_pbft_vote(effects);
 }
 
 void ExtVotesPacketHandler::executeConsensusNetworkEffects(size_t budget) {
