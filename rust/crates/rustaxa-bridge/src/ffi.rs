@@ -3682,24 +3682,6 @@ pub mod rustaxa_ffi {
         admission: TransactionManagerAdmissionCommandReport,
     }
 
-    /// Finalization hint for one transaction referenced by an expired DAG block.
-    struct DagExpiredTransactionFact {
-        hash: [u8; 32],
-        finalized: bool,
-    }
-
-    /// Deterministic finalization cleanup payload for expired DAG blocks.
-    ///
-    /// Callers receive full expired-transaction context to support legacy
-    /// storage removals while also receiving compact removal hashes suitable for
-    /// direct status updates.
-    struct DagExpiredTransactionCleanupPayload {
-        /// Transaction facts grouped by discovered order across expired DAG blocks.
-        expired_transaction_facts: Vec<DagExpiredTransactionFact>,
-        /// Unique hashes that should be removed from non-finalized storage.
-        remove_hashes: Vec<DagTransactionHash>,
-    }
-
     struct FinalizationDagBlock {
         author: [u8; 20],
         difficulty: u16,
@@ -3735,21 +3717,6 @@ pub mod rustaxa_ffi {
         expected_level: u64,
         level_matches: bool,
         missing_references: Vec<DagHash>,
-    }
-
-    /// C++-originated payload for Rust DAG block verification prechecks.
-    struct DagVerifyPrecheckBlock {
-        level: u64,
-        pivot: [u8; 32],
-        tips: Vec<DagHash>,
-    }
-
-    /// Rust DAG block verification precheck decision.
-    struct DagVerifyPrecheckResult {
-        continue_validation: bool,
-        reject_code: u32,
-        proposal_period_found: bool,
-        proposal_period: u64,
     }
 
     /// Compact block and caller-supplied transaction facts used to open one
@@ -4096,17 +4063,6 @@ pub mod rustaxa_ffi {
         tips: Vec<DagHash>,
         level: u64,
         difficulty: u32,
-    }
-
-    struct DagManagerSnapshot {
-        old_anchor: [u8; 32],
-        anchor: [u8; 32],
-        anchor_level: u64,
-        period: u64,
-        max_level: u64,
-        dag_expiry_level: u64,
-        non_finalized_min_difficulty: u32,
-        non_finalized_blocks: Vec<DagManagerBlock>,
     }
 
     struct DagManagerAnchors {
@@ -4587,10 +4543,6 @@ pub mod rustaxa_ffi {
             dag_expiry_limit: u32,
             storage: &BridgeStorage,
         ) -> Result<Box<BridgeDagManagerRuntime>>;
-        pub fn dag_manager_runtime_rebuild(
-            self: &mut BridgeDagManagerRuntime,
-            snapshot: DagManagerSnapshot,
-        ) -> Result<()>;
         /// Rebuilds the DAG runtime snapshot from Rust PBFT/DAG storage without
         /// using the legacy C++ graph mirror.
         pub fn dag_manager_runtime_restore_from_storage(
@@ -4661,10 +4613,6 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_non_finalized_min_difficulty(
             self: &BridgeDagManagerRuntime,
         ) -> u32;
-        pub fn dag_manager_runtime_block_exists(
-            self: &BridgeDagManagerRuntime,
-            hash: &[u8; 32],
-        ) -> Result<bool>;
         /// Returns DAG block membership from Rust graph state plus canonical
         /// Rust storage without consulting C++ compatibility caches.
         pub fn dag_manager_runtime_is_block_known(
@@ -4720,10 +4668,6 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_persistence_counters(
             self: &BridgeDagManagerRuntime,
         ) -> Result<DagPersistenceCounters>;
-        pub fn dag_manager_runtime_verify_precheck(
-            self: &BridgeDagManagerRuntime,
-            block: DagVerifyPrecheckBlock,
-        ) -> Result<DagVerifyPrecheckResult>;
         pub fn dag_manager_runtime_begin_verify_block_session(
             runtime: &mut BridgeDagManagerRuntime,
             input: DagVerifyBlockSessionInput,
@@ -4784,16 +4728,9 @@ pub mod rustaxa_ffi {
         pub fn dag_plan_proposer_worker_command(
             input: DagProposerWorkerCommandInput,
         ) -> DagProposerWorkerCommand;
-        /// Builds a compact finalization cleanup payload from plan candidates.
-        pub fn dag_manager_runtime_expired_transaction_cleanup_payload(
-            self: &BridgeDagManagerRuntime,
-            expired_hashes: Vec<DagHash>,
-            remaining_hashes: Vec<DagHash>,
-        ) -> Result<DagExpiredTransactionCleanupPayload>;
         pub fn dag_verify_vdf_sortition_from_block(
             input: DagVerifyVdfSortitionFromBlockInput,
         ) -> Result<DagVerifyVdfSortitionResult>;
-        pub fn dag_vrf_input(block_level: u64, proposal_period_hash: &[u8; 32]) -> Vec<u8>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
         pub fn dag_proposer_plan_block_intent(
             input: DagProposerBlockIntentInput,

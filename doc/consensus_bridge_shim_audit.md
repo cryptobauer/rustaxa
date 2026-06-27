@@ -253,6 +253,13 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `dag_plan_add_block_effects`, and `dag_verify_gas`. The live DAG manager shim now reaches those decisions through
   runtime-owned `BridgeDagManagerRuntime` methods, with only `dag_verify_vdf_sortition_from_block` retained as the
   temporary direct VDF verification boundary.
+- Additional DAG runtime bridge-test scaffolding is deleted from the CXX surface:
+  `dag_manager_runtime_rebuild`, `dag_manager_runtime_block_exists`, `dag_manager_runtime_verify_precheck`,
+  `dag_manager_runtime_expired_transaction_cleanup_payload`, `dag_vrf_input`, `DagManagerSnapshot`,
+  `DagVerifyPrecheckBlock`, `DagVerifyPrecheckResult`, `DagExpiredTransactionFact`, and
+  `DagExpiredTransactionCleanupPayload`. Live C++ uses storage restore, `dag_manager_runtime_is_block_known`, verify
+  sessions, finalized-order application, and the retained `dag_vdf_message` public helper; native
+  `rustaxa-consensus` DAG tests cover the deleted lower-level behavior.
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is deleted from the CXX surface. The live proposed-block shim uses
   `proposed_blocks_snapshot_entries`, which carries the block payload and validation flag; grouped hash snapshots remain
   Rust-only test coverage.

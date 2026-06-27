@@ -658,6 +658,15 @@ Implementation status:
   `dag_verify_vdf_sortition_from_block` boundary remains for the current DAG manager shim VDF executor path.
   Custom agents used: `architect-reviewer` confirmed the boundary shape and retained VDF route; `rust-engineer`
   confirmed DTO/test impact and native `rustaxa-consensus` DAG coverage for the deleted wrappers.
+- Additional DAG runtime bridge-test scaffolding is no longer CXX API:
+  `dag_manager_runtime_rebuild`, `dag_manager_runtime_block_exists`, `dag_manager_runtime_verify_precheck`,
+  `dag_manager_runtime_expired_transaction_cleanup_payload`, `dag_vrf_input`, `DagManagerSnapshot`,
+  `DagVerifyPrecheckBlock`, `DagVerifyPrecheckResult`, `DagExpiredTransactionFact`, and
+  `DagExpiredTransactionCleanupPayload` are deleted from the bridge surface. Live C++ uses storage restore,
+  `dag_manager_runtime_is_block_known`, verify sessions, finalized-order application, and the retained
+  `dag_vdf_message` public helper; native `rustaxa-consensus` DAG tests cover the deleted precheck, VRF-input, and
+  expired-transaction cleanup behavior.
+  Custom agents used: `architect-reviewer` confirmed the no-caller status and live-route replacements.
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is no longer a CXX export. Production C++ uses
   `proposed_blocks_snapshot_entries`, which preserves validation flags and payloads needed by the shim facade; grouped
   hash snapshots remain Rust test-only coverage.
