@@ -221,10 +221,6 @@ pub struct BridgePbftManagerBlockValidationSession {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerBlockValidationSession,
 }
 
-pub struct BridgePbftManagerProposalSession {
-    pub state: rustaxa_consensus::pbft_manager::PbftManagerProposalSession,
-}
-
 /// Long-lived Rust PBFT manager runtime used by the C++ compatibility shim.
 ///
 /// Purpose:
@@ -250,6 +246,7 @@ pub struct BridgePbftManagerRuntime {
     pub state_action_effect_session:
         Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
     pub runtime_session: Option<rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession>,
+    pub proposal_session: Option<rustaxa_consensus::pbft_manager::PbftManagerProposalSession>,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -5778,19 +5775,19 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             report: PbftManagerStateActionEffectReport,
         ) -> PbftManagerStateActionSessionStep;
-        type BridgePbftManagerProposalSession;
-        pub fn create_pbft_manager_proposal_session(
+        pub fn pbft_manager_runtime_begin_proposal_session(
+            runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerProposalInitialFact,
-        ) -> Box<BridgePbftManagerProposalSession>;
+        );
         pub fn pbft_manager_proposal_session_next(
-            session: &mut BridgePbftManagerProposalSession,
+            runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerProposalSessionStep;
         pub fn pbft_manager_proposal_session_report_dag_order(
-            session: &mut BridgePbftManagerProposalSession,
+            runtime: &mut BridgePbftManagerRuntime,
             report: PbftManagerProposalDagOrderReport,
         ) -> PbftManagerProposalSessionStep;
         pub fn abort_pbft_manager_proposal_session(
-            session: &mut BridgePbftManagerProposalSession,
+            runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerProposalSessionStep;
         pub fn plan_pbft_manager_broadcast(
             fact: PbftManagerBroadcastFact,
@@ -5851,16 +5848,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
         pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime);
-        pub fn pbft_manager_proposal_session_next(
-            self: &mut BridgePbftManagerProposalSession,
-        ) -> PbftManagerProposalSessionStep;
-        pub fn pbft_manager_proposal_session_report_dag_order(
-            self: &mut BridgePbftManagerProposalSession,
-            report: PbftManagerProposalDagOrderReport,
-        ) -> PbftManagerProposalSessionStep;
-        pub fn abort_pbft_manager_proposal_session(
-            self: &mut BridgePbftManagerProposalSession,
-        ) -> PbftManagerProposalSessionStep;
         pub fn pbft_manager_block_validation_session_next(
             self: &mut BridgePbftManagerBlockValidationSession,
         ) -> PbftManagerBlockValidationPlan;

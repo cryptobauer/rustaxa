@@ -65,8 +65,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodLambda as FfiPeriodLambda,
 };
 use crate::ffi::{
-    BridgePbftManagerBlockValidationSession, BridgePbftManagerProposalSession,
-    BridgePbftManagerRuntime, BridgeStorage,
+    BridgePbftManagerBlockValidationSession, BridgePbftManagerRuntime, BridgeStorage,
 };
 use crate::period_data_queue::{
     bridge_period_data_queue_clean_old_data, bridge_period_data_queue_pop,
@@ -126,10 +125,10 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan, PbftManagerLeaderBlockValidationStatus,
     PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
-    PbftManagerLeaderValidBlockCommand, PbftManagerProposalDagBlockFact,
+    PbftManagerLeaderValidBlockCommand, PbftManagerProposalAction, PbftManagerProposalDagBlockFact,
     PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
-    PbftManagerProposalSessionStep, PbftManagerProposalWalletFact, PbftManagerRuntimeAction,
-    PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
+    PbftManagerProposalSessionStep, PbftManagerProposalStatus, PbftManagerProposalWalletFact,
+    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
     PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepFact,
     PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
@@ -248,6 +247,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
         state_action_effect_session: None,
         runtime_session: None,
+        proposal_session: None,
     }))
 }
 
@@ -1376,35 +1376,75 @@ fn state_action_effect_session_not_started_step() -> FfiPbftManagerStateActionSe
     }
 }
 
-/// Creates a Rust-owned PBFT proposal-construction session from compact C++ facts.
-pub fn create_pbft_manager_proposal_session(
+/// Starts a runtime-owned PBFT proposal-construction session from compact C++ facts.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns the temporary proposal
+///   cursor.
+/// - `fact`: compact C++ facts needed to select a proposer and DAG anchor.
+///
+/// Outputs:
+/// - Replaces any previous proposal cursor. C++ drives the cursor with
+///   `pbft_manager_proposal_session_next` and
+///   `pbft_manager_proposal_session_report_dag_order`.
+///
+/// Invariants and edge behavior:
+/// - Proposal planning is PBFT-manager implementation state and is not exported
+///   as a standalone CXX handle.
+/// - Starting a new proposal replaces any incomplete previous proposal, matching
+///   the legacy per-call allocation behavior.
+pub fn pbft_manager_runtime_begin_proposal_session(
+    runtime: &mut BridgePbftManagerRuntime,
     fact: FfiPbftManagerProposalInitialFact,
-) -> Box<BridgePbftManagerProposalSession> {
-    Box::new(BridgePbftManagerProposalSession {
-        state: create_domain_pbft_manager_proposal_session(fact.into()),
-    })
+) {
+    runtime.proposal_session = Some(create_domain_pbft_manager_proposal_session(fact.into()));
 }
 
-/// Returns the next Rust-owned proposal-construction action or build command.
+/// Returns the next proposal-construction action or build command.
 pub fn pbft_manager_proposal_session_next(
-    session: &mut BridgePbftManagerProposalSession,
+    runtime: &mut BridgePbftManagerRuntime,
 ) -> FfiPbftManagerProposalSessionStep {
-    next_domain_pbft_manager_proposal_session(&mut session.state).into()
+    let Some(session) = runtime.proposal_session.as_mut() else {
+        return proposal_session_not_started_step();
+    };
+    next_domain_pbft_manager_proposal_session(session).into()
 }
 
-/// Reports one C++-loaded DAG order to the Rust-owned proposal session.
+/// Reports one C++-loaded DAG order to the runtime-owned proposal session.
 pub fn pbft_manager_proposal_session_report_dag_order(
-    session: &mut BridgePbftManagerProposalSession,
+    runtime: &mut BridgePbftManagerRuntime,
     report: FfiPbftManagerProposalDagOrderReport,
 ) -> FfiPbftManagerProposalSessionStep {
-    report_domain_pbft_manager_proposal_dag_order(&mut session.state, report.into()).into()
+    let Some(session) = runtime.proposal_session.as_mut() else {
+        return proposal_session_not_started_step();
+    };
+    report_domain_pbft_manager_proposal_dag_order(session, report.into()).into()
 }
 
-/// Aborts a proposal-construction session with a stable contract-error status.
+/// Aborts the runtime-owned proposal session with a stable contract-error status.
 pub fn abort_pbft_manager_proposal_session(
-    session: &mut BridgePbftManagerProposalSession,
+    runtime: &mut BridgePbftManagerRuntime,
 ) -> FfiPbftManagerProposalSessionStep {
-    abort_domain_pbft_manager_proposal_session(&mut session.state).into()
+    let Some(session) = runtime.proposal_session.as_mut() else {
+        return proposal_session_not_started_step();
+    };
+    abort_domain_pbft_manager_proposal_session(session).into()
+}
+
+fn proposal_session_not_started_step() -> FfiPbftManagerProposalSessionStep {
+    FfiPbftManagerProposalSessionStep {
+        action: PbftManagerProposalAction::ContractError.as_u8(),
+        status: PbftManagerProposalStatus::InvalidBridgeFacts.as_u8(),
+        requested_anchor_hash: [0; 32],
+        previous_pbft_block_hash: [0; 32],
+        anchor_hash: [0; 32],
+        order_hash: [0; 32],
+        final_chain_hash: [0; 32],
+        eligible_wallet_indices: Vec::new(),
+        dag_blocks_included: 0,
+        selected_null_anchor: false,
+        error_code: "PBFT_MANAGER_PROPOSAL_SESSION_NOT_STARTED".to_owned(),
+    }
 }
 
 /// Plans one Rust-owned PBFT vote broadcast action from timing/counter facts.
@@ -1504,26 +1544,6 @@ pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
 ) -> FfiPbftManagerTransitionPlan {
     plan_domain_pbft_manager_transition(fact.into()).into()
-}
-
-impl BridgePbftManagerProposalSession {
-    /// Returns the next proposal-construction action or build command.
-    pub fn pbft_manager_proposal_session_next(&mut self) -> FfiPbftManagerProposalSessionStep {
-        pbft_manager_proposal_session_next(self)
-    }
-
-    /// Reports one DAG-order fact response and returns the next proposal step.
-    pub fn pbft_manager_proposal_session_report_dag_order(
-        &mut self,
-        report: FfiPbftManagerProposalDagOrderReport,
-    ) -> FfiPbftManagerProposalSessionStep {
-        pbft_manager_proposal_session_report_dag_order(self, report)
-    }
-
-    /// Aborts this proposal session.
-    pub fn abort_pbft_manager_proposal_session(&mut self) -> FfiPbftManagerProposalSessionStep {
-        abort_pbft_manager_proposal_session(self)
-    }
 }
 
 impl BridgePbftManagerBlockValidationSession {
@@ -2392,13 +2412,17 @@ mod tests {
         }
     }
 
-    fn runtime_for_tick(tick: FfiPbftManagerRuntimeTickFact) -> Box<BridgePbftManagerRuntime> {
-        let temp_path = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_session");
+    fn runtime_for_startup(name: &str) -> Box<BridgePbftManagerRuntime> {
+        let temp_path = unique_temp_dir(name);
         let storage =
             crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
         let mut startup = startup_fact();
         startup.cacti_active_at_chain_size = false;
-        let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup).unwrap();
+        create_pbft_manager_runtime_from_storage(&storage, startup).unwrap()
+    }
+
+    fn runtime_for_tick(tick: FfiPbftManagerRuntimeTickFact) -> Box<BridgePbftManagerRuntime> {
+        let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_runtime_session");
         pbft_manager_runtime_begin_session(&mut runtime, tick);
         runtime
     }
@@ -2974,15 +2998,16 @@ mod tests {
 
     #[test]
     fn bridge_proposal_session_requests_order_and_builds_command() {
-        let mut session = create_pbft_manager_proposal_session(proposal_fact());
+        let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_proposal_session");
+        pbft_manager_runtime_begin_proposal_session(&mut runtime, proposal_fact());
 
-        let request = pbft_manager_proposal_session_next(&mut session);
+        let request = pbft_manager_proposal_session_next(&mut runtime);
         assert_eq!(request.action, PROPOSAL_ACTION_REQUEST_DAG_ORDER);
         assert_eq!(request.status, PROPOSAL_STATUS_ACTIVE);
         assert_eq!(request.requested_anchor_hash, [0x03; 32]);
 
         let build = pbft_manager_proposal_session_report_dag_order(
-            &mut session,
+            &mut runtime,
             FfiPbftManagerProposalDagOrderReport {
                 anchor_hash: request.requested_anchor_hash,
                 dag_blocks: vec![

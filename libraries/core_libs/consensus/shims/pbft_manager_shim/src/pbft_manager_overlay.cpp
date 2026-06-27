@@ -2920,8 +2920,8 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   fact.has_non_finalized_fallback = non_finalized_fallback_hash.has_value();
   fact.non_finalized_fallback_hash = toBridgeHash(non_finalized_fallback_hash.value_or(kNullBlockHash));
 
-  auto session = rustaxa::create_pbft_manager_proposal_session(fact);
-  auto step = session->pbft_manager_proposal_session_next();
+  rustaxa::pbft_manager_runtime_begin_proposal_session(*pbft_manager_runtime_.value(), fact);
+  auto step = rustaxa::pbft_manager_proposal_session_next(*pbft_manager_runtime_.value());
   while (step.action == kPbftManagerProposalActionRequestDagOrder) {
     const auto requested_anchor = fromBridgeHash(step.requested_anchor_hash);
     rustaxa::PbftManagerProposalDagOrderReport report;
@@ -2943,7 +2943,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
       dag_block_fact.gas_estimation = static_cast<uint64_t>(dag_blk->getGasEstimation());
       report.dag_blocks.push_back(dag_block_fact);
     }
-    step = session->pbft_manager_proposal_session_report_dag_order(report);
+    step = rustaxa::pbft_manager_proposal_session_report_dag_order(*pbft_manager_runtime_.value(), report);
   }
 
   if (step.action == kPbftManagerProposalActionBuildProposal && step.status == kPbftManagerProposalStatusBuildReady) {
