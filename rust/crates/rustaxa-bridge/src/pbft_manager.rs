@@ -52,6 +52,9 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
     PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
     PbftManagerTransitionRuntimeApplyResult as FfiPbftManagerTransitionRuntimeApplyResult,
+    PbftSyncQueueDrainReport as FfiPbftSyncQueueDrainReport,
+    PbftSyncQueueDrainReportResult as FfiPbftSyncQueueDrainReportResult,
+    PbftSyncQueueDrainStep as FfiPbftSyncQueueDrainStep,
     PeriodDataQueueEntryRef as FfiPeriodDataQueueEntryRef,
     PeriodDataQueuePbftVotePayload as FfiPeriodDataQueuePbftVotePayload,
     PeriodDataQueuePillarVotePayload as FfiPeriodDataQueuePillarVotePayload,
@@ -137,6 +140,13 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
     PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
     PbftManagerTransitionStorageStatus,
+};
+use rustaxa_consensus::pbft_sync::{
+    create_pbft_sync_queue_drain_session as create_domain_pbft_sync_queue_drain_session,
+    next_pbft_sync_queue_drain_step as next_domain_pbft_sync_queue_drain_step,
+    report_pbft_sync_queue_drain_step as report_domain_pbft_sync_queue_drain_step,
+    PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
+    PbftSyncQueueDrainStep,
 };
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
@@ -236,6 +246,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         state: runtime,
         storage: storage.0.clone(),
         period_data_queue: PeriodDataQueue::new(),
+        pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
     }))
 }
 
@@ -327,6 +338,99 @@ pub fn pbft_manager_runtime_period_data_queue_empty(runtime: &BridgePbftManagerR
 /// Clears PBFT manager runtime queue metadata.
 pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &mut BridgePbftManagerRuntime) {
     runtime.period_data_queue.clear();
+}
+
+fn queue_drain_step_into_ffi(value: PbftSyncQueueDrainStep) -> FfiPbftSyncQueueDrainStep {
+    FfiPbftSyncQueueDrainStep {
+        action: value.action.as_u8(),
+        status: value.status.as_u8(),
+        clean_before_period: value.clean_before_period,
+        can_continue: value.can_continue,
+        error_code: value.error_code.to_string(),
+    }
+}
+
+fn queue_drain_report_result_into_ffi(
+    value: PbftSyncQueueDrainReportResult,
+) -> FfiPbftSyncQueueDrainReportResult {
+    FfiPbftSyncQueueDrainReportResult {
+        status: value.status.as_u8(),
+        can_continue: value.can_continue,
+        error_code: value.error_code.to_string(),
+    }
+}
+
+fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQueueDrainReport {
+    PbftSyncQueueDrainReport {
+        action: PbftSyncQueueDrainAction::from_u8(value.action),
+        success: value.success,
+        accepted_period_data: value.accepted_period_data,
+    }
+}
+
+/// Resets the PBFT sync queue-drain planner owned by the PBFT manager runtime.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime.
+///
+/// Outputs:
+/// - The runtime's ephemeral queue-drain session is reset to its initial state.
+///
+/// Invariants and edge behavior:
+/// - C++ calls this once at the start of each `pushSyncedPbftBlocksIntoChain`
+///   pass. The live `PeriodData` sidecars remain C++-owned for now, but the
+///   planner session no longer requires a standalone CXX bridge handle.
+pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &mut BridgePbftManagerRuntime) {
+    runtime.pbft_sync_queue_drain_session = create_domain_pbft_sync_queue_drain_session();
+}
+
+/// Returns the next queue-drain step from the PBFT manager runtime-owned planner.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime.
+/// - `queue_size`: current processable C++ sidecar queue size.
+/// - `current_period`: current PBFT period used for stale queue cleanup.
+///
+/// Outputs:
+/// - A CXX-safe queue-drain step for the C++ executor.
+///
+/// Invariants and edge behavior:
+/// - Rust owns action ordering and report validation. C++ remains the
+///   temporary executor for live sidecar cleanup, period processing, block
+///   pushing, and network sync-state updates.
+pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
+    runtime: &mut BridgePbftManagerRuntime,
+    queue_size: usize,
+    current_period: u64,
+) -> FfiPbftSyncQueueDrainStep {
+    queue_drain_step_into_ffi(next_domain_pbft_sync_queue_drain_step(
+        &mut runtime.pbft_sync_queue_drain_session,
+        queue_size,
+        current_period,
+    ))
+}
+
+/// Reports one C++ queue-drain executor result to the runtime-owned planner.
+///
+/// Inputs:
+/// - `runtime`: long-lived Rust PBFT manager runtime.
+/// - `report`: C++ executor result for the previously issued drain step.
+///
+/// Outputs:
+/// - A CXX-safe validation result that controls whether C++ may continue the
+///   current drain pass.
+///
+/// Invariants and edge behavior:
+/// - Invalid, mismatched, or failed reports terminate the runtime-owned session
+///   exactly as the retired standalone bridge session did.
+pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
+    runtime: &mut BridgePbftManagerRuntime,
+    report: FfiPbftSyncQueueDrainReport,
+) -> FfiPbftSyncQueueDrainReportResult {
+    queue_drain_report_result_into_ffi(report_domain_pbft_sync_queue_drain_step(
+        &mut runtime.pbft_sync_queue_drain_session,
+        queue_drain_report_from_ffi(report),
+    ))
 }
 
 /// Pushes one period-data payload reference into PBFT manager runtime queue metadata.
@@ -3434,6 +3538,92 @@ mod tests {
                 !pbft_manager_runtime_pbft_block_in_db(&runtime, &[0xBF; 32])
                     .expect("missing PBFT existence should load")
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_owns_pbft_sync_queue_drain_session() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_queue_drain");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            storage
+                .0
+                .pbft()
+                .write_manager_field(2, 500)
+                .expect("lambda seed should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should initialize");
+
+            pbft_manager_runtime_begin_pbft_sync_queue_drain(&mut runtime);
+            let clean = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 2, 10);
+            assert_eq!(clean.action, PbftSyncQueueDrainAction::CleanOldData.as_u8());
+            assert_eq!(clean.clean_before_period, 10);
+            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
+                &mut runtime,
+                FfiPbftSyncQueueDrainReport {
+                    action: clean.action,
+                    success: true,
+                    accepted_period_data: false,
+                },
+            );
+            assert_eq!(report.status, 0);
+            assert!(report.can_continue);
+
+            let pop = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 1, 10);
+            assert_eq!(pop.action, PbftSyncQueueDrainAction::PopAndProcess.as_u8());
+            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
+                &mut runtime,
+                FfiPbftSyncQueueDrainReport {
+                    action: pop.action,
+                    success: true,
+                    accepted_period_data: true,
+                },
+            );
+            assert!(report.can_continue);
+
+            let push = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 1, 10);
+            assert_eq!(push.action, PbftSyncQueueDrainAction::PushAccepted.as_u8());
+            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
+                &mut runtime,
+                FfiPbftSyncQueueDrainReport {
+                    action: push.action,
+                    success: true,
+                    accepted_period_data: false,
+                },
+            );
+            assert!(report.can_continue);
+
+            let update = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 1, 11);
+            assert_eq!(
+                update.action,
+                PbftSyncQueueDrainAction::UpdateSyncState.as_u8()
+            );
+            let report = pbft_manager_runtime_pbft_sync_queue_drain_report(
+                &mut runtime,
+                FfiPbftSyncQueueDrainReport {
+                    action: update.action,
+                    success: true,
+                    accepted_period_data: false,
+                },
+            );
+            assert!(report.can_continue);
+
+            let stop = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 0, 11);
+            assert_eq!(stop.action, PbftSyncQueueDrainAction::Stop.as_u8());
+            assert_eq!(stop.status, 1);
+            assert!(!stop.can_continue);
+
+            pbft_manager_runtime_begin_pbft_sync_queue_drain(&mut runtime);
+            let restarted = pbft_manager_runtime_pbft_sync_queue_drain_next(&mut runtime, 0, 12);
+            assert_eq!(
+                restarted.action,
+                PbftSyncQueueDrainAction::CleanOldData.as_u8()
+            );
+            assert_eq!(restarted.clean_before_period, 12);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

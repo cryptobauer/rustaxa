@@ -3286,7 +3286,7 @@ void PbftManager::pushSyncedPbftBlocksIntoChain() {
     return;
   }
 
-  auto drain_session = rustaxa::create_pbft_sync_queue_drain_session();
+  rustaxa::pbft_manager_runtime_begin_pbft_sync_queue_drain(*pbft_manager_runtime_.value());
   std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> accepted_period_data;
 
   auto report_step = [&](const rustaxa::PbftSyncQueueDrainStep &step, bool success, bool accepted) {
@@ -3294,7 +3294,8 @@ void PbftManager::pushSyncedPbftBlocksIntoChain() {
     report.action = step.action;
     report.success = success;
     report.accepted_period_data = accepted;
-    const auto result = rustaxa::pbft_sync_queue_drain_session_report(*drain_session, report);
+    const auto result =
+        rustaxa::pbft_manager_runtime_pbft_sync_queue_drain_report(*pbft_manager_runtime_.value(), report);
     if (!result.can_continue && result.status != kPbftSyncQueueDrainStatusComplete) {
       LOG(log_er_) << "Rust PBFT sync queue drain stopped after action " << static_cast<uint32_t>(step.action)
                    << ", status " << static_cast<uint32_t>(result.status) << ", error "
@@ -3304,8 +3305,8 @@ void PbftManager::pushSyncedPbftBlocksIntoChain() {
   };
 
   while (true) {
-    const auto step = rustaxa::pbft_sync_queue_drain_session_next(*drain_session, periodDataQueueSize(),
-                                                                  static_cast<uint64_t>(getPbftPeriod()));
+    const auto step = rustaxa::pbft_manager_runtime_pbft_sync_queue_drain_next(
+        *pbft_manager_runtime_.value(), periodDataQueueSize(), static_cast<uint64_t>(getPbftPeriod()));
 
     if (step.action == kPbftSyncQueueDrainActionStop) {
       break;

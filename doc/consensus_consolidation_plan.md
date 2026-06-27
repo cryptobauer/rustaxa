@@ -371,6 +371,11 @@ Implementation notes:
 - The standalone `BridgePeriodDataQueue` CXX handle, `create_period_data_queue` constructor, `period_data_queue_shim`
   overlay, `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` CMake/Makefile flag, and bridge/shim tests for the retired facade were
   deleted.
+- `BridgePbftSyncQueueDrainSession` is retired. PBFT sync queue-drain planner state now lives inside the long-lived
+  `BridgePbftManagerRuntime`, and `pbft_manager_shim::pushSyncedPbftBlocksIntoChain()` resets and drives that
+  runtime-owned planner through `pbft_manager_runtime_begin_pbft_sync_queue_drain`,
+  `pbft_manager_runtime_pbft_sync_queue_drain_next`, and
+  `pbft_manager_runtime_pbft_sync_queue_drain_report`.
 - `pbft_manager_shim` keeps a temporary sidecar deque for live `PeriodData`, `PbftVote`, and peer objects. Rust owns the
   queue admission/order/pop/cleanup metadata; the sidecar deque should disappear when those payload model types move to
   Rust.
@@ -383,7 +388,8 @@ Implementation notes:
   while the legacy base still has private network state that may be read if an inherited base path executes. Remove that
   forwarding only with the broader DAG manager runtime/service consolidation.
 - Replacement bridge coverage is in the Rust `rustaxa-bridge` PBFT manager runtime test for period-data queue metadata,
-  plus the existing Rust `rustaxa-consensus` period-data queue domain tests.
+  the Rust `rustaxa-bridge` PBFT manager runtime test for queue-drain planner ownership, plus the existing Rust
+  `rustaxa-consensus` period-data queue and PBFT sync queue-drain domain tests.
 - Full `gas_pricer_shim` removal is not valid yet. Removing the overlay would route Rust-enabled builds back to the
   legacy C++ implementation instead of preserving Rust ownership. A future removal must first replace the C++ public
   facade with a native transaction/final-chain runtime API or a narrower external query API. The first gas-pricer cleanup
@@ -401,6 +407,8 @@ Implementation notes:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge bridge_runtime_owns_period_data_queue_metadata`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge bridge_runtime_owns_pbft_sync_queue_drain_session`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_sync`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus period_data_queue`
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
   - `cmake --build /build --target pbft_manager_test --parallel 12`

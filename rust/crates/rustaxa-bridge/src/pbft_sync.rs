@@ -14,9 +14,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftSyncPeriodAdmissionPlan as FfiPbftSyncPeriodAdmissionPlan,
     PbftSyncProcessPeriodDataRuntimeFact as FfiPbftSyncProcessPeriodDataRuntimeFact,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
-    PbftSyncQueueDrainReport as FfiPbftSyncQueueDrainReport,
-    PbftSyncQueueDrainReportResult as FfiPbftSyncQueueDrainReportResult,
-    PbftSyncQueueDrainStep as FfiPbftSyncQueueDrainStep,
     PbftSyncRuntimePlan as FfiPbftSyncRuntimePlan,
     PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
     PbftSyncTransactionQueryFact as FfiPbftSyncTransactionQueryFact,
@@ -26,28 +23,19 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::BridgePbftManagerRuntime;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_sync::{
-    create_pbft_sync_queue_drain_session as create_domain_pbft_sync_queue_drain_session,
     load_pbft_sync_egress_payload as load_domain_pbft_sync_egress_payload,
-    next_pbft_sync_queue_drain_step as next_domain_pbft_sync_queue_drain_step,
     plan_pbft_sync_period_admission_runtime as plan_domain_pbft_sync_period_admission_runtime,
     plan_pbft_sync_process_period_data_runtime as plan_domain_pbft_sync_process_period_data_runtime,
     plan_pbft_sync_runtime as plan_domain_pbft_sync_runtime,
     plan_pbft_sync_transaction_query as plan_domain_pbft_sync_transaction_query,
-    report_pbft_sync_queue_drain_step as report_domain_pbft_sync_queue_drain_step,
     validate_pbft_sync_cert_vote_bundle as validate_domain_pbft_sync_cert_vote_bundle,
     PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleValidation, PbftSyncCertVoteFact,
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionFact,
     PbftSyncPeriodAdmissionPlan, PbftSyncProcessPeriodDataRuntimeFact,
-    PbftSyncProcessPeriodDataRuntimePlan, PbftSyncQueueDrainAction, PbftSyncQueueDrainReport,
-    PbftSyncQueueDrainReportResult, PbftSyncQueueDrainSession, PbftSyncQueueDrainStep,
-    PbftSyncRewardVoteAttachmentFact, PbftSyncRuntimeFinalChainHashStatus, PbftSyncRuntimePlan,
-    PbftSyncTransactionQueryFact, PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
+    PbftSyncProcessPeriodDataRuntimePlan, PbftSyncRewardVoteAttachmentFact,
+    PbftSyncRuntimeFinalChainHashStatus, PbftSyncRuntimePlan, PbftSyncTransactionQueryFact,
+    PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
 };
-
-/// Opaque Rust-owned PBFT sync queue-drain session for the C++ shim.
-pub struct BridgePbftSyncQueueDrainSession {
-    state: PbftSyncQueueDrainSession,
-}
 
 /// Plans admission for one C++-originated synced PBFT period payload.
 pub fn plan_pbft_sync_period_admission(
@@ -114,30 +102,6 @@ pub fn validate_pbft_sync_cert_vote_bundle(
     fact: FfiPbftSyncCertVoteBundleFact,
 ) -> FfiPbftSyncCertVoteBundleValidation {
     validate_domain_pbft_sync_cert_vote_bundle(fact.into()).into()
-}
-
-/// Creates a Rust-owned PBFT sync queue-drain session for C++ execution.
-pub fn create_pbft_sync_queue_drain_session() -> Box<BridgePbftSyncQueueDrainSession> {
-    Box::new(BridgePbftSyncQueueDrainSession {
-        state: create_domain_pbft_sync_queue_drain_session(),
-    })
-}
-
-/// Returns the next Rust-planned queue-drain step.
-pub fn pbft_sync_queue_drain_session_next(
-    session: &mut BridgePbftSyncQueueDrainSession,
-    queue_size: usize,
-    current_period: u64,
-) -> FfiPbftSyncQueueDrainStep {
-    next_domain_pbft_sync_queue_drain_step(&mut session.state, queue_size, current_period).into()
-}
-
-/// Reports one C++ queue-drain executor result back to Rust.
-pub fn pbft_sync_queue_drain_session_report(
-    session: &mut BridgePbftSyncQueueDrainSession,
-    report: FfiPbftSyncQueueDrainReport,
-) -> FfiPbftSyncQueueDrainReportResult {
-    report_domain_pbft_sync_queue_drain_step(&mut session.state, report.into()).into()
 }
 
 /// Plans finalized-transaction lookups for synced PBFT period data.
@@ -335,38 +299,6 @@ impl From<PbftSyncProcessPeriodDataRuntimePlan> for FfiPbftSyncProcessPeriodData
     }
 }
 
-impl From<FfiPbftSyncQueueDrainReport> for PbftSyncQueueDrainReport {
-    fn from(value: FfiPbftSyncQueueDrainReport) -> Self {
-        Self {
-            action: PbftSyncQueueDrainAction::from_u8(value.action),
-            success: value.success,
-            accepted_period_data: value.accepted_period_data,
-        }
-    }
-}
-
-impl From<PbftSyncQueueDrainStep> for FfiPbftSyncQueueDrainStep {
-    fn from(value: PbftSyncQueueDrainStep) -> Self {
-        Self {
-            action: value.action.as_u8(),
-            status: value.status.as_u8(),
-            clean_before_period: value.clean_before_period,
-            can_continue: value.can_continue,
-            error_code: value.error_code.to_string(),
-        }
-    }
-}
-
-impl From<PbftSyncQueueDrainReportResult> for FfiPbftSyncQueueDrainReportResult {
-    fn from(value: PbftSyncQueueDrainReportResult) -> Self {
-        Self {
-            status: value.status.as_u8(),
-            can_continue: value.can_continue,
-            error_code: value.error_code.to_string(),
-        }
-    }
-}
-
 impl From<PbftSyncCertVoteBundleValidation> for FfiPbftSyncCertVoteBundleValidation {
     fn from(value: PbftSyncCertVoteBundleValidation) -> Self {
         Self {
@@ -396,8 +328,7 @@ mod tests {
     use crate::storage::create_storage;
     use rustaxa_consensus::pbft_sync::{
         PbftSyncAdmissionRuntimeAction, PbftSyncPeriodAdmissionDecision,
-        PbftSyncPeriodAdmissionStatus, PbftSyncQueueDrainAction, PbftSyncQueueDrainStatus,
-        PbftSyncTransactionWarningKind,
+        PbftSyncPeriodAdmissionStatus, PbftSyncTransactionWarningKind,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -679,69 +610,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![[4; 32]]
         );
-    }
-
-    #[test]
-    fn bridge_queue_drain_session_orders_outer_sync_steps() {
-        let mut session = create_pbft_sync_queue_drain_session();
-
-        let clean = pbft_sync_queue_drain_session_next(&mut session, 2, 10);
-        assert_eq!(clean.action, PbftSyncQueueDrainAction::CleanOldData.as_u8());
-        assert_eq!(clean.clean_before_period, 10);
-        let report = pbft_sync_queue_drain_session_report(
-            &mut session,
-            FfiPbftSyncQueueDrainReport {
-                action: clean.action,
-                success: true,
-                accepted_period_data: false,
-            },
-        );
-        assert_eq!(report.status, PbftSyncQueueDrainStatus::Active.as_u8());
-        assert!(report.can_continue);
-
-        let pop = pbft_sync_queue_drain_session_next(&mut session, 1, 10);
-        assert_eq!(pop.action, PbftSyncQueueDrainAction::PopAndProcess.as_u8());
-        let report = pbft_sync_queue_drain_session_report(
-            &mut session,
-            FfiPbftSyncQueueDrainReport {
-                action: pop.action,
-                success: true,
-                accepted_period_data: true,
-            },
-        );
-        assert!(report.can_continue);
-
-        let push = pbft_sync_queue_drain_session_next(&mut session, 1, 10);
-        assert_eq!(push.action, PbftSyncQueueDrainAction::PushAccepted.as_u8());
-        let report = pbft_sync_queue_drain_session_report(
-            &mut session,
-            FfiPbftSyncQueueDrainReport {
-                action: push.action,
-                success: true,
-                accepted_period_data: false,
-            },
-        );
-        assert!(report.can_continue);
-
-        let update = pbft_sync_queue_drain_session_next(&mut session, 1, 11);
-        assert_eq!(
-            update.action,
-            PbftSyncQueueDrainAction::UpdateSyncState.as_u8()
-        );
-        let report = pbft_sync_queue_drain_session_report(
-            &mut session,
-            FfiPbftSyncQueueDrainReport {
-                action: update.action,
-                success: true,
-                accepted_period_data: false,
-            },
-        );
-        assert!(report.can_continue);
-
-        let stop = pbft_sync_queue_drain_session_next(&mut session, 0, 11);
-        assert_eq!(stop.action, PbftSyncQueueDrainAction::Stop.as_u8());
-        assert_eq!(stop.status, PbftSyncQueueDrainStatus::Complete.as_u8());
-        assert!(!stop.can_continue);
     }
 
     #[test]

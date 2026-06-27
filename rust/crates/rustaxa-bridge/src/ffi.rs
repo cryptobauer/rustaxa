@@ -256,6 +256,7 @@ pub struct BridgePbftManagerRuntime {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
     pub storage: Arc<Storage>,
     pub period_data_queue: PeriodDataQueue,
+    pub pbft_sync_queue_drain_session: rustaxa_consensus::pbft_sync::PbftSyncQueueDrainSession,
 }
 
 pub struct BridgePbftVotePipelineSession {
@@ -5674,17 +5675,6 @@ pub mod rustaxa_ffi {
         pub fn validate_pbft_sync_cert_vote_bundle(
             fact: PbftSyncCertVoteBundleFact,
         ) -> PbftSyncCertVoteBundleValidation;
-        type BridgePbftSyncQueueDrainSession;
-        pub fn create_pbft_sync_queue_drain_session() -> Box<BridgePbftSyncQueueDrainSession>;
-        pub fn pbft_sync_queue_drain_session_next(
-            session: &mut BridgePbftSyncQueueDrainSession,
-            queue_size: usize,
-            current_period: u64,
-        ) -> PbftSyncQueueDrainStep;
-        pub fn pbft_sync_queue_drain_session_report(
-            session: &mut BridgePbftSyncQueueDrainSession,
-            report: PbftSyncQueueDrainReport,
-        ) -> PbftSyncQueueDrainReportResult;
         pub fn plan_pbft_finalization_intent(
             fact: PbftFinalizationIntentFact,
         ) -> PbftFinalizationIntentPlan;
@@ -5764,6 +5754,18 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             period: u64,
         ) -> Vec<PeriodDataQueueEntryRef>;
+        pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(
+            runtime: &mut BridgePbftManagerRuntime,
+        );
+        pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
+            runtime: &mut BridgePbftManagerRuntime,
+            queue_size: usize,
+            current_period: u64,
+        ) -> PbftSyncQueueDrainStep;
+        pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
+            runtime: &mut BridgePbftManagerRuntime,
+            report: PbftSyncQueueDrainReport,
+        ) -> PbftSyncQueueDrainReportResult;
         pub fn plan_pbft_manager_startup_replay_ranges(
             fact: PbftManagerStartupReplayRangeFact,
         ) -> PbftManagerStartupReplayRangePlan;

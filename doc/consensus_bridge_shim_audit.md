@@ -26,7 +26,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | `BridgePbftChain`, `create_pbft_chain*` | `pbft_chain_shim`, PBFT manager/runtime tests | C++ public compatibility facade | Delete once PBFT chain public C++ facade is no longer required or PBFT manager owns chain state natively in Rust. |
 | `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftManagerRuntime`, runtime/proposal/validation/session handles | `pbft_manager_shim`, app bootstrap runtime creation | Internal Rust route | Move session creation and state-action APIs into native Rust consensus runtime. Keep only app bootstrap handle until PBFT manager C++ facade is retired. |
 | `rust/crates/rustaxa-bridge/src/pbft_finalize.rs` | `BridgePbftFinalizationRuntimeSession`, finalization/resume sessions | PBFT manager/finalization shims and tests | Internal Rust route | Delete bridge sessions once PBFT finalization is invoked inside Rust consensus runtime rather than through C++ shim sessions. |
-| `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | `BridgePbftSyncQueueDrainSession`, `create_pbft_sync_queue_drain_session` | PBFT sync tests and PBFT manager plumbing | Obsolete scaffold | Delete after PBFT sync queue draining is represented as Rust runtime state/effects instead of a CXX helper session. |
+| `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | PBFT sync admission, egress, process-period, transaction-query, and cert-vote validation functions | `pbft_manager_shim`, PBFT sync bridge tests | Internal Rust route | Keep narrowing into `BridgePbftManagerRuntime` service methods. The standalone queue-drain CXX handle is retired; remaining functions disappear when PBFT sync processing is owned fully inside the Rust PBFT manager runtime. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_*` | Vote pipeline/admission/validation/generation/progress/ingress/event/payload helpers | Vote manager shim, network API tests, PBFT/vote tests | Internal Rust route | Collapse bridge helpers into native Rust vote pipeline modules. Keep only network-facing vote payload/effect adapters until the network/tarcap API owns that boundary. |
 | `rust/crates/rustaxa-bridge/src/verified_votes.rs` | `BridgeVerifiedVotes`, `create_verified_votes_index`, storage attach | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after vote manager no longer needs a C++ `VerifiedVotes` facade and Rust vote state attaches to storage internally. |
 | `rust/crates/rustaxa-bridge/src/period_data_queue.rs` | Internal conversion helpers only; no exported CXX handle | `pbft_manager.rs` | Internal Rust route | Delete the helper module after PBFT manager runtime can construct period-data queue facts directly from native Rust payload models instead of C++ sidecars. |
@@ -69,7 +69,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgeDagProposerSession` | `dag.rs` | `dag_manager_shim` proposer paths | Internal Rust route | DAG proposal planning runs inside Rust DAG/consensus runtime. |
 | `BridgeDagProposerRetryState` | `dag.rs` | `dag_block_proposer_shim` | Obsolete scaffold | Retry state becomes private Rust proposer state. |
 | `BridgePbftChain` | `pbft_chain.rs` | `pbft_chain_shim`, PBFT tests | C++ public compatibility facade | PBFT chain state is private to Rust PBFT manager/runtime. |
-| `BridgePbftSyncQueueDrainSession` | `pbft_sync.rs` | PBFT sync queue tests/helpers | Obsolete scaffold | PBFT sync queue draining becomes Rust runtime state/effects. |
 | `BridgePbftFinalizationRuntimeSession` | `pbft_finalize.rs` | PBFT finalization paths/tests | Internal Rust route | Finalization is invoked inside Rust PBFT runtime rather than via CXX sessions. |
 | `BridgePbftManagerRuntime` | `pbft_manager.rs` | App bootstrap, `pbft_manager_shim` | Internal Rust route | PBFT manager C++ orchestration is collapsed into Rust runtime. |
 | `BridgePbftManagerRuntimeSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | Runtime session APIs become native Rust calls. |
@@ -254,6 +253,12 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
 - `BridgePeriodDataQueue`, `period_data_queue_shim`, and `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` are retired. PBFT manager
   runtime owns period-data queue metadata through `pbft_manager_runtime_period_data_queue_*`; the C++ PBFT manager shim
   temporarily owns live `PeriodData`, vote, and peer sidecars until those payload models move to Rust.
+- `BridgePbftSyncQueueDrainSession` is retired. PBFT sync queue-drain planning is now owned by the long-lived
+  `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_pbft_sync_queue_drain`,
+  `pbft_manager_runtime_pbft_sync_queue_drain_next`, and
+  `pbft_manager_runtime_pbft_sync_queue_drain_report`. C++ remains the temporary executor for live queue sidecars,
+  `processPeriodData()`, `pushPbftBlock_()`, and network sync-state updates until Slice 6 moves PBFT sync execution into
+  the native Rust PBFT manager service.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.
