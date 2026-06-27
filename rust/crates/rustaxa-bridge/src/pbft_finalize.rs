@@ -15,7 +15,6 @@
 use crate::ffi::rustaxa_ffi::{
     PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
     PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
-    PbftDynamicLambdaPlan as FfiPbftDynamicLambdaPlan,
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
@@ -39,13 +38,12 @@ use anyhow::Result;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
-    plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
     plan_pbft_finalization_pillar_preflight as plan_domain_pbft_finalization_pillar_preflight,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_pillar_preflight as report_domain_pbft_finalization_pillar_preflight,
     validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
-    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
+    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
     PbftFinalizationLiveMutationValidation, PbftFinalizationPillarPreflightAction,
     PbftFinalizationPillarPreflightFact, PbftFinalizationPillarPreflightPlan,
@@ -247,16 +245,6 @@ pub fn validate_pbft_finalization_live_mutation_report(
     }
     let domain_plan = PbftFinalizationPlan::from(plan);
     validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report.into()).into()
-}
-
-/// C++/Rust bridge entry for Cacti dynamic-lambda calculation.
-///
-/// Inputs are only live pre-state, finalized-period facts, and Cacti config.
-/// The function does not read storage or mutate live state. On success, C++ must
-/// assign the returned live fields before passing them to the dynamic-lambda
-/// storage stage.
-pub fn plan_pbft_dynamic_lambda(fact: FfiPbftDynamicLambdaFact) -> FfiPbftDynamicLambdaPlan {
-    plan_domain_pbft_dynamic_lambda(fact.into()).into()
 }
 
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
@@ -633,27 +621,6 @@ impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
     }
 }
 
-impl From<PbftDynamicLambdaPlan> for FfiPbftDynamicLambdaPlan {
-    fn from(value: PbftDynamicLambdaPlan) -> Self {
-        let error_code = if value.status == PbftFinalizationStatus::ContractError {
-            "PBFT_DYNAMIC_LAMBDA_CONTRACT_ERROR".to_string()
-        } else {
-            String::new()
-        };
-        Self {
-            apply_dynamic_lambda_update: value.apply_dynamic_lambda_update,
-            period_lambda: value.period_lambda,
-            blocks_per_year: value.blocks_per_year,
-            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
-            dynamic_lambda: value.dynamic_lambda,
-            decreased_dynamic_lambda: value.decreased_dynamic_lambda,
-            increased_dynamic_lambda: value.increased_dynamic_lambda,
-            status: value.status.as_u8(),
-            error_code,
-        }
-    }
-}
-
 impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimePlan>
     for FfiPbftFinalizationRuntimePlan
 {
@@ -800,26 +767,6 @@ mod tests {
             ],
             ordered_transaction_hashes: vec![FfiPbftFinalizationHash { hash: [3; 32] }],
             process_pillar_block_after_advance: false,
-        }
-    }
-
-    fn dynamic_lambda_fact() -> FfiPbftDynamicLambdaFact {
-        FfiPbftDynamicLambdaFact {
-            dynamic_lambda_active: true,
-            finalized_period: 20,
-            finalized_round: 1,
-            pre_adjust_rounds_count_dynamic_lambda: 9,
-            pre_adjust_dynamic_lambda: 1_500,
-            config: FfiPbftDynamicLambdaConfig {
-                cacti_block_num: 10,
-                lambda_min: 500,
-                lambda_max: 1_500,
-                lambda_default: 2_000,
-                lambda_change_interval: 10,
-                lambda_change: 10,
-                consensus_delay: 400,
-                dpos_blocks_per_year: 500,
-            },
         }
     }
 
@@ -1115,32 +1062,6 @@ mod tests {
         );
         assert!(!reward_rejected.accepted);
         assert_eq!(reward_rejected.status, 12);
-    }
-
-    #[test]
-    fn dynamic_lambda_planner_maps_next_state_for_bridge() {
-        let plan = plan_pbft_dynamic_lambda(dynamic_lambda_fact());
-
-        assert_eq!(plan.status, PbftFinalizationStatus::Accepted.as_u8());
-        assert!(plan.error_code.is_empty());
-        assert!(plan.apply_dynamic_lambda_update);
-        assert_eq!(plan.period_lambda, 1_500);
-        assert_eq!(plan.blocks_per_year, 9_275_294);
-        assert_eq!(plan.rounds_count_dynamic_lambda, 0);
-        assert_eq!(plan.dynamic_lambda, 1_490);
-        assert!(plan.decreased_dynamic_lambda);
-        assert!(!plan.increased_dynamic_lambda);
-
-        let mut disabled = dynamic_lambda_fact();
-        disabled.dynamic_lambda_active = false;
-        let disabled_plan = plan_pbft_dynamic_lambda(disabled);
-        assert_eq!(
-            disabled_plan.status,
-            PbftFinalizationStatus::Accepted.as_u8()
-        );
-        assert!(!disabled_plan.apply_dynamic_lambda_update);
-        assert_eq!(disabled_plan.blocks_per_year, 500);
-        assert_eq!(disabled_plan.dynamic_lambda, 1_500);
     }
 
     #[test]

@@ -1020,7 +1020,8 @@ TEST(RustPbftSyncTest, FinalizationResumeRuntimeSessionOwnsTailReplayCursor) {
 }
 
 TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {
-  auto plan = plan_pbft_dynamic_lambda(makeDynamicLambdaFact());
+  auto runtime = managerRuntimeForFinalizationSession();
+  auto plan = pbft_manager_runtime_plan_finalization_dynamic_lambda(*runtime, makeDynamicLambdaFact());
 
   EXPECT_EQ(plan.status, kPbftFinalizationStatusAccepted);
   EXPECT_TRUE(plan.apply_dynamic_lambda_update);
@@ -1036,7 +1037,7 @@ TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {
   fact.finalized_round = 2;
   fact.pre_adjust_rounds_count_dynamic_lambda = 3;
   fact.pre_adjust_dynamic_lambda = 1495;
-  plan = plan_pbft_dynamic_lambda(fact);
+  plan = pbft_manager_runtime_plan_finalization_dynamic_lambda(*runtime, fact);
   EXPECT_EQ(plan.period_lambda, 2000);
   EXPECT_EQ(plan.rounds_count_dynamic_lambda, 5);
   EXPECT_EQ(plan.dynamic_lambda, 1500);
@@ -1045,7 +1046,7 @@ TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {
 
   fact = makeDynamicLambdaFact();
   fact.dynamic_lambda_active = false;
-  plan = plan_pbft_dynamic_lambda(fact);
+  plan = pbft_manager_runtime_plan_finalization_dynamic_lambda(*runtime, fact);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusAccepted);
   EXPECT_FALSE(plan.apply_dynamic_lambda_update);
   EXPECT_EQ(plan.blocks_per_year, 500);

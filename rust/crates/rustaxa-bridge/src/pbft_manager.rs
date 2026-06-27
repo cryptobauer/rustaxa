@@ -6,7 +6,8 @@
 //! advances.
 
 use crate::ffi::rustaxa_ffi::{
-    BlockPeriodLookup as FfiBlockPeriodLookup, PbftFinalizationHash as FfiPbftFinalizationHash,
+    BlockPeriodLookup as FfiBlockPeriodLookup, PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
+    PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationRuntimeActionReport as FfiPbftFinalizationRuntimeActionReport,
@@ -27,6 +28,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
+    PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -63,7 +65,6 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueuePushOutcome as FfiPeriodDataQueuePushOutcome,
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
-    PeriodLambda as FfiPeriodLambda,
 };
 use crate::ffi::{BridgePbftManagerRuntime, BridgeStorage};
 use crate::period_data_queue::{
@@ -78,11 +79,13 @@ use rustaxa_consensus::pbft_finalize::{
     inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
     load_pbft_finalization_last_period_lambda as load_domain_pbft_finalization_last_period_lambda,
     next_pbft_finalization_runtime_action,
+    plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
-    start_pbft_finalization_runtime, PbftFinalizationPlan, PbftFinalizationResumePlan,
-    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
-    PbftFinalizationRuntimeStatus, PbftFinalizationStorageWriteIntent,
+    start_pbft_finalization_runtime, PbftDynamicLambdaFact, PbftDynamicLambdaPlan,
+    PbftFinalizationPlan, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
+    PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
+    PbftFinalizationStorageWriteIntent,
 };
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
@@ -1065,29 +1068,46 @@ pub fn pbft_manager_runtime_pbft_block_in_db(
     pbft_block_exists_in_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))
 }
 
-/// Loads the latest persisted dynamic lambda through PBFT-manager runtime storage.
+/// Plans finalization dynamic-lambda state and loads the prior persisted lambda through runtime storage.
 ///
 /// Inputs:
 /// - `runtime`: long-lived PBFT manager runtime with its Rust storage handle.
-/// - `period`: upper-bound period for the closest-at-or-before lambda lookup.
+/// - `fact`: Cacti dynamic-lambda inputs gathered by the C++ compatibility shim.
 ///
 /// Outputs:
-/// - `PeriodLambda { found: true, value }` when a prior persisted lambda exists.
-/// - `PeriodLambda { found: false, value: 0 }` when no row exists.
+/// - The Rust dynamic-lambda decision for this finalized PBFT block.
+/// - The closest persisted period-lambda at or before `finalized_period - 1`
+///   when Cacti dynamic-lambda is active.
 ///
 /// Invariants and edge behavior:
-/// - This wrapper exists only to keep PBFT manager finalization paths on the
-///   runtime-owned storage handle; it does not change dynamic-lambda planning.
-pub fn pbft_manager_runtime_load_finalization_last_period_lambda(
+/// - This function does not mutate storage or live manager state.
+/// - Storage is read only when the dynamic-lambda plan is accepted and active;
+///   disabled or rejected plans return an empty previous-lambda lookup.
+/// - `finalized_period = 0` with active dynamic-lambda is treated as having no
+///   previous persisted lambda, matching the lower-bound lookup contract.
+pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
     runtime: &BridgePbftManagerRuntime,
-    period: u64,
-) -> anyhow::Result<FfiPeriodLambda> {
-    let lookup =
-        load_domain_pbft_finalization_last_period_lambda(runtime.storage.as_ref(), period)?;
-    Ok(FfiPeriodLambda {
-        found: lookup.found,
-        value: lookup.value,
-    })
+    fact: FfiPbftDynamicLambdaFact,
+) -> anyhow::Result<FfiPbftManagerFinalizationDynamicLambdaPlan> {
+    let dynamic_lambda_active = fact.dynamic_lambda_active;
+    let finalized_period = fact.finalized_period;
+    let plan = plan_domain_pbft_dynamic_lambda(PbftDynamicLambdaFact::from(fact));
+    let (last_saved_period_lambda_found, last_saved_period_lambda) = if dynamic_lambda_active
+        && plan.status == rustaxa_consensus::pbft_finalize::PbftFinalizationStatus::Accepted
+    {
+        let lookup = load_domain_pbft_finalization_last_period_lambda(
+            runtime.storage.as_ref(),
+            finalized_period.saturating_sub(1),
+        )?;
+        (lookup.found, lookup.value)
+    } else {
+        (false, 0)
+    };
+    Ok(FfiPbftManagerFinalizationDynamicLambdaPlan::from((
+        plan,
+        last_saved_period_lambda_found,
+        last_saved_period_lambda,
+    )))
 }
 
 /// Inspects duplicate PBFT finalization progress through runtime-owned storage.
@@ -1607,6 +1627,32 @@ pub fn pbft_manager_runtime_finalization_session_report_action(
 /// the next finalization attempt cannot accidentally observe stale cursor state.
 pub fn abort_pbft_manager_runtime_finalization_session(runtime: &mut BridgePbftManagerRuntime) {
     runtime.finalization_runtime_session = None;
+}
+
+impl From<(PbftDynamicLambdaPlan, bool, u32)> for FfiPbftManagerFinalizationDynamicLambdaPlan {
+    fn from(value: (PbftDynamicLambdaPlan, bool, u32)) -> Self {
+        let (plan, last_saved_period_lambda_found, last_saved_period_lambda) = value;
+        let error_code = if plan.status
+            == rustaxa_consensus::pbft_finalize::PbftFinalizationStatus::ContractError
+        {
+            "PBFT_DYNAMIC_LAMBDA_CONTRACT_ERROR".to_string()
+        } else {
+            String::new()
+        };
+        Self {
+            apply_dynamic_lambda_update: plan.apply_dynamic_lambda_update,
+            period_lambda: plan.period_lambda,
+            blocks_per_year: plan.blocks_per_year,
+            rounds_count_dynamic_lambda: plan.rounds_count_dynamic_lambda,
+            dynamic_lambda: plan.dynamic_lambda,
+            decreased_dynamic_lambda: plan.decreased_dynamic_lambda,
+            increased_dynamic_lambda: plan.increased_dynamic_lambda,
+            status: plan.status.as_u8(),
+            error_code,
+            last_saved_period_lambda_found,
+            last_saved_period_lambda,
+        }
+    }
 }
 
 impl From<FfiPbftManagerRuntimeTickFact> for PbftManagerRuntimeTickFact {
@@ -2241,6 +2287,7 @@ impl From<PbftManagerAdvancePeriodActionReportResult>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
@@ -2248,6 +2295,7 @@ mod tests {
         create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
     };
     use ethereum_types::H256;
+    use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
     use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
     use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
     use std::fs;
@@ -2775,6 +2823,26 @@ mod tests {
             ],
             ordered_transaction_hashes: vec![FfiPbftFinalizationHash { hash: [3; 32] }],
             process_pillar_block_after_advance: false,
+        }
+    }
+
+    fn dynamic_lambda_fact(finalized_period: u64) -> FfiPbftDynamicLambdaFact {
+        FfiPbftDynamicLambdaFact {
+            dynamic_lambda_active: true,
+            finalized_period,
+            finalized_round: 1,
+            pre_adjust_rounds_count_dynamic_lambda: 9,
+            pre_adjust_dynamic_lambda: 1_500,
+            config: FfiPbftDynamicLambdaConfig {
+                cacti_block_num: 10,
+                lambda_min: 500,
+                lambda_max: 1_500,
+                lambda_default: 2_000,
+                lambda_change_interval: 10,
+                lambda_change: 10,
+                consensus_delay: 400,
+                dpos_blocks_per_year: 500,
+            },
         }
     }
 
@@ -3813,7 +3881,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_loads_finalization_lambda_from_owned_storage() {
+    fn bridge_runtime_plans_finalization_dynamic_lambda_from_owned_storage() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_runtime_finalization_lambda");
         {
             let storage =
@@ -3827,20 +3895,32 @@ mod tests {
             storage
                 .0
                 .metadata()
-                .write_period_lambda(10, 1_234)
+                .write_period_lambda(19, 1_234)
                 .expect("period lambda should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
 
-            let lookup = pbft_manager_runtime_load_finalization_last_period_lambda(&runtime, 11)
-                .expect("runtime lambda lookup should run");
-            let missing = pbft_manager_runtime_load_finalization_last_period_lambda(&runtime, 1)
-                .expect("runtime missing lambda lookup should run");
+            let plan = pbft_manager_runtime_plan_finalization_dynamic_lambda(
+                &runtime,
+                dynamic_lambda_fact(20),
+            )
+            .expect("runtime dynamic-lambda planner should run");
+            let missing = pbft_manager_runtime_plan_finalization_dynamic_lambda(
+                &runtime,
+                dynamic_lambda_fact(1),
+            )
+            .expect("runtime missing dynamic-lambda planner should run");
 
-            assert!(lookup.found);
-            assert_eq!(lookup.value, 1_234);
-            assert!(!missing.found);
-            assert_eq!(missing.value, 0);
+            assert_eq!(plan.status, PbftFinalizationStatus::Accepted.as_u8());
+            assert!(plan.apply_dynamic_lambda_update);
+            assert_eq!(plan.period_lambda, 1_500);
+            assert_eq!(plan.blocks_per_year, 9_275_294);
+            assert_eq!(plan.rounds_count_dynamic_lambda, 0);
+            assert_eq!(plan.dynamic_lambda, 1_490);
+            assert!(plan.last_saved_period_lambda_found);
+            assert_eq!(plan.last_saved_period_lambda, 1_234);
+            assert!(!missing.last_saved_period_lambda_found);
+            assert_eq!(missing.last_saved_period_lambda, 0);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

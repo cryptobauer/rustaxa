@@ -1441,8 +1441,12 @@ pub mod rustaxa_ffi {
         config: PbftDynamicLambdaConfig,
     }
 
-    /// Rust-planned dynamic-lambda state for one PBFT finalization.
-    struct PbftDynamicLambdaPlan {
+    /// PBFT-manager-owned dynamic-lambda planning output for finalization.
+    ///
+    /// This extends the pure dynamic-lambda plan with the previous persisted
+    /// period-lambda lookup required by finalization intent planning, so C++
+    /// does not issue a separate storage query through the bridge.
+    struct PbftManagerFinalizationDynamicLambdaPlan {
         apply_dynamic_lambda_update: bool,
         period_lambda: u32,
         blocks_per_year: u32,
@@ -1452,6 +1456,8 @@ pub mod rustaxa_ffi {
         increased_dynamic_lambda: bool,
         status: u8,
         error_code: String,
+        last_saved_period_lambda_found: bool,
+        last_saved_period_lambda: u32,
     }
 
     /// Ordered runtime-side actions for PBFT finalization.
@@ -4957,10 +4963,10 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftManagerRuntime,
             hash: &[u8; 32],
         ) -> Result<bool>;
-        pub fn pbft_manager_runtime_load_finalization_last_period_lambda(
+        pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
             runtime: &BridgePbftManagerRuntime,
-            period: u64,
-        ) -> Result<PeriodLambda>;
+            fact: PbftDynamicLambdaFact,
+        ) -> Result<PbftManagerFinalizationDynamicLambdaPlan>;
         pub fn pbft_manager_runtime_inspect_finalization_resume(
             runtime: &BridgePbftManagerRuntime,
             write_set: &PbftFinalizationStorageWritePlan,
@@ -5067,7 +5073,6 @@ pub mod rustaxa_ffi {
             plan: &PbftFinalizationIntentPlan,
             report: PbftFinalizationLiveMutationReport,
         ) -> PbftFinalizationLiveMutationValidation;
-        pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan;
         pub fn apply_pbft_finalization_storage_writes(
             storage: &BridgeStorage,
             write_set: &PbftFinalizationStorageWritePlan,

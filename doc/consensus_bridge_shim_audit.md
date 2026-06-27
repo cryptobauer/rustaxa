@@ -402,9 +402,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   until a later manager-owned one-shot finalization operation absorbs the remaining coordinator loop.
 - Additional no-caller standalone PBFT runtime wrappers are retired from the CXX surface:
   `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
-  `load_pbft_finalization_last_period_lambda_storage`, and the bridge-only `PbftSyncRuntimePlan` DTO. Live C++ uses
-  `plan_pbft_sync_process_period_data_runtime`, `plan_pbft_manager_block_validation`, proposal runtime sessions, and
-  `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests keep coverage for the
+  `load_pbft_finalization_last_period_lambda_storage`, `plan_pbft_dynamic_lambda`,
+  `pbft_manager_runtime_load_finalization_last_period_lambda`, and the bridge-only `PbftSyncRuntimePlan` DTO. Live C++
+  uses `plan_pbft_sync_process_period_data_runtime`, `plan_pbft_manager_block_validation`, proposal runtime sessions,
+  and `pbft_manager_runtime_plan_finalization_dynamic_lambda`; native `rustaxa-consensus` tests keep coverage for the
   deleted lower-level planners and lambda lookup.
 - Direct PBFT sync admission and transaction-query planners are also retired from the CXX surface:
   `plan_pbft_sync_period_admission`, `plan_pbft_sync_transaction_query`, and their bridge-only fact/plan DTOs are

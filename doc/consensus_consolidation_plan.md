@@ -467,8 +467,10 @@ Acceptance:
 - Current status: the transaction manager packing path is now thin (`prepare` + single `finalize`) and does not keep shim-side
   estimate-session loops. PBFT block validation no longer stores a bridge runtime cursor. PBFT finalization and duplicate
   resume no longer allocate a standalone CXX `BridgePbftFinalizationRuntimeSession`; their cursors now live on
-  `BridgePbftManagerRuntime`. Slice 6 remains incomplete because `pbft_manager_shim` finalization/lifecycle paths and
-  `pillar_chain_manager_shim` still own orchestration loops that are not yet routed through one-shot Rust service calls.
+  `BridgePbftManagerRuntime`. Dynamic-lambda planning and the previous persisted period-lambda lookup are also
+  manager-runtime-owned through one finalization-specific API. Slice 6 remains incomplete because `pbft_manager_shim`
+  finalization/lifecycle paths and `pillar_chain_manager_shim` still own orchestration loops that are not yet routed
+  through one-shot Rust service calls.
 
 Implementation notes:
 
@@ -495,6 +497,11 @@ Implementation notes:
   create/next/report/abort exports are deleted. C++ still executes the external FinalChain/EVM, DAG, transaction,
   PBFT-chain, sortition, vote-manager, and pillar side effects for this cut; the next PBFT finalization slice should
   replace the remaining shim-side finalization coordinator with a one-shot manager-owned operation.
+- `pbft_manager_shim` dynamic-lambda planning now calls
+  `pbft_manager_runtime_plan_finalization_dynamic_lambda`, which combines the deterministic Cacti lambda calculation
+  with the prior persisted period-lambda lookup through the runtime-owned Rust storage handle. The standalone
+  `plan_pbft_dynamic_lambda` CXX export and `pbft_manager_runtime_load_finalization_last_period_lambda` CXX export are
+  deleted; native Rust tests keep lower-level planner and storage lookup coverage.
 - Custom-agent delegation was attempted for this Slice 6 increment (`cpp-pro` and `rust-engineer`), but the agent
   backend rejected both starts due a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
   using the `$implement-rustaxa-consensus-slice` workflow.
@@ -506,6 +513,12 @@ Implementation notes:
     `BridgePbftManagerRuntime` before broader pillar-chain ownership work.
   - `api-designer`: confirmed the larger follow-up API should be a manager-owned finalization operation while keeping
     FinalChain/EVM, pillar, DAG, transaction, PBFT-chain, and network side effects external.
+- Custom agents used for the dynamic-lambda manager-runtime consolidation:
+  - `architect-reviewer`: recommended the next larger PBFT finalization cut as a manager-runtime owned-action drain that
+    consumes internal actions while stopping before external FinalChain/EVM, DAG, transaction, PBFT-chain, sortition,
+    vote-manager, pillar, and network boundaries.
+  - `api-designer`: recommended evolving this into a manager-owned finalization executor API, with intent planning,
+    begin/resume, step reporting, and external-effect reports grouped behind `BridgePbftManagerRuntime`.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -546,9 +559,24 @@ Implementation notes:
   - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.FinalizationRuntime*:RustPbftSyncTest.FinalizationResumeRuntime*:RustPbftSyncTest.FinalizationRuntimePlanOrdersMixedExecutorActions' --gtest_print_time=1`
   - `cmake --build /build --target pbft_manager_test --parallel 12`
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+- Additional validation for PBFT dynamic-lambda manager-runtime consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge finalization_dynamic_lambda -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.DynamicLambdaPlannerMatchesCactiAdjustmentPolicy:RustPbftSyncTest.FinalizationRuntime*' --gtest_print_time=1`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `git diff --check`
+  - `.githooks/pre-commit`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
-- The immediate follow-up is one-loop reduction in those subsystems before Slice 6 can be marked complete.
+- The immediate follow-up is a PBFT finalization owned-action drain or executor cut: move manager-internal finalization
+  actions behind `BridgePbftManagerRuntime`, keep external side effects explicit, then return to pillar-chain loop
+  reduction before Slice 6 can be marked complete.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
@@ -830,11 +858,12 @@ Implementation status:
   private DTO/test impact.
 - Additional standalone PBFT runtime wrappers are no longer CXX exports:
   `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
-  `load_pbft_finalization_last_period_lambda_storage`, and the bridge-only `PbftSyncRuntimePlan` DTO are deleted from
-  the bridge surface. Live C++ uses `plan_pbft_sync_process_period_data_runtime`,
+  `load_pbft_finalization_last_period_lambda_storage`, `plan_pbft_dynamic_lambda`,
+  `pbft_manager_runtime_load_finalization_last_period_lambda`, and the bridge-only `PbftSyncRuntimePlan` DTO are deleted
+  from the bridge surface. Live C++ uses `plan_pbft_sync_process_period_data_runtime`,
   `plan_pbft_manager_block_validation`, proposal runtime sessions, and
-  `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests cover the deleted
-  lower-level planners and lambda lookup.
+  `pbft_manager_runtime_plan_finalization_dynamic_lambda`; native `rustaxa-consensus` tests cover the deleted lower-level
+  planners and lambda lookup.
   Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
   PBFT manager standalone planner lane as a secondary cleanup candidate.
 - `plan_pbft_manager_state_action` and `plan_pbft_manager_state_action_effects` are deleted from the CXX surface.

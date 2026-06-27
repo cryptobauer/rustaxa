@@ -3452,10 +3452,12 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   const auto block_pbft_round = sample_cert_vote->getRound();
   const auto dynamic_lambda_enabled = kGenesisConfig.state.hardforks.isOnCactiHardfork(block_pbft_period);
   const auto dynamic_lambda_runtime_snapshot = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value());
-  const auto dynamic_lambda_plan = rustaxa::plan_pbft_dynamic_lambda(makePbftDynamicLambdaFact(
-      kGenesisConfig.state.hardforks, kGenesisConfig.state.dpos.blocks_per_year, dynamic_lambda_enabled,
-      block_pbft_period, block_pbft_round, dynamic_lambda_runtime_snapshot.rounds_count_dynamic_lambda,
-      dynamic_lambda_runtime_snapshot.dynamic_lambda_ms));
+  const auto dynamic_lambda_plan = rustaxa::pbft_manager_runtime_plan_finalization_dynamic_lambda(
+      *pbft_manager_runtime_.value(),
+      makePbftDynamicLambdaFact(kGenesisConfig.state.hardforks, kGenesisConfig.state.dpos.blocks_per_year,
+                                dynamic_lambda_enabled, block_pbft_period, block_pbft_round,
+                                dynamic_lambda_runtime_snapshot.rounds_count_dynamic_lambda,
+                                dynamic_lambda_runtime_snapshot.dynamic_lambda_ms));
   if (dynamic_lambda_plan.status != kPbftFinalizationStatusAccepted) {
     LOG(log_er_) << "Rust PBFT dynamic-lambda planner rejected block " << pbft_block_hash << ", period "
                  << block_pbft_period << ", round " << block_pbft_round << ", error "
@@ -3463,11 +3465,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   const uint32_t block_lambda = dynamic_lambda_plan.period_lambda;
-  rustaxa::PeriodLambda last_saved_period_lambda{};
-  if (dynamic_lambda_enabled) {
-    last_saved_period_lambda = rustaxa::pbft_manager_runtime_load_finalization_last_period_lambda(
-        *pbft_manager_runtime_.value(), block_pbft_period - 1);
-  }
   const uint32_t dynamic_blocks_per_year = dynamic_lambda_enabled ? dynamic_lambda_plan.blocks_per_year : 0;
   bool pillar_block_finalized = false;
   const auto pillar_block_hash = period_data.pbft_blk->getExtraData()
@@ -3545,8 +3542,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period,
       block_in_chain, planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(),
       sample_cert_vote->getBlockHash(), sample_cert_vote->getPeriod(), sample_cert_vote->getRound(),
-      sample_cert_vote->getStep(), block_lambda, last_saved_period_lambda.found, last_saved_period_lambda.value,
-      dynamic_blocks_per_year, dynamic_lambda_plan.rounds_count_dynamic_lambda, dynamic_lambda_plan.dynamic_lambda,
+      sample_cert_vote->getStep(), block_lambda, dynamic_lambda_plan.last_saved_period_lambda_found,
+      dynamic_lambda_plan.last_saved_period_lambda, dynamic_blocks_per_year,
+      dynamic_lambda_plan.rounds_count_dynamic_lambda, dynamic_lambda_plan.dynamic_lambda,
       kGenesisConfig.state.dpos.blocks_per_year, dag_blocks_order, transaction_order,
       pbft_chain_->getJsonStrForBlock(pbft_block_hash, null_anchor),
       kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(block_pbft_period)));
