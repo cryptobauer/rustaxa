@@ -272,11 +272,36 @@ Implementation notes:
 - Next bounded Slice 4 implementation target: convert those single-write compatibility methods to create a shim-owned
   batch, reuse the existing typed `storage_shim_*` batch appenders, and commit immediately. That removes direct
   `BridgeStorage` mutator use without changing the public `DbStorage` API.
+- The first batch-only conversion is implemented for DAG block save/remove, status fields, PBFT manager fields/status,
+  PBFT heads, own verified votes, 2t+1 vote bundles, extra reward votes, and proposal-period DAG-level mappings. These
+  methods now use a private `DbStorage::commitImmediateRustBatch` helper, typed `storage_shim_*` appenders, and the
+  existing Rust-owned batch commit path.
+- Remaining direct `BridgeStorage` mutators in `storage_shim` are `clear_block_rewards_stats`, `set_genesis_hash`, and
+  `save_cert_voted_block_in_round`. They do not yet have low-risk typed batch equivalents: block-reward clearing is an
+  aggregate clear path, genesis hash has write-if-empty semantics, and cert-voted block still needs a native
+  `rustaxa-storage` in-batch writer before conversion.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.
   - `cpp-pro`: confirmed bridge batch use is currently storage-shim-local and mapped the remaining public `DbStorage`
     batch callsites in original consensus modules.
+  - `rust-engineer`: confirmed own and extra reward vote batch appenders are low-risk additions, while genesis,
+    block-reward clear, and cert-voted block should remain direct until native storage support exists.
+  - `cpp-pro`: confirmed the private immediate-commit helper shape and the C++ call paths suitable for conversion.
+- Validation for the first batch-only conversion:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge storage`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-storage pbft`
+  - `cmake --build /build --target rust_storage_tests --parallel 12`
+  - `/build/bin/rust_storage_tests`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `cmake --build /build --target dag_test --parallel 12`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.propose_block_and_vote_broadcast' --gtest_print_time=1`
+  - `/build/bin/dag_test --gtest_filter='DagTest.receive_block_in_order:DagTest.build_dag' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `.githooks/pre-commit`
 
 ## Slice 5: Retire Small Completed Consensus Shims
 

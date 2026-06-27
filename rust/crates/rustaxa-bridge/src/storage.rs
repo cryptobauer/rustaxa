@@ -956,6 +956,23 @@ pub fn storage_shim_remove_own_verified_vote(
         .remove_own_verified_vote_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
 }
 
+/// Appends a typed own verified vote write to a Rust-owned storage shim batch.
+///
+/// The caller supplies the canonical weighted vote RLP bytes. Rust owns the
+/// latest-round own-vote column and hash-key layout.
+pub fn storage_shim_save_own_verified_vote(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    vote_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.pbft().write_own_verified_vote_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        &vote_rlp,
+    )
+}
+
 /// Appends a typed 2t+1 vote bundle replacement to a Rust-owned storage shim batch.
 ///
 /// Rust validates the legacy vote-type discriminant and owns the delete-then-put
@@ -982,6 +999,23 @@ pub fn storage_shim_remove_extra_reward_vote(
     storage
         .pbft()
         .remove_extra_reward_vote_in_batch(storage_shim_batch_mut(batch)?, H256::from(*hash))
+}
+
+/// Appends a typed extra reward vote write to a Rust-owned storage shim batch.
+///
+/// The caller supplies the canonical weighted vote RLP bytes. Rust owns the
+/// extra-reward-vote column and hash-key layout.
+pub fn storage_shim_save_extra_reward_vote(
+    batch: &mut BridgeStorageBatch,
+    hash: &[u8; 32],
+    vote_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.pbft().write_extra_reward_vote_in_batch(
+        storage_shim_batch_mut(batch)?,
+        H256::from(*hash),
+        &vote_rlp,
+    )
 }
 
 /// Appends a typed PBFT block hash-to-period index write to a Rust-owned storage shim batch.

@@ -151,6 +151,12 @@ Current snapshot after Slice 5 period-data queue retirement:
   bridge-shaped storage query handles.
 - `BridgeStorageBatch` and `rustBatchId` remain storage-shim compatibility debt. They must not grow into new consensus
   production routes. `create_storage_shim_batch` is storage-shim-local, and `rustBatchId` no longer has code callsites.
+- Storage-shim single-write compatibility methods for DAG block save/remove, status fields, PBFT manager fields/status,
+  PBFT heads, own verified votes, 2t+1 vote bundles, extra reward votes, and proposal-period DAG-level mappings now
+  stage typed `storage_shim_*` writes through `BridgeStorageBatch` and immediately commit the Rust-owned batch.
+- Remaining direct `BridgeStorage` mutators in `storage_shim` are expected only for `clear_block_rewards_stats`,
+  `set_genesis_hash`, and `save_cert_voted_block_in_round` until those aggregate/write-if-empty/cert-vote paths have
+  native typed batch support or move behind a narrower Rust service.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

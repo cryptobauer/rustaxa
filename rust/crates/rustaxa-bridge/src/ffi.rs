@@ -7199,6 +7199,11 @@ pub mod rustaxa_ffi {
             batch: &mut BridgeStorageBatch,
             hash: &[u8; 32],
         ) -> Result<()>;
+        pub fn storage_shim_save_own_verified_vote(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+            vote_rlp: Vec<u8>,
+        ) -> Result<()>;
         pub fn storage_shim_replace_two_t_plus_one_votes(
             batch: &mut BridgeStorageBatch,
             vote_type: u8,
@@ -7207,6 +7212,11 @@ pub mod rustaxa_ffi {
         pub fn storage_shim_remove_extra_reward_vote(
             batch: &mut BridgeStorageBatch,
             hash: &[u8; 32],
+        ) -> Result<()>;
+        pub fn storage_shim_save_extra_reward_vote(
+            batch: &mut BridgeStorageBatch,
+            hash: &[u8; 32],
+            vote_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn storage_shim_save_pbft_block_period(
             batch: &mut BridgeStorageBatch,

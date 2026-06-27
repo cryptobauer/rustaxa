@@ -326,7 +326,8 @@ SharedTransactions DbStorage::getAllNonfinalizedTransactions() {
 
 void DbStorage::removeDagBlock(blk_hash_t const& hash) {
   auto h_arr = into_bytes_array(hash);
-  rust_storage_.value()->remove_dag_block(h_arr);
+  commitImmediateRustBatch(
+      [&](rustaxa::BridgeStorageBatch& batch) { rustaxa::storage_shim_remove_dag_block(batch, h_arr); });
 }
 
 void DbStorage::updateDagBlockCounters(std::vector<std::shared_ptr<DagBlock>> blks) {
@@ -361,9 +362,14 @@ void DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>& blk, Batch* write_
     auto h_arr = into_bytes_array(block_hash);
     auto block_bytes = blk->rlp(true);
     auto block_rlp = into_rust_vec(block_bytes);
-    rust_storage_.value()->save_dag_block(h_arr, blk->getLevel(), blk->getTips().size(), std::move(block_rlp));
-    dag_blocks_count_.fetch_add(1);
-    dag_edge_count_.fetch_add(blk->getTips().size() + 1);
+    auto const dag_blocks_count = dag_blocks_count_.load() + 1;
+    auto const dag_edge_count = dag_edge_count_.load() + blk->getTips().size() + 1;
+    commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) mutable {
+      rustaxa::storage_shim_save_dag_block(batch, h_arr, blk->getLevel(), std::move(block_rlp), dag_blocks_count,
+                                           dag_edge_count);
+    });
+    dag_blocks_count_.store(dag_blocks_count);
+    dag_edge_count_.store(dag_edge_count);
     return;
   }
 
@@ -776,7 +782,9 @@ uint64_t DbStorage::getNumTransactionInDag() { return getStatusField(StatusDbFie
 uint64_t DbStorage::getNumBlockExecuted() { return getStatusField(StatusDbField::ExecutedBlkCount); }
 
 void DbStorage::saveStatusField(StatusDbField const& field, uint64_t value) {
-  rust_storage_.value()->save_status_field(static_cast<uint8_t>(field), value);
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) {
+    rustaxa::storage_shim_save_status_field(batch, static_cast<uint8_t>(field), value);
+  });
 }
 
 void DbStorage::addStatusFieldToBatch(StatusDbField const& field, uint64_t value, Batch& write_batch) {
@@ -788,7 +796,9 @@ uint32_t DbStorage::getPbftMgrField(PbftMgrField field) {
 }
 
 void DbStorage::savePbftMgrField(PbftMgrField field, uint32_t value) {
-  rust_storage_.value()->save_pbft_mgr_field(static_cast<uint8_t>(field), value);
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) {
+    rustaxa::storage_shim_save_pbft_mgr_field(batch, static_cast<uint8_t>(field), value);
+  });
 }
 
 void DbStorage::addPbftMgrFieldToBatch(PbftMgrField field, uint32_t value, Batch& write_batch) {
@@ -800,7 +810,9 @@ bool DbStorage::getPbftMgrStatus(PbftMgrStatus field) {
 }
 
 void DbStorage::savePbftMgrStatus(PbftMgrStatus field, bool const& value) {
-  rust_storage_.value()->save_pbft_mgr_status(static_cast<uint8_t>(field), value);
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) {
+    rustaxa::storage_shim_save_pbft_mgr_status(batch, static_cast<uint8_t>(field), value);
+  });
 }
 
 void DbStorage::addPbftMgrStatusToBatch(PbftMgrStatus field, bool const& value, Batch& write_batch) {
@@ -858,7 +870,9 @@ std::string DbStorage::getPbftHead(blk_hash_t const& hash) {
 void DbStorage::savePbftHead(blk_hash_t const& hash, std::string const& pbft_chain_head_str) {
   auto h_arr = into_bytes_array(hash);
   auto head_bytes = into_rust_vec(pbft_chain_head_str);
-  rust_storage_.value()->save_pbft_head(h_arr, std::move(head_bytes));
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) mutable {
+    rustaxa::storage_shim_save_pbft_head(batch, h_arr, std::move(head_bytes));
+  });
 }
 
 void DbStorage::addPbftHeadToBatch(taraxa::blk_hash_t const& head_hash, std::string const& head_str,
@@ -874,7 +888,9 @@ void DbStorage::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
 
   auto vote_bytes = vote->rlp(true, true);
   auto vote_rlp = into_rust_vec(vote_bytes);
-  rust_storage_.value()->save_own_verified_vote(h_arr, std::move(vote_rlp));
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) mutable {
+    rustaxa::storage_shim_save_own_verified_vote(batch, h_arr, std::move(vote_rlp));
+  });
 }
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getOwnVerifiedVotes() {
@@ -904,7 +920,9 @@ void DbStorage::replaceTwoTPlusOneVotes(TwoTPlusOneVotedBlockType type,
   }
   auto votes_bundle = rust_votes_stream.out();
   auto votes_bundle_rlp = into_rust_vec(votes_bundle);
-  rust_storage_.value()->replace_two_t_plus_one_votes(static_cast<uint8_t>(type), std::move(votes_bundle_rlp));
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) mutable {
+    rustaxa::storage_shim_replace_two_t_plus_one_votes(batch, static_cast<uint8_t>(type), std::move(votes_bundle_rlp));
+  });
 }
 
 void DbStorage::replaceTwoTPlusOneVotesToBatch(TwoTPlusOneVotedBlockType type,
@@ -943,7 +961,9 @@ void DbStorage::saveExtraRewardVote(const std::shared_ptr<PbftVote>& vote) {
   auto h_arr = into_bytes_array(vote_hash);
   auto vote_bytes = vote->rlp(true, true);
   auto vote_rlp = into_rust_vec(vote_bytes);
-  rust_storage_.value()->save_extra_reward_vote(h_arr, std::move(vote_rlp));
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) mutable {
+    rustaxa::storage_shim_save_extra_reward_vote(batch, h_arr, std::move(vote_rlp));
+  });
 }
 
 std::vector<std::shared_ptr<PbftVote>> DbStorage::getRewardVotes() {
@@ -1016,7 +1036,9 @@ std::optional<PbftPeriod> DbStorage::getProposalPeriodForDagLevel(uint64_t level
 }
 
 void DbStorage::saveProposalPeriodDagLevelsMap(uint64_t level, PbftPeriod period) {
-  rust_storage_.value()->save_proposal_period_dag_levels_map(level, period);
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) {
+    rustaxa::storage_shim_save_proposal_period_dag_level(batch, level, period);
+  });
 }
 
 void DbStorage::addProposalPeriodDagLevelsMapToBatch(uint64_t level, PbftPeriod period, Batch& write_batch) {

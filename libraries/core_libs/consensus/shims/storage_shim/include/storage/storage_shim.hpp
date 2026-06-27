@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <unordered_map>
+#include <utility>
 
 #include "common/types.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -231,6 +232,18 @@ class DbStorage : public DbStorageOld {
 
  private:
   rustaxa::BridgeStorageBatch& getOrCreateRustBatch(Batch& batch);
+  template <typename Append>
+  void commitImmediateRustBatch(Append&& append) {
+    auto write_batch = createWriteBatch();
+    try {
+      std::forward<Append>(append)(getOrCreateRustBatch(write_batch));
+      commitWriteBatch(write_batch);
+    } catch (...) {
+      std::lock_guard<std::mutex> lock(rust_batches_mutex_);
+      rust_batches_.erase(&write_batch);
+      throw;
+    }
+  }
   std::string lookupFinalChainMeta(const Slice& key) const;
   std::string lookupFinalChainBlockByNumber(const Slice& key) const;
   std::string lookupFinalChainBlockHashByNumber(const Slice& key) const;
