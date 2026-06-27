@@ -2822,6 +2822,7 @@ pub fn plan_pbft_finalization_resume(
             }
         } else if !fact.executed_status_persisted && !fact.pillar_post_processing_required {
             replay_actions.push(PbftFinalizationRuntimeAction::PersistExecutedStatus);
+            replay_actions.push(PbftFinalizationRuntimeAction::SetExecutedFlag);
         }
         return PbftFinalizationResumePlan {
             status: PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence,
@@ -2867,7 +2868,10 @@ pub fn plan_pbft_finalization_resume(
             status: PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence,
             duplicate_classified: true,
             complete: false,
-            replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus],
+            replay_actions: vec![
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+            ],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
         };
     }
@@ -3881,6 +3885,21 @@ mod tests {
         assert!(plan.complete);
         assert!(plan.replay_actions.is_empty());
 
+        let mut needs_executed_status = complete;
+        needs_executed_status.executed_status_persisted = false;
+        let plan = plan_pbft_finalization_resume(needs_executed_status);
+        assert_eq!(
+            plan.status,
+            PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence
+        );
+        assert_eq!(
+            plan.replay_actions,
+            vec![
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+            ]
+        );
+
         let mut needs_final_chain = complete;
         needs_final_chain.final_chain_last_block = 9;
         needs_final_chain.executed_status_persisted = false;
@@ -3972,6 +3991,35 @@ mod tests {
                 PbftFinalizationRuntimeAction::PersistExecutedStatus,
                 PbftFinalizationRuntimeAction::SetExecutedFlag,
                 PbftFinalizationRuntimeAction::AdvancePeriod,
+            ]
+        );
+
+        let plan = plan_pbft_finalization_resume(PbftFinalizationResumeFact {
+            block_in_chain: true,
+            block_period: 10,
+            final_chain_last_block: 10,
+            pbft_period_mapping_matches: true,
+            period_data_matches: true,
+            dag_positions_match: true,
+            transaction_positions_match: true,
+            missing_primary_facts: false,
+            conflicting_primary_facts: false,
+            dynamic_lambda_required: true,
+            dynamic_lambda_persisted: false,
+            executed_status_persisted: false,
+            pillar_post_processing_required: false,
+        });
+
+        assert_eq!(
+            plan.status,
+            PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+        );
+        assert_eq!(
+            plan.replay_actions,
+            vec![
+                PbftFinalizationRuntimeAction::ApplyDynamicLambda,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
             ]
         );
     }

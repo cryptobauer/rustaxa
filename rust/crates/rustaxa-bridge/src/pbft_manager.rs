@@ -29,6 +29,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
+    PbftManagerFinalizationOwnedActionDrainResult as FfiPbftManagerFinalizationOwnedActionDrainResult,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -82,10 +83,12 @@ use rustaxa_consensus::pbft_finalize::{
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
-    start_pbft_finalization_runtime, PbftDynamicLambdaFact, PbftDynamicLambdaPlan,
+    start_pbft_finalization_runtime,
+    validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
+    PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationLiveMutationReport,
     PbftFinalizationPlan, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
     PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
-    PbftFinalizationStorageWriteIntent,
+    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
 };
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
@@ -968,60 +971,6 @@ pub fn pbft_manager_runtime_apply_cursor_field(
     Ok(runtime.state.snapshot().into())
 }
 
-/// Records an accepted dynamic-lambda finalization stage in the Rust runtime.
-///
-/// Inputs:
-/// - `runtime`: long-lived Rust PBFT manager runtime with its storage handle.
-/// - `rounds_count_dynamic_lambda`: post-adjust accumulator from the accepted
-///   Rust dynamic-lambda planner/storage stage.
-/// - `dynamic_lambda_ms`: post-adjust dynamic lambda from the accepted Rust
-///   dynamic-lambda planner/storage stage.
-///
-/// Outputs:
-/// - Returns the updated Rust runtime snapshot for C++ compatibility mirror
-///   hydration.
-///
-/// Invariants and edge behavior:
-/// - This bridge function does not write storage. The caller must invoke it
-///   only after `pbft_manager_runtime_apply_finalization_storage_writes`
-///   accepts the dynamic-lambda stage, keeping storage authority with the
-///   finalization storage runtime.
-pub fn pbft_manager_runtime_apply_dynamic_lambda(
-    runtime: &mut BridgePbftManagerRuntime,
-    rounds_count_dynamic_lambda: u32,
-    dynamic_lambda_ms: u32,
-) -> FfiPbftManagerRuntimeSnapshot {
-    runtime
-        .state
-        .apply_committed_dynamic_lambda(rounds_count_dynamic_lambda, dynamic_lambda_ms)
-        .into()
-}
-
-/// Records the executed-PBFT flag selected by an accepted Rust finalization plan.
-///
-/// Inputs:
-/// - `runtime`: long-lived Rust PBFT manager runtime.
-/// - `write_intent`: accepted finalization storage-write intent whose
-///   `executed_pbft_status` is the source of truth.
-///
-/// Outputs:
-/// - Returns the updated runtime snapshot so C++ can hydrate temporary manager
-///   mirrors without independently deriving the executed flag.
-///
-/// Invariants and edge behavior:
-/// - This function does not write storage. The caller must run it only after
-///   the finalization runtime has accepted any required executed-status storage
-///   stage and is executing the `SetExecutedFlag` action.
-pub fn pbft_manager_runtime_apply_finalization_executed_status(
-    runtime: &mut BridgePbftManagerRuntime,
-    write_intent: &FfiPbftFinalizationStorageWritePlan,
-) -> FfiPbftManagerRuntimeSnapshot {
-    runtime
-        .state
-        .apply_committed_finalization_executed_status(write_intent.executed_pbft_status)
-        .into()
-}
-
 /// Resolves a finalized DAG block period through PBFT-manager runtime storage.
 ///
 /// Inputs:
@@ -1506,6 +1455,103 @@ fn pbft_finalization_session_missing_step() -> FfiPbftFinalizationRuntimeSession
     }
 }
 
+const FINALIZATION_STAGE_DYNAMIC_LAMBDA: u8 = 1;
+const FINALIZATION_STAGE_EXECUTED_STATUS: u8 = 2;
+
+fn empty_finalization_stage(stage: u8) -> PbftFinalizationStorageWriteStage {
+    PbftFinalizationStorageWriteStage {
+        stage,
+        rounds_count_dynamic_lambda: 0,
+        dynamic_lambda: 0,
+        has_sortition_params_change: false,
+        sortition_params_change_period: 0,
+        sortition_params_change_interval_efficiency: 0,
+        sortition_params_change_threshold_upper: 0,
+        has_reward_votes_reset: false,
+        reward_votes_bundle_rlp: Vec::new(),
+        extra_reward_vote_hashes: Vec::new(),
+    }
+}
+
+struct FinalizationOwnedActionDrainState {
+    drained_actions: u32,
+    applied_dynamic_lambda: bool,
+    persisted_executed_status: bool,
+    set_executed_flag: bool,
+    has_snapshot: bool,
+    last_storage_status: u8,
+}
+
+impl FinalizationOwnedActionDrainState {
+    fn new() -> Self {
+        Self {
+            drained_actions: 0,
+            applied_dynamic_lambda: false,
+            persisted_executed_status: false,
+            set_executed_flag: false,
+            has_snapshot: false,
+            last_storage_status: 0,
+        }
+    }
+}
+
+fn finalization_drain_result(
+    runtime: &BridgePbftManagerRuntime,
+    drain: &FinalizationOwnedActionDrainState,
+    next_step: FfiPbftFinalizationRuntimeSessionStep,
+    error_code: String,
+) -> FfiPbftManagerFinalizationOwnedActionDrainResult {
+    FfiPbftManagerFinalizationOwnedActionDrainResult {
+        status: next_step.status,
+        drained_actions: drain.drained_actions,
+        applied_dynamic_lambda: drain.applied_dynamic_lambda,
+        persisted_executed_status: drain.persisted_executed_status,
+        set_executed_flag: drain.set_executed_flag,
+        has_snapshot: drain.has_snapshot,
+        snapshot: runtime.state.snapshot().into(),
+        last_storage_status: drain.last_storage_status,
+        next_step,
+        error_code,
+    }
+}
+
+fn base_finalization_live_report(
+    action: PbftFinalizationRuntimeAction,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> PbftFinalizationLiveMutationReport {
+    PbftFinalizationLiveMutationReport {
+        action,
+        block_period: write_set.block_period,
+        pbft_block_hash: write_set.pbft_block_hash,
+        anchor_hash: write_set.anchor_hash,
+        dag_finalized_count: 0,
+        finalized_transaction_count: 0,
+        pbft_chain_size: 0,
+        pbft_chain_head_hash: ethereum_types::H256::zero(),
+        pbft_chain_last_anchor_hash: ethereum_types::H256::zero(),
+        reward_votes_period: 0,
+        reward_votes_round: 0,
+        reward_votes_block_hash: ethereum_types::H256::zero(),
+        reward_votes_extra_count: 0,
+        sortition_changed: false,
+        sortition_change_period: 0,
+        sortition_change_interval_efficiency: 0,
+        sortition_change_threshold_upper: 0,
+        sortition_current_threshold_upper: 0,
+        sortition_params_changes_count: 0,
+        rounds_count_dynamic_lambda: 0,
+        dynamic_lambda: 0,
+        executed_pbft_block: false,
+        manager_period: 0,
+        pillar_processed_period: 0,
+        pillar_request_period: 0,
+        anchor_dag_cache_count: 0,
+        final_chain_dispatched: false,
+        final_chain_blocks_per_year: 0,
+        final_chain_last_block: 0,
+    }
+}
+
 /// Starts a PBFT finalization runtime cursor inside the long-lived PBFT manager runtime.
 ///
 /// Inputs are the accepted finalization intent plan already built by the C++
@@ -1619,6 +1665,211 @@ pub fn pbft_manager_runtime_finalization_session_report_action(
         },
     );
     next_pbft_finalization_runtime_action(session).into()
+}
+
+/// Drains PBFT-manager-owned actions from the current finalization cursor.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns the finalization cursor,
+///   Rust storage handle, and live scalar manager snapshot.
+/// - `plan`: accepted finalization intent whose storage-write intent and live
+///   mutation invariants describe the current finalization cursor.
+///
+/// Outputs:
+/// - Applies only manager-owned actions currently at the cursor:
+///   dynamic-lambda storage/live state, executed-status persistence, and the
+///   executed-block flag.
+/// - Stops before all external or subsystem actions and returns the next
+///   cursor step for the C++ executor.
+///
+/// Invariants and edge behavior:
+/// - This helper never executes FinalChain/EVM, DAG, transaction-manager,
+///   PBFT-chain, sortition, vote-manager, pillar, or network side effects.
+/// - Storage commits happen before live Rust snapshot mutation.
+/// - Cursor reports are submitted through the same runtime session contract used
+///   by C++ for external actions, so cursor mismatch/failure semantics stay
+///   centralized.
+pub fn pbft_manager_runtime_drain_owned_finalization_actions(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationIntentPlan,
+) -> anyhow::Result<FfiPbftManagerFinalizationOwnedActionDrainResult> {
+    let domain_plan = PbftFinalizationPlan::from(plan);
+    let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
+    let mut drain = FinalizationOwnedActionDrainState::new();
+
+    loop {
+        let current_step = pbft_manager_runtime_finalization_session_next(runtime);
+        if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+            || !current_step.has_action
+        {
+            return Ok(finalization_drain_result(
+                runtime,
+                &drain,
+                current_step,
+                String::new(),
+            ));
+        }
+
+        let Some(action) = PbftFinalizationRuntimeAction::from_u8(current_step.action) else {
+            return Ok(finalization_drain_result(
+                runtime,
+                &drain,
+                current_step,
+                "PBFT_FINALIZE_RUNTIME_UNKNOWN_ACTION".to_string(),
+            ));
+        };
+
+        match action {
+            PbftFinalizationRuntimeAction::ApplyDynamicLambda => {
+                let mut stage = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
+                stage.rounds_count_dynamic_lambda =
+                    plan.storage_write_intent.rounds_count_dynamic_lambda;
+                stage.dynamic_lambda = plan.storage_write_intent.dynamic_lambda;
+                let apply_result = apply_domain_pbft_finalization_storage_writes(
+                    runtime.storage.as_ref(),
+                    &write_set,
+                    vec![stage],
+                    false,
+                )?;
+                drain.last_storage_status = apply_result.status.as_u8();
+                if !apply_result.status.is_success() {
+                    let next_step = pbft_manager_runtime_finalization_session_report_action(
+                        runtime,
+                        FfiPbftFinalizationRuntimeActionReport {
+                            cursor: current_step.cursor,
+                            action: current_step.action,
+                            success: false,
+                            status: apply_result.status.as_u8(),
+                            error_code: apply_result.error_code,
+                        },
+                    );
+                    return Ok(finalization_drain_result(
+                        runtime,
+                        &drain,
+                        next_step,
+                        "PBFT_FINALIZE_DYNAMIC_LAMBDA_STORAGE_REJECTED".to_string(),
+                    ));
+                }
+
+                runtime.state.apply_committed_dynamic_lambda(
+                    plan.storage_write_intent.rounds_count_dynamic_lambda,
+                    plan.storage_write_intent.dynamic_lambda,
+                );
+                drain.has_snapshot = true;
+                let validation =
+                    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, {
+                        let snapshot = runtime.state.snapshot();
+                        PbftFinalizationLiveMutationReport {
+                            rounds_count_dynamic_lambda: snapshot.rounds_count_dynamic_lambda,
+                            dynamic_lambda: snapshot.dynamic_lambda_ms,
+                            ..base_finalization_live_report(action, &write_set)
+                        }
+                    });
+                let accepted = validation.accepted;
+                let status = if accepted {
+                    apply_result.status.as_u8()
+                } else {
+                    validation.status.as_u8()
+                };
+                let error_code = validation.error_code;
+                let next_step = pbft_manager_runtime_finalization_session_report_action(
+                    runtime,
+                    FfiPbftFinalizationRuntimeActionReport {
+                        cursor: current_step.cursor,
+                        action: current_step.action,
+                        success: accepted,
+                        status,
+                        error_code,
+                    },
+                );
+                if !accepted {
+                    return Ok(finalization_drain_result(
+                        runtime,
+                        &drain,
+                        next_step,
+                        "PBFT_FINALIZE_DYNAMIC_LAMBDA_LIVE_REJECTED".to_string(),
+                    ));
+                }
+                drain.drained_actions += 1;
+                drain.applied_dynamic_lambda = true;
+            }
+            PbftFinalizationRuntimeAction::PersistExecutedStatus => {
+                let apply_result = apply_domain_pbft_finalization_storage_writes(
+                    runtime.storage.as_ref(),
+                    &write_set,
+                    vec![empty_finalization_stage(FINALIZATION_STAGE_EXECUTED_STATUS)],
+                    false,
+                )?;
+                drain.last_storage_status = apply_result.status.as_u8();
+                let accepted = apply_result.status.is_success();
+                let next_step = pbft_manager_runtime_finalization_session_report_action(
+                    runtime,
+                    FfiPbftFinalizationRuntimeActionReport {
+                        cursor: current_step.cursor,
+                        action: current_step.action,
+                        success: accepted,
+                        status: apply_result.status.as_u8(),
+                        error_code: apply_result.error_code,
+                    },
+                );
+                if !accepted {
+                    return Ok(finalization_drain_result(
+                        runtime,
+                        &drain,
+                        next_step,
+                        "PBFT_FINALIZE_EXECUTED_STATUS_STORAGE_REJECTED".to_string(),
+                    ));
+                }
+                drain.drained_actions += 1;
+                drain.persisted_executed_status = true;
+            }
+            PbftFinalizationRuntimeAction::SetExecutedFlag => {
+                runtime.state.apply_committed_finalization_executed_status(
+                    plan.storage_write_intent.executed_pbft_status,
+                );
+                drain.has_snapshot = true;
+                let validation =
+                    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, {
+                        let snapshot = runtime.state.snapshot();
+                        PbftFinalizationLiveMutationReport {
+                            executed_pbft_block: snapshot.executed_pbft_block,
+                            ..base_finalization_live_report(action, &write_set)
+                        }
+                    });
+                let accepted = validation.accepted;
+                let status = validation.status.as_u8();
+                let error_code = validation.error_code;
+                let next_step = pbft_manager_runtime_finalization_session_report_action(
+                    runtime,
+                    FfiPbftFinalizationRuntimeActionReport {
+                        cursor: current_step.cursor,
+                        action: current_step.action,
+                        success: accepted,
+                        status,
+                        error_code,
+                    },
+                );
+                if !accepted {
+                    return Ok(finalization_drain_result(
+                        runtime,
+                        &drain,
+                        next_step,
+                        "PBFT_FINALIZE_EXECUTED_FLAG_LIVE_REJECTED".to_string(),
+                    ));
+                }
+                drain.drained_actions += 1;
+                drain.set_executed_flag = true;
+            }
+            _ => {
+                return Ok(finalization_drain_result(
+                    runtime,
+                    &drain,
+                    current_step,
+                    String::new(),
+                ));
+            }
+        }
+    }
 }
 
 /// Drops the manager-owned PBFT finalization runtime cursor.
@@ -2289,10 +2540,11 @@ mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
-    use crate::ffi::{BridgePbftStorageQueries, BridgeStorage};
+    use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
     use crate::storage::{
-        create_pbft_storage_queries, create_pbft_vote_storage_queries, create_storage,
+        create_metadata_storage_queries, create_pbft_storage_queries,
+        create_pbft_vote_storage_queries, create_storage,
     };
     use ethereum_types::H256;
     use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
@@ -2441,6 +2693,10 @@ mod tests {
 
     fn pbft_queries(storage: &BridgeStorage) -> Box<BridgePbftStorageQueries> {
         create_pbft_storage_queries(storage)
+    }
+
+    fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
+        create_metadata_storage_queries(storage)
     }
 
     fn fact(state: u8) -> FfiPbftManagerRuntimeTickFact {
@@ -2653,53 +2909,6 @@ mod tests {
         assert!(!failed.can_continue);
     }
 
-    #[test]
-    fn bridge_applies_finalization_executed_status_from_write_intent() {
-        let temp_path = unique_temp_dir("rustaxa_bridge_pbft_manager_finalized_executed_status");
-        let storage =
-            crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
-        let mut fact = startup_fact();
-        fact.cacti_active_at_chain_size = false;
-        let mut runtime = create_pbft_manager_runtime_from_storage(&storage, fact).unwrap();
-        let mut write_intent = FfiPbftFinalizationStorageWritePlan {
-            persist_pbft_head: false,
-            persist_period_data: false,
-            reset_reward_votes: false,
-            update_sortition_params: false,
-            apply_dynamic_lambda_update: false,
-            persist_period_lambda: false,
-            persist_executed_pbft_status: true,
-            process_pillar_block: false,
-            pbft_block_hash: [0; 32],
-            pbft_head_hash: [0; 32],
-            block_period: 10,
-            null_anchor: true,
-            anchor_hash: [0; 32],
-            reward_vote_period: 0,
-            reward_vote_round: 0,
-            reward_vote_step: 0,
-            reward_vote_block_hash: [0; 32],
-            period_lambda: 0,
-            blocks_per_year: 0,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            executed_pbft_status: true,
-            pbft_head_payload: Vec::new(),
-            period_data_rlp: Vec::new(),
-            dag_block_period_writes: Vec::new(),
-            transaction_location_writes: Vec::new(),
-        };
-
-        let applied =
-            pbft_manager_runtime_apply_finalization_executed_status(&mut runtime, &write_intent);
-        assert!(applied.executed_pbft_block);
-
-        write_intent.executed_pbft_status = false;
-        let cleared =
-            pbft_manager_runtime_apply_finalization_executed_status(&mut runtime, &write_intent);
-        assert!(!cleared.executed_pbft_block);
-    }
-
     fn state_fact(state: u8) -> FfiPbftManagerStateActionFact {
         FfiPbftManagerStateActionFact {
             state,
@@ -2906,6 +3115,91 @@ mod tests {
     }
 
     #[test]
+    fn manager_runtime_drains_owned_finalization_actions() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_finalization_owned_drain");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut startup = startup_fact();
+            startup.cacti_active_at_chain_size = false;
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
+                .expect("runtime should initialize");
+            let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+            pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+
+            loop {
+                let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+                if step.action == PbftFinalizationRuntimeAction::ApplyDynamicLambda.as_u8() {
+                    break;
+                }
+                assert!(step.has_action);
+                let next = pbft_manager_runtime_finalization_session_report(
+                    &mut runtime,
+                    step.cursor,
+                    step.action,
+                    true,
+                    0,
+                );
+                assert!(next.can_continue);
+            }
+
+            let dynamic =
+                pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
+                    .expect("dynamic-lambda drain should run");
+            assert_eq!(dynamic.drained_actions, 1);
+            assert!(dynamic.applied_dynamic_lambda);
+            assert!(dynamic.has_snapshot);
+            assert_eq!(dynamic.snapshot.rounds_count_dynamic_lambda, 0);
+            assert_eq!(dynamic.snapshot.dynamic_lambda_ms, 1_490);
+            assert_eq!(
+                dynamic.next_step.action,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
+            );
+            let period_lambda = metadata_queries(&storage)
+                .get_period_lambda(10, false)
+                .expect("period lambda should persist");
+            assert!(period_lambda.found);
+            assert_eq!(period_lambda.value, 1_500);
+            assert_eq!(
+                metadata_queries(&storage)
+                    .get_rounds_count_dynamic_lambda()
+                    .expect("round count should persist"),
+                0
+            );
+
+            let final_chain = pbft_manager_runtime_finalization_session_report(
+                &mut runtime,
+                dynamic.next_step.cursor,
+                dynamic.next_step.action,
+                true,
+                0,
+            );
+            assert_eq!(
+                final_chain.action,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8()
+            );
+
+            let executed =
+                pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
+                    .expect("executed-status drain should run");
+            assert_eq!(executed.drained_actions, 2);
+            assert!(executed.persisted_executed_status);
+            assert!(executed.set_executed_flag);
+            assert!(executed.snapshot.executed_pbft_block);
+            assert_eq!(
+                executed.next_step.action,
+                PbftFinalizationRuntimeAction::AdvancePeriod.as_u8()
+            );
+            assert!(pbft_queries(&storage)
+                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect("executed status should persist"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn manager_runtime_finalization_cursor_stops_on_failure_or_mismatch() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_failure");
@@ -2987,6 +3281,83 @@ mod tests {
         assert_eq!(actions, vec![9, 10, 11, 12]);
         assert!(step.complete);
         assert_eq!(step.status, PbftFinalizationRuntimeStatus::Complete.as_u8());
+    }
+
+    #[test]
+    fn manager_runtime_drain_replays_executed_status_resume_tail() {
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_pbft_manager_finalization_resume_executed_drain");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut startup = startup_fact();
+            startup.cacti_active_at_chain_size = false;
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
+                .expect("runtime should initialize");
+            let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+            let resume = FfiPbftFinalizationResumePlan {
+                status: 3,
+                duplicate_classified: true,
+                complete: false,
+                replay_actions: vec![
+                    PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8(),
+                    PbftFinalizationRuntimeAction::SetExecutedFlag.as_u8(),
+                ],
+                error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
+            };
+            pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
+
+            let drained =
+                pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
+                    .expect("resume owned-action drain should run");
+
+            assert_eq!(drained.drained_actions, 2);
+            assert!(drained.persisted_executed_status);
+            assert!(drained.set_executed_flag);
+            assert!(drained.has_snapshot);
+            assert!(drained.snapshot.executed_pbft_block);
+            assert!(drained.next_step.complete);
+            assert_eq!(
+                drained.next_step.status,
+                PbftFinalizationRuntimeStatus::Complete.as_u8()
+            );
+            assert!(pbft_queries(&storage)
+                .get_pbft_mgr_status(PBFT_MGR_STATUS_EXECUTED_BLOCK)
+                .expect("executed status should persist"));
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn manager_runtime_drain_reports_rejected_owned_storage_action() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_drain_reject");
+        let mut plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        plan.storage_write_intent.persist_executed_pbft_status = false;
+        let resume = FfiPbftFinalizationResumePlan {
+            status: 3,
+            duplicate_classified: true,
+            complete: false,
+            replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8()],
+            error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
+        };
+        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
+
+        let rejected = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime, &plan)
+            .expect("rejected owned-action drain should report through result");
+
+        assert_eq!(rejected.drained_actions, 0);
+        assert!(!rejected.next_step.can_continue);
+        assert_eq!(
+            rejected.next_step.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert_eq!(
+            rejected.error_code,
+            "PBFT_FINALIZE_EXECUTED_STATUS_STORAGE_REJECTED"
+        );
     }
 
     #[test]
@@ -3662,36 +4033,6 @@ mod tests {
             assert!(err
                 .to_string()
                 .contains("unsupported PBFT manager cursor field"));
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_runtime_records_committed_dynamic_lambda_snapshot() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_dynamic_lambda_snapshot");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .pbft()
-                .write_manager_field(2, 1_500)
-                .expect("lambda seed should persist");
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
-
-            let snapshot = pbft_manager_runtime_apply_dynamic_lambda(&mut runtime, 12, 1_250);
-
-            assert_eq!(snapshot.status, STARTUP_STATUS_READY);
-            assert_eq!(snapshot.rounds_count_dynamic_lambda, 12);
-            assert_eq!(snapshot.dynamic_lambda_ms, 1_250);
-            assert_eq!(
-                pbft_manager_runtime_snapshot(&runtime).dynamic_lambda_ms,
-                1_250
-            );
-            assert_eq!(pbft_queries(&storage).get_pbft_mgr_field(2).unwrap(), 1_500);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

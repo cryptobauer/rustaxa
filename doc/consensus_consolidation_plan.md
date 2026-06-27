@@ -468,9 +468,10 @@ Acceptance:
   estimate-session loops. PBFT block validation no longer stores a bridge runtime cursor. PBFT finalization and duplicate
   resume no longer allocate a standalone CXX `BridgePbftFinalizationRuntimeSession`; their cursors now live on
   `BridgePbftManagerRuntime`. Dynamic-lambda planning and the previous persisted period-lambda lookup are also
-  manager-runtime-owned through one finalization-specific API. Slice 6 remains incomplete because `pbft_manager_shim`
-  finalization/lifecycle paths and `pillar_chain_manager_shim` still own orchestration loops that are not yet routed
-  through one-shot Rust service calls.
+  manager-runtime-owned through one finalization-specific API. Manager-owned finalization actions are now drained by
+  `BridgePbftManagerRuntime` in normal finalization and duplicate-resume paths. Slice 6 remains incomplete because
+  `pbft_manager_shim` still coordinates external finalization effects and lifecycle paths, and
+  `pillar_chain_manager_shim` still owns orchestration loops that are not yet routed through one-shot Rust service calls.
 
 Implementation notes:
 
@@ -502,6 +503,19 @@ Implementation notes:
   with the prior persisted period-lambda lookup through the runtime-owned Rust storage handle. The standalone
   `plan_pbft_dynamic_lambda` CXX export and `pbft_manager_runtime_load_finalization_last_period_lambda` CXX export are
   deleted; native Rust tests keep lower-level planner and storage lookup coverage.
+- `pbft_manager_shim` normal finalization and duplicate-resume paths now call
+  `pbft_manager_runtime_drain_owned_finalization_actions` before and after the external FinalChain dispatch/replay
+  boundary. The drain consumes only manager-internal actions (`ApplyDynamicLambda`, `PersistExecutedStatus`, and
+  `SetExecutedFlag`), applies the Rust-owned storage writes through the runtime storage handle, mutates
+  `BridgePbftManagerRuntime` state, validates the live mutation transcript, and returns a snapshot for C++ mirror
+  fields. C++ still owns the external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager,
+  advance-period, and pillar side effects until a later one-shot finalization operation absorbs those boundaries.
+- Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
+  tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
+  executed status persisted but the live PBFT manager snapshot left stale.
+- The direct CXX exports `pbft_manager_runtime_apply_dynamic_lambda` and
+  `pbft_manager_runtime_apply_finalization_executed_status` are deleted; their behavior now exists only inside the
+  manager-owned finalization drain API.
 - Custom-agent delegation was attempted for this Slice 6 increment (`cpp-pro` and `rust-engineer`), but the agent
   backend rejected both starts due a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
   using the `$implement-rustaxa-consensus-slice` workflow.
@@ -572,11 +586,21 @@ Implementation notes:
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `git diff --check`
   - `.githooks/pre-commit`
+- Additional validation for PBFT finalization owned-action drain:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_drains_owned_finalization_actions -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_drain -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus resume_classifier -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.DynamicLambdaPlannerMatchesCactiAdjustmentPolicy:RustPbftSyncTest.FinalizationRuntime*:RustPbftSyncTest.FinalizationResumeRuntime*' --gtest_print_time=1`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
-- The immediate follow-up is a PBFT finalization owned-action drain or executor cut: move manager-internal finalization
-  actions behind `BridgePbftManagerRuntime`, keep external side effects explicit, then return to pillar-chain loop
-  reduction before Slice 6 can be marked complete.
+- The immediate follow-up is either the broader PBFT finalization executor cut that absorbs the remaining external-effect
+  report loop behind one manager API, or a return to pillar-chain loop reduction before Slice 6 can be marked complete.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 

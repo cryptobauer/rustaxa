@@ -1941,6 +1941,20 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// Result from draining PBFT-manager-owned finalization runtime actions.
+    struct PbftManagerFinalizationOwnedActionDrainResult {
+        status: u8,
+        drained_actions: u32,
+        applied_dynamic_lambda: bool,
+        persisted_executed_status: bool,
+        set_executed_flag: bool,
+        has_snapshot: bool,
+        snapshot: PbftManagerRuntimeSnapshot,
+        last_storage_status: u8,
+        next_step: PbftFinalizationRuntimeSessionStep,
+        error_code: String,
+    }
+
     /// Structured report for one PBFT finalization runtime action.
     struct PbftFinalizationRuntimeActionReport {
         cursor: u32,
@@ -4946,15 +4960,6 @@ pub mod rustaxa_ffi {
             field: u8,
             value: u32,
         ) -> Result<PbftManagerRuntimeSnapshot>;
-        pub fn pbft_manager_runtime_apply_dynamic_lambda(
-            runtime: &mut BridgePbftManagerRuntime,
-            rounds_count_dynamic_lambda: u32,
-            dynamic_lambda_ms: u32,
-        ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_apply_finalization_executed_status(
-            runtime: &mut BridgePbftManagerRuntime,
-            write_intent: &PbftFinalizationStorageWritePlan,
-        ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_dag_block_period(
             runtime: &BridgePbftManagerRuntime,
             hash: &[u8; 32],
@@ -4994,6 +4999,10 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             report: PbftFinalizationRuntimeActionReport,
         ) -> PbftFinalizationRuntimeSessionStep;
+        pub fn pbft_manager_runtime_drain_owned_finalization_actions(
+            runtime: &mut BridgePbftManagerRuntime,
+            plan: &PbftFinalizationIntentPlan,
+        ) -> Result<PbftManagerFinalizationOwnedActionDrainResult>;
         pub fn abort_pbft_manager_runtime_finalization_session(
             runtime: &mut BridgePbftManagerRuntime,
         );
