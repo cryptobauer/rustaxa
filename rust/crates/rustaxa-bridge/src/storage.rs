@@ -1368,10 +1368,6 @@ impl BridgeStorage {
         self.0.metadata().write_status_field(field, value)
     }
 
-    pub fn save_period_lambda(&self, period: u64, period_lambda: u32) -> Result<(), anyhow::Error> {
-        self.0.metadata().write_period_lambda(period, period_lambda)
-    }
-
     pub fn save_pbft_mgr_field(&self, field: u8, value: u32) -> Result<(), anyhow::Error> {
         self.0.pbft().write_manager_field(field, value)
     }

@@ -198,6 +198,8 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   `storage_shim_save_pbft_block_period` or native Rust period storage, so the broad CXX storage method has been deleted.
 - The storage conformance caller of broad `BridgeStorage::save_rounds_count_dynamic_lambda` now routes through
   `storage_shim_save_rounds_count_dynamic_lambda`, so the broad CXX storage method has been deleted.
+- The remaining callers of broad `BridgeStorage::save_period_lambda` now route through either
+  `storage_shim_save_period_lambda` or native Rust metadata storage, so the broad CXX storage method has been deleted.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

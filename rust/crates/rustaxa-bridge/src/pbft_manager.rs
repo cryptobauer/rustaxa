@@ -3396,7 +3396,9 @@ mod tests {
                 .save_pbft_mgr_field(2, 1_500)
                 .expect("lambda seed should persist");
             storage
-                .save_period_lambda(10, 1_234)
+                .0
+                .metadata()
+                .write_period_lambda(10, 1_234)
                 .expect("period lambda should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
@@ -3614,7 +3616,9 @@ mod tests {
                 .save_period_data(12, period_data.clone())
                 .expect("period data should persist");
             storage
-                .save_period_lambda(11, 1_234)
+                .0
+                .metadata()
+                .write_period_lambda(11, 1_234)
                 .expect("period lambda should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");

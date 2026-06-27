@@ -901,7 +901,7 @@ mod tests {
             api.consensus_query_final_chain_last_block_number().unwrap(),
             15
         );
-        storage.save_period_lambda(15, 1234).unwrap();
+        storage.0.metadata().write_period_lambda(15, 1234).unwrap();
         let sortition_change = SortitionParamsChange {
             period: 12,
             interval_efficiency: 4_200,

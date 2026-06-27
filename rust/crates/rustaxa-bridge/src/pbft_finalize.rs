@@ -1485,7 +1485,9 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             storage
-                .save_period_lambda(10, 1_500)
+                .0
+                .metadata()
+                .write_period_lambda(10, 1_500)
                 .expect("period lambda should persist");
 
             let lookup = load_pbft_finalization_last_period_lambda_storage(&storage, 11)
@@ -1960,7 +1962,9 @@ mod tests {
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
             storage
-                .save_period_lambda(10, 1_600)
+                .0
+                .metadata()
+                .write_period_lambda(10, 1_600)
                 .expect("lambda mismatch should seed");
             let mut dynamic_stage = empty_stage(APPEND_STAGE_DYNAMIC_LAMBDA);
             dynamic_stage.rounds_count_dynamic_lambda = 7;

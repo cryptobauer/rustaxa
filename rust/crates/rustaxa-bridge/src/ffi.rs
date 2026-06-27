@@ -7376,11 +7376,6 @@ pub mod rustaxa_ffi {
             period_data_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn save_status_field(self: &BridgeStorage, field: u8, value: u64) -> Result<()>;
-        pub fn save_period_lambda(
-            self: &BridgeStorage,
-            period: u64,
-            period_lambda: u32,
-        ) -> Result<()>;
         pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
         pub fn get_last_sortition_params(
             self: &BridgeMetadataStorageQueries,
