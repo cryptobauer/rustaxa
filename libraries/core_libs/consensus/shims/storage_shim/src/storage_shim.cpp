@@ -154,7 +154,7 @@ void DbStorage::enableSnapshots() { snapshots_enabled_ = true; }
 
 void DbStorage::deleteColumnData(const Column& c) {
   if (c.ordinal_ == Columns::block_rewards_stats.ordinal_) {
-    rust_storage_.value()->clear_block_rewards_stats();
+    rustaxa::storage_shim_clear_block_rewards_stats(*rust_storage_.value());
     return;
   }
 

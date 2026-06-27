@@ -890,6 +890,17 @@ pub fn storage_shim_save_block_rewards_stats(
     )
 }
 
+/// Clears block reward statistics through the storage shim boundary.
+///
+/// The Rust storage repository owns the aggregate delete and commits it as a
+/// native storage batch. The C++ shim uses this only for the public
+/// `DbStorage::deleteColumnData(block_rewards_stats)` compatibility route.
+pub fn storage_shim_clear_block_rewards_stats(
+    storage: &BridgeStorage,
+) -> Result<(), anyhow::Error> {
+    storage.0.metadata().clear_block_rewards_stats()
+}
+
 /// Writes the genesis hash through the storage shim boundary.
 ///
 /// The storage repository owns the legacy single-value key and write-once
@@ -1747,6 +1758,30 @@ mod tests {
             storage_shim_set_genesis_hash(&storage, &[0xCD; 32])
                 .expect("second genesis hash should be a no-op");
             assert_eq!(metadata.get_genesis_hash().unwrap(), vec![0xAB; 32]);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn storage_shim_clear_block_rewards_stats_removes_all_periods() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_storage_clear_rewards");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let metadata = metadata_queries(&storage);
+
+            storage
+                .save_block_rewards_stats(3, vec![0xC1, 0xA3])
+                .expect("first stats row should save");
+            storage
+                .save_block_rewards_stats(7, vec![0xC1, 0xA7])
+                .expect("second stats row should save");
+            assert_eq!(metadata.get_blocks_rewards_stats().unwrap().len(), 2);
+
+            storage_shim_clear_block_rewards_stats(&storage)
+                .expect("storage shim clear should remove stats");
+            assert!(metadata.get_blocks_rewards_stats().unwrap().is_empty());
         }
         let _ = fs::remove_dir_all(temp_dir);
     }

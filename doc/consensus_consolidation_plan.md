@@ -282,8 +282,12 @@ Implementation notes:
 - Genesis-hash writes now route through a dedicated `storage_shim_set_genesis_hash` API that preserves
   `rustaxa-storage` write-if-empty semantics without exposing the broad `BridgeStorage::set_genesis_hash` mutator to the
   C++ storage shim.
-- The remaining direct `BridgeStorage` mutator in `storage_shim` is `clear_block_rewards_stats`. It does not yet have a
-  low-risk typed batch equivalent because block-reward clearing is an aggregate clear path.
+- Block-reward stats clearing now routes through a dedicated `storage_shim_clear_block_rewards_stats` API. Rust storage
+  still owns the aggregate row-by-row delete and native batch commit, while the broad
+  `BridgeStorage::clear_block_rewards_stats` method remains only for compatibility tests/conformance callers.
+- The tracked direct `BridgeStorage` mutator cleanup for storage-shim single-write and aggregate-clear compatibility
+  paths is complete; remaining Slice 4 work should focus on original consensus modules that still call public
+  `DbStorage::createWriteBatch()` / `commitWriteBatch()` APIs.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.

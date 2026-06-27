@@ -7177,6 +7177,7 @@ pub mod rustaxa_ffi {
             period: u64,
             stats_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn storage_shim_clear_block_rewards_stats(storage: &BridgeStorage) -> Result<()>;
         pub fn storage_shim_set_genesis_hash(
             storage: &BridgeStorage,
             hash: &[u8; 32],
