@@ -1285,41 +1285,6 @@ pub(crate) fn transaction_rlp_lookups(
 }
 
 impl BridgeStorage {
-    pub fn save_dag_block(
-        &self,
-        hash: &[u8; 32],
-        level: u64,
-        tips_count: u64,
-        block_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .dag()
-            .write(H256::from(*hash), level, tips_count, &block_rlp)
-    }
-
-    pub fn remove_dag_block(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.dag().remove(H256::from(*hash))
-    }
-
-    pub fn save_proposal_period_dag_levels_map(
-        &self,
-        level: u64,
-        period: u64,
-    ) -> Result<(), anyhow::Error> {
-        self.0.dag().write_proposal_period_at_level(level, period)
-    }
-
-    pub fn save_dag_block_period(
-        &self,
-        hash: &[u8; 32],
-        period: u64,
-        position: u32,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .dag()
-            .write_period(H256::from(*hash), period, position)
-    }
-
     /// Seeds the exact FinalChain lookup rows required by storage conformance.
     ///
     /// Inputs are legacy-compatible raw bytes supplied by the conformance runner;

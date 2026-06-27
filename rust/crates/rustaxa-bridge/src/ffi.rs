@@ -7299,25 +7299,6 @@ pub mod rustaxa_ffi {
         ) -> Result<()>;
         pub fn storage_shim_commit_batch(batch: Box<BridgeStorageBatch>, sync: bool) -> Result<()>;
 
-        pub fn save_dag_block(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            level: u64,
-            tips_count: u64,
-            block_rlp: Vec<u8>,
-        ) -> Result<()>;
-        pub fn remove_dag_block(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
-        pub fn save_proposal_period_dag_levels_map(
-            self: &BridgeStorage,
-            level: u64,
-            period: u64,
-        ) -> Result<()>;
-        pub fn save_dag_block_period(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            period: u64,
-            position: u32,
-        ) -> Result<()>;
         pub fn dag_block_in_db(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<bool>;
         pub fn get_dag_block(self: &BridgeDagStorageQueries, hash: &[u8; 32]) -> Result<Vec<u8>>;
         pub fn get_dag_block_period_lookup(

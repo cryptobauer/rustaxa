@@ -96,7 +96,9 @@ TEST_F(StorageTest, DagBlockPeriodLookupReflectsFoundState) {
   EXPECT_FALSE(lookup.found);
 
   const auto existing = h256(0x33);
-  storage->save_dag_block_period(existing, 7, 4);
+  auto seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_dag_block_period(*seed_batch, existing, 7, 4);
+  storage_shim_commit_batch(std::move(seed_batch), false);
   auto found = dagQueries(storage)->get_dag_block_period_lookup(existing);
   EXPECT_TRUE(found.found);
   EXPECT_EQ(found.period, 7u);

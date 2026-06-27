@@ -1107,7 +1107,9 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_apply");
 
   auto storage = create_storage(test_dir.string());
-  storage->save_dag_block(h256(2), 1, 0, bytes({0xda}));
+  auto dag_seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_dag_block(*dag_seed_batch, h256(2), 1, bytes({0xda}), 1, 1);
+  storage_shim_commit_batch(std::move(dag_seed_batch), false);
   storage->save_transaction(h256(4), bytes({0xd0}));
   auto period_queries = periodQueries(storage);
 
@@ -1203,7 +1205,9 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_owned_apply");
 
   auto storage = create_storage(test_dir.string());
-  storage->save_dag_block(h256(2), 1, 0, bytes({0xda}));
+  auto dag_seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_dag_block(*dag_seed_batch, h256(2), 1, bytes({0xda}), 1, 1);
+  storage_shim_commit_batch(std::move(dag_seed_batch), false);
   storage->save_transaction(h256(4), bytes({0xd0}));
   auto seed_batch = create_storage_shim_batch(*storage);
   storage_shim_save_extra_reward_vote(*seed_batch, h256(12), bytes({0xee}));

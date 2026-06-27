@@ -3407,7 +3407,9 @@ mod tests {
             let dag_hash = [0xDA; 32];
             let pbft_hash = [0xBE; 32];
             storage
-                .save_dag_block_period(&dag_hash, 12, 4)
+                .0
+                .dag()
+                .write_period(H256::from(dag_hash), 12, 4)
                 .expect("DAG period should persist");
             storage
                 .0

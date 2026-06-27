@@ -915,9 +915,20 @@ mod tests {
         let status_dag_block_rlp = dag_block_rlp();
         let status_dag_block_hash = keccak256(&status_dag_block_rlp);
         storage
-            .save_dag_block(&status_dag_block_hash.0, 5, 1, status_dag_block_rlp)
+            .0
+            .dag()
+            .write(
+                H256::from(status_dag_block_hash.0),
+                5,
+                1,
+                &status_dag_block_rlp,
+            )
             .unwrap();
-        storage.save_proposal_period_dag_levels_map(5, 12).unwrap();
+        storage
+            .0
+            .dag()
+            .write_proposal_period_at_level(5, 12)
+            .unwrap();
         storage
             .0
             .metadata()
@@ -1235,9 +1246,15 @@ mod tests {
         let block_hash = keccak256(&block_rlp);
 
         storage
-            .save_dag_block(&block_hash.0, 5, 1, block_rlp.clone())
+            .0
+            .dag()
+            .write(H256::from(block_hash.0), 5, 1, &block_rlp)
             .unwrap();
-        storage.save_dag_block_period(&block_hash.0, 9, 2).unwrap();
+        storage
+            .0
+            .dag()
+            .write_period(H256::from(block_hash.0), 9, 2)
+            .unwrap();
 
         let view = api
             .consensus_query_dag_block_by_hash(&block_hash.0)
