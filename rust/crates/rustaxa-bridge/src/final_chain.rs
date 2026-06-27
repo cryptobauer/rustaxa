@@ -821,10 +821,6 @@ pub fn final_chain_execution_session_commit(
         .map(commit_report_to_ffi)
 }
 
-pub fn abort_final_chain_execution_session(session: Box<BridgeFinalChainExecutionSession>) {
-    let _ = rustaxa_consensus::abort_final_chain_execution_session(session.state);
-}
-
 pub fn plan_external_evm_system_transactions(
     fact: rustaxa_ffi::FinalChainSystemTransactionPlanFact,
 ) -> Result<rustaxa_ffi::FinalChainSystemTransactionPlan, anyhow::Error> {
@@ -1014,6 +1010,7 @@ impl BridgeConsensusExecutionApi {
     }
 }
 
+#[allow(dead_code)]
 impl BridgeFinalChainExecutionSession {
     pub fn final_chain_execution_session_next(
         &mut self,
@@ -1108,6 +1105,7 @@ impl BridgeFinalChainExecutionSession {
     }
 }
 
+#[allow(dead_code)]
 pub fn final_chain_execution_session_plan_external_evm_publication(
     final_chain: &BridgeFinalChain,
     session: &mut BridgeFinalChainExecutionSession,
@@ -1120,6 +1118,7 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
     ))
 }
 
+#[allow(dead_code)]
 pub fn final_chain_execution_session_publish_external_evm_publication(
     final_chain: &BridgeFinalChain,
     session: &mut BridgeFinalChainExecutionSession,
@@ -1132,6 +1131,7 @@ pub fn final_chain_execution_session_publish_external_evm_publication(
     ))
 }
 
+#[allow(dead_code)]
 pub fn final_chain_execution_session_persist_external_evm_pending_publication(
     final_chain: &BridgeFinalChain,
     session: &mut BridgeFinalChainExecutionSession,
@@ -1144,6 +1144,7 @@ pub fn final_chain_execution_session_persist_external_evm_pending_publication(
     ))
 }
 
+#[allow(dead_code)]
 pub fn final_chain_execution_session_report_external_evm_state_commit_result(
     final_chain: &BridgeFinalChain,
     session: &mut BridgeFinalChainExecutionSession,

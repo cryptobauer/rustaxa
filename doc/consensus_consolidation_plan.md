@@ -707,6 +707,13 @@ Implementation status:
   deleted lower-level planners and lambda lookup.
   Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
   PBFT manager standalone planner lane as a secondary cleanup candidate.
+- Direct FinalChain execution-session step/report/publication helpers are no longer CXX exports. The live
+  `final_chain_shim` path uses `BridgeConsensusExecutionApi` for external-EVM/`StateAPI` interaction, while the CXX
+  bridge keeps only session creation/commit, the dedicated execution API, and retained pending-publication
+  recovery/publication compatibility calls. The Rust-internal wrapper methods and their bridge-only DTOs remain as a
+  follow-up Slice 8/9 cleanup because bridge tests and the native-only compatibility finalizer still call them directly.
+  Custom agents used: `rust-engineer` confirmed the live C++ route and identified the remaining Rust-internal wrapper
+  callsites that must be migrated before deleting the implementation helpers.
 - Additional no-caller CXX exports are deleted after callsite audit showed they were bridge-test scaffolding only:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use

@@ -3216,6 +3216,7 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    #[allow(dead_code)]
     struct FinalChainExternalEvmStateCommitRequest {
         request_id: [u8; 32],
         plan_id: [u8; 32],
@@ -3239,6 +3240,7 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    #[allow(dead_code)]
     struct FinalChainExternalEvmLifecycleReport {
         request_id: [u8; 32],
         plan_id: [u8; 32],
@@ -6258,57 +6260,9 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             request: FinalChainExecutionRequest,
         ) -> Result<Box<BridgeFinalChainExecutionSession>>;
-        pub fn final_chain_execution_session_next(
-            self: &mut BridgeFinalChainExecutionSession,
-        ) -> Result<FinalChainExecutionStep>;
-        pub fn final_chain_execution_session_report_evm(
-            self: &mut BridgeFinalChainExecutionSession,
-            report: FinalChainEvmExecutionReport,
-        ) -> Result<FinalChainExecutionStep>;
-        pub fn final_chain_execution_session_report_system_transactions(
-            self: &mut BridgeFinalChainExecutionSession,
-            report: FinalChainSystemTransactionReport,
-        ) -> Result<FinalChainExecutionStep>;
         pub fn plan_external_evm_system_transactions(
             fact: FinalChainSystemTransactionPlanFact,
         ) -> Result<FinalChainSystemTransactionPlan>;
-        pub fn final_chain_execution_session_plan_external_evm_commit(
-            self: &mut BridgeFinalChainExecutionSession,
-            rewards_report: FinalChainEvmRewardsReport,
-        ) -> Result<FinalChainExternalEvmCommitPlan>;
-        pub fn final_chain_execution_session_attach_external_evm_rewards_stats(
-            self: &mut BridgeFinalChainExecutionSession,
-            rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
-        ) -> Result<FinalChainExternalEvmPublicationPlan>;
-        pub fn final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
-            self: &mut BridgeFinalChainExecutionSession,
-            update: FinalChainProposalPeriodDagLevelUpdate,
-        ) -> Result<FinalChainExternalEvmPublicationPlan>;
-        pub fn final_chain_execution_session_plan_external_evm_publication(
-            final_chain: &BridgeFinalChain,
-            session: &mut BridgeFinalChainExecutionSession,
-        ) -> Result<FinalChainExternalEvmPublicationPlan>;
-        pub fn final_chain_execution_session_publish_external_evm_publication(
-            final_chain: &BridgeFinalChain,
-            session: &mut BridgeFinalChainExecutionSession,
-        ) -> Result<FinalChainExternalEvmPublicationReport>;
-        pub fn final_chain_execution_session_persist_external_evm_pending_publication(
-            final_chain: &BridgeFinalChain,
-            session: &mut BridgeFinalChainExecutionSession,
-        ) -> Result<FinalChainExternalEvmPublicationReport>;
-        pub fn final_chain_execution_session_request_external_evm_state_commit(
-            self: &mut BridgeFinalChainExecutionSession,
-            request: FinalChainExternalEvmStateCommitRequest,
-        ) -> Result<FinalChainExternalEvmStateCommitIntent>;
-        pub fn final_chain_execution_session_report_external_evm_state_commit_result(
-            final_chain: &BridgeFinalChain,
-            session: &mut BridgeFinalChainExecutionSession,
-            result: FinalChainExternalEvmStateCommitResult,
-        ) -> Result<FinalChainExternalEvmCommitDecision>;
-        pub fn final_chain_execution_session_report_external_evm_lifecycle(
-            self: &mut BridgeFinalChainExecutionSession,
-            report: FinalChainExternalEvmLifecycleReport,
-        ) -> Result<FinalChainExternalEvmCommitDecision>;
         pub fn publish_external_evm_publication(
             self: &BridgeFinalChain,
             plan: FinalChainExternalEvmPublicationPlan,
@@ -6387,7 +6341,6 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: Box<BridgeFinalChainExecutionSession>,
         ) -> Result<FinalChainExecutionCommitReport>;
-        pub fn abort_final_chain_execution_session(session: Box<BridgeFinalChainExecutionSession>);
         pub fn get_transaction_rlps(self: &BridgeFinalChain, period: u64) -> Result<Vec<TxRlp>>;
         pub fn get_transaction_receipt(
             self: &BridgeFinalChain,
