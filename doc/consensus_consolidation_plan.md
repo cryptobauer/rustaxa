@@ -633,6 +633,14 @@ Implementation status:
   `transaction_manager_verify_not_finalized_with_runtime_and_final_chain` are deleted from the bridge surface. Live C++
   admission uses fact-backed external-FinalChain facts, DAG transaction persistence uses the runtime-owned command
   report, and finalized-status cleanup enters through the high-level runtime command.
+- DAG manager bridge-test-only sync selection helpers are no longer CXX exports:
+  `dag_manager_runtime_non_finalized_sync_snapshot`, `dag_manager_runtime_select_non_finalized_hashes`, and the
+  `DagManagerRuntimeSyncSnapshot` DTO. Live C++ uses `dag_manager_runtime_non_finalized_sync_payload` for
+  storage-backed DAG sync payload materialization; the lower-level selection/snapshot helpers remain Rust-private or
+  test-only behavior covered by Rust bridge/domain tests.
+- `BridgeProposedBlocks::proposed_blocks_snapshot` is no longer a CXX export. Production C++ uses
+  `proposed_blocks_snapshot_entries`, which preserves validation flags and payloads needed by the shim facade; grouped
+  hash snapshots remain Rust test-only coverage.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.

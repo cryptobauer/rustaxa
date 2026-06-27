@@ -4,25 +4,25 @@ use crate::ffi::rustaxa_ffi::{
     DagExpiredTransactionFact, DagFinalizedCounterUpdate, DagFrontier, DagHash, DagLevelHashes,
     DagManagerAnchors, DagManagerBlock, DagManagerFinalizationApplyPayload,
     DagManagerFinalizationCleanupPayload, DagManagerFinalizationPlan, DagManagerNonFinalizedSize,
-    DagManagerNonFinalizedSyncPayload, DagManagerRuntimeSyncSnapshot, DagManagerSnapshot, DagOrder,
-    DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
-    DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
-    DagProposerBlockIntentInput, DagProposerBlockIntentNowInput, DagProposerFrontierFacts,
-    DagProposerSessionStep, DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput,
-    DagProposerSigningReport, DagProposerStaleProofReport,
-    DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
-    DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
-    DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
-    DagProposerVdfWaitReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
-    DagSyncBlockRlp, DagTransactionHash, DagTransactionQueryPlan, DagTransactionRlpLookup,
-    DagVerifyAuthorizationInput, DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport,
-    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep,
-    DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport, DagVerifyGasInput,
-    DagVerifyGasResult, DagVerifyPrecheckBlock, DagVerifyPrecheckResult,
-    DagVerifyTransactionAvailabilityInput, DagVerifyTransactionAvailabilityResult,
-    DagVerifyVdfDposDecision, DagVerifyVdfDposFacts, DagVerifyVdfPrepareInput,
-    DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
-    DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
+    DagManagerNonFinalizedSyncPayload, DagManagerSnapshot, DagOrder, DagPersistenceCounters,
+    DagPivotTipsValidation, DagProposerAddBlockReport, DagProposerAttemptInput,
+    DagProposerAttemptPlan, DagProposerBlockConstructionPlan, DagProposerBlockIntentInput,
+    DagProposerBlockIntentNowInput, DagProposerFrontierFacts, DagProposerSessionStep,
+    DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput, DagProposerSigningReport,
+    DagProposerStaleProofReport, DagProposerStorageBlockConstructionInput,
+    DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
+    DagProposerTransactionPackReport, DagProposerTransactionPackRequest,
+    DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitReport,
+    DagProposerWorkerCommand, DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash,
+    DagTransactionQueryPlan, DagTransactionRlpLookup, DagVerifyAuthorizationInput,
+    DagVerifyAuthorizationResult, DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport,
+    DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport,
+    DagVerifyBlockVdfReport, DagVerifyGasInput, DagVerifyGasResult, DagVerifyPrecheckBlock,
+    DagVerifyPrecheckResult, DagVerifyTransactionAvailabilityInput,
+    DagVerifyTransactionAvailabilityResult, DagVerifyVdfDposDecision, DagVerifyVdfDposFacts,
+    DagVerifyVdfPrepareInput, DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
+    SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -169,6 +169,11 @@ pub struct DagProposerRetryState {
     last_propose_level: u64,
     retry_count: u64,
     max_retry_count: u64,
+}
+
+struct DagManagerRuntimeSyncSnapshot {
+    period: u64,
+    selected_hashes: Vec<DagHash>,
 }
 
 pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph> {
@@ -672,7 +677,7 @@ impl BridgeDagManagerRuntime {
     /// Returns a one-shot sync snapshot containing the current period and the
     /// deterministic selection of non-finalized block hashes that are not in
     /// `known_hashes`.
-    pub fn dag_manager_runtime_non_finalized_sync_snapshot(
+    fn dag_manager_runtime_non_finalized_sync_snapshot(
         &self,
         known_hashes: Vec<DagHash>,
     ) -> DagManagerRuntimeSyncSnapshot {
@@ -785,7 +790,8 @@ impl BridgeDagManagerRuntime {
     /// This method applies the deterministic `DagManagerState` selection helper at
     /// the runtime boundary so C++ can request next-sync candidates without
     /// reordering responsibility.
-    pub fn dag_manager_runtime_select_non_finalized_hashes(
+    #[cfg(test)]
+    fn dag_manager_runtime_select_non_finalized_hashes(
         &self,
         known_hashes: Vec<DagHash>,
     ) -> Vec<DagHash> {

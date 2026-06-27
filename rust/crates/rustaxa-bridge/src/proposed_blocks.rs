@@ -282,6 +282,7 @@ impl BridgeProposedBlocks {
     }
 
     /// Returns all proposed PBFT block hashes grouped by period.
+    #[cfg(test)]
     pub fn proposed_blocks_snapshot(&self) -> Vec<ProposedBlockPeriodHashes> {
         self.index.snapshot().into_iter().map(Into::into).collect()
     }

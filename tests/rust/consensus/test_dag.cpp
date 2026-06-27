@@ -20,15 +20,6 @@ class RustDagGraphTest : public ::testing::Test {
 
   static DagHash dag_hash(uint8_t last_byte) { return DagHash{h256(last_byte)}; }
 
-  static DagManagerBlock manager_block(uint8_t hash, uint8_t pivot, uint64_t level, uint32_t difficulty) {
-    DagManagerBlock block;
-    block.hash = h256(hash);
-    block.pivot = h256(pivot);
-    block.level = level;
-    block.difficulty = difficulty;
-    return block;
-  }
-
   static rust::Vec<DagHash> hashes(std::initializer_list<uint8_t> values) {
     rust::Vec<DagHash> out;
     out.reserve(values.size());
@@ -129,35 +120,13 @@ TEST_F(RustDagGraphTest, ComputeOrderMatchesConfluxPeriodFourFixture) {
   EXPECT_TRUE(missing.hashes.empty());
 }
 
-TEST_F(RustDagGraphTest, RuntimeSelectNonFinalizedHashesExcludesKnownInOrder) {
-  const auto test_dir = std::filesystem::temp_directory_path() / "rustaxa_consensus_dag_runtime_select_hashes";
-  if (std::filesystem::exists(test_dir)) {
-    std::filesystem::remove_all(test_dir);
-  }
-
-  auto storage = create_storage(test_dir.string());
-  auto runtime = create_dag_manager_runtime_from_storage(h256(1), 32, *storage);
-
-  runtime->dag_manager_runtime_add_block(manager_block(6, 3, 4, 85));
-  runtime->dag_manager_runtime_add_block(manager_block(2, 1, 2, 100));
-  runtime->dag_manager_runtime_add_block(manager_block(3, 2, 3, 90));
-  runtime->dag_manager_runtime_add_block(manager_block(4, 3, 4, 80));
-
-  const auto selected = runtime->dag_manager_runtime_select_non_finalized_hashes(hashes({2, 9, 2}));
-
-  EXPECT_EQ(last_bytes(selected), (std::vector<uint8_t>{3, 4, 6}));
-
-  std::filesystem::remove_all(test_dir);
-}
-
-TEST_F(RustDagGraphTest, RuntimeNonFinalizedSyncSnapshotAndTransactionRlpLookup) {
+TEST_F(RustDagGraphTest, RuntimeTransactionRlpLookupUsesRustStorage) {
   const auto test_dir = std::filesystem::temp_directory_path() / "rustaxa_consensus_dag_runtime_snapshot_tx_rlp";
   if (std::filesystem::exists(test_dir)) {
     std::filesystem::remove_all(test_dir);
   }
 
   auto storage = create_storage(test_dir.string());
-  auto runtime = create_dag_manager_runtime_from_storage(h256(1), 32, *storage);
 
   const auto tx_hash_a = h256(17);
   const auto tx_hash_b = h256(18);
@@ -166,13 +135,6 @@ TEST_F(RustDagGraphTest, RuntimeNonFinalizedSyncSnapshotAndTransactionRlpLookup)
   storage_shim_save_transaction(*tx_seed_batch, tx_hash_a, tx_payload({1, 2, 3}));
   storage_shim_save_transaction(*tx_seed_batch, tx_hash_b, tx_payload({4, 5, 6}));
   storage_shim_commit_batch(std::move(tx_seed_batch), false);
-
-  runtime->dag_manager_runtime_add_block(manager_block(6, 3, 4, 85));
-  runtime->dag_manager_runtime_add_block(manager_block(2, 1, 2, 100));
-
-  const auto sync_snapshot = runtime->dag_manager_runtime_non_finalized_sync_snapshot(hashes({}));
-  EXPECT_EQ(sync_snapshot.period, 0u);
-  EXPECT_EQ(last_bytes(sync_snapshot.selected_hashes), (std::vector<uint8_t>{2, 6}));
 
   const auto trxs = transaction_queries(storage)->get_transaction_rlps_by_hashes({
       rustaxa::DagTransactionHash{tx_hash_a},

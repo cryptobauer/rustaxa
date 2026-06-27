@@ -3557,12 +3557,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
-    /// Runtime snapshot for non-finalized DAG sync materialization.
-    struct DagManagerRuntimeSyncSnapshot {
-        period: u64,
-        selected_hashes: Vec<DagHash>,
-    }
-
     /// Canonical DAG block RLP selected for non-finalized sync payloads.
     struct DagSyncBlockRlp {
         hash: [u8; 32],
@@ -4955,11 +4949,6 @@ pub mod rustaxa_ffi {
             new_period: u64,
             finalized_order: Vec<DagHash>,
         ) -> Result<DagManagerFinalizationApplyPayload>;
-        /// Returns current runtime sync snapshot for non-finalized materialization.
-        pub fn dag_manager_runtime_non_finalized_sync_snapshot(
-            self: &BridgeDagManagerRuntime,
-            known_hashes: Vec<DagHash>,
-        ) -> DagManagerRuntimeSyncSnapshot;
         /// Returns non-finalized sync DAG block RLPs and referenced transaction
         /// RLPs through Rust-owned storage access.
         pub fn dag_manager_runtime_non_finalized_sync_payload(
@@ -4970,10 +4959,6 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             anchor: &[u8; 32],
         ) -> DagOrder;
-        pub fn dag_manager_runtime_select_non_finalized_hashes(
-            self: &BridgeDagManagerRuntime,
-            known_hashes: Vec<DagHash>,
-        ) -> Vec<DagHash>;
         pub fn dag_manager_runtime_frontier(self: &BridgeDagManagerRuntime) -> DagFrontier;
         pub fn dag_manager_runtime_proposer_frontier_facts(
             self: &BridgeDagManagerRuntime,
@@ -5643,9 +5628,6 @@ pub mod rustaxa_ffi {
         pub fn proposed_blocks_snapshot_entries(
             self: &BridgeProposedBlocks,
         ) -> Vec<ProposedBlockSnapshotEntry>;
-        pub fn proposed_blocks_snapshot(
-            self: &BridgeProposedBlocks,
-        ) -> Vec<ProposedBlockPeriodHashes>;
 
         // Consensus rewards stats
 

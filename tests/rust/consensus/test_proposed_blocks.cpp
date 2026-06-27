@@ -87,11 +87,10 @@ TEST_F(RustProposedBlocksTest, CleanupCandidatesAndRemovePeriodMatchLegacyBehavi
   EXPECT_FALSE(proposed_blocks->proposed_blocks_contains(2, h256(0x31)));
   EXPECT_TRUE(proposed_blocks->proposed_blocks_contains(3, h256(0x41)));
 
-  auto grouped = proposed_blocks->proposed_blocks_snapshot();
-  ASSERT_EQ(grouped.size(), 1);
-  EXPECT_EQ(grouped[0].period, 3u);
-  ASSERT_EQ(grouped[0].block_hashes.size(), 1);
-  EXPECT_EQ(grouped[0].block_hashes[0].hash, h256(0x41));
+  auto entries = proposed_blocks->proposed_blocks_snapshot_entries();
+  ASSERT_EQ(entries.size(), 1);
+  EXPECT_EQ(entries[0].period, 3u);
+  EXPECT_EQ(entries[0].block_hash, h256(0x41));
 }
 
 TEST_F(RustProposedBlocksTest, MarkValidThrowsForMissingBlock) {
