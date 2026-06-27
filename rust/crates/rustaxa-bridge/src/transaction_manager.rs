@@ -635,7 +635,7 @@ pub fn save_transactions_from_dag_block(
 
     let mut accepted: Vec<DagTransactionSaveAccepted> =
         Vec::with_capacity(plan.accepted_transactions.len());
-    let mut accepted_payloads: Vec<NonFinalizedTransactionPayload> =
+    let mut accepted_payloads: Vec<NonFinalizedTransactionStoragePayload> =
         Vec::with_capacity(plan.accepted_transactions.len());
 
     for DagTransactionSavePayload {
@@ -649,15 +649,15 @@ pub fn save_transactions_from_dag_block(
             hash: hash.0,
             erased_from_queue: false,
         });
-        accepted_payloads.push(NonFinalizedTransactionPayload {
-            hash: hash.0,
-            trx_rlp,
-        });
+        accepted_payloads.push(NonFinalizedTransactionStoragePayload { hash, trx_rlp });
     }
 
     if !accepted_payloads.is_empty() {
-        storage
-            .save_non_finalized_transactions(accepted_payloads, plan.target_transaction_count)?;
+        save_non_finalized_transactions(
+            &storage.0,
+            accepted_payloads,
+            plan.target_transaction_count,
+        )?;
     }
 
     Ok(DagTransactionSaveOutcome {
@@ -700,7 +700,7 @@ pub fn save_transactions_from_dag_block_with_sidecar(
 
     let mut accepted: Vec<DagTransactionSaveAccepted> =
         Vec::with_capacity(plan.accepted_transactions.len());
-    let mut accepted_payloads: Vec<NonFinalizedTransactionPayload> =
+    let mut accepted_payloads: Vec<NonFinalizedTransactionStoragePayload> =
         Vec::with_capacity(plan.accepted_transactions.len());
 
     for payload in &plan.accepted_transactions {
@@ -709,15 +709,18 @@ pub fn save_transactions_from_dag_block_with_sidecar(
             hash: payload.hash.0,
             erased_from_queue: false,
         });
-        accepted_payloads.push(NonFinalizedTransactionPayload {
-            hash: payload.hash.0,
+        accepted_payloads.push(NonFinalizedTransactionStoragePayload {
+            hash: payload.hash,
             trx_rlp: payload.trx_rlp.clone(),
         });
     }
 
     if !accepted_payloads.is_empty() {
-        storage
-            .save_non_finalized_transactions(accepted_payloads, plan.target_transaction_count)?;
+        save_non_finalized_transactions(
+            &storage.0,
+            accepted_payloads,
+            plan.target_transaction_count,
+        )?;
     }
 
     for payload in plan.accepted_transactions {

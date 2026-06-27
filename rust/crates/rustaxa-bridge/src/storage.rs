@@ -11,10 +11,6 @@ use crate::ffi::BridgeTransactionStorageQueries;
 use anyhow::Context;
 use ethereum_types::H256;
 use rlp::Rlp;
-use rustaxa_consensus::{
-    save_non_finalized_transactions as domain_save_non_finalized_transactions,
-    NonFinalizedTransactionStoragePayload,
-};
 use rustaxa_storage::Config;
 use rustaxa_storage::Storage;
 use std::path::PathBuf;
@@ -1320,32 +1316,6 @@ impl BridgeStorage {
             &receipts_rlp,
         )
     }
-
-    /// Persists TransactionManager-accepted non-finalized transactions with one
-    /// atomic write batch and writes the manager-owned `StatusField::TrxCount`.
-    ///
-    /// The caller owns transaction selection, duplicate filtering, finalized
-    /// checks, and the in-memory transaction-count value. This method is a
-    /// storage boundary only: every supplied payload is written under its hash,
-    /// and the provided `transaction_count` is stored as the target count in the
-    /// same batch.
-    pub fn save_non_finalized_transactions(
-        &self,
-        transactions: Vec<rustaxa_ffi::NonFinalizedTransactionPayload>,
-        transaction_count: u64,
-    ) -> Result<(), anyhow::Error> {
-        domain_save_non_finalized_transactions(
-            &self.0,
-            transactions
-                .into_iter()
-                .map(|transaction| NonFinalizedTransactionStoragePayload {
-                    hash: H256::from(transaction.hash),
-                    trx_rlp: transaction.trx_rlp,
-                })
-                .collect(),
-            transaction_count,
-        )
-    }
 }
 
 #[cfg(test)]
@@ -1372,13 +1342,6 @@ mod tests {
 
     fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
         create_metadata_storage_queries(storage)
-    }
-
-    fn non_finalized_tx_payload(hash: u8, data: u8) -> rustaxa_ffi::NonFinalizedTransactionPayload {
-        rustaxa_ffi::NonFinalizedTransactionPayload {
-            hash: [hash; 32],
-            trx_rlp: vec![data],
-        }
     }
 
     fn period_data_rlp(transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
@@ -1528,15 +1491,21 @@ mod tests {
                 )
                 .expect("pre-seeded transaction count should persist");
 
-            storage
-                .save_non_finalized_transactions(
-                    vec![
-                        non_finalized_tx_payload(10, 1),
-                        non_finalized_tx_payload(11, 2),
-                    ],
-                    existing_tx_count + 2,
-                )
-                .expect("batch write should persist accepted transactions");
+            rustaxa_consensus::save_non_finalized_transactions(
+                &storage.0,
+                vec![
+                    rustaxa_consensus::NonFinalizedTransactionStoragePayload {
+                        hash: H256::from([10u8; 32]),
+                        trx_rlp: vec![1],
+                    },
+                    rustaxa_consensus::NonFinalizedTransactionStoragePayload {
+                        hash: H256::from([11u8; 32]),
+                        trx_rlp: vec![2],
+                    },
+                ],
+                existing_tx_count + 2,
+            )
+            .expect("batch write should persist accepted transactions");
 
             assert_eq!(
                 metadata_queries(&storage)
@@ -1551,12 +1520,15 @@ mod tests {
                 vec![1],
             );
 
-            storage
-                .save_non_finalized_transactions(
-                    vec![non_finalized_tx_payload(13, 5)],
-                    existing_tx_count + 3,
-                )
-                .expect("second batch write should persist accepted tx");
+            rustaxa_consensus::save_non_finalized_transactions(
+                &storage.0,
+                vec![rustaxa_consensus::NonFinalizedTransactionStoragePayload {
+                    hash: H256::from([13u8; 32]),
+                    trx_rlp: vec![5],
+                }],
+                existing_tx_count + 3,
+            )
+            .expect("second batch write should persist accepted tx");
 
             assert_eq!(
                 metadata_queries(&storage)

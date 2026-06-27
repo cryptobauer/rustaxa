@@ -212,9 +212,9 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
 - The remaining callers of broad `BridgeStorage::save_transaction`, `remove_transaction`, `save_transaction_location`,
   `save_system_transaction`, and `save_period_system_transactions_hashes` now route through dedicated storage-shim batch
   appenders or native Rust transaction repositories, so the broad CXX storage methods have been deleted.
-- `BridgeStorage::save_non_finalized_transactions` remains documented production debt: current transaction-manager
-  bridge paths still call it to persist accepted non-finalized transaction payloads and the manager-owned `TrxCount` in a
-  single Rust storage batch.
+- `BridgeStorage::save_non_finalized_transactions` is also deleted. Older transaction-manager bridge paths now call the
+  native `rustaxa-consensus` transaction storage helper directly to persist accepted non-finalized transaction payloads
+  and the manager-owned `TrxCount` in a single Rust storage batch.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

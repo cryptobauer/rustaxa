@@ -7456,14 +7456,6 @@ pub mod rustaxa_ffi {
             source: u8,
         ) -> Result<LegacyTransactionInspection>;
 
-        /// Persists TransactionManager-accepted non-finalized transactions in one
-        /// storage batch and writes the manager-owned `StatusDbField::TrxCount`.
-        pub fn save_non_finalized_transactions(
-            self: &BridgeStorage,
-            transactions: Vec<NonFinalizedTransactionPayload>,
-            transaction_count: u64,
-        ) -> Result<()>;
-
         // FinalChain
 
         type BridgeFinalChain;
