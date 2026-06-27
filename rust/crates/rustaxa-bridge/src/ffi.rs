@@ -560,27 +560,9 @@ pub mod rustaxa_ffi {
         max_size: usize,
     }
 
-    /// Queue erase result and metadata for C++ mirror mutation.
-    struct TransactionQueueErasePlan {
-        removed: bool,
-        removed_hash: [u8; 32],
-        removed_sender: [u8; 20],
-        removed_nonce: [u8; 32],
-        removed_gas_price: [u8; 32],
-        removed_gas: u64,
-        removed_data_size: usize,
-        removed_last_block_number: u64,
-        removed_proposable: bool,
-    }
-
     /// Hash handle used to map Rust queue decisions back to C++ live transactions.
     struct TransactionQueueHash {
         hash: [u8; 32],
-    }
-
-    /// Proposable transaction hash group returned per sender.
-    struct TransactionQueueHashGroup {
-        hashes: Vec<TransactionQueueHash>,
     }
 
     /// C++-originated transaction queue metadata for one insert attempt.
@@ -615,13 +597,6 @@ pub mod rustaxa_ffi {
         inserted_hash: [u8; 32],
         demoted_hashes: Vec<TransactionQueueHash>,
         overflow_removed_hashes: Vec<TransactionQueueHash>,
-    }
-
-    /// Ordered hash read plan with completion metadata.
-    struct TransactionQueueOrderedHashesPlan {
-        hashes: Vec<TransactionQueueHash>,
-        requested_count: u64,
-        complete: bool,
     }
 
     /// Purge-style outcome with removed hashes and count.
@@ -5892,10 +5867,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionQueue,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionQueueInsertOutcome>;
-        pub fn transaction_queue_erase_plan(
-            self: &mut BridgeTransactionQueue,
-            hash: &[u8; 32],
-        ) -> TransactionQueueErasePlan;
         pub fn transaction_queue_erase(self: &mut BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
         pub fn transaction_queue_contains(self: &BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
         pub fn transaction_queue_mark_transaction_known(
@@ -5912,21 +5883,10 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
         ) -> TransactionQueueStoredTransaction;
         pub fn transaction_queue_size(self: &BridgeTransactionQueue) -> usize;
-        pub fn transaction_queue_ordered_hashes(
-            self: &BridgeTransactionQueue,
-            count: u64,
-        ) -> Vec<TransactionQueueHash>;
         pub fn transaction_queue_ordered_transactions(
             self: &BridgeTransactionQueue,
             count: u64,
         ) -> Vec<TransactionQueueStoredTransaction>;
-        pub fn transaction_queue_ordered_hashes_plan(
-            self: &BridgeTransactionQueue,
-            count: u64,
-        ) -> TransactionQueueOrderedHashesPlan;
-        pub fn transaction_queue_all_hash_groups(
-            self: &BridgeTransactionQueue,
-        ) -> Vec<TransactionQueueHashGroup>;
         pub fn transaction_queue_all_transaction_groups(
             self: &BridgeTransactionQueue,
         ) -> Vec<TransactionQueueTransactionGroup>;
@@ -5934,10 +5894,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionQueue,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
-        pub fn transaction_queue_block_finalized_plan(
-            self: &mut BridgeTransactionQueue,
-            block_number: u64,
-        ) -> TransactionQueuePurgePlan;
         pub fn transaction_queue_purge_with_final_chain(
             self: &mut BridgeTransactionQueue,
             final_chain: &BridgeFinalChain,

@@ -596,6 +596,9 @@ Implementation status:
 - `BridgePbftVoteValidationRuntime` is deleted. The standalone validation replay/threshold runtime had no external C++
   callsites and only protected older bridge tests; production Rust-mode vote validation uses `BridgeVerifiedVotes`, whose
   admission runtime owns replay protection, threshold caching, verified-vote metadata, and retained payloads together.
+- `BridgeTransactionQueue` CXX exports have been narrowed to the live `transaction_queue_shim` facade methods. No-caller
+  queue-only planning/hash-view exports and bridge wrapper methods are deleted; native `rustaxa-consensus` transaction
+  queue tests keep planner coverage.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also

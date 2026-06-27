@@ -37,7 +37,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/sortition.rs` | `BridgeSortitionParamsManager`, `create_sortition_params_manager*` | `sortition_params_manager_shim`, query/RPC paths through storage | C++ public compatibility facade | Delete after sortition parameter persistence and query reads are native Rust consensus/storage APIs. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | Transaction RLP inspection and bridge DTO helpers | Transaction manager, period-data queue, tests | External boundary | Keep only wire/codec compatibility helpers needed at C++ network/RPC boundaries. Move internal transaction facts to `rustaxa-types`/native consensus. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | `BridgeTransactionManagerSidecar`, `BridgeTransactionManagerRuntime`, admission execution/session helpers | `transaction_manager_shim`, RPC submission paths, tests | C++ public compatibility facade | Delete sidecar/runtime bridge after transaction manager public C++ facade is retired or all admission/packing paths are native Rust. Keep external EVM/final-chain callbacks as a minimal API. |
-| `rust/crates/rustaxa-bridge/src/transaction_queue.rs` | `BridgeTransactionQueue`, `create_transaction_queue` | `transaction_queue_shim` | C++ public compatibility facade | Delete after queue ownership moves fully to Rust transaction manager and C++ queue facade is no longer constructed. |
+| `rust/crates/rustaxa-bridge/src/transaction_queue.rs` | `BridgeTransactionQueue`, `create_transaction_queue`, live queue facade methods | `transaction_queue_shim` | C++ public compatibility facade | Delete after queue ownership moves fully to Rust transaction manager and C++ queue facade is no longer constructed. Queue-only planning/hash-view CXX helpers with no shim callers are deleted. |
 | `rust/crates/rustaxa-bridge/src/gas_pricer.rs` | `BridgeGasPricer`, `create_gas_pricer*`, bid/update methods | `gas_pricer_shim`, transaction/RPC gas estimation | C++ public compatibility facade | Delete after gas pricing history and query are Rust-owned behind the transaction/final-chain runtime API. The CXX-only storage init method has been removed; storage restoration is construction-time only. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | `BridgeSlashingProofPlanner`, `create_slashing_proof_planner` | `slashing_manager_shim` | C++ public compatibility facade | Delete after slashing proof planning is invoked by Rust consensus runtime instead of C++ manager facade. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF bridge helpers | VDF C++ integration/tests | External boundary | Keep until VDF boundary is explicitly folded into native Rust or a dedicated external VDF API. |
@@ -205,6 +205,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeStorage::save_non_finalized_transactions` is also deleted. Older transaction-manager bridge paths now call the
   native `rustaxa-consensus` transaction storage helper directly to persist accepted non-finalized transaction payloads
   and the manager-owned `TrxCount` in a single Rust storage batch.
+- `BridgeTransactionQueue` CXX exports are narrowed to the methods used by `transaction_queue_shim`. The no-caller
+  queue-only planning/hash-view exports `transaction_queue_erase_plan`, `transaction_queue_ordered_hashes`,
+  `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and
+  `transaction_queue_block_finalized_plan` have been deleted from the CXX surface. Native `rustaxa-consensus`
+  transaction queue tests keep the internal planner coverage.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for
   both pending-storage-row deletion and sidecar removal. Rust commits the native storage delete batch first and then
   mutates live sidecar state, matching the legacy C++ behavior without exposing public `DbStorage` batch usage in

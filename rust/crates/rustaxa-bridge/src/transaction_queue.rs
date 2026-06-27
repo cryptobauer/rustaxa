@@ -5,18 +5,16 @@
 //! routing sources account nonce facts from the Rust FinalChain handle so C++ does not materialize account facts.
 
 use crate::ffi::rustaxa_ffi::{
-    TransactionQueueConfig, TransactionQueueErasePlan, TransactionQueueHash,
-    TransactionQueueHashGroup, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
-    TransactionQueueOrderedHashesPlan, TransactionQueuePurgePlan,
-    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
+    TransactionQueueInsertOutcome, TransactionQueuePurgePlan, TransactionQueueStoredTransaction,
+    TransactionQueueTransactionGroup,
 };
 use crate::ffi::{BridgeFinalChain, BridgeTransactionQueue};
 use anyhow::{Context, Result};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueEntry,
-    TransactionQueueEraseOutcome, TransactionQueueInsertStatus,
-    TransactionQueueOrderedHashesPlan as ConsensusOrderedHashesPlan, TransactionQueuePurgeOutcome,
+    TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
 use std::time::{Duration, Instant};
 
@@ -26,31 +24,6 @@ const TRANSACTION_QUEUE_STATUS_KNOWN: u8 = 2;
 const TRANSACTION_QUEUE_STATUS_OVERFLOW: u8 = 3;
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
 const ZERO_HASH: H256 = H256::zero();
-
-fn tx_queue_sender_for_entry(entry: &TransactionQueueEntry) -> [u8; 20] {
-    entry.sender.0
-}
-
-fn tx_queue_nonce_for_entry(entry: &TransactionQueueEntry) -> [u8; 32] {
-    entry.nonce.to_big_endian()
-}
-
-fn tx_queue_gas_price_for_entry(entry: &TransactionQueueEntry) -> [u8; 32] {
-    entry.gas_price.to_big_endian()
-}
-
-fn tx_queue_empty_entry() -> TransactionQueueEntry {
-    TransactionQueueEntry {
-        hash: ZERO_HASH,
-        sender: H160::zero(),
-        nonce: U256::zero(),
-        gas_price: U256::zero(),
-        gas: 0,
-        data_size: 0,
-        rlp: Vec::new(),
-        last_block_number: 0,
-    }
-}
 
 fn tx_queue_stored_transaction_from_entry(
     entry: Option<TransactionQueueEntry>,
@@ -67,23 +40,6 @@ fn tx_queue_stored_transaction_from_entry(
             hash: ZERO_HASH.0,
             tx_rlp: Vec::new(),
         }
-    }
-}
-
-fn tx_queue_erase_plan_from_consensus(
-    outcome: TransactionQueueEraseOutcome,
-) -> TransactionQueueErasePlan {
-    let entry = outcome.removed_entry.unwrap_or_else(tx_queue_empty_entry);
-    TransactionQueueErasePlan {
-        removed: outcome.removed,
-        removed_hash: entry.hash.0,
-        removed_sender: tx_queue_sender_for_entry(&entry),
-        removed_nonce: tx_queue_nonce_for_entry(&entry),
-        removed_gas_price: tx_queue_gas_price_for_entry(&entry),
-        removed_gas: entry.gas,
-        removed_data_size: entry.data_size as usize,
-        removed_last_block_number: entry.last_block_number,
-        removed_proposable: outcome.removed_proposable,
     }
 }
 
@@ -113,16 +69,6 @@ fn tx_queue_account_nonce_facts_from_final_chain(
             })
         })
         .collect()
-}
-
-fn tx_queue_ordered_hashes_plan_from_consensus(
-    outcome: ConsensusOrderedHashesPlan,
-) -> TransactionQueueOrderedHashesPlan {
-    TransactionQueueOrderedHashesPlan {
-        hashes: hashes_to_bridge(outcome.hashes),
-        requested_count: outcome.requested_count,
-        complete: outcome.complete,
-    }
 }
 
 pub fn create_transaction_queue(config: TransactionQueueConfig) -> Box<BridgeTransactionQueue> {
@@ -165,12 +111,7 @@ impl BridgeTransactionQueue {
 
     /// Removes a transaction from any Rust queue index.
     pub fn transaction_queue_erase(&mut self, hash: &[u8; 32]) -> bool {
-        self.transaction_queue_erase_plan(hash).removed
-    }
-
-    /// Removes a transaction and returns a C++ mirror update plan.
-    pub fn transaction_queue_erase_plan(&mut self, hash: &[u8; 32]) -> TransactionQueueErasePlan {
-        tx_queue_erase_plan_from_consensus(self.queue.erase_plan(H256::from(*hash)))
+        self.queue.erase(H256::from(*hash))
     }
 
     /// Returns true when a transaction hash is known to proposer or non-proposer queue metadata.
@@ -207,11 +148,6 @@ impl BridgeTransactionQueue {
         self.queue.size() as usize
     }
 
-    /// Returns proposer-ordered transaction hashes.
-    pub fn transaction_queue_ordered_hashes(&self, count: u64) -> Vec<TransactionQueueHash> {
-        hashes_to_bridge(self.queue.ordered_hashes(count))
-    }
-
     /// Returns proposer-ordered transaction payloads.
     pub fn transaction_queue_ordered_transactions(
         &self,
@@ -222,25 +158,6 @@ impl BridgeTransactionQueue {
             .into_iter()
             .map(Some)
             .map(tx_queue_stored_transaction_from_entry)
-            .collect()
-    }
-
-    /// Returns proposer-ordered hashes with plan metadata.
-    pub fn transaction_queue_ordered_hashes_plan(
-        &self,
-        count: u64,
-    ) -> TransactionQueueOrderedHashesPlan {
-        tx_queue_ordered_hashes_plan_from_consensus(self.queue.ordered_hashes_plan(count))
-    }
-
-    /// Returns proposable transaction hashes grouped by sender and ordered by nonce.
-    pub fn transaction_queue_all_hash_groups(&self) -> Vec<TransactionQueueHashGroup> {
-        self.queue
-            .all_transactions_grouped()
-            .into_iter()
-            .map(|hashes| TransactionQueueHashGroup {
-                hashes: hashes_to_bridge(hashes),
-            })
             .collect()
     }
 
@@ -267,14 +184,6 @@ impl BridgeTransactionQueue {
         block_number: u64,
     ) -> Vec<TransactionQueueHash> {
         hashes_to_bridge(self.queue.block_finalized(block_number))
-    }
-
-    /// Expires old non-proposable transaction hashes and returns a mutation plan.
-    pub fn transaction_queue_block_finalized_plan(
-        &mut self,
-        block_number: u64,
-    ) -> TransactionQueuePurgePlan {
-        tx_queue_purge_plan_from_consensus(self.queue.block_finalized_plan(block_number))
     }
 
     /// Removes proposer transactions whose nonce is below the latest FinalChain account nonce.
@@ -415,7 +324,10 @@ mod tests {
         assert_eq!(replacement.demoted_hashes[0].hash, [1; 32]);
 
         assert_eq!(queue.transaction_queue_size(), 1);
-        assert_eq!(queue.transaction_queue_ordered_hashes(10)[0].hash, [2; 32]);
+        assert_eq!(
+            queue.transaction_queue_ordered_transactions(10)[0].hash,
+            [2; 32]
+        );
         assert!(queue.transaction_queue_contains(&[1; 32]));
     }
 
@@ -441,33 +353,6 @@ mod tests {
         assert!(groups
             .iter()
             .any(|group| group.transactions[0].tx_rlp == vec![2; 4]));
-    }
-
-    #[test]
-    fn bridge_erase_plan_reports_removed_entry_metadata() {
-        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
-        queue.transaction_queue_insert(input(1, 1, 1, 1)).unwrap();
-
-        let erase_plan = queue.transaction_queue_erase_plan(&[1; 32]);
-        assert!(erase_plan.removed);
-        assert_eq!(erase_plan.removed_hash, [1; 32]);
-        assert_eq!(erase_plan.removed_sender, [1; 20]);
-    }
-
-    #[test]
-    fn bridge_ordered_hashes_plan_tracks_completion() {
-        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
-        queue.transaction_queue_insert(input(1, 1, 1, 1)).unwrap();
-        queue.transaction_queue_insert(input(1, 2, 2, 2)).unwrap();
-        queue.transaction_queue_insert(input(2, 1, 3, 3)).unwrap();
-
-        let partial = queue.transaction_queue_ordered_hashes_plan(2);
-        assert_eq!(partial.hashes.len(), 2);
-        assert!(!partial.complete);
-
-        let full = queue.transaction_queue_ordered_hashes_plan(10);
-        assert!(full.complete);
-        assert_eq!(full.requested_count, 10);
     }
 
     #[test]
