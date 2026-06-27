@@ -353,6 +353,9 @@ Implementation notes:
   Rust.
 - `vote_manager_shim::setNetwork` no longer forwards through `VoteManagerOld`; it writes the inherited protected network
   pointer directly. This removes one completed setter forwarding without changing the public C++ API.
+- `transaction_manager_shim::getTransactionsMutex` no longer forwards through `TransactionManagerOld`; it is now a
+  shim-owned method that returns the same inherited mutex through the existing friend access helper. Transaction lifecycle
+  synchronization is still temporary inherited-state debt until the transaction runtime owns the lifecycle lock.
 - `dag_manager_shim::setNetwork` remains documented temporary compatibility debt: the shim has its own network pointer,
   while the legacy base still has private network state that may be read if an inherited base path executes. Remove that
   forwarding only with the broader DAG manager runtime/service consolidation.

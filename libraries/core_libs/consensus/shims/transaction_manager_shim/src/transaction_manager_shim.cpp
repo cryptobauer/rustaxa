@@ -275,6 +275,8 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 
 class TransactionManagerRustShimAccess {
  public:
+  static std::shared_mutex& transactionsMutex(TransactionManagerOld& manager) { return manager.transactions_mutex_; }
+
   static uint64_t rustFinalChainLastBlockNumber(const TransactionManagerOld& manager) {
     if (!manager.final_chain_) {
       throw std::runtime_error("TransactionManager requires FinalChain for Rust FinalChain height facts");
@@ -1402,6 +1404,11 @@ void TransactionManager::saveTransactionPayloadsFromDagBlock(const vec_trx_t& tr
 
 void TransactionManager::removeNonFinalizedTransactions(std::unordered_set<trx_hash_t>&& transactions) {
   TransactionManagerRustShimAccess::removeNonFinalizedTransactions(*this, std::move(transactions));
+}
+
+std::shared_mutex& TransactionManager::getTransactionsMutex() {
+  // TODO(rust-rewrite): migrate transaction lifecycle synchronization to Rust instead of inherited C++ state.
+  return TransactionManagerRustShimAccess::transactionsMutex(*this);
 }
 
 void TransactionManager::updateFinalizedTransactionsStatus(const PeriodData& period_data) {

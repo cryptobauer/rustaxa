@@ -279,10 +279,7 @@ class TransactionManager : public TransactionManagerOld {
 
   void removeNonFinalizedTransactions(std::unordered_set<trx_hash_t> &&transactions);
 
-  std::shared_mutex &getTransactionsMutex() {
-    // TODO(rust-rewrite): migrate transaction lifecycle synchronization to Rust instead of TransactionManagerOld.
-    return TransactionManagerOld::getTransactionsMutex();
-  }
+  std::shared_mutex &getTransactionsMutex();
 
   std::pair<std::vector<std::shared_ptr<Transaction>>, std::vector<trx_hash_t>> getPoolTransactions(
       const std::vector<trx_hash_t> &trx_to_query) const;
