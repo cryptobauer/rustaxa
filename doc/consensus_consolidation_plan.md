@@ -879,6 +879,19 @@ Acceptance:
 - Behavior coverage moves closer to Rust domain modules and the three external facades.
 - Narrow targeted test commands are documented in each implementation commit.
 
+### Implementation status
+
+- After the prior test-surface deletions, the remaining suite coverage in both C++ and Rust now centers on either:
+  - external-facing shim/public API behavior still intentionally used by the app, RPC, or GraphQL clients, or
+  - native Rust module behavior that owns the production route.
+- No remaining active CXX-only test-only session/planner paths were found that map directly to deleted exports that had no Rust or public-facing replacement; follow-up work is now primarily to keep this boundary healthy as new surface is deleted in future slices.
+- Validation and maintenance checkpoints run during this closeout:
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_sync`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus network_api`
+  - `cmake --build /build --target rust_consensus_tests final_chain_test pbft_manager_test --parallel 12`
+
 ## Suggested Execution Order
 
 1. Slice 0: audit table and closeout checks.
