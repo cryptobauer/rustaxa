@@ -3700,20 +3700,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
-    /// One sidecar lookup result preserving input ordering metadata.
-    struct TransactionManagerSidecarLookup {
-        input_index: u64,
-        hash: [u8; 32],
-        found: bool,
-        source: u8,
-        trx_rlp: Vec<u8>,
-    }
-
-    /// Ordered sidecar lookup plan for C++ materialization.
-    struct TransactionManagerSidecarLookupPlan {
-        lookups: Vec<TransactionManagerSidecarLookup>,
-    }
-
     /// Canonical hash wrapper for sidecar transition lists.
     struct TransactionManagerSidecarHash {
         hash: [u8; 32],
@@ -3732,15 +3718,9 @@ pub mod rustaxa_ffi {
         trx_rlp: Vec<u8>,
     }
 
-    /// Queue-known fact used by Rust-owned TransactionManager known-admission decisions.
-    struct TransactionManagerSidecarKnownFact {
-        hash: [u8; 32],
-        queue_known: bool,
-    }
-
-    /// Input transaction fact for sidecar-aware DAG transaction persistence.
+    /// Input transaction fact for runtime-owned DAG transaction persistence.
     ///
-    /// Rust computes sidecar membership from `BridgeTransactionManagerSidecar`
+    /// Rust computes sidecar membership from `BridgeTransactionManagerRuntime`
     /// instead of accepting C++ membership booleans.
     struct DagTransactionSaveSidecarFact {
         input_index: u64,
@@ -5945,13 +5925,9 @@ pub mod rustaxa_ffi {
 
         // Consensus transaction manager planning
 
-        type BridgeTransactionManagerSidecar;
         type BridgeTransactionManagerRuntime;
         type BridgeTransactionManagerAdmissionExecution;
 
-        pub fn create_transaction_manager_sidecar(
-            initial_transaction_count: u64,
-        ) -> Box<BridgeTransactionManagerSidecar>;
         pub fn create_transaction_manager_runtime(
             initial_transaction_count: u64,
             config: TransactionQueueConfig,
@@ -6134,46 +6110,6 @@ pub mod rustaxa_ffi {
             requests: Vec<TransactionManagerTransactionViewRequest>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
-        pub fn transaction_manager_sidecar_transaction_count(
-            self: &BridgeTransactionManagerSidecar,
-        ) -> u64;
-        pub fn transaction_manager_sidecar_is_transaction_known(
-            self: &BridgeTransactionManagerSidecar,
-            fact: TransactionManagerSidecarKnownFact,
-        ) -> Result<bool>;
-        pub fn transaction_manager_sidecar_insert_non_finalized(
-            self: &mut BridgeTransactionManagerSidecar,
-            input: TransactionManagerSidecarInsertInput,
-        ) -> Result<()>;
-        pub fn transaction_manager_sidecar_contains_non_finalized(
-            self: &BridgeTransactionManagerSidecar,
-            hash: &[u8; 32],
-        ) -> bool;
-        pub fn transaction_manager_sidecar_contains_recently_finalized(
-            self: &BridgeTransactionManagerSidecar,
-            hash: &[u8; 32],
-        ) -> bool;
-        pub fn transaction_manager_sidecar_lookup_ordered_payloads(
-            self: &BridgeTransactionManagerSidecar,
-            requests: Vec<TransactionManagerSidecarLookupRequest>,
-        ) -> Result<TransactionManagerSidecarLookupPlan>;
-        pub fn transaction_manager_sidecar_apply_finalized_transition(
-            self: &mut BridgeTransactionManagerSidecar,
-            transition: TransactionManagerSidecarTransitionInput,
-        ) -> Result<()>;
-        pub fn transaction_manager_sidecar_evict_stale_recently_finalized(
-            self: &mut BridgeTransactionManagerSidecar,
-            stale_period: u64,
-        ) -> u64;
-        pub fn transaction_manager_sidecar_insert_recovery_entries(
-            self: &mut BridgeTransactionManagerSidecar,
-            entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
-        ) -> Result<u64>;
-        pub fn save_transactions_from_dag_block_with_sidecar(
-            sidecar: &mut BridgeTransactionManagerSidecar,
-            storage: &BridgeStorage,
-            facts: Vec<DagTransactionSaveSidecarFact>,
-        ) -> Result<DagTransactionSaveOutcome>;
         pub fn save_transactions_from_dag_block_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             facts: Vec<DagTransactionSaveSidecarFact>,
@@ -6209,13 +6145,6 @@ pub mod rustaxa_ffi {
             current_transaction_count: u64,
             facts: Vec<DagTransactionSaveFact>,
         ) -> Result<DagTransactionSaveOutcome>;
-        pub fn update_finalized_transactions_status_with_sidecar(
-            sidecar: &mut BridgeTransactionManagerSidecar,
-            storage: &BridgeStorage,
-            period: u64,
-            retention_window: u64,
-            facts: Vec<FinalizedTransactionStatusSidecarFact>,
-        ) -> Result<FinalizedTransactionStatusPlan>;
         pub fn update_finalized_transactions_status_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             period: u64,
