@@ -7190,6 +7190,11 @@ pub mod rustaxa_ffi {
         pub fn storage_shim_remove_cert_voted_block_in_round(
             batch: &mut BridgeStorageBatch,
         ) -> Result<()>;
+        pub fn storage_shim_save_cert_voted_block_in_round(
+            batch: &mut BridgeStorageBatch,
+            round: u64,
+            block_rlp: Vec<u8>,
+        ) -> Result<()>;
         pub fn storage_shim_save_pbft_head(
             batch: &mut BridgeStorageBatch,
             hash: &[u8; 32],

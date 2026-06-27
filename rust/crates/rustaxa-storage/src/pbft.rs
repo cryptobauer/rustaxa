@@ -384,6 +384,41 @@ impl<D: DbReader + DbWriter> PbftRepository<D> {
         )
     }
 
+    /// Appends the latest cert-voted block and its round to a caller-owned
+    /// storage batch.
+    ///
+    /// Inputs:
+    /// - `batch`: Rust storage write batch that owns the eventual atomic
+    ///   commit.
+    /// - `round`: PBFT round associated with the cert-voted block.
+    /// - `block_rlp`: Canonical PBFT block bytes matching
+    ///   `PbftBlock::rlp(true)`.
+    ///
+    /// Outputs:
+    /// - Appends a put in `cert_voted_block_in_round` at the legacy
+    ///   single-value key.
+    ///
+    /// Invariants and edge behavior:
+    /// - The stored value is the legacy two-item RLP list `[round, block]`.
+    /// - `block_rlp` is embedded as raw RLP bytes and is not decoded or
+    ///   normalized by storage.
+    pub fn write_cert_voted_block_in_round_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        round: u64,
+        block_rlp: &[u8],
+    ) -> Result<()> {
+        let mut stream = rlp::RlpStream::new_list(2);
+        stream.append(&round);
+        stream.append_raw(block_rlp, 1);
+        self.db.batch_put(
+            batch,
+            Column::CertVotedBlockInRound,
+            &SINGLE_VALUE_KEY,
+            &stream.out(),
+        )
+    }
+
     /// Stores a proposed PBFT block payload by its hash.
     /// C++ mapping: `DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>&)`.
     pub fn write_proposed(&self, block_hash: H256, block_rlp: &[u8]) -> Result<()> {
@@ -862,6 +897,28 @@ mod tests {
 
         assert_eq!(repo.own_verified_votes_rlp().unwrap(), vec![vec![0xA1]]);
         assert_eq!(repo.reward_votes_rlp().unwrap(), vec![vec![0xB1]]);
+    }
+
+    #[test]
+    fn test_cert_voted_block_write_waits_for_batch_commit() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_cert_voted_block_in_round_in_batch(&mut batch, 12, &[0xC0])
+            .unwrap();
+
+        assert!(repo.cert_voted_block_in_round_rlp().unwrap().is_none());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+
+        let mut expected = rlp::RlpStream::new_list(2);
+        expected.append(&12u64);
+        expected.append_raw(&[0xC0], 1);
+        assert_eq!(
+            repo.cert_voted_block_in_round_rlp().unwrap(),
+            Some(expected.out().to_vec())
+        );
     }
 
     #[test]

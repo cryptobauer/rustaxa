@@ -930,6 +930,24 @@ pub fn storage_shim_remove_cert_voted_block_in_round(
         .remove_cert_voted_block_in_round_in_batch(storage_shim_batch_mut(batch)?)
 }
 
+/// Appends a typed cert-voted block write to a Rust-owned storage shim batch.
+///
+/// The block payload remains the canonical legacy PBFT block RLP supplied by
+/// the C++ facade. Rust owns the single-value key and the `[round, block]`
+/// storage wrapper used by the PBFT repository.
+pub fn storage_shim_save_cert_voted_block_in_round(
+    batch: &mut BridgeStorageBatch,
+    round: u64,
+    block_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    let storage = batch.storage.clone();
+    storage.pbft().write_cert_voted_block_in_round_in_batch(
+        storage_shim_batch_mut(batch)?,
+        round,
+        &block_rlp,
+    )
+}
+
 /// Appends a typed PBFT head write to a Rust-owned storage shim batch.
 ///
 /// The head payload remains opaque legacy bytes while Rust owns the PBFT head

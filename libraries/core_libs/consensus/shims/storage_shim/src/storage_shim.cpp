@@ -823,7 +823,9 @@ void DbStorage::saveCertVotedBlockInRound(PbftRound round, const std::shared_ptr
   assert(block);
   auto block_bytes = block->rlp(true);
   auto block_rlp = into_rust_vec(block_bytes);
-  rust_storage_.value()->save_cert_voted_block_in_round(round, std::move(block_rlp));
+  commitImmediateRustBatch([&](rustaxa::BridgeStorageBatch& batch) mutable {
+    rustaxa::storage_shim_save_cert_voted_block_in_round(batch, round, std::move(block_rlp));
+  });
 }
 
 std::optional<std::pair<PbftRound, std::shared_ptr<PbftBlock>>> DbStorage::getCertVotedBlockInRound() const {

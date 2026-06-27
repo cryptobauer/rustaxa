@@ -272,14 +272,16 @@ Implementation notes:
 - Next bounded Slice 4 implementation target: convert those single-write compatibility methods to create a shim-owned
   batch, reuse the existing typed `storage_shim_*` batch appenders, and commit immediately. That removes direct
   `BridgeStorage` mutator use without changing the public `DbStorage` API.
-- The first batch-only conversion is implemented for DAG block save/remove, status fields, PBFT manager fields/status,
-  PBFT heads, own verified votes, 2t+1 vote bundles, extra reward votes, and proposal-period DAG-level mappings. These
-  methods now use a private `DbStorage::commitImmediateRustBatch` helper, typed `storage_shim_*` appenders, and the
-  existing Rust-owned batch commit path.
-- Remaining direct `BridgeStorage` mutators in `storage_shim` are `clear_block_rewards_stats`, `set_genesis_hash`, and
-  `save_cert_voted_block_in_round`. They do not yet have low-risk typed batch equivalents: block-reward clearing is an
-  aggregate clear path, genesis hash has write-if-empty semantics, and cert-voted block still needs a native
-  `rustaxa-storage` in-batch writer before conversion.
+- The batch-only conversion is implemented for DAG block save/remove, status fields, PBFT manager fields/status, PBFT
+  heads, own verified votes, 2t+1 vote bundles, extra reward votes, proposal-period DAG-level mappings, and cert-voted
+  block writes/removal. These methods now use a private `DbStorage::commitImmediateRustBatch` helper, typed
+  `storage_shim_*` appenders, and the existing Rust-owned batch commit path.
+- Cert-voted block writes now have a native `rustaxa-storage` in-batch writer that preserves the legacy `[round, block]`
+  RLP wrapper while allowing the C++ storage shim to stage the write through `BridgeStorageBatch` instead of calling the
+  broad `BridgeStorage` mutator directly.
+- Remaining direct `BridgeStorage` mutators in `storage_shim` are `clear_block_rewards_stats` and `set_genesis_hash`.
+  They do not yet have low-risk typed batch equivalents: block-reward clearing is an aggregate clear path, and genesis
+  hash has write-if-empty semantics.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.
