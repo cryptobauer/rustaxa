@@ -258,6 +258,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - The direct in-memory `create_sortition_params_manager(SortitionRuntimeConfig, Vec<SortitionParamsChangePayload>)`
   constructor is deleted from the CXX surface. C++ bridge tests now use `create_sortition_params_manager_from_storage`,
   which is the same constructor path used by the live `sortition_params_manager_shim`; the direct bridge wrapper is gone.
+- The default-rewards `create_final_chain(...)` constructor is deleted from the CXX surface. C++ bridge tests now pass an
+  explicit `FinalChainRewardsConfig` through `create_final_chain_with_rewards_config`, which is the constructor shape
+  used by the live `final_chain_shim`; the default wrapper is Rust test-only fixture code.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.

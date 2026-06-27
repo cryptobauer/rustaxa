@@ -222,6 +222,31 @@ class RustFinalChainTest : public ::testing::Test {
     return config;
   }
 
+  static FinalChainRewardsConfig default_rewards_config() {
+    FinalChainRewardsConfig config;
+    config.committee_size = 0;
+    config.magnolia_period = 0;
+    config.aspen_part_one_period = UINT64_MAX;
+    config.fix_claim_all_block_num = UINT64_MAX;
+    config.aspen_part_two_period = 0;
+    config.max_block_author_reward_percent = 0;
+    config.dag_proposers_reward_percent = 0;
+    config.yield_percentage = 0;
+    config.dpos_blocks_per_year = 0;
+    config.dpos_delegation_locking_period = 0;
+    config.cornus_period = 0;
+    config.cornus_delegation_locking_period = 0;
+    config.genesis_balance_sum = {};
+    config.aspen_max_supply = {};
+    config.aspen_generated_rewards = {};
+    config.cacti_period = 0;
+    config.cacti_delegation_locking_period = 0;
+    config.magnolia_jail_time = 0;
+    config.cacti_jail_time = 0;
+    config.frequency_rules = {};
+    return config;
+  }
+
   static GenesisValidator genesis_validator(std::array<uint8_t, 20> validator_address,
                                             std::array<uint8_t, 20> owner = address(0x11),
                                             std::string description = "bridge validator metadata") {
@@ -240,6 +265,12 @@ class RustFinalChainTest : public ::testing::Test {
     rust::Vec<GenesisValidator> validators;
     validators.push_back(genesis_validator(validator_address));
     return validators;
+  }
+
+  static rust::Box<BridgeFinalChain> create_final_chain_for_test(BridgeStorage& storage,
+                                                                 rust::Vec<GenesisValidator> validators) {
+    return create_final_chain_with_rewards_config(storage, 0, 0, genesis_accounts(), std::move(validators),
+                                                  genesis_dpos_config(), default_rewards_config());
   }
 
   static FinalChainCall dpos_call(uint64_t block_number, rust::Vec<uint8_t> input) {
@@ -263,8 +294,7 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
   const auto validator_address = address(0x10);
   const auto unknown_address = address(0x20);
   auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain(*storage, 0, 0, genesis_accounts(), genesis_validators(validator_address),
-                                        genesis_dpos_config());
+  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
 
   EXPECT_EQ(final_chain->get_dpos_eligible_total_vote_count(0), 10u);
   EXPECT_EQ(final_chain->get_dpos_eligible_vote_count(0, validator_address), 10u);
@@ -307,8 +337,7 @@ TEST_F(RustFinalChainTest, DposQueriesUseGenesisSnapshotAtBlockZero) {
 TEST_F(RustFinalChainTest, DposQueriesRejectMissingNonGenesisSnapshot) {
   const auto validator_address = address(0x10);
   auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain(*storage, 0, 0, genesis_accounts(), genesis_validators(validator_address),
-                                        genesis_dpos_config());
+  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
 
   EXPECT_THROW(final_chain->get_dpos_eligible_total_vote_count(1), std::exception);
   EXPECT_THROW(final_chain->get_dpos_eligible_vote_count(1, validator_address), std::exception);
@@ -321,8 +350,7 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorMetadata) {
   const auto validator_address = address(0x10);
   const auto owner = address(0x11);
   auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain(*storage, 0, 0, genesis_accounts(), genesis_validators(validator_address),
-                                        genesis_dpos_config());
+  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
 
   auto outcome = final_chain->call(dpos_call(0, get_validator_input(validator_address)));
   const auto owner_word = abi_address_word(owner);
@@ -353,7 +381,7 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
 
   auto storage = create_storage(test_dir.string());
   auto final_chain =
-      create_final_chain(*storage, 0, 0, genesis_accounts(), std::move(validators), genesis_dpos_config());
+      create_final_chain_for_test(*storage, std::move(validators));
 
   auto all = final_chain->call(dpos_call(0, get_validators_input(0)));
   ASSERT_EQ(std::string(all.code_err), "");
@@ -372,8 +400,7 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
 TEST_F(RustFinalChainTest, DposCallTreatsMutatingSelectorsAsNoOps) {
   const auto validator_address = address(0x10);
   auto storage = create_storage(test_dir.string());
-  auto final_chain = create_final_chain(*storage, 0, 0, genesis_accounts(), genesis_validators(validator_address),
-                                        genesis_dpos_config());
+  auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
 
   auto claim_rewards_outcome = final_chain->call(dpos_call(0, get_claim_rewards_input(validator_address)));
   ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "");

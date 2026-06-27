@@ -6652,15 +6652,6 @@ pub mod rustaxa_ffi {
 
         type BridgeFinalChain;
 
-        pub fn create_final_chain(
-            storage: &BridgeStorage,
-            block_gas_limit: u64,
-            genesis_timestamp: u64,
-            genesis_accounts: Vec<GenesisAccount>,
-            genesis_validators: Vec<GenesisValidator>,
-            genesis_dpos_config: GenesisDposConfig,
-        ) -> Result<Box<BridgeFinalChain>>;
-
         pub fn create_final_chain_with_rewards_config(
             storage: &BridgeStorage,
             block_gas_limit: u64,

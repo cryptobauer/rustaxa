@@ -667,7 +667,8 @@ fn commit_report_to_ffi(
     }
 }
 
-pub fn create_final_chain(
+#[cfg(test)]
+pub(crate) fn create_final_chain(
     storage: &BridgeStorage,
     block_gas_limit: u64,
     genesis_timestamp: u64,

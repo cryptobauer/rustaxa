@@ -652,6 +652,9 @@ Implementation status:
   constructor is no longer exported. C++ sortition bridge tests now construct through
   `create_sortition_params_manager_from_storage`, matching the production shim path; the direct in-memory bridge
   constructor wrapper has been deleted entirely.
+- The default-rewards `create_final_chain(...)` CXX constructor is no longer exported. C++ FinalChain bridge tests now
+  call `create_final_chain_with_rewards_config`, matching the production `final_chain_shim` constructor shape; the
+  default wrapper remains Rust test-only for bridge unit fixtures.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.
