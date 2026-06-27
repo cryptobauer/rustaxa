@@ -1,0 +1,164 @@
+# Consensus Bridge and Shim Audit
+
+This is the Slice 0 deletion map for `doc/consensus_consolidation_plan.md`.
+It records the bridge and shim surfaces that still touch consensus rewrite code,
+classifies the ownership boundary, and names the condition for narrowing or
+removing each item.
+
+## Classification
+
+| Classification | Meaning | Default action |
+| --- | --- | --- |
+| External boundary | C++ remains the near-term owner because the client is network/tarcap, EVM, RPC, app bootstrap, or tests. | Keep a minimal API and narrow it to client-specific methods. |
+| C++ public compatibility facade | C++ class/API is still public but should delegate to Rust-owned internals in Rust mode. | Keep until callers migrate or the public C++ API is retired. |
+| Internal Rust route | Logic is consensus/storage implementation detail and should not remain bridge-shaped once Rust callers can use native crates. | Move to native Rust modules and delete CXX bridge/shim access. |
+| Obsolete scaffold | Compatibility helper exists only because earlier slices needed temporary wiring. | Delete in the owning cleanup slice. |
+
+## Rust Bridge Modules
+
+| Module | Main exported handles or constructors | Current consumers | Classification | Removal or narrowing condition |
+| --- | --- | --- | --- | --- |
+| `rust/crates/rustaxa-bridge/src/storage.rs` | `BridgeStorage`, `BridgeStorageBatch`, `Bridge*StorageQueries`, `create_storage`, `create_*_storage_queries`, `create_storage_shim_batch` | `storage_shim`, storage conformance tests, consensus shims that bootstrap native Rust storage handles | C++ public compatibility facade | Delete broad `BridgeStorage` read/write methods and `BridgeStorageBatch` once storage shim callers use narrow Rust storage runtimes or native Rust crates directly. Keep only app/bootstrap creation until C++ `DbStorage` facade is retired. |
+| `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, `create_consensus_query_api` | `network/consensus_query.hpp`, RPC/GraphQL, `plugin/light`, Rust tests | External boundary | Keep as the public query facade for RPC/GraphQL/light clients. Narrow remaining storage-backed reads into this facade, then remove direct external construction except approved app/bootstrap points. Route `plugin/light` through the common helper or a dedicated light-query API instead of constructing directly from `rustStorage()`. |
+| `rust/crates/rustaxa-bridge/src/network.rs` | `BridgeConsensusNetworkApi`, `create_consensus_network_api`, `consensus_network_queue_*` methods | Latest tarcap handlers, `tests/rust/consensus/test_network_api.cpp` | External boundary | Replace queue-specific bridge methods with the dedicated network/tarcap API from the consolidation plan. Delete `consensus_network_queue_*` after tarcap callers use typed ingress/egress APIs directly. |
+| `rust/crates/rustaxa-bridge/src/final_chain.rs` | `BridgeFinalChain`, `BridgeFinalChainExecutionSession`, `BridgeConsensusExecutionApi`, `create_final_chain*`, `create_final_chain_execution_session`, `create_consensus_execution_api` | `final_chain_shim`, transaction manager runtime, consensus execution adapters | External boundary | Keep EVM/execution boundary while EVM remains out of scope. Move consensus fact reads to Rust FinalChain ports and delete bridge paths that only materialize C++ facts for Rust consensus. |
+| `rust/crates/rustaxa-bridge/src/dag.rs` | `BridgeDagGraph`, `BridgeDagManagerState`, `BridgeDagManagerRuntime`, `BridgeDagVerifyBlockSession`, `BridgeDagProposerSession`, `BridgeDagProposerRetryState` | `dag_shim`, `dag_manager_shim`, DAG tests | C++ public compatibility facade | Remove graph/state compatibility handles after DAG public callers stop needing C++ graph aliases. Keep runtime/session handles only until DAG manager shim can be replaced by native Rust consensus/DAG ownership. |
+| `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | `BridgePbftChain`, `create_pbft_chain*` | `pbft_chain_shim`, PBFT manager/runtime tests | C++ public compatibility facade | Delete once PBFT chain public C++ facade is no longer required or PBFT manager owns chain state natively in Rust. |
+| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftManagerRuntime`, runtime/proposal/validation/session handles | `pbft_manager_shim`, app bootstrap runtime creation | Internal Rust route | Move session creation and state-action APIs into native Rust consensus runtime. Keep only app bootstrap handle until PBFT manager C++ facade is retired. |
+| `rust/crates/rustaxa-bridge/src/pbft_finalize.rs` | `BridgePbftFinalizationRuntimeSession`, finalization/resume sessions | PBFT manager/finalization shims and tests | Internal Rust route | Delete bridge sessions once PBFT finalization is invoked inside Rust consensus runtime rather than through C++ shim sessions. |
+| `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | `BridgePbftSyncQueueDrainSession`, `create_pbft_sync_queue_drain_session` | PBFT sync tests and PBFT manager plumbing | Obsolete scaffold | Delete after PBFT sync queue draining is represented as Rust runtime state/effects instead of a CXX helper session. |
+| `rust/crates/rustaxa-bridge/src/pbft_vote_*` | Vote pipeline/admission/validation/generation/progress/ingress/event/payload helpers | Vote manager shim, network API tests, PBFT/vote tests | Internal Rust route | Collapse bridge helpers into native Rust vote pipeline modules. Keep only network-facing vote payload/effect adapters until the network/tarcap API owns that boundary. |
+| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | `BridgeVerifiedVotes`, `create_verified_votes_index`, storage attach | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after vote manager no longer needs a C++ `VerifiedVotes` facade and Rust vote state attaches to storage internally. |
+| `rust/crates/rustaxa-bridge/src/period_data_queue.rs` | `BridgePeriodDataQueue`, `create_period_data_queue` | `period_data_queue_shim` | C++ public compatibility facade | Delete after PBFT period-data intake/queue behavior is owned by Rust runtime and external callers pass typed period data through native APIs. |
+| `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | `BridgeProposedBlocks`, `create_proposed_blocks_index*` | `proposed_blocks_shim`, `dag_manager_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after proposed-block tracking is part of Rust PBFT/DAG runtime and C++ no longer asks for metadata/materialized proposed blocks. |
+| `rust/crates/rustaxa-bridge/src/rewards_stats.rs` | `BridgeRewardsStatsRuntime`, `create_rewards_stats_runtime` | `rewards_stats_shim`, finalization/reward tests | C++ public compatibility facade | Delete C++ facade once rewards stats publication and storage writes are driven from Rust finalization. |
+| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | `BridgePillarChainStorage`, `create_pillar_chain_storage` | `storage_shim`, `pillar_chain_manager_shim` | C++ public compatibility facade | Keep as a narrow storage handle while pillar C++ facade exists. Delete after pillar chain storage access is native Rust-owned. |
+| `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | `BridgePillarVotes`, `create_pillar_votes_index` | `pillar_votes_shim`, period-data/vote paths | C++ public compatibility facade | Delete after pillar vote indexing/admission is moved into Rust pillar/PBFT runtime and no C++ index facade remains. |
+| `rust/crates/rustaxa-bridge/src/sortition.rs` | `BridgeSortitionParamsManager`, `create_sortition_params_manager*` | `sortition_params_manager_shim`, query/RPC paths through storage | C++ public compatibility facade | Delete after sortition parameter persistence and query reads are native Rust consensus/storage APIs. |
+| `rust/crates/rustaxa-bridge/src/transaction.rs` | Transaction RLP inspection and bridge DTO helpers | Transaction manager, period-data queue, tests | External boundary | Keep only wire/codec compatibility helpers needed at C++ network/RPC boundaries. Move internal transaction facts to `rustaxa-types`/native consensus. |
+| `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | `BridgeTransactionManagerSidecar`, `BridgeTransactionManagerRuntime`, admission execution/session helpers | `transaction_manager_shim`, RPC submission paths, tests | C++ public compatibility facade | Delete sidecar/runtime bridge after transaction manager public C++ facade is retired or all admission/packing paths are native Rust. Keep external EVM/final-chain callbacks as a minimal API. |
+| `rust/crates/rustaxa-bridge/src/transaction_queue.rs` | `BridgeTransactionQueue`, `create_transaction_queue` | `transaction_queue_shim` | C++ public compatibility facade | Delete after queue ownership moves fully to Rust transaction manager and C++ queue facade is no longer constructed. |
+| `rust/crates/rustaxa-bridge/src/gas_pricer.rs` | `BridgeGasPricer`, `create_gas_pricer*` | `gas_pricer_shim`, transaction/RPC gas estimation | C++ public compatibility facade | Delete after gas pricing history and query are Rust-owned behind the transaction/final-chain runtime API. |
+| `rust/crates/rustaxa-bridge/src/slashing.rs` | `BridgeSlashingProofPlanner`, `create_slashing_proof_planner` | `slashing_manager_shim` | C++ public compatibility facade | Delete after slashing proof planning is invoked by Rust consensus runtime instead of C++ manager facade. |
+| `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF bridge helpers | VDF C++ integration/tests | External boundary | Keep until VDF boundary is explicitly folded into native Rust or a dedicated external VDF API. |
+
+## Exported CXX Bridge Handles
+
+This table is the per-handle inventory for `type Bridge*` declarations in `rust/crates/rustaxa-bridge/src/ffi.rs`.
+
+| Handle | Implementing module | Current consumers | Classification | Delete or narrow when |
+| --- | --- | --- | --- | --- |
+| `BridgeConsensusQueryApi` | `query.rs` | RPC/GraphQL via `network/consensus_query.hpp`, light plugin, Rust tests | External boundary | Public query clients use one minimal facade and direct storage construction is limited to API construction points. |
+| `BridgeConsensusNetworkApi` | `network.rs` | Latest tarcap packet handlers, network API tests | External boundary | Tarcap uses a dedicated minimal network API and `consensus_network_queue_*` methods are deleted. |
+| `BridgeConsensusExecutionApi` | `final_chain.rs` | Consensus execution/EVM adapters | External boundary | EVM/StateAPI boundary is replaced or execution facts move into a dedicated Rust execution API. |
+| `BridgeFinalChain` | `final_chain.rs` | `final_chain_shim`, transaction manager/finalization adapters | External boundary | Consensus fact reads no longer materialize through C++; EVM-only execution remains behind a thinner API. |
+| `BridgeFinalChainExecutionSession` | `final_chain.rs` | FinalChain execution shim/tests | External boundary | Execution session is replaced by the dedicated EVM/execution adapter API. |
+| `BridgeStorage` | `storage.rs` | `storage_shim`, storage/query/runtime constructors, bridge tests | C++ public compatibility facade | Broad storage facade is replaced by native Rust storage runtimes or narrow bootstrap-only handles. |
+| `BridgeStorageBatch` | `storage.rs` | `storage_shim`, `rewards_stats.rs`, storage FFI | Internal Rust route | Rust owns write-batch lifecycle natively and no C++ consensus/storage caller passes bridge batches. |
+| `BridgePbftVoteStorageQueries` | `storage.rs` | Storage shim/tests, PBFT/vote bridge tests | C++ public compatibility facade | Vote storage reads move behind Rust vote/PBFT runtime ports. |
+| `BridgePbftStorageQueries` | `storage.rs` | PBFT chain/manager/finalization tests and bridge helpers | C++ public compatibility facade | PBFT storage reads move behind native Rust runtime ports. |
+| `BridgeMetadataStorageQueries` | `storage.rs` | FinalChain, transaction manager, rewards stats tests/helpers | C++ public compatibility facade | Metadata reads move behind native Rust storage/runtime ports. |
+| `BridgeDagStorageQueries` | `storage.rs` | DAG/finalization tests and bridge helpers | C++ public compatibility facade | DAG reads move behind native Rust DAG runtime/storage ports. |
+| `BridgeTransactionStorageQueries` | `storage.rs` | Transaction manager, DAG, PBFT sync/finalization tests | C++ public compatibility facade | Transaction storage reads move behind native Rust transaction/PBFT runtime ports. |
+| `BridgeFinalChainStorageQueries` | `storage.rs` | FinalChain/query compatibility | C++ public compatibility facade | Final-chain storage reads move behind native Rust FinalChain/query APIs. |
+| `BridgePeriodStorageQueries` | `storage.rs` | PBFT sync/finalization tests and query helpers | C++ public compatibility facade | Period-data reads move behind native Rust PBFT/finalization runtime ports. |
+| `BridgeDagGraph` | `dag.rs` | DAG shim/tests | C++ public compatibility facade | C++ DAG graph aliases stop being public API. |
+| `BridgeDagManagerState` | `dag.rs` | DAG manager runtime/tests | Internal Rust route | DAG manager state is native Rust runtime state, not a bridge handle. |
+| `BridgeDagManagerRuntime` | `dag.rs` | `dag_manager_shim` | C++ public compatibility facade | C++ `DagManager` facade is retired or narrowed to an external API. |
+| `BridgeDagVerifyBlockSession` | `dag.rs` | `dag_manager_shim` verify paths | Internal Rust route | DAG block verification runs inside Rust DAG/consensus runtime. |
+| `BridgeDagProposerSession` | `dag.rs` | `dag_manager_shim` proposer paths | Internal Rust route | DAG proposal planning runs inside Rust DAG/consensus runtime. |
+| `BridgeDagProposerRetryState` | `dag.rs` | `dag_block_proposer_shim` | Obsolete scaffold | Retry state becomes private Rust proposer state. |
+| `BridgePbftChain` | `pbft_chain.rs` | `pbft_chain_shim`, PBFT tests | C++ public compatibility facade | PBFT chain state is private to Rust PBFT manager/runtime. |
+| `BridgePbftSyncQueueDrainSession` | `pbft_sync.rs` | PBFT sync queue tests/helpers | Obsolete scaffold | PBFT sync queue draining becomes Rust runtime state/effects. |
+| `BridgePbftFinalizationRuntimeSession` | `pbft_finalize.rs` | PBFT finalization paths/tests | Internal Rust route | Finalization is invoked inside Rust PBFT runtime rather than via CXX sessions. |
+| `BridgePbftManagerRuntime` | `pbft_manager.rs` | App bootstrap, `pbft_manager_shim` | Internal Rust route | PBFT manager C++ orchestration is collapsed into Rust runtime. |
+| `BridgePbftManagerRuntimeSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | Runtime session APIs become native Rust calls. |
+| `BridgePbftManagerStateActionEffectSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | State-action/effect planning is native Rust and not exposed through CXX. |
+| `BridgePbftManagerProposalSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | Proposal planning is native Rust runtime behavior. |
+| `BridgePbftManagerBlockValidationSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | Block validation is native Rust runtime behavior. |
+| `BridgePbftVotePipelineSession` | `pbft_vote_pipeline.rs` | Vote manager/network tests | Internal Rust route | Vote pipeline is a Rust module called without CXX session handles. |
+| `BridgePbftVoteAdmissionSession` | `pbft_vote_admission.rs` | Vote admission paths/tests | Internal Rust route | Vote admission is Rust pipeline behavior behind network/effect API only. |
+| `BridgePbftVoteValidationRuntime` | `pbft_vote_validation.rs` | Vote manager/tests | Internal Rust route | Vote validation is private Rust vote runtime behavior. |
+| `BridgeVerifiedVotes` | `verified_votes.rs` | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Verified vote state is private Rust vote-manager state. |
+| `BridgePeriodDataQueue` | `period_data_queue.rs` | `period_data_queue_shim` | C++ public compatibility facade | Period-data intake is Rust runtime state/effects. |
+| `BridgeProposedBlocks` | `proposed_blocks.rs` | `proposed_blocks_shim`, DAG/vote manager shims | C++ public compatibility facade | Proposed-block tracking is private Rust PBFT/DAG runtime state. |
+| `BridgeRewardsStatsRuntime` | `rewards_stats.rs` | `rewards_stats_shim`, storage shim batch append | C++ public compatibility facade | Rewards stats writes/reads are driven from Rust finalization without C++ facade/batch passing. |
+| `BridgePillarChainStorage` | `pillar_chain.rs` | `storage_shim`, `pillar_chain_manager_shim` | C++ public compatibility facade | Pillar chain storage is native Rust-owned. |
+| `BridgePillarVotes` | `pillar_votes.rs` | `pillar_votes_shim` and period-data/vote paths | C++ public compatibility facade | Pillar vote indexing/admission is native Rust runtime state. |
+| `BridgeSortitionParamsManager` | `sortition.rs` | `sortition_params_manager_shim` | C++ public compatibility facade | Sortition params persistence/query is native Rust storage/query behavior. |
+| `BridgeTransactionQueue` | `transaction_queue.rs` | `transaction_queue_shim` | C++ public compatibility facade | Transaction queue is private Rust transaction-manager state. |
+| `BridgeTransactionManagerSidecar` | `transaction_manager.rs` | `transaction_manager_shim` | C++ public compatibility facade | Transaction sidecar materialization is removed from C++ API. |
+| `BridgeTransactionManagerRuntime` | `transaction_manager.rs` | `transaction_manager_shim`, app/bootstrap | C++ public compatibility facade | Transaction admission/packing runs behind native Rust runtime and minimal external submission API. |
+| `BridgeTransactionManagerAdmissionExecution` | `transaction_manager.rs` | Transaction manager admission/EVM adapter | External boundary | EVM execution callbacks are isolated in a dedicated external API. |
+| `BridgeGasPricer` | `gas_pricer.rs` | `gas_pricer_shim` | C++ public compatibility facade | Gas pricing is native Rust query/runtime behavior. |
+| `BridgeSlashingProofPlanner` | `slashing.rs` | `slashing_manager_shim` | C++ public compatibility facade | Slashing planning runs inside Rust consensus runtime. |
+
+## Consensus Shim Directories
+
+| Shim directory | Current role | Current consumers | Classification | Removal or narrowing condition |
+| --- | --- | --- | --- | --- |
+| `dag_block_proposer_shim` | Rust retry state for DAG proposal attempts | DAG manager/proposer code | C++ public compatibility facade | Delete when DAG proposal planning lives fully inside Rust DAG runtime. |
+| `dag_manager_shim` | Rust DAG manager runtime behind C++ `DagManager` API | App/consensus code, DAG tests | C++ public compatibility facade | Remove `DagManagerOld` forwarding and C++ graph materialization when DAG manager callers can use Rust runtime or a thinner public facade. |
+| `dag_shim` | C++ DAG facade over legacy graph aliases | DAG manager and DAG tests | C++ public compatibility facade | Delete after DAG graph types no longer leak through public C++ API. |
+| `final_chain_shim` | Rust FinalChain runtime behind C++ FinalChain API | App, PBFT manager, transaction manager, RPC/EVM execution | External boundary | Keep EVM execution adapter; remove consensus fact/materialization methods after Rust consensus consumes FinalChain ports directly. |
+| `gas_pricer_shim` | Gas price oracle facade | Transaction/RPC gas price paths | C++ public compatibility facade | Delete after gas price API is native Rust and external RPC sees only a narrow query method. |
+| `key_manager_shim` | Key manager compatibility | App/bootstrap/key manager users | External boundary | Keep until key ownership is redesigned; not a consensus-internal deletion target. |
+| `pbft_chain_shim` | PBFT chain facade | PBFT manager and tests | C++ public compatibility facade | Delete after PBFT chain state becomes private to Rust PBFT manager/runtime. |
+| `pbft_manager_shim` | PBFT manager Rust runtime facade | App bootstrap and consensus loop | Internal Rust route | Collapse into native Rust PBFT runtime and remove C++ orchestration once network/EVM/storage external APIs are thin. |
+| `period_data_queue_shim` | Period-data queue compatibility | PBFT sync/finalization paths | C++ public compatibility facade | Delete after period-data queue is Rust runtime state, not a C++ facade. |
+| `pillar_chain_manager_shim` | Pillar chain manager compatibility | App/consensus pillar paths | C++ public compatibility facade | Delete after pillar chain runtime/storage is native Rust-owned. |
+| `pillar_votes_shim` | Pillar vote index/admission facade | Pillar vote processing and tests | C++ public compatibility facade | Delete after pillar vote pipeline is native Rust. |
+| `proposed_blocks_shim` | Proposed block tracking facade | DAG manager, vote manager, PBFT paths | C++ public compatibility facade | Delete after proposed-block tracking is folded into Rust PBFT/DAG runtime. |
+| `rewards_stats_shim` | Rewards statistics facade | Finalization/rewards tests | C++ public compatibility facade | Delete after Rust finalization owns rewards stats writes/reads directly. |
+| `slashing_manager_shim` | Slashing proof planner facade | Slashing manager users | C++ public compatibility facade | Delete after slashing planning runs inside Rust consensus runtime. |
+| `sortition_params_manager_shim` | Sortition parameter storage facade | DAG/sortition, query paths | C++ public compatibility facade | Delete after sortition parameters are exposed through Rust storage/query APIs only. |
+| `storage_shim` | `DbStorage` Rust-mode overlay and Rust storage owner | App, consensus shims, storage tests | C++ public compatibility facade | Delete broad storage facade after all C++ consensus callers stop using `DbStorage`; keep only external app/admin bootstrap if needed. |
+| `transaction_manager_shim` | Transaction manager runtime/sidecar facade | App, RPC submission, PBFT packing | C++ public compatibility facade | Delete after transaction admission/packing/public submission API is native Rust with EVM boundary adapters. |
+| `transaction_queue_shim` | Transaction queue facade | Transaction manager and tests | C++ public compatibility facade | Delete after queue is private Rust transaction-manager state. |
+| `verified_votes_shim` | Verified votes compatibility facade | Vote manager shim | C++ public compatibility facade | Delete after vote manager uses Rust vote state directly. |
+| `vote_manager_shim` | Vote manager Rust runtime facade | PBFT manager, DAG/proposed blocks, network vote paths | Internal Rust route | Collapse into Rust PBFT/vote runtime. Keep only external network adapters until network/tarcap API is complete. |
+
+## Required Closeout Checks
+
+Run these after each consolidation slice that touches bridge/shim code. The expected result is either empty output or only
+entries listed in this audit as still-live compatibility/external boundaries.
+
+```bash
+rg -n '\b[A-Za-z_][A-Za-z0-9_]*Old::[A-Za-z_][A-Za-z0-9_]*\s*\(' \
+  libraries/core_libs/consensus/shims -g'*.cpp' -g'*.hpp'
+rg -n 'consensus_network_queue_' \
+  rust/crates/rustaxa-bridge/src rust/crates/rustaxa-consensus/src libraries/core_libs tests/rust \
+  -g'*.rs' -g'*.cpp' -g'*.hpp'
+rg -n 'create_consensus_query_api\([^\n]*rustStorage\(\)' \
+  libraries rust tests -g'*.cpp' -g'*.hpp' -g'*.rs'
+rg -n '\bBridgeStorage\b' rust/crates/rustaxa-consensus -g'*.rs'
+rg -n '\brustBatchId\b|BridgeStorageBatch|create_storage_shim_batch|storage_shim_.*batch' \
+  libraries rust tests/rust -g'*.cpp' -g'*.hpp' -g'*.rs'
+rg -n '^mod [a-z0-9_]+;' rust/crates/rustaxa-bridge/src/lib.rs
+rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
+```
+
+Current Slice 0 snapshot:
+
+- `Old::` forwarding remains in `dag_manager_shim`, `dag_shim`, `transaction_manager_shim`, and `vote_manager_shim`.
+- `consensus_network_queue_*` remains in `rustaxa-bridge/src/network.rs`, `rustaxa-bridge/src/ffi.rs`,
+  `tests/rust/consensus/test_network_api.cpp`, and latest tarcap vote gossip handling.
+- Direct public query API construction from `rustStorage()` remains at `network/consensus_query.hpp`, which is the approved
+  helper construction point after Slice 1. `plugin/light/src/light.cpp` still constructs directly and is tracked as a
+  scaffold to route through the common helper or a dedicated light-query API.
+- `BridgeStorage` remains in bridge storage/query/runtime constructors, storage shim, Rust bridge tests, and shim-owned
+  bootstrap points. Native `rustaxa-consensus` modules should not depend on `BridgeStorage`.
+- `BridgeStorageBatch` and `rustBatchId` remain storage-shim compatibility debt. They must not grow into new consensus
+  production routes.
+
+## Agent Use
+
+Slice 0 used the `$implement-rustaxa-consensus-slice` workflow. Custom agents were started for independent read-only
+coverage:
+
+- `rust-engineer`: Rust bridge module and exported handle inventory.
+- `cpp-pro`: C++ shim and closeout-pattern inventory.
+- `architect-reviewer`: audit structure and classification review.
+
+The committed file is based on the local mechanical inventory and should be updated with any later slice-specific
+findings when bridge/shim code is removed or narrowed.

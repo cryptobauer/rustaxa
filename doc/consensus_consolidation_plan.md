@@ -80,6 +80,14 @@ Acceptance:
 - No behavior changes.
 - `git diff --check` passes.
 
+Implementation status:
+
+- Complete in `doc/consensus_bridge_shim_audit.md`.
+- The audit classifies Rust bridge modules, exported `Bridge*` handles, consensus shim directories, consumers, and
+  removal/narrowing conditions.
+- Required `rg` closeout checks are recorded in the audit file and should be rerun after each deletion/consolidation
+  slice.
+
 ## Slice 1: Centralize Public Query API Injection
 
 Purpose: stop RPC/GraphQL callers from repeatedly constructing `ConsensusQueryApi` from `DbStorage` and make public-query
