@@ -510,12 +510,25 @@ Implementation notes:
   `BridgePbftManagerRuntime` state, validates the live mutation transcript, and returns a snapshot for C++ mirror
   fields. C++ still owns the external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager,
   advance-period, and pillar side effects until a later one-shot finalization operation absorbs those boundaries.
-- `pbft_manager_shim` normal finalization and duplicate-resume paths now report external live mutations through
-  `pbft_manager_runtime_report_finalization_live_mutation`. This manager-runtime API validates the C++ executor facts
-  against the accepted finalization plan and advances the manager-owned finalization cursor in one call, replacing the
-  standalone `validate_pbft_finalization_live_mutation_report` CXX export and bridge-only
-  `PbftFinalizationLiveMutationValidation` DTO. C++ still executes the external effects for now, but it no longer
-  performs a separate bridge validation step before reporting the cursor action.
+- `pbft_manager_shim` normal finalization and duplicate-resume paths first reported external live mutations through an
+  interim `pbft_manager_runtime_report_finalization_live_mutation` API. That manager-runtime API moved validation of C++
+  executor facts into Rust and replaced the standalone `validate_pbft_finalization_live_mutation_report` CXX export and
+  bridge-only `PbftFinalizationLiveMutationValidation` DTO. The later boundary consolidation below deletes the interim
+  CXX export and folds reporting into manager-owned finalization boundary APIs.
+- `pbft_manager_shim` normal finalization and duplicate-resume paths now use manager-owned finalization boundary APIs:
+  `pbft_manager_runtime_begin_finalization_boundary`,
+  `pbft_manager_runtime_begin_finalization_resume_boundary`,
+  `pbft_manager_runtime_report_finalization_live_mutation_boundary`, and
+  `pbft_manager_runtime_report_finalization_failure_boundary`. Rust owns cursor setup, primary storage apply through the
+  runtime storage handle, live mutation validation, manager-owned action drains, and final completion classification.
+  C++ still prepares primary storage stages under the existing DAG/transaction locks and still executes external
+  sortition, reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain/EVM, advance-period, and pillar
+  side effects before reporting facts back to Rust. The CXX exports for `plan_pbft_finalization_runtime`,
+  `pbft_manager_runtime_finalization_session_next`, `pbft_manager_runtime_finalization_session_report`,
+  `pbft_manager_runtime_finalization_session_report_action`,
+  `pbft_manager_runtime_report_finalization_live_mutation`,
+  `pbft_manager_runtime_drain_owned_finalization_actions`, and
+  `pbft_manager_runtime_apply_finalization_storage_writes` are deleted.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -523,7 +536,7 @@ Implementation notes:
   `pbft_manager_runtime_apply_finalization_executed_status` are deleted; their behavior now exists only inside the
   manager-owned finalization drain API.
 - Custom-agent delegation was attempted for this Slice 6 increment (`cpp-pro` and `rust-engineer`), but the agent
-  backend rejected both starts due a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
+  backend rejected both starts due to a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
   using the `$implement-rustaxa-consensus-slice` workflow.
 - Custom-agent delegation was attempted again for the PBFT block-validation cursor removal (`cpp-pro` and
   `rust-engineer`); both attempts hit the same GPT-5.3-Codex-Spark usage limit, so the local implementation path
@@ -545,6 +558,11 @@ Implementation notes:
     PBFT-chain, sortition, vote-manager, advance-period, and pillar execution external for now. This increment implements
     the prerequisite manager-runtime live-report API and leaves the broader boundary API as the next PBFT finalization
     cut.
+- Custom agents used for the PBFT finalization boundary consolidation:
+  - `architect-reviewer`: confirmed the bounded operation/boundary API shape and highlighted primary-storage ordering,
+    duplicate-resume replay, and explicit external action reporting as acceptance risks.
+  - `cpp-pro`: attempted for C++ shim review, but the agent backend rejected the start due to a GPT-5.3-Codex-Spark usage
+    limit. Local implementation and validation proceeded with the `$implement-rustaxa-consensus-slice` workflow.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -598,7 +616,6 @@ Implementation notes:
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `git diff --check`
   - `.githooks/pre-commit`
-  - `.githooks/pre-commit`
 - Additional validation for PBFT finalization owned-action drain:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
@@ -622,6 +639,18 @@ Implementation notes:
   - `scripts/rewrite_bridge_inventory_guard.sh`
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `git diff --check`
+- Additional validation for PBFT finalization boundary consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.Finalization*Boundary*' --gtest_print_time=1`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `git diff --check`
+  - `.githooks/pre-commit`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is either the broader PBFT finalization executor cut that absorbs the remaining external-effect

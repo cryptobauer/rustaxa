@@ -1460,14 +1460,6 @@ pub mod rustaxa_ffi {
         last_saved_period_lambda: u32,
     }
 
-    /// Ordered runtime-side actions for PBFT finalization.
-    struct PbftFinalizationRuntimePlan {
-        finalize_block: bool,
-        status: u8,
-        actions: Vec<u8>,
-        error_code: String,
-    }
-
     /// C++-originated facts for one Rust-owned PBFT manager daemon tick.
     struct PbftManagerRuntimeTickFact {
         tick_id: u64,
@@ -1952,6 +1944,23 @@ pub mod rustaxa_ffi {
         snapshot: PbftManagerRuntimeSnapshot,
         last_storage_status: u8,
         next_step: PbftFinalizationRuntimeSessionStep,
+        error_code: String,
+    }
+
+    /// Manager-owned PBFT finalization boundary returned to the C++ external executor.
+    struct PbftManagerFinalizationBoundary {
+        status: u8,
+        action: u8,
+        has_action: bool,
+        complete: bool,
+        can_continue: bool,
+        drained_actions: u32,
+        applied_dynamic_lambda: bool,
+        persisted_executed_status: bool,
+        set_executed_flag: bool,
+        has_snapshot: bool,
+        snapshot: PbftManagerRuntimeSnapshot,
+        last_storage_status: u8,
         error_code: String,
     }
 
@@ -4799,9 +4808,6 @@ pub mod rustaxa_ffi {
             plan: &PbftFinalizationPillarPreflightPlan,
             report: PbftFinalizationPillarPreflightReport,
         ) -> PbftFinalizationPillarPreflightPlan;
-        pub fn plan_pbft_finalization_runtime(
-            plan: &PbftFinalizationIntentPlan,
-        ) -> PbftFinalizationRuntimePlan;
         type BridgePbftManagerRuntime;
         pub fn create_pbft_manager_runtime_from_storage(
             storage: &BridgeStorage,
@@ -4969,46 +4975,31 @@ pub mod rustaxa_ffi {
             write_set: &PbftFinalizationStorageWritePlan,
             final_chain_last_block: u64,
         ) -> Result<PbftFinalizationResumePlan>;
-        pub fn pbft_manager_runtime_begin_finalization_session(
+        pub fn pbft_manager_runtime_begin_finalization_boundary(
             runtime: &mut BridgePbftManagerRuntime,
             plan: &PbftFinalizationIntentPlan,
-        );
-        pub fn pbft_manager_runtime_begin_finalization_resume_session(
+            primary_stages: Vec<PbftFinalizationStorageWriteStage>,
+            sync: bool,
+        ) -> Result<PbftManagerFinalizationBoundary>;
+        pub fn pbft_manager_runtime_begin_finalization_resume_boundary(
             runtime: &mut BridgePbftManagerRuntime,
-            plan: &PbftFinalizationResumePlan,
-        );
-        pub fn pbft_manager_runtime_finalization_session_next(
-            runtime: &mut BridgePbftManagerRuntime,
-        ) -> PbftFinalizationRuntimeSessionStep;
-        pub fn pbft_manager_runtime_finalization_session_report(
-            runtime: &mut BridgePbftManagerRuntime,
-            cursor: u32,
-            action: u8,
-            success: bool,
-            action_status: u8,
-        ) -> PbftFinalizationRuntimeSessionStep;
-        pub fn pbft_manager_runtime_finalization_session_report_action(
-            runtime: &mut BridgePbftManagerRuntime,
-            report: PbftFinalizationRuntimeActionReport,
-        ) -> PbftFinalizationRuntimeSessionStep;
-        pub fn pbft_manager_runtime_report_finalization_live_mutation(
+            plan: &PbftFinalizationIntentPlan,
+            resume: &PbftFinalizationResumePlan,
+        ) -> Result<PbftManagerFinalizationBoundary>;
+        pub fn pbft_manager_runtime_report_finalization_live_mutation_boundary(
             runtime: &mut BridgePbftManagerRuntime,
             plan: &PbftFinalizationIntentPlan,
             report: PbftFinalizationLiveMutationReport,
-        ) -> PbftFinalizationRuntimeSessionStep;
-        pub fn pbft_manager_runtime_drain_owned_finalization_actions(
+        ) -> Result<PbftManagerFinalizationBoundary>;
+        pub fn pbft_manager_runtime_report_finalization_failure_boundary(
             runtime: &mut BridgePbftManagerRuntime,
-            plan: &PbftFinalizationIntentPlan,
-        ) -> Result<PbftManagerFinalizationOwnedActionDrainResult>;
+            action: u8,
+            action_status: u8,
+            error_code: String,
+        ) -> PbftManagerFinalizationBoundary;
         pub fn abort_pbft_manager_runtime_finalization_session(
             runtime: &mut BridgePbftManagerRuntime,
         );
-        pub fn pbft_manager_runtime_apply_finalization_storage_writes(
-            runtime: &BridgePbftManagerRuntime,
-            write_set: &PbftFinalizationStorageWritePlan,
-            stages: Vec<PbftFinalizationStorageWriteStage>,
-            sync: bool,
-        ) -> Result<PbftFinalizedPeriodApplyResult>;
         pub fn pbft_manager_runtime_begin_session(
             runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerRuntimeTickFact,

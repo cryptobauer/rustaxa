@@ -77,21 +77,12 @@ constexpr uint8_t kPbftFinalizationStatusBlockAlreadyInChain = 1;
 constexpr uint8_t kPbftFinalizationStatusPillarDependencyMissing = 4;
 constexpr uint8_t kPbftFinalizationStatusEmptyCertVotes = 5;
 constexpr uint8_t kPbftFinalizationStatusCertVoteBlockMismatch = 6;
-constexpr uint8_t kPbftFinalizationRuntimeActionPrimaryStorage = 0;
-constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardReset = 3;
-constexpr uint8_t kPbftFinalizationRuntimeActionSetDagOrder = 4;
-constexpr uint8_t kPbftFinalizationRuntimeActionUpdateTransactions = 5;
-constexpr uint8_t kPbftFinalizationRuntimeActionUpdatePbftChain = 6;
-constexpr uint8_t kPbftFinalizationRuntimeActionClearAnchorCache = 7;
-constexpr uint8_t kPbftFinalizationRuntimeActionApplyDynamicLambda = 8;
 constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
 constexpr uint8_t kPbftFinalizationRuntimeActionPersistExecutedStatus = 10;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
-constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
-constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
 constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
@@ -807,42 +798,39 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_EQ(plan.storage_write_intent.transaction_location_writes[0].position, 0);
 }
 
-TEST(RustPbftSyncTest, FinalizationLiveMutationReportsAdvanceManagerRuntime) {
+TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
-  pbft_manager_runtime_begin_finalization_session(*runtime, plan);
-
-  auto step = pbft_manager_runtime_finalization_session_next(*runtime);
-  while (step.has_action && step.action != kPbftFinalizationRuntimeActionSetDagOrder) {
-    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
-  }
-  ASSERT_TRUE(step.has_action);
-  ASSERT_EQ(step.action, kPbftFinalizationRuntimeActionSetDagOrder);
+  auto boundary = pbft_manager_runtime_begin_finalization_boundary(
+      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
 
   PbftFinalizationLiveMutationReport report{};
-  report.action = kPbftFinalizationRuntimeActionSetDagOrder;
+  report.action = boundary.action;
   report.block_period = 101;
   report.pbft_block_hash = h256(9);
   report.anchor_hash = h256(8);
-  report.dag_finalized_count = 2;
+  report.sortition_changed = true;
+  report.sortition_change_period = 999;
+  report.sortition_params_changes_count = 1;
 
-  auto next = pbft_manager_runtime_report_finalization_live_mutation(*runtime, plan, report);
-  EXPECT_EQ(next.status, kPbftFinalizationRuntimeStatusActive);
-  EXPECT_EQ(next.action, kPbftFinalizationRuntimeActionUpdateTransactions);
+  boundary = pbft_manager_runtime_report_finalization_live_mutation_boundary(*runtime, plan, report);
+  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
+  EXPECT_FALSE(boundary.has_action);
+  EXPECT_FALSE(boundary.can_continue);
+  EXPECT_FALSE(std::string(boundary.error_code).empty());
+}
 
-  pbft_manager_runtime_begin_finalization_session(*runtime, plan);
-  step = pbft_manager_runtime_finalization_session_next(*runtime);
-  while (step.has_action && step.action != kPbftFinalizationRuntimeActionSetDagOrder) {
-    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
-  }
-  ASSERT_TRUE(step.has_action);
-  ASSERT_EQ(step.action, kPbftFinalizationRuntimeActionSetDagOrder);
+TEST(RustPbftSyncTest, FinalizationBoundaryBeginsAtFirstExternalAction) {
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  auto runtime = managerRuntimeForFinalizationSession();
 
-  report.dag_finalized_count = 1;
-  next = pbft_manager_runtime_report_finalization_live_mutation(*runtime, plan, report);
-  EXPECT_EQ(next.status, kPbftFinalizationRuntimeStatusActionFailed);
-  EXPECT_FALSE(next.has_action);
-  EXPECT_EQ(std::string(next.error_code), "PBFT_FINALIZE_LIVE_MUTATION_DAG_COUNT_MISMATCH");
+  const auto boundary = pbft_manager_runtime_begin_finalization_boundary(
+      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
+
+  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
+  EXPECT_TRUE(boundary.has_action);
+  EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
+  EXPECT_TRUE(boundary.can_continue);
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentRejectsAlreadyPersistedBlock) {
@@ -915,95 +903,22 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
   expectNoFinalizationStorageWrites(plan.storage_write_intent);
 }
 
-TEST(RustPbftSyncTest, FinalizationRuntimePlanOrdersMixedExecutorActions) {
-  const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
-  const auto runtime = plan_pbft_finalization_runtime(intent);
-
-  EXPECT_TRUE(runtime.finalize_block);
-  EXPECT_EQ(runtime.status, kPbftFinalizationStatusAccepted);
-  const std::vector<uint8_t> actions(runtime.actions.begin(), runtime.actions.end());
-  EXPECT_EQ(actions, (std::vector<uint8_t>{
-                         kPbftFinalizationRuntimeActionPrimaryStorage,
-                         kPbftFinalizationRuntimeActionCommitSortitionRuntime,
-                         kPbftFinalizationRuntimeActionCommitRewardReset,
-                         kPbftFinalizationRuntimeActionSetDagOrder,
-                         kPbftFinalizationRuntimeActionUpdateTransactions,
-                         kPbftFinalizationRuntimeActionUpdatePbftChain,
-                         kPbftFinalizationRuntimeActionClearAnchorCache,
-                         kPbftFinalizationRuntimeActionApplyDynamicLambda,
-                         kPbftFinalizationRuntimeActionFinalizeFinalChain,
-                         kPbftFinalizationRuntimeActionPersistExecutedStatus,
-                         kPbftFinalizationRuntimeActionSetExecutedFlag,
-                         kPbftFinalizationRuntimeActionAdvancePeriod,
-                     }));
-
-  auto rejected_fact = makeFinalizationFact();
-  rejected_fact.block_in_chain = true;
-  const auto rejected_intent = plan_pbft_finalization_intent(std::move(rejected_fact));
-  const auto rejected_runtime = plan_pbft_finalization_runtime(rejected_intent);
-  EXPECT_FALSE(rejected_runtime.finalize_block);
-  EXPECT_TRUE(rejected_runtime.actions.empty());
-}
-
-TEST(RustPbftSyncTest, FinalizationRuntimeSessionOwnsCursorAndCompletion) {
-  const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
+TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
-  pbft_manager_runtime_begin_finalization_session(*runtime, intent);
+  auto boundary = pbft_manager_runtime_begin_finalization_boundary(
+      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
+  ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  auto step = pbft_manager_runtime_finalization_session_next(*runtime);
-  EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusActive);
-  EXPECT_TRUE(step.has_action);
-  EXPECT_EQ(step.cursor, 0);
-  EXPECT_EQ(step.action, kPbftFinalizationRuntimeActionPrimaryStorage);
-  EXPECT_FALSE(step.complete);
-
-  std::vector<uint8_t> actions;
-  while (step.has_action) {
-    actions.push_back(step.action);
-    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
-  }
-
-  EXPECT_TRUE(step.complete);
-  EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusComplete);
-  EXPECT_EQ(actions, (std::vector<uint8_t>{
-                         kPbftFinalizationRuntimeActionPrimaryStorage,
-                         kPbftFinalizationRuntimeActionCommitSortitionRuntime,
-                         kPbftFinalizationRuntimeActionCommitRewardReset,
-                         kPbftFinalizationRuntimeActionSetDagOrder,
-                         kPbftFinalizationRuntimeActionUpdateTransactions,
-                         kPbftFinalizationRuntimeActionUpdatePbftChain,
-                         kPbftFinalizationRuntimeActionClearAnchorCache,
-                         kPbftFinalizationRuntimeActionApplyDynamicLambda,
-                         kPbftFinalizationRuntimeActionFinalizeFinalChain,
-                         kPbftFinalizationRuntimeActionPersistExecutedStatus,
-                         kPbftFinalizationRuntimeActionSetExecutedFlag,
-                         kPbftFinalizationRuntimeActionAdvancePeriod,
-                     }));
+  boundary = pbft_manager_runtime_report_finalization_failure_boundary(
+      *runtime, kPbftFinalizationRuntimeActionCommitSortitionRuntime, 77, "TEST_EXTERNAL_FAILURE");
+  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
+  EXPECT_FALSE(boundary.has_action);
+  EXPECT_EQ(std::string(boundary.error_code), "TEST_EXTERNAL_FAILURE");
 }
 
-TEST(RustPbftSyncTest, FinalizationRuntimeSessionStopsOnFailureOrMismatch) {
-  const auto intent = plan_pbft_finalization_intent(makeFinalizationFact());
-  auto runtime = managerRuntimeForFinalizationSession();
-  pbft_manager_runtime_begin_finalization_session(*runtime, intent);
-
-  auto failed =
-      pbft_manager_runtime_finalization_session_report(*runtime, 0, kPbftFinalizationRuntimeActionPrimaryStorage, false,
-                                                       77);
-  EXPECT_EQ(failed.status, kPbftFinalizationRuntimeStatusActionFailed);
-  EXPECT_FALSE(failed.has_action);
-  EXPECT_EQ(failed.cursor, 0);
-  EXPECT_EQ(std::string(failed.error_code), "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_77");
-
-  pbft_manager_runtime_begin_finalization_session(*runtime, intent);
-  auto mismatch =
-      pbft_manager_runtime_finalization_session_report(*runtime, 1, kPbftFinalizationRuntimeActionPrimaryStorage, true,
-                                                       0);
-  EXPECT_EQ(mismatch.status, kPbftFinalizationRuntimeStatusActionMismatch);
-  EXPECT_FALSE(mismatch.has_action);
-  EXPECT_EQ(std::string(mismatch.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
-}
-
-TEST(RustPbftSyncTest, FinalizationResumeRuntimeSessionOwnsTailReplayCursor) {
+TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   PbftFinalizationResumePlan resume;
   resume.status = kPbftFinalizationResumeStatusNeedsFinalChainReplay;
   resume.duplicate_classified = true;
@@ -1014,23 +929,12 @@ TEST(RustPbftSyncTest, FinalizationResumeRuntimeSessionOwnsTailReplayCursor) {
   resume.replay_actions.push_back(kPbftFinalizationRuntimeActionAdvancePeriod);
   resume.error_code = "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY";
   auto runtime = managerRuntimeForFinalizationSession();
-  pbft_manager_runtime_begin_finalization_resume_session(*runtime, resume);
 
-  auto step = pbft_manager_runtime_finalization_session_next(*runtime);
-  std::vector<uint8_t> actions;
-  while (step.has_action) {
-    actions.push_back(step.action);
-    step = pbft_manager_runtime_finalization_session_report(*runtime, step.cursor, step.action, true, 0);
-  }
+  const auto boundary = pbft_manager_runtime_begin_finalization_resume_boundary(*runtime, plan, resume);
 
-  EXPECT_TRUE(step.complete);
-  EXPECT_EQ(step.status, kPbftFinalizationRuntimeStatusComplete);
-  EXPECT_EQ(actions, (std::vector<uint8_t>{
-                         kPbftFinalizationRuntimeActionFinalizeFinalChain,
-                         kPbftFinalizationRuntimeActionPersistExecutedStatus,
-                         kPbftFinalizationRuntimeActionSetExecutedFlag,
-                         kPbftFinalizationRuntimeActionAdvancePeriod,
-                     }));
+  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
+  EXPECT_TRUE(boundary.has_action);
+  EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionFinalizeFinalChain);
 }
 
 TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {

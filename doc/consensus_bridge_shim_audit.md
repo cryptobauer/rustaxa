@@ -401,10 +401,17 @@ Current snapshot after DAG proposer-session cursor consolidation:
   manager-owned begin/next/report/abort APIs on `BridgePbftManagerRuntime`; C++ still executes external side effects
   until a later manager-owned one-shot finalization operation absorbs the remaining coordinator loop.
 - The standalone `validate_pbft_finalization_live_mutation_report` CXX export and bridge-only
-  `PbftFinalizationLiveMutationValidation` DTO are deleted. External FinalChain/EVM, DAG, transaction-manager,
-  PBFT-chain, sortition, vote-manager, advance-period, and pillar executors now report their post-state facts through
-  `pbft_manager_runtime_report_finalization_live_mutation`, which validates the facts and advances the manager-owned
-  finalization cursor in one call.
+  `PbftFinalizationLiveMutationValidation` DTO are deleted. The interim manager-runtime live-report API moved external
+  FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, and pillar fact
+  validation into Rust; the later boundary APIs below delete that interim CXX export and fold reporting into the
+  manager-owned finalization boundary.
+- Normal PBFT finalization and duplicate-finalization resume now enter through manager-owned boundary APIs:
+  `pbft_manager_runtime_begin_finalization_boundary`, `pbft_manager_runtime_begin_finalization_resume_boundary`,
+  `pbft_manager_runtime_report_finalization_live_mutation_boundary`, and
+  `pbft_manager_runtime_report_finalization_failure_boundary`. The direct CXX exports for finalization runtime planning,
+  cursor next/report, standalone live-mutation report, owned-action drain, and manager-runtime storage apply are deleted.
+  Rust still returns explicit external action boundaries, so C++ remains the executor for FinalChain/EVM, DAG,
+  transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache side effects.
 - Manager-owned PBFT finalization actions are now drained through
   `pbft_manager_runtime_drain_owned_finalization_actions`. The drain owns dynamic-lambda persistence/state and
   executed-status persistence/state inside `BridgePbftManagerRuntime`, while stopping at external FinalChain/EVM, DAG,

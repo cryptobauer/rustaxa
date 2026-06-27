@@ -15,7 +15,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
-    PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
     PbftManagerAdvancePeriodActionReport as FfiPbftManagerAdvancePeriodActionReport,
     PbftManagerAdvancePeriodActionReportResult as FfiPbftManagerAdvancePeriodActionReportResult,
     PbftManagerAdvancePeriodPlan as FfiPbftManagerAdvancePeriodPlan,
@@ -29,6 +28,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
+    PbftManagerFinalizationBoundary as FfiPbftManagerFinalizationBoundary,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationOwnedActionDrainResult as FfiPbftManagerFinalizationOwnedActionDrainResult,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
@@ -1090,39 +1090,6 @@ pub fn pbft_manager_runtime_inspect_finalization_resume(
     .map(Into::into)
 }
 
-/// Applies PBFT finalization storage stages through runtime-owned storage.
-///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime with its Rust storage handle.
-/// - `write_set`: accepted PBFT finalization storage intent from the Rust planner.
-/// - `stages`: ordered persistence stages to append to one Rust storage batch.
-/// - `sync`: whether the storage commit should use synchronous write options.
-///
-/// Outputs:
-/// - The combined finalized-period apply result from Rust consensus storage.
-///
-/// Invariants and edge behavior:
-/// - Batch creation, stage append, and commit are owned by Rust storage.
-/// - Empty stage lists and storage conflicts are rejected by the existing
-///   finalization storage helper without C++ batch participation.
-pub fn pbft_manager_runtime_apply_finalization_storage_writes(
-    runtime: &BridgePbftManagerRuntime,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-    stages: Vec<FfiPbftFinalizationStorageWriteStage>,
-    sync: bool,
-) -> anyhow::Result<FfiPbftFinalizedPeriodApplyResult> {
-    let write_set: PbftFinalizationStorageWriteIntent = write_set.into();
-    let stages = stages.into_iter().map(Into::into).collect();
-    Ok(crate::pbft_finalize::apply_result_from_domain(
-        apply_domain_pbft_finalization_storage_writes(
-            runtime.storage.as_ref(),
-            &write_set,
-            stages,
-            sync,
-        )?,
-    ))
-}
-
 /// Starts a runtime-owned PBFT manager daemon-tick session.
 ///
 /// Inputs:
@@ -1516,6 +1483,64 @@ fn finalization_drain_result(
     }
 }
 
+fn finalization_boundary_from_step(
+    runtime: &BridgePbftManagerRuntime,
+    step: FfiPbftFinalizationRuntimeSessionStep,
+    error_code: String,
+) -> FfiPbftManagerFinalizationBoundary {
+    FfiPbftManagerFinalizationBoundary {
+        status: step.status,
+        action: step.action,
+        has_action: step.has_action,
+        complete: step.complete,
+        can_continue: step.can_continue,
+        drained_actions: 0,
+        applied_dynamic_lambda: false,
+        persisted_executed_status: false,
+        set_executed_flag: false,
+        has_snapshot: false,
+        snapshot: runtime.state.snapshot().into(),
+        last_storage_status: 0,
+        error_code: if error_code.is_empty() {
+            step.error_code
+        } else {
+            error_code
+        },
+    }
+}
+
+fn finalization_boundary_from_drain(
+    drain: FfiPbftManagerFinalizationOwnedActionDrainResult,
+) -> FfiPbftManagerFinalizationBoundary {
+    FfiPbftManagerFinalizationBoundary {
+        status: drain.status,
+        action: drain.next_step.action,
+        has_action: drain.next_step.has_action,
+        complete: drain.next_step.complete,
+        can_continue: drain.next_step.can_continue,
+        drained_actions: drain.drained_actions,
+        applied_dynamic_lambda: drain.applied_dynamic_lambda,
+        persisted_executed_status: drain.persisted_executed_status,
+        set_executed_flag: drain.set_executed_flag,
+        has_snapshot: drain.has_snapshot,
+        snapshot: drain.snapshot,
+        last_storage_status: drain.last_storage_status,
+        error_code: if drain.error_code.is_empty() {
+            drain.next_step.error_code
+        } else {
+            drain.error_code
+        },
+    }
+}
+
+fn drain_finalization_boundary(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationIntentPlan,
+) -> anyhow::Result<FfiPbftManagerFinalizationBoundary> {
+    pbft_manager_runtime_drain_owned_finalization_actions(runtime, plan)
+        .map(finalization_boundary_from_drain)
+}
+
 fn base_finalization_live_report(
     action: PbftFinalizationRuntimeAction,
     write_set: &PbftFinalizationStorageWriteIntent,
@@ -1599,6 +1624,7 @@ pub fn pbft_manager_runtime_finalization_session_next(
 /// `cursor` and `action` must match the current Rust-planned step. Success
 /// advances the cursor; failure, cursor mismatch, or unknown action moves the
 /// session into a terminal status and returns that terminal step.
+#[cfg(test)]
 pub fn pbft_manager_runtime_finalization_session_report(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
@@ -1726,6 +1752,171 @@ pub fn pbft_manager_runtime_report_finalization_live_mutation(
     };
 
     pbft_manager_runtime_finalization_session_report_action(runtime, validation)
+}
+
+/// Starts normal PBFT finalization and advances to the first external boundary.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns storage and the
+///   finalization cursor.
+/// - `plan`: accepted finalization intent built from C++ facts.
+/// - `primary_stages`: primary storage stages prepared by C++ subsystem
+///   adapters, such as reward-vote reset and sortition payloads.
+/// - `sync`: whether the Rust storage commit should be synchronous.
+///
+/// Outputs:
+/// - Applies the primary storage action, drains Rust-owned manager actions, and
+///   returns the next action that must still be executed by C++.
+///
+/// Invariants and edge behavior:
+/// - This never executes external FinalChain/EVM, DAG, transaction-manager,
+///   PBFT-chain, sortition, vote-manager, advance-period, pillar, or network
+///   work.
+/// - Storage apply failures are reported to the manager-owned cursor before the
+///   boundary is returned.
+/// - The caller should abort the finalization session if it stops using the
+///   returned boundary before completion.
+pub fn pbft_manager_runtime_begin_finalization_boundary(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationIntentPlan,
+    primary_stages: Vec<FfiPbftFinalizationStorageWriteStage>,
+    sync: bool,
+) -> anyhow::Result<FfiPbftManagerFinalizationBoundary> {
+    pbft_manager_runtime_begin_finalization_session(runtime, plan);
+    let current_step = pbft_manager_runtime_finalization_session_next(runtime);
+    if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+        || current_step.action != PbftFinalizationRuntimeAction::ApplyPrimaryStorage.as_u8()
+    {
+        return Ok(finalization_boundary_from_step(
+            runtime,
+            current_step,
+            "PBFT_FINALIZE_PRIMARY_STORAGE_ACTION_MISSING".to_string(),
+        ));
+    }
+
+    let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
+    let stages = primary_stages.into_iter().map(Into::into).collect();
+    let apply_result = apply_domain_pbft_finalization_storage_writes(
+        runtime.storage.as_ref(),
+        &write_set,
+        stages,
+        sync,
+    )?;
+    let accepted = apply_result.status.is_success();
+    let next_step = pbft_manager_runtime_finalization_session_report_action(
+        runtime,
+        FfiPbftFinalizationRuntimeActionReport {
+            cursor: current_step.cursor,
+            action: current_step.action,
+            success: accepted,
+            status: apply_result.status.as_u8(),
+            error_code: apply_result.error_code,
+        },
+    );
+    if !accepted {
+        return Ok(finalization_boundary_from_step(
+            runtime,
+            next_step,
+            "PBFT_FINALIZE_PRIMARY_STORAGE_REJECTED".to_string(),
+        ));
+    }
+
+    drain_finalization_boundary(runtime, plan)
+}
+
+/// Starts duplicate PBFT finalization resume and advances to the next external boundary.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns the finalization
+///   cursor and Rust storage.
+/// - `plan`: accepted finalization intent used for live-mutation validation.
+/// - `resume`: durable crash-window classification for the duplicate block.
+///
+/// Outputs:
+/// - Returns the next external action to replay, or completion when the
+///   manager-owned resume tail is fully drained.
+///
+/// Invariants and edge behavior:
+/// - Only manager-owned actions are drained in Rust; external replay remains
+///   explicit in C++.
+pub fn pbft_manager_runtime_begin_finalization_resume_boundary(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationIntentPlan,
+    resume: &FfiPbftFinalizationResumePlan,
+) -> anyhow::Result<FfiPbftManagerFinalizationBoundary> {
+    pbft_manager_runtime_begin_finalization_resume_session(runtime, resume);
+    drain_finalization_boundary(runtime, plan)
+}
+
+/// Reports one external live mutation and advances to the next boundary.
+///
+/// Inputs:
+/// - `runtime`: manager runtime that owns the finalization cursor.
+/// - `plan`: accepted finalization intent used to validate post-state facts.
+/// - `report`: external executor post-state facts for the current action.
+///
+/// Outputs:
+/// - Returns the next external action after Rust validates the report and drains
+///   any manager-owned actions that immediately follow it.
+///
+/// Invariants and edge behavior:
+/// - Validation failure is reported to the cursor and returned as a terminal
+///   boundary.
+/// - External side effects are never executed here.
+pub fn pbft_manager_runtime_report_finalization_live_mutation_boundary(
+    runtime: &mut BridgePbftManagerRuntime,
+    plan: &FfiPbftFinalizationIntentPlan,
+    report: FfiPbftFinalizationLiveMutationReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationBoundary> {
+    let next_step = pbft_manager_runtime_report_finalization_live_mutation(runtime, plan, report);
+    if next_step.status != PbftFinalizationRuntimeStatus::Active.as_u8() || !next_step.can_continue
+    {
+        return Ok(finalization_boundary_from_step(
+            runtime,
+            next_step,
+            String::new(),
+        ));
+    }
+    drain_finalization_boundary(runtime, plan)
+}
+
+/// Reports an externally executed PBFT finalization action failure.
+///
+/// Inputs:
+/// - `runtime`: manager runtime that owns the finalization cursor.
+/// - `action`: action that C++ attempted to execute.
+/// - `action_status`: stable executor status code.
+/// - `error_code`: stable error code for logs and tests.
+///
+/// Outputs:
+/// - Returns the terminal boundary after the failure is recorded.
+///
+/// Invariants and edge behavior:
+/// - The cursor is read inside Rust so C++ does not pass cursor indexes across
+///   the boundary.
+pub fn pbft_manager_runtime_report_finalization_failure_boundary(
+    runtime: &mut BridgePbftManagerRuntime,
+    action: u8,
+    action_status: u8,
+    error_code: String,
+) -> FfiPbftManagerFinalizationBoundary {
+    let current_step = pbft_manager_runtime_finalization_session_next(runtime);
+    if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+        || !current_step.has_action
+    {
+        return finalization_boundary_from_step(runtime, current_step, String::new());
+    }
+    let next_step = pbft_manager_runtime_finalization_session_report_action(
+        runtime,
+        FfiPbftFinalizationRuntimeActionReport {
+            cursor: current_step.cursor,
+            action,
+            success: false,
+            status: action_status,
+            error_code,
+        },
+    );
+    finalization_boundary_from_step(runtime, next_step, String::new())
 }
 
 /// Drains PBFT-manager-owned actions from the current finalization cursor.

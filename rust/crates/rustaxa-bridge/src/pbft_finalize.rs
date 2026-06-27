@@ -24,7 +24,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationPillarPreflightReport as FfiPbftFinalizationPillarPreflightReport,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
-    PbftFinalizationRuntimePlan as FfiPbftFinalizationRuntimePlan,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
@@ -39,7 +38,6 @@ use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
     plan_pbft_finalization_pillar_preflight as plan_domain_pbft_finalization_pillar_preflight,
-    plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_pillar_preflight as report_domain_pbft_finalization_pillar_preflight,
     PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftFinalizationAnchor,
     PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
@@ -200,25 +198,6 @@ pub fn report_pbft_finalization_pillar_preflight(
     report: FfiPbftFinalizationPillarPreflightReport,
 ) -> FfiPbftFinalizationPillarPreflightPlan {
     report_domain_pbft_finalization_pillar_preflight(&plan.into(), report.into()).into()
-}
-
-/// C++/Rust bridge entry for the ordered PBFT finalization runtime script.
-///
-/// Inputs:
-/// - `plan`: finalization intent returned by `plan_pbft_finalization_intent`.
-///
-/// Outputs:
-/// - Stable runtime action codes in the order the mixed shim executor must
-///   apply side effects.
-///
-/// Rejected plans return no actions. This keeps finalization candidate
-/// decisions, live runtime sequencing, and storage-apply status in separate
-/// bridge status spaces.
-pub fn plan_pbft_finalization_runtime(
-    plan: &FfiPbftFinalizationIntentPlan,
-) -> FfiPbftFinalizationRuntimePlan {
-    let domain_plan = PbftFinalizationPlan::from(plan);
-    plan_domain_pbft_finalization_runtime(&domain_plan).into()
 }
 
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
@@ -595,23 +574,6 @@ impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
     }
 }
 
-impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimePlan>
-    for FfiPbftFinalizationRuntimePlan
-{
-    fn from(value: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimePlan) -> Self {
-        Self {
-            finalize_block: value.finalize_block,
-            status: value.status.as_u8(),
-            actions: value
-                .actions
-                .into_iter()
-                .map(PbftFinalizationRuntimeAction::as_u8)
-                .collect(),
-            error_code: String::new(),
-        }
-    }
-}
-
 impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
     for FfiPbftFinalizationRuntimeSessionStep
 {
@@ -890,23 +852,6 @@ mod tests {
         assert!(accepted.accepted);
         assert_eq!(accepted.status, 0);
         assert!(accepted.error_code.is_empty());
-    }
-
-    #[test]
-    fn runtime_planner_maps_ordered_finalization_actions() {
-        let mut fact = fact();
-        fact.process_pillar_block_after_advance = true;
-        let plan = plan_pbft_finalization_intent(fact);
-
-        let runtime = plan_pbft_finalization_runtime(&plan);
-
-        assert!(runtime.finalize_block);
-        assert_eq!(runtime.status, PbftFinalizationStatus::Accepted.as_u8());
-        assert_eq!(
-            runtime.actions,
-            vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15]
-        );
-        assert!(runtime.error_code.is_empty());
     }
 
     #[test]
