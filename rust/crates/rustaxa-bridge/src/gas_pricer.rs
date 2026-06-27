@@ -73,15 +73,6 @@ impl BridgeGasPricer {
         Ok(())
     }
 
-    /// Restores finalized-block history directly from Rust storage for bridge tests.
-    ///
-    /// Production CXX callers restore history through `create_gas_pricer_from_storage`, keeping storage injection
-    /// construction-time-only.
-    #[cfg(test)]
-    pub fn gas_pricer_init_from_storage(&self, storage: &BridgeStorage) -> Result<()> {
-        self.lock()?.restore_from_storage(storage.0.as_ref())
-    }
-
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GasPriceOracle>> {
         let _storage_owner = &self.1;
         self.0
@@ -131,74 +122,78 @@ mod tests {
     }
 
     #[test]
-    fn bridge_init_from_storage_populates_percentile_history() {
+    fn bridge_create_from_storage_populates_percentile_history() {
         let storage = crate::storage::create_storage(
-            unique_storage_path("gas_pricer_init_from_storage_ok").as_str(),
+            unique_storage_path("gas_pricer_create_from_storage_ok").as_str(),
         )
         .unwrap();
         init_gas_pricer_storage(&storage, &[(2, &[9, 5]), (1, &[8])]).unwrap();
         seed_last_finalized_block(&storage, 2).unwrap();
 
-        let oracle = create_gas_pricer(GasPricerConfig {
-            percentile: 50,
-            minimum_price: be(1),
-            history_blocks: 10,
-            is_light_node: false,
-            blocks_gas_pricer: true,
-        })
+        let oracle = create_gas_pricer_from_storage(
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: be(1),
+                history_blocks: 10,
+                is_light_node: false,
+                blocks_gas_pricer: true,
+            },
+            &storage,
+        )
         .unwrap();
-
-        oracle.gas_pricer_init_from_storage(&storage).unwrap();
 
         assert_eq!(oracle.gas_pricer_bid().unwrap(), be(5));
     }
 
     #[test]
-    fn bridge_init_from_storage_light_node_stops_on_missing_period_data() {
+    fn bridge_create_from_storage_light_node_stops_on_missing_period_data() {
         let storage = crate::storage::create_storage(
-            unique_storage_path("gas_pricer_init_from_storage_light").as_str(),
+            unique_storage_path("gas_pricer_create_from_storage_light").as_str(),
         )
         .unwrap();
         init_gas_pricer_storage(&storage, &[(2, &[9])]).unwrap();
         seed_last_finalized_block(&storage, 3).unwrap();
 
-        let oracle = create_gas_pricer(GasPricerConfig {
-            percentile: 100,
-            minimum_price: be(7),
-            history_blocks: 10,
-            is_light_node: true,
-            blocks_gas_pricer: true,
-        })
+        let oracle = create_gas_pricer_from_storage(
+            GasPricerConfig {
+                percentile: 100,
+                minimum_price: be(7),
+                history_blocks: 10,
+                is_light_node: true,
+                blocks_gas_pricer: true,
+            },
+            &storage,
+        )
         .unwrap();
-
-        oracle.gas_pricer_init_from_storage(&storage).unwrap();
 
         // Period 3 is missing and light mode should stop initialization instead of erroring.
         assert_eq!(oracle.gas_pricer_bid().unwrap(), be(7));
     }
 
     #[test]
-    fn bridge_init_from_storage_full_node_fails_on_missing_period_data() {
+    fn bridge_create_from_storage_full_node_fails_on_missing_period_data() {
         let storage = crate::storage::create_storage(
-            unique_storage_path("gas_pricer_init_from_storage_full").as_str(),
+            unique_storage_path("gas_pricer_create_from_storage_full").as_str(),
         )
         .unwrap();
         init_gas_pricer_storage(&storage, &[(2, &[9])]).unwrap();
         seed_last_finalized_block(&storage, 3).unwrap();
 
-        let oracle = create_gas_pricer(GasPricerConfig {
-            percentile: 100,
-            minimum_price: be(1),
-            history_blocks: 10,
-            is_light_node: false,
-            blocks_gas_pricer: true,
-        })
-        .unwrap();
-
-        let err = oracle
-            .gas_pricer_init_from_storage(&storage)
-            .unwrap_err()
-            .to_string();
+        let err = match create_gas_pricer_from_storage(
+            GasPricerConfig {
+                percentile: 100,
+                minimum_price: be(1),
+                history_blocks: 10,
+                is_light_node: false,
+                blocks_gas_pricer: true,
+            },
+            &storage,
+        ) {
+            Ok(_) => {
+                panic!("expected missing period data to fail full-node gas-pricer restoration")
+            }
+            Err(err) => err.to_string(),
+        };
 
         assert!(err.contains("missing finalized transactions for block 3"));
     }

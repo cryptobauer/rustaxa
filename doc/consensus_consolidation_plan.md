@@ -228,6 +228,20 @@ Acceptance:
 - `rustaxa-bridge` storage query APIs exist only for C++ shims or compatibility tests.
 - `cargo test -p rustaxa-consensus`, `cargo test -p rustaxa-storage`, and `rust_storage_tests` pass.
 
+Implementation status:
+
+- Current audit confirms `rustaxa-consensus` has no `BridgeStorage`, `BridgeStorageBatch`, `rustBatchId`, or
+  `Bridge*StorageQueries` references.
+- Remaining storage query handles live in `rustaxa-bridge` compatibility modules, C++ storage/query shims, and bridge or
+  conformance tests. They are still valid compatibility debt until the corresponding C++ public facades move to native
+  Rust services.
+- Gas-pricer finalized-history restoration is construction-time-only through `create_gas_pricer_from_storage`; the
+  obsolete `gas_pricer_init_from_storage` storage injection helper has been deleted from the Rust bridge tests and
+  implementation.
+- Validation for the gas-pricer storage-injection cleanup:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge gas_pricer`
+
 ## Slice 4: Thin the Storage Shim to a Compatibility Shell
 
 Purpose: make the C++ `DbStorage` shim visibly legacy-facing and remove bridge batch usage from Rust-owned operations.
@@ -247,6 +261,22 @@ Acceptance:
 - Rust-mode consensus code does not assemble write batches through C++ `DbStorage` or public bridge-batch helpers.
 - Storage shim comments and guard exceptions name only external compatibility callers.
 - Storage conformance and targeted storage bridge tests pass.
+
+Implementation notes:
+
+- C++ review confirmed `create_storage_shim_batch` and `BridgeStorageBatch` are confined to `storage_shim` internals, and
+  `rustBatchId` no longer has code callsites.
+- Slice 4 is not complete: original consensus modules still call public `DbStorage::createWriteBatch()` /
+  `commitWriteBatch()` APIs, and several `storage_shim` single-write compatibility methods still call broad
+  `BridgeStorage` mutators directly.
+- Next bounded Slice 4 implementation target: convert those single-write compatibility methods to create a shim-owned
+  batch, reuse the existing typed `storage_shim_*` batch appenders, and commit immediately. That removes direct
+  `BridgeStorage` mutator use without changing the public `DbStorage` API.
+- Custom agents used for the current storage-boundary audit:
+  - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
+    that can be converted to typed batch appenders.
+  - `cpp-pro`: confirmed bridge batch use is currently storage-shim-local and mapped the remaining public `DbStorage`
+    batch callsites in original consensus modules.
 
 ## Slice 5: Retire Small Completed Consensus Shims
 
@@ -409,6 +439,8 @@ Implementation status:
   deletions.
 - `BridgeGasPricer` CXX exports have been narrowed: `gas_pricer_init_from_storage` is no longer exported because
   Rust-mode storage history restoration is owned by `create_gas_pricer_from_storage`.
+- The obsolete test-only `BridgeGasPricer::gas_pricer_init_from_storage` helper has also been removed; bridge tests now
+  exercise `create_gas_pricer_from_storage` directly.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

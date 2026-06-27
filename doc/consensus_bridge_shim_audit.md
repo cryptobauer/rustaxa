@@ -147,12 +147,14 @@ Current snapshot after Slice 5 period-data queue retirement:
 - Direct public query API construction from `rustStorage()` remains at `network/consensus_query.hpp`, which is the approved
   helper construction point after Slice 1. RPC/GraphQL and `plugin/light/src/light.cpp` route through that helper.
 - `BridgeStorage` remains in bridge storage/query/runtime constructors, storage shim, Rust bridge tests, and shim-owned
-  bootstrap points. Native `rustaxa-consensus` modules should not depend on `BridgeStorage`.
+  bootstrap points. Native `rustaxa-consensus` modules do not depend on `BridgeStorage`, `BridgeStorageBatch`, or
+  bridge-shaped storage query handles.
 - `BridgeStorageBatch` and `rustBatchId` remain storage-shim compatibility debt. They must not grow into new consensus
-  production routes.
+  production routes. `create_storage_shim_batch` is storage-shim-local, and `rustBatchId` no longer has code callsites.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
-  broad storage access through a second bridge call.
+  broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is
+  also deleted; bridge tests now cover the production constructor path directly.
 - `BridgePeriodDataQueue`, `period_data_queue_shim`, and `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` are retired. PBFT manager
   runtime owns period-data queue metadata through `pbft_manager_runtime_period_data_queue_*`; the C++ PBFT manager shim
   temporarily owns live `PeriodData`, vote, and peer sidecars until those payload models move to Rust.
