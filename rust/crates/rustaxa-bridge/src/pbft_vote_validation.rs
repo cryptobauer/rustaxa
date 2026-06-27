@@ -16,29 +16,9 @@ use crate::ffi::rustaxa_ffi::{
 use anyhow::Result;
 use rustaxa_consensus::pbft_thresholds::PbftTwoTPlusOneThresholdPlan;
 use rustaxa_consensus::pbft_vote_validation::{
-    inspect_canonical_pbft_vote, pbft_vote_sortition_threshold, plan_pbft_proposer_sortition,
-    PbftCanonicalVoteInspection, PbftCanonicalVoteValidation, PbftProposerSortitionFact,
+    inspect_canonical_pbft_vote, plan_pbft_proposer_sortition, PbftCanonicalVoteInspection,
+    PbftCanonicalVoteValidation, PbftProposerSortitionFact,
 };
-use rustaxa_consensus::verified_votes::PbftVoteType;
-
-/// Computes the PBFT sortition threshold from legacy-compatible scalar facts.
-///
-/// Inputs are plain integers so C++ shims can call this helper without
-/// materializing any Rust state. Unsupported vote-type values are returned as
-/// bridge errors.
-pub fn pbft_vote_sortition_threshold_for_bridge(
-    total_dpos_vote_count: u64,
-    vote_type: u8,
-    committee_size: u64,
-    number_of_proposers: u64,
-) -> Result<u64> {
-    pbft_vote_sortition_threshold(
-        total_dpos_vote_count,
-        PbftVoteType::try_from(vote_type)?,
-        committee_size,
-        number_of_proposers,
-    )
-}
 
 pub(crate) fn threshold_plan_to_ffi(
     plan: PbftTwoTPlusOneThresholdPlan,
@@ -164,18 +144,6 @@ const fn proposer_sortition_error_code(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bridge_exposes_threshold_helper() {
-        assert_eq!(
-            pbft_vote_sortition_threshold_for_bridge(100, 1, 50, 20).unwrap(),
-            20
-        );
-        assert_eq!(
-            pbft_vote_sortition_threshold_for_bridge(12, 3, 50, 20).unwrap(),
-            12
-        );
-    }
 
     #[test]
     fn bridge_screens_local_proposer_sortition() {

@@ -332,6 +332,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   bridge-only modules/DTOs no longer expose alternate CXX routes into the same Rust vote logic. Direct canonical
   inspection, vote generation, and payload conversion helpers remain live until their C++ shim callers are moved behind
   a facade.
+- `pbft_vote_sortition_threshold_for_bridge` is retired as a no-caller scalar helper. Native Rust consensus keeps the
+  threshold calculation internally, while C++ proposer screening continues through the live `pbft_proposer_sortition_plan`
+  boundary.
 - `BridgePbftManagerStateActionEffectSession` is retired. PBFT manager state-action effect cursors are now owned by the
   long-lived `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_state_action_effect_session`,
   `pbft_manager_runtime_state_action_effect_session_next`, and

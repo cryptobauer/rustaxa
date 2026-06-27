@@ -604,6 +604,9 @@ Implementation status:
   validation/admission/reward-vote materialization uses `BridgeVerifiedVotes`, and the bridge-only DTOs/modules that
   existed solely for the removed free functions are deleted. `pbft_inspect_canonical_vote`, vote payload conversion, and
   vote generation helpers remain because `vote_manager_shim` and `slashing_manager_shim` still call them directly.
+- The no-caller scalar threshold helper `pbft_vote_sortition_threshold_for_bridge` is also deleted from the CXX surface.
+  Native `rustaxa-consensus` keeps `pbft_vote_sortition_threshold` for validation, threshold planning, and vote
+  generation; live C++ proposer screening still uses `pbft_proposer_sortition_plan`.
 - `BridgeTransactionQueue` CXX exports have been narrowed to the live `transaction_queue_shim` facade methods. No-caller
   queue-only planning/hash-view exports and bridge wrapper methods are deleted; native `rustaxa-consensus` transaction
   queue tests keep planner coverage.

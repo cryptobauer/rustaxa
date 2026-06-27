@@ -5895,14 +5895,6 @@ pub mod rustaxa_ffi {
             request: PbftRewardVotesResetRequest,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
 
-        // PBFT vote validation planner
-
-        pub fn pbft_vote_sortition_threshold_for_bridge(
-            total_dpos_vote_count: u64,
-            vote_type: u8,
-            committee_size: u64,
-            number_of_proposers: u64,
-        ) -> Result<u64>;
         pub fn pbft_inspect_canonical_vote(vote_rlp: &[u8]) -> Result<PbftCanonicalVoteInspection>;
         pub fn pbft_generate_signed_vote(
             input: PbftVoteGenerationInput,
