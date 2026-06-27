@@ -216,6 +216,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `transaction_manager_runtime_insert_recovery_entries`. The live shim uses
   `transaction_manager_runtime_pack_begin_sharded`, gas-estimation cache state is verified through planner outputs, and
   recovery insertion is private Rust runtime behavior behind `transaction_manager_recover_nonfinalized_with_runtime`.
+- The bridge-test-only transaction-manager recovery loader exports and DTOs are deleted:
+  `transaction_manager_load_nonfinalized_recovery`, `transaction_manager_load_nonfinalized_recovery_inputs`,
+  `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput`. The only C++ recovery boundary is
+  now `transaction_manager_recover_nonfinalized_with_runtime`, which keeps storage scan, stale-row cleanup, payload
+  validation, and sidecar rebuild inside Rust-owned runtime code.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.

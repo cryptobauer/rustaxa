@@ -607,6 +607,11 @@ Implementation status:
   `transaction_manager_runtime_insert_recovery_entries` are deleted from the CXX surface. Live C++ transaction packing
   uses `transaction_manager_runtime_pack_begin_sharded`, gas-estimation cache behavior is observable through the planner
   result, and non-finalized recovery uses the Rust-owned `transaction_manager_recover_nonfinalized_with_runtime` command.
+- Transaction-manager non-finalized recovery loaders are no longer CXX exports:
+  `transaction_manager_load_nonfinalized_recovery`, `transaction_manager_load_nonfinalized_recovery_inputs`,
+  `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput` are deleted from the bridge
+  surface. C++ recovery uses the single high-level `transaction_manager_recover_nonfinalized_with_runtime` command while
+  Rust bridge tests exercise native recovery helpers directly.
 - `BridgeTransactionManagerSidecar` is deleted as a CXX handle. Its constructor, standalone sidecar methods, DAG-save
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.

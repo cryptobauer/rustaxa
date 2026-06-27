@@ -3636,16 +3636,6 @@ pub mod rustaxa_ffi {
         views: Vec<TransactionManagerTransactionView>,
     }
 
-    /// One non-finalized transaction recovery entry loaded from Rust storage.
-    ///
-    /// `finalized` identifies stale pending rows that must be removed from
-    /// non-finalized storage and must not be materialized into C++ live sidecars.
-    struct TransactionManagerRecoveryEntry {
-        hash: [u8; 32],
-        finalized: bool,
-        tx_rlp: Vec<u8>,
-    }
-
     /// One sidecar insertion payload for live non-finalized transaction state.
     struct TransactionManagerSidecarInsertInput {
         hash: [u8; 32],
@@ -3667,13 +3657,6 @@ pub mod rustaxa_ffi {
     struct TransactionManagerSidecarTransitionInput {
         period: u64,
         hashes: Vec<TransactionManagerSidecarHash>,
-    }
-
-    /// One recovery insertion payload for sidecar state rebuild.
-    struct TransactionManagerSidecarRecoveryInsertInput {
-        hash: [u8; 32],
-        finalized: bool,
-        trx_rlp: Vec<u8>,
     }
 
     /// Input transaction fact for runtime-owned DAG transaction persistence.
@@ -6109,14 +6092,6 @@ pub mod rustaxa_ffi {
             proposal_period: u64,
             requests: Vec<TransactionManagerStoredTransactionRequest>,
         ) -> Result<Vec<TransactionManagerStoredTransactionLookup>>;
-        /// Returns persisted non-finalized transaction payloads for TransactionManager recovery.
-        pub fn transaction_manager_load_nonfinalized_recovery(
-            storage: &BridgeStorage,
-        ) -> Result<Vec<TransactionManagerRecoveryEntry>>;
-        /// Returns Rust-validated sidecar recovery inputs for TransactionManager startup recovery.
-        pub fn transaction_manager_load_nonfinalized_recovery_inputs(
-            storage: &BridgeStorage,
-        ) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>>;
         /// Rebuilds runtime recovery sidecars from Rust-backed storage.
         pub fn transaction_manager_recover_nonfinalized_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,

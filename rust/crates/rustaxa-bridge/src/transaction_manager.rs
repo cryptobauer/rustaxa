@@ -23,10 +23,9 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
     TransactionManagerHashCommand, TransactionManagerInsertTransactionFact,
     TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
-    TransactionManagerPublicInsertResult, TransactionManagerRecoveryEntry,
-    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
-    TransactionManagerSidecarInsertInput, TransactionManagerSidecarLookupRequest,
-    TransactionManagerSidecarRecoveryInsertInput, TransactionManagerSidecarTransitionInput,
+    TransactionManagerPublicInsertResult, TransactionManagerRuntimeAdmissionOutcome,
+    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
+    TransactionManagerSidecarLookupRequest, TransactionManagerSidecarTransitionInput,
     TransactionManagerStoredTransactionLookup, TransactionManagerStoredTransactionRequest,
     TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
     TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
@@ -70,7 +69,8 @@ use rustaxa_consensus::transaction_queue::{
 use rustaxa_consensus::transaction_storage::{
     load_non_finalized_recovery_entries, load_stored_transactions,
     remove_non_finalized_transactions, save_non_finalized_transactions, save_transaction_count,
-    transaction_finalized, NonFinalizedTransactionStoragePayload, StoredTransactionLookupRequest,
+    transaction_finalized, NonFinalizedTransactionRecoveryEntry,
+    NonFinalizedTransactionStoragePayload, StoredTransactionLookupRequest,
     STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
     STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
 };
@@ -1416,49 +1416,15 @@ pub fn transaction_manager_verify_not_finalized_with_runtime(
     })
 }
 
-/// Returns all payloads currently persisted for non-finalized transaction recovery.
-///
-/// The returned list preserves storage iteration order, carries the DB key hash
-/// for invariant validation by C++, and flags any payloads that are stale by
-/// checking finalized-index membership in Rust. Stale finalized rows are removed
-/// from non-finalized storage in one Rust storage batch before returning.
-pub fn transaction_manager_load_nonfinalized_recovery(
-    storage: &BridgeStorage,
-) -> Result<Vec<TransactionManagerRecoveryEntry>> {
-    transaction_manager_load_nonfinalized_recovery_from_storage(&storage.0)
-}
-
 fn transaction_manager_load_nonfinalized_recovery_from_storage(
     storage: &Storage,
-) -> Result<Vec<TransactionManagerRecoveryEntry>> {
-    load_non_finalized_recovery_entries(storage)
-        .context("TM_NONFINALIZED_RECOVERY_STORAGE")?
-        .into_iter()
-        .map(|entry| {
-            Ok(TransactionManagerRecoveryEntry {
-                hash: entry.hash.0,
-                finalized: entry.finalized,
-                tx_rlp: entry.trx_rlp,
-            })
-        })
-        .collect()
-}
-
-/// Returns Rust-validated sidecar inputs for non-finalized transaction recovery.
-///
-/// Rust owns storage iteration, stale-finalized cleanup, canonical legacy RLP
-/// inspection, key-hash validation, and sender-presence validation before C++
-/// mutates live runtime sidecars. C++ only applies the returned inputs under the
-/// transaction mutex, so malformed survivor storage never reaches live state.
-pub fn transaction_manager_load_nonfinalized_recovery_inputs(
-    storage: &BridgeStorage,
-) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>> {
-    transaction_manager_load_nonfinalized_recovery_inputs_from_storage(&storage.0)
+) -> Result<Vec<NonFinalizedTransactionRecoveryEntry>> {
+    load_non_finalized_recovery_entries(storage).context("TM_NONFINALIZED_RECOVERY_STORAGE")
 }
 
 fn transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
     storage: &Storage,
-) -> Result<Vec<TransactionManagerSidecarRecoveryInsertInput>> {
+) -> Result<Vec<ConsensusTransactionManagerSidecarRecoveryEntry>> {
     let entries = transaction_manager_load_nonfinalized_recovery_from_storage(storage)?;
     let mut recovered = Vec::with_capacity(entries.len());
 
@@ -1467,10 +1433,10 @@ fn transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
             continue;
         }
 
-        let inspection = legacy_transaction_inspection_from_bytes(&entry.tx_rlp, 0)
+        let inspection = legacy_transaction_inspection_from_bytes(&entry.trx_rlp, 0)
             .context("TM_NONFINALIZED_RECOVERY_ENVELOPE_INSPECT")?;
         ensure!(
-            inspection.hash == entry.hash,
+            H256::from(inspection.hash) == entry.hash,
             "TM_NONFINALIZED_RECOVERY_HASH_MISMATCH"
         );
         ensure!(
@@ -1478,7 +1444,7 @@ fn transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
             "TM_NONFINALIZED_RECOVERY_SENDER_MISSING"
         );
 
-        recovered.push(TransactionManagerSidecarRecoveryInsertInput {
+        recovered.push(ConsensusTransactionManagerSidecarRecoveryEntry {
             hash: entry.hash,
             finalized: false,
             trx_rlp: inspection.tx_rlp,
@@ -2047,20 +2013,11 @@ impl BridgeTransactionManagerRuntime {
 
     fn insert_recovery_entries(
         &mut self,
-        entries: Vec<TransactionManagerSidecarRecoveryInsertInput>,
+        entries: Vec<ConsensusTransactionManagerSidecarRecoveryEntry>,
     ) -> Result<u64> {
         Ok(self
             .sidecar
-            .insert_recovery_entries(
-                entries
-                    .into_iter()
-                    .map(|entry| ConsensusTransactionManagerSidecarRecoveryEntry {
-                        hash: H256::from(entry.hash),
-                        finalized: entry.finalized,
-                        trx_rlp: entry.trx_rlp,
-                    })
-                    .collect(),
-            )
+            .insert_recovery_entries(entries)
             .context("TM_RUNTIME_RECOVERY_INSERT")? as u64)
     }
 
@@ -4089,13 +4046,13 @@ mod tests {
             .write(11, &period_data.out().as_ref().to_vec())
             .expect("period data should persist");
 
-        let out = transaction_manager_load_nonfinalized_recovery(&storage)
+        let out = transaction_manager_load_nonfinalized_recovery_from_storage(&storage.0)
             .expect("recovery payload lookup should inspect all non-finalized storage rows");
 
         assert_eq!(out.len(), 2);
         let mut by_hash = out
             .into_iter()
-            .map(|entry| (entry.hash[0], entry.finalized))
+            .map(|entry| (entry.hash.0[0], entry.finalized))
             .collect::<Vec<_>>();
         by_hash.sort_unstable();
         assert_eq!(by_hash, vec![(1u8, false), (2u8, true)]);
@@ -4132,11 +4089,11 @@ mod tests {
             .write(envelope.hash, &tx_rlp)
             .expect("non-finalized transaction should persist");
 
-        let inputs = transaction_manager_load_nonfinalized_recovery_inputs(&storage)
+        let inputs = transaction_manager_load_nonfinalized_recovery_inputs_from_storage(&storage.0)
             .expect("recovery inputs should validate live survivor envelopes");
 
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].hash, envelope.hash.0);
+        assert_eq!(inputs[0].hash, envelope.hash);
         assert!(!inputs[0].finalized);
         assert_eq!(inputs[0].trx_rlp, tx_rlp);
 
