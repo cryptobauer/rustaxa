@@ -2929,12 +2929,6 @@ pub mod rustaxa_ffi {
         selected_vote_count: u64,
     }
 
-    struct UniqueVoterCheckOutcome {
-        is_unique: bool,
-        conflict_found: bool,
-        conflicting_vote_hash: [u8; 32],
-    }
-
     struct UniqueVoterInsertOutcome {
         accepted: bool,
         conflict_found: bool,
@@ -3019,23 +3013,11 @@ pub mod rustaxa_ffi {
         step: u64,
     }
 
-    struct TwoTPlusOneVotesLookup {
-        found: bool,
-        block_hash: [u8; 32],
-        step: u64,
-        vote_hashes: Vec<DagHash>,
-    }
-
     struct TwoTPlusOneVotePayloadsLookup {
         found: bool,
         block_hash: [u8; 32],
         step: u64,
         votes: Vec<PbftVoteStorageRecord>,
-    }
-
-    struct NetworkTPlusOneStepLookup {
-        found: bool,
-        step: u64,
     }
 
     struct TwoTPlusOneSnapshotEntry {
@@ -6188,10 +6170,6 @@ pub mod rustaxa_ffi {
             canonical_vote_rlp: &[u8],
             validation_facts: PbftVoteValidationExternalFacts,
         ) -> Result<PbftVoteRuntimeValidationResult>;
-        pub fn verified_votes_check_unique_voter(
-            self: &BridgeVerifiedVotes,
-            vote: VerifiedVotePayload,
-        ) -> Result<UniqueVoterCheckOutcome>;
         pub fn verified_votes_insert_unique_voter(
             self: &mut BridgeVerifiedVotes,
             vote: VerifiedVotePayload,
@@ -6210,25 +6188,12 @@ pub mod rustaxa_ffi {
             total_weight: u64,
             two_t_plus_one_threshold: u64,
         ) -> Result<ThresholdDecisionOutcome>;
-        pub fn verified_votes_vote_in_verified_map(
-            self: &BridgeVerifiedVotes,
-            period: u64,
-            round: u64,
-            step: u64,
-            block_hash: &[u8; 32],
-            vote_hash: &[u8; 32],
-        ) -> bool;
         pub fn verified_votes_set_network_t_plus_one_step(
             self: &mut BridgeVerifiedVotes,
             period: u64,
             round: u64,
             step: u64,
         ) -> bool;
-        pub fn verified_votes_get_network_t_plus_one_step(
-            self: &BridgeVerifiedVotes,
-            period: u64,
-            round: u64,
-        ) -> NetworkTPlusOneStepLookup;
         pub fn verified_votes_determine_new_round(
             self: &BridgeVerifiedVotes,
             period: u64,
@@ -6248,12 +6213,6 @@ pub mod rustaxa_ffi {
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotedBlockLookup>;
-        pub fn verified_votes_get_two_t_plus_one_voted_block_votes(
-            self: &BridgeVerifiedVotes,
-            period: u64,
-            round: u64,
-            kind: u8,
-        ) -> Result<TwoTPlusOneVotesLookup>;
         pub fn verified_votes_get_two_t_plus_one_voted_block_payloads(
             self: &BridgeVerifiedVotes,
             period: u64,
@@ -6295,9 +6254,6 @@ pub mod rustaxa_ffi {
         pub fn verified_votes_snapshot_votes(
             self: &BridgeVerifiedVotes,
         ) -> Vec<VerifiedVotePayload>;
-        pub fn verified_votes_snapshot_weighted_payloads(
-            self: &BridgeVerifiedVotes,
-        ) -> Vec<PbftVoteStorageRecord>;
         pub fn verified_votes_weighted_payload(
             self: &BridgeVerifiedVotes,
             vote_hash: &[u8; 32],
@@ -6541,12 +6497,6 @@ pub mod rustaxa_ffi {
             self: &BridgeSortitionParamsManager,
             period: u64,
         ) -> Result<SortitionRuntimeParams>;
-        pub fn sortition_restore_finalized_period(
-            self: &mut BridgeSortitionParamsManager,
-            has_pivot: bool,
-            unique_transactions: u64,
-            total_dag_transaction_refs: u64,
-        ) -> Result<()>;
         pub fn sortition_record_finalized_period(
             self: &mut BridgeSortitionParamsManager,
             period: u64,

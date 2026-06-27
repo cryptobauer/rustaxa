@@ -1,6 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
-    AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, NetworkTPlusOneStepLookup,
-    PbftFinalizationHash, PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
+    AtomicVoteInsertOutcome, DagHash, DetermineNewRoundOutcome, PbftFinalizationHash,
+    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
     PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
@@ -10,10 +10,10 @@ use crate::ffi::rustaxa_ffi::{
     PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
     PbftVoteStorageRecord, PbftVoteValidationExternalFacts, RoundMarkerSnapshot,
     ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry,
-    TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup, TwoTPlusOneVotesLookup,
-    UniqueVoterCheckOutcome, UniqueVoterInsertOutcome, VerifiedStepVotesEntry,
-    VerifiedStepVotesLookup, VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome,
-    VerifiedVotePayload, VotedValueInsertOutcome,
+    TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup, UniqueVoterInsertOutcome,
+    VerifiedStepVotesEntry, VerifiedStepVotesLookup,
+    VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
+    VotedValueInsertOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeVerifiedVotes};
 use crate::pbft_finalize::apply_result_from_domain;
@@ -208,29 +208,7 @@ impl BridgeVerifiedVotes {
         })
     }
 
-    /// Checks unique-voter acceptance for `vote`.
-    ///
-    /// Compatibility/test helper only. Production Rust-mode vote-manager
-    /// mutation should enter through `verified_votes_admit_validated_vote` so
-    /// canonical validation, replay, retained payloads, threshold updates, and
-    /// executor intents stay in one runtime transition.
-    pub fn verified_votes_check_unique_voter(
-        &self,
-        vote: VerifiedVotePayload,
-    ) -> Result<UniqueVoterCheckOutcome, anyhow::Error> {
-        let vote = payload_to_vote(vote)?;
-        let outcome = self.runtime.verified_votes().check_unique_voter(&vote);
-        Ok(UniqueVoterCheckOutcome {
-            is_unique: outcome.is_unique,
-            conflict_found: outcome.conflicting_vote_hash.is_some(),
-            conflicting_vote_hash: outcome.conflicting_vote_hash.unwrap_or_default().into(),
-        })
-    }
-
     /// Inserts `vote` into unique-voter tracking.
-    ///
-    /// Compatibility/test helper only; see
-    /// `verified_votes_check_unique_voter` for production routing notes.
     pub fn verified_votes_insert_unique_voter(
         &mut self,
         vote: VerifiedVotePayload,
@@ -308,24 +286,6 @@ impl BridgeVerifiedVotes {
         Ok(outcome.into())
     }
 
-    /// Returns whether exact `(period, round, step, block_hash, vote_hash)` exists.
-    pub fn verified_votes_vote_in_verified_map(
-        &self,
-        period: u64,
-        round: u64,
-        step: u64,
-        block_hash: &[u8; 32],
-        vote_hash: &[u8; 32],
-    ) -> bool {
-        self.runtime.verified_votes().vote_in_verified_map(
-            period,
-            round,
-            step,
-            H256::from(*block_hash),
-            H256::from(*vote_hash),
-        )
-    }
-
     /// Sets network t+1 step marker for one round.
     pub fn verified_votes_set_network_t_plus_one_step(
         &mut self,
@@ -336,22 +296,6 @@ impl BridgeVerifiedVotes {
         self.runtime
             .verified_votes_mut()
             .set_network_t_plus_one_step(period, round, step)
-    }
-
-    /// Returns network t+1 step marker for one round.
-    pub fn verified_votes_get_network_t_plus_one_step(
-        &self,
-        period: u64,
-        round: u64,
-    ) -> NetworkTPlusOneStepLookup {
-        self.runtime
-            .verified_votes()
-            .network_t_plus_one_step(period, round)
-            .map(|step| NetworkTPlusOneStepLookup { found: true, step })
-            .unwrap_or(NetworkTPlusOneStepLookup {
-                found: false,
-                step: 0,
-            })
     }
 
     /// Determines next round from Rust-owned next-vote 2t+1 mappings.
@@ -413,43 +357,6 @@ impl BridgeVerifiedVotes {
                 block_hash: [0u8; 32],
                 step: 0,
             }))
-    }
-
-    /// Gets vote hashes for one mapped 2t+1 voted block.
-    pub fn verified_votes_get_two_t_plus_one_voted_block_votes(
-        &self,
-        period: u64,
-        round: u64,
-        kind: u8,
-    ) -> Result<TwoTPlusOneVotesLookup, anyhow::Error> {
-        let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
-        let voted = self
-            .runtime
-            .verified_votes()
-            .get_two_t_plus_one_voted_block(period, round, kind);
-        let Some(voted) = voted else {
-            return Ok(TwoTPlusOneVotesLookup {
-                found: false,
-                block_hash: [0u8; 32],
-                step: 0,
-                vote_hashes: Vec::new(),
-            });
-        };
-
-        let vote_hashes = self
-            .runtime
-            .verified_votes()
-            .get_two_t_plus_one_voted_block_vote_hashes(period, round, kind)
-            .into_iter()
-            .map(|hash| DagHash { hash: hash.into() })
-            .collect();
-
-        Ok(TwoTPlusOneVotesLookup {
-            found: true,
-            block_hash: voted.hash.into(),
-            step: voted.step,
-            vote_hashes,
-        })
     }
 
     /// Gets retained weighted vote payloads for one mapped 2t+1 voted block.
@@ -736,19 +643,6 @@ impl BridgeVerifiedVotes {
         self.runtime
             .verified_votes()
             .snapshot_votes()
-            .into_iter()
-            .map(Into::into)
-            .collect()
-    }
-
-    /// Returns all retained weighted PBFT vote payloads in deterministic order.
-    ///
-    /// This is the temporary materialization boundary for legacy C++ APIs that
-    /// still return `PbftVote` objects. The Rust admission runtime remains the
-    /// authoritative owner of these bytes.
-    pub fn verified_votes_snapshot_weighted_payloads(&self) -> Vec<PbftVoteStorageRecord> {
-        self.runtime
-            .weighted_payloads()
             .into_iter()
             .map(Into::into)
             .collect()
@@ -1670,14 +1564,10 @@ mod tests {
         assert!(first_result.accepted);
         assert!(first_result.has_storage_vote);
 
-        let snapshot = votes.verified_votes_snapshot_weighted_payloads();
-        assert_eq!(snapshot.len(), 1);
-        assert_eq!(snapshot[0].hash, first_hash);
-        assert!(!snapshot[0].vote_rlp.is_empty());
-
         let lookup = votes.verified_votes_weighted_payload(&first_hash);
         assert!(lookup.found);
         assert_eq!(lookup.vote.hash, first_hash);
+        assert!(!lookup.vote.vote_rlp.is_empty());
 
         let second_result = votes
             .verified_votes_admit_validated_vote(
@@ -1730,12 +1620,12 @@ mod tests {
             .expect("second generated vote is admitted");
 
         let lookup = votes
-            .verified_votes_get_two_t_plus_one_voted_block_votes(
+            .verified_votes_get_two_t_plus_one_voted_block_payloads(
                 12,
                 2,
                 TwoTPlusOneVotedBlockType::CertVotedBlock.into(),
             )
-            .expect("2t+1 vote-hash lookup succeeds");
+            .expect("2t+1 retained payload lookup succeeds");
         assert!(lookup.found);
 
         let result = votes.verified_votes_build_optimized_votes_bundle_egress(
@@ -1746,9 +1636,9 @@ mod tests {
                 round: 2,
                 step: 3,
                 vote_hashes: lookup
-                    .vote_hashes
+                    .votes
                     .into_iter()
-                    .map(|hash| PbftFinalizationHash { hash: hash.hash })
+                    .map(|vote| PbftFinalizationHash { hash: vote.hash })
                     .collect(),
             },
         );

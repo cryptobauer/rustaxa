@@ -163,22 +163,6 @@ impl BridgeSortitionParamsManager {
         Ok(self.manager.params_for_period_from_storage(period)?.into())
     }
 
-    /// Restores a finalized period while rebuilding runtime state during startup.
-    pub fn restore_finalized_period(
-        &mut self,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-    ) -> Result<()> {
-        let dag_efficiency = self.efficiency_from_counts(
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-        )?;
-        self.manager.restore_finalized_period(dag_efficiency)?;
-        Ok(())
-    }
-
     /// Records a finalized period and returns any emitted threshold change.
     ///
     /// `unique_transactions` is the count of finalized unique transactions and
@@ -366,16 +350,6 @@ impl BridgeSortitionParamsManager {
         period: u64,
     ) -> Result<rustaxa_ffi::SortitionRuntimeParams> {
         self.params_for_period_from_storage(period)
-    }
-
-    /// CXX-exported method restoring a finalized period sample.
-    pub fn sortition_restore_finalized_period(
-        &mut self,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-    ) -> Result<()> {
-        self.restore_finalized_period(has_pivot, unique_transactions, total_dag_transaction_refs)
     }
 
     /// CXX-exported method recording a finalized period sample.

@@ -221,6 +221,12 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ callers use the storage-restoring PBFT
   chain constructor, slashing executor-report API, and pillar-vote payload lookup API.
+- No-caller verified-vote and sortition CXX exports have also been deleted:
+  `verified_votes_check_unique_voter`, `verified_votes_vote_in_verified_map`,
+  `verified_votes_get_network_t_plus_one_step`, `verified_votes_get_two_t_plus_one_voted_block_votes`,
+  `verified_votes_snapshot_weighted_payloads`, and `sortition_restore_finalized_period`. C++ verified-vote callers use
+  insertion/admission, retained payload lookups, round-marker snapshots, and explicit sortition finalized-period
+  record/persist methods instead.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for
   both pending-storage-row deletion and sidecar removal. Rust commits the native storage delete batch first and then
   mutates live sidecar state, matching the legacy C++ behavior without exposing public `DbStorage` batch usage in

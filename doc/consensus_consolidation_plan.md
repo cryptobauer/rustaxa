@@ -613,6 +613,12 @@ Implementation status:
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use
   `create_pbft_chain_from_storage`, `slashing_report_double_voting_proof_submission`, and
   `pillar_votes_get_verified_vote_payloads`.
+- Additional no-caller verified-vote and sortition CXX exports are deleted:
+  `verified_votes_check_unique_voter`, `verified_votes_vote_in_verified_map`,
+  `verified_votes_get_network_t_plus_one_step`, `verified_votes_get_two_t_plus_one_voted_block_votes`,
+  `verified_votes_snapshot_weighted_payloads`, and `sortition_restore_finalized_period`. Live C++ verified-vote paths
+  use admission, payload lookup, retained-payload 2t+1 lookup, round-marker snapshots, and explicit sortition
+  record/persist APIs instead.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
