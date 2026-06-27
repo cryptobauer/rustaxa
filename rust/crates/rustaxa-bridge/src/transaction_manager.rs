@@ -21,15 +21,14 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
     TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
     TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
-    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
-    TransactionManagerSidecarInsertInput, TransactionManagerSidecarLookupRequest,
-    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
-    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
-    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
-    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
-    TransactionPackEstimateOutcome, TransactionPackSelectedTransaction,
-    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
-    TransactionPackSessionStep,
+    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerSidecarInsertInput,
+    TransactionManagerSidecarLookupRequest, TransactionManagerTransactionView,
+    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
+    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
+    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
+    TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
+    TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
+    TransactionPackSessionEstimateInput, TransactionPackSessionStep,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
     TransactionQueueInsertOutcome, TransactionQueueProposableAccountFact,
@@ -75,6 +74,11 @@ use rustaxa_storage::Storage;
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+
+struct TransactionManagerRuntimeQueueCleanupPlan {
+    non_proposable_expired: TransactionQueuePurgePlan,
+    finalized_account_purged: TransactionQueuePurgePlan,
+}
 
 #[derive(Debug)]
 struct TransactionManagerStoredTransactionRequest {
@@ -372,6 +376,13 @@ fn append_queue_cleanup_to_finalized_status_command_report(
     report: &mut TransactionManagerFinalizedStatusCommandReport,
     cleanup: TransactionManagerRuntimeQueueCleanupPlan,
 ) {
+    report.queue_erased.extend(
+        cleanup
+            .non_proposable_expired
+            .removed_hashes
+            .into_iter()
+            .map(|entry| hash_command(entry.hash)),
+    );
     report.finalized_account_purged.extend(
         cleanup
             .finalized_account_purged
@@ -2104,7 +2115,7 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// Applies Rust-owned queue cleanup using proposal-account nonce facts.
-    pub fn transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
+    fn transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
         &mut self,
         apply_block_finalized: bool,
         block_number: u64,

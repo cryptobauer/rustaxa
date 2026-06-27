@@ -603,16 +603,6 @@ pub mod rustaxa_ffi {
         sender: [u8; 20],
     }
 
-    /// TransactionManager runtime queue cleanup outcome.
-    ///
-    /// `non_proposable_expired` reports non-proposable entries expired by
-    /// finalized block height. `finalized_account_purged` reports proposable
-    /// entries removed from C++ supplied FinalChain account nonce facts.
-    struct TransactionManagerRuntimeQueueCleanupPlan {
-        non_proposable_expired: TransactionQueuePurgePlan,
-        finalized_account_purged: TransactionQueuePurgePlan,
-    }
-
     /// Result of accepting packet bytes at the Rust consensus ingress boundary.
     struct NetworkIngressReceipt {
         accepted: bool,
@@ -5384,12 +5374,6 @@ pub mod rustaxa_ffi {
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
-        pub fn transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
-            self: &mut BridgeTransactionManagerRuntime,
-            apply_block_finalized: bool,
-            block_number: u64,
-            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-        ) -> Result<TransactionManagerRuntimeQueueCleanupPlan>;
         /// Applies DAG transaction persistence and returns a typed command report.
         pub fn save_transactions_from_dag_block_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,

@@ -665,6 +665,7 @@ Implementation status:
   `transaction_manager_verify_not_finalized_with_runtime_and_final_chain` are deleted from the bridge surface. Live C++
   admission uses account-nonce facts emitted from proposable queue senders, DAG transaction persistence uses the
   runtime-owned command report, and finalized-status cleanup enters through the high-level runtime command.
+  The queue cleanup helper is now private to `transaction_manager.rs`, and its bridge-only CXX DTO is deleted.
 - DAG manager bridge-test-only sync selection helpers are no longer CXX exports:
   `dag_manager_runtime_non_finalized_sync_snapshot`, `dag_manager_runtime_select_non_finalized_hashes`, and the
   `DagManagerRuntimeSyncSnapshot` DTO. Live C++ uses `dag_manager_runtime_non_finalized_sync_payload` for

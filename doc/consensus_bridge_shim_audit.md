@@ -235,6 +235,8 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `transaction_manager_verify_not_finalized_with_runtime_and_final_chain`. Live C++ uses FinalChain-backed fact inputs on
   the high-level runtime commands, runtime-owned DAG-save command reports, and the finalized-status command; the remaining
   Rust helpers are module-local behavior coverage rather than exported compatibility API.
+  The queue cleanup helper now remains only as a private Rust bridge method used by
+  `update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts`.
 - DAG manager CXX sync-selection scaffolding is deleted from the bridge surface:
   `dag_manager_runtime_non_finalized_sync_snapshot`, `dag_manager_runtime_select_non_finalized_hashes`, and
   `DagManagerRuntimeSyncSnapshot`. Live C++ DAG sync materialization uses
