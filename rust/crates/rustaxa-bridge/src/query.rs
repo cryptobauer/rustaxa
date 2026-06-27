@@ -529,6 +529,40 @@ mod tests {
         encode_optimized_pillar_votes_bundle_rlp, PillarBlock, PillarVote, ValidatorVoteCountChange,
     };
 
+    #[allow(clippy::too_many_arguments)]
+    fn seed_final_chain_conformance_lookup_rows(
+        storage: &BridgeStorage,
+        meta_key: u32,
+        meta_value: Vec<u8>,
+        block_number: u64,
+        block_hash: H256,
+        block_header_rlp: Vec<u8>,
+        receipt_hash: H256,
+        receipt_rlp: Vec<u8>,
+        blooms_chunk: H256,
+        blooms_rlp: Vec<u8>,
+        receipt_period: u64,
+        receipts_rlp: Vec<u8>,
+    ) {
+        storage
+            .0
+            .final_chain()
+            .write_conformance_lookup_rows(
+                meta_key,
+                &meta_value,
+                block_number,
+                block_hash,
+                &block_header_rlp,
+                receipt_hash,
+                &receipt_rlp,
+                blooms_chunk,
+                &blooms_rlp,
+                receipt_period,
+                &receipts_rlp,
+            )
+            .expect("final-chain conformance rows should seed");
+    }
+
     fn period_data_rlp(pbft_block_rlp: &[u8]) -> Vec<u8> {
         let mut stream = RlpStream::new_list(5);
         stream.append_raw(pbft_block_rlp, 1);
@@ -841,40 +875,34 @@ mod tests {
             .period()
             .write(15, &period_data_rlp(&pbft_block_rlp))
             .unwrap();
-        storage
-            .seed_final_chain_conformance_lookup_rows(
-                1,
-                15u64.to_le_bytes().to_vec(),
-                15,
-                &block_hash.0,
-                stored_header_rlp(),
-                &H256::from_low_u64_be(99).0,
-                vec![],
-                &rustaxa_storage::final_chain_log_bloom_chunk_id(1, 0)
-                    .unwrap()
-                    .0,
-                rustaxa_storage::encode_final_chain_log_bloom_chunk(&root_chunk),
-                15,
-                vec![],
-            )
-            .unwrap();
-        storage
-            .seed_final_chain_conformance_lookup_rows(
-                1,
-                15u64.to_le_bytes().to_vec(),
-                15,
-                &block_hash.0,
-                stored_header_rlp(),
-                &H256::from_low_u64_be(99).0,
-                vec![],
-                &rustaxa_storage::final_chain_log_bloom_chunk_id(0, 0)
-                    .unwrap()
-                    .0,
-                rustaxa_storage::encode_final_chain_log_bloom_chunk(&leaf_chunk),
-                15,
-                vec![],
-            )
-            .unwrap();
+        seed_final_chain_conformance_lookup_rows(
+            &storage,
+            1,
+            15u64.to_le_bytes().to_vec(),
+            15,
+            block_hash,
+            stored_header_rlp(),
+            H256::from_low_u64_be(99),
+            vec![],
+            rustaxa_storage::final_chain_log_bloom_chunk_id(1, 0).unwrap(),
+            rustaxa_storage::encode_final_chain_log_bloom_chunk(&root_chunk),
+            15,
+            vec![],
+        );
+        seed_final_chain_conformance_lookup_rows(
+            &storage,
+            1,
+            15u64.to_le_bytes().to_vec(),
+            15,
+            block_hash,
+            stored_header_rlp(),
+            H256::from_low_u64_be(99),
+            vec![],
+            rustaxa_storage::final_chain_log_bloom_chunk_id(0, 0).unwrap(),
+            rustaxa_storage::encode_final_chain_log_bloom_chunk(&leaf_chunk),
+            15,
+            vec![],
+        );
 
         let view = api.consensus_query_final_chain_block_by_number(15).unwrap();
         assert!(view.found);
@@ -1429,21 +1457,20 @@ mod tests {
                 &period_data_with_transactions_rlp(&[first_rlp.clone(), second_rlp.clone()]),
             )
             .unwrap();
-        storage
-            .seed_final_chain_conformance_lookup_rows(
-                0,
-                b"meta".to_vec(),
-                12,
-                &block_hash.0,
-                vec![0xC0],
-                &[0; 32],
-                vec![0xC0],
-                &[0; 32],
-                vec![0xC0],
-                12,
-                receipt_list_rlp(&[]),
-            )
-            .unwrap();
+        seed_final_chain_conformance_lookup_rows(
+            &storage,
+            0,
+            b"meta".to_vec(),
+            12,
+            block_hash,
+            vec![0xC0],
+            H256::zero(),
+            vec![0xC0],
+            H256::zero(),
+            vec![0xC0],
+            12,
+            receipt_list_rlp(&[]),
+        );
 
         let by_number = api
             .consensus_query_transaction_by_block_number_and_index(12, 1)
@@ -1530,21 +1557,20 @@ mod tests {
                 &period_data_with_transactions_rlp(std::slice::from_ref(&trx_rlp)),
             )
             .unwrap();
-        storage
-            .seed_final_chain_conformance_lookup_rows(
-                0,
-                b"meta".to_vec(),
-                12,
-                &block_hash.0,
-                vec![0xC0],
-                &trx_hash.0,
-                receipt_rlp.clone(),
-                &[0; 32],
-                vec![0xC0],
-                12,
-                receipt_list_rlp(std::slice::from_ref(&receipt_rlp)),
-            )
-            .unwrap();
+        seed_final_chain_conformance_lookup_rows(
+            &storage,
+            0,
+            b"meta".to_vec(),
+            12,
+            block_hash,
+            vec![0xC0],
+            trx_hash,
+            receipt_rlp.clone(),
+            H256::zero(),
+            vec![0xC0],
+            12,
+            receipt_list_rlp(std::slice::from_ref(&receipt_rlp)),
+        );
 
         let view = api
             .consensus_query_transaction_receipt_by_hash(&trx_hash.0)

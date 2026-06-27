@@ -197,6 +197,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeStorage::save_non_finalized_transactions` is also deleted. Older transaction-manager bridge paths now call the
   native `rustaxa-consensus` transaction storage helper directly to persist accepted non-finalized transaction payloads
   and the manager-owned `TrxCount` in a single Rust storage batch.
+- `BridgeStorage::seed_final_chain_conformance_lookup_rows` is deleted. It had no production C++ callsites; Rust bridge
+  query fixtures that still need exact FinalChain lookup rows seed them through native `rustaxa-storage`
+  `FinalChainStore::write_conformance_lookup_rows` test setup.
 - `BridgeTransactionQueue` CXX exports are narrowed to the methods used by `transaction_queue_shim`. The no-caller
   queue-only planning/hash-view exports `transaction_queue_erase_plan`, `transaction_queue_ordered_hashes`,
   `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and

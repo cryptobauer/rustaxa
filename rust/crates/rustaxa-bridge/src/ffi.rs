@@ -5967,20 +5967,6 @@ pub mod rustaxa_ffi {
         /// Typed by-period receipts lookup.
         pub fn get_block_receipt(self: &BridgePeriodStorageQueries, period: u64)
             -> Result<Vec<u8>>;
-        pub fn seed_final_chain_conformance_lookup_rows(
-            self: &BridgeStorage,
-            meta_key: u32,
-            meta_value: Vec<u8>,
-            block_number: u64,
-            block_hash: &[u8; 32],
-            block_header_rlp: Vec<u8>,
-            receipt_hash: &[u8; 32],
-            receipt_rlp: Vec<u8>,
-            blooms_chunk: &[u8; 32],
-            blooms_rlp: Vec<u8>,
-            receipt_period: u64,
-            receipts_rlp: Vec<u8>,
-        ) -> Result<()>;
         pub fn get_genesis_hash(self: &BridgeMetadataStorageQueries) -> Result<Vec<u8>>;
         pub fn get_last_sortition_params(
             self: &BridgeMetadataStorageQueries,

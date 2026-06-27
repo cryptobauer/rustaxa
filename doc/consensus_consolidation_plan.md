@@ -580,6 +580,10 @@ Implementation status:
 - `BridgeStorage::save_non_finalized_transactions` is also deleted. Older transaction-manager bridge paths now call the
   native `rustaxa-consensus` transaction storage helper directly, matching the runtime commit path and preserving the
   atomic accepted-transaction RLP plus `TrxCount` write group without a broad `BridgeStorage` mutator.
+- `BridgeStorage::seed_final_chain_conformance_lookup_rows` is deleted from the CXX bridge surface. A code-mapper audit
+  identified it as an orphan export, and the remaining Rust bridge query fixtures now seed FinalChain lookup rows through
+  native `rustaxa-storage` `FinalChainStore::write_conformance_lookup_rows` test setup instead of a broad storage bridge
+  mutator.
 - The unused CXX `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` exports are deleted. Their wrapper
   modules only protected bridge-shaped test scaffolding; production C++ had no callsites, and native
   `rustaxa-consensus` vote pipeline/admission tests now own the behavior coverage.
@@ -767,6 +771,13 @@ Implementation status:
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_manager_runtime_lookup_transaction_views_with_final_chain_marks_old_finalized`
   - `cmake --build /build --target final_chain_test rust_consensus_tests --parallel 12`
   - `/build/bin/final_chain_test --gtest_filter='FinalChainTest.*' --gtest_print_time=1`
+  Validation for this FinalChain conformance seed export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge query::tests::bridge_consensus_query_api_reads_public_block_view`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge query::tests::bridge_consensus_query_api_reads_indexed_transaction_view`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge query::tests::bridge_consensus_query_api_reads_transaction_receipt`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
   Validation for this CXX export shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
