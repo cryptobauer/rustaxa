@@ -825,6 +825,10 @@ Implementation status:
   `verified_votes_snapshot_weighted_payloads`, and `sortition_restore_finalized_period`. Live C++ verified-vote paths
   use admission, payload lookup, retained-payload 2t+1 lookup, round-marker snapshots, and explicit sortition
   record/persist APIs instead.
+- `BridgePillarChainStorage::pillar_chain_storage_block_data_rlp` is deleted from the CXX bridge surface. Rust-mode
+  Taraxa RPC pillar block-data reads use `BridgeConsensusQueryApi::consensus_query_pillar_block_data_by_period`, while
+  pillar/storage shims retain only the narrower current/latest block, own-vote, finalized-block, and period-data storage
+  methods they call.
 - The standalone broad `apply_rewards_stats_storage_writes` CXX export is deleted. Rewards-stat storage writes now enter
   through either `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` with runtime-owned storage or
   the dedicated storage-shim batch appender.

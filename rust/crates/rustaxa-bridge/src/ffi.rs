@@ -5676,10 +5676,6 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_block_data_rlp(
-            self: &BridgePillarChainStorage,
-            period: u64,
-        ) -> Result<Vec<u8>>;
 
         // Consensus sortition
 

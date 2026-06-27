@@ -312,6 +312,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `verified_votes_snapshot_weighted_payloads`, and `sortition_restore_finalized_period`. C++ verified-vote callers use
   insertion/admission, retained payload lookups, round-marker snapshots, and explicit sortition finalized-period
   record/persist methods instead.
+- `BridgePillarChainStorage::pillar_chain_storage_block_data_rlp` is deleted from the CXX surface. Rust-mode Taraxa RPC
+  pillar block-data reads use `BridgeConsensusQueryApi::consensus_query_pillar_block_data_by_period`, and
+  pillar/storage shims only require current/latest block, own-vote, finalized-block, and period-data storage methods.
 - The no-caller broad `apply_rewards_stats_storage_writes` CXX export is deleted. Live rewards-stat persistence uses the
   runtime-owned `rewards_stats_runtime_apply_storage_writes` method or the dedicated storage-shim batch appender.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for

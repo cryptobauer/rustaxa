@@ -18,9 +18,8 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
 use crate::ffi::{BridgePillarChainStorage, BridgeStorage};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ethereum_types::{H160, H256};
-use rlp::Rlp;
 use rustaxa_consensus::{
     load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
     load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
@@ -41,9 +40,6 @@ use rustaxa_consensus::{
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
-use rustaxa_types::pillar::RawPillarBlockData;
-
-const PILLAR_VOTES_POS_IN_PERIOD_DATA: usize = 4;
 
 /// Creates a typed pillar-chain storage handle from the generic CXX storage
 /// facade.
@@ -107,53 +103,6 @@ impl BridgePillarChainStorage {
     /// block is stored for that period.
     pub fn pillar_chain_storage_load_block(&self, period: u64) -> Result<Vec<u8>> {
         Ok(self.storage.pillar().rlp(period)?.unwrap_or_default())
-    }
-
-    /// Returns canonical `PillarBlockData` RLP for RPC/query materialization.
-    ///
-    /// Inputs:
-    /// - `period`: pillar block period requested by the caller.
-    ///
-    /// Outputs:
-    /// - Empty bytes when either the pillar block or the following period's
-    ///   finalized pillar-vote bundle is absent.
-    /// - Otherwise `[pillar_block_rlp, optimized_pillar_votes_bundle_rlp]`
-    ///   encoded with the compatibility shape used by C++ `PillarBlockData`.
-    ///
-    /// Invariants and edge behavior:
-    /// - Reads go directly through the typed pillar storage handle; no broad
-    ///   `BridgeStorage` query method participates after handle construction.
-    /// - Vote payloads are preserved as canonical bytes and decoded only by the
-    ///   RPC materialization boundary.
-    pub fn pillar_chain_storage_block_data_rlp(&self, period: u64) -> Result<Vec<u8>> {
-        let Some(pillar_block_rlp) = self.storage.pillar().rlp(period)? else {
-            return Ok(Vec::new());
-        };
-        let period_data = self
-            .storage
-            .period()
-            .data_raw(period + 1)
-            .context("PILLAR_BLOCK_DATA_PERIOD_DATA")?;
-        if period_data.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let period_rlp = Rlp::new(&period_data);
-        if period_rlp.item_count()? <= PILLAR_VOTES_POS_IN_PERIOD_DATA {
-            return Ok(Vec::new());
-        }
-        let votes = period_rlp
-            .at(PILLAR_VOTES_POS_IN_PERIOD_DATA)
-            .context("PILLAR_BLOCK_DATA_VOTES")?;
-        if votes.item_count()? == 0 {
-            return Ok(Vec::new());
-        }
-
-        RawPillarBlockData {
-            pillar_block_rlp,
-            pillar_votes_bundle_rlp: votes.as_raw().to_vec(),
-        }
-        .encode_rlp()
     }
 }
 
@@ -363,16 +312,6 @@ mod tests {
         H256::from_low_u64_be(value).into()
     }
 
-    fn period_data_with_pillar_votes_rlp(votes_bundle_rlp: &[u8]) -> Vec<u8> {
-        let mut period_data = rlp::RlpStream::new_list(5);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(votes_bundle_rlp, 1);
-        period_data.out().to_vec()
-    }
-
     fn vote_count(address: u8, vote_count: u64) -> FfiPillarValidatorVoteCount {
         FfiPillarValidatorVoteCount {
             address: addr(address),
@@ -566,45 +505,6 @@ mod tests {
                     .expect("latest pillar block should read"),
                 vec![0xC1, 0x03],
             );
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_pillar_block_data_query_reads_raw_components_from_typed_storage() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_block_data");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let pillar_storage = create_pillar_chain_storage(&storage);
-
-            assert!(pillar_storage
-                .pillar_chain_storage_block_data_rlp(10)
-                .expect("missing query should succeed")
-                .is_empty());
-
-            let pillar_block_rlp = vec![0xC1, 0xA1];
-            let mut votes_bundle = rlp::RlpStream::new_list(1);
-            votes_bundle.append(&vec![0xB0]);
-            let votes_bundle_rlp = votes_bundle.out().to_vec();
-
-            pillar_storage
-                .pillar_chain_storage_apply_finalized_block(10, pillar_block_rlp.clone())
-                .expect("pillar block should persist");
-            storage
-                .0
-                .period()
-                .write(11, &period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
-                .expect("period data should persist");
-
-            let encoded = pillar_storage
-                .pillar_chain_storage_block_data_rlp(10)
-                .expect("query should succeed");
-            let decoded = RawPillarBlockData::decode_rlp(&encoded).expect("wrapper should decode");
-            assert_eq!(decoded.pillar_block_rlp, pillar_block_rlp);
-            assert_eq!(decoded.pillar_votes_bundle_rlp, votes_bundle_rlp);
         }
 
         let _ = fs::remove_dir_all(temp_dir);
