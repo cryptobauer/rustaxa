@@ -11,10 +11,11 @@
 #include "final_chain/data.hpp"
 #include "logger/logger.hpp"
 #include "pillar_chain/pillar_block.hpp"
-#include "pillar_chain/pillar_votes.hpp"
+#include "rustaxa-bridge/ffi.rs.h"
 
 namespace rustaxa {
 struct BridgePillarChainStorage;
+struct BridgePillarVotes;
 }
 
 namespace taraxa {
@@ -147,7 +148,7 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const std::shared_ptr<final_chain::FinalChain>& final_chain,
                                                     const std::shared_ptr<PillarBlock>& current_pillar_block,
-                                                    const PillarVotes& pillar_votes);
+                                                    const ::rust::Box<rustaxa::BridgePillarVotes>& pillar_votes);
 
 /**
  * Prepared insertion facts for one Rust-inspected pillar vote.
@@ -689,7 +690,7 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> current_pillar_block_;
   std::vector<state_api::ValidatorVoteCount> current_pillar_block_vote_counts_;
 
-  PillarVotes pillar_votes_;
+  ::rust::Box<rustaxa::BridgePillarVotes> pillar_votes_;
 
   mutable std::shared_mutex mutex_;
 

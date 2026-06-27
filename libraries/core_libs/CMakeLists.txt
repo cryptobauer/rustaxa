@@ -357,25 +357,12 @@ if(RUSTAXA_ENABLE_PILLAR_VOTES)
     endif()
 
     # In Rust pillar-votes mode, inject a header overlay that remaps legacy
-    # PillarVotes to PillarVotesOld and exposes a standalone PillarVotes shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC
-                             ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_votes_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_votes_shim/src/pillar_votes_shim.cpp)
-
-    # In Rust pillar-votes mode, inject a header overlay that remaps legacy
     # PillarChainManager to PillarChainManagerOld and exposes a standalone
     # PillarChainManager shim facade.
     target_include_directories(core_libs BEFORE PUBLIC
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/include)
     target_sources(core_libs PRIVATE
                   ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/src/pillar_chain_manager_shim.cpp)
-
-    # Compile the legacy implementation as PillarVotesOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pillar_chain/pillar_votes.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "PillarVotes=PillarVotesOld"
-    )
 
     # Compile the legacy implementation as PillarChainManagerOld.
     set_source_files_properties(

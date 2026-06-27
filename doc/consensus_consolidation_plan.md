@@ -350,7 +350,7 @@ Candidate order:
 
 1. `period_data_queue_shim`
 2. `verified_votes_shim`
-3. `pillar_votes_shim`
+3. `pillar_votes_shim` (retired in this slice)
 4. `transaction_queue_shim`
 5. `gas_pricer_shim`
 6. `rewards_stats_shim`
@@ -371,6 +371,10 @@ Implementation notes:
   materializes vote state exclusively from Rust-retained weighted payloads for conflict resolution, snapshot rebuilds, and
   threshold-weighted vote aggregation. `live_votes_` storage was deleted from production flow, and missing payloads now
   fail fast rather than degrade into compatibility paths.
+- `pillar_votes_shim` is retired. C++ now routes pillar vote indexing and planning through
+  `BridgePillarVotes` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
+  `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and
+  `pillar_votes_shim_test.cpp` was removed.
 - The standalone `BridgePeriodDataQueue` CXX handle, `create_period_data_queue` constructor, `period_data_queue_shim`
   overlay, `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` CMake/Makefile flag, and bridge/shim tests for the retired facade were
   deleted.

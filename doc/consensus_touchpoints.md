@@ -814,7 +814,6 @@ shimmed toward Rust, or can reasonably continue moving into Rust as part of the 
    - `libraries/core_libs/consensus/include/pillar_chain/`
    - `libraries/core_libs/consensus/src/pillar_chain/`
    - `libraries/core_libs/consensus/shims/pillar_chain_manager_shim/`
-   - `libraries/core_libs/consensus/shims/pillar_votes_shim/`
    - Internal for PBFT sync validation, pillar-vote inspection, vote aggregation, pillar-block planning,
      and Rust-owned deterministic relevance checks.
    - Network gossip, signing execution, and some FinalChain/state facts remain boundary work.
