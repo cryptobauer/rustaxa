@@ -34,19 +34,6 @@ pub fn create_pbft_chain(
     }))
 }
 
-/// Creates a Rust PBFT chain state model from a C++-parsed head payload and
-/// binds it to a shared Rust storage handle for block lookup/materialization.
-pub fn create_pbft_chain_with_storage(
-    storage: &BridgeStorage,
-    head: PbftChainHeadPayload,
-) -> Result<Box<BridgePbftChain>, anyhow::Error> {
-    Ok(Box::new(BridgePbftChain {
-        state: PbftChain::new(head.into())?,
-        storage: Some(storage.0.clone()),
-        initialized_default: false,
-    }))
-}
-
 /// Creates a Rust PBFT chain state model directly from native Rust storage.
 ///
 /// The bridge is only a DTO adapter: storage recovery, legacy head parsing,
@@ -57,7 +44,7 @@ pub fn create_pbft_chain_from_storage(
 ) -> Result<Box<BridgePbftChain>, anyhow::Error> {
     let restored = domain_restore_pbft_chain_from_storage(storage.0.as_ref())?;
     Ok(Box::new(BridgePbftChain {
-        state: PbftChain::new(restored.head.into())?,
+        state: PbftChain::new(restored.head)?,
         storage: Some(storage.0.clone()),
         initialized_default: restored.initialized_default,
     }))
@@ -402,18 +389,7 @@ mod tests {
             .unwrap();
         storage.0.period().write_pbft_period(block_hash, 1).unwrap();
 
-        let chain = create_pbft_chain_with_storage(
-            &storage,
-            PbftChainHead {
-                head_hash: H256::zero(),
-                size: 1,
-                non_empty_size: 1,
-                last_pbft_block_hash: block_hash,
-                last_non_null_pbft_dag_anchor_hash: hash(9),
-            }
-            .into(),
-        )
-        .unwrap();
+        let chain = create_pbft_chain_from_storage(&storage).unwrap();
         let exists = chain.pbft_chain_block_exists(&block_hash.into()).unwrap();
         let loaded = chain.pbft_chain_block_rlp(&block_hash.into()).unwrap();
         let missing = chain.pbft_chain_block_rlp(&hash(999).into()).unwrap();

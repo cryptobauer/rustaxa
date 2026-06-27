@@ -2713,12 +2713,6 @@ pub mod rustaxa_ffi {
         block_weight: u64,
     }
 
-    /// Lightweight reference to a Rust-selected pillar vote.
-    struct PillarVoteRef {
-        vote_hash: [u8; 32],
-        weight: u64,
-    }
-
     /// Rust-retained pillar vote payload selected for C++ edge materialization.
     struct PillarVoteRecord {
         vote_hash: [u8; 32],
@@ -2731,14 +2725,6 @@ pub mod rustaxa_ffi {
     struct PillarVoteBundleAcceptedVote {
         vote_hash: [u8; 32],
         weight: u64,
-    }
-
-    /// Lookup result for one pillar block, optionally threshold-filtered.
-    struct PillarVotesLookup {
-        threshold_met: bool,
-        block_weight: u64,
-        selected_weight: u64,
-        votes: Vec<PillarVoteRef>,
     }
 
     /// Lookup result with Rust-retained vote payloads for edge materialization.
@@ -5303,10 +5289,6 @@ pub mod rustaxa_ffi {
         type BridgePbftChain;
 
         pub fn create_pbft_chain(head: PbftChainHeadPayload) -> Result<Box<BridgePbftChain>>;
-        pub fn create_pbft_chain_with_storage(
-            storage: &BridgeStorage,
-            head: PbftChainHeadPayload,
-        ) -> Result<Box<BridgePbftChain>>;
         pub fn create_pbft_chain_from_storage(
             storage: &BridgeStorage,
         ) -> Result<Box<BridgePbftChain>>;
@@ -5894,10 +5876,6 @@ pub mod rustaxa_ffi {
             self: &BridgeSlashingProofPlanner,
             input: DoubleVotingProofInput,
         ) -> Result<DoubleVotingProofPlan>;
-        pub fn slashing_mark_double_voting_proof_submission(
-            self: &BridgeSlashingProofPlanner,
-            proof_hash: &[u8; 32],
-        ) -> Result<bool>;
         pub fn slashing_report_double_voting_proof_submission(
             self: &BridgeSlashingProofPlanner,
             report: DoubleVotingProofSubmissionReport,
@@ -6462,12 +6440,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgePillarVotes,
             vote: PillarVotePayload,
         ) -> Result<PillarVoteInsertOutcome>;
-        pub fn pillar_votes_get_verified_votes(
-            self: &BridgePillarVotes,
-            period: u64,
-            block_hash: &[u8; 32],
-            above_threshold: bool,
-        ) -> PillarVotesLookup;
         pub fn pillar_votes_get_verified_vote_payloads(
             self: &BridgePillarVotes,
             period: u64,
@@ -6475,7 +6447,6 @@ pub mod rustaxa_ffi {
             above_threshold: bool,
         ) -> PillarVotesPayloadLookup;
         pub fn pillar_votes_cleanup_votes_by_period(self: &mut BridgePillarVotes, min_period: u64);
-        pub fn pillar_votes_snapshot_refs(self: &BridgePillarVotes) -> Vec<PillarVoteRef>;
 
         pub fn plan_pillar_vote_bundle(
             facts: Vec<PillarVoteBundleFact>,

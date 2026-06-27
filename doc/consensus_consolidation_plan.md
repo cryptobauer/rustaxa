@@ -608,6 +608,11 @@ Implementation status:
 - `BridgeTransactionManagerAdmissionExecution` is deleted as a CXX handle. The unused explicit execute/commit DAG-save
   script and bridge-only test are gone; `save_transactions_from_dag_block_with_runtime` preserves storage-first ordering
   inside the runtime-owned method.
+- Additional no-caller CXX exports are deleted after callsite audit showed they were bridge-test scaffolding only:
+  `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
+  `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use
+  `create_pbft_chain_from_storage`, `slashing_report_double_voting_proof_submission`, and
+  `pillar_votes_get_verified_vote_payloads`.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also

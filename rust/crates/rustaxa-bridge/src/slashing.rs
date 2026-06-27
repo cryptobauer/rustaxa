@@ -41,19 +41,6 @@ impl BridgeSlashingProofPlanner {
         Ok(self.lock()?.plan_double_voting_proof(input.into()).into())
     }
 
-    /// Marks a proof hash as submitted if not already in the duplicate cache.
-    ///
-    /// `proof_hash` comes from the plan payload and must be the same 32-byte hash
-    /// used in duplicate protection.
-    pub fn slashing_mark_double_voting_proof_submission(
-        &self,
-        proof_hash: &[u8; 32],
-    ) -> Result<bool> {
-        Ok(self
-            .lock()?
-            .mark_double_voting_proof_submission(H256::from(*proof_hash)))
-    }
-
     /// Applies a typed transaction executor report to Rust duplicate protection.
     pub fn slashing_report_double_voting_proof_submission(
         &self,
@@ -275,15 +262,20 @@ mod tests {
     }
 
     #[test]
-    fn bridges_marks_submission_once() {
+    fn bridge_report_marks_submission_once() {
         let planner = create_slashing_proof_planner(true).unwrap();
         let plan = planner
             .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
             .unwrap();
 
-        assert!(planner
-            .slashing_mark_double_voting_proof_submission(&plan.proof_hash)
-            .unwrap());
+        let submitted = planner
+            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
+                proof_hash: plan.proof_hash,
+                transaction_inserted: true,
+            })
+            .unwrap();
+        assert!(submitted.submitted);
+        assert!(submitted.mark_inserted);
         assert_eq!(
             planner
                 .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
@@ -291,9 +283,21 @@ mod tests {
                 .status,
             double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::DuplicateProof),
         );
-        assert!(!planner
-            .slashing_mark_double_voting_proof_submission(&plan.proof_hash)
-            .unwrap());
+
+        let duplicate = planner
+            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
+                proof_hash: plan.proof_hash,
+                transaction_inserted: true,
+            })
+            .unwrap();
+        assert_eq!(
+            duplicate.status,
+            double_voting_proof_submission_status_code(
+                DoubleVotingProofSubmissionStatus::DuplicateProof
+            )
+        );
+        assert!(!duplicate.submitted);
+        assert!(!duplicate.mark_inserted);
     }
 
     #[test]

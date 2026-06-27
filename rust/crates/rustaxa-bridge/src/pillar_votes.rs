@@ -14,9 +14,9 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteBundleAcceptedVote, PillarVoteBundleFact as FfiPillarVoteBundleFact,
     PillarVoteBundlePlan as PillarVoteBundlePlanOutput, PillarVoteIdentityPayload,
     PillarVoteInsertOutcome, PillarVoteInspection, PillarVotePayload, PillarVoteRecord,
-    PillarVoteRef, PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
+    PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteUniqueOutcome,
-    PillarVotesLookup, PillarVotesPayloadLookup,
+    PillarVotesPayloadLookup,
 };
 use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
@@ -77,22 +77,6 @@ impl BridgePillarVotes {
         Ok(self.0.add_verified_vote(vote)?.into())
     }
 
-    /// Looks up one pillar block's votes for threshold or non-threshold views.
-    ///
-    /// With `above_threshold = false`, all votes are returned in vote-hash order.
-    /// With `above_threshold = true`, the minimal deterministic weighted prefix is
-    /// returned only when cumulative weight reaches the period threshold.
-    pub fn pillar_votes_get_verified_votes(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-        above_threshold: bool,
-    ) -> PillarVotesLookup {
-        self.0
-            .get_verified_votes(period, H256::from(*block_hash), above_threshold)
-            .into()
-    }
-
     /// Looks up Rust-retained pillar vote payloads for C++ edge materialization.
     ///
     /// This keeps deterministic selection in Rust while avoiding dependency on
@@ -123,15 +107,6 @@ impl BridgePillarVotes {
                 .0
                 .is_unique_vote_identity(identity_payload_to_consensus(vote)),
         })
-    }
-
-    /// Returns all stored vote refs for C++ shim sidecar pruning.
-    pub fn pillar_votes_snapshot_refs(&self) -> Vec<PillarVoteRef> {
-        self.0
-            .snapshot_votes()
-            .into_iter()
-            .map(PillarVoteRef::from)
-            .collect()
     }
 }
 
@@ -256,32 +231,12 @@ impl From<ConsensusPillarVoteInsertOutcome> for PillarVoteInsertOutcome {
     }
 }
 
-impl From<rustaxa_consensus::VerifiedPillarVote> for PillarVoteRef {
-    fn from(value: rustaxa_consensus::VerifiedPillarVote) -> Self {
-        Self {
-            vote_hash: value.vote_hash.into(),
-            weight: value.weight,
-        }
-    }
-}
-
 impl From<rustaxa_consensus::VerifiedPillarVote> for PillarVoteRecord {
     fn from(value: rustaxa_consensus::VerifiedPillarVote) -> Self {
         Self {
             vote_hash: value.vote_hash.into(),
             weight: value.weight,
             vote_rlp: value.vote.encode_rlp(),
-        }
-    }
-}
-
-impl From<rustaxa_consensus::PillarVotesLookup> for PillarVotesLookup {
-    fn from(value: rustaxa_consensus::PillarVotesLookup) -> Self {
-        Self {
-            threshold_met: value.threshold_met,
-            block_weight: value.block_weight,
-            selected_weight: value.selected_weight,
-            votes: value.votes.into_iter().map(PillarVoteRef::from).collect(),
         }
     }
 }
@@ -504,7 +459,7 @@ mod tests {
         assert!(!duplicate.conflict_found);
         assert_eq!(duplicate.block_weight, 6);
 
-        let lookup = votes.pillar_votes_get_verified_votes(11, &first.block_hash, false);
+        let lookup = votes.pillar_votes_get_verified_vote_payloads(11, &first.block_hash, false);
         assert_eq!(lookup.votes.len(), 1);
         assert_eq!(lookup.votes[0].vote_hash, first.vote_hash);
     }
@@ -556,14 +511,6 @@ mod tests {
             .pillar_votes_insert_vote(clone_payload(&high))
             .unwrap();
 
-        let lookup = votes.pillar_votes_get_verified_votes(13, &high.block_hash, true);
-        assert!(lookup.threshold_met);
-        assert_eq!(lookup.block_weight, 8);
-        assert_eq!(lookup.selected_weight, 7);
-        assert_eq!(lookup.votes.len(), 2);
-        assert_eq!(lookup.votes[0].vote_hash, high.vote_hash);
-        assert_eq!(lookup.votes[1].vote_hash, mid.vote_hash);
-
         let payload_lookup =
             votes.pillar_votes_get_verified_vote_payloads(13, &high.block_hash, true);
         assert!(payload_lookup.threshold_met);
@@ -592,7 +539,7 @@ mod tests {
             .pillar_votes_insert_vote(clone_payload(&second))
             .unwrap();
 
-        let lookup = votes.pillar_votes_get_verified_votes(14, &first.block_hash, true);
+        let lookup = votes.pillar_votes_get_verified_vote_payloads(14, &first.block_hash, true);
         assert!(!lookup.threshold_met);
         assert_eq!(lookup.block_weight, 9);
         assert_eq!(lookup.selected_weight, 0);
@@ -626,14 +573,13 @@ mod tests {
         assert!(votes
             .pillar_votes_is_unique_vote(vote(22, 20, 23, 0xE3, 1))
             .is_ok());
-        assert_eq!(
-            votes
-                .pillar_votes_snapshot_refs()
-                .into_iter()
-                .map(|vote| vote.weight)
-                .collect::<Vec<_>>(),
-            vec![1]
+        let retained = votes.pillar_votes_get_verified_vote_payloads(
+            22,
+            &vote(22, 20, 22, 0xE2, 1).block_hash,
+            false,
         );
+        assert_eq!(retained.votes.len(), 1);
+        assert_eq!(retained.votes[0].weight, 1);
     }
 
     #[test]
