@@ -1,108 +1,47 @@
-//! CXX bridge wrappers for deterministic PBFT vote-progress planning.
+//! Rust-only adapters for deterministic PBFT vote-progress planning.
 //!
-//! The bridge keeps the Rust consensus planner side-effect-free while exposing
-//! operation-specific payloads for the C++ `VoteManager` shim. C++ supplies
-//! compact vote facts and, after applying the authoritative verified-vote
-//! mutation, feeds the flattened mutation report back into this module. The
-//! returned execution plan names the side effects this route may execute:
-//! peer-known marking, proposed-block sidecar routing, gossip, reward
-//! persistence, slashing submission, PBFT progress notification, and
-//! current-round 2t+1 vote-bundle persistence. C++ remains the executor for
-//! effects that touch peers, networking, storage handles, or live sidecars.
+//! The verified-votes facade keeps the Rust consensus planner side-effect-free
+//! while flattening operation-specific execution facts for the C++
+//! `VoteManager` shim. C++ remains the executor for effects that touch peers,
+//! networking, storage handles, or live sidecars.
 
-use crate::ffi::rustaxa_ffi::{
-    PbftVoteProgressContext as FfiPbftVoteProgressContext,
-    PbftVoteProgressExecutionPlan as FfiPbftVoteProgressExecutionPlan,
-    PbftVoteProgressFact as FfiPbftVoteProgressFact,
-    PbftVoteProgressPrecheckPlan as FfiPbftVoteProgressPrecheckPlan, VerifiedVoteAddOutcome,
-};
+use crate::ffi::rustaxa_ffi::PbftVoteProgressContext as FfiPbftVoteProgressContext;
+#[cfg(test)]
+use crate::ffi::rustaxa_ffi::VerifiedVoteAddOutcome;
+#[cfg(test)]
 use anyhow::Result;
-use ethereum_types::{H160, H256};
+#[cfg(test)]
+use ethereum_types::H256;
 use rustaxa_consensus::pbft_vote_progress::{
-    plan_pbft_vote_progress, PbftVoteIdentity, PbftVoteProgressContext, PbftVoteProgressFact,
-    PbftVoteProgressIntent, PbftVoteProgressPlan, PbftVoteProgressStatus,
+    PbftVoteProgressContext, PbftVoteProgressFact, PbftVoteProgressIntent, PbftVoteProgressPlan,
+    PbftVoteProgressStatus,
 };
+#[cfg(test)]
 use rustaxa_consensus::verified_votes::{
-    AddVerifiedVoteOutcome, PbftVoteType, ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome,
+    AddVerifiedVoteOutcome, ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome,
     TwoTPlusOneVotedBlockType,
 };
 
-/// Plans the pre-mutation portion of PBFT vote progress.
-///
-/// Inputs:
-/// - `fact`: compact identity, weight, ingress, and validation facts for one
-///   vote.
-/// - `context`: scalar current-period, current-round, threshold, sidecar, and
-///   slashing settings.
-///
-/// Outputs:
-/// - A terminal rejection/known plan or an instruction to execute exactly one
-///   verified-vote insertion mutation.
-///
-/// Edge behavior:
-/// - Malformed vote type values are returned as bridge errors.
-/// - Durable side effects are never requested before insertion succeeds.
-pub fn pbft_vote_progress_plan_precheck(
-    fact: FfiPbftVoteProgressFact,
-    context: FfiPbftVoteProgressContext,
-) -> Result<FfiPbftVoteProgressPrecheckPlan> {
-    let fact = fact_to_domain(fact)?;
-    let context = context_to_domain(&context);
-    let plan = plan_pbft_vote_progress(fact, context, None);
-
-    Ok(FfiPbftVoteProgressPrecheckPlan {
-        status: plan.status.as_u8(),
-        error_code: error_code(plan.status).to_owned(),
-        should_insert_verified_vote: plan.contains_intent(|intent| {
-            matches!(intent, PbftVoteProgressIntent::InsertVerifiedVote { .. })
-        }),
-        has_two_t_plus_one_threshold: context.two_t_plus_one_threshold.is_some(),
-        two_t_plus_one_threshold: context.two_t_plus_one_threshold.unwrap_or_default(),
-    })
-}
-
-/// Plans the post-mutation portion of PBFT vote progress.
-///
-/// Inputs:
-/// - `fact` and `context`: same values supplied to the precheck call.
-/// - `add_vote_outcome`: authoritative verified-vote insertion and threshold
-///   report produced by the Rust-backed verified-votes index.
-///
-/// Outputs:
-/// - A flat execution plan for the C++ shim's in-scope side effects.
-///
-/// Invariants:
-/// - The add report is trusted as the only state mutation result for this vote;
-///   this function does not repeat insertion or threshold checks.
-pub fn pbft_vote_progress_plan_after_add(
-    fact: FfiPbftVoteProgressFact,
-    context: FfiPbftVoteProgressContext,
-    add_vote_outcome: VerifiedVoteAddOutcome,
-) -> Result<FfiPbftVoteProgressExecutionPlan> {
-    let domain_fact = fact_to_domain(fact)?;
-    let domain_context = context_to_domain(&context);
-    let outcome = add_outcome_to_domain(add_vote_outcome)?;
-    let plan = plan_pbft_vote_progress(domain_fact, domain_context, Some(outcome));
-
-    Ok(execution_plan_to_ffi(plan, domain_fact, context))
-}
-
-pub(crate) fn fact_to_domain(value: FfiPbftVoteProgressFact) -> Result<PbftVoteProgressFact> {
-    Ok(PbftVoteProgressFact {
-        identity: PbftVoteIdentity {
-            vote_hash: H256::from(value.vote.vote_hash),
-            block_hash: H256::from(value.vote.block_hash),
-            period: value.vote.period,
-            round: value.vote.round,
-            step: value.vote.step,
-            voter: H160::from(value.vote.voter),
-        },
-        vote_type: PbftVoteType::try_from(value.vote.vote_type)?,
-        weight: value.vote.weight,
-        vote_already_known: value.vote_already_known,
-        carries_proposed_block: value.carries_proposed_block,
-        valid_stale_reward_vote: value.valid_stale_reward_vote,
-    })
+/// Rust-only flattened vote-progress execution facts for the verified-votes
+/// facade.
+pub(crate) struct PbftVoteProgressExecutionAdapter {
+    pub(crate) status: u8,
+    pub(crate) error_code: String,
+    pub(crate) accepted: bool,
+    pub(crate) mark_vote_known: bool,
+    pub(crate) mark_vote_known_hash: [u8; 32],
+    pub(crate) request_proposed_block_sidecar: bool,
+    pub(crate) proposed_block_sidecar_hash: [u8; 32],
+    pub(crate) proposed_block_sidecar_period: u64,
+    pub(crate) gossip_vote: bool,
+    pub(crate) gossip_vote_hash: [u8; 32],
+    pub(crate) report_slashing: bool,
+    pub(crate) persist_extra_reward_vote: bool,
+    pub(crate) network_t_plus_one_step_updated: bool,
+    pub(crate) drive_pbft_progress: bool,
+    pub(crate) progress_period: u64,
+    pub(crate) progress_round: u64,
+    pub(crate) persist_two_t_plus_one_votes: bool,
 }
 
 pub(crate) fn context_to_domain(value: &FfiPbftVoteProgressContext) -> PbftVoteProgressContext {
@@ -118,6 +57,7 @@ pub(crate) fn context_to_domain(value: &FfiPbftVoteProgressContext) -> PbftVoteP
     }
 }
 
+#[cfg(test)]
 pub(crate) fn add_outcome_to_domain(
     value: VerifiedVoteAddOutcome,
 ) -> Result<AddVerifiedVoteOutcome> {
@@ -158,7 +98,7 @@ pub(crate) fn execution_plan_to_ffi(
     plan: PbftVoteProgressPlan,
     _fact: PbftVoteProgressFact,
     _context: FfiPbftVoteProgressContext,
-) -> FfiPbftVoteProgressExecutionPlan {
+) -> PbftVoteProgressExecutionAdapter {
     let slashing = plan.intents.iter().find_map(|intent| match intent {
         PbftVoteProgressIntent::ReportSlashing {
             incoming_vote_hash,
@@ -200,7 +140,7 @@ pub(crate) fn execution_plan_to_ffi(
     });
     let threshold = plan.threshold_decision;
 
-    FfiPbftVoteProgressExecutionPlan {
+    PbftVoteProgressExecutionAdapter {
         status: plan.status.as_u8(),
         error_code: error_code(plan.status).to_owned(),
         accepted: matches!(
@@ -220,38 +160,13 @@ pub(crate) fn execution_plan_to_ffi(
         gossip_vote: gossip_vote.is_some(),
         gossip_vote_hash: gossip_vote.unwrap_or_default().into(),
         report_slashing: slashing.is_some(),
-        slashing_incoming_vote_hash: slashing
-            .map(|(incoming, _)| incoming)
-            .unwrap_or_default()
-            .into(),
-        slashing_conflicting_vote_hash: slashing
-            .map(|(_, conflicting)| conflicting)
-            .unwrap_or_default()
-            .into(),
         persist_extra_reward_vote: extra_reward_vote.is_some(),
-        extra_reward_vote_hash: extra_reward_vote.unwrap_or_default().into(),
         network_t_plus_one_step_updated: threshold
             .is_some_and(|decision| decision.network_t_plus_one_step_updated),
         drive_pbft_progress: drive_progress.is_some(),
         progress_period: drive_progress.map(|(period, _)| period).unwrap_or_default(),
         progress_round: drive_progress.map(|(_, round)| round).unwrap_or_default(),
         persist_two_t_plus_one_votes: two_t_plus_one.is_some(),
-        two_t_plus_one_kind: two_t_plus_one
-            .map(|(kind, _, _, _, _)| kind.into())
-            .unwrap_or_default(),
-        two_t_plus_one_period: two_t_plus_one
-            .map(|(_, period, _, _, _)| period)
-            .unwrap_or_default(),
-        two_t_plus_one_round: two_t_plus_one
-            .map(|(_, _, round, _, _)| round)
-            .unwrap_or_default(),
-        two_t_plus_one_step: two_t_plus_one
-            .map(|(_, _, _, step, _)| step)
-            .unwrap_or_default(),
-        two_t_plus_one_block_hash: two_t_plus_one
-            .map(|(_, _, _, _, block_hash)| block_hash)
-            .unwrap_or_default()
-            .into(),
     }
 }
 
@@ -279,8 +194,11 @@ pub(crate) const fn error_code(status: PbftVoteProgressStatus) -> &'static str {
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::VerifiedVotePayload;
+    use ethereum_types::H160;
+    use rustaxa_consensus::pbft_vote_progress::{plan_pbft_vote_progress, PbftVoteIdentity};
+    use rustaxa_consensus::verified_votes::PbftVoteType;
 
-    fn vote(weight: u64) -> VerifiedVotePayload {
+    fn vote_payload(weight: u64) -> VerifiedVotePayload {
         VerifiedVotePayload {
             vote_hash: [1; 32],
             block_hash: [2; 32],
@@ -293,9 +211,18 @@ mod tests {
         }
     }
 
-    fn fact(weight: u64) -> FfiPbftVoteProgressFact {
-        FfiPbftVoteProgressFact {
-            vote: vote(weight),
+    fn fact(weight: u64) -> PbftVoteProgressFact {
+        PbftVoteProgressFact {
+            identity: PbftVoteIdentity {
+                vote_hash: H256::from([1; 32]),
+                block_hash: H256::from([2; 32]),
+                voter: H160::from([3; 20]),
+                period: 10,
+                round: 1,
+                step: 2,
+            },
+            vote_type: PbftVoteType::Cert,
+            weight,
             vote_already_known: false,
             carries_proposed_block: true,
             valid_stale_reward_vote: false,
@@ -316,7 +243,7 @@ mod tests {
 
     fn add_outcome() -> VerifiedVoteAddOutcome {
         VerifiedVoteAddOutcome {
-            vote: vote(1),
+            vote: vote_payload(1),
             inserted: false,
             total_weight: 0,
             votes_count: 0,
@@ -336,23 +263,28 @@ mod tests {
     }
 
     #[test]
-    fn bridge_precheck_flattens_insert_decision_without_durable_effects() {
-        let plan = pbft_vote_progress_plan_precheck(fact(1), context()).unwrap();
+    fn planner_still_reports_insert_precheck_without_durable_effects() {
+        let ctx = context();
+        let plan = plan_pbft_vote_progress(fact(1), context_to_domain(&ctx), None);
 
-        assert_eq!(plan.status, 0);
-        assert!(plan.should_insert_verified_vote);
-        assert!(plan.has_two_t_plus_one_threshold);
-        assert_eq!(plan.two_t_plus_one_threshold, 2);
-        assert!(plan.error_code.is_empty());
+        assert_eq!(plan.status.as_u8(), 0);
+        assert!(plan.contains_intent(|intent| {
+            matches!(intent, PbftVoteProgressIntent::InsertVerifiedVote { .. })
+        }));
+        assert!(plan.threshold_decision.is_none());
     }
 
     #[test]
-    fn bridge_after_add_flattens_slashing_decision() {
+    fn facade_adapter_flattens_slashing_decision() {
         let mut outcome = add_outcome();
         outcome.conflict_found = true;
         outcome.conflicting_vote_hash = [9; 32];
 
-        let plan = pbft_vote_progress_plan_after_add(fact(1), context(), outcome).unwrap();
+        let domain_fact = fact(1);
+        let domain_context = context_to_domain(&context());
+        let outcome = add_outcome_to_domain(outcome).unwrap();
+        let plan = plan_pbft_vote_progress(domain_fact, domain_context, Some(outcome));
+        let plan = execution_plan_to_ffi(plan, domain_fact, context());
 
         assert_eq!(plan.status, 9);
         assert!(!plan.accepted);
@@ -360,13 +292,12 @@ mod tests {
         assert_eq!(plan.mark_vote_known_hash, [1; 32]);
         assert!(!plan.gossip_vote);
         assert!(plan.report_slashing);
-        assert_eq!(plan.slashing_conflicting_vote_hash, [9; 32]);
         assert!(!plan.persist_extra_reward_vote);
         assert!(!plan.persist_two_t_plus_one_votes);
     }
 
     #[test]
-    fn bridge_after_add_plans_current_round_two_t_plus_one_persistence() {
+    fn facade_adapter_plans_current_round_two_t_plus_one_persistence() {
         let mut outcome = add_outcome();
         outcome.inserted = true;
         outcome.total_weight = 2;
@@ -376,11 +307,16 @@ mod tests {
         outcome.network_t_plus_one_step_updated = true;
         outcome.two_t_plus_one_reached = true;
         outcome.two_t_plus_one_kind_found = true;
-        outcome.two_t_plus_one_kind = 0;
+        outcome.two_t_plus_one_kind = TwoTPlusOneVotedBlockType::NextVotedBlock.into();
         outcome.two_t_plus_one_round_found = true;
         outcome.two_t_plus_one_inserted = true;
 
-        let plan = pbft_vote_progress_plan_after_add(fact(1), context(), outcome).unwrap();
+        let mut domain_fact = fact(1);
+        domain_fact.vote_type = PbftVoteType::Next;
+        let domain_context = context_to_domain(&context());
+        let outcome = add_outcome_to_domain(outcome).unwrap();
+        let plan = plan_pbft_vote_progress(domain_fact, domain_context, Some(outcome));
+        let plan = execution_plan_to_ffi(plan, domain_fact, context());
 
         assert_eq!(plan.status, 2);
         assert!(plan.accepted);
@@ -390,25 +326,26 @@ mod tests {
         assert!(plan.drive_pbft_progress);
         assert!(plan.network_t_plus_one_step_updated);
         assert!(plan.persist_two_t_plus_one_votes);
-        assert_eq!(plan.two_t_plus_one_kind, 0);
     }
 
     #[test]
-    fn bridge_after_add_defers_reward_persistence_until_acceptance() {
+    fn facade_adapter_defers_reward_persistence_until_acceptance() {
         let mut stale_fact = fact(1);
-        stale_fact.vote.period = 9;
-        stale_fact.vote.vote_type = 3;
+        stale_fact.identity.period = 9;
+        stale_fact.vote_type = PbftVoteType::Next;
         stale_fact.valid_stale_reward_vote = true;
 
         let mut ctx = context();
         ctx.current_period = 10;
         ctx.max_future_period_delta = u64::MAX - ctx.current_period;
-        let precheck = pbft_vote_progress_plan_precheck(stale_fact, ctx).unwrap();
-        assert!(precheck.should_insert_verified_vote);
+        let precheck = plan_pbft_vote_progress(stale_fact, context_to_domain(&ctx), None);
+        assert!(precheck.contains_intent(|intent| {
+            matches!(intent, PbftVoteProgressIntent::InsertVerifiedVote { .. })
+        }));
 
         let mut stale_fact = fact(1);
-        stale_fact.vote.period = 9;
-        stale_fact.vote.vote_type = 3;
+        stale_fact.identity.period = 9;
+        stale_fact.vote_type = PbftVoteType::Next;
         stale_fact.valid_stale_reward_vote = true;
         let mut ctx = context();
         ctx.current_period = 10;
@@ -417,25 +354,25 @@ mod tests {
         accepted.inserted = true;
         accepted.total_weight = 1;
         accepted.votes_count = 1;
-        let plan = pbft_vote_progress_plan_after_add(stale_fact, ctx, accepted).unwrap();
+        let outcome = add_outcome_to_domain(accepted).unwrap();
+        let plan = plan_pbft_vote_progress(stale_fact, context_to_domain(&ctx), Some(outcome));
+        let plan = execution_plan_to_ffi(plan, stale_fact, ctx);
 
         assert!(plan.accepted);
         assert!(plan.gossip_vote);
         assert!(plan.persist_extra_reward_vote);
-        assert_eq!(plan.extra_reward_vote_hash, [1; 32]);
     }
 
     #[test]
-    fn bridge_precheck_flattens_missing_proposed_block_sidecar_request() {
+    fn facade_adapter_flattens_missing_proposed_block_sidecar_request() {
         let mut fact = fact(1);
-        fact.vote.vote_type = 1;
+        fact.vote_type = PbftVoteType::Propose;
         fact.carries_proposed_block = false;
         let mut context = context();
         context.require_proposed_block_sidecar = true;
 
-        let domain_fact = fact_to_domain(fact).unwrap();
-        let plan = plan_pbft_vote_progress(domain_fact, context_to_domain(&context), None);
-        let ffi = execution_plan_to_ffi(plan, domain_fact, context);
+        let plan = plan_pbft_vote_progress(fact, context_to_domain(&context), None);
+        let ffi = execution_plan_to_ffi(plan, fact, context);
 
         assert!(!ffi.accepted);
         assert!(!ffi.mark_vote_known);

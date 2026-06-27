@@ -5,13 +5,9 @@ use crate::network::*;
 use crate::pbft_chain::*;
 use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
-use crate::pbft_reward_votes::*;
 use crate::pbft_sync::*;
-use crate::pbft_vote_event::*;
 use crate::pbft_vote_generation::*;
-use crate::pbft_vote_ingress::*;
 use crate::pbft_vote_payload::*;
-use crate::pbft_vote_progress::*;
 use crate::pbft_vote_validation::*;
 use crate::pillar_chain::*;
 use crate::pillar_votes::*;
@@ -2186,19 +2182,6 @@ pub mod rustaxa_ffi {
         weight: u64,
     }
 
-    /// Compact facts for one PBFT vote-progress planning pass.
-    ///
-    /// The vote payload carries canonical consensus identity and weight facts;
-    /// booleans carry caller-supplied ingress or validation state. This payload
-    /// intentionally does not own packet bytes, live `PbftVote` objects, or
-    /// verified-vote state.
-    struct PbftVoteProgressFact {
-        vote: VerifiedVotePayload,
-        vote_already_known: bool,
-        carries_proposed_block: bool,
-        valid_stale_reward_vote: bool,
-    }
-
     /// Caller-supplied flags for deriving PBFT vote event facts from canonical bytes.
     struct PbftVoteEventFactFlags {
         vote_already_known: bool,
@@ -2253,32 +2236,6 @@ pub mod rustaxa_ffi {
         checking_step: u64,
     }
 
-    /// Compact PBFT vote event facts derived from canonical vote bytes.
-    ///
-    /// Status values:
-    /// - `0` - ready
-    /// - `1` - malformed RLP
-    /// - `2` - invalid signature
-    /// - `3` - invalid zero weight
-    /// - `4` - validation pending
-    /// - `5` - validation rejected
-    /// - `6` - accepted validation did not include a calculated weight
-    struct PbftVoteEventFact {
-        status: u8,
-        error_code: String,
-        has_progress_fact: bool,
-        progress_fact: PbftVoteProgressFact,
-    }
-
-    /// Validation-backed PBFT vote fact boundary result.
-    struct PbftVoteFactBoundaryResult {
-        status: u8,
-        error_code: String,
-        validation: PbftCanonicalVoteValidation,
-        has_progress_fact: bool,
-        progress_fact: PbftVoteProgressFact,
-    }
-
     /// Scalar context for one PBFT vote-progress planning pass.
     ///
     /// `has_two_t_plus_one_threshold` gates whether the threshold value should
@@ -2293,54 +2250,6 @@ pub mod rustaxa_ffi {
         two_t_plus_one_threshold: u64,
         require_proposed_block_sidecar: bool,
         slashing_enabled: bool,
-    }
-
-    /// Pre-mutation PBFT vote-progress decision for C++ executors.
-    ///
-    /// `status` matches `PbftVoteProgressStatus::as_u8()` in
-    /// `rustaxa-consensus`. A true `should_insert_verified_vote` means the shim
-    /// should execute exactly one verified-vote insertion mutation, then call
-    /// `pbft_vote_progress_plan_after_add`.
-    struct PbftVoteProgressPrecheckPlan {
-        status: u8,
-        error_code: String,
-        should_insert_verified_vote: bool,
-        has_two_t_plus_one_threshold: bool,
-        two_t_plus_one_threshold: u64,
-    }
-
-    /// Post-mutation PBFT vote-progress execution decision for C++ executors.
-    ///
-    /// This is intentionally operation-specific for `VoteManager::addVerifiedVote`:
-    /// Rust owns the protocol decision, while C++ remains the executor for
-    /// peer-known marks, proposed-block sidecar handling, gossip, storage,
-    /// slashing submission, and PBFT progress dispatch.
-    struct PbftVoteProgressExecutionPlan {
-        status: u8,
-        error_code: String,
-        accepted: bool,
-        mark_vote_known: bool,
-        mark_vote_known_hash: [u8; 32],
-        request_proposed_block_sidecar: bool,
-        proposed_block_sidecar_hash: [u8; 32],
-        proposed_block_sidecar_period: u64,
-        gossip_vote: bool,
-        gossip_vote_hash: [u8; 32],
-        report_slashing: bool,
-        slashing_incoming_vote_hash: [u8; 32],
-        slashing_conflicting_vote_hash: [u8; 32],
-        persist_extra_reward_vote: bool,
-        extra_reward_vote_hash: [u8; 32],
-        network_t_plus_one_step_updated: bool,
-        drive_pbft_progress: bool,
-        progress_period: u64,
-        progress_round: u64,
-        persist_two_t_plus_one_votes: bool,
-        two_t_plus_one_kind: u8,
-        two_t_plus_one_period: u64,
-        two_t_plus_one_round: u64,
-        two_t_plus_one_step: u64,
-        two_t_plus_one_block_hash: [u8; 32],
     }
 
     /// Runtime-owned PBFT vote admission transition result.
@@ -2400,53 +2309,6 @@ pub mod rustaxa_ffi {
         replay_already_present: bool,
     }
 
-    /// Compact reward-vote membership facts for one PBFT round.
-    ///
-    /// The C++ VoteManager shim supplies one candidate for the preferred
-    /// reward round and a reverse-ordered list of all known period rounds.
-    /// `vote_hashes` contains only votes in the cert-vote step bucket for the
-    /// expected reward block hash; C++ sidecar objects never cross this bridge.
-    struct PbftRewardVoteRoundCandidate {
-        round: u64,
-        has_cert_step: bool,
-        has_reward_block: bool,
-        vote_hashes: Vec<PbftFinalizationHash>,
-    }
-
-    /// Fact-only input for Rust-planned PBFT reward-vote selection.
-    ///
-    /// `requested_vote_hashes` are the hashes embedded in the PBFT block being
-    /// checked. Rust first evaluates `preferred_round`, then scans
-    /// `period_rounds` in caller-supplied order to preserve legacy reverse
-    /// round lookup.
-    struct PbftRewardVoteSelectionFact {
-        block_period: u64,
-        reward_period: u64,
-        preferred_reward_round: u64,
-        reward_block_hash: [u8; 32],
-        requested_vote_hashes: Vec<PbftFinalizationHash>,
-        has_preferred_round: bool,
-        preferred_round: PbftRewardVoteRoundCandidate,
-        has_reward_period: bool,
-        period_rounds: Vec<PbftRewardVoteRoundCandidate>,
-    }
-
-    /// Rust-planned PBFT reward-vote selection output.
-    ///
-    /// When `accepted` is true, `selected_vote_hashes` preserves the PBFT
-    /// block's requested order. C++ maps those hashes back to live `PbftVote`
-    /// sidecars only if the caller requested copied votes.
-    struct PbftRewardVoteSelectionPlan {
-        accepted: bool,
-        status: u8,
-        error_code: String,
-        selected_period: u64,
-        selected_round: u64,
-        selected_block_hash: [u8; 32],
-        selected_vote_hashes: Vec<PbftFinalizationHash>,
-        missing_vote_hash: [u8; 32],
-    }
-
     /// Rust-owned PBFT reward-vote materialization output.
     ///
     /// This keeps reward-vote selection under the `BridgeVerifiedVotes`
@@ -2463,42 +2325,6 @@ pub mod rustaxa_ffi {
         selected_vote_hashes: Vec<PbftFinalizationHash>,
         selected_records: Vec<PbftVoteStorageRecord>,
         missing_vote_hash: [u8; 32],
-    }
-
-    /// Explicit caller facts for one Rust-planned PBFT vote validation pass.
-    ///
-    /// The C++ shim owns live vote materialization, FinalChain/key lookups,
-    /// cryptographic checks, and mutable weight calculation for now. Rust owns
-    /// the validation decision and replay-marker timing from these facts.
-    struct PbftVoteValidationFact {
-        vote_type: u8,
-        dpos_vote_count_ready: bool,
-        dpos_vote_count: u64,
-        vrf_key_ready: bool,
-        has_vrf_key: bool,
-        signature_ready: bool,
-        signature_valid: bool,
-        vrf_sortition_ready: bool,
-        vrf_sortition_valid: bool,
-        total_dpos_vote_count_ready: bool,
-        total_dpos_vote_count: u64,
-        weight_ready: bool,
-        weight: u64,
-        future_dpos_state: bool,
-        unknown_error: bool,
-        committee_size: u64,
-        number_of_proposers: u64,
-    }
-
-    /// Rust PBFT vote validation decision for C++ boundary executors.
-    struct PbftVoteValidationPlan {
-        status: u8,
-        error_code: String,
-        accepted: bool,
-        rejected: bool,
-        mark_validated_replay: bool,
-        has_sortition_threshold: bool,
-        sortition_threshold: u64,
     }
 
     /// Caller facts for Rust-owned PBFT `2t+1` threshold lookup and caching.
@@ -6069,32 +5895,6 @@ pub mod rustaxa_ffi {
             request: PbftRewardVotesResetRequest,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
 
-        // PBFT vote-progress protocol planner
-
-        pub fn pbft_vote_progress_plan_precheck(
-            fact: PbftVoteProgressFact,
-            context: PbftVoteProgressContext,
-        ) -> Result<PbftVoteProgressPrecheckPlan>;
-        pub fn pbft_vote_progress_plan_after_add(
-            fact: PbftVoteProgressFact,
-            context: PbftVoteProgressContext,
-            add_vote_outcome: VerifiedVoteAddOutcome,
-        ) -> Result<PbftVoteProgressExecutionPlan>;
-        pub fn pbft_vote_ingress_plan(
-            fact: PbftVoteIngressFact,
-            context: PbftVoteIngressContext,
-        ) -> Result<PbftVoteIngressPlan>;
-        pub fn pbft_vote_bundle_ingress_plan(
-            reference: PbftVoteIngressFact,
-            vote: PbftVoteIngressFact,
-            context: PbftVoteIngressContext,
-        ) -> Result<PbftVoteIngressPlan>;
-        // PBFT reward-vote selection planner
-
-        pub fn pbft_reward_votes_plan(
-            fact: PbftRewardVoteSelectionFact,
-        ) -> PbftRewardVoteSelectionPlan;
-
         // PBFT vote validation planner
 
         pub fn pbft_vote_sortition_threshold_for_bridge(
@@ -6103,24 +5903,7 @@ pub mod rustaxa_ffi {
             committee_size: u64,
             number_of_proposers: u64,
         ) -> Result<u64>;
-        pub fn pbft_vote_validation_plan(
-            fact: PbftVoteValidationFact,
-        ) -> Result<PbftVoteValidationPlan>;
         pub fn pbft_inspect_canonical_vote(vote_rlp: &[u8]) -> Result<PbftCanonicalVoteInspection>;
-        pub fn pbft_validate_canonical_vote(
-            vote_rlp: &[u8],
-            facts: PbftVoteValidationExternalFacts,
-        ) -> Result<PbftCanonicalVoteValidation>;
-        pub fn pbft_vote_event_fact_from_canonical_vote(
-            canonical_vote_rlp: &[u8],
-            weight: u64,
-            flags: PbftVoteEventFactFlags,
-        ) -> Result<PbftVoteEventFact>;
-        pub fn pbft_derive_vote_progress_fact_from_canonical_vote(
-            canonical_vote_rlp: &[u8],
-            validation_facts: PbftVoteValidationExternalFacts,
-            flags: PbftVoteEventFactFlags,
-        ) -> Result<PbftVoteFactBoundaryResult>;
         pub fn pbft_generate_signed_vote(
             input: PbftVoteGenerationInput,
         ) -> Result<PbftGeneratedVote>;

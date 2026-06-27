@@ -1,10 +1,10 @@
-//! CXX bridge wrappers for PBFT vote ingress planning.
+//! Facade adapters for PBFT vote ingress planning.
 //!
-//! The bridge exposes deterministic packet-adjacent PBFT vote gates to C++ as
-//! scalar facts. Rust decides relevance, legacy-compatible period/round/step
-//! windows, bundle propose-vote rejection, and sync-request hints. C++ remains
-//! responsible for packet decoding, peer timers, disconnects, vote admission,
-//! proposed-block execution, and gossip.
+//! `BridgeConsensusNetworkApi` exposes deterministic packet-adjacent PBFT vote
+//! gates to C++ as scalar facts. Rust decides relevance, legacy-compatible
+//! period/round/step windows, bundle propose-vote rejection, and sync-request
+//! hints. C++ remains responsible for packet decoding, peer timers,
+//! disconnects, vote admission, proposed-block execution, and gossip.
 
 use crate::ffi::rustaxa_ffi::{
     PbftVoteIngressContext as FfiPbftVoteIngressContext,
@@ -12,35 +12,9 @@ use crate::ffi::rustaxa_ffi::{
 };
 use anyhow::Result;
 use rustaxa_consensus::pbft_vote_ingress::{
-    plan_pbft_vote_bundle_ingress, plan_pbft_vote_ingress, PbftVoteIngressContext,
-    PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
+    PbftVoteIngressContext, PbftVoteIngressFact, PbftVoteIngressPlan, PbftVoteIngressStatus,
 };
 use rustaxa_consensus::verified_votes::PbftVoteType;
-
-/// Plans ingress gating for one PBFT vote.
-pub fn pbft_vote_ingress_plan(
-    fact: FfiPbftVoteIngressFact,
-    context: FfiPbftVoteIngressContext,
-) -> Result<FfiPbftVoteIngressPlan> {
-    let fact = fact_to_domain(fact)?;
-    let context = context_to_domain(context);
-    Ok(plan_to_ffi(plan_pbft_vote_ingress(fact, context)))
-}
-
-/// Plans bundle-level ingress gating for one PBFT vote against the bundle
-/// reference vote.
-pub fn pbft_vote_bundle_ingress_plan(
-    reference: FfiPbftVoteIngressFact,
-    vote: FfiPbftVoteIngressFact,
-    context: FfiPbftVoteIngressContext,
-) -> Result<FfiPbftVoteIngressPlan> {
-    let reference = fact_to_domain(reference)?;
-    let vote = fact_to_domain(vote)?;
-    let context = context_to_domain(context);
-    Ok(plan_to_ffi(plan_pbft_vote_bundle_ingress(
-        reference, vote, context,
-    )))
-}
 
 pub(crate) fn fact_to_domain(value: FfiPbftVoteIngressFact) -> Result<PbftVoteIngressFact> {
     Ok(PbftVoteIngressFact {
@@ -100,6 +74,9 @@ const fn error_code(status: PbftVoteIngressStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_consensus::pbft_vote_ingress::{
+        plan_pbft_vote_bundle_ingress, plan_pbft_vote_ingress,
+    };
 
     const fn fact(period: u64, round: u64, step: u64, vote_type: u8) -> FfiPbftVoteIngressFact {
         FfiPbftVoteIngressFact {
@@ -126,8 +103,11 @@ mod tests {
     }
 
     #[test]
-    fn bridge_maps_single_vote_ingress_plan() {
-        let plan = pbft_vote_ingress_plan(fact(10, 3, 2, 2), context()).unwrap();
+    fn facade_adapter_maps_single_vote_ingress_plan() {
+        let plan = plan_to_ffi(plan_pbft_vote_ingress(
+            fact_to_domain(fact(10, 3, 2, 2)).unwrap(),
+            context_to_domain(context()),
+        ));
 
         assert!(plan.accepted);
         assert_eq!(plan.status, 0);
@@ -137,8 +117,11 @@ mod tests {
     }
 
     #[test]
-    fn bridge_maps_sync_hints() {
-        let plan = pbft_vote_ingress_plan(fact(14, 3, 1, 2), context()).unwrap();
+    fn facade_adapter_maps_sync_hints() {
+        let plan = plan_to_ffi(plan_pbft_vote_ingress(
+            fact_to_domain(fact(14, 3, 1, 2)).unwrap(),
+            context_to_domain(context()),
+        ));
 
         assert!(!plan.accepted);
         assert!(plan.request_pbft_sync);
@@ -146,9 +129,12 @@ mod tests {
     }
 
     #[test]
-    fn bridge_rejects_bundle_mismatch() {
-        let plan =
-            pbft_vote_bundle_ingress_plan(fact(10, 3, 2, 2), fact(10, 3, 3, 2), context()).unwrap();
+    fn facade_adapter_rejects_bundle_mismatch() {
+        let plan = plan_to_ffi(plan_pbft_vote_bundle_ingress(
+            fact_to_domain(fact(10, 3, 2, 2)).unwrap(),
+            fact_to_domain(fact(10, 3, 3, 2)).unwrap(),
+            context_to_domain(context()),
+        ));
 
         assert!(!plan.accepted);
         assert_eq!(plan.error_code, "PBFT_VOTE_INGRESS_BUNDLE_VOTE_MISMATCH");

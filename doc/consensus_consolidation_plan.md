@@ -596,6 +596,14 @@ Implementation status:
 - `BridgePbftVoteValidationRuntime` is deleted. The standalone validation replay/threshold runtime had no external C++
   callsites and only protected older bridge tests; production Rust-mode vote validation uses `BridgeVerifiedVotes`, whose
   admission runtime owns replay protection, threshold caching, verified-vote metadata, and retained payloads together.
+- Standalone PBFT vote planner CXX exports are deleted:
+  `pbft_vote_progress_plan_precheck`, `pbft_vote_progress_plan_after_add`, `pbft_vote_ingress_plan`,
+  `pbft_vote_bundle_ingress_plan`, `pbft_reward_votes_plan`, `pbft_vote_validation_plan`,
+  `pbft_validate_canonical_vote`, `pbft_vote_event_fact_from_canonical_vote`, and
+  `pbft_derive_vote_progress_fact_from_canonical_vote`. Live C++ ingress now uses `BridgeConsensusNetworkApi`, live
+  validation/admission/reward-vote materialization uses `BridgeVerifiedVotes`, and the bridge-only DTOs/modules that
+  existed solely for the removed free functions are deleted. `pbft_inspect_canonical_vote`, vote payload conversion, and
+  vote generation helpers remain because `vote_manager_shim` and `slashing_manager_shim` still call them directly.
 - `BridgeTransactionQueue` CXX exports have been narrowed to the live `transaction_queue_shim` facade methods. No-caller
   queue-only planning/hash-view exports and bridge wrapper methods are deleted; native `rustaxa-consensus` transaction
   queue tests keep planner coverage.
