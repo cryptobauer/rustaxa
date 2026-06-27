@@ -266,8 +266,9 @@ Implementation notes:
 
 - C++ review confirmed `create_storage_shim_batch` and `BridgeStorageBatch` are confined to `storage_shim` internals, and
   `rustBatchId` no longer has code callsites.
-- Slice 4 is not complete: original consensus modules still call public `DbStorage::createWriteBatch()` /
-  `commitWriteBatch()` APIs in paths that do not yet have an authoritative Rust-mode overlay or service.
+- Slice 4 storage-shim direct-mutator cleanup is complete for the audited compatibility paths. Remaining public
+  `DbStorage::createWriteBatch()` / `commitWriteBatch()` blocks in original consensus modules must be classified by
+  their active Rust-mode overlay before adding new storage-shim APIs.
 - The batch-only conversion is implemented for DAG block save/remove, status fields, PBFT manager fields/status, PBFT
   heads, own verified votes, 2t+1 vote bundles, extra reward votes, proposal-period DAG-level mappings, and cert-voted
   block writes/removal. These methods now use a private `DbStorage::commitImmediateRustBatch` helper, typed
@@ -282,10 +283,16 @@ Implementation notes:
   still owns the aggregate row-by-row delete and native batch commit. The obsolete broad
   `BridgeStorage::clear_block_rewards_stats` CXX export has been deleted.
 - The tracked direct `BridgeStorage` mutator cleanup for storage-shim single-write and aggregate-clear compatibility
-  paths is complete; remaining Slice 4 work should focus on original consensus modules that still call public
-  `DbStorage::createWriteBatch()` / `commitWriteBatch()` APIs.
-- Remaining original PBFT manager reset paths still need new narrow APIs before their public batch usage can be removed:
-  cert-voted-block removal and own-verified-vote clearing are still batch-only at the caller boundary.
+  paths is complete. Remaining Slice 4 work should classify original consensus-module public batch blocks as either
+  active Rust-mode gaps or legacy/reference code behind an authoritative overlay.
+- PBFT manager reset, finish-polling, loopback-finish, and finalization public batch blocks are closed for the current
+  Rust-mode route. The active `pbft_manager_shim` overlay overrides those methods and routes transition persistence
+  through `pbft_manager_runtime_apply_transition_storage_write`, which commits manager cursor/status updates,
+  cert-voted-block removal, and own-verified-vote cleanup in one native Rust storage batch before updating runtime and
+  C++ mirrors. Executed-block reset and finalization storage writes are also Rust-owned runtime/finalization calls with
+  explicit external boundaries for finalization execution and sidecar materialization. The public batch blocks in
+  `libraries/core_libs/consensus/src/pbft/pbft_manager.cpp` remain legacy/reference behavior behind
+  `RUSTAXA_ENABLE_PBFT_MANAGER`.
 - Proposed-block persistence is closed for the current Rust-mode route. The active `proposed_blocks_shim` overlay owns
   save, startup restore, and stale-period cleanup through `BridgeProposedBlocks`; storage-backed cleanup plans stale
   period/hash groups, commits one native Rust storage delete batch, and mutates the Rust index only after commit. The

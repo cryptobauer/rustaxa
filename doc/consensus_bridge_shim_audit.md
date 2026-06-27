@@ -237,6 +237,16 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   genesis/header storage through native Rust storage. The public batch blocks in
   `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy/reference behavior when
   `RUSTAXA_ENABLE_FINAL_CHAIN` enables the overlay.
+- `pbft_manager_shim` is the active Rust-mode route for PBFT manager reset, finish-polling, loopback-finish, period
+  advance, and finalization storage intent execution. Reset/finish transitions call
+  `pbft_manager_runtime_apply_transition_storage_write`, so Rust commits the manager cursor/status rows,
+  cert-voted-block removal, and own-verified-vote cleanup in one native storage batch before the runtime snapshot and
+  C++ mirrors advance. Executed-block reset is a separate Rust-owned status write that preserves the legacy
+  post-finalization wait ordering, and finalization/dynamic-lambda storage writes are owned by the Rust finalization
+  storage path behind `pbft_manager_runtime_apply_finalization_storage_writes`. The public batch blocks in
+  `libraries/core_libs/consensus/src/pbft/pbft_manager.cpp` are legacy/reference behavior when
+  `RUSTAXA_ENABLE_PBFT_MANAGER` enables the overlay; remaining PBFT manager cleanup belongs to Slice 6 service
+  consolidation and Slice 8 CXX session-handle shrinkage rather than new storage-shim APIs.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is
