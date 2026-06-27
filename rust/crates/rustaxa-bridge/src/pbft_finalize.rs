@@ -41,7 +41,6 @@ use ethereum_types::H256;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
-    load_pbft_finalization_last_period_lambda as load_domain_pbft_finalization_last_period_lambda,
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
@@ -465,33 +464,6 @@ impl BridgePbftFinalizationRuntimeSession {
 /// storage stage.
 pub fn plan_pbft_dynamic_lambda(fact: FfiPbftDynamicLambdaFact) -> FfiPbftDynamicLambdaPlan {
     plan_domain_pbft_dynamic_lambda(fact.into()).into()
-}
-
-/// Loads the closest persisted dynamic lambda needed by PBFT finalization.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge used only to access native
-///   `rustaxa-storage`.
-/// - `period`: upper-bound period for the closest-at-or-before lambda lookup.
-///
-/// Outputs:
-/// - `PeriodLambda { found: true, value }` when a prior persisted lambda exists.
-/// - `PeriodLambda { found: false, value: 0 }` when no row exists.
-///
-/// Invariants and edge behavior:
-/// - The bridge does not route through C++ storage or bridge-owned batches.
-/// - Missing values are explicit so the finalization planner can decide whether
-///   to persist the current block lambda.
-/// - Storage failures are returned as bridge errors.
-pub fn load_pbft_finalization_last_period_lambda_storage(
-    storage: &BridgeStorage,
-    period: u64,
-) -> Result<crate::ffi::rustaxa_ffi::PeriodLambda> {
-    let lookup = load_domain_pbft_finalization_last_period_lambda(storage.0.as_ref(), period)?;
-    Ok(crate::ffi::rustaxa_ffi::PeriodLambda {
-        found: lookup.found,
-        value: lookup.value,
-    })
 }
 
 impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
@@ -1475,47 +1447,6 @@ mod tests {
         assert!(!disabled_plan.apply_dynamic_lambda_update);
         assert_eq!(disabled_plan.blocks_per_year, 500);
         assert_eq!(disabled_plan.dynamic_lambda, 1_500);
-    }
-
-    #[test]
-    fn loads_finalization_last_period_lambda_for_bridge() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_finalize_lambda_read");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            storage
-                .0
-                .metadata()
-                .write_period_lambda(10, 1_500)
-                .expect("period lambda should persist");
-
-            let lookup = load_pbft_finalization_last_period_lambda_storage(&storage, 11)
-                .expect("bridge lambda lookup should succeed");
-
-            assert!(lookup.found);
-            assert_eq!(lookup.value, 1_500);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn reports_missing_finalization_last_period_lambda_for_bridge() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_finalize_lambda_missing");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-
-            let lookup = load_pbft_finalization_last_period_lambda_storage(&storage, 11)
-                .expect("bridge missing lambda lookup should succeed");
-
-            assert!(!lookup.found);
-            assert_eq!(lookup.value, 0);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

@@ -14,7 +14,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftSyncPeriodAdmissionPlan as FfiPbftSyncPeriodAdmissionPlan,
     PbftSyncProcessPeriodDataRuntimeFact as FfiPbftSyncProcessPeriodDataRuntimeFact,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
-    PbftSyncRuntimePlan as FfiPbftSyncRuntimePlan,
     PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
     PbftSyncTransactionQueryFact as FfiPbftSyncTransactionQueryFact,
     PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
@@ -26,14 +25,13 @@ use rustaxa_consensus::pbft_sync::{
     load_pbft_sync_egress_payload as load_domain_pbft_sync_egress_payload,
     plan_pbft_sync_period_admission_runtime as plan_domain_pbft_sync_period_admission_runtime,
     plan_pbft_sync_process_period_data_runtime as plan_domain_pbft_sync_process_period_data_runtime,
-    plan_pbft_sync_runtime as plan_domain_pbft_sync_runtime,
     plan_pbft_sync_transaction_query as plan_domain_pbft_sync_transaction_query,
     validate_pbft_sync_cert_vote_bundle as validate_domain_pbft_sync_cert_vote_bundle,
     PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleValidation, PbftSyncCertVoteFact,
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionFact,
     PbftSyncPeriodAdmissionPlan, PbftSyncProcessPeriodDataRuntimeFact,
     PbftSyncProcessPeriodDataRuntimePlan, PbftSyncRewardVoteAttachmentFact,
-    PbftSyncRuntimeFinalChainHashStatus, PbftSyncRuntimePlan, PbftSyncTransactionQueryFact,
+    PbftSyncRuntimeFinalChainHashStatus, PbftSyncTransactionQueryFact,
     PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
 };
 
@@ -43,17 +41,6 @@ pub fn plan_pbft_sync_period_admission(
 ) -> FfiPbftSyncPeriodAdmissionPlan {
     plan_domain_pbft_sync_period_admission_runtime(fact.into())
         .into_plan()
-        .into()
-}
-
-/// Builds one combined PBFT sync runtime plan from one call.
-///
-/// This is a side-effect-free orchestration function for `processPeriodData()` paths.
-pub fn plan_pbft_sync_runtime(
-    period_admission_fact: FfiPbftSyncPeriodAdmissionFact,
-    transaction_query_fact: FfiPbftSyncTransactionQueryFact,
-) -> FfiPbftSyncRuntimePlan {
-    plan_domain_pbft_sync_runtime(period_admission_fact.into(), transaction_query_fact.into())
         .into()
 }
 
@@ -266,16 +253,6 @@ impl From<PbftSyncTransactionQueryPlan> for FfiPbftSyncTransactionQueryPlan {
     }
 }
 
-impl From<PbftSyncRuntimePlan> for FfiPbftSyncRuntimePlan {
-    fn from(plan: PbftSyncRuntimePlan) -> Self {
-        Self {
-            action: plan.period_admission.action.as_u8(),
-            period_admission_plan: plan.period_admission.plan.into(),
-            transaction_query_plan: plan.transaction_query.into(),
-        }
-    }
-}
-
 impl From<PbftSyncProcessPeriodDataRuntimePlan> for FfiPbftSyncProcessPeriodDataRuntimePlan {
     fn from(plan: PbftSyncProcessPeriodDataRuntimePlan) -> Self {
         Self {
@@ -327,8 +304,8 @@ mod tests {
     use crate::pbft_manager::create_pbft_manager_runtime_from_storage;
     use crate::storage::create_storage;
     use rustaxa_consensus::pbft_sync::{
-        PbftSyncAdmissionRuntimeAction, PbftSyncPeriodAdmissionDecision,
-        PbftSyncPeriodAdmissionStatus, PbftSyncTransactionWarningKind,
+        PbftSyncPeriodAdmissionDecision, PbftSyncPeriodAdmissionStatus,
+        PbftSyncTransactionWarningKind,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -451,39 +428,6 @@ mod tests {
                 .map(|hash| hash.hash)
                 .collect::<Vec<_>>(),
             vec![[1; 32], [3; 32]]
-        );
-    }
-
-    #[test]
-    fn bridge_runtime_plan_wraps_admission_and_transaction_lookup() {
-        let plan = plan_pbft_sync_runtime(
-            fact(),
-            FfiPbftSyncTransactionQueryFact {
-                dag_transaction_hashes: vec![
-                    FfiPbftSyncTransactionHash { hash: [1; 32] },
-                    FfiPbftSyncTransactionHash { hash: [1; 32] },
-                    FfiPbftSyncTransactionHash { hash: [2; 32] },
-                ],
-                period_data_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [2; 32] }],
-            },
-        );
-
-        assert_eq!(plan.action, PbftSyncAdmissionRuntimeAction::Accept.as_u8());
-        assert_eq!(
-            plan.period_admission_plan.decision,
-            PbftSyncPeriodAdmissionDecision::Accept.as_u8()
-        );
-        assert_eq!(
-            plan.period_admission_plan.status,
-            PbftSyncPeriodAdmissionStatus::Accepted.as_u8()
-        );
-        assert_eq!(
-            plan.transaction_query_plan
-                .finalized_lookup_hashes
-                .into_iter()
-                .map(|hash| hash.hash)
-                .collect::<Vec<_>>(),
-            vec![[1; 32]]
         );
     }
 

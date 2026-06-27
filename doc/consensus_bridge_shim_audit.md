@@ -365,12 +365,18 @@ Current snapshot after DAG proposer-session cursor consolidation:
   standalone bridge handle for the scheduler transcript.
 - `BridgePbftManagerProposalSession` is retired. PBFT block proposal planning is now a cursor inside
   `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_proposal_session`,
-  `pbft_manager_proposal_session_next`, `pbft_manager_proposal_session_report_dag_order`, and
-  `abort_pbft_manager_proposal_session`, so C++ no longer allocates a standalone bridge handle for proposal planning.
+  `pbft_manager_proposal_session_next`, and `pbft_manager_proposal_session_report_dag_order`, so C++ no longer allocates
+  a standalone bridge handle for proposal planning.
 - `BridgePbftManagerBlockValidationSession` is retired. PBFT block validation planning is now a cursor inside
   `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_block_validation_session`,
   `pbft_manager_block_validation_session_next`, and `pbft_manager_block_validation_session_report`, so C++ no longer
   allocates a standalone bridge handle for validation planning.
+- Additional no-caller standalone PBFT runtime wrappers are retired from the CXX surface:
+  `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`, `plan_pbft_manager_block_validation`,
+  `load_pbft_finalization_last_period_lambda_storage`, and the bridge-only `PbftSyncRuntimePlan` DTO. Live C++ uses
+  `plan_pbft_sync_process_period_data_runtime`, proposal/block-validation runtime sessions, and
+  `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests keep coverage for the
+  deleted lower-level planners and lambda lookup.
 - `BridgeDagVerifyBlockSession` is retired. DAG block verification still has C++ executor boundaries for transaction
   lookup, FinalChain authorization facts, VDF verification, and gas estimation, but the ordered verification cursor now
   lives inside `BridgeDagManagerRuntime` through `dag_manager_runtime_begin_verify_block_session`,

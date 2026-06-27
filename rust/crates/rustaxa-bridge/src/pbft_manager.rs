@@ -79,7 +79,6 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationStorageWriteIntent,
 };
 use rustaxa_consensus::pbft_manager::{
-    abort_pbft_manager_proposal_session as abort_domain_pbft_manager_proposal_session,
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
@@ -94,7 +93,6 @@ use rustaxa_consensus::pbft_manager::{
     next_pbft_manager_runtime_action,
     next_pbft_manager_state_action_effect_session as next_domain_pbft_manager_state_action_effect_session,
     plan_pbft_manager_advance_period_from_transition as plan_domain_pbft_manager_advance_period_from_transition,
-    plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
@@ -1421,16 +1419,6 @@ pub fn pbft_manager_proposal_session_report_dag_order(
     report_domain_pbft_manager_proposal_dag_order(session, report.into()).into()
 }
 
-/// Aborts the runtime-owned proposal session with a stable contract-error status.
-pub fn abort_pbft_manager_proposal_session(
-    runtime: &mut BridgePbftManagerRuntime,
-) -> FfiPbftManagerProposalSessionStep {
-    let Some(session) = runtime.proposal_session.as_mut() else {
-        return proposal_session_not_started_step();
-    };
-    abort_domain_pbft_manager_proposal_session(session).into()
-}
-
 fn proposal_session_not_started_step() -> FfiPbftManagerProposalSessionStep {
     FfiPbftManagerProposalSessionStep {
         action: PbftManagerProposalAction::ContractError.as_u8(),
@@ -1460,13 +1448,6 @@ pub fn report_pbft_manager_broadcast(
     report: FfiPbftManagerBroadcastReport,
 ) -> FfiPbftManagerBroadcastReportResult {
     report_domain_pbft_manager_broadcast(plan.into(), report.into()).into()
-}
-
-/// Plans the next Rust-owned PBFT block validation check from live C++ facts.
-pub fn plan_pbft_manager_block_validation(
-    fact: FfiPbftManagerBlockValidationFact,
-) -> FfiPbftManagerBlockValidationPlan {
-    plan_domain_pbft_manager_block_validation(fact.into()).into()
 }
 
 /// Starts a runtime-owned PBFT block-validation session from initial live facts.
@@ -2263,9 +2244,7 @@ mod tests {
     const BLOCK_VALIDATION_FACT_MISSING: u8 = 3;
     const BLOCK_VALIDATION_FACT_NOT_REQUIRED: u8 = 4;
     const BLOCK_VALIDATION_ACTION_RUN_CHECK: u8 = 0;
-    const BLOCK_VALIDATION_ACTION_ACCEPT: u8 = 1;
     const BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION: u8 = 3;
-    const BLOCK_VALIDATION_STATUS_ACCEPTED: u8 = 1;
     const BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING: u8 = 3;
     const BLOCK_VALIDATION_CHECK_PBFT_CHAIN: u8 = 0;
     const BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH: u8 = 1;
@@ -4147,42 +4126,6 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_plans_pbft_block_validation_checks_and_acceptance() {
-        let plan = plan_pbft_manager_block_validation(block_validation_fact());
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
-        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_PBFT_CHAIN);
-
-        let mut final_chain_fact = block_validation_fact();
-        final_chain_fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
-        let plan = plan_pbft_manager_block_validation(final_chain_fact);
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
-        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
-
-        let mut accept_fact = block_validation_fact();
-        accept_fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
-        accept_fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_VALID;
-        accept_fact.reward_votes_status = BLOCK_VALIDATION_FACT_VALID;
-        accept_fact.extra_data_status = BLOCK_VALIDATION_FACT_VALID;
-        accept_fact.pivot_is_null = true;
-        let plan = plan_pbft_manager_block_validation(accept_fact);
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_ACCEPT);
-        assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_ACCEPTED);
-    }
-
-    #[test]
-    fn bridge_pbft_block_validation_reports_final_chain_wait() {
-        let mut fact = block_validation_fact();
-        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
-        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_MISSING;
-
-        let plan = plan_pbft_manager_block_validation(fact);
-
-        assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION);
-        assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING);
-        assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
     }
 
     #[test]

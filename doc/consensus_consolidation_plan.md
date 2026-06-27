@@ -699,6 +699,14 @@ Implementation status:
   the storage-first mutation and command-report conversion.
   Custom agents used: `architect-reviewer` confirmed the live C++ command-report boundary; `rust-engineer` confirmed the
   private DTO/test impact.
+- Additional standalone PBFT runtime wrappers are no longer CXX exports:
+  `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`, `plan_pbft_manager_block_validation`,
+  `load_pbft_finalization_last_period_lambda_storage`, and the bridge-only `PbftSyncRuntimePlan` DTO are deleted from
+  the bridge surface. Live C++ uses `plan_pbft_sync_process_period_data_runtime`, proposal/block-validation runtime
+  sessions, and `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests cover the
+  deleted lower-level planners and lambda lookup.
+  Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
+  PBFT manager standalone planner lane as a secondary cleanup candidate.
 - Additional no-caller CXX exports are deleted after callsite audit showed they were bridge-test scaffolding only:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use

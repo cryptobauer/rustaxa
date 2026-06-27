@@ -1206,13 +1206,6 @@ pub mod rustaxa_ffi {
         contains_finalized_transaction_warning: bool,
     }
 
-    /// Combined PBFT sync runtime decision and transaction lookup plan.
-    struct PbftSyncRuntimePlan {
-        action: u8,
-        period_admission_plan: PbftSyncPeriodAdmissionPlan,
-        transaction_query_plan: PbftSyncTransactionQueryPlan,
-    }
-
     /// Storage-backed PBFT sync egress payload for packet materialization.
     struct PbftSyncEgressPayload {
         period_data_rlp: Vec<u8>,
@@ -4793,10 +4786,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_sync_transaction_query(
             fact: PbftSyncTransactionQueryFact,
         ) -> PbftSyncTransactionQueryPlan;
-        pub fn plan_pbft_sync_runtime(
-            period_admission_fact: PbftSyncPeriodAdmissionFact,
-            transaction_query_fact: PbftSyncTransactionQueryFact,
-        ) -> PbftSyncRuntimePlan;
         pub fn load_pbft_sync_egress_payload(
             runtime: &BridgePbftManagerRuntime,
             block_period: u64,
@@ -5055,9 +5044,6 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             report: PbftManagerProposalDagOrderReport,
         ) -> PbftManagerProposalSessionStep;
-        pub fn abort_pbft_manager_proposal_session(
-            runtime: &mut BridgePbftManagerRuntime,
-        ) -> PbftManagerProposalSessionStep;
         pub fn plan_pbft_manager_broadcast(
             fact: PbftManagerBroadcastFact,
         ) -> PbftManagerBroadcastPlan;
@@ -5065,9 +5051,6 @@ pub mod rustaxa_ffi {
             plan: PbftManagerBroadcastPlan,
             report: PbftManagerBroadcastReport,
         ) -> PbftManagerBroadcastReportResult;
-        pub fn plan_pbft_manager_block_validation(
-            fact: PbftManagerBlockValidationFact,
-        ) -> PbftManagerBlockValidationPlan;
         pub fn pbft_manager_runtime_begin_block_validation_session(
             runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerBlockValidationFact,
@@ -5127,10 +5110,6 @@ pub mod rustaxa_ffi {
             final_chain_last_block: u64,
         ) -> Result<PbftFinalizationResumePlan>;
         pub fn plan_pbft_dynamic_lambda(fact: PbftDynamicLambdaFact) -> PbftDynamicLambdaPlan;
-        pub fn load_pbft_finalization_last_period_lambda_storage(
-            storage: &BridgeStorage,
-            period: u64,
-        ) -> Result<PeriodLambda>;
         pub fn apply_pbft_finalization_storage_writes(
             storage: &BridgeStorage,
             write_set: &PbftFinalizationStorageWritePlan,
