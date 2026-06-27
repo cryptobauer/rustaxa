@@ -454,6 +454,14 @@ Acceptance:
 - C++ shims no longer pass one bridge handle into another bridge handle for internal consensus dependencies.
 - Rust services own their storage/final-chain dependencies through native Rust structs or traits.
 - Large shim methods become input conversion plus one Rust call plus output conversion.
+- Completed in this pass: `FinalChain::rustFinalChainForRust()` accessor was removed from the
+  `final_chain_shim`, eliminating the direct internal bridge-handle sharing point in FinalChain call-paths.
+
+Implementation notes:
+
+- `final_chain_shim` now no longer exposes `rustFinalChainForRust()`; callers must route through explicit
+  consensus/runtime APIs, which keeps FinalChain session ownership constrained to the shim constructor and execution
+  boundary.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 

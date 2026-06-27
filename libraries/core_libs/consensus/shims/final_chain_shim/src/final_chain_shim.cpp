@@ -919,8 +919,6 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
   return account;
 }
 
-const rustaxa::BridgeFinalChain& FinalChain::rustFinalChainForRust() const { return *rust_final_chain_.value(); }
-
 h256 FinalChain::getAccountStorage(addr_t const& addr, u256 const& key, std::optional<EthBlockNumber> blk_n) const {
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
   const auto requested_block = blk_n.value_or(state_descriptor.blk_num);
