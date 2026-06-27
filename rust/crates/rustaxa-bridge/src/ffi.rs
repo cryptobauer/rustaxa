@@ -7380,7 +7380,6 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
             period: u64,
         ) -> Result<()>;
-        pub fn set_genesis_hash(self: &BridgeStorage, hash: &[u8; 32]) -> Result<()>;
         pub fn save_status_field(self: &BridgeStorage, field: u8, value: u64) -> Result<()>;
         pub fn save_sortition_params_change(
             self: &BridgeStorage,

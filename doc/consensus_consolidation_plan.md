@@ -267,11 +267,7 @@ Implementation notes:
 - C++ review confirmed `create_storage_shim_batch` and `BridgeStorageBatch` are confined to `storage_shim` internals, and
   `rustBatchId` no longer has code callsites.
 - Slice 4 is not complete: original consensus modules still call public `DbStorage::createWriteBatch()` /
-  `commitWriteBatch()` APIs, and several `storage_shim` single-write compatibility methods still call broad
-  `BridgeStorage` mutators directly.
-- Next bounded Slice 4 implementation target: convert those single-write compatibility methods to create a shim-owned
-  batch, reuse the existing typed `storage_shim_*` batch appenders, and commit immediately. That removes direct
-  `BridgeStorage` mutator use without changing the public `DbStorage` API.
+  `commitWriteBatch()` APIs.
 - The batch-only conversion is implemented for DAG block save/remove, status fields, PBFT manager fields/status, PBFT
   heads, own verified votes, 2t+1 vote bundles, extra reward votes, proposal-period DAG-level mappings, and cert-voted
   block writes/removal. These methods now use a private `DbStorage::commitImmediateRustBatch` helper, typed
@@ -281,13 +277,15 @@ Implementation notes:
   broad `BridgeStorage` mutator directly.
 - Genesis-hash writes now route through a dedicated `storage_shim_set_genesis_hash` API that preserves
   `rustaxa-storage` write-if-empty semantics without exposing the broad `BridgeStorage::set_genesis_hash` mutator to the
-  C++ storage shim.
+  C++ storage shim. The obsolete broad `BridgeStorage::set_genesis_hash` CXX export has been deleted.
 - Block-reward stats clearing now routes through a dedicated `storage_shim_clear_block_rewards_stats` API. Rust storage
   still owns the aggregate row-by-row delete and native batch commit, while the broad
   `BridgeStorage::clear_block_rewards_stats` method remains only for compatibility tests/conformance callers.
 - The tracked direct `BridgeStorage` mutator cleanup for storage-shim single-write and aggregate-clear compatibility
   paths is complete; remaining Slice 4 work should focus on original consensus modules that still call public
   `DbStorage::createWriteBatch()` / `commitWriteBatch()` APIs.
+- Remaining original PBFT manager reset paths still need new narrow APIs before their public batch usage can be removed:
+  cert-voted-block removal and own-verified-vote clearing are still batch-only at the caller boundary.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.
@@ -482,6 +480,8 @@ Implementation status:
   Rust-mode storage history restoration is owned by `create_gas_pricer_from_storage`.
 - The obsolete test-only `BridgeGasPricer::gas_pricer_init_from_storage` helper has also been removed; bridge tests now
   exercise `create_gas_pricer_from_storage` directly.
+- `BridgeStorage` CXX exports have been narrowed: the obsolete broad `set_genesis_hash` mutator is deleted because
+  Rust-mode `DbStorage::setGenesisHash` uses the dedicated `storage_shim_set_genesis_hash` compatibility API.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

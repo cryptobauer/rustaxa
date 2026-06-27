@@ -1433,10 +1433,6 @@ impl BridgeStorage {
         self.0.period().write_pbft_period(H256::from(*hash), period)
     }
 
-    pub fn set_genesis_hash(&self, hash: &[u8; 32]) -> Result<(), anyhow::Error> {
-        self.0.metadata().set_genesis_hash_if_empty(hash)
-    }
-
     pub fn save_status_field(&self, field: u8, value: u64) -> Result<(), anyhow::Error> {
         self.0.metadata().write_status_field(field, value)
     }

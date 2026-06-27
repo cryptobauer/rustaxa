@@ -168,7 +168,8 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   commit the Rust-owned batch.
 - Genesis-hash writes now use `storage_shim_set_genesis_hash`, a dedicated storage-shim API that preserves the
   `rustaxa-storage` write-if-empty behavior while avoiding the broad `BridgeStorage::set_genesis_hash` mutator from the
-  C++ shim.
+  C++ shim. The obsolete broad `BridgeStorage::set_genesis_hash` CXX export has been deleted; only the dedicated
+  storage-shim helper remains.
 - Block-reward stats clearing now uses `storage_shim_clear_block_rewards_stats`, a dedicated storage-shim API that
   preserves the Rust storage aggregate delete and native batch commit while avoiding the broad
   `BridgeStorage::clear_block_rewards_stats` mutator from the C++ shim.
