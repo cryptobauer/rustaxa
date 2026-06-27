@@ -641,7 +641,9 @@ mod tests {
                 threshold_upper: 1_234,
             };
             storage
-                .save_sortition_params_change(10, change.to_rlp_bytes())
+                .0
+                .metadata()
+                .write_sortition_params_change(10, &change.to_rlp_bytes())
                 .expect("change should persist");
             let manager = create_sortition_params_manager_from_storage(runtime_config(), &storage)
                 .expect("manager should initialize");

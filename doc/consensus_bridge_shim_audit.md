@@ -178,6 +178,9 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   compatibility paths. The no-caller broad `BridgeStorage` CXX mutators for block-reward stats, cert-voted-block
   removal, own-vote removal, extra-reward-vote removal, and 2t+1 vote replacement have been deleted. Remaining broad
   `BridgeStorage` mutators are compatibility-test/conformance debt until the public `BridgeStorage` facade is retired.
+- The no-caller broad `BridgeStorage::save_sortition_params_change` CXX mutator has been deleted. C++ `DbStorage`
+  compatibility writes use the dedicated `storage_shim_save_sortition_params_change` batch appender, and Rust bridge
+  tests seed sortition changes through native `rustaxa-storage` metadata writes.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

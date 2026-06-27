@@ -908,7 +908,9 @@ mod tests {
             threshold_upper: 1_234,
         };
         storage
-            .save_sortition_params_change(12, sortition_change.to_rlp_bytes())
+            .0
+            .metadata()
+            .write_sortition_params_change(12, &sortition_change.to_rlp_bytes())
             .unwrap();
         let status_dag_block_rlp = dag_block_rlp();
         let status_dag_block_hash = keccak256(&status_dag_block_rlp);
@@ -974,7 +976,9 @@ mod tests {
                 .found
         );
         storage
-            .save_sortition_params_change(16, vec![0xC1])
+            .0
+            .metadata()
+            .write_sortition_params_change(16, &[0xC1])
             .unwrap();
         assert!(api
             .consensus_query_sortition_params_change_by_period(16)

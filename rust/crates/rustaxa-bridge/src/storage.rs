@@ -1436,16 +1436,6 @@ impl BridgeStorage {
         self.0.metadata().write_status_field(field, value)
     }
 
-    pub fn save_sortition_params_change(
-        &self,
-        period: u64,
-        params_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0
-            .metadata()
-            .write_sortition_params_change(period, &params_rlp)
-    }
-
     pub fn save_period_lambda(&self, period: u64, period_lambda: u32) -> Result<(), anyhow::Error> {
         self.0.metadata().write_period_lambda(period, period_lambda)
     }

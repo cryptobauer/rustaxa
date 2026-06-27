@@ -488,6 +488,9 @@ Implementation status:
 - Additional unused broad `BridgeStorage` CXX mutators have been deleted after dedicated storage-shim paths became the
   production route: `save_block_rewards_stats`, `remove_cert_voted_block_in_round`, `remove_own_verified_vote`,
   `remove_extra_reward_vote`, and `replace_two_t_plus_one_votes`.
+- The unused broad `BridgeStorage::save_sortition_params_change` CXX mutator has been deleted. Rust bridge tests now seed
+  sortition params through native `rustaxa-storage` metadata writes, while the C++ `DbStorage` compatibility shell keeps
+  the dedicated `storage_shim_save_sortition_params_change` batch appender.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 
