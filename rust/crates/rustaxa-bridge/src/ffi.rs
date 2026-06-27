@@ -217,10 +217,6 @@ pub struct BridgePillarChainStorage {
     pub storage: Arc<Storage>,
 }
 
-pub struct BridgePbftManagerBlockValidationSession {
-    pub state: rustaxa_consensus::pbft_manager::PbftManagerBlockValidationSession,
-}
-
 /// Long-lived Rust PBFT manager runtime used by the C++ compatibility shim.
 ///
 /// Purpose:
@@ -247,6 +243,8 @@ pub struct BridgePbftManagerRuntime {
         Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
     pub runtime_session: Option<rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession>,
     pub proposal_session: Option<rustaxa_consensus::pbft_manager::PbftManagerProposalSession>,
+    pub block_validation_session:
+        Option<rustaxa_consensus::pbft_manager::PbftManagerBlockValidationSession>,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -5799,15 +5797,15 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_block_validation(
             fact: PbftManagerBlockValidationFact,
         ) -> PbftManagerBlockValidationPlan;
-        type BridgePbftManagerBlockValidationSession;
-        pub fn create_pbft_manager_block_validation_session(
+        pub fn pbft_manager_runtime_begin_block_validation_session(
+            runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerBlockValidationFact,
-        ) -> Box<BridgePbftManagerBlockValidationSession>;
+        );
         pub fn pbft_manager_block_validation_session_next(
-            session: &mut BridgePbftManagerBlockValidationSession,
+            runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerBlockValidationPlan;
         pub fn pbft_manager_block_validation_session_report(
-            session: &mut BridgePbftManagerBlockValidationSession,
+            runtime: &mut BridgePbftManagerRuntime,
             status: u8,
             dag_weight_check_required: bool,
         ) -> PbftManagerBlockValidationPlan;
@@ -5848,14 +5846,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
         pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime);
-        pub fn pbft_manager_block_validation_session_next(
-            self: &mut BridgePbftManagerBlockValidationSession,
-        ) -> PbftManagerBlockValidationPlan;
-        pub fn pbft_manager_block_validation_session_report(
-            self: &mut BridgePbftManagerBlockValidationSession,
-            status: u8,
-            dag_weight_check_required: bool,
-        ) -> PbftManagerBlockValidationPlan;
         pub fn validate_pbft_finalization_live_mutation_report(
             plan: &PbftFinalizationIntentPlan,
             report: PbftFinalizationLiveMutationReport,

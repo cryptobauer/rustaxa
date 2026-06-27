@@ -64,9 +64,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
     PeriodLambda as FfiPeriodLambda,
 };
-use crate::ffi::{
-    BridgePbftManagerBlockValidationSession, BridgePbftManagerRuntime, BridgeStorage,
-};
+use crate::ffi::{BridgePbftManagerRuntime, BridgeStorage};
 use crate::period_data_queue::{
     bridge_period_data_queue_clean_old_data, bridge_period_data_queue_pop,
     bridge_period_data_queue_push,
@@ -116,10 +114,11 @@ use rustaxa_consensus::pbft_manager::{
     save_cert_voted_block_in_round_storage,
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
     PbftManagerAdvancePeriodActionReport, PbftManagerAdvancePeriodActionReportResult,
-    PbftManagerAdvancePeriodPlan, PbftManagerBlockValidationFact,
-    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationPlan,
-    PbftManagerBroadcastAction, PbftManagerBroadcastFact, PbftManagerBroadcastPlan,
-    PbftManagerBroadcastReport, PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
+    PbftManagerAdvancePeriodPlan, PbftManagerBlockValidationAction, PbftManagerBlockValidationFact,
+    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationNextCheck,
+    PbftManagerBlockValidationPlan, PbftManagerBlockValidationStatus, PbftManagerBroadcastAction,
+    PbftManagerBroadcastFact, PbftManagerBroadcastPlan, PbftManagerBroadcastReport,
+    PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
     PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
     PbftManagerCandidateAdmissionValidationStatus, PbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
@@ -248,6 +247,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         state_action_effect_session: None,
         runtime_session: None,
         proposal_session: None,
+        block_validation_session: None,
     }))
 }
 
@@ -1469,36 +1469,45 @@ pub fn plan_pbft_manager_block_validation(
     plan_domain_pbft_manager_block_validation(fact.into()).into()
 }
 
-/// Creates a Rust-owned PBFT block-validation session from initial live facts.
+/// Starts a runtime-owned PBFT block-validation session from initial live facts.
 ///
 /// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns the temporary
+///   block-validation cursor.
 /// - `fact`: initial block identity and check status bundle supplied by C++.
 ///
 /// Outputs:
-/// - A session handle that owns the evolving validation facts and pending
-///   requested check.
+/// - Replaces any previous block-validation cursor. C++ drives the cursor with
+///   `pbft_manager_block_validation_session_next` and
+///   `pbft_manager_block_validation_session_report`.
 ///
 /// Invariants and edge behavior:
 /// - C++ must call `pbft_manager_block_validation_session_next` before
 ///   reporting a check.
 /// - The session is a compatibility executor boundary; it does not perform
 ///   live checks or materialize C++ sidecars.
-pub fn create_pbft_manager_block_validation_session(
+/// - Starting a new validation replaces any incomplete previous validation,
+///   matching the legacy per-call allocation behavior.
+pub fn pbft_manager_runtime_begin_block_validation_session(
+    runtime: &mut BridgePbftManagerRuntime,
     fact: FfiPbftManagerBlockValidationFact,
-) -> Box<BridgePbftManagerBlockValidationSession> {
-    Box::new(BridgePbftManagerBlockValidationSession {
-        state: create_domain_pbft_manager_block_validation_session(fact.into()),
-    })
+) {
+    runtime.block_validation_session = Some(create_domain_pbft_manager_block_validation_session(
+        fact.into(),
+    ));
 }
 
-/// Returns the next validation plan for a Rust-owned PBFT block-validation session.
+/// Returns the next validation plan for the runtime-owned block-validation session.
 pub fn pbft_manager_block_validation_session_next(
-    session: &mut BridgePbftManagerBlockValidationSession,
+    runtime: &mut BridgePbftManagerRuntime,
 ) -> FfiPbftManagerBlockValidationPlan {
-    next_domain_pbft_manager_block_validation_session(&mut session.state).into()
+    let Some(session) = runtime.block_validation_session.as_mut() else {
+        return block_validation_session_not_started_plan();
+    };
+    next_domain_pbft_manager_block_validation_session(session).into()
 }
 
-/// Reports one requested live check to a Rust-owned PBFT block-validation session.
+/// Reports one requested live check to the runtime-owned block-validation session.
 ///
 /// Inputs:
 /// - `status`: stable fact status for the most recently requested check.
@@ -1509,16 +1518,28 @@ pub fn pbft_manager_block_validation_session_next(
 /// Outputs:
 /// - The next validation plan after Rust applies the reported status.
 pub fn pbft_manager_block_validation_session_report(
-    session: &mut BridgePbftManagerBlockValidationSession,
+    runtime: &mut BridgePbftManagerRuntime,
     status: u8,
     dag_weight_check_required: bool,
 ) -> FfiPbftManagerBlockValidationPlan {
+    let Some(session) = runtime.block_validation_session.as_mut() else {
+        return block_validation_session_not_started_plan();
+    };
     report_domain_pbft_manager_block_validation_session_check(
-        &mut session.state,
+        session,
         PbftManagerBlockValidationFactStatus::from_u8(status),
         dag_weight_check_required,
     )
     .into()
+}
+
+fn block_validation_session_not_started_plan() -> FfiPbftManagerBlockValidationPlan {
+    FfiPbftManagerBlockValidationPlan {
+        action: PbftManagerBlockValidationAction::Reject.as_u8(),
+        status: PbftManagerBlockValidationStatus::InvalidBridgeFacts.as_u8(),
+        next_check: PbftManagerBlockValidationNextCheck::None.as_u8(),
+        error_code: "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_NOT_STARTED".to_owned(),
+    }
 }
 
 /// Plans one Rust-owned proposed PBFT block admission attempt from live C++ facts.
@@ -1544,24 +1565,6 @@ pub fn plan_pbft_manager_transition(
     fact: FfiPbftManagerTransitionFact,
 ) -> FfiPbftManagerTransitionPlan {
     plan_domain_pbft_manager_transition(fact.into()).into()
-}
-
-impl BridgePbftManagerBlockValidationSession {
-    /// Returns the next validation plan for this PBFT block-validation session.
-    pub fn pbft_manager_block_validation_session_next(
-        &mut self,
-    ) -> FfiPbftManagerBlockValidationPlan {
-        pbft_manager_block_validation_session_next(self)
-    }
-
-    /// Reports one requested live check and returns the next validation plan.
-    pub fn pbft_manager_block_validation_session_report(
-        &mut self,
-        status: u8,
-        dag_weight_check_required: bool,
-    ) -> FfiPbftManagerBlockValidationPlan {
-        pbft_manager_block_validation_session_report(self, status, dag_weight_check_required)
-    }
 }
 
 impl From<FfiPbftManagerRuntimeTickFact> for PbftManagerRuntimeTickFact {
@@ -4184,28 +4187,42 @@ mod tests {
 
     #[test]
     fn bridge_pbft_block_validation_session_reports_checks_and_retry() {
-        let mut session = create_pbft_manager_block_validation_session(block_validation_fact());
-        let plan = session.pbft_manager_block_validation_session_next();
+        let mut runtime =
+            runtime_for_startup("rustaxa_bridge_pbft_manager_block_validation_session");
+        pbft_manager_runtime_begin_block_validation_session(&mut runtime, block_validation_fact());
+        let plan = pbft_manager_block_validation_session_next(&mut runtime);
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_PBFT_CHAIN);
 
-        let plan = session
-            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_VALID, false);
+        let plan = pbft_manager_block_validation_session_report(
+            &mut runtime,
+            BLOCK_VALIDATION_FACT_VALID,
+            false,
+        );
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
 
-        let plan = session
-            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_MISSING, false);
+        let plan = pbft_manager_block_validation_session_report(
+            &mut runtime,
+            BLOCK_VALIDATION_FACT_MISSING,
+            false,
+        );
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION);
         assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING);
 
-        let plan = session
-            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_NOT_CHECKED, false);
+        let plan = pbft_manager_block_validation_session_report(
+            &mut runtime,
+            BLOCK_VALIDATION_FACT_NOT_CHECKED,
+            false,
+        );
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
 
-        let plan = session
-            .pbft_manager_block_validation_session_report(BLOCK_VALIDATION_FACT_VALID, false);
+        let plan = pbft_manager_block_validation_session_report(
+            &mut runtime,
+            BLOCK_VALIDATION_FACT_VALID,
+            false,
+        );
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_REWARD_VOTES);
     }
