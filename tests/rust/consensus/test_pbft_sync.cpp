@@ -759,6 +759,11 @@ TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
 }
 
 TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTranscript) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_state_action_runtime");
+  auto storage = create_storage(test_dir.string());
+  auto startup_fact = makePbftManagerStartupFact();
+  startup_fact.cacti_active_at_chain_size = false;
+  auto runtime = create_pbft_manager_runtime_from_storage(*storage, startup_fact);
   auto fact = makePbftManagerStateActionFact(4);
   fact.has_current_round_soft_value = true;
   fact.has_previous_round_next_null = true;
@@ -767,22 +772,24 @@ TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTransc
   ASSERT_EQ(plan.status, kPbftManagerStateActionStatusReady);
   ASSERT_EQ(plan.effects.size(), 2);
 
-  auto session = create_pbft_manager_state_action_effect_session(fact);
+  pbft_manager_runtime_begin_state_action_effect_session(*runtime, fact);
   std::vector<uint8_t> intents;
 
-  auto step = session->pbft_manager_state_action_effect_session_next();
+  auto step = pbft_manager_runtime_state_action_effect_session_next(*runtime);
   ASSERT_EQ(step.status, kPbftManagerStateActionSessionActive);
   ASSERT_TRUE(step.has_effect);
   intents.push_back(step.effect.intent);
   EXPECT_EQ(step.effect.hash, h256(0x55));
 
-  step = session->pbft_manager_state_action_effect_session_report(stateActionReport(step.cursor, step.effect.intent));
+  step = pbft_manager_runtime_state_action_effect_session_report(*runtime,
+                                                                 stateActionReport(step.cursor, step.effect.intent));
   ASSERT_EQ(step.status, kPbftManagerStateActionSessionActive);
   ASSERT_TRUE(step.has_effect);
   intents.push_back(step.effect.intent);
   EXPECT_EQ(step.effect.hash, h256(0));
 
-  step = session->pbft_manager_state_action_effect_session_report(stateActionReport(step.cursor, step.effect.intent));
+  step = pbft_manager_runtime_state_action_effect_session_report(*runtime,
+                                                                 stateActionReport(step.cursor, step.effect.intent));
   EXPECT_EQ(step.status, kPbftManagerStateActionSessionComplete);
   EXPECT_TRUE(step.complete);
   EXPECT_TRUE(step.can_continue);
@@ -790,6 +797,7 @@ TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTransc
 
   EXPECT_EQ(intents, (std::vector<uint8_t>{kPbftManagerStateActionNextVoteCurrentSoftValue,
                                            kPbftManagerStateActionNextVoteNullBlock}));
+  std::filesystem::remove_all(test_dir);
 }
 
 TEST(RustPbftSyncTest, ManagerAdvancePeriodRecordsEffectTranscript) {

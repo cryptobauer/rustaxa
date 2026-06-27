@@ -562,6 +562,9 @@ Implementation status:
 - The unused CXX `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` exports are deleted. Their wrapper
   modules only protected bridge-shaped test scaffolding; production C++ had no callsites, and native
   `rustaxa-consensus` vote pipeline/admission tests now own the behavior coverage.
+- `BridgePbftManagerStateActionEffectSession` is deleted. The C++ PBFT manager shim still executes live vote/block
+  side effects, but the ordered state-action transcript is now a cursor inside `BridgePbftManagerRuntime`, reducing the
+  PBFT manager CXX session surface by one internal handle.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also

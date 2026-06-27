@@ -415,9 +415,10 @@ rustaxa::PbftManagerStateActionFact makePbftManagerStateActionFact(
 
 template <typename Executor, typename Logger>
 rustaxa::PbftManagerStateActionSessionStep executeStateActionEffectSession(
-    const rustaxa::PbftManagerStateActionFact &fact, Executor &&executor, Logger &log_er) {
-  auto session = rustaxa::create_pbft_manager_state_action_effect_session(fact);
-  auto step = session->pbft_manager_state_action_effect_session_next();
+    rustaxa::BridgePbftManagerRuntime &runtime, const rustaxa::PbftManagerStateActionFact &fact, Executor &&executor,
+    Logger &log_er) {
+  rustaxa::pbft_manager_runtime_begin_state_action_effect_session(runtime, fact);
+  auto step = rustaxa::pbft_manager_runtime_state_action_effect_session_next(runtime);
   while (step.has_effect) {
     rustaxa::PbftManagerStateActionEffectReport report{};
     report.cursor = step.cursor;
@@ -430,7 +431,7 @@ rustaxa::PbftManagerStateActionSessionStep executeStateActionEffectSession(
     } catch (...) {
       report.error_code = "PBFT_MANAGER_STATE_ACTION_EFFECT_UNKNOWN_EXCEPTION";
     }
-    step = session->pbft_manager_state_action_effect_session_report(report);
+    step = rustaxa::pbft_manager_runtime_state_action_effect_session_report(runtime, report);
   }
   if (!step.can_continue) {
     LOG(log_er) << "Rust PBFT manager state-action effect session stopped, status "
@@ -2434,7 +2435,7 @@ void PbftManager::proposeBlock_() {
       action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
       action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(
-      fact,
+      *pbft_manager_runtime_.value(), fact,
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentProposeNewBlock) {
           LOG(log_nf_) << " 2t+1 next voted kNullBlockHash in previous round " << round - 1;
@@ -2503,7 +2504,7 @@ void PbftManager::identifyBlock_() {
       action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
       action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(
-      fact,
+      *pbft_manager_runtime_.value(), fact,
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentIdentifyLeaderAndSoftVote) {
           const auto leader_block_data = vote_mgr_->identifyLeaderBlock(
@@ -2568,7 +2569,7 @@ void PbftManager::certifyBlock_() {
       action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
       action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(
-      fact,
+      *pbft_manager_runtime_.value(), fact,
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentGoFinish) {
           LOG(log_dg_) << "Step 3 expired, will go to step 4 in period " << period << ", round " << round;
@@ -2628,7 +2629,7 @@ void PbftManager::firstFinish_() {
       action_snapshot.has_cert_voted_block, fromBridgeHash(action_snapshot.cert_voted_block_hash),
       action_snapshot.already_next_voted_value, action_snapshot.already_next_voted_null);
   executeStateActionEffectSession(
-      fact,
+      *pbft_manager_runtime_.value(), fact,
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentNextVoteCertVotedBlock) {
           if (!cert_voted_block_for_round_.has_value()) {
@@ -2731,7 +2732,7 @@ void PbftManager::secondFinish_() {
       fromBridgeHash(action_snapshot.cert_voted_block_hash), action_snapshot.already_next_voted_value,
       action_snapshot.already_next_voted_null);
   const auto session_step = executeStateActionEffectSession(
-      fact,
+      *pbft_manager_runtime_.value(), fact,
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentNextVoteCurrentSoftValue) {
           const auto soft_voted_block_hash = fromBridgeHash(effect.hash);

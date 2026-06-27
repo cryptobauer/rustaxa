@@ -66,8 +66,7 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::{
     BridgePbftManagerBlockValidationSession, BridgePbftManagerProposalSession,
-    BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession,
-    BridgePbftManagerStateActionEffectSession, BridgeStorage,
+    BridgePbftManagerRuntime, BridgePbftManagerRuntimeSession, BridgeStorage,
 };
 use crate::period_data_queue::{
     bridge_period_data_queue_clean_old_data, bridge_period_data_queue_pop,
@@ -137,9 +136,9 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerStateActionEffect, PbftManagerStateActionEffectPlan,
     PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
     PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionPlan,
-    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
-    PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
-    PbftManagerTransitionStorageStatus,
+    PbftManagerStateActionSessionStatus, PbftManagerStateActionSessionStep,
+    PbftManagerStorageStartupFact, PbftManagerTransitionFact, PbftManagerTransitionKind,
+    PbftManagerTransitionPlan, PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
 };
 use rustaxa_consensus::pbft_sync::{
     create_pbft_sync_queue_drain_session as create_domain_pbft_sync_queue_drain_session,
@@ -247,6 +246,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         storage: storage.0.clone(),
         period_data_queue: PeriodDataQueue::new(),
         pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
+        state_action_effect_session: None,
     }))
 }
 
@@ -1268,45 +1268,70 @@ pub fn plan_pbft_manager_state_action_effects(
     plan_domain_pbft_manager_state_action_effects(fact.into()).into()
 }
 
-/// Creates a Rust-owned state-action effect session from compact C++ facts.
-pub fn create_pbft_manager_state_action_effect_session(
+/// Starts a runtime-owned state-action effect session from compact C++ facts.
+///
+/// Inputs:
+/// - `runtime`: long-lived PBFT manager runtime that owns temporary session
+///   cursors for C++ compatibility execution.
+/// - `fact`: compact manager state, timing, and vote-status facts sourced by C++.
+///
+/// Outputs:
+/// - Resets the runtime-owned state-action effect cursor. Callers then drive it
+///   through `pbft_manager_runtime_state_action_effect_session_next` and
+///   `pbft_manager_runtime_state_action_effect_session_report`.
+///
+/// Invariants and edge behavior:
+/// - The session is not exported as a separate CXX handle; it is PBFT-manager
+///   runtime implementation state.
+/// - Starting a new session replaces any previous incomplete state-action
+///   cursor, matching the legacy per-call session allocation behavior.
+pub fn pbft_manager_runtime_begin_state_action_effect_session(
+    runtime: &mut BridgePbftManagerRuntime,
     fact: FfiPbftManagerStateActionFact,
-) -> Box<BridgePbftManagerStateActionEffectSession> {
-    Box::new(BridgePbftManagerStateActionEffectSession {
-        state: create_domain_pbft_manager_state_action_effect_session(fact.into()),
-    })
+) {
+    runtime.state_action_effect_session = Some(
+        create_domain_pbft_manager_state_action_effect_session(fact.into()),
+    );
 }
 
-/// Returns the next effect requested by a Rust-owned state-action session.
-pub fn pbft_manager_state_action_effect_session_next(
-    session: &mut BridgePbftManagerStateActionEffectSession,
+/// Returns the next effect requested by the runtime-owned state-action session.
+pub fn pbft_manager_runtime_state_action_effect_session_next(
+    runtime: &mut BridgePbftManagerRuntime,
 ) -> FfiPbftManagerStateActionSessionStep {
-    next_domain_pbft_manager_state_action_effect_session(&mut session.state).into()
+    let Some(session) = runtime.state_action_effect_session.as_mut() else {
+        return state_action_effect_session_not_started_step();
+    };
+    next_domain_pbft_manager_state_action_effect_session(session).into()
 }
 
 /// Reports one C++-executed state-action effect to Rust and returns the next step.
-pub fn pbft_manager_state_action_effect_session_report(
-    session: &mut BridgePbftManagerStateActionEffectSession,
+pub fn pbft_manager_runtime_state_action_effect_session_report(
+    runtime: &mut BridgePbftManagerRuntime,
     report: FfiPbftManagerStateActionEffectReport,
 ) -> FfiPbftManagerStateActionSessionStep {
-    report_domain_pbft_manager_state_action_effect_session(&mut session.state, report.into()).into()
+    let Some(session) = runtime.state_action_effect_session.as_mut() else {
+        return state_action_effect_session_not_started_step();
+    };
+    report_domain_pbft_manager_state_action_effect_session(session, report.into()).into()
 }
 
-/// Aborts this state-action effect session by exhausting it with a contract error.
-pub fn abort_pbft_manager_state_action_effect_session(
-    session: &mut BridgePbftManagerStateActionEffectSession,
-) {
-    let mut report_step = next_domain_pbft_manager_state_action_effect_session(&mut session.state);
-    while report_step.has_effect {
-        report_step = report_domain_pbft_manager_state_action_effect_session(
-            &mut session.state,
-            PbftManagerStateActionEffectReport {
-                cursor: report_step.cursor,
-                intent: report_step.effect.intent,
-                result: PbftManagerStateActionEffectResultCode::ExecutorError,
-                error_code: "PBFT_MANAGER_STATE_ACTION_EFFECT_SESSION_ABORTED".to_string(),
-            },
-        );
+fn state_action_effect_session_not_started_step() -> FfiPbftManagerStateActionSessionStep {
+    FfiPbftManagerStateActionSessionStep {
+        status: PbftManagerStateActionSessionStatus::ContractError.as_u8(),
+        cursor: 0,
+        has_effect: false,
+        effect: FfiPbftManagerStateActionEffect {
+            intent: PbftManagerStateActionIntent::Noop.as_u8(),
+            hash: [0; 32],
+            request_proposed_block_sidecar: false,
+            proposed_block_sidecar_hash: [0; 32],
+            proposed_block_sidecar_period: 0,
+        },
+        go_finish_state: false,
+        loop_back_finish_state: false,
+        complete: true,
+        can_continue: false,
+        error_code: "PBFT_MANAGER_STATE_ACTION_EFFECT_SESSION_NOT_STARTED".to_owned(),
     }
 }
 
@@ -1457,28 +1482,6 @@ impl BridgePbftManagerRuntimeSession {
     /// Aborts this runtime session.
     pub fn abort_pbft_manager_runtime_session(&mut self) {
         abort_pbft_manager_runtime_session(self)
-    }
-}
-
-impl BridgePbftManagerStateActionEffectSession {
-    /// Returns the next requested state-action effect.
-    pub fn pbft_manager_state_action_effect_session_next(
-        &mut self,
-    ) -> FfiPbftManagerStateActionSessionStep {
-        pbft_manager_state_action_effect_session_next(self)
-    }
-
-    /// Reports one executed state-action effect.
-    pub fn pbft_manager_state_action_effect_session_report(
-        &mut self,
-        report: FfiPbftManagerStateActionEffectReport,
-    ) -> FfiPbftManagerStateActionSessionStep {
-        pbft_manager_state_action_effect_session_report(self, report)
-    }
-
-    /// Aborts this state-action effect session.
-    pub fn abort_pbft_manager_state_action_effect_session(&mut self) {
-        abort_pbft_manager_state_action_effect_session(self)
     }
 }
 
@@ -2883,14 +2886,21 @@ mod tests {
     }
 
     #[test]
-    fn bridge_state_action_effect_session_reports_each_effect() {
+    fn bridge_runtime_owns_state_action_effect_session() {
         let mut finish_polling_fact = state_fact(4);
         finish_polling_fact.current_round_lambda_ms = 1_000;
         finish_polling_fact.has_current_round_soft_value = true;
         finish_polling_fact.has_previous_round_next_null = true;
-        let mut session = create_pbft_manager_state_action_effect_session(finish_polling_fact);
+        let temp_path = unique_temp_dir("rustaxa_bridge_pbft_manager_state_action_runtime");
+        let storage =
+            crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
+        let mut startup = startup_fact();
+        startup.cacti_active_at_chain_size = false;
+        let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup).unwrap();
 
-        let first = pbft_manager_state_action_effect_session_next(&mut session);
+        pbft_manager_runtime_begin_state_action_effect_session(&mut runtime, finish_polling_fact);
+
+        let first = pbft_manager_runtime_state_action_effect_session_next(&mut runtime);
         assert_eq!(first.status, STATE_ACTION_SESSION_ACTIVE);
         assert!(first.has_effect);
         assert_eq!(
@@ -2901,8 +2911,8 @@ mod tests {
         assert_eq!(first.effect.proposed_block_sidecar_hash, [0x55; 32]);
         assert_eq!(first.effect.proposed_block_sidecar_period, 10);
 
-        let second = pbft_manager_state_action_effect_session_report(
-            &mut session,
+        let second = pbft_manager_runtime_state_action_effect_session_report(
+            &mut runtime,
             FfiPbftManagerStateActionEffectReport {
                 cursor: first.cursor,
                 intent: first.effect.intent,
@@ -2916,8 +2926,8 @@ mod tests {
         assert_eq!(second.effect.proposed_block_sidecar_hash, [0; 32]);
         assert_eq!(second.effect.proposed_block_sidecar_period, 0);
 
-        let done = pbft_manager_state_action_effect_session_report(
-            &mut session,
+        let done = pbft_manager_runtime_state_action_effect_session_report(
+            &mut runtime,
             FfiPbftManagerStateActionEffectReport {
                 cursor: second.cursor,
                 intent: second.effect.intent,

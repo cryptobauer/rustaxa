@@ -212,10 +212,6 @@ pub struct BridgePbftManagerRuntimeSession {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession,
 }
 
-pub struct BridgePbftManagerStateActionEffectSession {
-    pub state: rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession,
-}
-
 /// Pillar-chain storage wrapper used by the C++ manager shim.
 ///
 /// The wrapper owns a cloned Rust storage handle so production pillar-chain
@@ -255,6 +251,8 @@ pub struct BridgePbftManagerRuntime {
     pub storage: Arc<Storage>,
     pub period_data_queue: PeriodDataQueue,
     pub pbft_sync_queue_drain_session: rustaxa_consensus::pbft_sync::PbftSyncQueueDrainSession,
+    pub state_action_effect_session:
+        Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -5772,20 +5770,17 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_state_action_effects(
             fact: PbftManagerStateActionFact,
         ) -> PbftManagerStateActionEffectPlan;
-        type BridgePbftManagerStateActionEffectSession;
-        pub fn create_pbft_manager_state_action_effect_session(
+        pub fn pbft_manager_runtime_begin_state_action_effect_session(
+            runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerStateActionFact,
-        ) -> Box<BridgePbftManagerStateActionEffectSession>;
-        pub fn pbft_manager_state_action_effect_session_next(
-            session: &mut BridgePbftManagerStateActionEffectSession,
+        );
+        pub fn pbft_manager_runtime_state_action_effect_session_next(
+            runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerStateActionSessionStep;
-        pub fn pbft_manager_state_action_effect_session_report(
-            session: &mut BridgePbftManagerStateActionEffectSession,
+        pub fn pbft_manager_runtime_state_action_effect_session_report(
+            runtime: &mut BridgePbftManagerRuntime,
             report: PbftManagerStateActionEffectReport,
         ) -> PbftManagerStateActionSessionStep;
-        pub fn abort_pbft_manager_state_action_effect_session(
-            session: &mut BridgePbftManagerStateActionEffectSession,
-        );
         type BridgePbftManagerProposalSession;
         pub fn create_pbft_manager_proposal_session(
             fact: PbftManagerProposalInitialFact,
@@ -5859,16 +5854,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgePbftFinalizationRuntimeSession,
         );
         pub fn abort_pbft_manager_runtime_session(self: &mut BridgePbftManagerRuntimeSession);
-        pub fn pbft_manager_state_action_effect_session_next(
-            self: &mut BridgePbftManagerStateActionEffectSession,
-        ) -> PbftManagerStateActionSessionStep;
-        pub fn pbft_manager_state_action_effect_session_report(
-            self: &mut BridgePbftManagerStateActionEffectSession,
-            report: PbftManagerStateActionEffectReport,
-        ) -> PbftManagerStateActionSessionStep;
-        pub fn abort_pbft_manager_state_action_effect_session(
-            self: &mut BridgePbftManagerStateActionEffectSession,
-        );
         pub fn pbft_manager_proposal_session_next(
             self: &mut BridgePbftManagerProposalSession,
         ) -> PbftManagerProposalSessionStep;
