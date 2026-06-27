@@ -227,8 +227,14 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - Additional no-caller `BridgeTransactionManagerRuntime` CXX exports are deleted:
   `transaction_manager_runtime_pack_begin`, `transaction_manager_runtime_gas_estimation_cache_size`, and
   `transaction_manager_runtime_insert_recovery_entries`. The live shim uses
-  `transaction_manager_runtime_pack_begin_sharded`, gas-estimation cache state is verified through planner outputs, and
+  `transaction_manager_runtime_pack_prepare_sharded` plus
+  `transaction_manager_runtime_pack_finalize_with_estimates`, gas-estimation cache state is verified through planner outputs, and
   recovery insertion is private Rust runtime behavior behind `transaction_manager_recover_nonfinalized_with_runtime`.
+- The older transaction-pack cursor CXX API is deleted: `transaction_manager_runtime_pack_begin_sharded`,
+  `transaction_manager_runtime_pack_request_next`, `transaction_manager_runtime_pack_record_estimate_step`, and the
+  bridge-only `TransactionPackEstimateOutcome` DTO. Live C++ transaction packing uses the batch prepare/finalize route,
+  and Rust bridge tests now cover candidate selection, sharding, declared-gas, cache, and finalization behavior through
+  that route.
 - The bridge-test-only transaction-manager recovery loader exports and DTOs are deleted:
   `transaction_manager_load_nonfinalized_recovery`, `transaction_manager_load_nonfinalized_recovery_inputs`,
   `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput`. The only C++ recovery boundary is

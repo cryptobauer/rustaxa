@@ -26,10 +26,9 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
     TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
     TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
-    TransactionPackPreparedPlan, TransactionPackSelectedTransaction,
-    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
-    TransactionPackSessionStep,
+    TransactionManagerVerifyTransactionOutcome, TransactionPackPreparedPlan,
+    TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
+    TransactionPackSessionEstimateInput, TransactionPackSessionStep,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
     TransactionQueueInsertOutcome, TransactionQueueProposableAccountFact,
@@ -1394,49 +1393,6 @@ impl BridgeTransactionManagerRuntime {
         })
     }
 
-    /// Begins one runtime-owned transaction packing session for a DAG proposer shard.
-    ///
-    /// Sharding is applied before gas estimation using the legacy sender-prefix
-    /// rule, so C++ only materializes and estimates candidates that Rust may
-    /// actually select for the configured proposer shard.
-    #[allow(clippy::too_many_arguments)]
-    pub fn transaction_manager_runtime_pack_begin_sharded(
-        &mut self,
-        weight_limit: u64,
-        min_transaction_gas: u64,
-        proposal_period: u64,
-        estimate_gas_limit: u64,
-        last_block_number: u64,
-        total_shards: u16,
-        node_shard: u16,
-        shard_period_interval: u64,
-    ) -> Result<()> {
-        ensure!(
-            self.transaction_pack_session.is_none(),
-            "TM_RUNTIME_PACK_SESSION_ALREADY_ACTIVE"
-        );
-        ensure!(total_shards != 0, "TM_RUNTIME_PACK_TOTAL_SHARDS_ZERO");
-        ensure!(
-            node_shard < total_shards,
-            "TM_RUNTIME_PACK_NODE_SHARD_OUT_OF_RANGE"
-        );
-        ensure!(
-            total_shards <= 1 || shard_period_interval != 0,
-            "TM_RUNTIME_PACK_SHARD_INTERVAL_ZERO"
-        );
-        self.transaction_pack_session = Some(self.create_pack_session(
-            weight_limit,
-            min_transaction_gas,
-            proposal_period,
-            estimate_gas_limit,
-            last_block_number,
-            total_shards,
-            node_shard,
-            shard_period_interval,
-        )?);
-        Ok(())
-    }
-
     /// Begins one runtime-owned packing flow and returns all candidates that
     /// require C++ gas estimation.
     #[allow(clippy::too_many_arguments)]
@@ -1632,108 +1588,11 @@ impl BridgeTransactionManagerRuntime {
         Ok(step)
     }
 
-    /// Requests the next packed transaction candidate or final session outcome.
-    pub fn transaction_manager_runtime_pack_request_next(
-        &mut self,
-    ) -> Result<TransactionPackSessionStep> {
-        let mut session = self
-            .transaction_pack_session
-            .take()
-            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
-        let step = match self.transaction_manager_runtime_pack_step_inner(&mut session) {
-            Ok(step) => step,
-            Err(err) => {
-                self.transaction_pack_session = Some(session);
-                return Err(err).context("TM_RUNTIME_PACK_REQUEST_NEXT");
-            }
-        };
-        if step.request_estimate {
-            self.transaction_pack_session = Some(session);
-        }
-        Ok(step)
-    }
-
-    /// Records one C++ gas estimate and returns the next Rust-driven request or final output.
-    pub fn transaction_manager_runtime_pack_record_estimate_step(
-        &mut self,
-        input: TransactionPackSessionEstimateInput,
-    ) -> Result<TransactionPackSessionStep> {
-        let mut session = self
-            .transaction_pack_session
-            .take()
-            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?;
-
-        if let Err(err) =
-            self.transaction_manager_runtime_pack_record_estimate_inner(&mut session, input)
-        {
-            self.transaction_pack_session = Some(session);
-            return Err(err).context("TM_RUNTIME_PACK_RECORD_ESTIMATE");
-        }
-
-        let out = match self.transaction_manager_runtime_pack_step_inner(&mut session) {
-            Ok(out) => out,
-            Err(err) => {
-                self.transaction_pack_session = Some(session);
-                return Err(err).context("TM_RUNTIME_PACK_RECORD_ESTIMATE");
-            }
-        };
-
-        if out.request_estimate {
-            self.transaction_pack_session = Some(session);
-        }
-        Ok(out)
-    }
-
-    fn transaction_manager_runtime_pack_step_inner(
-        &mut self,
-        session: &mut TransactionManagerRuntimePackSession,
-    ) -> Result<TransactionPackSessionStep> {
-        loop {
-            let Some(candidate) = runtime_pack_next_estimable_entry(session)? else {
-                return Ok(runtime_pack_session_final_step(session));
-            };
-
-            if candidate.gas <= session.estimate_gas_limit {
-                let input = TransactionPackSessionEstimateInput {
-                    hash: candidate.hash.0,
-                    gas_used: candidate.gas,
-                    last_block_number: session.last_block_number,
-                    result_rlp: Vec::new(),
-                };
-                self.transaction_manager_runtime_pack_record_estimate_inner(session, input)?;
-                continue;
-            }
-
-            if let Some(cached) = self
-                .sidecar
-                .gas_estimation_cache_get(candidate.hash, session.proposal_period)
-                .context("TM_RUNTIME_PACK_GAS_ESTIMATION_CACHE_GET")?
-            {
-                let input = TransactionPackSessionEstimateInput {
-                    hash: candidate.hash.0,
-                    gas_used: cached.gas_used,
-                    last_block_number: session.last_block_number,
-                    result_rlp: Vec::new(),
-                };
-                self.transaction_manager_runtime_pack_record_estimate_inner(session, input)?;
-                continue;
-            }
-
-            return Ok(TransactionPackSessionStep {
-                request_estimate: true,
-                candidate: transaction_pack_candidate_from_entry(Some(candidate))?,
-                selected_transactions: Vec::new(),
-                demoted_hashes: Vec::new(),
-                stopped: session.stopped,
-            });
-        }
-    }
-
     fn transaction_manager_runtime_pack_record_estimate_inner(
         &mut self,
         session: &mut TransactionManagerRuntimePackSession,
         input: TransactionPackSessionEstimateInput,
-    ) -> Result<TransactionPackEstimateOutcome> {
+    ) -> Result<()> {
         let Some(candidate) = session.current.take() else {
             return Err(anyhow!("TM_RUNTIME_PACK_NO_ACTIVE_CANDIDATE"));
         };
@@ -1770,13 +1629,7 @@ impl BridgeTransactionManagerRuntime {
         if outcome.stop {
             session.stopped = true;
         }
-        Ok(TransactionPackEstimateOutcome {
-            hash: outcome.hash.0,
-            selected: outcome.selected,
-            demote_to_non_proposable: outcome.demote_to_non_proposable,
-            stop: outcome.stop,
-            gas_used: outcome.gas_used,
-        })
+        Ok(())
     }
 
     /// Aborts and clears the active runtime packing session.
@@ -3773,67 +3626,6 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_pack_session_round_trips_and_clears() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-        let signing_key = SigningKey::from_slice(&[0x41u8; 32]).unwrap();
-        let sender = address_from_signing_key(&signing_key);
-        let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
-        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
-        runtime
-            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
-                hash: envelope.hash.0,
-                sender: sender.0,
-                nonce: envelope.nonce.to_big_endian(),
-                gas_price: envelope.gas_price.to_big_endian(),
-                gas: envelope.gas,
-                data_size: envelope.data.len(),
-                tx_rlp: tx_rlp.clone(),
-                proposable: true,
-                last_block_number: 0,
-            })
-            .expect("queue insert should succeed");
-
-        runtime
-            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
-            .expect("pack session should begin");
-
-        let step = runtime
-            .transaction_manager_runtime_pack_request_next()
-            .expect("candidate request should succeed");
-        assert!(step.request_estimate);
-        let candidate = step.candidate;
-        assert!(candidate.found);
-        assert_eq!(candidate.hash, envelope.hash.0);
-        assert_eq!(candidate.sender, sender.0);
-        assert_eq!(candidate.nonce, envelope.nonce.to_big_endian());
-        assert_eq!(candidate.gas_price, envelope.gas_price.to_big_endian());
-        assert_eq!(candidate.declared_gas, 21_000);
-        assert_eq!(candidate.gas, 21_000);
-        assert!(candidate.receiver_found);
-        assert_eq!(candidate.receiver, H160::from([0x44u8; 20]).0);
-        assert_eq!(candidate.value, U256::from(3u64).to_big_endian());
-        assert!(candidate.data.is_empty());
-
-        let final_step = runtime
-            .transaction_manager_runtime_pack_record_estimate_step(
-                TransactionPackSessionEstimateInput {
-                    hash: envelope.hash.0,
-                    gas_used: 42_000,
-                    last_block_number: 10,
-                    result_rlp: vec![0xc0],
-                },
-            )
-            .expect("record estimate should succeed");
-        assert!(!final_step.request_estimate);
-        assert!(final_step.stopped);
-        assert_eq!(final_step.selected_transactions.len(), 1);
-        assert_eq!(final_step.selected_transactions[0].hash, envelope.hash.0);
-        assert_eq!(final_step.selected_transactions[0].gas_used, 42_000);
-        assert!(!runtime.transaction_manager_runtime_pack_abort());
-    }
-
-    #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_finalize_single_candidate() {
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
@@ -3920,91 +3712,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_pack_request_next_drives_estimate_loop() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
-        let signing_key = SigningKey::from_slice(&[0x42u8; 32]).unwrap();
-        let sender = address_from_signing_key(&signing_key);
-        let first_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
-        let first_envelope = LegacyTransactionEnvelope::decode(&first_rlp).unwrap();
-        let second_rlp = signed_legacy_transaction_rlp(&signing_key, 2, 2999);
-        let second_envelope = LegacyTransactionEnvelope::decode(&second_rlp).unwrap();
-        runtime
-            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
-                hash: first_envelope.hash.0,
-                sender: sender.0,
-                nonce: first_envelope.nonce.to_big_endian(),
-                gas_price: first_envelope.gas_price.to_big_endian(),
-                gas: first_envelope.gas,
-                data_size: first_envelope.data.len(),
-                tx_rlp: first_rlp,
-                proposable: true,
-                last_block_number: 0,
-            })
-            .expect("proposable insert should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
-                hash: second_envelope.hash.0,
-                sender: sender.0,
-                nonce: second_envelope.nonce.to_big_endian(),
-                gas_price: second_envelope.gas_price.to_big_endian(),
-                gas: second_envelope.gas,
-                data_size: second_envelope.data.len(),
-                tx_rlp: second_rlp,
-                proposable: true,
-                last_block_number: 0,
-            })
-            .expect("proposable insert should succeed");
-
-        runtime
-            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
-            .expect("pack session should begin");
-
-        let first_step = runtime
-            .transaction_manager_runtime_pack_request_next()
-            .expect("first request should be emitted");
-        assert!(first_step.request_estimate);
-        assert!(first_step.candidate.found);
-        let first_hash = first_step.candidate.hash;
-
-        let second_step = runtime
-            .transaction_manager_runtime_pack_record_estimate_step(
-                TransactionPackSessionEstimateInput {
-                    hash: first_hash,
-                    gas_used: 30_000,
-                    last_block_number: 10,
-                    result_rlp: vec![0xc0],
-                },
-            )
-            .expect("first estimate should return next request");
-        assert!(second_step.request_estimate);
-        let second_hash = second_step.candidate.hash;
-
-        let final_step = runtime
-            .transaction_manager_runtime_pack_record_estimate_step(
-                TransactionPackSessionEstimateInput {
-                    hash: second_hash,
-                    gas_used: 20_000,
-                    last_block_number: 11,
-                    result_rlp: vec![0xc0],
-                },
-            )
-            .expect("loop should finalize after last candidate");
-        assert!(!final_step.request_estimate);
-        assert_eq!(final_step.selected_transactions.len(), 1);
-        assert_eq!(final_step.selected_transactions[0].hash, first_hash);
-        assert_eq!(final_step.selected_transactions[0].gas_used, 30_000);
-        assert_eq!(final_step.demoted_hashes.len(), 1);
-        assert_eq!(final_step.demoted_hashes[0].hash, second_hash);
-
-        assert!(!runtime.transaction_manager_runtime_pack_abort());
-        runtime
-            .transaction_manager_runtime_pack_begin_sharded(21_000, 21_000, 7, 0, 10, 1, 0, 1)
-            .expect("completed step session should be cleared");
-    }
-
-    #[test]
-    fn bridge_transaction_manager_runtime_pack_session_filters_candidate_shards() {
+    fn bridge_transaction_manager_runtime_pack_prepare_filters_candidate_shards() {
         fn legacy_sender_shard(sender: H160, proposal_period: u64, total_shards: u16) -> u16 {
             let prefix = legacy_transaction_shard_sender_prefix(sender);
             ((prefix + proposal_period / 10) % u64::from(total_shards)) as u16
@@ -4052,8 +3760,8 @@ mod tests {
                 .expect("proposable insert should succeed");
         }
 
-        runtime
-            .transaction_manager_runtime_pack_begin_sharded(
+        let plan = runtime
+            .transaction_manager_runtime_pack_prepare_sharded(
                 63_000,
                 21_000,
                 proposal_period,
@@ -4063,23 +3771,19 @@ mod tests {
                 first_shard,
                 10,
             )
-            .expect("sharded pack session should begin");
-
-        let first_step = runtime
-            .transaction_manager_runtime_pack_request_next()
-            .expect("matching-shard candidate should be requested");
-        assert!(first_step.request_estimate);
-        assert_eq!(first_step.candidate.hash, first_envelope.hash.0);
+            .expect("sharded pack prepare should begin");
+        assert_eq!(plan.request_estimates.len(), 1);
+        assert_eq!(plan.request_estimates[0].hash, first_envelope.hash.0);
 
         let final_step = runtime
-            .transaction_manager_runtime_pack_record_estimate_step(
+            .transaction_manager_runtime_pack_finalize_with_estimates(vec![
                 TransactionPackSessionEstimateInput {
-                    hash: first_step.candidate.hash,
+                    hash: plan.request_estimates[0].hash,
                     gas_used: 30_000,
                     last_block_number: 10,
                     result_rlp: vec![0xc0],
                 },
-            )
+            ])
             .expect("estimate should finish sharded pack session");
         assert!(!final_step.request_estimate);
         assert_eq!(final_step.selected_transactions.len(), 1);
@@ -4108,7 +3812,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_pack_session_consumes_declared_and_cached_gas() {
+    fn bridge_transaction_manager_runtime_pack_prepare_consumes_declared_and_cached_gas() {
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
         let signing_key = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
@@ -4146,25 +3850,17 @@ mod tests {
             )
             .expect("cache store should succeed");
 
-        runtime
-            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 25_000, 10, 1, 0, 1)
-            .expect("pack session should begin");
-
-        let final_step = runtime
-            .transaction_manager_runtime_pack_request_next()
-            .expect("declared/cache paths should finish without C++ estimate");
-        assert!(!final_step.request_estimate);
-        assert_eq!(final_step.selected_transactions.len(), 2);
-        assert_eq!(
-            final_step.selected_transactions[0].hash,
-            first_envelope.hash.0
-        );
-        assert_eq!(final_step.selected_transactions[0].gas_used, 21_000);
-        assert_eq!(
-            final_step.selected_transactions[1].hash,
-            second_envelope.hash.0
-        );
-        assert_eq!(final_step.selected_transactions[1].gas_used, 21_000);
+        let plan = runtime
+            .transaction_manager_runtime_pack_prepare_sharded(
+                63_000, 21_000, 7, 25_000, 10, 1, 0, 1,
+            )
+            .expect("pack prepare should consume declared/cache paths");
+        assert!(plan.request_estimates.is_empty());
+        assert_eq!(plan.selected_transactions.len(), 2);
+        assert_eq!(plan.selected_transactions[0].hash, first_envelope.hash.0);
+        assert_eq!(plan.selected_transactions[0].gas_used, 21_000);
+        assert_eq!(plan.selected_transactions[1].hash, second_envelope.hash.0);
+        assert_eq!(plan.selected_transactions[1].gas_used, 21_000);
         assert!(!runtime.transaction_manager_runtime_pack_abort());
 
         let mut cached_runtime =
@@ -4192,19 +3888,16 @@ mod tests {
                 },
             )
             .expect("cache store should succeed");
-        cached_runtime
-            .transaction_manager_runtime_pack_begin_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
-            .expect("cached pack session should begin");
-        let cached_step = cached_runtime
-            .transaction_manager_runtime_pack_request_next()
-            .expect("cached path should finish without C++ estimate");
-        assert!(!cached_step.request_estimate);
-        assert_eq!(cached_step.selected_transactions.len(), 1);
+        let cached_plan = cached_runtime
+            .transaction_manager_runtime_pack_prepare_sharded(63_000, 21_000, 7, 0, 10, 1, 0, 1)
+            .expect("cached pack prepare should finish without C++ estimate");
+        assert!(cached_plan.request_estimates.is_empty());
+        assert_eq!(cached_plan.selected_transactions.len(), 1);
         assert_eq!(
-            cached_step.selected_transactions[0].hash,
+            cached_plan.selected_transactions[0].hash,
             second_envelope.hash.0
         );
-        assert_eq!(cached_step.selected_transactions[0].gas_used, 30_000);
+        assert_eq!(cached_plan.selected_transactions[0].gas_used, 30_000);
         assert!(!cached_runtime.transaction_manager_runtime_pack_abort());
     }
 

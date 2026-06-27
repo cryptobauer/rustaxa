@@ -910,8 +910,15 @@ Implementation status:
 - `BridgeTransactionManagerRuntime` no-caller transaction-manager exports are narrowed again:
   `transaction_manager_runtime_pack_begin`, `transaction_manager_runtime_gas_estimation_cache_size`, and
   `transaction_manager_runtime_insert_recovery_entries` are deleted from the CXX surface. Live C++ transaction packing
-  uses `transaction_manager_runtime_pack_begin_sharded`, gas-estimation cache behavior is observable through the planner
-  result, and non-finalized recovery uses the Rust-owned `transaction_manager_recover_nonfinalized_with_runtime` command.
+  uses `transaction_manager_runtime_pack_prepare_sharded` plus
+  `transaction_manager_runtime_pack_finalize_with_estimates`, gas-estimation cache behavior is observable through the
+  planner result, and non-finalized recovery uses the Rust-owned `transaction_manager_recover_nonfinalized_with_runtime`
+  command.
+- The older transaction-pack cursor CXX API is also deleted:
+  `transaction_manager_runtime_pack_begin_sharded`, `transaction_manager_runtime_pack_request_next`,
+  `transaction_manager_runtime_pack_record_estimate_step`, and the bridge-only `TransactionPackEstimateOutcome` DTO.
+  The retained C++ shim route is the batch prepare/finalize API; Rust bridge tests for sharding, declared-gas, cached
+  gas, candidate selection, and finalization now exercise that route instead of the retired request/record cursor.
 - Transaction-manager non-finalized recovery loaders are no longer CXX exports:
   `transaction_manager_load_nonfinalized_recovery`, `transaction_manager_load_nonfinalized_recovery_inputs`,
   `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput` are deleted from the bridge
@@ -1074,6 +1081,16 @@ Implementation status:
   - `cmake --build /build --target final_chain_test --parallel 12`
   - `/build/bin/final_chain_test --gtest_filter='FinalChainTest.*' --gtest_print_time=1`
   - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `git diff --check`
+  Validation for this transaction pack cursor export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_manager_runtime_pack -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `cmake --build /build --target taraxad --parallel 12`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `rg -n "TransactionPackEstimateOutcome|transaction_manager_runtime_pack_(begin_sharded|request_next|record_estimate_step)|pack_begin_sharded|pack_request_next|pack_record_estimate_step|transaction_manager_runtime_pack_step_inner" rust/crates/rustaxa-bridge/src libraries tests -g'*.rs' -g'*.cpp' -g'*.hpp'` returned no matches.
   - `git diff --check`
 - Additional no-caller CXX exports are deleted after callsite audit showed they were bridge-test scaffolding only:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
