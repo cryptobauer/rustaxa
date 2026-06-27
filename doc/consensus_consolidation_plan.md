@@ -267,7 +267,7 @@ Implementation notes:
 - C++ review confirmed `create_storage_shim_batch` and `BridgeStorageBatch` are confined to `storage_shim` internals, and
   `rustBatchId` no longer has code callsites.
 - Slice 4 is not complete: original consensus modules still call public `DbStorage::createWriteBatch()` /
-  `commitWriteBatch()` APIs.
+  `commitWriteBatch()` APIs in paths that do not yet have an authoritative Rust-mode overlay or service.
 - The batch-only conversion is implemented for DAG block save/remove, status fields, PBFT manager fields/status, PBFT
   heads, own verified votes, 2t+1 vote bundles, extra reward votes, proposal-period DAG-level mappings, and cert-voted
   block writes/removal. These methods now use a private `DbStorage::commitImmediateRustBatch` helper, typed
@@ -286,6 +286,11 @@ Implementation notes:
   `DbStorage::createWriteBatch()` / `commitWriteBatch()` APIs.
 - Remaining original PBFT manager reset paths still need new narrow APIs before their public batch usage can be removed:
   cert-voted-block removal and own-verified-vote clearing are still batch-only at the caller boundary.
+- Proposed-block persistence is closed for the current Rust-mode route. The active `proposed_blocks_shim` overlay owns
+  save, startup restore, and stale-period cleanup through `BridgeProposedBlocks`; storage-backed cleanup plans stale
+  period/hash groups, commits one native Rust storage delete batch, and mutates the Rust index only after commit. The
+  public batch loop in `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` remains legacy/reference behavior
+  behind `RUSTAXA_ENABLE_PROPOSED_BLOCKS` and should not drive new storage-shim API expansion.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.
@@ -531,6 +536,11 @@ Implementation status:
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
   removed matching DB rows. The remaining public `DbStorage` batch blocks in
   `libraries/core_libs/consensus/src/transaction/transaction_manager.cpp` are legacy-only under the current overlay.
+- Proposed-block Rust-mode persistence and cleanup are also closed under the current overlay. The remaining public
+  `DbStorage` batch block in `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` is legacy-only when
+  `RUSTAXA_ENABLE_PROPOSED_BLOCKS` is enabled; Rust-mode cleanup enters
+  `BridgeProposedBlocks::proposed_blocks_cleanup_with_storage`, which commits the delete batch in native Rust storage
+  before removing stale periods from the Rust index.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

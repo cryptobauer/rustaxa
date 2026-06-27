@@ -219,6 +219,11 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   both pending-storage-row deletion and sidecar removal. Rust commits the native storage delete batch first and then
   mutates live sidecar state, matching the legacy C++ behavior without exposing public `DbStorage` batch usage in
   Rust-mode.
+- `proposed_blocks_shim::cleanupProposedPbftBlocksByPeriod` is the active Rust-mode route for proposed-block cleanup.
+  It calls `BridgeProposedBlocks::proposed_blocks_cleanup_with_storage`, which plans stale period/hash groups, commits a
+  native Rust storage delete batch, and only then mutates the Rust proposed-block index. The public batch loop in
+  `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` is legacy/reference behavior when
+  `RUSTAXA_ENABLE_PROPOSED_BLOCKS` enables the overlay, not remaining Rust-mode storage-shim debt.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is
