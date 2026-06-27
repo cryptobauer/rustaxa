@@ -526,6 +526,11 @@ Implementation status:
 - `BridgeStorage::save_non_finalized_transactions` is also deleted. Older transaction-manager bridge paths now call the
   native `rustaxa-consensus` transaction storage helper directly, matching the runtime commit path and preserving the
   atomic accepted-transaction RLP plus `TrxCount` write group without a broad `BridgeStorage` mutator.
+- Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
+  native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
+  `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
+  removed matching DB rows. The remaining public `DbStorage` batch blocks in
+  `libraries/core_libs/consensus/src/transaction/transaction_manager.cpp` are legacy-only under the current overlay.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

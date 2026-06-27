@@ -131,6 +131,37 @@ pub fn save_transaction_count(storage: &Storage, transaction_count: u64) -> Resu
         .context("TRANSACTION_MANAGER_COUNT_WRITE")
 }
 
+/// Removes non-finalized transaction payload rows for explicit hashes.
+///
+/// Inputs:
+/// - `storage`: native Rust storage handle.
+/// - `hashes`: transaction hashes whose pending payload rows should be removed.
+///
+/// Outputs:
+/// - Commits one Rust-owned batch deleting the supplied pending transaction keys.
+///
+/// Invariants and edge behavior:
+/// - This does not update `TrxCount`; callers own any associated live counter
+///   semantics.
+/// - Missing rows are treated as no-op deletes, matching legacy storage batch
+///   behavior.
+/// - An empty hash list is a no-op and does not create or commit a batch.
+pub fn remove_non_finalized_transactions(storage: &Storage, hashes: Vec<H256>) -> Result<()> {
+    if hashes.is_empty() {
+        return Ok(());
+    }
+
+    let mut batch = storage.create_write_batch();
+    for hash in hashes {
+        storage
+            .batch_delete_raw(&mut batch, Column::Transactions, hash.as_bytes())
+            .context("NON_FINALIZED_TRANSACTION_BATCH_DELETE")?;
+    }
+    storage
+        .commit_write_batch_with_sync(batch, false)
+        .context("NON_FINALIZED_TRANSACTION_DELETE_BATCH_COMMIT")
+}
+
 /// Returns whether a transaction hash is indexed as finalized.
 ///
 /// Inputs:
@@ -350,6 +381,45 @@ mod tests {
                 .status_field(StatusField::TrxCount as u8)
                 .unwrap(),
             9
+        );
+    }
+
+    #[test]
+    fn remove_non_finalized_transactions_deletes_rows_without_count_update() {
+        let storage = temp_storage("rustaxa_consensus_transaction_storage_remove_non_finalized");
+        let live_hash = H256::from([0x11; 32]);
+        let removed_hash = H256::from([0x22; 32]);
+        let missing_hash = H256::from([0x33; 32]);
+
+        save_non_finalized_transactions(
+            &storage,
+            vec![
+                NonFinalizedTransactionStoragePayload {
+                    hash: live_hash,
+                    trx_rlp: vec![0xC1],
+                },
+                NonFinalizedTransactionStoragePayload {
+                    hash: removed_hash,
+                    trx_rlp: vec![0xC2],
+                },
+            ],
+            2,
+        )
+        .unwrap();
+
+        remove_non_finalized_transactions(&storage, vec![removed_hash, missing_hash]).unwrap();
+
+        assert_eq!(
+            storage.transaction().rlp(live_hash).unwrap(),
+            Some(vec![0xC1])
+        );
+        assert_eq!(storage.transaction().rlp(removed_hash).unwrap(), None);
+        assert_eq!(
+            storage
+                .metadata()
+                .status_field(StatusField::TrxCount as u8)
+                .unwrap(),
+            2
         );
     }
 

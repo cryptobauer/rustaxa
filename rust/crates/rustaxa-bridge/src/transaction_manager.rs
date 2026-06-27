@@ -70,11 +70,11 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
 use rustaxa_consensus::transaction_storage::{
-    load_non_finalized_recovery_entries, load_stored_transactions, save_non_finalized_transactions,
-    save_transaction_count, transaction_finalized, NonFinalizedTransactionStoragePayload,
-    StoredTransactionLookupRequest, STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR,
-    STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
-    STORED_TRANSACTION_SOURCE_PENDING,
+    load_non_finalized_recovery_entries, load_stored_transactions,
+    remove_non_finalized_transactions, save_non_finalized_transactions, save_transaction_count,
+    transaction_finalized, NonFinalizedTransactionStoragePayload, StoredTransactionLookupRequest,
+    STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
+    STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
 };
 use rustaxa_storage::Storage;
 use rustaxa_types::LegacyTransactionEnvelope;
@@ -2282,13 +2282,26 @@ impl BridgeTransactionManagerRuntime {
         &mut self,
         requests: Vec<TransactionManagerSidecarLookupRequest>,
     ) -> Result<u64> {
-        let mut removed = 0u64;
-        for request in requests {
+        let mut hashes = Vec::with_capacity(requests.len());
+        for request in &requests {
             let hash = H256::from(request.hash);
             ensure!(
                 !hash.is_zero(),
                 "runtime sidecar removal hash cannot be zero"
             );
+            if self.sidecar.contains_non_finalized(hash) {
+                hashes.push(hash);
+            }
+        }
+
+        remove_non_finalized_transactions(
+            transaction_manager_runtime_storage(self)?,
+            hashes.clone(),
+        )
+        .context("TM_RUNTIME_REMOVE_NON_FINALIZED_STORAGE")?;
+
+        let mut removed = 0u64;
+        for hash in hashes {
             if self.sidecar.remove_non_finalized(hash) {
                 removed += 1;
             }
@@ -3437,6 +3450,71 @@ mod tests {
             TM_TRANSACTION_VIEW_SOURCE_STORAGE_PENDING
         );
         assert_eq!(plan.views[3].tx_rlp, vec![0x44]);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_remove_non_finalized_deletes_storage_rows() {
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_transaction_manager_runtime_remove_non_finalized");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+        let mut runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            3,
+            TransactionQueueConfig { max_size: 16 },
+        );
+
+        for (hash, trx_rlp) in [
+            ([1u8; 32], vec![0x11]),
+            ([2u8; 32], vec![0x22]),
+            ([3u8; 32], vec![0x33]),
+        ] {
+            storage
+                .0
+                .transaction()
+                .write(H256::from(hash), &trx_rlp)
+                .expect("pending transaction should persist");
+        }
+        for (hash, trx_rlp) in [([1u8; 32], vec![0x11]), ([2u8; 32], vec![0x22])] {
+            runtime
+                .transaction_manager_runtime_insert_non_finalized(
+                    TransactionManagerSidecarInsertInput { hash, trx_rlp },
+                )
+                .expect("sidecar payload should insert");
+        }
+
+        let removed = runtime
+            .transaction_manager_runtime_remove_non_finalized(vec![
+                TransactionManagerSidecarLookupRequest {
+                    input_index: 0,
+                    hash: [1u8; 32],
+                },
+                TransactionManagerSidecarLookupRequest {
+                    input_index: 1,
+                    hash: [3u8; 32],
+                },
+            ])
+            .expect("runtime removal should delete storage-backed sidecar rows");
+
+        assert_eq!(removed, 1);
+        assert!(!runtime.transaction_manager_runtime_contains_non_finalized(&[1u8; 32]));
+        assert!(runtime.transaction_manager_runtime_contains_non_finalized(&[2u8; 32]));
+        assert_eq!(
+            storage.0.transaction().rlp(H256::from([1u8; 32])).unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.0.transaction().rlp(H256::from([2u8; 32])).unwrap(),
+            Some(vec![0x22])
+        );
+        assert_eq!(
+            storage.0.transaction().rlp(H256::from([3u8; 32])).unwrap(),
+            Some(vec![0x33])
+        );
 
         let _ = fs::remove_dir_all(temp_dir);
     }

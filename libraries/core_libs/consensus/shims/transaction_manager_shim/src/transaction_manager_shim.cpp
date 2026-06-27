@@ -753,12 +753,11 @@ class TransactionManagerRustShimAccess {
   }
 
   /**
-   * Clears only live non-finalized transaction sidecars after Rust finalization
-   * storage cleanup has committed.
+   * Clears live non-finalized transaction sidecars and their pending storage rows.
    *
-   * This intentionally performs no storage deletes and does not update
-   * transaction counters, matching the legacy expired-DAG cleanup semantics after
-   * moving persistent deletion to Rust.
+   * Rust owns the storage delete batch and commits it before mutating the live
+   * sidecar. Transaction counters are unchanged, matching the legacy
+   * expired-DAG cleanup semantics.
    */
   static void removeNonFinalizedTransactions(TransactionManager& manager,
                                              std::unordered_set<trx_hash_t>&& transactions) {

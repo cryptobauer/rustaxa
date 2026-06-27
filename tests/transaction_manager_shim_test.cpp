@@ -344,7 +344,7 @@ TEST_F(TransactionManagerShimFixture, rustRecoverNonfinalizedTransactionsSkipsFi
   ASSERT_TRUE(db->getTransaction(transactions[1]->getHash()));
 }
 
-TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDoesNotTouchStorage) {
+TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDeletesStorageRow) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
@@ -364,7 +364,7 @@ TEST_F(TransactionManagerShimFixture, expiredNonFinalizedSidecarCleanupDoesNotTo
   lock.unlock();
 
   EXPECT_EQ(trx_mgr.getNonfinalizedTrxSize(), 0);
-  EXPECT_TRUE(db->getTransaction(transactions[0]->getHash()));
+  EXPECT_FALSE(db->getTransaction(transactions[0]->getHash()));
 }
 
 TEST_F(TransactionManagerShimFixture, rustFinalizedTransactionsInitializationRetainsLivePayloadsInRust) {
