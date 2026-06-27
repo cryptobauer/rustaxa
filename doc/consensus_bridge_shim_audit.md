@@ -169,7 +169,7 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
 - Genesis-hash writes now use `storage_shim_set_genesis_hash`, a dedicated storage-shim API that preserves the
   `rustaxa-storage` write-if-empty behavior while avoiding the broad `BridgeStorage::set_genesis_hash` mutator from the
   C++ shim. The obsolete broad `BridgeStorage::set_genesis_hash` CXX export has been deleted; only the dedicated
-  storage-shim helper remains.
+  storage-shim helper remains. The storage conformance runner now uses that dedicated helper as well.
 - Block-reward stats clearing now uses `storage_shim_clear_block_rewards_stats`, a dedicated storage-shim API that
   preserves the Rust storage aggregate delete and native batch commit while avoiding the broad
   `BridgeStorage::clear_block_rewards_stats` mutator from the C++ shim. The obsolete broad
@@ -192,6 +192,8 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
 - The remaining test-only callers of broad `BridgeStorage::save_cert_voted_block_in_round` now route through either
   `storage_shim_save_cert_voted_block_in_round` or native Rust PBFT manager storage helpers, so the broad CXX storage
   method has been deleted.
+- The storage conformance caller of broad `BridgeStorage::save_pbft_head` now routes through
+  `storage_shim_save_pbft_head` and a Rust-owned storage-shim batch, so the broad CXX storage method has been deleted.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

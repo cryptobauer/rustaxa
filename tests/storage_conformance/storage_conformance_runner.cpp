@@ -194,7 +194,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("genesis_missing_before", toString(metadata_queries->get_genesis_hash().empty()));
 
   auto genesis_hash = h256Array(0xAB);
-  storage->set_genesis_hash(genesis_hash);
+  rustaxa::storage_shim_set_genesis_hash(*storage, genesis_hash);
   transcript.add("genesis_after_set_len", toString(metadata_queries->get_genesis_hash().size()));
 
   storage->save_status_field(kStatusFieldTrxCount, 11);
@@ -260,7 +260,10 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
 
   auto pbft_head_hash = h256Array(0x71);
   transcript.add("pbft_head_missing_len", toString(pbft_queries->get_pbft_head(pbft_head_hash).size()));
-  storage->save_pbft_head(pbft_head_hash, toRustVec(std::vector<uint8_t>{'h', 'e', 'a', 'd'}));
+  auto pbft_head_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_pbft_head(*pbft_head_batch, pbft_head_hash,
+                                       toRustVec(std::vector<uint8_t>{'h', 'e', 'a', 'd'}));
+  rustaxa::storage_shim_commit_batch(std::move(pbft_head_batch), false);
   transcript.add("pbft_head_after_save_len", toString(pbft_queries->get_pbft_head(pbft_head_hash).size()));
 
   // Transaction paths + system transaction + period system hashes

@@ -482,6 +482,8 @@ Implementation status:
   exercise `create_gas_pricer_from_storage` directly.
 - `BridgeStorage` CXX exports have been narrowed: the obsolete broad `set_genesis_hash` mutator is deleted because
   Rust-mode `DbStorage::setGenesisHash` uses the dedicated `storage_shim_set_genesis_hash` compatibility API.
+- The storage conformance runner now also seeds genesis through `storage_shim_set_genesis_hash`, so it no longer depends
+  on the deleted broad `BridgeStorage::set_genesis_hash` method.
 - `BridgeStorage` CXX exports have been narrowed further: the obsolete broad `clear_block_rewards_stats` mutator is
   deleted because Rust-mode `DbStorage::deleteColumnData(block_rewards_stats)` uses the dedicated
   `storage_shim_clear_block_rewards_stats` compatibility API.
@@ -502,6 +504,8 @@ Implementation status:
 - The last test-only callers of broad `BridgeStorage::save_cert_voted_block_in_round` have been migrated to either the
   dedicated `storage_shim_save_cert_voted_block_in_round` batch appender or native Rust PBFT manager storage helpers, and
   the broad CXX mutator is deleted.
+- The storage conformance caller of broad `BridgeStorage::save_pbft_head` now seeds through the dedicated
+  `storage_shim_save_pbft_head` batch appender, and the broad CXX mutator is deleted.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

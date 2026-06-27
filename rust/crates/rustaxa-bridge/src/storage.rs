@@ -1394,10 +1394,6 @@ impl BridgeStorage {
         self.0.pbft().write_manager_status(field, value)
     }
 
-    pub fn save_pbft_head(&self, hash: &[u8; 32], head: Vec<u8>) -> Result<(), anyhow::Error> {
-        self.0.pbft().write_head(H256::from(*hash), &head)
-    }
-
     /// Batch-loads canonical transaction RLP payloads by hash through Rust
     /// storage.
     ///
