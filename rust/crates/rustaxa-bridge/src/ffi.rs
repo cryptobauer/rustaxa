@@ -7432,11 +7432,6 @@ pub mod rustaxa_ffi {
             hash: &[u8; 32],
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn save_extra_reward_vote(
-            self: &BridgeStorage,
-            hash: &[u8; 32],
-            vote_rlp: Vec<u8>,
-        ) -> Result<()>;
         pub fn persist_pbft_vote_progress(
             self: &BridgeStorage,
             write: PbftVoteProgressPersistenceWrite,

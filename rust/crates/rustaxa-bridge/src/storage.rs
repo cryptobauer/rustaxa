@@ -1482,23 +1482,6 @@ impl BridgeStorage {
         )?)
     }
 
-    pub fn save_extra_reward_vote(
-        &self,
-        hash: &[u8; 32],
-        vote_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        require_pbft_vote_persistence_applied(domain_persist_pbft_vote_progress(
-            &self.0,
-            DomainPbftVoteProgressPersistenceWrite {
-                extra_reward_vote: Some(DomainPbftVoteStorageRecord {
-                    hash: H256::from(*hash),
-                    vote_rlp,
-                }),
-                two_t_plus_one_bundle: None,
-            },
-        )?)
-    }
-
     /// Persists VoteManager durable effects for one accepted PBFT vote.
     ///
     /// Inputs:

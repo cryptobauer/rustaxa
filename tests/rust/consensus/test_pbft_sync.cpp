@@ -1203,7 +1203,9 @@ TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
   auto storage = create_storage(test_dir.string());
   storage->save_dag_block(h256(2), 1, 0, bytes({0xda}));
   storage->save_transaction(h256(4), bytes({0xd0}));
-  storage->save_extra_reward_vote(h256(12), bytes({0xee}));
+  auto seed_batch = create_storage_shim_batch(*storage);
+  storage_shim_save_extra_reward_vote(*seed_batch, h256(12), bytes({0xee}));
+  storage_shim_commit_batch(std::move(seed_batch), false);
   auto period_queries = periodQueries(storage);
 
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
