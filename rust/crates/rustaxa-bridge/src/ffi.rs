@@ -159,10 +159,6 @@ pub struct BridgeConsensusNetworkApi {
 
 pub struct BridgeDagGraph(pub DagGraph);
 
-/// Storage-free DagManager state wrapper used for in-memory DAG graph/index
-/// logic only. Persistence is intentionally handled by `BridgeDagManagerRuntime`.
-pub struct BridgeDagManagerState(pub DagManagerState);
-
 /// DagManager runtime wrapper coupling deterministic in-memory state with the
 /// shared Rust storage handle used for direct DAG persistence and reads.
 pub struct BridgeDagManagerRuntime {
@@ -5126,52 +5122,6 @@ pub mod rustaxa_ffi {
         ) -> DagPivotTipsValidation;
         pub fn dag_clear(self: &mut BridgeDagGraph);
         pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
-
-        type BridgeDagManagerState;
-
-        pub fn create_dag_manager_state(
-            genesis: &[u8; 32],
-            dag_expiry_limit: u32,
-        ) -> Result<Box<BridgeDagManagerState>>;
-        pub fn dag_manager_rebuild(
-            self: &mut BridgeDagManagerState,
-            snapshot: DagManagerSnapshot,
-        ) -> Result<()>;
-        pub fn dag_manager_add_block(
-            self: &mut BridgeDagManagerState,
-            block: DagManagerBlock,
-        ) -> Result<()>;
-        pub fn dag_manager_validate_pivot_tips(
-            self: &BridgeDagManagerState,
-            block_level: u64,
-            pivot: &[u8; 32],
-            tips: Vec<DagHash>,
-        ) -> DagPivotTipsValidation;
-        pub fn dag_manager_compute_order(
-            self: &BridgeDagManagerState,
-            anchor: &[u8; 32],
-        ) -> DagOrder;
-        pub fn dag_manager_frontier(self: &BridgeDagManagerState) -> DagFrontier;
-        pub fn dag_manager_ghost_path(
-            self: &BridgeDagManagerState,
-            source: &[u8; 32],
-        ) -> Vec<DagHash>;
-        pub fn dag_manager_anchor_ghost_path(self: &BridgeDagManagerState) -> Vec<DagHash>;
-        pub fn dag_manager_graphviz_dot(self: &BridgeDagManagerState, pivot_tree: bool) -> String;
-        pub fn dag_manager_vertex_count(self: &BridgeDagManagerState) -> usize;
-        pub fn dag_manager_edge_count(self: &BridgeDagManagerState) -> usize;
-        pub fn dag_manager_max_level(self: &BridgeDagManagerState) -> u64;
-        pub fn dag_manager_latest_period(self: &BridgeDagManagerState) -> u64;
-        pub fn dag_manager_anchors(self: &BridgeDagManagerState) -> DagManagerAnchors;
-        pub fn dag_manager_dag_expiry_limit(self: &BridgeDagManagerState) -> u32;
-        pub fn dag_manager_dag_expiry_level(self: &BridgeDagManagerState) -> u64;
-        pub fn dag_manager_non_finalized_blocks(
-            self: &BridgeDagManagerState,
-        ) -> Vec<DagLevelHashes>;
-        pub fn dag_manager_non_finalized_blocks_size(
-            self: &BridgeDagManagerState,
-        ) -> DagManagerNonFinalizedSize;
-        pub fn dag_manager_non_finalized_min_difficulty(self: &BridgeDagManagerState) -> u32;
 
         type BridgeDagManagerRuntime;
 

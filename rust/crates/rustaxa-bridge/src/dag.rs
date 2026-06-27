@@ -24,7 +24,7 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyVdfPrepareResult, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionInput,
     DagVerifyVdfSortitionResult, HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
-use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeStorage};
+use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 #[cfg(test)]
@@ -175,21 +175,6 @@ pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph> {
     Box::new(BridgeDagGraph(DagGraph::new(to_h256(genesis))))
 }
 
-/// Creates a Rust-owned DagManager state bridge rooted at `genesis`.
-///
-/// The returned state owns deterministic graph/index data only; C++ remains
-/// responsible for DB writes, transaction side effects, events, and networking
-/// until those domains are explicitly migrated.
-pub fn create_dag_manager_state(
-    genesis: &[u8; 32],
-    dag_expiry_limit: u32,
-) -> Result<Box<BridgeDagManagerState>> {
-    Ok(Box::new(BridgeDagManagerState(DagManagerState::new(
-        to_h256(genesis),
-        dag_expiry_limit,
-    )?)))
-}
-
 /// Creates a Rust-owned DagManager runtime with direct storage access.
 ///
 /// The runtime owns deterministic graph/index state and a cloned Rust storage
@@ -328,125 +313,6 @@ impl BridgeDagGraph {
 
     pub fn dag_graphviz_dot(&self) -> String {
         self.0.graphviz_dot()
-    }
-}
-
-impl BridgeDagManagerState {
-    /// Rebuilds the in-memory DAG state from a caller-provided snapshot.
-    pub fn dag_manager_rebuild(&mut self, snapshot: DagManagerSnapshot) -> Result<()> {
-        self.0.rebuild_from_snapshot(to_domain_snapshot(snapshot))
-    }
-
-    /// Adds one accepted DAG block to the in-memory Rust state.
-    pub fn dag_manager_add_block(&mut self, block: DagManagerBlock) -> Result<()> {
-        self.0.add_block(to_domain_block(block))
-    }
-
-    /// Validates pivot/tip availability against the current in-memory DAG state.
-    pub fn dag_manager_validate_pivot_tips(
-        &self,
-        block_level: u64,
-        pivot: &[u8; 32],
-        tips: Vec<DagHash>,
-    ) -> DagPivotTipsValidation {
-        let tips = tips
-            .into_iter()
-            .map(|tip| H256::from(tip.hash))
-            .collect::<Vec<_>>();
-        let validation = self
-            .0
-            .validate_pivot_tips(block_level, to_h256(pivot), &tips);
-
-        DagPivotTipsValidation {
-            ok: validation.ok,
-            expected_level: validation.expected_level,
-            level_matches: validation.level_matches,
-            missing_references: to_dag_hashes(validation.missing_references),
-        }
-    }
-
-    pub fn dag_manager_compute_order(&self, anchor: &[u8; 32]) -> DagOrder {
-        match self.0.compute_order(to_h256(anchor)) {
-            Some(hashes) => DagOrder {
-                found: true,
-                hashes: to_dag_hashes(hashes),
-            },
-            None => DagOrder {
-                found: false,
-                hashes: Vec::new(),
-            },
-        }
-    }
-
-    pub fn dag_manager_frontier(&self) -> DagFrontier {
-        to_bridge_frontier(self.0.frontier())
-    }
-
-    pub fn dag_manager_ghost_path(&self, source: &[u8; 32]) -> Vec<DagHash> {
-        to_dag_hashes(self.0.ghost_path(to_h256(source)))
-    }
-
-    pub fn dag_manager_anchor_ghost_path(&self) -> Vec<DagHash> {
-        to_dag_hashes(self.0.anchor_ghost_path())
-    }
-
-    pub fn dag_manager_graphviz_dot(&self, pivot_tree: bool) -> String {
-        self.0.graphviz_dot(pivot_tree)
-    }
-
-    pub fn dag_manager_vertex_count(&self) -> usize {
-        self.0.vertex_count()
-    }
-
-    pub fn dag_manager_edge_count(&self) -> usize {
-        self.0.edge_count()
-    }
-
-    pub fn dag_manager_max_level(&self) -> u64 {
-        self.0.max_level()
-    }
-
-    pub fn dag_manager_latest_period(&self) -> u64 {
-        self.0.period()
-    }
-
-    pub fn dag_manager_anchors(&self) -> DagManagerAnchors {
-        let (old_anchor, anchor) = self.0.anchors();
-        DagManagerAnchors {
-            old_anchor: old_anchor.into(),
-            anchor: anchor.into(),
-        }
-    }
-
-    pub fn dag_manager_dag_expiry_limit(&self) -> u32 {
-        self.0.dag_expiry_limit()
-    }
-
-    pub fn dag_manager_dag_expiry_level(&self) -> u64 {
-        self.0.dag_expiry_level()
-    }
-
-    pub fn dag_manager_non_finalized_blocks(&self) -> Vec<DagLevelHashes> {
-        self.0
-            .non_finalized_blocks()
-            .iter()
-            .map(|(level, hashes)| DagLevelHashes {
-                level: *level,
-                hashes: to_dag_hashes(hashes.iter().copied().collect()),
-            })
-            .collect()
-    }
-
-    pub fn dag_manager_non_finalized_blocks_size(&self) -> DagManagerNonFinalizedSize {
-        let (levels, blocks) = self.0.non_finalized_blocks_size();
-        DagManagerNonFinalizedSize {
-            levels: levels as u64,
-            blocks: blocks as u64,
-        }
-    }
-
-    pub fn dag_manager_non_finalized_min_difficulty(&self) -> u32 {
-        self.0.non_finalized_min_difficulty()
     }
 }
 

@@ -585,6 +585,9 @@ Implementation status:
 - `BridgeDagProposerRetryState` is deleted. Per-wallet DAG proposer retry state moved into `BridgeDagManagerRuntime`,
   keyed by wallet VRF public key, so `dag_block_proposer_shim` no longer snapshots or applies retry state through a
   standalone bridge handle.
+- `BridgeDagManagerState` is deleted. The unused storage-free DAG manager state handle and its CXX methods were removed;
+  live DAG manager state is owned by `BridgeDagManagerRuntime`, while standalone graph compatibility remains isolated in
+  `BridgeDagGraph`.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
