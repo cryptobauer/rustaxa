@@ -24,7 +24,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | `BridgeFinalChain`, `BridgeFinalChainExecutionSession`, `BridgeConsensusExecutionApi`, `create_final_chain*`, `create_final_chain_execution_session`, `create_consensus_execution_api` | `final_chain_shim`, transaction manager runtime, consensus execution adapters | External boundary | Keep EVM/execution boundary while EVM remains out of scope. Move consensus fact reads to Rust FinalChain ports and delete bridge paths that only materialize C++ facts for Rust consensus. |
 | `rust/crates/rustaxa-bridge/src/dag.rs` | `BridgeDagGraph`, `BridgeDagManagerRuntime` | `dag_shim`, `dag_manager_shim`, DAG tests | C++ public compatibility facade | Remove graph compatibility handles after DAG public callers stop needing C++ graph aliases. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | `BridgePbftChain`, `create_pbft_chain`, `create_pbft_chain_from_storage` | `pbft_chain_shim`, PBFT manager/runtime tests | C++ public compatibility facade | Delete once PBFT chain public C++ facade is no longer required or PBFT manager owns chain state natively in Rust. The no-caller `create_pbft_chain_with_storage` export is deleted. |
-| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftManagerRuntime` | `pbft_manager_shim`, app bootstrap runtime creation | Internal Rust route | Runtime, state-action effect, proposal, and block-validation session handles are retired and owned by `BridgePbftManagerRuntime`. Keep only app bootstrap handle until PBFT manager C++ facade is retired. |
+| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftManagerRuntime`, stateless block-validation planner | `pbft_manager_shim`, app bootstrap runtime creation | Internal Rust route | Runtime, state-action effect, and proposal session handles are retired and owned by `BridgePbftManagerRuntime`; block validation is now a stateless planner with C++-local facts. Keep only app bootstrap handle until PBFT manager C++ facade is retired. |
 | `rust/crates/rustaxa-bridge/src/pbft_finalize.rs` | `BridgePbftFinalizationRuntimeSession`, finalization/resume sessions | PBFT manager/finalization shims and tests | Internal Rust route | Delete bridge sessions once PBFT finalization is invoked inside Rust consensus runtime rather than through C++ shim sessions. |
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | PBFT sync egress, process-period, and cert-vote validation functions | `pbft_manager_shim`, PBFT sync bridge tests | Internal Rust route | Keep narrowing into `BridgePbftManagerRuntime` service methods. Standalone direct admission, transaction-query, and queue-drain CXX surfaces are retired; remaining functions disappear when PBFT sync processing is owned fully inside the Rust PBFT manager runtime. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_*` | Vote validation/generation/progress/ingress/payload helpers | Vote manager shim, network API tests, PBFT/vote tests | Internal Rust route | CXX vote pipeline/admission/session/runtime handles are retired. Standalone planner/event free-function exports and bridge-only DTOs are deleted; live ingress uses `BridgeConsensusNetworkApi`, live validation/admission/reward materialization uses `BridgeVerifiedVotes`, and direct helper exports remain only for canonical inspection, vote generation, and payload conversion still called by C++ shims. |
@@ -395,14 +395,13 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_proposal_session`,
   `pbft_manager_proposal_session_next`, and `pbft_manager_proposal_session_report_dag_order`, so C++ no longer allocates
   a standalone bridge handle for proposal planning.
-- `BridgePbftManagerBlockValidationSession` is retired. PBFT block validation planning is now a cursor inside
-  `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_block_validation_session`,
-  `pbft_manager_block_validation_session_next`, and `pbft_manager_block_validation_session_report`, so C++ no longer
-  allocates a standalone bridge handle for validation planning.
+- `BridgePbftManagerBlockValidationSession` is retired, and the later bridge-runtime block-validation cursor has also
+  been removed. `pbft_manager_shim` now calls stateless `plan_pbft_manager_block_validation` with a C++-local fact
+  bundle after each external PBFT-chain, FinalChain, reward-vote, pillar, or DAG check.
 - Additional no-caller standalone PBFT runtime wrappers are retired from the CXX surface:
-  `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`, `plan_pbft_manager_block_validation`,
+  `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
   `load_pbft_finalization_last_period_lambda_storage`, and the bridge-only `PbftSyncRuntimePlan` DTO. Live C++ uses
-  `plan_pbft_sync_process_period_data_runtime`, proposal/block-validation runtime sessions, and
+  `plan_pbft_sync_process_period_data_runtime`, `plan_pbft_manager_block_validation`, proposal runtime sessions, and
   `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests keep coverage for the
   deleted lower-level planners and lambda lookup.
 - Direct PBFT sync admission and transaction-query planners are also retired from the CXX surface:

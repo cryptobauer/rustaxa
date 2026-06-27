@@ -80,17 +80,16 @@ use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
-    create_pbft_manager_block_validation_session as create_domain_pbft_manager_block_validation_session,
     create_pbft_manager_proposal_session as create_domain_pbft_manager_proposal_session,
     create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     create_pbft_manager_state_action_effect_session as create_domain_pbft_manager_state_action_effect_session,
     load_pbft_manager_startup_replay_period as load_domain_pbft_manager_startup_replay_period,
-    next_pbft_manager_block_validation_session as next_domain_pbft_manager_block_validation_session,
     next_pbft_manager_proposal_session as next_domain_pbft_manager_proposal_session,
     next_pbft_manager_runtime_action,
     next_pbft_manager_state_action_effect_session as next_domain_pbft_manager_state_action_effect_session,
     plan_pbft_manager_advance_period_from_transition as plan_domain_pbft_manager_advance_period_from_transition,
+    plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
     plan_pbft_manager_eligible_wallet_period_wait as plan_domain_pbft_manager_eligible_wallet_period_wait,
@@ -100,7 +99,6 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_sleep_until_next_step as plan_domain_pbft_manager_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
-    report_pbft_manager_block_validation_session_check as report_domain_pbft_manager_block_validation_session_check,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
     report_pbft_manager_proposal_dag_order as report_domain_pbft_manager_proposal_dag_order,
     report_pbft_manager_runtime_action,
@@ -108,11 +106,10 @@ use rustaxa_consensus::pbft_manager::{
     save_cert_voted_block_in_round_storage,
     validate_pbft_manager_advance_period_action_report as validate_domain_pbft_manager_advance_period_action_report,
     PbftManagerAdvancePeriodActionReport, PbftManagerAdvancePeriodActionReportResult,
-    PbftManagerAdvancePeriodPlan, PbftManagerBlockValidationAction, PbftManagerBlockValidationFact,
-    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationNextCheck,
-    PbftManagerBlockValidationPlan, PbftManagerBlockValidationStatus, PbftManagerBroadcastAction,
-    PbftManagerBroadcastFact, PbftManagerBroadcastPlan, PbftManagerBroadcastReport,
-    PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
+    PbftManagerAdvancePeriodPlan, PbftManagerBlockValidationFact,
+    PbftManagerBlockValidationFactStatus, PbftManagerBlockValidationPlan,
+    PbftManagerBroadcastAction, PbftManagerBroadcastFact, PbftManagerBroadcastPlan,
+    PbftManagerBroadcastReport, PbftManagerBroadcastReportResult, PbftManagerBroadcastStatus,
     PbftManagerCandidateAdmissionFact, PbftManagerCandidateAdmissionPlan,
     PbftManagerCandidateAdmissionValidationStatus, PbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
@@ -241,7 +238,6 @@ pub fn create_pbft_manager_runtime_from_storage(
         state_action_effect_session: None,
         runtime_session: None,
         proposal_session: None,
-        block_validation_session: None,
     }))
 }
 
@@ -1421,77 +1417,27 @@ pub fn report_pbft_manager_broadcast(
     report_domain_pbft_manager_broadcast(plan.into(), report.into()).into()
 }
 
-/// Starts a runtime-owned PBFT block-validation session from initial live facts.
+/// Plans one PBFT block-validation step from the current live-fact bundle.
 ///
 /// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime that owns the temporary
-///   block-validation cursor.
-/// - `fact`: initial block identity and check status bundle supplied by C++.
+/// - `fact`: block identity, static validation flags, and current live-check
+///   statuses supplied by C++.
 ///
 /// Outputs:
-/// - Replaces any previous block-validation cursor. C++ drives the cursor with
-///   `pbft_manager_block_validation_session_next` and
-///   `pbft_manager_block_validation_session_report`.
+/// - Returns the next requested live check, terminal accept/reject, or
+///   contract error for invalid bridge facts.
 ///
 /// Invariants and edge behavior:
-/// - C++ must call `pbft_manager_block_validation_session_next` before
-///   reporting a check.
-/// - The session is a compatibility executor boundary; it does not perform
-///   live checks or materialize C++ sidecars.
-/// - Starting a new validation replaces any incomplete previous validation,
-///   matching the legacy per-call allocation behavior.
-pub fn pbft_manager_runtime_begin_block_validation_session(
-    runtime: &mut BridgePbftManagerRuntime,
+/// - Rust owns the deterministic check ordering and rejection reason.
+/// - C++ owns live PBFT chain, FinalChain, reward-vote, pillar, and DAG
+///   execution and calls this again after updating the corresponding status in
+///   the fact bundle.
+/// - No validation cursor is stored in `BridgePbftManagerRuntime`; callers keep
+///   the per-block fact bundle local to the validation path.
+pub fn plan_pbft_manager_block_validation(
     fact: FfiPbftManagerBlockValidationFact,
-) {
-    runtime.block_validation_session = Some(create_domain_pbft_manager_block_validation_session(
-        fact.into(),
-    ));
-}
-
-/// Returns the next validation plan for the runtime-owned block-validation session.
-pub fn pbft_manager_block_validation_session_next(
-    runtime: &mut BridgePbftManagerRuntime,
 ) -> FfiPbftManagerBlockValidationPlan {
-    let Some(session) = runtime.block_validation_session.as_mut() else {
-        return block_validation_session_not_started_plan();
-    };
-    next_domain_pbft_manager_block_validation_session(session).into()
-}
-
-/// Reports one requested live check to the runtime-owned block-validation session.
-///
-/// Inputs:
-/// - `status`: stable fact status for the most recently requested check.
-/// - `dag_weight_check_required`: meaningful only for successful DAG-order
-///   reports, where the executor discovers whether a DAG-weight check must
-///   follow.
-///
-/// Outputs:
-/// - The next validation plan after Rust applies the reported status.
-pub fn pbft_manager_block_validation_session_report(
-    runtime: &mut BridgePbftManagerRuntime,
-    status: u8,
-    dag_weight_check_required: bool,
-) -> FfiPbftManagerBlockValidationPlan {
-    let Some(session) = runtime.block_validation_session.as_mut() else {
-        return block_validation_session_not_started_plan();
-    };
-    report_domain_pbft_manager_block_validation_session_check(
-        session,
-        PbftManagerBlockValidationFactStatus::from_u8(status),
-        dag_weight_check_required,
-    )
-    .into()
-}
-
-fn block_validation_session_not_started_plan() -> FfiPbftManagerBlockValidationPlan {
-    FfiPbftManagerBlockValidationPlan {
-        action: PbftManagerBlockValidationAction::Reject.as_u8(),
-        status: PbftManagerBlockValidationStatus::InvalidBridgeFacts.as_u8(),
-        next_check: PbftManagerBlockValidationNextCheck::None.as_u8(),
-        error_code: "PBFT_MANAGER_BLOCK_VALIDATION_SESSION_NOT_STARTED".to_owned(),
-    }
+    plan_domain_pbft_manager_block_validation(fact.into()).into()
 }
 
 /// Plans one Rust-owned proposed PBFT block admission attempt from live C++ facts.
@@ -4010,43 +3956,36 @@ mod tests {
     }
 
     #[test]
-    fn bridge_pbft_block_validation_session_reports_checks_and_retry() {
-        let mut runtime =
-            runtime_for_startup("rustaxa_bridge_pbft_manager_block_validation_session");
-        pbft_manager_runtime_begin_block_validation_session(&mut runtime, block_validation_fact());
-        let plan = pbft_manager_block_validation_session_next(&mut runtime);
+    fn bridge_plans_pbft_block_validation_checks_and_retry() {
+        let fact = block_validation_fact();
+        let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_PBFT_CHAIN);
 
-        let plan = pbft_manager_block_validation_session_report(
-            &mut runtime,
-            BLOCK_VALIDATION_FACT_VALID,
-            false,
-        );
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
+        let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
 
-        let plan = pbft_manager_block_validation_session_report(
-            &mut runtime,
-            BLOCK_VALIDATION_FACT_MISSING,
-            false,
-        );
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
+        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_MISSING;
+        let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_WAIT_FOR_FINALIZATION);
         assert_eq!(plan.status, BLOCK_VALIDATION_STATUS_FINAL_CHAIN_MISSING);
 
-        let plan = pbft_manager_block_validation_session_report(
-            &mut runtime,
-            BLOCK_VALIDATION_FACT_NOT_CHECKED,
-            false,
-        );
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
+        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_NOT_CHECKED;
+        let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_FINAL_CHAIN_HASH);
 
-        let plan = pbft_manager_block_validation_session_report(
-            &mut runtime,
-            BLOCK_VALIDATION_FACT_VALID,
-            false,
-        );
+        let mut fact = block_validation_fact();
+        fact.pbft_chain_status = BLOCK_VALIDATION_FACT_VALID;
+        fact.final_chain_hash_status = BLOCK_VALIDATION_FACT_VALID;
+        let plan = plan_pbft_manager_block_validation(fact);
         assert_eq!(plan.action, BLOCK_VALIDATION_ACTION_RUN_CHECK);
         assert_eq!(plan.next_check, BLOCK_VALIDATION_CHECK_REWARD_VOTES);
     }

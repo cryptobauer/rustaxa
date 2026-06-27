@@ -228,8 +228,6 @@ pub struct BridgePbftManagerRuntime {
         Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
     pub runtime_session: Option<rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession>,
     pub proposal_session: Option<rustaxa_consensus::pbft_manager::PbftManagerProposalSession>,
-    pub block_validation_session:
-        Option<rustaxa_consensus::pbft_manager::PbftManagerBlockValidationSession>,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -5026,17 +5024,8 @@ pub mod rustaxa_ffi {
             plan: PbftManagerBroadcastPlan,
             report: PbftManagerBroadcastReport,
         ) -> PbftManagerBroadcastReportResult;
-        pub fn pbft_manager_runtime_begin_block_validation_session(
-            runtime: &mut BridgePbftManagerRuntime,
+        pub fn plan_pbft_manager_block_validation(
             fact: PbftManagerBlockValidationFact,
-        );
-        pub fn pbft_manager_block_validation_session_next(
-            runtime: &mut BridgePbftManagerRuntime,
-        ) -> PbftManagerBlockValidationPlan;
-        pub fn pbft_manager_block_validation_session_report(
-            runtime: &mut BridgePbftManagerRuntime,
-            status: u8,
-            dag_weight_check_required: bool,
         ) -> PbftManagerBlockValidationPlan;
         pub fn plan_pbft_manager_candidate_admission(
             fact: PbftManagerCandidateAdmissionFact,

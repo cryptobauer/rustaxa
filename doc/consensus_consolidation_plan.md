@@ -465,8 +465,9 @@ Acceptance:
   `final_chain_shim`, eliminating the direct internal bridge-handle sharing point in FinalChain call-paths.
 
 - Current status: the transaction manager packing path is now thin (`prepare` + single `finalize`) and does not keep shim-side
-  estimate-session loops. Slice 6 remains incomplete because `pbft_manager_shim` and `pillar_chain_manager_shim` still own
-  orchestration loops or session state that is not yet routed through one-shot Rust service calls.
+  estimate-session loops. PBFT block validation no longer stores a bridge runtime cursor. Slice 6 remains incomplete
+  because `pbft_manager_shim` finalization/lifecycle paths and `pillar_chain_manager_shim` still own orchestration loops
+  or session state that is not yet routed through one-shot Rust service calls.
 
 Implementation notes:
 
@@ -484,9 +485,16 @@ Implementation notes:
   one batched read, then passes canonical RLP bytes and weights back to Rust for signature validation, duplicate/conflict
   checks, threshold selection, and accepted-voter materialization. The previous shim-local per-vote inspection/weight
   loop and `getPillarVoteWeight()` helper are gone.
+- `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
+  `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
+  `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
+  `BridgePbftManagerRuntime` while C++ performs external PBFT-chain, FinalChain, vote, pillar, and DAG checks.
 - Custom-agent delegation was attempted for this Slice 6 increment (`cpp-pro` and `rust-engineer`), but the agent
   backend rejected both starts due a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
   using the `$implement-rustaxa-consensus-slice` workflow.
+- Custom-agent delegation was attempted again for the PBFT block-validation cursor removal (`cpp-pro` and
+  `rust-engineer`); both attempts hit the same GPT-5.3-Codex-Spark usage limit, so the local implementation path
+  continued.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -509,6 +517,15 @@ Implementation notes:
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
   - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarChainPlanningBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
   - `cmake --build /build --target pbft_manager_test --parallel 12`
+- Additional validation for PBFT block-validation cursor removal:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_block_validation`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus block_validation`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='*PbftManager*:*PBFT*:*Pbft*' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes:PbftManagerTest.*sync*:PbftManagerTest.*pbft_block*' --gtest_print_time=1`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is one-loop reduction in those subsystems before Slice 6 can be marked complete.
@@ -660,9 +677,9 @@ Implementation status:
 - `BridgePbftManagerProposalSession` is deleted. PBFT block proposal planning is now a cursor inside
   `BridgePbftManagerRuntime`, so `pbft_manager_shim` no longer creates a standalone bridge handle for proposal
   construction.
-- `BridgePbftManagerBlockValidationSession` is deleted. PBFT block validation planning is now a cursor inside
-  `BridgePbftManagerRuntime`, so `pbft_manager_shim` no longer creates a standalone bridge handle for validation
-  checks.
+- `BridgePbftManagerBlockValidationSession` is deleted. PBFT block validation planning now uses the stateless
+  `plan_pbft_manager_block_validation` API with a C++-local fact bundle, so `pbft_manager_shim` no longer creates a
+  standalone bridge handle or stores a validation cursor in `BridgePbftManagerRuntime`.
 - `BridgeDagVerifyBlockSession` is deleted. DAG block verification still reports live external facts from C++ for
   transaction lookup, FinalChain authorization, VDF verification, and gas estimation, but the ordered cursor now lives
   inside `BridgeDagManagerRuntime` through runtime-owned begin/next/report functions. `dag_manager_shim::verifyBlock`
@@ -792,11 +809,12 @@ Implementation status:
   Custom agents used: `architect-reviewer` confirmed the live C++ command-report boundary; `rust-engineer` confirmed the
   private DTO/test impact.
 - Additional standalone PBFT runtime wrappers are no longer CXX exports:
-  `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`, `plan_pbft_manager_block_validation`,
+  `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
   `load_pbft_finalization_last_period_lambda_storage`, and the bridge-only `PbftSyncRuntimePlan` DTO are deleted from
-  the bridge surface. Live C++ uses `plan_pbft_sync_process_period_data_runtime`, proposal/block-validation runtime
-  sessions, and `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests cover the
-  deleted lower-level planners and lambda lookup.
+  the bridge surface. Live C++ uses `plan_pbft_sync_process_period_data_runtime`,
+  `plan_pbft_manager_block_validation`, proposal runtime sessions, and
+  `pbft_manager_runtime_load_finalization_last_period_lambda`; native `rustaxa-consensus` tests cover the deleted
+  lower-level planners and lambda lookup.
   Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
   PBFT manager standalone planner lane as a secondary cleanup candidate.
 - `plan_pbft_manager_state_action` and `plan_pbft_manager_state_action_effects` are deleted from the CXX surface.

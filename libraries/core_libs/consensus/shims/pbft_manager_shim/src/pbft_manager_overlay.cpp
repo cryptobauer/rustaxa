@@ -3083,8 +3083,7 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
   fact.dag_order_status = kPbftManagerBlockValidationFactNotChecked;
   fact.dag_weight_status = kPbftManagerBlockValidationFactNotChecked;
 
-  rustaxa::pbft_manager_runtime_begin_block_validation_session(*pbft_manager_runtime_.value(), fact);
-  auto plan = rustaxa::pbft_manager_block_validation_session_next(*pbft_manager_runtime_.value());
+  auto plan = rustaxa::plan_pbft_manager_block_validation(fact);
   while (true) {
     if (plan.action == kPbftManagerBlockValidationActionAccept) {
       return true;
@@ -3102,47 +3101,41 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckPbftChain) {
-      plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                   pbft_chain_->checkPbftBlockValidation(pbft_block)
-                                                                       ? kPbftManagerBlockValidationFactValid
-                                                                       : kPbftManagerBlockValidationFactInvalid,
-                                                                   false);
+      fact.pbft_chain_status = pbft_chain_->checkPbftBlockValidation(pbft_block)
+                                   ? kPbftManagerBlockValidationFactValid
+                                   : kPbftManagerBlockValidationFactInvalid;
+      plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckFinalChainHash) {
       const auto validation_result = validateFinalChainHash(pbft_block);
       if (validation_result == PbftStateRootValidation::Valid) {
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactValid, false);
+        fact.final_chain_hash_status = kPbftManagerBlockValidationFactValid;
       } else if (validation_result == PbftStateRootValidation::Missing) {
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactMissing, false);
+        fact.final_chain_hash_status = kPbftManagerBlockValidationFactMissing;
       } else {
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactInvalid, false);
+        fact.final_chain_hash_status = kPbftManagerBlockValidationFactInvalid;
       }
+      plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
       if (!vote_mgr_->validateRewardVotesForBlock(pbft_block)) {
         LOG(log_er_) << "Failed verifying reward votes for proposed PBFT block " << pbft_block_hash;
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactInvalid, false);
+        fact.reward_votes_status = kPbftManagerBlockValidationFactInvalid;
       } else {
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactValid, false);
+        fact.reward_votes_status = kPbftManagerBlockValidationFactValid;
       }
+      plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
 
     if (plan.next_check == kPbftManagerBlockValidationCheckExtraData) {
-      plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                   validatePbftBlockExtraData(pbft_block)
-                                                                       ? kPbftManagerBlockValidationFactValid
-                                                                       : kPbftManagerBlockValidationFactInvalid,
-                                                                   false);
+      fact.extra_data_status = validatePbftBlockExtraData(pbft_block) ? kPbftManagerBlockValidationFactValid
+                                                                      : kPbftManagerBlockValidationFactInvalid;
+      plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
 
@@ -3151,11 +3144,9 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
           pbft_block->getExtraData().has_value() ? pbft_block->getExtraData()->getPillarBlockHash() : std::nullopt;
       const auto pillar_anchor_validation =
           pillar_chain_mgr_->validatePbftBlockPillarAnchor(pbft_block_hash, block_period, pillar_hash);
-      plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                   pillar_anchor_validation.valid
-                                                                       ? kPbftManagerBlockValidationFactValid
-                                                                       : kPbftManagerBlockValidationFactInvalid,
-                                                                   false);
+      fact.pillar_block_status = pillar_anchor_validation.valid ? kPbftManagerBlockValidationFactValid
+                                                                : kPbftManagerBlockValidationFactInvalid;
+      plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
 
@@ -3163,8 +3154,8 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
       auto dag_blocks_order = dag_mgr_->getDagBlockOrder(anchor_hash, pbft_block->getPeriod());
       if (dag_blocks_order.empty()) {
         LOG(log_er_) << "Missing dag blocks for proposed PBFT block " << pbft_block_hash;
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactMissing, false);
+        fact.dag_order_status = kPbftManagerBlockValidationFactMissing;
+        plan = rustaxa::plan_pbft_manager_block_validation(fact);
         continue;
       }
 
@@ -3173,8 +3164,8 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
         LOG(log_er_) << "Order hash incorrect. Pbft block: " << pbft_block_hash
                      << ". Order hash: " << pbft_block->getOrderHash() << " . Calculated hash:" << calculated_order_hash
                      << ". Dag order: " << dag_blocks_order;
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactInvalid, false);
+        fact.dag_order_status = kPbftManagerBlockValidationFactInvalid;
+        plan = rustaxa::plan_pbft_manager_block_validation(fact);
         continue;
       }
 
@@ -3195,8 +3186,9 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
         auto ghost = dag_mgr_->getGhostPath(prev_pbft_block.getPivotDagBlockHash());
         dag_weight_check_required = ghost.size() > 1 && anchor_hash != ghost[1];
       }
-      plan = rustaxa::pbft_manager_block_validation_session_report(
-          *pbft_manager_runtime_.value(), kPbftManagerBlockValidationFactValid, dag_weight_check_required);
+      fact.dag_order_status = kPbftManagerBlockValidationFactValid;
+      fact.dag_weight_check_required = dag_weight_check_required;
+      plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
 
@@ -3207,12 +3199,11 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
         const auto remove_cache_snapshot = rustaxa::pbft_manager_runtime_remove_cached_anchor_dag_order(
             *pbft_manager_runtime_.value(), toBridgeHash(anchor_hash));
         ensurePbftManagerRuntimeSnapshotReady(remove_cache_snapshot, "Remove cached PBFT DAG order anchor");
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactInvalid, false);
+        fact.dag_weight_status = kPbftManagerBlockValidationFactInvalid;
       } else {
-        plan = rustaxa::pbft_manager_block_validation_session_report(*pbft_manager_runtime_.value(),
-                                                                     kPbftManagerBlockValidationFactValid, false);
+        fact.dag_weight_status = kPbftManagerBlockValidationFactValid;
       }
+      plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
 
@@ -4576,8 +4567,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   block_validation_fact.dag_weight_status = kPbftManagerBlockValidationFactNotRequired;
 
   bool retry_logged = false;
-  rustaxa::pbft_manager_runtime_begin_block_validation_session(*pbft_manager_runtime_.value(), block_validation_fact);
-  auto validation_plan = rustaxa::pbft_manager_block_validation_session_next(*pbft_manager_runtime_.value());
+  auto validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
   while (true) {
     if (validation_plan.action == kPbftManagerBlockValidationActionAccept) {
       break;
@@ -4590,8 +4580,8 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
                      << " validation delayed, state root missing, execution is behind";
         retry_logged = true;
       }
-      validation_plan = rustaxa::pbft_manager_block_validation_session_report(
-          *pbft_manager_runtime_.value(), kPbftManagerBlockValidationFactNotChecked, false);
+      block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactNotChecked;
+      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
       continue;
     }
     if (validation_plan.action == kPbftManagerBlockValidationActionReject) {
@@ -4639,33 +4629,29 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckFinalChainHash) {
       const auto validation_result = validate_final_chain_hash_from_queue_metadata();
       if (validation_result == PbftStateRootValidation::Valid) {
-        validation_plan = rustaxa::pbft_manager_block_validation_session_report(
-            *pbft_manager_runtime_.value(), kPbftManagerBlockValidationFactValid, false);
+        block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactValid;
       } else if (validation_result == PbftStateRootValidation::Missing) {
-        validation_plan = rustaxa::pbft_manager_block_validation_session_report(
-            *pbft_manager_runtime_.value(), kPbftManagerBlockValidationFactMissing, false);
+        block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactMissing;
       } else {
-        validation_plan = rustaxa::pbft_manager_block_validation_session_report(
-            *pbft_manager_runtime_.value(), kPbftManagerBlockValidationFactInvalid, false);
+        block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactInvalid;
       }
+      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
       continue;
     }
 
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
       reward_votes =
           vote_mgr_->collectRewardVotesForBlock(block_period, pbft_block_hash, block_prev_hash, reward_vote_hashes);
-      validation_plan = rustaxa::pbft_manager_block_validation_session_report(
-          *pbft_manager_runtime_.value(),
-          reward_votes.has_value() ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid,
-          false);
+      block_validation_fact.reward_votes_status =
+          reward_votes.has_value() ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid;
+      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
       continue;
     }
 
     if (validation_plan.next_check == kPbftManagerBlockValidationCheckExtraData) {
-      validation_plan = rustaxa::pbft_manager_block_validation_session_report(
-          *pbft_manager_runtime_.value(),
-          rust_pillar_data_valid ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid,
-          false);
+      block_validation_fact.extra_data_status =
+          rust_pillar_data_valid ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid;
+      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
       continue;
     }
 
