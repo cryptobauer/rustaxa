@@ -230,6 +230,13 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   finalized-period changes through native Rust storage. The public batch block in
   `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy/reference behavior when
   `RUSTAXA_ENABLE_SORTITION_PARAMS` enables the overlay.
+- `final_chain_shim` is the active Rust-mode route for FinalChain startup, native finalization, external-EVM publication,
+  pending-publication recovery, and storage audit. It constructs `BridgeFinalChain` and `BridgeConsensusExecutionApi`;
+  C++ supplies only the external `StateAPI`/EVM adapter, while Rust commits FinalChain headers, receipts, transaction
+  indexes, bloom indexes, execution counters, rewards-stat updates, pending-publication markers, recovery cleanup, and
+  genesis/header storage through native Rust storage. The public batch blocks in
+  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy/reference behavior when
+  `RUSTAXA_ENABLE_FINAL_CHAIN` enables the overlay.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

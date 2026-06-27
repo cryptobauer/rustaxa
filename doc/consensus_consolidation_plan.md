@@ -297,6 +297,13 @@ Implementation notes:
   and persists emitted finalized-period changes through the Rust runtime before live state is updated. The public batch
   block in `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` remains legacy/reference behavior behind
   `RUSTAXA_ENABLE_SORTITION_PARAMS`.
+- FinalChain block publication is closed for the current Rust-mode route. The active `final_chain_shim` overlay is a
+  standalone facade over `BridgeFinalChain` and `BridgeConsensusExecutionApi`; native finalization, external-EVM pending
+  publication markers, recovery, storage publication, execution counters, rewards-stat attachment, transaction indexes,
+  receipts, log blooms, and genesis header creation are committed through native Rust storage. The public batch blocks in
+  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` remain legacy/reference behavior behind
+  `RUSTAXA_ENABLE_FINAL_CHAIN`; Rust mode keeps the external `StateAPI`/EVM adapter but does not route FinalChain
+  storage publication through C++ `DbStorage` batches.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
     that can be converted to typed batch appenders.
@@ -551,6 +558,11 @@ Implementation status:
   `DbStorage` batch block in `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy-only when
   `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled; Rust-mode construction and updates enter
   `BridgeSortitionParamsManager` with an attached native Rust storage handle.
+- FinalChain Rust-mode startup, native finalization, external-EVM publication, crash recovery, and storage audit are
+  closed under the current overlay. The remaining public `DbStorage` batch blocks in
+  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy-only when `RUSTAXA_ENABLE_FINAL_CHAIN` is
+  enabled; Rust-mode publication enters `BridgeFinalChain`/`BridgeConsensusExecutionApi` and commits FinalChain storage
+  rows through native Rust storage. `StateAPI` remains the external EVM/state database boundary.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 
