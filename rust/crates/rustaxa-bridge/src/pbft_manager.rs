@@ -1585,7 +1585,7 @@ fn base_finalization_live_report(
 /// longer owns a standalone bridge session handle; subsequent next/report calls
 /// operate on this manager-owned session. Starting a new session replaces any
 /// incomplete prior finalization cursor.
-pub fn pbft_manager_runtime_begin_finalization_session(
+fn pbft_manager_runtime_begin_finalization_session(
     runtime: &mut BridgePbftManagerRuntime,
     plan: &FfiPbftFinalizationIntentPlan,
 ) {
@@ -1600,7 +1600,7 @@ pub fn pbft_manager_runtime_begin_finalization_session(
 /// durable storage facts. C++ still executes live FinalChain, manager, and
 /// pillar side effects, but the action cursor and terminal status stay on the
 /// existing manager runtime.
-pub fn pbft_manager_runtime_begin_finalization_resume_session(
+fn pbft_manager_runtime_begin_finalization_resume_session(
     runtime: &mut BridgePbftManagerRuntime,
     plan: &FfiPbftFinalizationResumePlan,
 ) {
@@ -1610,7 +1610,7 @@ pub fn pbft_manager_runtime_begin_finalization_resume_session(
 }
 
 /// Returns the next manager-owned PBFT finalization action without advancing the cursor.
-pub fn pbft_manager_runtime_finalization_session_next(
+fn pbft_manager_runtime_finalization_session_next(
     runtime: &mut BridgePbftManagerRuntime,
 ) -> FfiPbftFinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_ref() else {
@@ -1625,7 +1625,7 @@ pub fn pbft_manager_runtime_finalization_session_next(
 /// advances the cursor; failure, cursor mismatch, or unknown action moves the
 /// session into a terminal status and returns that terminal step.
 #[cfg(test)]
-pub fn pbft_manager_runtime_finalization_session_report(
+fn pbft_manager_runtime_finalization_session_report(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     action: u8,
@@ -1653,7 +1653,7 @@ pub fn pbft_manager_runtime_finalization_session_report(
 /// `BridgePbftManagerRuntime`. The session remains available for inspection
 /// after terminal statuses until C++ explicitly aborts it or starts the next
 /// finalization session.
-pub fn pbft_manager_runtime_finalization_session_report_action(
+fn pbft_manager_runtime_finalization_session_report_action(
     runtime: &mut BridgePbftManagerRuntime,
     report: FfiPbftFinalizationRuntimeActionReport,
 ) -> FfiPbftFinalizationRuntimeSessionStep {
@@ -1716,7 +1716,7 @@ pub fn pbft_manager_runtime_finalization_session_report_action(
 ///   validation error code.
 /// - Unknown actions and cursor mismatches are still handled by the shared
 ///   `pbft_manager_runtime_finalization_session_report_action` contract.
-pub fn pbft_manager_runtime_report_finalization_live_mutation(
+fn pbft_manager_runtime_report_finalization_live_mutation(
     runtime: &mut BridgePbftManagerRuntime,
     plan: &FfiPbftFinalizationIntentPlan,
     report: FfiPbftFinalizationLiveMutationReport,
@@ -1941,7 +1941,7 @@ pub fn pbft_manager_runtime_report_finalization_failure_boundary(
 /// - Cursor reports are submitted through the same runtime session contract used
 ///   by C++ for external actions, so cursor mismatch/failure semantics stay
 ///   centralized.
-pub fn pbft_manager_runtime_drain_owned_finalization_actions(
+fn pbft_manager_runtime_drain_owned_finalization_actions(
     runtime: &mut BridgePbftManagerRuntime,
     plan: &FfiPbftFinalizationIntentPlan,
 ) -> anyhow::Result<FfiPbftManagerFinalizationOwnedActionDrainResult> {

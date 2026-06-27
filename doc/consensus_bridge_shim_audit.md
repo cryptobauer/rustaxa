@@ -408,8 +408,8 @@ Current snapshot after DAG proposer-session cursor consolidation:
   been removed. `pbft_manager_shim` now calls stateless `plan_pbft_manager_block_validation` with a C++-local fact
   bundle after each external PBFT-chain, FinalChain, reward-vote, pillar, or DAG check.
 - `BridgePbftFinalizationRuntimeSession` is retired. Normal PBFT finalization and duplicate-finalization resume now use
-  manager-owned begin/next/report/abort APIs on `BridgePbftManagerRuntime`; C++ still executes external side effects
-  until a later manager-owned one-shot finalization operation absorbs the remaining coordinator loop.
+  manager-owned finalization boundary APIs on `BridgePbftManagerRuntime`; C++ still executes external side effects until
+  a later manager-owned one-shot finalization operation absorbs the remaining coordinator loop.
 - The standalone `validate_pbft_finalization_live_mutation_report` CXX export and bridge-only
   `PbftFinalizationLiveMutationValidation` DTO are deleted. The interim manager-runtime live-report API moved external
   FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, and pillar fact
@@ -422,13 +422,14 @@ Current snapshot after DAG proposer-session cursor consolidation:
   cursor next/report, standalone live-mutation report, owned-action drain, and manager-runtime storage apply are deleted.
   Rust still returns explicit external action boundaries, so C++ remains the executor for FinalChain/EVM, DAG,
   transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache side effects.
-- Manager-owned PBFT finalization actions are now drained through
-  `pbft_manager_runtime_drain_owned_finalization_actions`. The drain owns dynamic-lambda persistence/state and
-  executed-status persistence/state inside `BridgePbftManagerRuntime`, while stopping at external FinalChain/EVM, DAG,
-  transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and network boundaries. The direct
-  `pbft_manager_runtime_apply_dynamic_lambda` and `pbft_manager_runtime_apply_finalization_executed_status` exports are
-  deleted. Duplicate-finalization resume tails include the paired `SetExecutedFlag` replay after executed-status
-  persistence so Rust-owned drain completion keeps durable and live manager state aligned.
+- Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
+  dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
+  stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,
+  pillar, and network boundaries. The direct `pbft_manager_runtime_apply_dynamic_lambda`,
+  `pbft_manager_runtime_apply_finalization_executed_status`, and public bridge-crate
+  `pbft_manager_runtime_drain_owned_finalization_actions` surfaces are deleted. Duplicate-finalization resume tails
+  include the paired `SetExecutedFlag` replay after executed-status persistence so Rust-owned drain completion keeps
+  durable and live manager state aligned.
 - Additional no-caller standalone PBFT runtime wrappers are retired from the CXX surface:
   `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
   `load_pbft_finalization_last_period_lambda_storage`, `plan_pbft_dynamic_lambda`,

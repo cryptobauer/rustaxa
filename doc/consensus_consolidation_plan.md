@@ -542,6 +542,15 @@ Implementation notes:
   `pbft_manager_runtime_report_finalization_live_mutation`,
   `pbft_manager_runtime_drain_owned_finalization_actions`, and
   `pbft_manager_runtime_apply_finalization_storage_writes` are deleted.
+- The legacy Rust bridge-crate finalization cursor primitives
+  `pbft_manager_runtime_begin_finalization_session`,
+  `pbft_manager_runtime_begin_finalization_resume_session`,
+  `pbft_manager_runtime_finalization_session_next`,
+  `pbft_manager_runtime_finalization_session_report_action`,
+  `pbft_manager_runtime_report_finalization_live_mutation`, and
+  `pbft_manager_runtime_drain_owned_finalization_actions` are now private implementation helpers. C++ and external bridge
+  consumers can only drive the manager-owned finalization path through the boundary APIs listed above plus the explicit
+  abort call.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -696,6 +705,13 @@ Implementation notes:
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
   - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
   - `rg -n "plan_pillar_vote_bundle\\(|PillarVoteBundleFact|PillarVoteBundlePlan\\b|PillarVoteBundleAcceptedVote\\b|bundle_fact_to_consensus_fact|FfiPillarVoteBundleFact|PillarVoteBundlePlanOutput" rust/crates/rustaxa-bridge/src libraries tests -g'*.rs' -g'*.cpp' -g'*.hpp'` returned no matches.
+- Additional validation for PBFT finalization cursor helper privacy:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `rg -n "pub fn pbft_manager_runtime_(begin_finalization_session|begin_finalization_resume_session|finalization_session_next|finalization_session_report|finalization_session_report_action|report_finalization_live_mutation|drain_owned_finalization_actions)" rust/crates/rustaxa-bridge/src/pbft_manager.rs` returns only the retained public boundary function.
+  - `git diff --check`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is either the broader PBFT finalization executor cut that absorbs the remaining external-effect
