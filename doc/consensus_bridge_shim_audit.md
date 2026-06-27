@@ -22,7 +22,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi`, `create_consensus_query_api` | `network/consensus_query.hpp`, RPC/GraphQL, `plugin/light`, Rust tests | External boundary | Keep as the public query facade for RPC/GraphQL/light clients. Narrow remaining storage-backed reads into this facade, then remove direct external construction except approved app/bootstrap points. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | `BridgeConsensusNetworkApi`, `create_consensus_network_api`, ingress/planner/drain/report methods, `consensus_network_gossip_pbft_vote` | Latest tarcap handlers, `tests/rust/consensus/test_network_api.cpp` | External boundary | Queue-named bridge helpers are deleted. Keep narrowing the direct network/tarcap facade until only packet ingress, deterministic planners, gossip/send/sync/report effects, and result reporting remain. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | `BridgeFinalChain`, `BridgeFinalChainExecutionSession`, `BridgeConsensusExecutionApi`, `create_final_chain*`, `create_final_chain_execution_session`, `create_consensus_execution_api` | `final_chain_shim`, transaction manager runtime, consensus execution adapters | External boundary | Keep EVM/execution boundary while EVM remains out of scope. Move consensus fact reads to Rust FinalChain ports and delete bridge paths that only materialize C++ facts for Rust consensus. |
-| `rust/crates/rustaxa-bridge/src/dag.rs` | `BridgeDagGraph`, `BridgeDagManagerState`, `BridgeDagManagerRuntime`, `BridgeDagProposerSession`, `BridgeDagProposerRetryState` | `dag_shim`, `dag_manager_shim`, DAG tests | C++ public compatibility facade | Remove graph/state compatibility handles after DAG public callers stop needing C++ graph aliases. Keep runtime/proposer handles only until DAG manager shim can be replaced by native Rust consensus/DAG ownership. |
+| `rust/crates/rustaxa-bridge/src/dag.rs` | `BridgeDagGraph`, `BridgeDagManagerState`, `BridgeDagManagerRuntime`, `BridgeDagProposerRetryState` | `dag_shim`, `dag_manager_shim`, DAG tests | C++ public compatibility facade | Remove graph/state compatibility handles after DAG public callers stop needing C++ graph aliases. Keep retry-state compatibility only until per-wallet DAG proposer state is private Rust runtime state. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | `BridgePbftChain`, `create_pbft_chain*` | `pbft_chain_shim`, PBFT manager/runtime tests | C++ public compatibility facade | Delete once PBFT chain public C++ facade is no longer required or PBFT manager owns chain state natively in Rust. |
 | `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftManagerRuntime` | `pbft_manager_shim`, app bootstrap runtime creation | Internal Rust route | Runtime, state-action effect, proposal, and block-validation session handles are retired and owned by `BridgePbftManagerRuntime`. Keep only app bootstrap handle until PBFT manager C++ facade is retired. |
 | `rust/crates/rustaxa-bridge/src/pbft_finalize.rs` | `BridgePbftFinalizationRuntimeSession`, finalization/resume sessions | PBFT manager/finalization shims and tests | Internal Rust route | Delete bridge sessions once PBFT finalization is invoked inside Rust consensus runtime rather than through C++ shim sessions. |
@@ -65,7 +65,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgeDagGraph` | `dag.rs` | DAG shim/tests | C++ public compatibility facade | C++ DAG graph aliases stop being public API. |
 | `BridgeDagManagerState` | `dag.rs` | DAG manager runtime/tests | Internal Rust route | DAG manager state is native Rust runtime state, not a bridge handle. |
 | `BridgeDagManagerRuntime` | `dag.rs` | `dag_manager_shim` | C++ public compatibility facade | C++ `DagManager` facade is retired or narrowed to an external API. |
-| `BridgeDagProposerSession` | `dag.rs` | `dag_manager_shim` proposer paths | Internal Rust route | DAG proposal planning runs inside Rust DAG/consensus runtime. |
 | `BridgeDagProposerRetryState` | `dag.rs` | `dag_block_proposer_shim` | Obsolete scaffold | Retry state becomes private Rust proposer state. |
 | `BridgePbftChain` | `pbft_chain.rs` | `pbft_chain_shim`, PBFT tests | C++ public compatibility facade | PBFT chain state is private to Rust PBFT manager/runtime. |
 | `BridgePbftFinalizationRuntimeSession` | `pbft_finalize.rs` | PBFT finalization paths/tests | Internal Rust route | Finalization is invoked inside Rust PBFT runtime rather than via CXX sessions. |
@@ -129,7 +128,7 @@ rg -n '^mod [a-z0-9_]+;' rust/crates/rustaxa-bridge/src/lib.rs
 rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 ```
 
-Current snapshot after DAG verify-session cursor consolidation:
+Current snapshot after DAG proposer-session cursor consolidation:
 
 - `Old::` forwarding remains in `dag_manager_shim` and `dag_shim`.
 - `vote_manager_shim::setNetwork` writes inherited protected state directly and no longer forwards to
@@ -277,6 +276,11 @@ Current snapshot after DAG verify-session cursor consolidation:
   lives inside `BridgeDagManagerRuntime` through `dag_manager_runtime_begin_verify_block_session`,
   `dag_manager_runtime_verify_block_session_next`, and `dag_manager_runtime_verify_block_session_report_*`, so C++ no
   longer allocates a standalone bridge handle for `DagManager::verifyBlock`.
+- `BridgeDagProposerSession` is retired. DAG proposal attempts still have C++ executor boundaries for live transaction
+  packing, async VDF proof work, block signing/materialization, and `addDagBlock`, but the ordered proposal cursor now
+  lives inside `BridgeDagManagerRuntime` through `dag_manager_runtime_begin_proposer_session`,
+  `dag_manager_runtime_proposer_session_next`, and `dag_manager_runtime_proposer_session_report_*`, so
+  `DagBlockProposer` no longer allocates a standalone bridge handle for each attempt.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

@@ -124,11 +124,19 @@ class DagManager : public DagManagerOld {
    */
   rustaxa::DagProposerAttemptPlan planProposerAttempt(rustaxa::DagProposerAttemptInput input) const;
   /**
-   * Opens an ordered Rust-owned proposer session for one `DagBlockProposer::proposeDagBlock` attempt.
+   * Opens a runtime-owned proposer cursor for one `DagBlockProposer::proposeDagBlock` attempt.
    *
-   * C++ executes only requested live effects and reports their results before the Rust session advances.
+   * C++ executes only requested live effects and reports their results before
+   * the Rust DAG runtime cursor advances.
    */
-  rust::Box<rustaxa::BridgeDagProposerSession> createProposerSession(rustaxa::DagProposerAttemptInput input) const;
+  void beginProposerSession(rustaxa::DagProposerAttemptInput input);
+  rustaxa::DagProposerSessionStep proposerSessionNext();
+  rustaxa::DagProposerSessionStep reportProposerTransactions(rustaxa::DagProposerTransactionPackReport report);
+  rustaxa::DagProposerSessionStep reportProposerVdfWait(rustaxa::DagProposerVdfWaitReport report);
+  rustaxa::DagProposerSessionStep reportProposerVdfProof(rustaxa::DagProposerVdfProofReport report);
+  rustaxa::DagProposerSessionStep reportProposerStaleProof(rustaxa::DagProposerStaleProofReport report);
+  rustaxa::DagProposerSessionStep reportProposerSigning(rustaxa::DagProposerSigningReport report);
+  rustaxa::DagProposerSessionStep reportProposerAddBlock(rustaxa::DagProposerAddBlockReport report);
   /**
    * Resolves the proposal period for a DAG level through the Rust DAG runtime.
    *

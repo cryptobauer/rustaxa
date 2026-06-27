@@ -26,7 +26,7 @@ use crate::ffi::rustaxa_ffi::{
 };
 use crate::ffi::{
     BridgeDagGraph, BridgeDagManagerRuntime, BridgeDagManagerState, BridgeDagProposerRetryState,
-    BridgeDagProposerSession, BridgeStorage,
+    BridgeStorage,
 };
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
@@ -209,6 +209,7 @@ pub fn create_dag_manager_runtime_from_storage(
     Ok(Box::new(BridgeDagManagerRuntime {
         state: DagManagerState::new(to_h256(genesis), dag_expiry_limit)?,
         storage: storage.0.clone(),
+        proposer_session: None,
         verify_block_session: None,
     }))
 }
@@ -1036,15 +1037,12 @@ impl BridgeDagManagerRuntime {
         Ok(to_bridge_dag_proposer_attempt_plan(plan))
     }
 
-    /// Opens an ordered Rust-owned DAG proposer session for one proposal attempt.
+    /// Opens a runtime-owned DAG proposer cursor for one proposal attempt.
     ///
-    /// The session starts by running the existing Rust proposal-attempt planner. Non-continuing plans become terminal
+    /// The cursor starts by running the existing Rust proposal-attempt planner. Non-continuing plans become terminal
     /// steps immediately; continuing plans request the live transaction-packing executor boundary. All later stages
     /// advance only through explicit C++ reports.
-    pub fn dag_manager_runtime_create_proposer_session(
-        &self,
-        input: DagProposerAttemptInput,
-    ) -> Result<Box<BridgeDagProposerSession>> {
+    pub fn begin_proposer_session(&mut self, input: DagProposerAttemptInput) -> Result<()> {
         let minimum_vdf_difficulty = input.sortition_params.difficulty_min;
         let attempt = self.dag_manager_runtime_plan_proposal_attempt(input)?;
         let action = if attempt.action == rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
@@ -1057,24 +1055,23 @@ impl BridgeDagManagerRuntime {
         } else {
             DAG_PROPOSER_SESSION_STATUS_ACTIVE
         };
-        Ok(Box::new(BridgeDagProposerSession {
-            state: DagProposerSession {
-                action,
-                status,
-                reason_code: attempt.reason_code,
-                return_value: false,
-                update_retry_state: attempt.update_retry_state,
-                next_last_propose_level: attempt.next_last_propose_level,
-                next_retry_count: attempt.next_retry_count,
-                record_proposed_block: false,
-                minimum_vdf_difficulty,
-                vdf_message: Vec::new(),
-                selected_transaction_hashes: Vec::new(),
-                transaction_gas_estimations: Vec::new(),
-                attempt,
-                error_code: String::new(),
-            },
-        }))
+        self.proposer_session = Some(DagProposerSession {
+            action,
+            status,
+            reason_code: attempt.reason_code,
+            return_value: false,
+            update_retry_state: attempt.update_retry_state,
+            next_last_propose_level: attempt.next_last_propose_level,
+            next_retry_count: attempt.next_retry_count,
+            record_proposed_block: false,
+            minimum_vdf_difficulty,
+            vdf_message: Vec::new(),
+            selected_transaction_hashes: Vec::new(),
+            transaction_gas_estimations: Vec::new(),
+            attempt,
+            error_code: String::new(),
+        });
+        Ok(())
     }
 
     /// Returns the ghost path from a source block.
@@ -1633,221 +1630,259 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
     complete_verify_block_session(session, result.reject_code)
 }
 
-impl BridgeDagProposerSession {
-    pub fn dag_proposer_session_next(&self) -> DagProposerSessionStep {
-        dag_proposer_session_step(&self.state)
+/// Opens a DAG proposal cursor inside the long-lived DAG manager runtime.
+///
+/// Inputs:
+/// - `runtime`: the DAG manager runtime that owns graph state, storage, and the temporary proposal cursor.
+/// - `input`: compact attempt facts collected by the C++ proposer shell for one wallet attempt.
+///
+/// Outputs:
+/// - Replaces any previous runtime proposal cursor. C++ drives the cursor with
+///   `dag_manager_runtime_proposer_session_next` and report functions.
+///
+/// Invariants and edge behavior:
+/// - The proposal cursor is DAG-manager implementation state and is not exported as a standalone CXX handle.
+/// - Starting a new proposal replaces any incomplete previous cursor, matching the legacy per-attempt allocation
+///   behavior.
+pub fn dag_manager_runtime_begin_proposer_session(
+    runtime: &mut BridgeDagManagerRuntime,
+    input: DagProposerAttemptInput,
+) -> Result<()> {
+    runtime.begin_proposer_session(input)
+}
+
+/// Returns the next requested action for the runtime-owned DAG proposal cursor.
+pub fn dag_manager_runtime_proposer_session_next(
+    runtime: &mut BridgeDagManagerRuntime,
+) -> DagProposerSessionStep {
+    let Some(session) = runtime.proposer_session.as_ref() else {
+        return dag_proposer_session_not_started_step();
+    };
+    dag_proposer_session_step(session)
+}
+
+/// Reports live transaction-packing results to the runtime-owned DAG proposal cursor.
+pub fn dag_manager_runtime_proposer_session_report_transactions(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagProposerTransactionPackReport,
+) -> DagProposerSessionStep {
+    let Some(session) = runtime.proposer_session.as_mut() else {
+        return dag_proposer_session_not_started_step();
+    };
+    if !matches!(session.action, DagProposerSessionAction::PackTransactions) {
+        return invalid_dag_proposer_report(
+            session,
+            "DAG_PROPOSER_SESSION_UNEXPECTED_TRANSACTION_REPORT",
+        );
     }
 
-    pub fn dag_proposer_session_report_transactions(
-        &mut self,
-        report: DagProposerTransactionPackReport,
-    ) -> DagProposerSessionStep {
-        if !matches!(
-            self.state.action,
-            DagProposerSessionAction::PackTransactions
-        ) {
+    let post_pack = plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
+        proposal_level: session.attempt.proposal_level,
+        network_throttled: report.network_throttled,
+        packed_transaction_count: report.transaction_hashes.len() as u64,
+    });
+    session.reason_code = post_pack.reason_code;
+    session.update_retry_state = post_pack.update_retry_state;
+    session.next_last_propose_level = post_pack.next_last_propose_level;
+    session.next_retry_count = post_pack.next_retry_count;
+
+    if post_pack.action != rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
+        session.action = DagProposerSessionAction::Complete;
+        session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+        session.return_value = false;
+    } else {
+        if report.transaction_hashes.len() != report.transaction_gas_estimations.len() {
             return invalid_dag_proposer_report(
-                &mut self.state,
-                "DAG_PROPOSER_SESSION_UNEXPECTED_TRANSACTION_REPORT",
+                session,
+                "DAG_PROPOSER_SESSION_TRANSACTION_REPORT_LENGTH_MISMATCH",
             );
         }
-
-        let post_pack =
-            plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
-                proposal_level: self.state.attempt.proposal_level,
-                network_throttled: report.network_throttled,
-                packed_transaction_count: report.transaction_hashes.len() as u64,
-            });
-        self.state.reason_code = post_pack.reason_code;
-        self.state.update_retry_state = post_pack.update_retry_state;
-        self.state.next_last_propose_level = post_pack.next_last_propose_level;
-        self.state.next_retry_count = post_pack.next_retry_count;
-
-        if post_pack.action != rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
-            self.state.action = DagProposerSessionAction::Complete;
-            self.state.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
-            self.state.return_value = false;
-        } else {
-            if report.transaction_hashes.len() != report.transaction_gas_estimations.len() {
-                return invalid_dag_proposer_report(
-                    &mut self.state,
-                    "DAG_PROPOSER_SESSION_TRANSACTION_REPORT_LENGTH_MISMATCH",
-                );
-            }
-            self.state.selected_transaction_hashes = report
-                .transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect();
-            self.state.transaction_gas_estimations = report.transaction_gas_estimations;
-            self.state.vdf_message = construct_dag_vdf_message(
-                H256::from(self.state.attempt.frontier_pivot),
-                &self.state.selected_transaction_hashes,
-            );
-            self.state.action = DagProposerSessionAction::StartVdf;
-        }
-
-        dag_proposer_session_step(&self.state)
+        session.selected_transaction_hashes = report
+            .transaction_hashes
+            .into_iter()
+            .map(|hash| H256::from(hash.hash))
+            .collect();
+        session.transaction_gas_estimations = report.transaction_gas_estimations;
+        session.vdf_message = construct_dag_vdf_message(
+            H256::from(session.attempt.frontier_pivot),
+            &session.selected_transaction_hashes,
+        );
+        session.action = DagProposerSessionAction::StartVdf;
     }
 
-    pub fn dag_proposer_session_report_vdf_wait(
-        &self,
-        report: DagProposerVdfWaitReport,
-    ) -> DagProposerSessionStep {
-        if !matches!(self.state.action, DagProposerSessionAction::StartVdf) {
-            let mut step = dag_proposer_session_step(&self.state);
-            step.status = DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT;
-            return step;
-        }
+    dag_proposer_session_step(session)
+}
 
-        let wait = plan_dag_proposer_vdf_wait(rustaxa_consensus::dag::DagProposerVdfWaitInput {
-            proposal_level: self.state.attempt.proposal_level,
-            latest_proposal_level: report.latest_proposal_level,
-            vdf_difficulty: self.state.attempt.vdf_difficulty,
-            minimum_vdf_difficulty: self.state.minimum_vdf_difficulty,
-        });
-        if !wait.cancel_in_flight_proof {
-            return dag_proposer_session_step(&self.state);
-        }
+/// Reports VDF worker wait progress to the runtime-owned DAG proposal cursor.
+pub fn dag_manager_runtime_proposer_session_report_vdf_wait(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagProposerVdfWaitReport,
+) -> DagProposerSessionStep {
+    let Some(session) = runtime.proposer_session.as_ref() else {
+        return dag_proposer_session_not_started_step();
+    };
+    if !matches!(session.action, DagProposerSessionAction::StartVdf) {
+        let mut step = dag_proposer_session_step(session);
+        step.status = DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT;
+        return step;
+    }
 
+    let wait = plan_dag_proposer_vdf_wait(rustaxa_consensus::dag::DagProposerVdfWaitInput {
+        proposal_level: session.attempt.proposal_level,
+        latest_proposal_level: report.latest_proposal_level,
+        vdf_difficulty: session.attempt.vdf_difficulty,
+        minimum_vdf_difficulty: session.minimum_vdf_difficulty,
+    });
+    if !wait.cancel_in_flight_proof {
+        return dag_proposer_session_step(session);
+    }
+
+    let retry = plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
+        proposal_level: session.attempt.proposal_level,
+    });
+    let mut step = dag_proposer_session_step(session);
+    step.action = DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF;
+    step.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+    step.return_value = true;
+    step.update_retry_state = retry.update_retry_state;
+    step.next_last_propose_level = retry.next_last_propose_level;
+    step.next_retry_count = retry.next_retry_count;
+    step
+}
+
+/// Reports VDF proof completion to the runtime-owned DAG proposal cursor.
+pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagProposerVdfProofReport,
+) -> DagProposerSessionStep {
+    let Some(session) = runtime.proposer_session.as_mut() else {
+        return dag_proposer_session_not_started_step();
+    };
+    if !matches!(session.action, DagProposerSessionAction::StartVdf) {
+        return invalid_dag_proposer_report(
+            session,
+            "DAG_PROPOSER_SESSION_UNEXPECTED_VDF_PROOF_REPORT",
+        );
+    }
+    if !report.proof_ok {
+        return invalid_dag_proposer_report(session, "DAG_PROPOSER_SESSION_VDF_PROOF_FAILED");
+    }
+
+    session.action = if session.attempt.vdf_stale {
+        DagProposerSessionAction::StaleProofSleep
+    } else {
+        DagProposerSessionAction::BuildBlock
+    };
+    dag_proposer_session_step(session)
+}
+
+/// Reports stale-proof recheck results to the runtime-owned DAG proposal cursor.
+pub fn dag_manager_runtime_proposer_session_report_stale_proof(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagProposerStaleProofReport,
+) -> DagProposerSessionStep {
+    let Some(session) = runtime.proposer_session.as_mut() else {
+        return dag_proposer_session_not_started_step();
+    };
+    if !matches!(session.action, DagProposerSessionAction::StaleProofSleep) {
+        return invalid_dag_proposer_report(
+            session,
+            "DAG_PROPOSER_SESSION_UNEXPECTED_STALE_PROOF_REPORT",
+        );
+    }
+
+    let stale = plan_dag_proposer_stale_proof(rustaxa_consensus::dag::DagProposerStaleProofInput {
+        proposal_level: session.attempt.proposal_level,
+        latest_proposal_level: report.latest_proposal_level,
+    });
+    session.reason_code = stale.reason_code;
+    session.update_retry_state = stale.update_retry_state;
+    session.next_last_propose_level = stale.next_last_propose_level;
+    session.next_retry_count = stale.next_retry_count;
+    if stale.action != rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
+        session.action = DagProposerSessionAction::Complete;
+        session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+        session.return_value = false;
+    } else {
+        session.action = DagProposerSessionAction::BuildBlock;
+    }
+    dag_proposer_session_step(session)
+}
+
+/// Reports signed-block materialization to the runtime-owned DAG proposal cursor.
+pub fn dag_manager_runtime_proposer_session_report_signing(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagProposerSigningReport,
+) -> DagProposerSessionStep {
+    let Some(session) = runtime.proposer_session.as_mut() else {
+        return dag_proposer_session_not_started_step();
+    };
+    if !matches!(session.action, DagProposerSessionAction::BuildBlock) {
+        return invalid_dag_proposer_report(
+            session,
+            "DAG_PROPOSER_SESSION_UNEXPECTED_SIGNING_REPORT",
+        );
+    }
+    if !report.signature_ready {
         let retry =
             plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
-                proposal_level: self.state.attempt.proposal_level,
+                proposal_level: session.attempt.proposal_level,
             });
-        let mut step = dag_proposer_session_step(&self.state);
-        step.action = DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF;
-        step.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
-        step.return_value = true;
-        step.update_retry_state = retry.update_retry_state;
-        step.next_last_propose_level = retry.next_last_propose_level;
-        step.next_retry_count = retry.next_retry_count;
-        step
+        session.action = DagProposerSessionAction::Complete;
+        session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+        session.reason_code = rustaxa_consensus::dag::DAG_PROPOSER_REASON_SIGNING_FAILED;
+        session.return_value = false;
+        session.update_retry_state = retry.update_retry_state;
+        session.next_last_propose_level = retry.next_last_propose_level;
+        session.next_retry_count = retry.next_retry_count;
+        return dag_proposer_session_step(session);
     }
+    session.action = DagProposerSessionAction::AddBlock;
+    dag_proposer_session_step(session)
+}
 
-    pub fn dag_proposer_session_report_vdf_proof(
-        &mut self,
-        report: DagProposerVdfProofReport,
-    ) -> DagProposerSessionStep {
-        if !matches!(self.state.action, DagProposerSessionAction::StartVdf) {
-            return invalid_dag_proposer_report(
-                &mut self.state,
-                "DAG_PROPOSER_SESSION_UNEXPECTED_VDF_PROOF_REPORT",
-            );
-        }
-        if !report.proof_ok {
-            return invalid_dag_proposer_report(
-                &mut self.state,
-                "DAG_PROPOSER_SESSION_VDF_PROOF_FAILED",
-            );
-        }
-
-        self.state.action = if self.state.attempt.vdf_stale {
-            DagProposerSessionAction::StaleProofSleep
-        } else {
-            DagProposerSessionAction::BuildBlock
-        };
-        dag_proposer_session_step(&self.state)
+/// Reports `DagManager::addDagBlock` execution to the runtime-owned DAG proposal cursor.
+pub fn dag_manager_runtime_proposer_session_report_add_block(
+    runtime: &mut BridgeDagManagerRuntime,
+    report: DagProposerAddBlockReport,
+) -> DagProposerSessionStep {
+    let Some(session) = runtime.proposer_session.as_mut() else {
+        return dag_proposer_session_not_started_step();
+    };
+    if !matches!(session.action, DagProposerSessionAction::AddBlock) {
+        return invalid_dag_proposer_report(
+            session,
+            "DAG_PROPOSER_SESSION_UNEXPECTED_ADD_BLOCK_REPORT",
+        );
     }
-
-    pub fn dag_proposer_session_report_stale_proof(
-        &mut self,
-        report: DagProposerStaleProofReport,
-    ) -> DagProposerSessionStep {
-        if !matches!(self.state.action, DagProposerSessionAction::StaleProofSleep) {
-            return invalid_dag_proposer_report(
-                &mut self.state,
-                "DAG_PROPOSER_SESSION_UNEXPECTED_STALE_PROOF_REPORT",
-            );
-        }
-
-        let stale =
-            plan_dag_proposer_stale_proof(rustaxa_consensus::dag::DagProposerStaleProofInput {
-                proposal_level: self.state.attempt.proposal_level,
-                latest_proposal_level: report.latest_proposal_level,
-            });
-        self.state.reason_code = stale.reason_code;
-        self.state.update_retry_state = stale.update_retry_state;
-        self.state.next_last_propose_level = stale.next_last_propose_level;
-        self.state.next_retry_count = stale.next_retry_count;
-        if stale.action != rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
-            self.state.action = DagProposerSessionAction::Complete;
-            self.state.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
-            self.state.return_value = false;
-        } else {
-            self.state.action = DagProposerSessionAction::BuildBlock;
-        }
-        dag_proposer_session_step(&self.state)
+    if ((report.accepted || report.duplicate) && report.expired)
+        || (report.accepted && !report.missing_references.is_empty())
+    {
+        return invalid_dag_proposer_report(
+            session,
+            "DAG_PROPOSER_SESSION_INVALID_ADD_BLOCK_REPORT",
+        );
     }
-
-    pub fn dag_proposer_session_report_signing(
-        &mut self,
-        report: DagProposerSigningReport,
-    ) -> DagProposerSessionStep {
-        if !matches!(self.state.action, DagProposerSessionAction::BuildBlock) {
-            return invalid_dag_proposer_report(
-                &mut self.state,
-                "DAG_PROPOSER_SESSION_UNEXPECTED_SIGNING_REPORT",
-            );
-        }
-        if !report.signature_ready {
-            let retry =
-                plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
-                    proposal_level: self.state.attempt.proposal_level,
-                });
-            self.state.action = DagProposerSessionAction::Complete;
-            self.state.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
-            self.state.reason_code = rustaxa_consensus::dag::DAG_PROPOSER_REASON_SIGNING_FAILED;
-            self.state.return_value = false;
-            self.state.update_retry_state = retry.update_retry_state;
-            self.state.next_last_propose_level = retry.next_last_propose_level;
-            self.state.next_retry_count = retry.next_retry_count;
-            return dag_proposer_session_step(&self.state);
-        }
-        self.state.action = DagProposerSessionAction::AddBlock;
-        dag_proposer_session_step(&self.state)
-    }
-
-    pub fn dag_proposer_session_report_add_block(
-        &mut self,
-        report: DagProposerAddBlockReport,
-    ) -> DagProposerSessionStep {
-        if !matches!(self.state.action, DagProposerSessionAction::AddBlock) {
-            return invalid_dag_proposer_report(
-                &mut self.state,
-                "DAG_PROPOSER_SESSION_UNEXPECTED_ADD_BLOCK_REPORT",
-            );
-        }
-        if (report.duplicate && report.expired)
-            || (report.accepted && report.expired)
-            || (report.accepted && !report.missing_references.is_empty())
-        {
-            return invalid_dag_proposer_report(
-                &mut self.state,
-                "DAG_PROPOSER_SESSION_INVALID_ADD_BLOCK_REPORT",
-            );
-        }
-        let retry =
-            plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
-                proposal_level: self.state.attempt.proposal_level,
-            });
-        self.state.action = DagProposerSessionAction::Complete;
-        self.state.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
-        self.state.reason_code = if report.accepted {
-            rustaxa_consensus::dag::DAG_PROPOSER_REASON_OK
-        } else if report.expired {
-            rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_EXPIRED
-        } else if !report.missing_references.is_empty() {
-            rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_MISSING_REFERENCES
-        } else {
-            rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_REJECTED
-        };
-        self.state.return_value = report.accepted;
-        self.state.update_retry_state = retry.update_retry_state;
-        self.state.next_last_propose_level = retry.next_last_propose_level;
-        self.state.next_retry_count = retry.next_retry_count;
-        self.state.record_proposed_block = report.accepted;
-        dag_proposer_session_step(&self.state)
-    }
+    let retry = plan_dag_proposer_retry_reset(rustaxa_consensus::dag::DagProposerRetryResetInput {
+        proposal_level: session.attempt.proposal_level,
+    });
+    session.action = DagProposerSessionAction::Complete;
+    session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+    session.reason_code = if report.accepted {
+        rustaxa_consensus::dag::DAG_PROPOSER_REASON_OK
+    } else if report.expired {
+        rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_EXPIRED
+    } else if !report.missing_references.is_empty() {
+        rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_MISSING_REFERENCES
+    } else {
+        rustaxa_consensus::dag::DAG_PROPOSER_REASON_ADD_BLOCK_REJECTED
+    };
+    session.return_value = report.accepted;
+    session.update_retry_state = retry.update_retry_state;
+    session.next_last_propose_level = retry.next_last_propose_level;
+    session.next_retry_count = retry.next_retry_count;
+    session.record_proposed_block = report.accepted;
+    dag_proposer_session_step(session)
 }
 
 pub fn create_dag_proposer_retry_state(max_retry_count: u64) -> Box<BridgeDagProposerRetryState> {
@@ -2532,6 +2567,43 @@ fn invalid_dag_proposer_report(
     session.return_value = false;
     session.error_code = error_code.to_string();
     dag_proposer_session_step(session)
+}
+
+fn dag_proposer_session_not_started_step() -> DagProposerSessionStep {
+    DagProposerSessionStep {
+        status: DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT,
+        action: DAG_PROPOSER_SESSION_ACTION_NONE,
+        reason_code: rustaxa_consensus::dag::DAG_PROPOSER_REASON_OK,
+        return_value: false,
+        update_retry_state: false,
+        next_last_propose_level: 0,
+        next_retry_count: 0,
+        frontier_pivot: [0; 32],
+        frontier_tips: Vec::new(),
+        proposal_level: 0,
+        proposal_period: 0,
+        last_finalized_period: 0,
+        vrf_input: Vec::new(),
+        vote_count: 0,
+        max_vote_count: 0,
+        vdf_difficulty: 0,
+        vdf_stale: false,
+        old_proposal: false,
+        vdf_message: Vec::new(),
+        selected_transaction_hashes: Vec::new(),
+        transaction_gas_estimations: Vec::new(),
+        transaction_request: DagProposerTransactionPackRequest {
+            proposal_period: 0,
+            weight_limit: 0,
+            total_transaction_shards: 0,
+            node_transaction_shard: 0,
+            shard_period_interval: 0,
+        },
+        record_proposed_block: false,
+        vdf_poll_interval_ms: rustaxa_consensus::dag::DAG_PROPOSER_VDF_POLL_INTERVAL_MS,
+        stale_proof_sleep_ms: rustaxa_consensus::dag::DAG_PROPOSER_STALE_PROOF_SLEEP_MS,
+        error_code: "DAG_PROPOSER_SESSION_NOT_STARTED".to_string(),
+    }
 }
 
 fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockSessionStep {
@@ -3508,7 +3580,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -3523,8 +3595,9 @@ mod tests {
 
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let mut session = runtime
-                .dag_manager_runtime_create_proposer_session(DagProposerAttemptInput {
+            dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                DagProposerAttemptInput {
                     transaction_pool_size: 1,
                     non_finalized_transaction_count: 0,
                     max_non_finalized_transactions: 100,
@@ -3565,10 +3638,11 @@ mod tests {
                     total_transaction_shards: 4,
                     node_transaction_shard: 2,
                     shard_period_interval: 10,
-                })
-                .expect("session should open");
+                },
+            )
+            .expect("session should open");
 
-            let first = session.dag_proposer_session_next();
+            let first = dag_manager_runtime_proposer_session_next(&mut runtime);
             assert_eq!(first.status, DAG_PROPOSER_SESSION_STATUS_ACTIVE);
             assert_eq!(first.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
             assert_eq!(first.transaction_request.proposal_period, 7);
@@ -3576,7 +3650,8 @@ mod tests {
             assert_eq!(first.stale_proof_sleep_ms, 1_000);
             assert!(!first.vrf_input.is_empty());
 
-            let start_vdf = session.dag_proposer_session_report_transactions(
+            let start_vdf = dag_manager_runtime_proposer_session_report_transactions(
+                &mut runtime,
                 DagProposerTransactionPackReport {
                     network_throttled: false,
                     transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
@@ -3591,29 +3666,37 @@ mod tests {
                 dag_vdf_message(&[1u8; 32], vec![DagHash { hash: [2u8; 32] }])
             );
 
-            let still_waiting =
-                session.dag_proposer_session_report_vdf_wait(DagProposerVdfWaitReport {
+            let still_waiting = dag_manager_runtime_proposer_session_report_vdf_wait(
+                &mut runtime,
+                DagProposerVdfWaitReport {
                     latest_proposal_level: 1,
-                });
+                },
+            );
             assert_eq!(still_waiting.action, DAG_PROPOSER_SESSION_ACTION_START_VDF);
 
-            let build = session.dag_proposer_session_report_vdf_proof(DagProposerVdfProofReport {
-                proof_ok: true,
-            });
+            let build = dag_manager_runtime_proposer_session_report_vdf_proof(
+                &mut runtime,
+                DagProposerVdfProofReport { proof_ok: true },
+            );
             assert_eq!(build.action, DAG_PROPOSER_SESSION_ACTION_BUILD_BLOCK);
 
-            let add = session.dag_proposer_session_report_signing(DagProposerSigningReport {
-                signature_ready: true,
-            });
+            let add = dag_manager_runtime_proposer_session_report_signing(
+                &mut runtime,
+                DagProposerSigningReport {
+                    signature_ready: true,
+                },
+            );
             assert_eq!(add.action, DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK);
 
-            let complete =
-                session.dag_proposer_session_report_add_block(DagProposerAddBlockReport {
+            let complete = dag_manager_runtime_proposer_session_report_add_block(
+                &mut runtime,
+                DagProposerAddBlockReport {
                     accepted: true,
                     duplicate: false,
                     expired: false,
                     missing_references: Vec::new(),
-                });
+                },
+            );
             assert_eq!(complete.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
             assert_eq!(complete.action, DAG_PROPOSER_SESSION_ACTION_NONE);
             assert!(complete.return_value);
