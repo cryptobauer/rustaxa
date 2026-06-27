@@ -963,17 +963,6 @@ impl BridgeFinalChain {
         ))
     }
 
-    pub fn get_vrf_key(
-        self: &BridgeFinalChain,
-        address: &[u8; 20],
-    ) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self
-            .0
-            .vrf_key(*address)?
-            .map(|key| key.to_vec())
-            .unwrap_or_default())
-    }
-
     /// Returns a block-scoped validator VRF key for the C++ FinalChain shim.
     ///
     /// Inputs are a finalized block number and validator address. The output is
@@ -1120,13 +1109,6 @@ impl BridgeFinalChain {
                 vote_count: vote_count.vote_count,
             })
             .collect())
-    }
-
-    pub fn estimate_call_gas(
-        self: &BridgeFinalChain,
-        gas_limit: u64,
-    ) -> Result<u64, anyhow::Error> {
-        self.0.estimate_call_gas(gas_limit)
     }
 
     pub fn call(

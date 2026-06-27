@@ -592,6 +592,12 @@ Implementation status:
 - The standalone `inspect_pbft_finalization_resume` CXX export is deleted. Production duplicate-finalization recovery
   uses the runtime-owned `pbft_manager_runtime_inspect_finalization_resume` API from `pbft_manager_shim`, while Rust
   bridge and native consensus tests exercise the native resume inspector directly.
+- `BridgePeriodStorageQueries::get_pbft_block_hash_by_period` is deleted from the CXX bridge surface. A caller audit
+  found no C++ or Rust users; live compatibility paths keep `get_period_data_raw`, `get_period_from_pbft_hash`, and
+  receipt reads.
+- `BridgeFinalChain::get_vrf_key` and `BridgeFinalChain::estimate_call_gas` are deleted from the CXX bridge surface.
+  Live C++ uses the block-scoped `get_vrf_key_at_block` route and the `FinalChain::call` gas-estimation adapter; the
+  removed wrappers had no repo callers.
 - The unused CXX `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` exports are deleted. Their wrapper
   modules only protected bridge-shaped test scaffolding; production C++ had no callsites, and native
   `rustaxa-consensus` vote pipeline/admission tests now own the behavior coverage.

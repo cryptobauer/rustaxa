@@ -207,6 +207,12 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - The standalone `inspect_pbft_finalization_resume` CXX export is deleted. Live duplicate-finalization recovery enters
   through `pbft_manager_runtime_inspect_finalization_resume`, which keeps storage ownership on
   `BridgePbftManagerRuntime`; Rust tests call the native consensus resume inspector directly.
+- `BridgePeriodStorageQueries::get_pbft_block_hash_by_period` is deleted. It had no C++ or Rust callers after public
+  period lookups moved to the typed by-PBFT-hash query and raw period-data readers used by the storage shim,
+  conformance fixtures, and PBFT sync tests.
+- `BridgeFinalChain::get_vrf_key` and `BridgeFinalChain::estimate_call_gas` are deleted from the CXX surface. Repo
+  callers use the block-scoped `get_vrf_key_at_block` shim route and the dedicated `FinalChain::call` gas-estimation
+  adapter instead; the removed wrappers had no C++ or Rust callers.
 - `BridgeTransactionQueue` CXX exports are narrowed to the methods used by `transaction_queue_shim`. The no-caller
   queue-only planning/hash-view exports `transaction_queue_erase_plan`, `transaction_queue_ordered_hashes`,
   `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and

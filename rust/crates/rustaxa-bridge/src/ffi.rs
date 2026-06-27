@@ -5965,10 +5965,6 @@ pub mod rustaxa_ffi {
             self: &BridgePeriodStorageQueries,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn get_pbft_block_hash_by_period(
-            self: &BridgePeriodStorageQueries,
-            period: u64,
-        ) -> Result<HashLookup>;
         /// Typed period-by-PBFT-block hash lookup.
         pub fn get_period_from_pbft_hash(
             self: &BridgePeriodStorageQueries,
@@ -6156,13 +6152,11 @@ pub mod rustaxa_ffi {
             self: &BridgeFinalChain,
             block_number: u64,
         ) -> Result<Vec<DposValidatorVoteCount>>;
-        pub fn get_vrf_key(self: &BridgeFinalChain, address: &[u8; 20]) -> Result<Vec<u8>>;
         pub fn get_vrf_key_at_block(
             self: &BridgeFinalChain,
             block_number: u64,
             address: &[u8; 20],
         ) -> Result<Vec<u8>>;
-        pub fn estimate_call_gas(self: &BridgeFinalChain, gas_limit: u64) -> Result<u64>;
         pub fn call(
             self: &BridgeFinalChain,
             request: FinalChainCall,
