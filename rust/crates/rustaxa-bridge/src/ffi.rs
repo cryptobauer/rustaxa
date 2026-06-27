@@ -3216,16 +3216,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    #[allow(dead_code)]
-    struct FinalChainExternalEvmStateCommitRequest {
-        request_id: [u8; 32],
-        plan_id: [u8; 32],
-        period: u64,
-        post_execution_state_root: [u8; 32],
-        post_rewards_state_root: [u8; 32],
-        publication_block_hash: [u8; 32],
-    }
-
     struct FinalChainExternalEvmStateCommitIntent {
         request_id: [u8; 32],
         plan_id: [u8; 32],
@@ -3236,18 +3226,6 @@ pub mod rustaxa_ffi {
     }
 
     struct FinalChainExternalEvmStateCommitResult {
-        status: u8,
-        error_code: String,
-    }
-
-    #[allow(dead_code)]
-    struct FinalChainExternalEvmLifecycleReport {
-        request_id: [u8; 32],
-        plan_id: [u8; 32],
-        period: u64,
-        post_execution_state_root: [u8; 32],
-        post_rewards_state_root: [u8; 32],
-        publication_block_hash: [u8; 32],
         status: u8,
         error_code: String,
     }
