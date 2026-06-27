@@ -27,7 +27,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftManagerRuntime`, runtime/proposal/validation/session handles | `pbft_manager_shim`, app bootstrap runtime creation | Internal Rust route | Move session creation and state-action APIs into native Rust consensus runtime. Keep only app bootstrap handle until PBFT manager C++ facade is retired. |
 | `rust/crates/rustaxa-bridge/src/pbft_finalize.rs` | `BridgePbftFinalizationRuntimeSession`, finalization/resume sessions | PBFT manager/finalization shims and tests | Internal Rust route | Delete bridge sessions once PBFT finalization is invoked inside Rust consensus runtime rather than through C++ shim sessions. |
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | PBFT sync admission, egress, process-period, transaction-query, and cert-vote validation functions | `pbft_manager_shim`, PBFT sync bridge tests | Internal Rust route | Keep narrowing into `BridgePbftManagerRuntime` service methods. The standalone queue-drain CXX handle is retired; remaining functions disappear when PBFT sync processing is owned fully inside the Rust PBFT manager runtime. |
-| `rust/crates/rustaxa-bridge/src/pbft_vote_*` | Vote pipeline/admission/validation/generation/progress/ingress/event/payload helpers | Vote manager shim, network API tests, PBFT/vote tests | Internal Rust route | Collapse bridge helpers into native Rust vote pipeline modules. Keep only network-facing vote payload/effect adapters until the network/tarcap API owns that boundary. |
+| `rust/crates/rustaxa-bridge/src/pbft_vote_*` | Vote validation/generation/progress/ingress/event/payload helpers | Vote manager shim, network API tests, PBFT/vote tests | Internal Rust route | CXX vote pipeline/admission session handles are retired. Collapse remaining bridge helpers into native Rust vote pipeline modules and keep only network-facing vote payload/effect adapters until the network/tarcap API owns that boundary. |
 | `rust/crates/rustaxa-bridge/src/verified_votes.rs` | `BridgeVerifiedVotes`, `create_verified_votes_index`, storage attach | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after vote manager no longer needs a C++ `VerifiedVotes` facade and Rust vote state attaches to storage internally. |
 | `rust/crates/rustaxa-bridge/src/period_data_queue.rs` | Internal conversion helpers only; no exported CXX handle | `pbft_manager.rs` | Internal Rust route | Delete the helper module after PBFT manager runtime can construct period-data queue facts directly from native Rust payload models instead of C++ sidecars. |
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | `BridgeProposedBlocks`, `create_proposed_blocks_index*` | `proposed_blocks_shim`, `dag_manager_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after proposed-block tracking is part of Rust PBFT/DAG runtime and C++ no longer asks for metadata/materialized proposed blocks. |
@@ -75,8 +75,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgePbftManagerStateActionEffectSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | State-action/effect planning is native Rust and not exposed through CXX. |
 | `BridgePbftManagerProposalSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | Proposal planning is native Rust runtime behavior. |
 | `BridgePbftManagerBlockValidationSession` | `pbft_manager.rs` | `pbft_manager_shim` | Internal Rust route | Block validation is native Rust runtime behavior. |
-| `BridgePbftVotePipelineSession` | `pbft_vote_pipeline.rs` | Vote manager/network tests | Internal Rust route | Vote pipeline is a Rust module called without CXX session handles. |
-| `BridgePbftVoteAdmissionSession` | `pbft_vote_admission.rs` | Vote admission paths/tests | Internal Rust route | Vote admission is Rust pipeline behavior behind network/effect API only. |
 | `BridgePbftVoteValidationRuntime` | `pbft_vote_validation.rs` | Vote manager/tests | Internal Rust route | Vote validation is private Rust vote runtime behavior. |
 | `BridgeVerifiedVotes` | `verified_votes.rs` | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Verified vote state is private Rust vote-manager state. |
 | `BridgeProposedBlocks` | `proposed_blocks.rs` | `proposed_blocks_shim`, DAG/vote manager shims | C++ public compatibility facade | Proposed-block tracking is private Rust PBFT/DAG runtime state. |
@@ -259,6 +257,9 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
   `pbft_manager_runtime_pbft_sync_queue_drain_report`. C++ remains the temporary executor for live queue sidecars,
   `processPeriodData()`, `pushPbftBlock_()`, and network sync-state updates until Slice 6 moves PBFT sync execution into
   the native Rust PBFT manager service.
+- `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` are retired. They had no production C++ callsites;
+  the deterministic vote pipeline/admission behavior remains covered by native `rustaxa-consensus` tests while the bridge
+  keeps only live C++ facade and network-facing vote helpers.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

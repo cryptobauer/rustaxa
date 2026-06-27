@@ -559,6 +559,9 @@ Implementation status:
 - `BridgeStorage::save_non_finalized_transactions` is also deleted. Older transaction-manager bridge paths now call the
   native `rustaxa-consensus` transaction storage helper directly, matching the runtime commit path and preserving the
   atomic accepted-transaction RLP plus `TrxCount` write group without a broad `BridgeStorage` mutator.
+- The unused CXX `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` exports are deleted. Their wrapper
+  modules only protected bridge-shaped test scaffolding; production C++ had no callsites, and native
+  `rustaxa-consensus` vote pipeline/admission tests now own the behavior coverage.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
