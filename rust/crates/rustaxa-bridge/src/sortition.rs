@@ -663,7 +663,12 @@ mod tests {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
             storage
-                .save_period_data(1, period_data_rlp(1, H256::from_low_u64_be(42), 2, &[2, 2]))
+                .0
+                .period()
+                .write(
+                    1,
+                    &period_data_rlp(1, H256::from_low_u64_be(42), 2, &[2, 2]),
+                )
                 .expect("period data should persist");
 
             let manager = create_sortition_params_manager_from_storage(runtime_config(), &storage)

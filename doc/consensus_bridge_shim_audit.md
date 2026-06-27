@@ -206,6 +206,8 @@ Current snapshot after Slice 5 period-data queue retirement and VoteManager sett
 - The remaining callers of broad `BridgeStorage::save_dag_block`, `remove_dag_block`,
   `save_proposal_period_dag_levels_map`, and `save_dag_block_period` now route through dedicated storage-shim batch
   appenders or native Rust DAG repositories, so the broad CXX storage methods have been deleted.
+- The remaining callers of broad `BridgeStorage::save_period_data` now route through the dedicated storage-shim batch
+  appender or native Rust period storage, so the broad CXX storage method has been deleted.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

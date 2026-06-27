@@ -319,7 +319,9 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("period_system_hashes_count", toString(period_sys_hashes.size() / 32));
 
   auto period_data_raw = std::vector<uint8_t>{0xC6, 0xC0, 0xC0, 0xC0, 0xE1, 0xC0, 0xC0};
-  storage->save_period_data(33, toRustVec(period_data_raw));
+  auto period_data_batch = rustaxa::create_storage_shim_batch(*storage);
+  rustaxa::storage_shim_save_period_data(*period_data_batch, 33, toRustVec(period_data_raw));
+  rustaxa::storage_shim_commit_batch(std::move(period_data_batch), false);
   transcript.add("period_data_raw_len", toString(period_queries->get_period_data_raw(33).size()));
 
   // Final-chain lookup/intercepted columns

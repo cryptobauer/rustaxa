@@ -3244,9 +3244,11 @@ mod tests {
         let pbft_block = signed_pbft_block(&pbft_key, 1, 100);
 
         storage
-            .save_period_data(
+            .0
+            .period()
+            .write(
                 1,
-                period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
+                &period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
             )
             .expect("period data should persist");
 
@@ -3387,7 +3389,9 @@ mod tests {
         period_data.append_raw(&txs.out(), 1);
         period_data.append_raw(&[0xC0], 1);
         storage
-            .save_period_data(99, period_data.out().as_ref().to_vec())
+            .0
+            .period()
+            .write(99, &period_data.out().as_ref().to_vec())
             .expect("finalized period data should persist");
 
         let plan = runtime
@@ -3452,9 +3456,11 @@ mod tests {
             .save_transaction_location(&transaction_hash, 1, 0, false)
             .expect("proposal storage location should persist");
         storage
-            .save_period_data(
+            .0
+            .period()
+            .write(
                 1,
-                period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
+                &period_data_rlp_with_pbft(&pbft_block, std::slice::from_ref(&transaction_rlp)),
             )
             .expect("period data should persist");
 
@@ -4377,7 +4383,9 @@ mod tests {
         period_data.append_raw(&txs.out(), 1);
         period_data.append_raw(&[0xC0], 1);
         storage
-            .save_period_data(8, period_data.out().as_ref().to_vec())
+            .0
+            .period()
+            .write(8, &period_data.out().as_ref().to_vec())
             .expect("period data should persist");
         storage
             .save_system_transaction(&[4u8; 32], vec![0x44])
@@ -4489,7 +4497,9 @@ mod tests {
         period_data.append_raw(&txs.out(), 1);
         period_data.append_raw(&[0xC0], 1);
         storage
-            .save_period_data(11, period_data.out().as_ref().to_vec())
+            .0
+            .period()
+            .write(11, &period_data.out().as_ref().to_vec())
             .expect("period data should persist");
 
         let out = transaction_manager_load_nonfinalized_recovery(&storage)

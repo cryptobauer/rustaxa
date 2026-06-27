@@ -238,7 +238,10 @@ mod tests {
             for &gas_price in prices {
                 append_transaction(&mut period_rlp, gas_price);
             }
-            storage.save_period_data(period, period_rlp.out().to_vec())?;
+            storage
+                .0
+                .period()
+                .write(period, &period_rlp.out().to_vec())?;
         }
         Ok(())
     }

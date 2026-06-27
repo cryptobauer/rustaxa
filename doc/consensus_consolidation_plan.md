@@ -518,6 +518,8 @@ Implementation status:
 - The remaining callers of broad `BridgeStorage::save_dag_block`, `remove_dag_block`,
   `save_proposal_period_dag_levels_map`, and `save_dag_block_period` now seed through dedicated storage-shim batch
   appenders or native Rust DAG repositories, and the broad CXX mutators are deleted.
+- The remaining callers of broad `BridgeStorage::save_period_data` now seed through the dedicated storage-shim batch
+  appender or native Rust period storage, and the broad CXX mutator is deleted.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 

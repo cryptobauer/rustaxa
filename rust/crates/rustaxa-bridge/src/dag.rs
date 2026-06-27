@@ -3178,7 +3178,9 @@ mod tests {
                     .block_hash
                     .into();
             storage
-                .save_period_data(7, period_data_with_pbft_block(&pbft_block))
+                .0
+                .period()
+                .write(7, &period_data_with_pbft_block(&pbft_block))
                 .expect("period data save should succeed");
 
             let found = runtime
@@ -3188,7 +3190,9 @@ mod tests {
             assert_eq!(found.hash, expected_hash);
 
             storage
-                .save_period_data(8, vec![0x80])
+                .0
+                .period()
+                .write(8, &vec![0x80])
                 .expect("corrupt period data save should succeed");
             assert!(runtime.dag_manager_runtime_period_block_hash(8).is_err());
         }
@@ -3216,7 +3220,9 @@ mod tests {
                     .block_hash
                     .into();
             storage
-                .save_period_data(7, period_data_with_pbft_block(&pbft_block))
+                .0
+                .period()
+                .write(7, &period_data_with_pbft_block(&pbft_block))
                 .expect("period data save should succeed");
 
             let vrf_key =
@@ -3464,7 +3470,9 @@ mod tests {
                 .expect("proposal-period mapping should save");
             let pbft_block = signed_pbft_block(7, 99);
             storage
-                .save_period_data(7, period_data_with_pbft_block(&pbft_block))
+                .0
+                .period()
+                .write(7, &period_data_with_pbft_block(&pbft_block))
                 .expect("period data save should succeed");
 
             let vrf_key =

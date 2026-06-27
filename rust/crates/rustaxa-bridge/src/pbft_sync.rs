@@ -767,7 +767,9 @@ mod tests {
                 .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             storage
-                .save_period_data(9, vec![0xC8, 0xC0, 0xC1])
+                .0
+                .period()
+                .write(9, &vec![0xC8, 0xC0, 0xC1])
                 .expect("period data should persist");
 
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())

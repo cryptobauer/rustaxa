@@ -837,7 +837,9 @@ mod tests {
         leaf_chunk[15] = query_bloom;
 
         storage
-            .save_period_data(15, period_data_rlp(&pbft_block_rlp))
+            .0
+            .period()
+            .write(15, &period_data_rlp(&pbft_block_rlp))
             .unwrap();
         storage
             .seed_final_chain_conformance_lookup_rows(
@@ -1041,7 +1043,9 @@ mod tests {
         let pbft_block = signed_pbft_block_rlp(&signing_key);
 
         storage
-            .save_period_data(7, period_data_rlp_with_dag_bundle(&pbft_block))
+            .0
+            .period()
+            .write(7, &period_data_rlp_with_dag_bundle(&pbft_block))
             .unwrap();
 
         let view = api
@@ -1085,7 +1089,9 @@ mod tests {
         let pbft_block = signed_pbft_block_rlp(&signing_key);
 
         storage
-            .save_period_data(7, period_data_rlp(&pbft_block))
+            .0
+            .period()
+            .write(7, &period_data_rlp(&pbft_block))
             .unwrap();
 
         let view = api.consensus_query_pbft_node_version_by_period(7).unwrap();
@@ -1130,9 +1136,11 @@ mod tests {
         let expected_vote = canonical_pbft_vote_rlp(12, 3, 3, block_hash, &proof, &signature);
 
         storage
-            .save_period_data(
+            .0
+            .period()
+            .write(
                 13,
-                period_data_with_cert_votes_rlp(
+                &period_data_with_cert_votes_rlp(
                     block_hash,
                     12,
                     3,
@@ -1197,7 +1205,9 @@ mod tests {
             .pillar_chain_storage_apply_finalized_block(10, block.encode_rlp())
             .unwrap();
         storage
-            .save_period_data(11, period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
+            .0
+            .period()
+            .write(11, &period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
             .unwrap();
 
         let view = api.consensus_query_pillar_block_data_by_period(10).unwrap();
@@ -1279,7 +1289,9 @@ mod tests {
 
         let (dag_bundle, canonical_block) = signed_finalized_dag_bundle_rlp();
         storage
-            .save_period_data(7, period_data_with_dag_bundle_rlp(&dag_bundle))
+            .0
+            .period()
+            .write(7, &period_data_with_dag_bundle_rlp(&dag_bundle))
             .unwrap();
         let finalized_views = api
             .consensus_query_finalized_dag_blocks_by_period(7)
@@ -1322,7 +1334,9 @@ mod tests {
             .save_transaction_location(&finalized_hash.0, 8, 0, false)
             .unwrap();
         storage
-            .save_period_data(8, period_data_with_transactions_rlp(&[vec![0x22]]))
+            .0
+            .period()
+            .write(8, &period_data_with_transactions_rlp(&[vec![0x22]]))
             .unwrap();
         storage
             .save_transaction_location(&system_hash.0, 9, 0, true)
@@ -1400,9 +1414,11 @@ mod tests {
         let second_rlp = vec![0x33];
 
         storage
-            .save_period_data(
+            .0
+            .period()
+            .write(
                 12,
-                period_data_with_transactions_rlp(&[first_rlp.clone(), second_rlp.clone()]),
+                &period_data_with_transactions_rlp(&[first_rlp.clone(), second_rlp.clone()]),
             )
             .unwrap();
         storage
@@ -1497,9 +1513,11 @@ mod tests {
             .save_transaction_location(&trx_hash.0, 12, 0, false)
             .unwrap();
         storage
-            .save_period_data(
+            .0
+            .period()
+            .write(
                 12,
-                period_data_with_transactions_rlp(std::slice::from_ref(&trx_rlp)),
+                &period_data_with_transactions_rlp(std::slice::from_ref(&trx_rlp)),
             )
             .unwrap();
         storage

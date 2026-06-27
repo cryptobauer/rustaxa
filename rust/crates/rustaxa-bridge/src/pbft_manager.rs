@@ -3689,7 +3689,9 @@ mod tests {
                 .expect("lambda seed should persist");
             let period_data = empty_finalized_dag_period_data_rlp();
             storage
-                .save_period_data(12, period_data.clone())
+                .0
+                .period()
+                .write(12, &period_data.clone())
                 .expect("period data should persist");
             storage
                 .0

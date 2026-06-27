@@ -594,7 +594,9 @@ mod tests {
                 .pillar_chain_storage_apply_finalized_block(10, pillar_block_rlp.clone())
                 .expect("pillar block should persist");
             storage
-                .save_period_data(11, period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
+                .0
+                .period()
+                .write(11, &period_data_with_pillar_votes_rlp(&votes_bundle_rlp))
                 .expect("period data should persist");
 
             let encoded = pillar_storage

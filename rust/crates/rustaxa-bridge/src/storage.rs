@@ -1321,14 +1321,6 @@ impl BridgeStorage {
         )
     }
 
-    pub fn save_period_data(
-        &self,
-        period: u64,
-        period_data_rlp: Vec<u8>,
-    ) -> Result<(), anyhow::Error> {
-        self.0.period().write(period, &period_data_rlp)
-    }
-
     /// Batch-loads canonical transaction RLP payloads by hash through Rust
     /// storage.
     ///
@@ -1514,7 +1506,9 @@ mod tests {
                 .save_transaction(&[1u8; 32], pending.clone())
                 .expect("pending transaction should save");
             storage
-                .save_period_data(7, period_data_rlp(std::slice::from_ref(&finalized)))
+                .0
+                .period()
+                .write(7, &period_data_rlp(std::slice::from_ref(&finalized)))
                 .expect("period data should save");
             storage
                 .save_transaction_location(&[2u8; 32], 7, 0, false)
