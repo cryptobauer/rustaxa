@@ -3177,6 +3177,7 @@ pub mod rustaxa_ffi {
         level: u64,
     }
 
+    #[allow(dead_code)]
     struct FinalChainExternalEvmPublicationPlan {
         request_id: [u8; 32],
         plan_id: [u8; 32],
@@ -6169,11 +6170,6 @@ pub mod rustaxa_ffi {
         pub fn plan_external_evm_system_transactions(
             fact: FinalChainSystemTransactionPlanFact,
         ) -> Result<FinalChainSystemTransactionPlan>;
-        pub fn publish_external_evm_publication(
-            self: &BridgeFinalChain,
-            plan: FinalChainExternalEvmPublicationPlan,
-            decision: FinalChainExternalEvmCommitDecision,
-        ) -> Result<FinalChainExternalEvmPublicationReport>;
         pub fn recover_external_evm_pending_publication(
             self: &BridgeFinalChain,
             committed_period: u64,

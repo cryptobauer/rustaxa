@@ -407,6 +407,7 @@ fn external_evm_rewards_stats_update_from_ffi(
     }
 }
 
+#[cfg(test)]
 fn external_evm_publication_plan_from_ffi(
     plan: rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
 ) -> rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
@@ -507,6 +508,7 @@ fn external_evm_state_commit_result_from_ffi(
     }
 }
 
+#[cfg(test)]
 fn external_evm_commit_decision_from_ffi(
     decision: rustaxa_ffi::FinalChainExternalEvmCommitDecision,
 ) -> rustaxa_consensus::FinalChainExternalEvmCommitDecision {
@@ -909,19 +911,6 @@ impl BridgeFinalChain {
         to: u64,
     ) -> Result<Vec<u64>, anyhow::Error> {
         self.0.with_block_bloom(bloom, from, to)
-    }
-
-    pub fn publish_external_evm_publication(
-        self: &BridgeFinalChain,
-        plan: rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
-        decision: rustaxa_ffi::FinalChainExternalEvmCommitDecision,
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationReport, anyhow::Error> {
-        Ok(external_evm_publication_report_to_ffi(
-            self.0.publish_external_evm_publication(
-                external_evm_publication_plan_from_ffi(plan),
-                external_evm_commit_decision_from_ffi(decision),
-            )?,
-        ))
     }
 
     pub fn recover_external_evm_pending_publication(
@@ -1985,6 +1974,17 @@ mod tests {
             rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE
         );
         decision
+    }
+
+    fn publish_external_evm_publication_via_rust(
+        final_chain: &BridgeFinalChain,
+        publication: rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+        decision: rustaxa_ffi::FinalChainExternalEvmCommitDecision,
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationReport, anyhow::Error> {
+        final_chain.0.publish_external_evm_publication(
+            external_evm_publication_plan_from_ffi(publication),
+            external_evm_commit_decision_from_ffi(decision),
+        )
     }
 
     fn ready_external_evm_commit_decision_via_execution_api(
@@ -3193,9 +3193,9 @@ mod tests {
             vec![1]
         );
         assert_external_evm_publication_audit_matches(&reloaded, &publication);
-        let already_applied_report = reloaded
-            .publish_external_evm_publication(publication, decision)
-            .expect("already-applied publication should convert");
+        let already_applied_report =
+            publish_external_evm_publication_via_rust(&reloaded, publication, decision)
+                .expect("already-applied publication should convert");
         assert_eq!(
             already_applied_report.status,
             rustaxa_consensus::FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED
@@ -3543,8 +3543,7 @@ mod tests {
             ready_external_evm_commit_decision(&final_chain, &mut session, &plan, &publication);
         publication.stored_header_rlp.push(0xff);
 
-        let report = final_chain
-            .publish_external_evm_publication(publication, decision)
+        let report = publish_external_evm_publication_via_rust(&final_chain, publication, decision)
             .expect("publication rejection should convert");
 
         assert_eq!(
@@ -3589,9 +3588,9 @@ mod tests {
             error_code: String::new(),
         };
 
-        let report = final_chain
-            .publish_external_evm_publication(publication, forged_decision)
-            .expect("publication rejection should convert");
+        let report =
+            publish_external_evm_publication_via_rust(&final_chain, publication, forged_decision)
+                .expect("publication rejection should convert");
 
         assert_eq!(
             report.status,

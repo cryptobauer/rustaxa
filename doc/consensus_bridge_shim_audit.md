@@ -213,6 +213,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeFinalChain::get_vrf_key` and `BridgeFinalChain::estimate_call_gas` are deleted from the CXX surface. Repo
   callers use the block-scoped `get_vrf_key_at_block` shim route and the dedicated `FinalChain::call` gas-estimation
   adapter instead; the removed wrappers had no C++ or Rust callers.
+- `BridgeFinalChain::publish_external_evm_publication` is deleted from the CXX surface. Live external-EVM publication
+  enters through `BridgeFinalChainExecutionSession` and `BridgeConsensusExecutionApi`; bridge tests that still verify
+  malformed direct publication plans now call the native Rust `FinalChain::publish_external_evm_publication` helper
+  without exporting that wrapper to C++.
 - `BridgeTransactionQueue` CXX exports are narrowed to the methods used by `transaction_queue_shim`. The no-caller
   queue-only planning/hash-view exports `transaction_queue_erase_plan`, `transaction_queue_ordered_hashes`,
   `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and

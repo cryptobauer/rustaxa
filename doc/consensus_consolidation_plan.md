@@ -598,6 +598,9 @@ Implementation status:
 - `BridgeFinalChain::get_vrf_key` and `BridgeFinalChain::estimate_call_gas` are deleted from the CXX bridge surface.
   Live C++ uses the block-scoped `get_vrf_key_at_block` route and the `FinalChain::call` gas-estimation adapter; the
   removed wrappers had no repo callers.
+- `BridgeFinalChain::publish_external_evm_publication` is deleted from the CXX bridge surface. Live publication crosses
+  CXX through `BridgeFinalChainExecutionSession` and `BridgeConsensusExecutionApi`; the remaining malformed-publication
+  bridge tests now call native Rust `FinalChain::publish_external_evm_publication` through a private test helper.
 - The unused CXX `BridgePbftVotePipelineSession` and `BridgePbftVoteAdmissionSession` exports are deleted. Their wrapper
   modules only protected bridge-shaped test scaffolding; production C++ had no callsites, and native
   `rustaxa-consensus` vote pipeline/admission tests now own the behavior coverage.
