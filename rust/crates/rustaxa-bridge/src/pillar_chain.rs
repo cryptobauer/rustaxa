@@ -9,7 +9,7 @@
 
 use crate::ffi::rustaxa_ffi::{
     PillarBlockCreationFact as FfiPillarBlockCreationFact,
-    PillarBlockCreationPlan as FfiPillarBlockCreationPlan,
+    PillarBlockCreationWithVoteCountsPlan as FfiPillarBlockCreationWithVoteCountsPlan,
     PillarBlockFinalizationFact as FfiPillarBlockFinalizationFact,
     PillarBlockFinalizationPlan as FfiPillarBlockFinalizationPlan,
     PillarBlockLinkageFact as FfiPillarBlockLinkageFact,
@@ -141,25 +141,52 @@ pub fn plan_pillar_block_linkage(
     ))
 }
 
-/// Plans the shell fields used by temporary C++ `PillarBlock` materialization.
+/// Plans the shell fields and ordered vote-count deltas used by temporary C++
+/// `PillarBlock` materialization.
 ///
 /// Inputs:
 /// - `fact`: typed pillar period/config, finalized parent, state root, and
 ///   bridge root/epoch facts.
+/// - `current_vote_counts`: latest DPoS eligible-vote snapshot.
+/// - `previous_vote_counts`: snapshot stored with the current pillar block, or
+///   an empty vector for the first pillar block.
 ///
 /// Outputs:
 /// - Returns CXX-safe hashes and linkage status that C++ uses to construct the
 ///   current `PillarBlock` object.
+/// - Returns legacy-compatible signed vote-count deltas in deterministic order.
 ///
 /// Invariants and edge behavior:
 /// - Bridge root and epoch are consumed by Rust planning before C++ uses them.
-/// - Vote-count deltas remain planned separately in this slice.
-pub fn plan_pillar_block_creation(
+/// - Linkage planning and vote-count delta planning either both succeed under
+///   this API or the pillar block is not materialized.
+pub fn plan_pillar_block_creation_with_vote_counts(
     fact: FfiPillarBlockCreationFact,
-) -> Result<FfiPillarBlockCreationPlan> {
-    Ok(FfiPillarBlockCreationPlan::from(
-        consensus_plan_pillar_block_creation(creation_fact_to_consensus(fact))?,
-    ))
+    current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
+    previous_vote_counts: Vec<FfiPillarValidatorVoteCount>,
+) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
+    let creation_plan = consensus_plan_pillar_block_creation(creation_fact_to_consensus(fact))?;
+    let current_vote_counts = current_vote_counts
+        .into_iter()
+        .map(vote_count_to_consensus)
+        .collect::<Vec<_>>();
+    let previous_vote_counts = previous_vote_counts
+        .into_iter()
+        .map(vote_count_to_consensus)
+        .collect::<Vec<_>>();
+    let vote_count_changes = consensus_plan_vote_count_changes(
+        current_vote_counts.as_slice(),
+        previous_vote_counts.as_slice(),
+    )?
+    .into_iter()
+    .map(FfiPillarValidatorVoteCountChange::from)
+    .collect();
+    Ok(
+        FfiPillarBlockCreationWithVoteCountsPlan::from_creation_plan(
+            creation_plan,
+            vote_count_changes,
+        ),
+    )
 }
 
 /// Plans one pillar-block finalization attempt from compact manager facts.
@@ -258,8 +285,11 @@ impl From<ConsensusPillarBlockLinkagePlan> for FfiPillarBlockLinkagePlan {
     }
 }
 
-impl From<ConsensusPillarBlockCreationPlan> for FfiPillarBlockCreationPlan {
-    fn from(value: ConsensusPillarBlockCreationPlan) -> Self {
+impl FfiPillarBlockCreationWithVoteCountsPlan {
+    fn from_creation_plan(
+        value: ConsensusPillarBlockCreationPlan,
+        vote_count_changes: Vec<FfiPillarValidatorVoteCountChange>,
+    ) -> Self {
         Self {
             status: value.status as u8,
             valid: value.valid,
@@ -268,6 +298,7 @@ impl From<ConsensusPillarBlockCreationPlan> for FfiPillarBlockCreationPlan {
             state_root: value.state_root.0,
             bridge_root: value.bridge_root.0,
             bridge_epoch: value.bridge_epoch.0,
+            vote_count_changes,
         }
     }
 }
@@ -369,17 +400,21 @@ mod tests {
 
     #[test]
     fn bridge_plans_pillar_block_creation_with_bridge_facts() {
-        let plan = plan_pillar_block_creation(FfiPillarBlockCreationFact {
-            pillar_block_period: 18,
-            state_root: hash(0xA1),
-            bridge_root: hash(0xB2),
-            bridge_epoch: hash(0xC3),
-            first_pillar_block_period: 10,
-            pillar_blocks_interval: 8,
-            has_last_finalized_pillar_block: true,
-            last_finalized_period: 10,
-            last_finalized_hash: hash(0xD4),
-        })
+        let plan = plan_pillar_block_creation_with_vote_counts(
+            FfiPillarBlockCreationFact {
+                pillar_block_period: 18,
+                state_root: hash(0xA1),
+                bridge_root: hash(0xB2),
+                bridge_epoch: hash(0xC3),
+                first_pillar_block_period: 10,
+                pillar_blocks_interval: 8,
+                has_last_finalized_pillar_block: true,
+                last_finalized_period: 10,
+                last_finalized_hash: hash(0xD4),
+            },
+            vec![vote_count(3, 5), vote_count(1, 7)],
+            vec![vote_count(3, 2), vote_count(2, 4)],
+        )
         .expect("creation planning should succeed");
 
         assert!(plan.valid);
@@ -388,26 +423,60 @@ mod tests {
         assert_eq!(plan.state_root, hash(0xA1));
         assert_eq!(plan.bridge_root, hash(0xB2));
         assert_eq!(plan.bridge_epoch, hash(0xC3));
+        assert_eq!(plan.vote_count_changes.len(), 3);
+        assert_eq!(plan.vote_count_changes[0].address, addr(1));
+        assert_eq!(plan.vote_count_changes[0].vote_count_change, 7);
     }
 
     #[test]
     fn bridge_plans_first_pillar_block_creation_with_null_parent() {
-        let plan = plan_pillar_block_creation(FfiPillarBlockCreationFact {
-            pillar_block_period: 10,
-            state_root: hash(0xA1),
-            bridge_root: hash(0xB2),
-            bridge_epoch: hash(0xC3),
-            first_pillar_block_period: 10,
-            pillar_blocks_interval: 8,
-            has_last_finalized_pillar_block: false,
-            last_finalized_period: 0,
-            last_finalized_hash: [0; 32],
-        })
+        let plan = plan_pillar_block_creation_with_vote_counts(
+            FfiPillarBlockCreationFact {
+                pillar_block_period: 10,
+                state_root: hash(0xA1),
+                bridge_root: hash(0xB2),
+                bridge_epoch: hash(0xC3),
+                first_pillar_block_period: 10,
+                pillar_blocks_interval: 8,
+                has_last_finalized_pillar_block: false,
+                last_finalized_period: 0,
+                last_finalized_hash: [0; 32],
+            },
+            vec![vote_count(3, 5), vote_count(1, 7)],
+            Vec::new(),
+        )
         .expect("first creation planning should succeed");
 
         assert!(plan.valid);
         assert_eq!(plan.status, 1);
         assert_eq!(plan.previous_pillar_block_hash, [0; 32]);
+        assert_eq!(plan.vote_count_changes.len(), 2);
+        assert_eq!(plan.vote_count_changes[0].address, addr(3));
+        assert_eq!(plan.vote_count_changes[0].vote_count_change, 5);
+    }
+
+    #[test]
+    fn bridge_rejects_creation_when_vote_count_delta_overflows() {
+        let err = match plan_pillar_block_creation_with_vote_counts(
+            FfiPillarBlockCreationFact {
+                pillar_block_period: 10,
+                state_root: hash(0xA1),
+                bridge_root: hash(0xB2),
+                bridge_epoch: hash(0xC3),
+                first_pillar_block_period: 10,
+                pillar_blocks_interval: 8,
+                has_last_finalized_pillar_block: false,
+                last_finalized_period: 0,
+                last_finalized_hash: [0; 32],
+            },
+            vec![vote_count(3, u64::from(i32::MAX as u32) + 1)],
+            Vec::new(),
+        ) {
+            Ok(_) => panic!("oversized first-block vote count should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("i32 range"));
     }
 
     #[test]

@@ -2744,10 +2744,11 @@ pub mod rustaxa_ffi {
         last_finalized_hash: [u8; 32],
     }
 
-    /// Rust-planned shell fields for temporary C++ `PillarBlock` materialization.
+    /// Rust-planned shell fields and validator deltas for temporary C++
+    /// `PillarBlock` materialization.
     ///
     /// Status values match `PillarBlockLinkagePlan`.
-    struct PillarBlockCreationPlan {
+    struct PillarBlockCreationWithVoteCountsPlan {
         status: u8,
         valid: bool,
         expected_previous_period: u64,
@@ -2755,6 +2756,7 @@ pub mod rustaxa_ffi {
         state_root: [u8; 32],
         bridge_root: [u8; 32],
         bridge_epoch: [u8; 32],
+        vote_count_changes: Vec<PillarValidatorVoteCountChange>,
     }
 
     /// Compact facts for Rust-side pillar-block finalization planning.
@@ -5680,9 +5682,11 @@ pub mod rustaxa_ffi {
         pub fn plan_pillar_block_linkage(
             fact: PillarBlockLinkageFact,
         ) -> Result<PillarBlockLinkagePlan>;
-        pub fn plan_pillar_block_creation(
+        pub fn plan_pillar_block_creation_with_vote_counts(
             fact: PillarBlockCreationFact,
-        ) -> Result<PillarBlockCreationPlan>;
+            current_vote_counts: Vec<PillarValidatorVoteCount>,
+            previous_vote_counts: Vec<PillarValidatorVoteCount>,
+        ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
         pub fn plan_pillar_block_finalization(
             fact: PillarBlockFinalizationFact,
         ) -> Result<PillarBlockFinalizationPlan>;

@@ -489,6 +489,13 @@ Implementation notes:
   one batched read, then passes canonical RLP bytes and weights back to Rust for signature validation, duplicate/conflict
   checks, threshold selection, and accepted-voter materialization. The previous shim-local per-vote inspection/weight
   loop and `getPillarVoteWeight()` helper are gone.
+- `pillar_chain_manager_shim::createPillarBlock()` now calls
+  `plan_pillar_block_creation_with_vote_counts`, which combines pillar-block shell planning with ordered validator
+  vote-count delta planning behind one Rust API. C++ still owns FinalChain DPoS vote-count reads, temporary
+  `PillarBlock` materialization, current-block storage payload materialization, and live manager mirrors, but it no
+  longer separately orchestrates the creation planner and vote-count planner before constructing a candidate block. The
+  creation-only `plan_pillar_block_creation` CXX export and shell-only DTO are deleted; native Rust still owns the
+  lower-level domain planner internally.
 - `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
@@ -563,6 +570,12 @@ Implementation notes:
     duplicate-resume replay, and explicit external action reporting as acceptance risks.
   - `cpp-pro`: attempted for C++ shim review, but the agent backend rejected the start due to a GPT-5.3-Codex-Spark usage
     limit. Local implementation and validation proceeded with the `$implement-rustaxa-consensus-slice` workflow.
+- Custom agents used for the pillar-chain creation consolidation:
+  - `api-designer`: recommended a broader follow-up `BridgePillarChainRuntime` that would own vote admission and sync
+    bundle planning while keeping FinalChain DPoS reads, network requests, event emission, and temporary
+    `PillarBlock`/`PillarVote` materialization external.
+  - `architect-reviewer`: recommended the no-caller plain-fact pillar-vote bundle planner as the next bridge-surface
+    cleanup candidate and confirmed `BridgePillarVotes` plus pillar storage remain live for now.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -651,6 +664,20 @@ Implementation notes:
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `git diff --check`
   - `.githooks/pre-commit`
+- Additional validation for pillar-chain creation consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_chain -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `cmake --build /build --target pillar_chain_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='PillarChainPlanningBridgeTest.*' --gtest_print_time=1`
+  - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarChainPlanningBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
+  - `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.pillar_blocks_create' --gtest_print_time=1`
+  - `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.votes_count_changes' --gtest_print_time=1`
+  - The combined `pillar_chain_test` filter
+    `PillarChainTest.pillar_blocks_create:PillarChainTest.votes_count_changes` failed on a `/tmp/taraxa0` RocksDB lock
+    when the second test started in the same process; each focused test passed when run in isolation.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
 - The immediate follow-up is either the broader PBFT finalization executor cut that absorbs the remaining external-effect

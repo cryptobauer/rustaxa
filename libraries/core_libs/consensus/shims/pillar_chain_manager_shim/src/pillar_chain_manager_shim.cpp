@@ -692,21 +692,11 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     PbftPeriod period, const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
     const h256& bridge_epoch) {
   auto new_vote_counts = loadPillarValidatorVoteCounts(final_chain_, period);
-  std::vector<PillarBlock::ValidatorVoteCountChange> votes_count_changes;
   std::shared_ptr<PillarBlock> last_finalized_pillar_block;
+  rust::Vec<rustaxa::PillarValidatorVoteCount> previous_vote_counts;
 
   // First ever pillar block
-  if (period == kFicusHfConfig.firstPillarBlockPeriod()) {
-    try {
-      rust::Vec<rustaxa::PillarValidatorVoteCount> empty_previous_vote_counts;
-      votes_count_changes = fromBridgeVoteCountChanges(rustaxa::plan_pillar_vote_count_changes(
-          toBridgeVoteCounts(new_vote_counts), std::move(empty_previous_vote_counts)));
-    } catch (const std::exception& e) {
-      LOG(log_er_) << "Unable to plan first pillar block vote-count changes in Rust for period " << period << ": "
-                   << e.what();
-      return nullptr;
-    }
-  } else {
+  if (period != kFicusHfConfig.firstPillarBlockPeriod()) {
     last_finalized_pillar_block = getLastFinalizedPillarBlock();
     // This should never happen !!!
     if (!last_finalized_pillar_block) {
@@ -724,21 +714,15 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
       return nullptr;
     }
 
-    // Get validators vote counts changes between the current and previous pillar block
-    try {
-      votes_count_changes = fromBridgeVoteCountChanges(rustaxa::plan_pillar_vote_count_changes(
-          toBridgeVoteCounts(new_vote_counts), toBridgeVoteCounts(current_pillar_block_vote_counts_)));
-    } catch (const std::exception& e) {
-      LOG(log_er_) << "Unable to plan pillar block vote-count changes in Rust for period " << period << ": "
-                   << e.what();
-      return nullptr;
-    }
+    previous_vote_counts = toBridgeVoteCounts(current_pillar_block_vote_counts_);
   }
 
-  rustaxa::PillarBlockCreationPlan creation_plan{};
+  rustaxa::PillarBlockCreationWithVoteCountsPlan creation_plan{};
   try {
-    creation_plan = rustaxa::plan_pillar_block_creation(toBridgeCreationFact(
-        kFicusHfConfig, period, block_header, bridge_root, bridge_epoch, last_finalized_pillar_block));
+    creation_plan = rustaxa::plan_pillar_block_creation_with_vote_counts(
+        toBridgeCreationFact(kFicusHfConfig, period, block_header, bridge_root, bridge_epoch,
+                             last_finalized_pillar_block),
+        toBridgeVoteCounts(new_vote_counts), std::move(previous_vote_counts));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to plan pillar block creation in Rust for period " << period << ": " << e.what();
     return nullptr;
@@ -753,7 +737,7 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
   const auto pillar_block = std::make_shared<PillarBlock>(
       period, fromBridgeH256(creation_plan.state_root), fromBridgeBlockHash(creation_plan.previous_pillar_block_hash),
       fromBridgeH256(creation_plan.bridge_root), fromBridgeH256(creation_plan.bridge_epoch),
-      std::move(votes_count_changes));
+      fromBridgeVoteCountChanges(creation_plan.vote_count_changes));
 
   // Check if some pillar block was not skipped
   if (!isValidPillarBlock(pillar_block)) {

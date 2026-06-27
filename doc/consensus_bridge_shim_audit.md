@@ -318,6 +318,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   inspection and weight accumulation. It calls the Rust batch RLP inspection API, performs the one remaining external
   FinalChain DPoS weight read as a batch, then calls the Rust weighted-bundle planner. The obsolete shim helper
   `getPillarVoteWeight()` has been removed.
+- `pillar_chain_manager_shim::createPillarBlock()` now calls
+  `plan_pillar_block_creation_with_vote_counts`, which combines pillar-block shell planning and ordered validator
+  vote-count delta planning behind one Rust bridge call. The creation-only `plan_pillar_block_creation` CXX export and
+  shell-only DTO are deleted. C++ still owns external FinalChain DPoS vote-count reads, temporary `PillarBlock`
+  materialization, current-block storage payload materialization, and live manager mirrors.
 - The no-caller broad `apply_rewards_stats_storage_writes` CXX export is deleted. Live rewards-stat persistence uses the
   runtime-owned `rewards_stats_runtime_apply_storage_writes` method or the dedicated storage-shim batch appender.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for

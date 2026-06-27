@@ -76,6 +76,21 @@ rustaxa::PillarBlockLinkageFact makeLinkageFact(uint64_t period, uint64_t previo
   return fact;
 }
 
+rustaxa::PillarBlockCreationFact makeCreationFact(uint64_t period, bool has_last_finalized, uint64_t last_period,
+                                                  uint64_t last_hash) {
+  rustaxa::PillarBlockCreationFact fact{};
+  fact.pillar_block_period = period;
+  fact.state_root = makeHash(0xA1);
+  fact.bridge_root = makeHash(0xB2);
+  fact.bridge_epoch = makeHash(0xC3);
+  fact.first_pillar_block_period = 10;
+  fact.pillar_blocks_interval = 10;
+  fact.has_last_finalized_pillar_block = has_last_finalized;
+  fact.last_finalized_period = last_period;
+  fact.last_finalized_hash = makeHash(last_hash);
+  return fact;
+}
+
 rust::Slice<const uint8_t> makeSlice(const taraxa::bytes& bytes) {
   return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
 }
@@ -294,6 +309,36 @@ TEST(PillarChainPlanningBridgeTest, planPillarBlockLinkageReportsStatus) {
   const auto wrong_hash = rustaxa::plan_pillar_block_linkage(makeLinkageFact(20, 778, true, 10, 777));
   EXPECT_FALSE(wrong_hash.valid);
   EXPECT_EQ(wrong_hash.status, 4);
+}
+
+TEST(PillarChainPlanningBridgeTest, planPillarBlockCreationCombinesShellAndVoteCountChanges) {
+  rust::Vec<rustaxa::PillarValidatorVoteCount> current;
+  current.push_back(makeVoteCount(3, 9));
+  current.push_back(makeVoteCount(1, 3));
+  current.push_back(makeVoteCount(4, 4));
+
+  rust::Vec<rustaxa::PillarValidatorVoteCount> previous;
+  previous.push_back(makeVoteCount(3, 5));
+  previous.push_back(makeVoteCount(2, 8));
+  previous.push_back(makeVoteCount(1, 3));
+
+  const auto plan =
+      rustaxa::plan_pillar_block_creation_with_vote_counts(makeCreationFact(20, true, 10, 777), std::move(current),
+                                                           std::move(previous));
+
+  EXPECT_TRUE(plan.valid);
+  EXPECT_EQ(plan.status, 0);
+  EXPECT_EQ(plan.previous_pillar_block_hash, makeHash(777));
+  EXPECT_EQ(plan.state_root, makeHash(0xA1));
+  EXPECT_EQ(plan.bridge_root, makeHash(0xB2));
+  EXPECT_EQ(plan.bridge_epoch, makeHash(0xC3));
+  ASSERT_EQ(plan.vote_count_changes.size(), 3);
+  EXPECT_EQ(plan.vote_count_changes[0].address, makeVoter(2));
+  EXPECT_EQ(plan.vote_count_changes[0].vote_count_change, -8);
+  EXPECT_EQ(plan.vote_count_changes[1].address, makeVoter(3));
+  EXPECT_EQ(plan.vote_count_changes[1].vote_count_change, 4);
+  EXPECT_EQ(plan.vote_count_changes[2].address, makeVoter(4));
+  EXPECT_EQ(plan.vote_count_changes[2].vote_count_change, 4);
 }
 
 TEST(PillarVoteInspectionBridgeTest, inspectPillarVoteRecoversSameVoterAsCpp) {
