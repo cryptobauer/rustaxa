@@ -130,9 +130,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `VoteManagerOld::setNetwork`.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
   `dag_manager_shim::getDagMutex` now returns a shim-owned mutex to avoid `DagManagerOld` forwarding.
-- `transaction_manager_shim::getTransactionsMutex` no longer forwards to `TransactionManagerOld`; the shim method returns
-  the same inherited mutex through `TransactionManagerRustShimAccess`. The lock itself remains temporary inherited-state
-  compatibility debt until transaction lifecycle synchronization moves into the Rust transaction runtime.
+- `transaction_manager_shim::getTransactionsMutex` no longer forwards to `TransactionManagerOld`; the shim method now
+  returns a shim-owned lock via `TransactionManagerRustShimAccess`, removing the direct inherited-state dependency for
+  lock ownership.
 - `consensus_network_queue_*` no longer remains in bridge, FFI, latest tarcap network code, Rust consensus network API,
   or network API tests. Keep the closeout check above as a regression guard with empty output expected.
 - Remaining live network effect execution is PBFT vote gossip through `consensus_network_gossip_pbft_vote` and

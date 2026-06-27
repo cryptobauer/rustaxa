@@ -381,8 +381,7 @@ Implementation notes:
 - `vote_manager_shim::setNetwork` no longer forwards through `VoteManagerOld`; it writes the inherited protected network
   pointer directly. This removes one completed setter forwarding without changing the public C++ API.
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards through `TransactionManagerOld`; it is now a
-  shim-owned method that returns the same inherited mutex through the existing friend access helper. Transaction lifecycle
-  synchronization is still temporary inherited-state debt until the transaction runtime owns the lifecycle lock.
+  shim-owned method that routes to a lock stored on `TransactionManager` itself through the existing friend access helper.
 - `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
   network pointer at this seam.
 - Replacement bridge coverage is in the Rust `rustaxa-bridge` PBFT manager runtime test for period-data queue metadata,

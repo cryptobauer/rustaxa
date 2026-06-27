@@ -57,13 +57,13 @@ TEST(TransactionManagerShimTest, rustModeTransactionManagerIsDistinctFromLegacyT
 #ifdef RUSTAXA_ENABLE
 struct TransactionManagerShimFixture : NodesTest {};
 
-TEST_F(TransactionManagerShimFixture, transactionMutexAccessorReturnsInheritedLock) {
+TEST_F(TransactionManagerShimFixture, transactionMutexAccessorUsesShimOwnedLock) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
 
-  EXPECT_EQ(&trx_mgr.getTransactionsMutex(),
+  EXPECT_NE(&trx_mgr.getTransactionsMutex(),
             &static_cast<TransactionManagerOld&>(trx_mgr).getTransactionsMutex());
 }
 
