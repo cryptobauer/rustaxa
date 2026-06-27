@@ -239,25 +239,6 @@ pub fn rewards_stats_runtime_clear_storage_and_state(
     Ok(result.into())
 }
 
-/// Applies reward-stat cache writes or clears through a Rust-owned storage batch.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage handle.
-/// - `plan` is the successful result from `process_finalized_period_rewards_stats`.
-/// - `sync`: commit sync flag.
-///
-/// Outputs:
-/// - `status` is `0` when the requested writes were committed and `1` when
-///   the plan was rejected or internally inconsistent.
-pub fn apply_rewards_stats_storage_writes(
-    storage: &BridgeStorage,
-    plan: &RewardsStatsProcessResult,
-    sync: bool,
-) -> Result<RewardsStatsApplyResult> {
-    let plan = rewards_stats_process_plan_from_ffi(plan);
-    Ok(domain_apply_rewards_stats_storage_writes(&storage.0, &plan, sync)?.into())
-}
-
 /// Appends reward-stat cache writes to an existing Rust storage shim batch.
 ///
 /// This is the task-specific replacement for routing rewards-stat production

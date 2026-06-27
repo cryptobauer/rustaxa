@@ -227,6 +227,8 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `verified_votes_snapshot_weighted_payloads`, and `sortition_restore_finalized_period`. C++ verified-vote callers use
   insertion/admission, retained payload lookups, round-marker snapshots, and explicit sortition finalized-period
   record/persist methods instead.
+- The no-caller broad `apply_rewards_stats_storage_writes` CXX export is deleted. Live rewards-stat persistence uses the
+  runtime-owned `rewards_stats_runtime_apply_storage_writes` method or the dedicated storage-shim batch appender.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for
   both pending-storage-row deletion and sidecar removal. Rust commits the native storage delete batch first and then
   mutates live sidecar state, matching the legacy C++ behavior without exposing public `DbStorage` batch usage in

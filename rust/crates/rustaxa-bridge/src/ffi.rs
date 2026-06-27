@@ -5774,12 +5774,6 @@ pub mod rustaxa_ffi {
             current_period: u64,
             sync: bool,
         ) -> Result<RewardsStatsApplyResult>;
-        pub fn apply_rewards_stats_storage_writes(
-            storage: &BridgeStorage,
-            plan: &RewardsStatsProcessResult,
-            sync: bool,
-        ) -> Result<RewardsStatsApplyResult>;
-
         // Consensus transaction queue
 
         type BridgeTransactionQueue;

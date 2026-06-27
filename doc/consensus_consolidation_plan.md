@@ -619,6 +619,9 @@ Implementation status:
   `verified_votes_snapshot_weighted_payloads`, and `sortition_restore_finalized_period`. Live C++ verified-vote paths
   use admission, payload lookup, retained-payload 2t+1 lookup, round-marker snapshots, and explicit sortition
   record/persist APIs instead.
+- The standalone broad `apply_rewards_stats_storage_writes` CXX export is deleted. Rewards-stat storage writes now enter
+  through either `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` with runtime-owned storage or
+  the dedicated storage-shim batch appender.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
