@@ -384,9 +384,8 @@ Implementation notes:
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards through `TransactionManagerOld`; it is now a
   shim-owned method that returns the same inherited mutex through the existing friend access helper. Transaction lifecycle
   synchronization is still temporary inherited-state debt until the transaction runtime owns the lifecycle lock.
-- `dag_manager_shim::setNetwork` remains documented temporary compatibility debt: the shim has its own network pointer,
-  while the legacy base still has private network state that may be read if an inherited base path executes. Remove that
-  forwarding only with the broader DAG manager runtime/service consolidation.
+- `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
+  network pointer at this seam.
 - Replacement bridge coverage is in the Rust `rustaxa-bridge` PBFT manager runtime test for period-data queue metadata,
   the Rust `rustaxa-bridge` PBFT manager runtime test for queue-drain planner ownership, plus the existing Rust
   `rustaxa-consensus` period-data queue and PBFT sync queue-drain domain tests.

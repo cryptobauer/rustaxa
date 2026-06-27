@@ -416,7 +416,6 @@ std::shared_ptr<DagManager> DagManager::getShared() {
 
 void DagManager::setNetwork(std::weak_ptr<Network> network) {
   network_ = network;
-  DagManagerOld::setNetwork(std::move(network));
 }
 
 bool DagManager::isDagBlockKnown(const blk_hash_t &hash) const {

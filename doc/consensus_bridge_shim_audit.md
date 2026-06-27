@@ -125,12 +125,9 @@ rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 
 Current snapshot after DAG proposer-session cursor consolidation:
 
-- `Old::` forwarding remains in `dag_shim` and in `dag_manager_shim::setNetwork` only (temporary).
+- `Old::` forwarding remains in `dag_shim` only (temporary).
 - `vote_manager_shim::setNetwork` writes inherited protected state directly and no longer forwards to
   `VoteManagerOld::setNetwork`.
-- `dag_manager_shim::setNetwork` still forwards to `DagManagerOld::setNetwork` as temporary compatibility debt because
-  the shim-owned network pointer and the legacy base's private network pointer are distinct until DAG manager runtime
-  consolidation removes inherited base-path reliance.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
   `dag_manager_shim::getDagMutex` now returns a shim-owned mutex to avoid `DagManagerOld` forwarding.
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards to `TransactionManagerOld`; the shim method returns
