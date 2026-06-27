@@ -1178,12 +1178,6 @@ pub mod rustaxa_ffi {
         hash: [u8; 32],
     }
 
-    /// C++-originated PBFT sync transaction references.
-    struct PbftSyncTransactionQueryFact {
-        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-    }
-
     /// Rust-planned finalized transaction lookup work for PBFT sync admission.
     struct PbftSyncTransactionQueryPlan {
         finalized_lookup_hashes: Vec<PbftSyncTransactionHash>,
@@ -1204,18 +1198,6 @@ pub mod rustaxa_ffi {
         contains_finalized_transactions: bool,
         pillar_data_status: u8,
         pillar_votes_status: u8,
-    }
-
-    /// Plan outcome for one PBFT sync admission decision.
-    struct PbftSyncPeriodAdmissionPlan {
-        decision: u8,
-        status: u8,
-        clear_sync_queue: bool,
-        report_malicious_peer: bool,
-        wait_for_finalization: bool,
-        accept_period_data: bool,
-        warnings: Vec<PbftSyncTransactionWarning>,
-        contains_finalized_transaction_warning: bool,
     }
 
     /// Storage-backed PBFT sync egress payload for packet materialization.
@@ -4757,12 +4739,6 @@ pub mod rustaxa_ffi {
             period: u64,
             prev_hash: &[u8; 32],
         ) -> PbftBlockValidationResult;
-        pub fn plan_pbft_sync_period_admission(
-            fact: PbftSyncPeriodAdmissionFact,
-        ) -> PbftSyncPeriodAdmissionPlan;
-        pub fn plan_pbft_sync_transaction_query(
-            fact: PbftSyncTransactionQueryFact,
-        ) -> PbftSyncTransactionQueryPlan;
         pub fn load_pbft_sync_egress_payload(
             runtime: &BridgePbftManagerRuntime,
             block_period: u64,

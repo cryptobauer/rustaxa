@@ -729,6 +729,20 @@ Implementation status:
   deleted lower-level planners and lambda lookup.
   Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
   PBFT manager standalone planner lane as a secondary cleanup candidate.
+- Direct PBFT sync admission and transaction-query planners are no longer CXX exports:
+  `plan_pbft_sync_period_admission`, `plan_pbft_sync_transaction_query`, and their bridge-only fact/plan DTOs are
+  deleted from the bridge surface. Live C++ uses the staged `plan_pbft_sync_process_period_data_runtime` API, whose
+  runtime plan still carries transaction-query output when the process-period executor needs it; native
+  `rustaxa-consensus` tests cover the lower-level admission and transaction-query planners.
+  Custom agents used: `rust-engineer` identified these two direct planners as bridge-test-only exports after the live
+  PBFT sync route moved to the staged runtime API.
+  Validation for this CXX export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_sync`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_sync`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.*' --gtest_print_time=1`
 - Lower-level FinalChain execution API helpers that were superseded by the one-shot
   `consensus_execution_prepare_external_evm_state_commit` call are no longer CXX exports:
   `consensus_execution_plan_publication`, `consensus_execution_attach_rewards_stats`,

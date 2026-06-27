@@ -57,7 +57,6 @@ std::vector<std::array<uint8_t, 32>> hashes(const rust::Vec<PbftSyncTransactionH
 }
 
 constexpr uint8_t kPbftSyncFactValid = 0;
-constexpr uint8_t kPbftSyncFactNotRequired = 2;
 constexpr uint8_t kPbftSyncFactNotChecked = 3;
 constexpr uint8_t kPbftSyncFinalChainHashValid = 0;
 constexpr uint8_t kPbftSyncFinalChainHashMissing = 1;
@@ -71,7 +70,6 @@ constexpr uint8_t kPbftSyncNextCheckValidateCertVotes = 3;
 constexpr uint8_t kPbftSyncNextCheckCheckTransactions = 4;
 constexpr uint8_t kPbftSyncNextCheckValidatePillarVotes = 6;
 constexpr uint8_t kPbftSyncTransactionWarningMissing = 1;
-constexpr uint8_t kPbftSyncTransactionWarningFinalized = 2;
 constexpr uint8_t kPbftFinalizationAnchorNull = 0;
 constexpr uint8_t kPbftFinalizationAnchorAnchored = 1;
 constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
@@ -200,22 +198,6 @@ PbftFinalizationStorageWriteStage rewardResetFinalizationStorageStage(
     stage.extra_reward_vote_hashes.push_back(PbftFinalizationHash{hash});
   }
   return stage;
-}
-
-PbftSyncPeriodAdmissionFact makeAdmissionFact() {
-  PbftSyncPeriodAdmissionFact fact;
-  fact.block_period = 101;
-  fact.block_prev_hash = h256(1);
-  fact.chain_last_hash = h256(1);
-  fact.chain_last_period = 100;
-  fact.block_in_chain = false;
-  fact.final_chain_hash_status = kPbftSyncFinalChainHashValid;
-  fact.reward_votes_status = kPbftSyncFactValid;
-  fact.cert_votes_status = kPbftSyncFactValid;
-  fact.contains_finalized_transactions = false;
-  fact.pillar_data_status = kPbftSyncFactValid;
-  fact.pillar_votes_status = kPbftSyncFactNotRequired;
-  return fact;
 }
 
 PbftSyncProcessPeriodDataRuntimeFact makeRuntimeFact() {
@@ -441,61 +423,6 @@ void expectNoFinalizationStorageWrites(const PbftFinalizationStorageWritePlan& s
 }
 
 }  // namespace
-
-TEST(RustPbftSyncTest, TransactionQueryPlansUniqueMissingDagTransactionsInOrder) {
-  PbftSyncTransactionQueryFact fact;
-  fact.dag_transaction_hashes.push_back(tx(1));
-  fact.dag_transaction_hashes.push_back(tx(2));
-  fact.dag_transaction_hashes.push_back(tx(1));
-  fact.dag_transaction_hashes.push_back(tx(3));
-  fact.dag_transaction_hashes.push_back(tx(4));
-  fact.period_data_transaction_hashes.push_back(tx(2));
-  fact.period_data_transaction_hashes.push_back(tx(4));
-
-  const auto plan = plan_pbft_sync_transaction_query(std::move(fact));
-
-  EXPECT_EQ(hashes(plan.finalized_lookup_hashes), (std::vector{h256(1), h256(3)}));
-}
-
-TEST(RustPbftSyncTest, PeriodAdmissionPlanAcceptsWithRuntimeWarnings) {
-  auto fact = makeAdmissionFact();
-  fact.missing_transaction_hashes = {tx(2), tx(4)};
-  fact.finalized_transaction_hashes = {tx(7)};
-  fact.contains_finalized_transactions = true;
-
-  const auto plan = plan_pbft_sync_period_admission(std::move(fact));
-
-  EXPECT_TRUE(plan.accept_period_data);
-  EXPECT_FALSE(plan.clear_sync_queue);
-  EXPECT_FALSE(plan.report_malicious_peer);
-  EXPECT_FALSE(plan.wait_for_finalization);
-  EXPECT_EQ(plan.warnings.size(), 3);
-  EXPECT_EQ(plan.warnings[0].kind, kPbftSyncTransactionWarningMissing);
-  EXPECT_EQ(plan.warnings[2].kind, kPbftSyncTransactionWarningFinalized);
-  EXPECT_TRUE(plan.contains_finalized_transaction_warning);
-}
-
-TEST(RustPbftSyncTest, PeriodAdmissionPlanWaitsWhenFinalChainHashIsMissing) {
-  auto fact = makeAdmissionFact();
-  fact.final_chain_hash_status = kPbftSyncFinalChainHashMissing;
-
-  const auto plan = plan_pbft_sync_period_admission(std::move(fact));
-
-  EXPECT_TRUE(plan.wait_for_finalization);
-  EXPECT_FALSE(plan.accept_period_data);
-  EXPECT_FALSE(plan.clear_sync_queue);
-}
-
-TEST(RustPbftSyncTest, PeriodAdmissionPlanClearsAndReportsForPrevHashMismatch) {
-  auto fact = makeAdmissionFact();
-  fact.block_prev_hash = h256(2);
-
-  const auto plan = plan_pbft_sync_period_admission(std::move(fact));
-
-  EXPECT_FALSE(plan.accept_period_data);
-  EXPECT_TRUE(plan.clear_sync_queue);
-  EXPECT_TRUE(plan.report_malicious_peer);
-}
 
 TEST(RustPbftSyncTest, ProcessPeriodRuntimeRequestsChecksInOrder) {
   auto fact = makeRuntimeFact();
