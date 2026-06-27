@@ -137,9 +137,17 @@ rg -n '^mod [a-z0-9_]+;' rust/crates/rustaxa-bridge/src/lib.rs
 rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 ```
 
-Current snapshot after Slice 5 period-data queue retirement:
+Current snapshot after Slice 5 period-data queue retirement and VoteManager setter cleanup:
 
-- `Old::` forwarding remains in `dag_manager_shim`, `dag_shim`, `transaction_manager_shim`, and `vote_manager_shim`.
+- `Old::` forwarding remains in `dag_manager_shim`, `dag_shim`, and `transaction_manager_shim`.
+- `vote_manager_shim::setNetwork` writes inherited protected state directly and no longer forwards to
+  `VoteManagerOld::setNetwork`.
+- `dag_manager_shim::setNetwork` still forwards to `DagManagerOld::setNetwork` as temporary compatibility debt because
+  the shim-owned network pointer and the legacy base's private network pointer are distinct until DAG manager runtime
+  consolidation removes inherited base-path reliance.
+- `dag_manager_shim::getShared` and `getDagMutex` still forward to inherited `DagManagerOld` state with call-site TODOs;
+  remove them only when DAG manager ownership/synchronization are shim- or Rust-owned instead of inherited from the
+  legacy base.
 - `consensus_network_queue_*` no longer remains in bridge, FFI, latest tarcap network code, Rust consensus network API,
   or network API tests. Keep the closeout check above as a regression guard with empty output expected.
 - Remaining live network effect execution is PBFT vote gossip through `consensus_network_gossip_pbft_vote` and

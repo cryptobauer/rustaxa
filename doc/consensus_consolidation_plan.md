@@ -351,6 +351,11 @@ Implementation notes:
 - `pbft_manager_shim` keeps a temporary sidecar deque for live `PeriodData`, `PbftVote`, and peer objects. Rust owns the
   queue admission/order/pop/cleanup metadata; the sidecar deque should disappear when those payload model types move to
   Rust.
+- `vote_manager_shim::setNetwork` no longer forwards through `VoteManagerOld`; it writes the inherited protected network
+  pointer directly. This removes one completed setter forwarding without changing the public C++ API.
+- `dag_manager_shim::setNetwork` remains documented temporary compatibility debt: the shim has its own network pointer,
+  while the legacy base still has private network state that may be read if an inherited base path executes. Remove that
+  forwarding only with the broader DAG manager runtime/service consolidation.
 - Replacement bridge coverage is in the Rust `rustaxa-bridge` PBFT manager runtime test for period-data queue metadata,
   plus the existing Rust `rustaxa-consensus` period-data queue domain tests.
 - Full `gas_pricer_shim` removal is not valid yet. Removing the overlay would route Rust-enabled builds back to the

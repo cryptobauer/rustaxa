@@ -494,8 +494,7 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
 }
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) {
-  // TODO(rustaxa): move VoteManager network wiring to Rust/shim-owned state.
-  VoteManagerOld::setNetwork(std::move(network));
+  network_ = std::move(network);
 }
 
 bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {

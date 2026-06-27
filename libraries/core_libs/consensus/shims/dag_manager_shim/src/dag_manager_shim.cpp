@@ -408,6 +408,8 @@ std::pair<blk_hash_t, std::vector<blk_hash_t>> DagManager::getRustFrontier() con
 
 std::shared_ptr<DagManager> DagManager::getShared() {
   try {
+    // TODO(rust-rewrite): migrate DagManager shared ownership to a shim-owned
+    // facade before removing inherited DagManagerOld shared_from_this state.
     return std::static_pointer_cast<DagManager>(DagManagerOld::shared_from_this());
   } catch (std::bad_weak_ptr &e) {
     std::cerr << "DagManager: " << e.what() << std::endl;
