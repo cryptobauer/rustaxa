@@ -29,13 +29,14 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
     TransactionPackEstimateOutcome, TransactionPackSelectedTransaction,
     TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
-    TransactionPackSessionStep, TransactionQueueConfig, TransactionQueueHash,
-    TransactionQueueInsertInput, TransactionQueueInsertOutcome, TransactionQueuePurgePlan,
-    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionPackSessionStep,
+    TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
+    TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
+    TransactionQueueInsertOutcome, TransactionQueueProposableAccountFact,
+    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
-    BridgeFinalChain, BridgeStorage, BridgeTransactionManagerRuntime,
-    TransactionManagerRuntimePackSession,
+    BridgeStorage, BridgeTransactionManagerRuntime, TransactionManagerRuntimePackSession,
 };
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
@@ -72,6 +73,7 @@ use rustaxa_consensus::transaction_storage::{
 };
 use rustaxa_storage::Storage;
 use rustaxa_types::LegacyTransactionEnvelope;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 #[derive(Debug)]
@@ -594,21 +596,35 @@ fn runtime_queue_purge_plan_from_consensus(
     }
 }
 
-fn runtime_queue_account_nonce_facts_from_final_chain(
-    final_chain: &BridgeFinalChain,
+fn runtime_queue_account_nonce_facts_from_bridge(
     proposable_accounts: Vec<H160>,
-) -> Result<Vec<TransactionQueueAccountNonceFact>> {
+    account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
+) -> Vec<TransactionQueueAccountNonceFact> {
+    let account_nonce_facts: HashMap<H160, (bool, U256)> = account_nonce_facts
+        .into_iter()
+        .map(|fact| {
+            (
+                H160::from(fact.sender),
+                (
+                    fact.account_found,
+                    U256::from_big_endian(&fact.account_nonce),
+                ),
+            )
+        })
+        .collect();
+
     proposable_accounts
         .into_iter()
         .map(|sender| {
-            let lookup = final_chain
-                .get_account(&sender.0)
-                .context("TM_RUNTIME_QUEUE_PURGE_ACCOUNT_LOOKUP_FAILED")?;
-            Ok(TransactionQueueAccountNonceFact {
+            let (account_found, account_nonce) = account_nonce_facts
+                .get(&sender)
+                .copied()
+                .unwrap_or((false, U256::zero()));
+            TransactionQueueAccountNonceFact {
                 sender,
-                account_found: lookup.found,
-                account_nonce: U256::from(lookup.nonce),
-            })
+                account_found,
+                account_nonce,
+            }
         })
         .collect()
 }
@@ -784,11 +800,11 @@ pub fn update_finalized_transactions_status_command_report_with_runtime(
 }
 
 /// Applies finalized status changes plus queue purge and returns typed command actions.
-pub fn update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
+pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
     runtime: &mut BridgeTransactionManagerRuntime,
-    final_chain: &BridgeFinalChain,
     period: u64,
     retention_window: u64,
+    account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
 ) -> Result<TransactionManagerFinalizedStatusCommandReport> {
     let outcome = update_finalized_transactions_status_with_runtime(
@@ -799,10 +815,10 @@ pub fn update_finalized_transactions_status_command_report_with_runtime_and_fina
     )?;
     let mut report = finalized_status_command_report(&outcome);
     if report.purge_transaction_queue {
-        let cleanup = runtime.transaction_manager_runtime_queue_cleanup_with_final_chain(
-            final_chain,
+        let cleanup = runtime.transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
             false,
             0,
+            account_nonce_facts,
         )?;
         append_queue_cleanup_to_finalized_status_command_report(&mut report, cleanup);
         report.purge_transaction_queue = false;
@@ -989,12 +1005,25 @@ fn transaction_manager_load_stored_transactions_from_storage(
         .collect()
 }
 
-fn transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
+fn transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
     storage: &Storage,
-    final_chain: &BridgeFinalChain,
-    proposal_period: u64,
+    _proposal_period: u64,
+    account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
     requests: Vec<TransactionManagerStoredTransactionRequest>,
 ) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
+    let account_nonce_facts: HashMap<H160, (bool, U256)> = account_nonce_facts
+        .into_iter()
+        .map(|fact| {
+            (
+                H160::from(fact.sender),
+                (
+                    fact.account_found,
+                    U256::from_big_endian(&fact.account_nonce),
+                ),
+            )
+        })
+        .collect();
+
     let lookups = transaction_manager_load_stored_transactions_from_storage(storage, requests)?;
     lookups
         .into_iter()
@@ -1010,10 +1039,12 @@ fn transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
             );
             let identity = inspect_stored_transaction_identity(&lookup.tx_rlp, lookup.source)
                 .context("TM_PROPOSAL_TRANSACTION_IDENTITY_INSPECT_FAILED")?;
-            let account = final_chain
-                .get_account_at_block(proposal_period, &identity.sender)
-                .context("TM_PROPOSAL_FINAL_CHAIN_ACCOUNT_LOOKUP_FAILED")?;
-            if account.found && U256::from(account.nonce) > identity.nonce {
+            let account_nonce = account_nonce_facts
+                .get(&H160::from(identity.sender))
+                .copied()
+                .unwrap_or((false, U256::zero()));
+
+            if account_nonce.0 && account_nonce.1 > identity.nonce {
                 lookup.found = false;
                 lookup.old_finalized = true;
                 lookup.tx_rlp.clear();
@@ -1052,7 +1083,7 @@ fn transaction_manager_runtime_lookup_transaction_views_inner(
     runtime: &BridgeTransactionManagerRuntime,
     requests: Vec<TransactionManagerTransactionViewRequest>,
     max_count: u64,
-    mut transaction_lookup: impl FnMut(
+    transaction_lookup: impl FnOnce(
         Vec<TransactionManagerStoredTransactionRequest>,
     ) -> Result<Vec<TransactionManagerStoredTransactionLookup>>,
 ) -> Result<TransactionManagerTransactionViewPlan> {
@@ -1642,11 +1673,11 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// Returns bounded, source-ordered runtime payload views including proposal-period filtering.
-    pub fn transaction_manager_runtime_lookup_proposal_transaction_views(
+    pub fn transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
         &self,
-        final_chain: &BridgeFinalChain,
         proposal_period: u64,
         requests: Vec<TransactionManagerTransactionViewRequest>,
+        account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
         max_count: u64,
     ) -> Result<TransactionManagerTransactionViewPlan> {
         let storage = transaction_manager_runtime_storage(self)?;
@@ -1655,10 +1686,10 @@ impl BridgeTransactionManagerRuntime {
             requests,
             max_count,
             |stored_requests| {
-                transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
+                transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
                     storage,
-                    final_chain,
                     proposal_period,
+                    account_nonce_facts,
                     stored_requests,
                 )
             },
@@ -2053,6 +2084,17 @@ impl BridgeTransactionManagerRuntime {
         self.queue.size() as usize
     }
 
+    /// Returns current proposable accounts from Rust queue state.
+    pub fn transaction_manager_runtime_queue_proposable_accounts(
+        &self,
+    ) -> Vec<TransactionQueueProposableAccountFact> {
+        self.queue
+            .proposable_accounts()
+            .into_iter()
+            .map(|sender| TransactionQueueProposableAccountFact { sender: sender.0 })
+            .collect()
+    }
+
     /// Applies finalized-block expiry to non-proposable queue state.
     pub fn transaction_manager_runtime_queue_block_finalized(
         &mut self,
@@ -2061,20 +2103,17 @@ impl BridgeTransactionManagerRuntime {
         runtime_hashes_to_bridge(self.queue.block_finalized(block_number))
     }
 
-    /// Applies Rust-owned queue cleanup by sourcing account nonce facts from Rust FinalChain.
-    ///
-    /// This keeps finalized-account purge fact sourcing inside Rust and mutates the
-    /// Rust-owned queue directly without C++ account-lookup involvement.
-    pub fn transaction_manager_runtime_queue_cleanup_with_final_chain(
+    /// Applies Rust-owned queue cleanup using proposal-account nonce facts.
+    pub fn transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
         &mut self,
-        final_chain: &BridgeFinalChain,
         apply_block_finalized: bool,
         block_number: u64,
+        account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
     ) -> Result<TransactionManagerRuntimeQueueCleanupPlan> {
-        let account_nonce_facts = runtime_queue_account_nonce_facts_from_final_chain(
-            final_chain,
+        let account_nonce_facts = runtime_queue_account_nonce_facts_from_bridge(
             self.queue.proposable_accounts(),
-        )?;
+            account_nonce_facts,
+        );
         let non_proposable_expired = if apply_block_finalized {
             self.queue.block_finalized_plan(block_number)
         } else {
@@ -2395,30 +2434,40 @@ mod tests {
             )
             .expect("finalization should create block-scoped account snapshot");
 
-        let before = transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
-            &storage.0,
-            &final_chain,
-            0,
-            vec![TransactionManagerStoredTransactionRequest {
-                input_index: 4,
-                hash: transaction_hash,
-            }],
-        )
-        .expect("proposal lookup at genesis should keep transaction");
+        let before =
+            transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
+                &storage.0,
+                0,
+                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
+                    sender: sender_bytes,
+                    account_found: true,
+                    account_nonce: U256::zero().to_big_endian(),
+                }],
+                vec![TransactionManagerStoredTransactionRequest {
+                    input_index: 4,
+                    hash: transaction_hash,
+                }],
+            )
+            .expect("proposal lookup at genesis should keep transaction");
         assert!(before[0].found);
         assert!(!before[0].old_finalized);
         assert_eq!(before[0].tx_rlp, transaction_rlp);
 
-        let after = transaction_manager_load_proposal_transactions_with_final_chain_from_storage(
-            &storage.0,
-            &final_chain,
-            1,
-            vec![TransactionManagerStoredTransactionRequest {
-                input_index: 4,
-                hash: transaction_hash,
-            }],
-        )
-        .expect("proposal lookup at finalized period should filter old transaction");
+        let after =
+            transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
+                &storage.0,
+                1,
+                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
+                    sender: sender_bytes,
+                    account_found: true,
+                    account_nonce: U256::from(1u64).to_big_endian(),
+                }],
+                vec![TransactionManagerStoredTransactionRequest {
+                    input_index: 4,
+                    hash: transaction_hash,
+                }],
+            )
+            .expect("proposal lookup at finalized period should filter old transaction");
         assert!(!after[0].found);
         assert!(after[0].old_finalized);
         assert!(after[0].tx_rlp.is_empty());
@@ -2684,12 +2733,16 @@ mod tests {
             TransactionQueueConfig { max_size: 32 },
         );
         let plan = runtime
-            .transaction_manager_runtime_lookup_proposal_transaction_views(
-                &final_chain,
+            .transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
                 1,
                 vec![TransactionManagerTransactionViewRequest {
                     input_index: 10,
                     hash: transaction_hash,
+                }],
+                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
+                    sender: sender_bytes,
+                    account_found: true,
+                    account_nonce: U256::from(2u64).to_big_endian(),
                 }],
                 0,
             )
@@ -3039,7 +3092,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_update_finalized_transactions_status_command_report_with_final_chain_executes_periodic_purge_boundary(
+    fn bridge_update_finalized_transactions_status_command_report_with_runtime_account_nonce_facts_executes_boundary(
     ) {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_update_finalized_status_report_fc_purge");
         let storage = crate::storage::create_storage(
@@ -3047,7 +3100,7 @@ mod tests {
         )
         .expect("storage should initialize");
         let sender = [9; 20];
-        let final_chain = crate::final_chain::create_final_chain(
+        let _final_chain = crate::final_chain::create_final_chain(
             &storage,
             1_000_000,
             1,
@@ -3080,14 +3133,17 @@ mod tests {
             ))
             .expect("queue seed should succeed");
 
-        let report =
-            update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
+        let report = update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
                 &mut runtime,
-                &final_chain,
                 100,
                 10,
+                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
+                    sender,
+                    account_found: true,
+                    account_nonce: U256::from(0u64).to_big_endian(),
+                }],
                 Vec::new(),
-            )
+        )
             .expect("runtime finalized status report with final chain should execute purge");
 
         assert!(!report.purge_transaction_queue);
@@ -3376,39 +3432,23 @@ mod tests {
     }
 
     #[test]
-    fn runtime_queue_account_nonce_facts_from_final_chain_maps_found_and_missing_accounts() {
+    fn runtime_queue_account_nonce_facts_from_bridge_maps_found_and_missing_accounts() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_queue_nonce_facts");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let genesis_account = crate::ffi::rustaxa_ffi::GenesisAccount {
-            address: [1; 20],
-            balance: vec![1],
-        };
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![genesis_account],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        let facts = runtime_queue_account_nonce_facts_from_final_chain(
-            &final_chain,
+        let facts = runtime_queue_account_nonce_facts_from_bridge(
             vec![H160::from([1; 20]), H160::from([2; 20])],
-        )
-        .expect("fact collection should succeed");
+            vec![
+                crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
+                    sender: [1; 20],
+                    account_found: true,
+                    account_nonce: U256::zero().to_big_endian(),
+                },
+                crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
+                    sender: [2; 20],
+                    account_found: false,
+                    account_nonce: U256::zero().to_big_endian(),
+                },
+            ],
+        );
 
         assert_eq!(facts.len(), 2);
         assert_eq!(facts[0].sender, H160::from([1; 20]));
@@ -3422,34 +3462,9 @@ mod tests {
     }
 
     #[test]
-    fn bridge_transaction_manager_runtime_queue_cleanup_with_final_chain_collects_facts_and_runs() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_queue_cleanup_fc");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
+    fn bridge_transaction_manager_runtime_queue_cleanup_with_account_nonce_facts_collects_facts_and_runs(
+    ) {
         let sender = [7; 20];
-        let final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: vec![1],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
         let mut runtime =
             create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 32 });
         runtime
@@ -3469,8 +3484,16 @@ mod tests {
             .expect("non-proposable nonce=2 insert should succeed");
 
         let cleanup = runtime
-            .transaction_manager_runtime_queue_cleanup_with_final_chain(&final_chain, false, 20)
-            .expect("cleanup with final chain should succeed");
+            .transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
+                false,
+                20,
+                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
+                    sender,
+                    account_found: true,
+                    account_nonce: U256::from(0u64).to_big_endian(),
+                }],
+            )
+            .expect("cleanup with account nonce facts should succeed");
 
         assert_eq!(cleanup.non_proposable_expired.removed_count, 0);
         assert!(
@@ -3478,8 +3501,6 @@ mod tests {
             "purge should only affect proposable sender entries"
         );
         assert!(runtime.transaction_manager_runtime_queue_contains(&[3; 32]));
-
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

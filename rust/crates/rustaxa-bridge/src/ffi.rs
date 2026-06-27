@@ -591,6 +591,18 @@ pub mod rustaxa_ffi {
         removed_count: usize,
     }
 
+    /// C++-supplied nonce fact for one proposable account.
+    struct TransactionQueueAccountNonceFact {
+        sender: [u8; 20],
+        account_found: bool,
+        account_nonce: [u8; 32],
+    }
+
+    /// Proposable account observed from queue state.
+    struct TransactionQueueProposableAccountFact {
+        sender: [u8; 20],
+    }
+
     /// TransactionManager runtime queue cleanup outcome.
     ///
     /// `non_proposable_expired` reports non-proposable entries expired by
@@ -5239,10 +5251,13 @@ pub mod rustaxa_ffi {
             self: &mut BridgeTransactionQueue,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
-        pub fn transaction_queue_purge_with_final_chain(
+        pub fn transaction_queue_purge_with_account_nonce_facts(
             self: &mut BridgeTransactionQueue,
-            final_chain: &BridgeFinalChain,
+            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
         ) -> Result<TransactionQueuePurgePlan>;
+        pub fn transaction_queue_proposable_accounts(
+            self: &BridgeTransactionQueue,
+        ) -> Vec<TransactionQueueProposableAccountFact>;
         pub fn transaction_queue_non_proposable_over_limit(self: &BridgeTransactionQueue) -> bool;
         pub fn transaction_queue_min_gas_price_for_block_inclusion(
             self: &BridgeTransactionQueue,
@@ -5372,6 +5387,9 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_runtime_queue_size(
             self: &BridgeTransactionManagerRuntime,
         ) -> usize;
+        pub fn transaction_manager_runtime_queue_proposable_accounts(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> Vec<TransactionQueueProposableAccountFact>;
         pub fn transaction_manager_runtime_queue_block_finalized(
             self: &mut BridgeTransactionManagerRuntime,
             block_number: u64,
@@ -5398,13 +5416,19 @@ pub mod rustaxa_ffi {
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
         /// Resolves requested hashes through queue, sidecars, then proposal-filtered Rust storage.
-        pub fn transaction_manager_runtime_lookup_proposal_transaction_views(
+        pub fn transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
             self: &BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
             proposal_period: u64,
             requests: Vec<TransactionManagerTransactionViewRequest>,
+            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
+        pub fn transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
+            self: &mut BridgeTransactionManagerRuntime,
+            apply_block_finalized: bool,
+            block_number: u64,
+            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
+        ) -> Result<TransactionManagerRuntimeQueueCleanupPlan>;
         /// Applies DAG transaction persistence and returns a typed command report.
         pub fn save_transactions_from_dag_block_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
@@ -5418,11 +5442,11 @@ pub mod rustaxa_ffi {
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
         ) -> Result<TransactionManagerFinalizedStatusCommandReport>;
         /// Applies finalized status updates plus periodic purge and returns a typed command report.
-        pub fn update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
+        pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
             runtime: &mut BridgeTransactionManagerRuntime,
-            final_chain: &BridgeFinalChain,
             period: u64,
             retention_window: u64,
+            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
             facts: Vec<FinalizedTransactionStatusSidecarFact>,
         ) -> Result<TransactionManagerFinalizedStatusCommandReport>;
         /// Builds deterministic TransactionManager::verifyTransaction admission plan.

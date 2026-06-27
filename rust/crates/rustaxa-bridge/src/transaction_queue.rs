@@ -2,15 +2,18 @@
 //!
 //! C++ shims pass fixed metadata and canonical RLP into this module. Rust returns hash and payload plans so C++ can
 //! update known-transaction cache state and materialize legacy `Transaction` objects for API callers. Production purge
-//! routing sources account nonce facts from the Rust FinalChain handle so C++ does not materialize account facts.
+//! routing sources account nonce facts from the C++-supplied bridge API so queue pruning is minimal at the boundary.
 
 use crate::ffi::rustaxa_ffi::{
     TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
-    TransactionQueueInsertOutcome, TransactionQueuePurgePlan, TransactionQueueStoredTransaction,
-    TransactionQueueTransactionGroup,
+    TransactionQueueInsertOutcome, TransactionQueueProposableAccountFact,
+    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
-use crate::ffi::{BridgeFinalChain, BridgeTransactionQueue};
-use anyhow::{Context, Result};
+use crate::ffi::{
+    rustaxa_ffi::TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
+    BridgeTransactionQueue,
+};
+use anyhow::Result;
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueEntry,
@@ -52,21 +55,15 @@ fn tx_queue_purge_plan_from_consensus(
     }
 }
 
-fn tx_queue_account_nonce_facts_from_final_chain(
-    final_chain: &BridgeFinalChain,
-    proposable_accounts: Vec<H160>,
-) -> Result<Vec<TransactionQueueAccountNonceFact>> {
-    proposable_accounts
+fn tx_queue_account_nonce_facts_from_bridge(
+    account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
+) -> Vec<TransactionQueueAccountNonceFact> {
+    account_nonce_facts
         .into_iter()
-        .map(|sender| {
-            let lookup = final_chain
-                .get_account(&sender.0)
-                .context("TRANSACTION_QUEUE_PURGE_ACCOUNT_LOOKUP_FAILED")?;
-            Ok(TransactionQueueAccountNonceFact {
-                sender,
-                account_found: lookup.found,
-                account_nonce: U256::from(lookup.nonce),
-            })
+        .map(|fact| TransactionQueueAccountNonceFact {
+            sender: H160::from(fact.sender),
+            account_found: fact.account_found,
+            account_nonce: U256::from_big_endian(&fact.account_nonce),
         })
         .collect()
 }
@@ -186,33 +183,35 @@ impl BridgeTransactionQueue {
         hashes_to_bridge(self.queue.block_finalized(block_number))
     }
 
-    /// Removes proposer transactions whose nonce is below the latest FinalChain account nonce.
+    /// Removes proposer transactions whose nonce is below supplied account facts.
     ///
     /// Inputs:
-    /// - `final_chain`: Rust FinalChain runtime used to read the latest account
-    ///   state for each currently proposable queue sender.
+    /// - `account_nonce_facts`: caller-supplied account facts for each
+    ///   currently proposable queue sender.
     ///
     /// Output:
     /// - a deterministic purge plan containing all removed transaction hashes.
-    ///
-    /// Behavior:
-    /// - collects proposable senders from the Rust queue
-    /// - reads each sender account from Rust FinalChain
-    /// - treats missing accounts as nonce zero, matching the consensus queue
-    ///   planner's account-fact semantics
-    /// - mutates only Rust-owned queue state and does not materialize C++
-    ///   account facts or transaction objects
-    pub fn transaction_queue_purge_with_final_chain(
+    pub fn transaction_queue_purge_with_account_nonce_facts(
         &mut self,
-        final_chain: &BridgeFinalChain,
+        account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
     ) -> Result<TransactionQueuePurgePlan> {
-        let facts = tx_queue_account_nonce_facts_from_final_chain(
-            final_chain,
-            self.queue.proposable_accounts(),
-        )?;
         Ok(tx_queue_purge_plan_from_consensus(
-            self.queue.purge_accounts_plan(&facts),
+            self.queue
+                .purge_accounts_plan(&tx_queue_account_nonce_facts_from_bridge(
+                    account_nonce_facts,
+                )),
         ))
+    }
+
+    /// Returns proposable senders currently queued, as raw addresses.
+    pub fn transaction_queue_proposable_accounts(
+        &self,
+    ) -> Vec<TransactionQueueProposableAccountFact> {
+        self.queue
+            .proposable_accounts()
+            .into_iter()
+            .map(|sender| TransactionQueueProposableAccountFact { sender: sender.0 })
+            .collect()
     }
 
     /// Returns true when non-proposable transactions reached their limit.
@@ -249,9 +248,6 @@ fn status_to_bridge(status: TransactionQueueInsertStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn be(value: u64) -> [u8; 32] {
         U256::from(value).to_big_endian()
@@ -269,44 +265,6 @@ mod tests {
             proposable: true,
             last_block_number: 1,
         }
-    }
-
-    fn unique_temp_dir(prefix: &str) -> PathBuf {
-        let now_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after UNIX_EPOCH")
-            .as_nanos();
-        let process_id = std::process::id();
-        std::env::temp_dir().join(format!("{prefix}_{process_id}_{now_ns}"))
-    }
-
-    fn final_chain_with_genesis_account(
-        storage_path: &str,
-        address: [u8; 20],
-    ) -> Box<BridgeFinalChain> {
-        let storage =
-            crate::storage::create_storage(storage_path).expect("storage should initialize");
-        crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address,
-                balance: vec![1],
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize")
     }
 
     #[test]
@@ -356,25 +314,41 @@ mod tests {
     }
 
     #[test]
-    fn bridge_purge_with_final_chain_sources_account_facts_in_rust() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tx_queue_purge_fc");
-        let final_chain = final_chain_with_genesis_account(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-            [1; 20],
-        );
+    fn bridge_queue_purge_with_account_nonce_facts_in_rust() {
         let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
         queue.transaction_queue_insert(input(1, 0, 5, 1)).unwrap();
         queue.transaction_queue_insert(input(2, 0, 6, 2)).unwrap();
 
         let plan = queue
-            .transaction_queue_purge_with_final_chain(&final_chain)
-            .expect("FinalChain-backed purge should succeed");
+            .transaction_queue_purge_with_account_nonce_facts(vec![
+                BridgeTransactionQueueAccountNonceFact {
+                    sender: [1; 20],
+                    account_found: true,
+                    account_nonce: U256::from(0u8).to_big_endian(),
+                },
+                BridgeTransactionQueueAccountNonceFact {
+                    sender: [2; 20],
+                    account_found: true,
+                    account_nonce: U256::from(0u8).to_big_endian(),
+                },
+            ])
+            .expect("Queue purge should execute with caller-provided account facts");
 
         assert_eq!(plan.removed_count, 0);
         assert!(queue.transaction_queue_contains(&[1; 32]));
         assert!(queue.transaction_queue_contains(&[2; 32]));
+    }
 
-        let _ = fs::remove_dir_all(temp_dir);
+    #[test]
+    fn bridge_queue_proposable_accounts_tracks_senders() {
+        let mut queue = create_transaction_queue(TransactionQueueConfig { max_size: 100 });
+        queue.transaction_queue_insert(input(1, 0, 5, 1)).unwrap();
+        queue.transaction_queue_insert(input(2, 1, 6, 2)).unwrap();
+
+        let proposable = queue.transaction_queue_proposable_accounts();
+        assert_eq!(proposable.len(), 2);
+        assert!(proposable.iter().any(|fact| fact.sender == [1; 20]));
+        assert!(proposable.iter().any(|fact| fact.sender == [2; 20]));
     }
 
     #[test]

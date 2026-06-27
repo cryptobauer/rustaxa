@@ -349,6 +349,24 @@ class TransactionManagerRustShimAccess {
     }
   }
 
+  static rust::Vec<rustaxa::TransactionQueueAccountNonceFact> buildAccountNonceFacts(
+      const TransactionManager& manager) {
+    rust::Vec<rustaxa::TransactionQueueAccountNonceFact> account_nonce_facts;
+    const auto proposable_senders = manager.runtime_->transaction_manager_runtime_queue_proposable_accounts();
+    account_nonce_facts.reserve(proposable_senders.size());
+
+    for (const auto& sender : proposable_senders) {
+      const auto account = latestAccountFact(manager, fromBridgeAddress(sender.sender));
+      rustaxa::TransactionQueueAccountNonceFact fact;
+      fact.sender = sender.sender;
+      fact.account_found = account.has_value();
+      fact.account_nonce = account.has_value() ? toBridgeU256(account->nonce) : std::array<uint8_t, 32>{};
+      account_nonce_facts.push_back(std::move(fact));
+    }
+
+    return account_nonce_facts;
+  }
+
   static rustaxa::TransactionManagerFinalChainAdmissionFact buildFinalChainAdmissionFact(
       const TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope) {
     rustaxa::TransactionManagerFinalChainAdmissionFact fact;
@@ -855,8 +873,8 @@ class TransactionManagerRustShimAccess {
       view_plan = [&]() {
         try {
           if (proposal_period.has_value() && manager.final_chain_) {
-            return manager.runtime_->transaction_manager_runtime_lookup_proposal_transaction_views(
-                manager.final_chain_->rustFinalChainForRust(), proposal_period.value(), std::move(requests), 0);
+            return manager.runtime_->transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
+                proposal_period.value(), std::move(requests), buildAccountNonceFacts(manager), 0);
           }
           return manager.runtime_->transaction_manager_runtime_lookup_transaction_views(std::move(requests), 0);
         } catch (const std::exception& e) {
@@ -1264,9 +1282,9 @@ class TransactionManagerRustShimAccess {
 
     const auto report = [&]() {
       try {
-        return rustaxa::update_finalized_transactions_status_command_report_with_runtime_and_final_chain(
-            *manager.runtime_, manager.final_chain_->rustFinalChainForRust(), period,
-            recently_finalized_transactions_periods, std::move(facts));
+        return rustaxa::update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
+            *manager.runtime_, period, recently_finalized_transactions_periods, buildAccountNonceFacts(manager),
+            std::move(facts));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_STORAGE_FINALIZED_TX_STATUS_FAILED: ") + e.what());
       }

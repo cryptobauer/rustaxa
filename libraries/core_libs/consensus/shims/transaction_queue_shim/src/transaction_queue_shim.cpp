@@ -129,7 +129,19 @@ void TransactionQueue::purge() {
   }
 
   try {
-    queue_->transaction_queue_purge_with_final_chain(final_chain_->rustFinalChainForRust());
+    rust::Vec<rustaxa::TransactionQueueAccountNonceFact> account_nonce_facts;
+    const auto proposable_senders = queue_->transaction_queue_proposable_accounts();
+    account_nonce_facts.reserve(proposable_senders.size());
+    for (const auto& account_fact : proposable_senders) {
+      auto account = final_chain_->getAccount(addr_t(account_fact.sender.data(), addr_t::ConstructFromPointer));
+      rustaxa::TransactionQueueAccountNonceFact queue_fact;
+      queue_fact.sender = account_fact.sender;
+      queue_fact.account_found = account.has_value();
+      queue_fact.account_nonce = account.has_value() ? toBridgeU256(account->nonce) : std::array<uint8_t, 32>{};
+      account_nonce_facts.emplace_back(std::move(queue_fact));
+    }
+
+    queue_->transaction_queue_purge_with_account_nonce_facts(std::move(account_nonce_facts));
   } catch (const std::exception& e) {
     throw std::runtime_error(std::string("TransactionQueue::purge failed in Rust FinalChain-backed route: ") +
                              e.what());

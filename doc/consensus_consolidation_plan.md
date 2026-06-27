@@ -648,13 +648,13 @@ Implementation status:
 - Older transaction-manager FinalChain-backed bridge shortcuts are no longer CXX exports:
   `transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report`,
   `transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report`,
-  `transaction_manager_runtime_queue_cleanup_with_final_chain`,
+  `transaction_manager_runtime_queue_cleanup_with_account_nonce_facts`,
   `save_transactions_from_dag_block_with_runtime_and_final_chain`,
   `save_transactions_from_dag_block_command_report_with_runtime_and_final_chain`,
   `save_transactions_from_dag_block`, `update_finalized_transactions_status`, and
   `transaction_manager_verify_not_finalized_with_runtime_and_final_chain` are deleted from the bridge surface. Live C++
-  admission uses fact-backed external-FinalChain facts, DAG transaction persistence uses the runtime-owned command
-  report, and finalized-status cleanup enters through the high-level runtime command.
+  admission uses account-nonce facts emitted from proposable queue senders, DAG transaction persistence uses the
+  runtime-owned command report, and finalized-status cleanup enters through the high-level runtime command.
 - DAG manager bridge-test-only sync selection helpers are no longer CXX exports:
   `dag_manager_runtime_non_finalized_sync_snapshot`, `dag_manager_runtime_select_non_finalized_hashes`, and the
   `DagManagerRuntimeSyncSnapshot` DTO. Live C++ uses `dag_manager_runtime_non_finalized_sync_payload` for
@@ -706,7 +706,8 @@ Implementation status:
   `save_transactions_from_dag_block_with_runtime`, `update_finalized_transactions_status_with_runtime`,
   `DagTransactionSaveAccepted`, `DagTransactionSaveOutcome`, `FinalizedTransactionStatusAction`, and
   `FinalizedTransactionStatusPlan` are deleted from the bridge surface. Live C++ uses the DAG-save command-report API
-  and `update_finalized_transactions_status_command_report_with_runtime_and_final_chain`; private Rust helpers still own
+  and `update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts`; private Rust helpers still
+  own
   the storage-first mutation and command-report conversion.
   Custom agents used: `architect-reviewer` confirmed the live C++ command-report boundary; `rust-engineer` confirmed the
   private DTO/test impact.

@@ -234,13 +234,13 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - Older no-caller transaction-manager FinalChain-backed shortcuts are deleted from the CXX bridge surface:
   `transaction_manager_runtime_execute_transaction_admission_with_final_chain_command_report`,
   `transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_command_report`,
-  `transaction_manager_runtime_queue_cleanup_with_final_chain`,
+  `transaction_manager_runtime_queue_cleanup_with_account_nonce_facts`,
   `save_transactions_from_dag_block_with_runtime_and_final_chain`,
   `save_transactions_from_dag_block_command_report_with_runtime_and_final_chain`,
   `save_transactions_from_dag_block`, `update_finalized_transactions_status`, and
-  `transaction_manager_verify_not_finalized_with_runtime_and_final_chain`. Live C++ uses fact-backed admission commands,
-  runtime-owned DAG-save command reports, and the finalized-status high-level runtime command; the remaining Rust helpers
-  are module-local behavior coverage rather than exported compatibility API.
+  `transaction_manager_verify_not_finalized_with_runtime_and_final_chain`. Live C++ uses FinalChain-backed fact inputs on
+  the high-level runtime commands, runtime-owned DAG-save command reports, and the finalized-status command; the remaining
+  Rust helpers are module-local behavior coverage rather than exported compatibility API.
 - DAG manager CXX sync-selection scaffolding is deleted from the bridge surface:
   `dag_manager_runtime_non_finalized_sync_snapshot`, `dag_manager_runtime_select_non_finalized_hashes`, and
   `DagManagerRuntimeSyncSnapshot`. Live C++ DAG sync materialization uses
