@@ -361,6 +361,16 @@ Acceptance:
 - CXX exports are explainable from the external boundary inventory or the compatibility audit table.
 - `cargo check -p rustaxa-bridge` and affected C++ build targets pass.
 
+Implementation status:
+
+- Bridge export inventory guard is implemented as `scripts/rewrite_bridge_inventory_guard.sh` and wired into
+  `make rewrite-validate-fast` through `make rewrite-bridge-inventory-guard`.
+- The guard compares CXX `type Bridge*;` exports in `rust/crates/rustaxa-bridge/src/ffi.rs` to the exported-handle table
+  in `doc/consensus_bridge_shim_audit.md`, fails on undocumented exported handles, and warns on stale audit rows after
+  deletions.
+- The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
+  and additions.
+
 ## Slice 9: Delete Compatibility Tests That Only Protect Retired Scaffolding
 
 Purpose: keep test coverage aligned with target Rust-mode architecture.

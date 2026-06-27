@@ -134,6 +134,7 @@ rg -n 'create_consensus_query_api\([^\n]*rustStorage\(\)' \
 rg -n '\bBridgeStorage\b' rust/crates/rustaxa-consensus -g'*.rs'
 rg -n '\brustBatchId\b|BridgeStorageBatch|create_storage_shim_batch|storage_shim_.*batch' \
   libraries rust tests/rust -g'*.cpp' -g'*.hpp' -g'*.rs'
+scripts/rewrite_bridge_inventory_guard.sh
 rg -n '^mod [a-z0-9_]+;' rust/crates/rustaxa-bridge/src/lib.rs
 rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 ```
@@ -151,6 +152,9 @@ Current snapshot after Slice 2:
   bootstrap points. Native `rustaxa-consensus` modules should not depend on `BridgeStorage`.
 - `BridgeStorageBatch` and `rustBatchId` remain storage-shim compatibility debt. They must not grow into new consensus
   production routes.
+- `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
+  `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
+  row remains after a bridge handle is deleted.
 
 ## Agent Use
 
