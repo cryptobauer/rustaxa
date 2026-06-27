@@ -347,8 +347,8 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   auto receipt_value = std::vector<uint8_t>{'r', 'c', 'p'};
   auto blooms_value = std::vector<uint8_t>{'b', 'l', 'm'};
 
-  storage->seed_final_chain_conformance_lookup_rows(
-      meta_key, toRustVec(meta_value), block_number, block_hash, toRustVec(block_value), receipt_hash,
+  rustaxa::storage_shim_seed_final_chain_conformance_lookup_rows(
+      *storage, meta_key, toRustVec(meta_value), block_number, block_hash, toRustVec(block_value), receipt_hash,
       toRustVec(receipt_value), blooms_chunk, toRustVec(blooms_value), 15, toRustVec(std::vector<uint8_t>{0xC0}));
 
   auto meta_lookup = final_chain_queries->get_final_chain_meta_value(meta_key);

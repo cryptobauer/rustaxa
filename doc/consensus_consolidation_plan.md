@@ -581,9 +581,10 @@ Implementation status:
   native `rustaxa-consensus` transaction storage helper directly, matching the runtime commit path and preserving the
   atomic accepted-transaction RLP plus `TrxCount` write group without a broad `BridgeStorage` mutator.
 - `BridgeStorage::seed_final_chain_conformance_lookup_rows` is deleted from the CXX bridge surface. A code-mapper audit
-  identified it as an orphan export, and the remaining Rust bridge query fixtures now seed FinalChain lookup rows through
-  native `rustaxa-storage` `FinalChainStore::write_conformance_lookup_rows` test setup instead of a broad storage bridge
-  mutator.
+  identified it as a broad storage-method export with no production callsites. Rust bridge query fixtures now seed
+  FinalChain lookup rows through native `rustaxa-storage` `FinalChainStore::write_conformance_lookup_rows` test setup,
+  and the storage conformance runner uses the dedicated
+  `storage_shim_seed_final_chain_conformance_lookup_rows` fixture helper instead of a broad storage bridge mutator.
 - `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted from the CXX bridge surface. Production
   DAG transaction availability and sync payload lookup continue through runtime-owned DAG APIs; the direct
   storage-query method only backed bridge-test scaffolding, and Rust bridge storage tests now cover pending, finalized,

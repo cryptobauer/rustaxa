@@ -832,6 +832,46 @@ pub fn storage_shim_set_genesis_hash(
     storage.0.metadata().set_genesis_hash_if_empty(hash)
 }
 
+/// Seeds exact FinalChain lookup rows for storage conformance.
+///
+/// Inputs are legacy-compatible raw bytes supplied by the conformance runner.
+/// The Rust storage repository owns the atomic write group for meta, header,
+/// hash/number, receipt, bloom, and by-period receipt rows. This is a dedicated
+/// fixture API so C++ tests do not regain a broad `BridgeStorage` mutator.
+///
+/// Errors preserve the native storage write failure from the underlying
+/// FinalChain repository. The helper does not perform partial repair if a write
+/// conflict or RocksDB error occurs.
+#[allow(clippy::too_many_arguments)]
+pub fn storage_shim_seed_final_chain_conformance_lookup_rows(
+    storage: &BridgeStorage,
+    meta_key: u32,
+    meta_value: Vec<u8>,
+    block_number: u64,
+    block_hash: &[u8; 32],
+    block_header_rlp: Vec<u8>,
+    receipt_hash: &[u8; 32],
+    receipt_rlp: Vec<u8>,
+    blooms_chunk: &[u8; 32],
+    blooms_rlp: Vec<u8>,
+    receipt_period: u64,
+    receipts_rlp: Vec<u8>,
+) -> Result<(), anyhow::Error> {
+    storage.0.final_chain().write_conformance_lookup_rows(
+        meta_key,
+        &meta_value,
+        block_number,
+        H256::from(*block_hash),
+        &block_header_rlp,
+        H256::from(*receipt_hash),
+        &receipt_rlp,
+        H256::from(*blooms_chunk),
+        &blooms_rlp,
+        receipt_period,
+        &receipts_rlp,
+    )
+}
+
 /// Appends a typed PBFT manager numeric-field write to a Rust-owned storage shim batch.
 ///
 /// The C++ shim supplies legacy enum discriminants and values; `rustaxa-storage`
