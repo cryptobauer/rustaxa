@@ -3006,11 +3006,6 @@ pub mod rustaxa_ffi {
         consensus_err: String,
     }
 
-    struct FinalizationOutcome {
-        block_header_rlp: Vec<u8>,
-        receipts: Vec<ReceiptRlp>,
-    }
-
     struct FinalizationTransaction {
         hash: [u8; 32],
         sender: [u8; 20],
@@ -6181,27 +6176,6 @@ pub mod rustaxa_ffi {
             self: &BridgeFinalChain,
             request: FinalChainCall,
         ) -> Result<FinalChainCallOutcome>;
-        pub fn finalize_block(
-            self: &BridgeFinalChain,
-            pbft_block_rlp: Vec<u8>,
-            transactions: Vec<FinalizationTransaction>,
-            finalized_dag_blocks: Vec<FinalizationDagBlock>,
-        ) -> Result<FinalizationOutcome>;
-        pub fn finalize_block_with_rewards_context(
-            self: &BridgeFinalChain,
-            pbft_block_rlp: Vec<u8>,
-            transactions: Vec<FinalizationTransaction>,
-            finalized_dag_blocks: Vec<FinalizationDagBlock>,
-            blocks_per_year: u32,
-        ) -> Result<FinalizationOutcome>;
-        pub fn finalize_block_with_rewards_facts(
-            self: &BridgeFinalChain,
-            pbft_block_rlp: Vec<u8>,
-            transactions: Vec<FinalizationTransaction>,
-            finalized_dag_blocks: Vec<FinalizationDagBlock>,
-            blocks_per_year: u32,
-            cert_votes: Vec<RewardsCertVoteFact>,
-        ) -> Result<FinalizationOutcome>;
         type BridgeFinalChainExecutionSession;
         pub fn create_final_chain_execution_session(
             final_chain: &BridgeFinalChain,

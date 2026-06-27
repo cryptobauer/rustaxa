@@ -3,10 +3,7 @@ use crate::ffi::BridgeConsensusExecutionApi;
 use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeFinalChainExecutionSession;
 use crate::ffi::BridgeStorage;
-use rustaxa_consensus::{
-    Account, FinalChain, FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE,
-    FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
-};
+use rustaxa_consensus::{Account, FinalChain};
 
 const PBFT_FINAL_CHAIN_FACT_STATUS_READY: u8 = 0;
 const PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE: u8 = 1;
@@ -115,24 +112,6 @@ fn final_chain_execution_request_from_ffi(
         block_gas_limit: request.block_gas_limit,
         mode: request.mode,
     }
-}
-
-fn final_chain_execution_request_from_compat(
-    pbft_block_rlp: Vec<u8>,
-    transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
-    finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
-    blocks_per_year: u32,
-    cert_votes: Vec<rustaxa_ffi::RewardsCertVoteFact>,
-) -> rustaxa_consensus::FinalChainExecutionRequest {
-    final_chain_execution_request_from_ffi(rustaxa_ffi::FinalChainExecutionRequest {
-        pbft_block_rlp,
-        transactions,
-        finalized_dag_blocks,
-        blocks_per_year,
-        cert_votes,
-        block_gas_limit: 0,
-        mode: FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
-    })
 }
 
 fn evm_transaction_input_to_ffi(
@@ -1172,75 +1151,6 @@ impl BridgeFinalChain {
             gas_used: outcome.gas_used,
             code_err: outcome.code_err,
             consensus_err: outcome.consensus_err,
-        })
-    }
-
-    pub fn finalize_block(
-        self: &BridgeFinalChain,
-        pbft_block_rlp: Vec<u8>,
-        transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
-        finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
-    ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
-        self.finalize_block_with_rewards_context(
-            pbft_block_rlp,
-            transactions,
-            finalized_dag_blocks,
-            0,
-        )
-    }
-
-    pub fn finalize_block_with_rewards_context(
-        self: &BridgeFinalChain,
-        pbft_block_rlp: Vec<u8>,
-        transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
-        finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
-        blocks_per_year: u32,
-    ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
-        self.finalize_block_with_rewards_facts(
-            pbft_block_rlp,
-            transactions,
-            finalized_dag_blocks,
-            blocks_per_year,
-            Vec::new(),
-        )
-    }
-
-    pub fn finalize_block_with_rewards_facts(
-        self: &BridgeFinalChain,
-        pbft_block_rlp: Vec<u8>,
-        transactions: Vec<rustaxa_ffi::FinalizationTransaction>,
-        finalized_dag_blocks: Vec<rustaxa_ffi::FinalizationDagBlock>,
-        blocks_per_year: u32,
-        cert_votes: Vec<rustaxa_ffi::RewardsCertVoteFact>,
-    ) -> Result<rustaxa_ffi::FinalizationOutcome, anyhow::Error> {
-        let request = final_chain_execution_request_from_compat(
-            pbft_block_rlp,
-            transactions,
-            finalized_dag_blocks,
-            blocks_per_year,
-            cert_votes,
-        );
-        let mut session = BridgeFinalChainExecutionSession {
-            state: rustaxa_consensus::create_final_chain_execution_session(request),
-        };
-        let execution_api = create_consensus_execution_api()?;
-        let step = execution_api.consensus_execution_next_execution_request(&mut session)?;
-        if step.action != FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE {
-            anyhow::bail!(
-                "Rust FinalChain execution runtime rejected finalize request: {}",
-                step.error_code
-            );
-        }
-        let report = final_chain_execution_session_commit(self, Box::new(session))?;
-        if !report.error_code.is_empty() {
-            anyhow::bail!(
-                "Rust FinalChain execution runtime failed finalize request: {}",
-                report.error_code
-            );
-        }
-        Ok(rustaxa_ffi::FinalizationOutcome {
-            block_header_rlp: report.block_header_rlp,
-            receipts: report.receipts,
         })
     }
 
@@ -3786,31 +3696,6 @@ mod tests {
             decision.error_code,
             "FINAL_CHAIN_EVM_LIFECYCLE_POST_REWARDS_ROOT_MISMATCH"
         );
-
-        drop(final_chain);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_compat_finalizer_rejects_external_evm_before_commit() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_reject");
-        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let final_chain = make_final_chain(storage_path, vec![]);
-
-        let error = match final_chain.finalize_block_with_rewards_facts(
-            signed_pbft_block_rlp(7),
-            vec![ffi_transaction(1, true, [8; 20], vec![0xaa])],
-            Vec::new(),
-            0,
-            Vec::new(),
-        ) {
-            Ok(_) => panic!("external EVM transaction should not commit through native runtime"),
-            Err(error) => error,
-        };
-
-        assert!(error
-            .to_string()
-            .contains("FINAL_CHAIN_EXECUTION_REQUIRES_EXTERNAL_EVM"));
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

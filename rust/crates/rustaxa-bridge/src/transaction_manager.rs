@@ -2224,7 +2224,8 @@ fn queue_status_from_ffi(status: u8) -> Result<TransactionQueueInsertStatus> {
 mod tests {
     use super::*;
     use crate::ffi::{
-        BridgeMetadataStorageQueries, BridgeStorage, BridgeTransactionStorageQueries,
+        BridgeFinalChain, BridgeMetadataStorageQueries, BridgeStorage,
+        BridgeTransactionStorageQueries,
     };
     use crate::storage::{create_metadata_storage_queries, create_transaction_storage_queries};
     use k256::ecdsa::SigningKey;
@@ -2333,6 +2334,35 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn finalize_regular_transaction_for_test(
+        final_chain: &BridgeFinalChain,
+        pbft_block_rlp: Vec<u8>,
+        transaction: crate::ffi::rustaxa_ffi::FinalizationTransaction,
+    ) {
+        final_chain
+            .0
+            .finalize_block(
+                pbft_block_rlp,
+                vec![rustaxa_consensus::FinalizationTransaction {
+                    hash: transaction.hash,
+                    sender: transaction.sender,
+                    receiver: if transaction.receiver_found {
+                        Some(transaction.receiver)
+                    } else {
+                        None
+                    },
+                    nonce: transaction.nonce,
+                    value: transaction.value,
+                    gas_price: transaction.gas_price,
+                    gas_limit: transaction.gas_limit,
+                    data: transaction.data,
+                    rlp: transaction.rlp,
+                }],
+                Vec::new(),
+            )
+            .expect("finalization should create block-scoped account snapshot");
+    }
+
     fn system_transaction_rlp(nonce: u64) -> Vec<u8> {
         let mut stream = RlpStream::new_list(9);
         stream.append(&U256::from(nonce));
@@ -2426,24 +2456,22 @@ mod tests {
         )
         .expect("final chain should initialize");
 
-        final_chain
-            .finalize_block(
-                pbft_block,
-                vec![crate::ffi::rustaxa_ffi::FinalizationTransaction {
-                    hash: transaction_hash,
-                    sender: sender_bytes,
-                    receiver_found: true,
-                    receiver: [0x44u8; 20],
-                    nonce: 0,
-                    value: U256::from(3u64).to_big_endian().to_vec(),
-                    gas_price: U256::from(2u64).to_big_endian().to_vec(),
-                    gas_limit: 21_000,
-                    data: vec![],
-                    rlp: transaction_rlp.clone(),
-                }],
-                vec![],
-            )
-            .expect("finalization should create block-scoped account snapshot");
+        finalize_regular_transaction_for_test(
+            &final_chain,
+            pbft_block,
+            crate::ffi::rustaxa_ffi::FinalizationTransaction {
+                hash: transaction_hash,
+                sender: sender_bytes,
+                receiver_found: true,
+                receiver: [0x44u8; 20],
+                nonce: 0,
+                value: U256::from(3u64).to_big_endian().to_vec(),
+                gas_price: U256::from(2u64).to_big_endian().to_vec(),
+                gas_limit: 21_000,
+                data: vec![],
+                rlp: transaction_rlp.clone(),
+            },
+        );
 
         let before =
             transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
@@ -2719,24 +2747,22 @@ mod tests {
         )
         .expect("final chain should initialize");
 
-        final_chain
-            .finalize_block(
-                pbft_block,
-                vec![crate::ffi::rustaxa_ffi::FinalizationTransaction {
-                    hash: transaction_hash,
-                    sender: sender_bytes,
-                    receiver_found: true,
-                    receiver: [0x55u8; 20],
-                    nonce: 2,
-                    value: U256::from(3u64).to_big_endian().to_vec(),
-                    gas_price: U256::from(2u64).to_big_endian().to_vec(),
-                    gas_limit: 21_000,
-                    data: vec![],
-                    rlp: transaction_rlp.clone(),
-                }],
-                vec![],
-            )
-            .expect("finalization should create block-scoped account snapshot");
+        finalize_regular_transaction_for_test(
+            &final_chain,
+            pbft_block,
+            crate::ffi::rustaxa_ffi::FinalizationTransaction {
+                hash: transaction_hash,
+                sender: sender_bytes,
+                receiver_found: true,
+                receiver: [0x55u8; 20],
+                nonce: 2,
+                value: U256::from(3u64).to_big_endian().to_vec(),
+                gas_price: U256::from(2u64).to_big_endian().to_vec(),
+                gas_limit: 21_000,
+                data: vec![],
+                rlp: transaction_rlp.clone(),
+            },
+        );
 
         let runtime = create_transaction_manager_runtime_from_storage(
             &storage,

@@ -755,6 +755,18 @@ Implementation status:
   cleanup once bridge tests move to native consensus APIs.
   Custom agents used: `rust-engineer` confirmed the live C++ route and identified the remaining Rust-internal wrapper
   callsites that must be migrated before deleting the implementation helpers.
+- The older direct `BridgeFinalChain::finalize_block*` compatibility exports and bridge-only `FinalizationOutcome` DTO
+  are deleted. FinalChain execution now crosses the CXX bridge through `BridgeFinalChainExecutionSession` and
+  `BridgeConsensusExecutionApi`; native `rustaxa-consensus` FinalChain tests cover direct native finalization.
+  Custom agents used: `code-mapper` identified additional orphan CXX exports and confirmed this cleanup class has no
+  production C++ callsites.
+  Validation for this direct finalizer export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_manager_runtime_lookup_transaction_views_with_final_chain_marks_old_finalized`
+  - `cmake --build /build --target final_chain_test rust_consensus_tests --parallel 12`
+  - `/build/bin/final_chain_test --gtest_filter='FinalChainTest.*' --gtest_print_time=1`
   Validation for this CXX export shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`

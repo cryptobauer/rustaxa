@@ -386,6 +386,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   external EVM and `StateAPI` through the remaining `BridgeConsensusExecutionApi` methods; the CXX surface still keeps
   session creation/commit plus the minimal step/report/publish methods called by `final_chain_shim`. Remaining
   Rust-internal wrappers are tracked as follow-up bridge-test cleanup before their DTOs can be deleted.
+- The older direct `BridgeFinalChain::finalize_block*` compatibility exports and bridge-only `FinalizationOutcome` DTO
+  are retired. FinalChain execution now crosses the bridge through `BridgeFinalChainExecutionSession` and
+  `BridgeConsensusExecutionApi`, while native direct finalization remains covered in `rustaxa-consensus`.
 - `BridgeDagVerifyBlockSession` is retired. DAG block verification still has C++ executor boundaries for transaction
   lookup, FinalChain authorization facts, VDF verification, and gas estimation, but the ordered verification cursor now
   lives inside `BridgeDagManagerRuntime` through `dag_manager_runtime_begin_verify_block_session`,
