@@ -272,8 +272,13 @@ Current snapshot after DAG proposer-session cursor consolidation:
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
   `BridgeTransactionManagerRuntime`, whose command APIs own those paths.
 - `BridgeTransactionManagerAdmissionExecution` is retired as a CXX handle. No C++ shim callers remained for the explicit
-  execute/commit DAG-save script; `save_transactions_from_dag_block_with_runtime` now keeps the storage-first write and
-  live queue/sidecar mutation ordering inside one runtime-owned bridge method.
+  execute/commit DAG-save script; the retained `save_transactions_from_dag_block_command_report_with_runtime` boundary
+  now keeps the storage-first write and live queue/sidecar mutation ordering inside one runtime-owned bridge method.
+- Transaction-manager lower-level DAG-save/finalized-status result APIs are deleted from the CXX surface:
+  `save_transactions_from_dag_block_with_runtime`, `update_finalized_transactions_status_with_runtime`,
+  `DagTransactionSaveAccepted`, `DagTransactionSaveOutcome`, `FinalizedTransactionStatusAction`, and
+  `FinalizedTransactionStatusPlan`. Live C++ callers use command-report APIs, while the lower helpers and result structs
+  are private Rust implementation details.
 - No-caller bridge-test-only CXX exports have been deleted from remaining compatibility handles:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ callers use the storage-restoring PBFT

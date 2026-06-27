@@ -12,27 +12,26 @@
 //! pointers or gas estimation.
 
 use crate::ffi::rustaxa_ffi::{
-    DagTransactionSaveAccepted, DagTransactionSaveOutcome, DagTransactionSaveSidecarFact,
-    FinalizedTransactionFilterPlan, FinalizedTransactionStatusAction,
-    FinalizedTransactionStatusPlan, FinalizedTransactionStatusSidecarFact,
-    TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
-    TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
-    TransactionManagerFilterAction, TransactionManagerFinalChainAdmissionFact,
-    TransactionManagerFinalizedStatusCommandReport, TransactionManagerGasEstimationFact,
-    TransactionManagerGasEstimationPlan, TransactionManagerGasEstimationResult,
-    TransactionManagerHashCommand, TransactionManagerInsertTransactionFact,
-    TransactionManagerInsertTransactionOutcome, TransactionManagerPublicAdmissionCommandReport,
-    TransactionManagerPublicInsertResult, TransactionManagerRuntimeAdmissionOutcome,
-    TransactionManagerRuntimeQueueCleanupPlan, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarLookupRequest, TransactionManagerTransactionView,
-    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionOutcome, TransactionPackEstimateOutcome,
-    TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
-    TransactionPackSessionEstimateInput, TransactionPackSessionStep, TransactionQueueConfig,
-    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueInsertOutcome,
-    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
+    FinalizedTransactionStatusSidecarFact, TransactionManagerAdmissionCommandReport,
+    TransactionManagerAdmissionResult, TransactionManagerAdmissionShellIntent,
+    TransactionManagerDagSaveCommandReport, TransactionManagerFilterAction,
+    TransactionManagerFinalChainAdmissionFact, TransactionManagerFinalizedStatusCommandReport,
+    TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
+    TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
+    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
+    TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
+    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerRuntimeQueueCleanupPlan,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarLookupRequest,
+    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
+    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
+    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
+    TransactionPackEstimateOutcome, TransactionPackSelectedTransaction,
+    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
+    TransactionPackSessionStep, TransactionQueueConfig, TransactionQueueHash,
+    TransactionQueueInsertInput, TransactionQueueInsertOutcome, TransactionQueuePurgePlan,
+    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
     BridgeFinalChain, BridgeStorage, BridgeTransactionManagerRuntime,
@@ -99,6 +98,27 @@ struct TransactionManagerSidecarHash {
 struct TransactionManagerSidecarTransitionInput {
     period: u64,
     hashes: Vec<TransactionManagerSidecarHash>,
+}
+
+struct DagTransactionSaveAccepted {
+    hash: [u8; 32],
+    erased_from_queue: bool,
+}
+
+struct DagTransactionSaveOutcome {
+    accepted: Vec<DagTransactionSaveAccepted>,
+}
+
+struct FinalizedTransactionStatusAction {
+    hash: [u8; 32],
+    removed_non_finalized: bool,
+    erase_from_queue: bool,
+    erased_from_queue: bool,
+}
+
+struct FinalizedTransactionStatusPlan {
+    accepted: Vec<FinalizedTransactionStatusAction>,
+    purge_transaction_queue: bool,
 }
 
 const TM_TRANSACTION_VIEW_SOURCE_MISSING: u8 = 0;
@@ -603,7 +623,7 @@ fn transaction_manager_runtime_storage(
 }
 
 /// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
-pub fn save_transactions_from_dag_block_with_runtime(
+fn save_transactions_from_dag_block_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<DagTransactionSaveOutcome> {
@@ -633,7 +653,6 @@ pub fn save_transactions_from_dag_block_with_runtime(
 
     for payload in &plan.accepted_transactions {
         accepted.push(DagTransactionSaveAccepted {
-            input_index: payload.input_index,
             hash: payload.hash.0,
             erased_from_queue: false,
         });
@@ -658,10 +677,7 @@ pub fn save_transactions_from_dag_block_with_runtime(
         .sidecar
         .set_transaction_count(plan.target_transaction_count);
 
-    Ok(DagTransactionSaveOutcome {
-        accepted,
-        target_transaction_count: plan.target_transaction_count,
-    })
+    Ok(DagTransactionSaveOutcome { accepted })
 }
 
 /// Applies DAG transaction persistence and returns a typed command report.
@@ -679,7 +695,7 @@ pub fn save_transactions_from_dag_block_command_report_with_runtime(
 /// succeeds, the runtime evicts stale recent-finalized sidecars, inserts current
 /// finalized payloads, marks queue-known membership, erases matching queued
 /// payloads, and advances the authoritative transaction count.
-pub fn update_finalized_transactions_status_with_runtime(
+fn update_finalized_transactions_status_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
     period: u64,
     retention_window: u64,
@@ -735,10 +751,8 @@ pub fn update_finalized_transactions_status_with_runtime(
         runtime.queue.mark_transaction_known(hash);
         let erased_from_queue = runtime.queue.erase(hash);
         accepted.push(FinalizedTransactionStatusAction {
-            input_index: action.input_index,
             hash: action.hash.0,
             removed_non_finalized: action.removed_non_finalized,
-            mark_transaction_known: true,
             erase_from_queue: true,
             erased_from_queue,
         });
@@ -749,9 +763,6 @@ pub fn update_finalized_transactions_status_with_runtime(
 
     Ok(FinalizedTransactionStatusPlan {
         accepted,
-        target_transaction_count: plan.target_transaction_count,
-        stale_period: plan.stale_period.unwrap_or(0),
-        has_stale_period: plan.stale_period.is_some(),
         purge_transaction_queue: plan.purge_transactions,
     })
 }
@@ -2929,7 +2940,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_save_transactions_from_dag_block_with_runtime_uses_admission_commit_path() {
+    fn bridge_save_transactions_from_dag_block_command_report_uses_admission_commit_path() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_admission_wrapper");
         let storage = crate::storage::create_storage(
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
@@ -2944,15 +2955,14 @@ mod tests {
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
             .expect("queue seed should succeed");
 
-        let out = save_transactions_from_dag_block_with_runtime(
+        let report = save_transactions_from_dag_block_command_report_with_runtime(
             &mut runtime,
             vec![dag_tx_sidecar_fact(0, 1, 5, 4, 0x33)],
         )
         .expect("runtime wrapper should succeed");
 
-        assert_eq!(out.accepted.len(), 1);
-        assert!(out.accepted[0].erased_from_queue);
-        assert_eq!(out.target_transaction_count, 8);
+        assert_eq!(report.queue_erased.len(), 1);
+        assert_eq!(report.queue_erased[0].hash, [1; 32]);
         assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         assert!(runtime.transaction_manager_runtime_contains_non_finalized(&[1; 32]));
         assert_eq!(

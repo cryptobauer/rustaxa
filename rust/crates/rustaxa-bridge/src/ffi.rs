@@ -3454,29 +3454,6 @@ pub mod rustaxa_ffi {
         sender_account_nonce: [u8; 32],
     }
 
-    /// Accepted DAG transaction pointer for C++ live sidecar updates.
-    struct DagTransactionSaveAccepted {
-        input_index: u64,
-        hash: [u8; 32],
-        erased_from_queue: bool,
-    }
-
-    /// Rust planning outcome for one DAG transaction persistence pass.
-    struct DagTransactionSaveOutcome {
-        accepted: Vec<DagTransactionSaveAccepted>,
-        target_transaction_count: u64,
-    }
-
-    /// One finalized transaction action returned from Rust status planning.
-    struct FinalizedTransactionStatusAction {
-        input_index: u64,
-        hash: [u8; 32],
-        removed_non_finalized: bool,
-        mark_transaction_known: bool,
-        erase_from_queue: bool,
-        erased_from_queue: bool,
-    }
-
     /// Input finalized transaction payload for sidecar-aware status updates.
     struct FinalizedTransactionStatusSidecarFact {
         input_index: u64,
@@ -3703,15 +3680,6 @@ pub mod rustaxa_ffi {
         verification_expected_chain_id: u64,
         public_result: TransactionManagerPublicInsertResult,
         admission: TransactionManagerAdmissionCommandReport,
-    }
-
-    /// Finalized status planning outcome for one finalized period.
-    struct FinalizedTransactionStatusPlan {
-        accepted: Vec<FinalizedTransactionStatusAction>,
-        target_transaction_count: u64,
-        stale_period: u64,
-        has_stale_period: bool,
-        purge_transaction_queue: bool,
     }
 
     /// Finalization hint for one transaction referenced by an expired DAG block.
@@ -5541,21 +5509,11 @@ pub mod rustaxa_ffi {
             requests: Vec<TransactionManagerTransactionViewRequest>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
-        pub fn save_transactions_from_dag_block_with_runtime(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            facts: Vec<DagTransactionSaveSidecarFact>,
-        ) -> Result<DagTransactionSaveOutcome>;
         /// Applies DAG transaction persistence and returns a typed command report.
         pub fn save_transactions_from_dag_block_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
-        pub fn update_finalized_transactions_status_with_runtime(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            period: u64,
-            retention_window: u64,
-            facts: Vec<FinalizedTransactionStatusSidecarFact>,
-        ) -> Result<FinalizedTransactionStatusPlan>;
         /// Applies finalized status updates and returns a typed command report.
         pub fn update_finalized_transactions_status_command_report_with_runtime(
             runtime: &mut BridgeTransactionManagerRuntime,

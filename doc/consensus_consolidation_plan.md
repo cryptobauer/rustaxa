@@ -679,8 +679,17 @@ Implementation status:
   route, finalized-status route, and bridge-only test are gone; live sidecar state is private to
   `BridgeTransactionManagerRuntime`.
 - `BridgeTransactionManagerAdmissionExecution` is deleted as a CXX handle. The unused explicit execute/commit DAG-save
-  script and bridge-only test are gone; `save_transactions_from_dag_block_with_runtime` preserves storage-first ordering
-  inside the runtime-owned method.
+  script and bridge-only test are gone; `save_transactions_from_dag_block_command_report_with_runtime` preserves
+  storage-first ordering at the CXX boundary while the lower `save_transactions_from_dag_block_with_runtime` helper is
+  Rust-private.
+- Transaction-manager lower-level DAG-save/finalized-status result APIs are no longer CXX exports:
+  `save_transactions_from_dag_block_with_runtime`, `update_finalized_transactions_status_with_runtime`,
+  `DagTransactionSaveAccepted`, `DagTransactionSaveOutcome`, `FinalizedTransactionStatusAction`, and
+  `FinalizedTransactionStatusPlan` are deleted from the bridge surface. Live C++ uses the DAG-save command-report API
+  and `update_finalized_transactions_status_command_report_with_runtime_and_final_chain`; private Rust helpers still own
+  the storage-first mutation and command-report conversion.
+  Custom agents used: `architect-reviewer` confirmed the live C++ command-report boundary; `rust-engineer` confirmed the
+  private DTO/test impact.
 - Additional no-caller CXX exports are deleted after callsite audit showed they were bridge-test scaffolding only:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use
