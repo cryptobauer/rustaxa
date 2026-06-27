@@ -464,6 +464,10 @@ Acceptance:
 - Completed in this pass: `FinalChain::rustFinalChainForRust()` accessor was removed from the
   `final_chain_shim`, eliminating the direct internal bridge-handle sharing point in FinalChain call-paths.
 
+- Current status: transaction, PBFT, and pillar manager runtime-heavy shims are still in progress under this slice. Slice 6
+  remains incomplete once these shims still own orchestration loops or sidecar/session state that is not a thin external
+  call boundary. No additional `RUSTAXA_ENABLE_*` runtime orchestration blocks have been removed from this pass.
+
 Implementation notes:
 
 - `final_chain_shim` now no longer exposes `rustFinalChainForRust()`; callers must route through explicit
@@ -472,6 +476,9 @@ Implementation notes:
 - `dag_manager_shim` now moved `getShared()` and `getDagMutex()` off inherited `DagManagerOld` access and onto shim-owned
   state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
   callers now perform the lock sequencing directly.
+- `transaction_manager_shim` and `pbft_manager_shim` still route through shim-owned orchestration and session wiring,
+  especially for admission/packing/finalization flows. Their shrink opportunities are the next concrete work and require
+  deleting/rewiring shim-local orchestration before the slice can be marked complete.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
