@@ -5596,11 +5596,6 @@ pub mod rustaxa_ffi {
         pub fn sortition_current_params(
             self: &BridgeSortitionParamsManager,
         ) -> SortitionRuntimeParams;
-        pub fn sortition_params_for_period(
-            self: &BridgeSortitionParamsManager,
-            found: bool,
-            change: SortitionParamsChangePayload,
-        ) -> SortitionRuntimeParams;
         pub fn sortition_params_for_period_from_storage(
             self: &BridgeSortitionParamsManager,
             period: u64,

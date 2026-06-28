@@ -99,18 +99,3 @@ TEST(RustSortitionTest, CommitRejectsPreviewMismatch) {
   unexpected.threshold_upper = 1234;
   EXPECT_THROW(manager->sortition_commit_finalized_period(1, true, 25, 100, 1, true, unexpected), std::exception);
 }
-
-TEST(RustSortitionTest, ParamsForPeriodAppliesStorageChangePayload) {
-  auto manager = create_manager("rustaxa_consensus_sortition_params_for_period");
-  SortitionParamsChangePayload change;
-  change.period = 10;
-  change.interval_efficiency = 75 * 100;
-  change.threshold_upper = 4444;
-
-  auto params = manager->sortition_params_for_period(true, change);
-
-  EXPECT_EQ(params.threshold_upper, 4444);
-  EXPECT_EQ(params.difficulty_min, 1);
-  EXPECT_EQ(params.difficulty_max, 2);
-  EXPECT_EQ(params.difficulty_stale, 3);
-}

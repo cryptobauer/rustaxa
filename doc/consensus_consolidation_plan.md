@@ -1668,6 +1668,9 @@ Implementation status:
   `DbStorage` batch block in `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy-only when
   `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled; Rust-mode construction and updates enter
   `BridgeSortitionParamsManager` with an attached native Rust storage handle.
+- The direct `sortition_params_for_period(found, change)` CXX export is deleted. C++ sortition callers now use only
+  `sortition_params_for_period_from_storage(period)` for historical lookups, while direct change-payload lookup coverage
+  remains in native Rust sortition tests.
 - FinalChain Rust-mode startup, native finalization, external-EVM publication, crash recovery, and storage audit are
   closed under the current overlay. The remaining public `DbStorage` batch blocks in
   `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy-only when `RUSTAXA_ENABLE_FINAL_CHAIN` is

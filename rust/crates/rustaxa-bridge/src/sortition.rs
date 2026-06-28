@@ -121,19 +121,6 @@ impl BridgeSortitionParamsManager {
         self.manager.current_params().into()
     }
 
-    /// Returns sortition parameters using an optional persisted change.
-    ///
-    /// C++ supplies the latest storage change at-or-before the requested period
-    /// when one exists. Absence leaves the current config threshold unchanged.
-    pub fn params_for_period(
-        &self,
-        found: bool,
-        change: rustaxa_ffi::SortitionParamsChangePayload,
-    ) -> rustaxa_ffi::SortitionRuntimeParams {
-        let period_change = found.then(|| SortitionParamsChange::from(change));
-        self.manager.params_for_period(period_change).into()
-    }
-
     /// Returns sortition parameters for `period` by reading the latest
     /// at-or-before sortition change from Rust storage.
     pub fn params_for_period_from_storage(
@@ -312,15 +299,6 @@ impl BridgeSortitionParamsManager {
     /// CXX-exported method returning current sortition parameters.
     pub fn sortition_current_params(&self) -> rustaxa_ffi::SortitionRuntimeParams {
         self.current_params()
-    }
-
-    /// CXX-exported method returning period-specific sortition parameters.
-    pub fn sortition_params_for_period(
-        &self,
-        found: bool,
-        change: rustaxa_ffi::SortitionParamsChangePayload,
-    ) -> rustaxa_ffi::SortitionRuntimeParams {
-        self.params_for_period(found, change)
     }
 
     /// CXX-exported method returning period-specific sortition parameters using

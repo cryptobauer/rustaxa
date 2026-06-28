@@ -403,6 +403,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   finalized-period changes through native Rust storage. The public batch block in
   `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy/reference behavior when
   `RUSTAXA_ENABLE_SORTITION_PARAMS` enables the overlay.
+- The direct `sortition_params_for_period(found, change)` CXX export is deleted. Live C++ lookups use the storage-backed
+  `sortition_params_for_period_from_storage(period)` route, so callers no longer inject synthetic sortition-change
+  payloads through a bridge-shaped helper. Native `rustaxa-consensus` tests keep direct `params_for_period` coverage.
 - `final_chain_shim` is the active Rust-mode route for FinalChain startup, native finalization, external-EVM publication,
   pending-publication recovery, and storage audit. It constructs `BridgeFinalChain` and `BridgeConsensusExecutionApi`;
   C++ supplies only the external `StateAPI`/EVM adapter, while Rust commits FinalChain headers, receipts, transaction
