@@ -243,6 +243,7 @@ pub struct BridgeVerifiedVotes {
     pub storage: Option<Arc<Storage>>,
 }
 
+#[cfg(test)]
 pub struct BridgePillarVotes(pub PillarVotes);
 
 /// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
@@ -2588,7 +2589,8 @@ pub mod rustaxa_ffi {
     ///
     /// C++ supplies DPoS weights from the external FinalChain boundary. Rust
     /// owns byte inspection, weighted bundle planning, period-threshold
-    /// initialization, and selected-vote insertion into `BridgePillarVotes`.
+    /// initialization, and selected-vote insertion into the pillar-chain
+    /// runtime.
     struct PillarVoteBundleApplyPlan {
         status: u8,
         block_weight: u64,
@@ -5476,36 +5478,10 @@ pub mod rustaxa_ffi {
 
         // Consensus pillar votes
 
-        type BridgePillarVotes;
-
-        pub fn create_pillar_votes_index() -> Box<BridgePillarVotes>;
         pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
         pub fn inspect_pillar_vote_bundle_rlps(
             votes: Vec<PillarVoteRlpPayload>,
         ) -> Result<PillarVoteBundleInspectionPlan>;
-        pub fn pillar_votes_prepare_single_vote_admission(
-            self: &BridgePillarVotes,
-            vote_rlp: Vec<u8>,
-            context: PillarVoteSingleAdmissionContext,
-        ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
-        pub fn pillar_votes_apply_prepared_single_vote_admission(
-            self: &mut BridgePillarVotes,
-            input: PillarVoteSingleAdmissionApplyInput,
-        ) -> Result<PillarVoteSingleAdmissionApplyPlan>;
-        pub fn pillar_votes_apply_weighted_rlp_bundle(
-            self: &mut BridgePillarVotes,
-            votes: Vec<PillarVoteWeightedRlpPayload>,
-            expected_period: u64,
-            expected_block_hash: &[u8; 32],
-            threshold: u64,
-        ) -> Result<PillarVoteBundleApplyPlan>;
-        pub fn pillar_votes_get_verified_vote_payloads(
-            self: &BridgePillarVotes,
-            period: u64,
-            block_hash: &[u8; 32],
-            above_threshold: bool,
-        ) -> PillarVotesPayloadLookup;
-        pub fn pillar_votes_cleanup_votes_by_period(self: &mut BridgePillarVotes, min_period: u64);
 
         /// Evaluates one pillar-vote relevance query.
         pub fn plan_pillar_vote_relevance(

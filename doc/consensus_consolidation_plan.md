@@ -371,8 +371,8 @@ Implementation notes:
   materializes vote state exclusively from Rust-retained weighted payloads for conflict resolution, snapshot rebuilds, and
   threshold-weighted vote aggregation. `live_votes_` storage was deleted from production flow, and missing payloads now
   fail fast rather than degrade into compatibility paths.
-- `pillar_votes_shim` is retired. C++ now routes pillar vote indexing and planning through
-  `BridgePillarVotes` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
+- `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
+  `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and
   `pillar_votes_shim_test.cpp` was removed.
 - The standalone `BridgePeriodDataQueue` CXX handle, `create_period_data_queue` constructor, `period_data_queue_shim`
@@ -488,8 +488,8 @@ Implementation notes:
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
 - `pillar_chain_manager_shim` now constructs `BridgePillarChainRuntime`, which owns live pillar-vote aggregation state
   and the native pillar storage handle used by PBFT-facing finalization. The previous live manager field
-  `BridgePillarVotes` is gone; the standalone `BridgePillarVotes` CXX handle remains only for compatibility tests and
-  non-manager bridge callers until they move to the runtime or native Rust modules.
+  `BridgePillarVotes` is gone; the standalone `BridgePillarVotes` CXX handle is also retired after the remaining C++
+  bridge test moved to the runtime. The Rust helper remains only as a bridge-module unit-test fixture.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` now routes synced bundle RLPs through
   Rust-owned batch inspection and `BridgePillarChainRuntime` weighted apply APIs. C++ only performs the external
   FinalChain DPoS weight lookup in one batched read, then passes canonical RLP bytes and weights back to Rust for
@@ -637,7 +637,8 @@ Implementation notes:
     bundle planning while keeping FinalChain DPoS reads, network requests, event emission, and temporary
     `PillarBlock`/`PillarVote` materialization external.
   - `architect-reviewer`: recommended the no-caller plain-fact pillar-vote bundle planner as the next bridge-surface
-    cleanup candidate and confirmed `BridgePillarVotes` plus pillar storage remain live for now.
+    cleanup candidate. Follow-up cleanup retired the last `BridgePillarVotes` CXX handle after moving C++ coverage to
+    `BridgePillarChainRuntime`; pillar storage compatibility remains live for now.
 - Custom agent attempted for the plain-fact pillar-vote bundle cleanup:
   - `rust-engineer`: requested to review hidden callsites and retained coverage, but the agent backend rejected the
     start due to a GPT-5.3-Codex-Spark usage limit. Local implementation proceeded with call-site search evidence and
@@ -1267,8 +1268,11 @@ Implementation status:
 - Additional no-caller CXX exports are deleted after callsite audit showed they were bridge-test scaffolding only:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use
-  `create_pbft_chain_from_storage`, `slashing_report_double_voting_proof_submission`, and
-  `pillar_votes_get_verified_vote_payloads`.
+  `create_pbft_chain_from_storage`, `slashing_report_double_voting_proof_submission`, and runtime-owned
+  pillar vote payload lookup APIs.
+- The remaining standalone `BridgePillarVotes` CXX surface is deleted after
+  `PillarVoteBundleBridgeTest.applyPillarVoteBundleFromWeightedRlpsInsertsAcceptedVotes` moved to
+  `BridgePillarChainRuntime`. Rust bridge-module tests still cover the Rust-only compatibility helper directly.
 - Additional no-caller verified-vote and sortition CXX exports are deleted:
   `verified_votes_check_unique_voter`, `verified_votes_vote_in_verified_map`,
   `verified_votes_get_network_t_plus_one_step`, `verified_votes_get_two_t_plus_one_voted_block_votes`,

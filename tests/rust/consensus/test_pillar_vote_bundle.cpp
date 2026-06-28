@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -92,6 +94,14 @@ rust::Vec<uint8_t> makeBytes(const taraxa::bytes& bytes) {
   return out;
 }
 
+std::filesystem::path tempStoragePath(const std::string& name) {
+  const auto path = std::filesystem::temp_directory_path() / name;
+  if (std::filesystem::exists(path)) {
+    std::filesystem::remove_all(path);
+  }
+  return path;
+}
+
 }  // namespace
 
 TEST(PillarVoteBundleBridgeTest, inspectPillarVoteBundleRlpsReturnsRecoveredVoters) {
@@ -138,9 +148,11 @@ TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcc
   second_payload.weight = 3;
   votes.push_back(std::move(second_payload));
 
-  auto pillar_votes = rustaxa::create_pillar_votes_index();
+  const auto test_dir = tempStoragePath("rustaxa_pillar_vote_bundle_runtime");
+  auto storage = rustaxa::create_storage(test_dir.string());
+  auto pillar_runtime = rustaxa::create_pillar_chain_runtime(*storage);
   const auto plan =
-      pillar_votes->pillar_votes_apply_weighted_rlp_bundle(std::move(votes), period, block_hash.asArray(), 7);
+      pillar_runtime->pillar_chain_runtime_apply_weighted_rlp_bundle(std::move(votes), period, block_hash.asArray(), 7);
 
   EXPECT_EQ(plan.status, 0);
   EXPECT_EQ(plan.block_weight, 7);
@@ -148,11 +160,12 @@ TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcc
   EXPECT_FALSE(plan.insert_failed);
   EXPECT_EQ(plan.applied_votes, 2);
 
-  const auto lookup = pillar_votes->pillar_votes_get_verified_vote_payloads(period, block_hash.asArray(), true);
+  const auto lookup = pillar_runtime->pillar_chain_runtime_get_verified_vote_payloads(period, block_hash.asArray(), true);
   EXPECT_TRUE(lookup.threshold_met);
   EXPECT_EQ(lookup.selected_weight, 7);
   ASSERT_EQ(lookup.votes.size(), 2);
   EXPECT_EQ(lookup.votes[0].weight + lookup.votes[1].weight, 7);
+  std::filesystem::remove_all(test_dir);
 }
 
 TEST(PillarVoteRelevanceBridgeTest, planPillarVoteRelevanceMatchesManagerPeriodRules) {

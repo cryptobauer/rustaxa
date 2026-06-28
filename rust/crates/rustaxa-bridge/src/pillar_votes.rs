@@ -19,7 +19,9 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteSingleAdmissionContext, PillarVoteSingleAdmissionPreparePlan,
     PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
 };
-use crate::ffi::{BridgePillarChainRuntime, BridgePillarVotes};
+use crate::ffi::BridgePillarChainRuntime;
+#[cfg(test)]
+use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::{
@@ -61,10 +63,12 @@ struct WeightedRlpBundlePlan {
 }
 
 /// Creates an empty Rust pillar-vote registry for the C++ pillar-vote shim.
+#[cfg(test)]
 pub fn create_pillar_votes_index() -> Box<BridgePillarVotes> {
     Box::new(BridgePillarVotes(PillarVotes::new()))
 }
 
+#[cfg(test)]
 impl BridgePillarVotes {
     /// Validates and applies one weighted synced pillar-vote bundle.
     ///
@@ -325,6 +329,7 @@ impl BridgePillarChainRuntime {
     }
 }
 
+#[cfg(test)]
 impl BridgePillarVotes {
     /// Prepares one pillar vote for validation or insertion without reading
     /// FinalChain or mutating aggregation state.
