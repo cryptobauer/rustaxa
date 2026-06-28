@@ -667,6 +667,11 @@ Implementation notes:
   `PbftFinalizationExternalEffectReport` for that manager-local client. Rust maps the single
   `remaining_anchor_count` fact into the temporary executor envelope internally before running the existing cursor
   validation and drain path.
+- Follow-up API narrowing moved advance-period reporting onto
+  `pbft_manager_runtime_advance_finalization_advance_period`, so C++ no longer constructs
+  `PbftFinalizationExternalEffectReport` for that manager-local client. Rust maps the single post-advance
+  `manager_period` fact into the temporary executor envelope internally before running the existing cursor validation and
+  drain path.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -802,6 +807,11 @@ Implementation notes:
   - `rust-engineer`: implemented/reviewed the typed Rust bridge advancement, added a targeted bridge test for the
     anchor-cache report, and confirmed the helper should map only `remaining_anchor_count` into the temporary executor
     envelope.
+- Custom agents used for the advance-period typed advancement cleanup:
+  - `cpp-pro`: implemented/reviewed the fresh and duplicate-resume C++ success wiring and confirmed failure, abort, and
+    snapshot semantics remain unchanged.
+  - `rust-engineer`: requested for the Rust bridge helper/test; local implementation proceeded while the agent was still
+    running, using the established typed pillar and anchor-cache helper pattern.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -986,9 +996,10 @@ Implementation notes:
   - `rg -n "FinalChainPbftFinalizationDispatchReport|final_chain_dispatched|final_chain_blocks_per_year|final_chain_last_block|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/include/pbft/pbft_manager_shim.hpp libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows `finalize_` returning a typed FinalChain report and only manager-local conversion populating the generic
     executor report fields.
-  - `rg -n "PbftManagerFinalizationAdvancePeriodReport|manager_period|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.cpp'`
-    shows the advance-period finalization path producing a typed manager report before conversion to the generic manager
-    executor report.
+  - `rg -n "advance_finalization_advance_period|PbftManagerFinalizationAdvancePeriodReport|manager_period|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.cpp'`
+    shows the advance-period finalization path using a typed Rust bridge advancement instead of C++ constructing the
+    generic external-effect report. The remaining `manager_period` assignment for this path is Rust-private temporary
+    executor envelope construction.
   - `rg -n "PbftManagerFinalizationPillarPostProcessingReport|pillar_processed_period|pillar_request_period|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.cpp'`
     shows the pillar post-processing path producing a typed manager report before conversion to the generic manager
     executor report.

@@ -3661,6 +3661,25 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
           return true;
         };
+        auto report_resume_advance_period = [&](const PbftManagerFinalizationAdvancePeriodReport &report,
+                                                rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+          rustaxa::PbftManagerFinalizationAdvancePeriodReport bridge_report{};
+          bridge_report.manager_period = report.manager_period;
+          try {
+            boundary = rustaxa::pbft_manager_runtime_advance_finalization_advance_period(
+                *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+          } catch (const std::exception &e) {
+            LOG(log_er_) << "Rust PBFT finalization resume boundary report threw for block " << pbft_block_hash
+                         << ", period " << block_pbft_period << ", context advance period: " << e.what();
+            rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+            return false;
+          }
+          apply_resume_boundary_snapshot(boundary);
+          if (!boundary.can_continue) {
+            return fail_resume_boundary("advance period", boundary);
+          }
+          return true;
+        };
         auto apply_advance_period_for_finalization = [&]() -> std::optional<PbftManagerFinalizationAdvancePeriodReport> {
           if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
             return std::nullopt;
@@ -3741,11 +3760,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             report_resume_failure(resume_boundary);
             return false;
           }
-          rustaxa::PbftFinalizationExternalEffectReport advance_report{};
-          advance_report.success = true;
-          advance_report.status = 0;
-          advance_report.manager_period = advance_period->manager_period;
-          if (!report_resume_live_mutation("advance period", advance_report, resume_boundary)) {
+          if (!report_resume_advance_period(*advance_period, resume_boundary)) {
             return false;
           }
         }
@@ -3880,6 +3895,25 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     apply_boundary_snapshot(boundary);
     if (!boundary.can_continue) {
       return fail_boundary("anchor DAG cache clear", boundary);
+    }
+    return true;
+  };
+  auto report_advance_period = [&](const PbftManagerFinalizationAdvancePeriodReport &report,
+                                   rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    rustaxa::PbftManagerFinalizationAdvancePeriodReport bridge_report{};
+    bridge_report.manager_period = report.manager_period;
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_advance_period(
+          *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context advance period: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("advance period", boundary);
     }
     return true;
   };
@@ -4125,11 +4159,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       report_failure_boundary(boundary);
       return false;
     }
-    rustaxa::PbftFinalizationExternalEffectReport advance_report{};
-    advance_report.success = true;
-    advance_report.status = 0;
-    advance_report.manager_period = advance_period->manager_period;
-    if (!report_live_mutation("advance period", advance_report, boundary)) {
+    if (!report_advance_period(*advance_period, boundary)) {
       return false;
     }
   }

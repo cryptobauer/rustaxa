@@ -1980,6 +1980,15 @@ pub mod rustaxa_ffi {
         remaining_anchor_count: u64,
     }
 
+    /// Typed PBFT finalization advance-period report from the C++ executor.
+    ///
+    /// C++ supplies only the manager period observed after executing the
+    /// Rust-planned period advance. Success/status, action identity, and cursor
+    /// identity are derived by the manager finalization executor.
+    struct PbftManagerFinalizationAdvancePeriodReport {
+        manager_period: u64,
+    }
+
     /// Rust classification of durable PBFT finalization resume state.
     struct PbftFinalizationResumePlan {
         status: u8,
@@ -4903,6 +4912,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
             report: PbftManagerFinalizationAnchorCacheClearReport,
+        ) -> Result<PbftManagerFinalizationExecutorState>;
+        pub fn pbft_manager_runtime_advance_finalization_advance_period(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            report: PbftManagerFinalizationAdvancePeriodReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn abort_pbft_manager_runtime_finalization_session(
             runtime: &mut BridgePbftManagerRuntime,

@@ -26,6 +26,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
+    PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport,
     PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
@@ -2316,6 +2317,34 @@ pub fn pbft_manager_runtime_advance_finalization_anchor_cache_clear(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports PBFT finalization advance-period facts to the manager-owned executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: typed manager period fact after C++ executes the Rust-planned
+///   advance-period operation.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the advance-period client.
+/// - Rust derives the PBFT finalization action from the cursor and maps only the
+///   post-advance manager period needed for live-mutation validation.
+/// - Cursor mismatch, validation failure, and advance execution failure use the
+///   same executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_advance_period(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiPbftManagerFinalizationAdvancePeriodReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.manager_period = report.manager_period;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
 ///
 /// Inputs:
@@ -3190,6 +3219,7 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::rustaxa_ffi::PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
+    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
@@ -3970,6 +4000,34 @@ mod tests {
         assert_eq!(
             state.action,
             PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_advance_period_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_advance_period_report");
+        let mut fact = finalization_fact();
+        fact.process_pillar_block_after_advance = true;
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(fact);
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::AdvancePeriod,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_advance_period(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationAdvancePeriodReport { manager_period: 11 },
+        )
+        .expect("typed advance-period report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::ProcessPillarBlock.as_u8()
         );
     }
 
