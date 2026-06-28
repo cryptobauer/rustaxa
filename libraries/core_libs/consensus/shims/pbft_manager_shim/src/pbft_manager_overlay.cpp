@@ -3934,6 +3934,22 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
+  auto report_dag_order = [&](uint64_t finalized_count, rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_dag_order(
+          *pbft_manager_runtime_.value(), boundary.cursor, finalized_count);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context DAG block order: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("DAG block order", boundary);
+    }
+    return true;
+  };
   auto clear_anchor_dag_cache_for_finalization = [&]() {
     anchor_dag_block_order_cache_.clear();
     const auto clear_cache_snapshot =
@@ -4069,11 +4085,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (finalization_plan.cleanup.set_dag_block_order) {
       const auto dag_order_report =
           dag_mgr_->setDagBlockOrderForPbftFinalization(anchor_hash, block_pbft_period, dag_blocks_order);
-      rustaxa::PbftFinalizationExternalEffectReport dag_report{};
-      dag_report.success = true;
-      dag_report.status = 0;
-      dag_report.dag_finalized_count = dag_order_report.finalized_count;
-      if (!report_live_mutation("DAG block order", dag_report, boundary)) {
+      if (!report_dag_order(dag_order_report.finalized_count, boundary)) {
         return false;
       }
     }

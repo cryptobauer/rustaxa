@@ -643,7 +643,8 @@ Implementation notes:
   external-effect envelope at the manager executor boundary.
 - The DAG-order finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `setDagBlockOrderForPbftFinalization`. The shim now returns `DagFinalizationOrderReport`, containing only the finalized
-  DAG-block count, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor boundary.
+  DAG-block count, and `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order` so
+  Rust builds the temporary external-effect envelope at the manager executor boundary.
 - The manager-local anchor DAG cache clear path no longer constructs the generic finalization report directly from the
   cache mutation. It now uses `AnchorDagCacheFinalizationClearReport`, containing only the remaining cached-anchor count,
   and `pbft_manager_shim` builds the final external-effect envelope at the manager executor boundary.
@@ -678,6 +679,10 @@ Implementation notes:
   `PbftFinalizationExternalEffectReport` for that external PBFT-chain client. Rust maps the existing
   `PbftChainFinalizationUpdateReport` head facts into the temporary executor envelope internally before running the
   existing cursor validation and drain path.
+- Follow-up API narrowing moved DAG-order reporting onto
+  `pbft_manager_runtime_advance_finalization_dag_order`, so C++ no longer constructs
+  `PbftFinalizationExternalEffectReport` for that external DAG client. Rust maps the single finalized DAG-block count
+  into the temporary executor envelope internally before running the existing cursor validation and drain path.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -822,6 +827,11 @@ Implementation notes:
   - `rust-engineer`: implemented/reviewed the Rust helper/test over the existing
     `PbftChainFinalizationUpdateReport` and confirmed the report size must match the finalization period.
   - `cpp-pro`: requested for C++ shim wiring review preserving abort, snapshot, and failure semantics.
+- Custom agents used for the DAG-order typed advancement cleanup:
+  - `api-designer`: confirmed the scalar `finalized_count` helper is preferable to adding a one-field CXX DTO and keeps
+    DAG identity/action/status at the PBFT manager boundary.
+  - `cpp-pro`: confirmed DAG order is the lowest-risk remaining generic producer and that the helper preserves abort,
+    snapshot, `can_continue`, and `fail_boundary` semantics without touching the resume path.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -996,9 +1006,9 @@ Implementation notes:
   - `rg -n "PbftFinalizationExternalEffectReport|commitRewardVotesResetForFinalization|RewardVotesFinalizationResetReport|makeRewardVotesResetLiveReport" libraries/core_libs/consensus/shims/vote_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows no generic finalization report in the vote-manager shim; only manager-local conversion uses
     `PbftFinalizationExternalEffectReport`.
-  - `rg -n "PbftFinalizationExternalEffectReport|PbftFinalizationStorageWritePlan|setDagBlockOrderForPbftFinalization|DagFinalizationOrderReport" libraries/core_libs/consensus/shims/dag_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
-    shows no generic finalization report or finalization write-plan dependency in the DAG-manager shim; only
-    manager-local conversion uses `PbftFinalizationExternalEffectReport`.
+  - `rg -n "advance_finalization_dag_order|dag_finalized_count|setDagBlockOrderForPbftFinalization|DagFinalizationOrderReport|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/dag_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.hpp' -g'*.cpp'`
+    shows DAG order using the scalar typed Rust bridge advancement helper; any remaining `dag_finalized_count`
+    assignment is Rust-private temporary executor envelope construction, not a C++ generic report in the DAG-order path.
   - `rg -n "advance_finalization_anchor_cache_clear|PbftManagerFinalizationAnchorCacheClearReport|AnchorDagCacheFinalizationClearReport|anchor_dag_cache_count|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.cpp'`
     shows the anchor DAG cache clear path using a typed Rust bridge advancement instead of C++ constructing the generic
     external-effect report. The remaining `anchor_dag_cache_count` assignment is Rust-private temporary executor

@@ -2289,6 +2289,34 @@ pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports finalized DAG-order facts to the manager-owned PBFT finalization executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `finalized_count`: count of DAG blocks finalized by the DAG manager
+///   external client.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the DAG-order client.
+/// - Rust derives the PBFT finalization action from the cursor and maps only the
+///   finalized DAG-block count needed for live-mutation validation.
+/// - Cursor mismatch, validation failure, and DAG execution failure use the same
+///   executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_dag_order(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    finalized_count: u64,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.dag_finalized_count = finalized_count;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
 ///
 /// Inputs:
@@ -3999,6 +4027,29 @@ mod tests {
         assert_eq!(
             state.action,
             PbftFinalizationRuntimeAction::ClearAnchorDagCache.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_dag_order_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_dag_order_report");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::SetDagBlockOrder,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state =
+            pbft_manager_runtime_advance_finalization_dag_order(&mut runtime, step.cursor, 2)
+                .expect("typed DAG-order report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions.as_u8()
         );
     }
 

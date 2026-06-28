@@ -505,22 +505,23 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `PbftFinalizationExternalEffectReport`. `pbft_chain_update_for_finalization` returns
   `PbftChainFinalizationUpdateReport` with only head size/hash/anchor facts; `pbft_manager_shim` advances through
   `pbft_manager_runtime_advance_finalization_pbft_chain`, so Rust fills the temporary executor envelope internally.
-  Remaining generic finalization report producers are sortition, reward-vote reset, DAG order, FinalChain
-  dispatch/replay, and the manager executor boundary itself.
+  Remaining generic finalization report producers are sortition, reward-vote reset, FinalChain dispatch/replay, and the
+  manager executor boundary itself.
 - Sortition finalization update facts no longer leak through `sortition_params_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitPreparedBlockForSortitionFinalization` returns
   `SortitionFinalizationCommitReport` with only changed/change/current-threshold/cache-count facts; `pbft_manager_shim`
   converts those facts at the manager executor boundary. Remaining generic finalization report producers are reward-vote
-  reset, DAG order, manager-local cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
+  reset, FinalChain dispatch/replay, and the manager executor boundary itself.
 - Reward-vote reset finalization facts no longer leak through `vote_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitRewardVotesResetForFinalization` returns
   `RewardVotesFinalizationResetReport` with only period/round/block-hash/extra-count facts; `pbft_manager_shim` converts
-  those facts at the manager executor boundary. Remaining generic finalization report producers are DAG order,
-  manager-local cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
+  those facts at the manager executor boundary. Remaining generic finalization report producers are FinalChain
+  dispatch/replay and the manager executor boundary itself.
 - DAG-order finalization facts no longer leak through `dag_manager_shim` as `PbftFinalizationExternalEffectReport`.
   `setDagBlockOrderForPbftFinalization` returns `DagFinalizationOrderReport` with only the finalized DAG-block count;
-  `pbft_manager_shim` converts that fact at the manager executor boundary. Remaining generic finalization report
-  producers are manager-local cache/final-chain/advance/pillar reports and the manager executor boundary itself.
+  `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order`, so Rust fills the
+  temporary executor envelope internally. Remaining generic finalization report producers are FinalChain dispatch/replay
+  and the manager executor boundary itself.
 - Anchor-DAG-cache clear facts now advance through
   `pbft_manager_runtime_advance_finalization_anchor_cache_clear`. C++ passes only the typed
   `AnchorDagCacheFinalizationClearReport` fact (`remaining_anchor_count`), and Rust fills the temporary
