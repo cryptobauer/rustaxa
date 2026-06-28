@@ -28,6 +28,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
+    PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -2252,6 +2253,38 @@ pub fn pbft_manager_runtime_advance_finalization_transaction_status(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor
+///   and live manager snapshot.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: pillar post-processing facts after C++ executes
+///   `processPillarBlock`.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the pillar post-processing client.
+/// - Rust derives the PBFT finalization action from the cursor, injects the
+///   manager period from the runtime snapshot, and maps only the
+///   processed/request period facts needed for live-mutation validation.
+/// - Cursor mismatch, validation failure, and pillar execution failure use the
+///   same executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiPbftManagerFinalizationPillarPostProcessingReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.manager_period = pbft_manager_runtime_snapshot(runtime).period;
+    external_report.pillar_processed_period = report.processed_period;
+    external_report.pillar_request_period = report.request_period;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
 ///
 /// Inputs:
@@ -3840,6 +3873,44 @@ mod tests {
             state.action,
             PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8()
         );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_pillar_post_processing_report() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_manager_pillar_post_processing_report");
+        let storage = create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+            .expect("storage should initialize");
+        let mut startup = startup_fact();
+        startup.current_period = 11;
+        startup.cacti_active_at_chain_size = false;
+        let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
+            .expect("runtime should initialize");
+        let mut fact = finalization_fact();
+        fact.process_pillar_block_after_advance = true;
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(fact);
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::ProcessPillarBlock,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_pillar_post_processing(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationPillarPostProcessingReport {
+                processed_period: 10,
+                request_period: 5,
+            },
+        )
+        .expect("typed pillar report should advance finalization");
+
+        assert_eq!(
+            state.status,
+            PbftFinalizationRuntimeStatus::Complete.as_u8()
+        );
+        assert!(state.complete);
+        assert!(!state.has_action);
     }
 
     #[test]

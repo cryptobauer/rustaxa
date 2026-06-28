@@ -3640,6 +3640,27 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
           return true;
         };
+        auto report_resume_pillar_post_processing =
+            [&](const PbftManagerFinalizationPillarPostProcessingReport &report,
+                rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+          rustaxa::PbftManagerFinalizationPillarPostProcessingReport bridge_report{};
+          bridge_report.processed_period = report.processed_period;
+          bridge_report.request_period = report.request_period;
+          try {
+            boundary = rustaxa::pbft_manager_runtime_advance_finalization_pillar_post_processing(
+                *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+          } catch (const std::exception &e) {
+            LOG(log_er_) << "Rust PBFT finalization resume boundary report threw for block " << pbft_block_hash
+                         << ", period " << block_pbft_period << ", context pillar post-processing: " << e.what();
+            rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+            return false;
+          }
+          apply_resume_boundary_snapshot(boundary);
+          if (!boundary.can_continue) {
+            return fail_resume_boundary("pillar post-processing", boundary);
+          }
+          return true;
+        };
         auto apply_advance_period_for_finalization = [&]() -> std::optional<PbftManagerFinalizationAdvancePeriodReport> {
           if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
             return std::nullopt;
@@ -3739,13 +3760,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             report_resume_failure(resume_boundary);
             return false;
           }
-          rustaxa::PbftFinalizationExternalEffectReport pillar_report{};
-          pillar_report.success = true;
-          pillar_report.status = 0;
-          pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
-          pillar_report.pillar_processed_period = pillar_post_processing->processed_period;
-          pillar_report.pillar_request_period = pillar_post_processing->request_period;
-          if (!report_resume_live_mutation("pillar post-processing", pillar_report, resume_boundary)) {
+          if (!report_resume_pillar_post_processing(*pillar_post_processing, resume_boundary)) {
             return false;
           }
         }
@@ -3826,6 +3841,26 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     apply_boundary_snapshot(boundary);
     if (!boundary.can_continue) {
       return fail_boundary(context, boundary);
+    }
+    return true;
+  };
+  auto report_pillar_post_processing = [&](const PbftManagerFinalizationPillarPostProcessingReport &report,
+                                           rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    rustaxa::PbftManagerFinalizationPillarPostProcessingReport bridge_report{};
+    bridge_report.processed_period = report.processed_period;
+    bridge_report.request_period = report.request_period;
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_pillar_post_processing(
+          *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context pillar post-processing: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("pillar post-processing", boundary);
     }
     return true;
   };
@@ -4094,13 +4129,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       report_failure_boundary(boundary);
       return false;
     }
-    rustaxa::PbftFinalizationExternalEffectReport pillar_report{};
-    pillar_report.success = true;
-    pillar_report.status = 0;
-    pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
-    pillar_report.pillar_processed_period = pillar_post_processing->processed_period;
-    pillar_report.pillar_request_period = pillar_post_processing->request_period;
-    if (!report_live_mutation("pillar post-processing", pillar_report, boundary)) {
+    if (!report_pillar_post_processing(*pillar_post_processing, boundary)) {
       return false;
     }
   }

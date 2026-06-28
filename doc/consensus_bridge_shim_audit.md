@@ -533,10 +533,12 @@ Current snapshot after DAG proposer-session cursor consolidation:
   executor boundary. Remaining generic finalization report producers were manager-local pillar post-processing reports and
   the manager executor boundary itself.
 - PBFT manager pillar post-processing facts now use the manager-local
-  `PbftManagerFinalizationPillarPostProcessingReport` before conversion to `PbftFinalizationExternalEffectReport` at the
-  executor boundary. The report carries only the pillar processed/request periods, and the shim now rejects invalid
-  delegation-delay request-period derivation before executing the pillar side effect. The generic finalization report is
-  now limited to the manager executor envelope and manager-local conversions from typed subsystem reports.
+  `PbftManagerFinalizationPillarPostProcessingReport` and advance through
+  `pbft_manager_runtime_advance_finalization_pillar_post_processing` instead of constructing
+  `PbftFinalizationExternalEffectReport` in C++. The report carries only the pillar processed/request periods, and the
+  shim now rejects invalid delegation-delay request-period derivation before executing the pillar side effect. The
+  remaining generic finalization report use is the temporary Rust executor envelope for the other manager-local and
+  subsystem conversions.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

@@ -1956,6 +1956,19 @@ pub mod rustaxa_ffi {
         final_chain_last_block: u64,
     }
 
+    /// Typed PBFT finalization pillar post-processing report from the C++
+    /// executor.
+    ///
+    /// C++ supplies only the post-processing facts produced after executing
+    /// `processPillarBlock`: the finalized PBFT period and the FinalChain
+    /// request period used to build pillar inputs. Success/status, manager
+    /// period, action identity, and cursor identity are derived by the manager
+    /// finalization executor.
+    struct PbftManagerFinalizationPillarPostProcessingReport {
+        processed_period: u64,
+        request_period: u64,
+    }
+
     /// Rust classification of durable PBFT finalization resume state.
     struct PbftFinalizationResumePlan {
         status: u8,
@@ -4869,6 +4882,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
             report: TransactionManagerFinalizedStatusCommandReport,
+        ) -> Result<PbftManagerFinalizationExecutorState>;
+        pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            report: PbftManagerFinalizationPillarPostProcessingReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn abort_pbft_manager_runtime_finalization_session(
             runtime: &mut BridgePbftManagerRuntime,

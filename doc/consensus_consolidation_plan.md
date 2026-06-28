@@ -654,10 +654,14 @@ Implementation notes:
   post-advance manager period, before `pbft_manager_shim` builds the final external-effect envelope at the manager
   executor boundary.
 - PBFT manager pillar post-processing now uses `PbftManagerFinalizationPillarPostProcessingReport`, containing only the
-  pillar processed/request periods, before `pbft_manager_shim` builds the final external-effect envelope at the manager
-  executor boundary. The shim derives the request period once with checked delegation-delay arithmetic before executing
-  the pillar side effect. All current PBFT finalization subsystem/local facts now have typed reports before the
-  temporary generic executor envelope.
+  pillar processed/request periods, before the Rust bridge builds the temporary finalization executor envelope
+  internally. The shim derives the request period once with checked delegation-delay arithmetic before executing the
+  pillar side effect. All current PBFT finalization subsystem/local facts now have typed reports before the temporary
+  generic executor envelope.
+- Follow-up API narrowing moved pillar post-processing onto
+  `pbft_manager_runtime_advance_finalization_pillar_post_processing`, so C++ no longer constructs
+  `PbftFinalizationExternalEffectReport` for that client. Rust injects the live manager period and reuses the existing
+  finalization executor validation/drain path internally.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -787,6 +791,8 @@ Implementation notes:
   - `cpp-pro`: identified the duplicate-resume and fresh callsites around `processPillarBlock(block_pbft_period)` and
     called out the delegation-delay/request-period calculation, unsigned underflow risk, and `processPillarBlock` side
     effects as the invariants to preserve.
+  - `rust-engineer`: implemented/reviewed the typed Rust bridge advancement, added a targeted bridge test for the pillar
+    report, and confirmed the helper should inject `manager_period` through `pbft_manager_runtime_snapshot`.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -976,6 +982,9 @@ Implementation notes:
   - `rg -n "PbftManagerFinalizationPillarPostProcessingReport|pillar_processed_period|pillar_request_period|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.cpp'`
     shows the pillar post-processing path producing a typed manager report before conversion to the generic manager
     executor report.
+  - `rg -n "advance_finalization_pillar_post_processing|PbftManagerFinalizationPillarPostProcessingReport|pillar_report" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.cpp'`
+    shows the pillar post-processing path using a typed Rust bridge advancement instead of C++ constructing the generic
+    external-effect report.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -1053,9 +1062,9 @@ Implementation notes:
   - `rg -n "getVerifiedPillarVotes\\(" libraries/core_libs/network libraries/core_libs/consensus/shims tests/rust/consensus -g'*.cpp' -g'*.hpp'`
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
-- The immediate follow-up is replacing the temporary generic PBFT finalization executor envelope with narrower
-  executor-advance APIs or a one-shot manager-owned operation. Later pillar-chain runtime slices still need external DPoS
-  fact ports and legacy materialization removal.
+- The immediate follow-up is replacing the remaining temporary generic PBFT finalization executor envelope callsites
+  with narrower executor-advance APIs, or collapsing the whole loop into a one-shot manager-owned operation. Later
+  pillar-chain runtime slices still need external DPoS fact ports and legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
