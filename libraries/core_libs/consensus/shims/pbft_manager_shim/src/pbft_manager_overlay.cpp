@@ -139,6 +139,17 @@ constexpr uint8_t kPbftManagerAdvancePeriodActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetPeriodTimer = 5;
 
+/**
+ * Manager-owned result after clearing cached anchor DAG order for PBFT finalization.
+ *
+ * Inputs are the C++ PBFT manager anchor-order cache and the Rust manager runtime cache. Outputs carry only the
+ * manager-local cache fact needed by the finalization executor: the remaining cached anchor count after both caches are
+ * cleared. The generic PBFT finalization external-effect report is constructed only at the executor boundary.
+ */
+struct AnchorDagCacheFinalizationClearReport {
+  uint64_t remaining_anchor_count = 0;
+};
+
 rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectFailure(uint8_t action_status,
                                                                                    const std::string &error_code) {
   rustaxa::PbftFinalizationExternalEffectReport report{};
@@ -3762,6 +3773,17 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
+  auto clear_anchor_dag_cache_for_finalization = [&]() {
+    anchor_dag_block_order_cache_.clear();
+    const auto clear_cache_snapshot =
+        rustaxa::pbft_manager_runtime_clear_cached_anchor_dag_order(*pbft_manager_runtime_.value());
+    ensurePbftManagerRuntimeSnapshotReady(clear_cache_snapshot, "Clear cached PBFT DAG order anchors");
+
+    AnchorDagCacheFinalizationClearReport report{};
+    report.remaining_anchor_count =
+        rustaxa::pbft_manager_runtime_cached_anchor_dag_order_count(*pbft_manager_runtime_.value());
+    return report;
+  };
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> first_persistence_stages;
   first_persistence_stages.push_back(makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary));
 
@@ -3922,15 +3944,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   if (finalization_plan.cleanup.clear_anchor_dag_cache) {
-    anchor_dag_block_order_cache_.clear();
-    const auto clear_cache_snapshot =
-        rustaxa::pbft_manager_runtime_clear_cached_anchor_dag_order(*pbft_manager_runtime_.value());
-    ensurePbftManagerRuntimeSnapshotReady(clear_cache_snapshot, "Clear cached PBFT DAG order anchors");
+    const auto clear_cache = clear_anchor_dag_cache_for_finalization();
     rustaxa::PbftFinalizationExternalEffectReport clear_cache_report{};
     clear_cache_report.success = true;
     clear_cache_report.status = 0;
-    clear_cache_report.anchor_dag_cache_count =
-        rustaxa::pbft_manager_runtime_cached_anchor_dag_order_count(*pbft_manager_runtime_.value());
+    clear_cache_report.anchor_dag_cache_count = clear_cache.remaining_anchor_count;
     if (!report_live_mutation("anchor DAG cache clear", clear_cache_report, boundary)) {
       return false;
     }

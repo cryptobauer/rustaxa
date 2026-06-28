@@ -643,6 +643,9 @@ Implementation notes:
 - The DAG-order finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `setDagBlockOrderForPbftFinalization`. The shim now returns `DagFinalizationOrderReport`, containing only the finalized
   DAG-block count, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor boundary.
+- The manager-local anchor DAG cache clear path no longer constructs the generic finalization report directly from the
+  cache mutation. It now uses `AnchorDagCacheFinalizationClearReport`, containing only the remaining cached-anchor count,
+  and `pbft_manager_shim` builds the final external-effect envelope at the manager executor boundary.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -748,6 +751,13 @@ Implementation notes:
     FFI changes; PBFT manager remains the only generic executor-report owner.
   - `cpp-pro`: confirmed `setDagBlockOrderForPbftFinalization` did not use the finalization write intent and that the
     only in-repo caller is the PBFT manager overlay.
+- Custom agents used for the anchor DAG cache finalization report cleanup:
+  - `api-designer`: confirmed the cache clear path is manager-local and already has the right typed fact shape
+    (`remaining_anchor_count`), then recommended FinalChain dispatch/replay as the next meaningful external-client cut
+    with a `blocks_per_year`/`last_block` report.
+  - `cpp-pro`: mapped the remaining C++ generic finalization report producers, confirmed anchor cache is the only
+    fresh-path producer whose mutation is purely manager/runtime local, and recommended the advance-period pair as the
+    lowest-risk overlay-only follow-up.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -925,6 +935,9 @@ Implementation notes:
   - `rg -n "PbftFinalizationExternalEffectReport|PbftFinalizationStorageWritePlan|setDagBlockOrderForPbftFinalization|DagFinalizationOrderReport" libraries/core_libs/consensus/shims/dag_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows no generic finalization report or finalization write-plan dependency in the DAG-manager shim; only
     manager-local conversion uses `PbftFinalizationExternalEffectReport`.
+  - `rg -n "AnchorDagCacheFinalizationClearReport|anchor_dag_cache_count|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.cpp'`
+    shows the anchor DAG cache clear path producing a typed cache report before converting to the generic manager
+    executor report.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -1003,7 +1016,7 @@ Implementation notes:
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
 - The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
-  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are manager-local cache/final-chain/advance/pillar
+  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are manager-local final-chain/advance/pillar
   reports. Later pillar-chain runtime slices still need external DPoS fact ports and legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
