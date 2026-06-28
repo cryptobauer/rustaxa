@@ -1446,18 +1446,6 @@ TransactionManager::updateFinalizedTransactionsStatusForPbftFinalization(const P
   return TransactionManagerRustShimAccess::updateFinalizedTransactionsStatusReport(*this, period_data);
 }
 
-rustaxa::PbftFinalizationExternalEffectReport TransactionManager::updateFinalizedTransactionsStatusForPbftFinalization(
-    const PeriodData& period_data, const rustaxa::PbftFinalizationStorageWritePlan&) {
-  const auto status_report =
-      TransactionManagerRustShimAccess::updateFinalizedTransactionsStatusReport(*this, period_data);
-
-  rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.success = true;
-  report.status = 0;
-  report.finalized_transaction_count = status_report.accepted_count;
-  return report;
-}
-
 void TransactionManager::initializeRecentlyFinalizedTransactions(const PeriodData& period_data) {
   TransactionManagerRustShimAccess::initializeRecentlyFinalizedTransactions(*this, period_data);
 }

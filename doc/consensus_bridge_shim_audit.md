@@ -497,6 +497,12 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `PbftFinalizationRuntimeSessionStep` and `PbftManagerFinalizationOwnedActionDrainResult` are no longer CXX DTOs. The
   manager-owned finalization cursor/drain internals remain Rust-private in `pbft_manager.rs`, and C++ only receives the
   stable `PbftManagerFinalizationExecutorState` executor boundary.
+- Transaction finalized-status post-state facts no longer leak through
+  `transaction_manager_shim` as `PbftFinalizationExternalEffectReport`. The shim returns its typed
+  `TransactionManagerFinalizedStatusCommandReport`, and `pbft_manager_shim` advances through
+  `pbft_manager_runtime_advance_finalization_transaction_status` so the PBFT-specific report mapping is Rust-private.
+  Remaining generic finalization report producers are PBFT-chain, sortition, reward-vote reset, DAG order, manager-local
+  cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

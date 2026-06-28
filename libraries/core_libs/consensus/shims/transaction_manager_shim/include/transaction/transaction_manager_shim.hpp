@@ -262,15 +262,6 @@ class TransactionManager : public TransactionManagerOld {
       const PeriodData &period_data);
 
   /**
-   * Apply finalized-status transitions and return a PBFT finalization external-effect report.
-   *
-   * Inputs are the finalized period data and the Rust-planned finalization write intent. The returned report carries
-   * post-mutation transaction counts that Rust validates before the PBFT runtime cursor advances.
-   */
-  rustaxa::PbftFinalizationExternalEffectReport updateFinalizedTransactionsStatusForPbftFinalization(
-      const PeriodData &period_data, const rustaxa::PbftFinalizationStorageWritePlan &write_intent);
-
-  /**
    * Warm Rust-owned recently-finalized sidecars from canonical period-data RLP payloads.
    *
    * `PeriodData` is only an edge adapter: C++ extracts hashes/RLP bytes, Rust

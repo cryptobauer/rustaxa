@@ -3861,9 +3861,19 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     if (finalization_plan.cleanup.update_finalized_transactions_status) {
       const auto finalized_transaction_report = trx_mgr_->updateFinalizedTransactionsStatusForPbftFinalization(
-          period_data, finalization_plan.storage_write_intent);
-      if (!report_live_mutation("transaction finalized-status update", finalized_transaction_report, boundary)) {
+          period_data);
+      try {
+        boundary = rustaxa::pbft_manager_runtime_advance_finalization_transaction_status(
+            *pbft_manager_runtime_.value(), boundary.cursor, finalized_transaction_report);
+      } catch (const std::exception &e) {
+        LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                     << block_pbft_period << ", context transaction finalized-status update: " << e.what();
+        rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
         return false;
+      }
+      apply_boundary_snapshot(boundary);
+      if (!boundary.can_continue) {
+        return fail_boundary("transaction finalized-status update", boundary);
       }
     }
 

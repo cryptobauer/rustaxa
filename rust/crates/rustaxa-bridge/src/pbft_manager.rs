@@ -65,6 +65,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueSnapshot as FfiPeriodDataQueueSnapshot,
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
+    TransactionManagerFinalizedStatusCommandReport as FfiTransactionManagerFinalizedStatusCommandReport,
 };
 use crate::ffi::{BridgePbftManagerRuntime, BridgeStorage};
 use anyhow::anyhow;
@@ -1838,6 +1839,43 @@ fn external_effect_live_report(
     }
 }
 
+fn empty_finalization_external_effect_report(
+    success: bool,
+    status: u8,
+    error_code: String,
+) -> FfiPbftFinalizationExternalEffectReport {
+    FfiPbftFinalizationExternalEffectReport {
+        success,
+        status,
+        error_code,
+        dag_finalized_count: 0,
+        finalized_transaction_count: 0,
+        pbft_chain_size: 0,
+        pbft_chain_head_hash: [0; 32],
+        pbft_chain_last_anchor_hash: [0; 32],
+        reward_votes_period: 0,
+        reward_votes_round: 0,
+        reward_votes_block_hash: [0; 32],
+        reward_votes_extra_count: 0,
+        sortition_changed: false,
+        sortition_change_period: 0,
+        sortition_change_interval_efficiency: 0,
+        sortition_change_threshold_upper: 0,
+        sortition_current_threshold_upper: 0,
+        sortition_params_changes_count: 0,
+        rounds_count_dynamic_lambda: 0,
+        dynamic_lambda: 0,
+        executed_pbft_block: false,
+        manager_period: 0,
+        pillar_processed_period: 0,
+        pillar_request_period: 0,
+        anchor_dag_cache_count: 0,
+        final_chain_dispatched: false,
+        final_chain_blocks_per_year: 0,
+        final_chain_last_block: 0,
+    }
+}
+
 /// Starts a PBFT finalization runtime cursor inside the long-lived PBFT manager runtime.
 ///
 /// Inputs are the accepted finalization intent plan already built by the C++
@@ -2183,6 +2221,35 @@ pub fn pbft_manager_runtime_advance_finalization_external_effect(
         ));
     }
     drain_finalization_executor_state(runtime)
+}
+
+/// Reports a transaction-manager finalized-status command result to the
+/// manager-owned PBFT finalization executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: transaction-manager command report after finalized-status side
+///   effects have executed.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the transaction-manager client.
+/// - Rust derives the PBFT finalization action from the cursor and maps only the
+///   transaction facts needed for live-mutation validation.
+/// - Cursor mismatch, validation failure, and transaction execution failure use
+///   the same executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_transaction_status(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiTransactionManagerFinalizedStatusCommandReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.finalized_transaction_count = report.accepted_count;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
@@ -3740,6 +3807,38 @@ mod tests {
         assert_eq!(
             rejected.error_code,
             "PBFT_FINALIZE_LIVE_MUTATION_TRANSACTION_COUNT_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_transaction_status_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_transaction_status_report");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_transaction_status(
+            &mut runtime,
+            step.cursor,
+            FfiTransactionManagerFinalizedStatusCommandReport {
+                removed_non_finalized: Vec::new(),
+                queue_erased: Vec::new(),
+                finalized_account_purged: Vec::new(),
+                accepted_count: 1,
+                purge_transaction_queue: false,
+            },
+        )
+        .expect("typed transaction status report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8()
         );
     }
 
