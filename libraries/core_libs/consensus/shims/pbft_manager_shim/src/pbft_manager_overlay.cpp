@@ -150,6 +150,17 @@ struct AnchorDagCacheFinalizationClearReport {
   uint64_t remaining_anchor_count = 0;
 };
 
+/**
+ * Manager-owned result after advancing the PBFT manager period during PBFT finalization.
+ *
+ * Inputs are the accepted finalized-chain size and the Rust-planned period-advance operation. Outputs carry only the
+ * manager fact needed by the finalization executor: the manager period observed after the advance succeeds. Success,
+ * status, error, PBFT identity, and action identity remain owned by the PBFT manager executor boundary.
+ */
+struct PbftManagerFinalizationAdvancePeriodReport {
+  uint64_t manager_period = 0;
+};
+
 rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectFailure(uint8_t action_status,
                                                                                    const std::string &error_code) {
   rustaxa::PbftFinalizationExternalEffectReport report{};
@@ -3616,6 +3627,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           }
           return true;
         };
+        auto apply_advance_period_for_finalization = [&]() -> std::optional<PbftManagerFinalizationAdvancePeriodReport> {
+          if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
+            return std::nullopt;
+          }
+          PbftManagerFinalizationAdvancePeriodReport report{};
+          report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+          return report;
+        };
 
         rustaxa::PbftManagerFinalizationExecutorState resume_boundary{};
         try {
@@ -3669,14 +3688,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                               kPbftFinalizationRuntimeActionAdvancePeriod)) {
             return false;
           }
-          if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
+          const auto advance_period = apply_advance_period_for_finalization();
+          if (!advance_period.has_value()) {
             report_resume_failure(resume_boundary);
             return false;
           }
           rustaxa::PbftFinalizationExternalEffectReport advance_report{};
           advance_report.success = true;
           advance_report.status = 0;
-          advance_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+          advance_report.manager_period = advance_period->manager_period;
           if (!report_resume_live_mutation("advance period", advance_report, resume_boundary)) {
             return false;
           }
@@ -3789,6 +3809,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     AnchorDagCacheFinalizationClearReport report{};
     report.remaining_anchor_count =
         rustaxa::pbft_manager_runtime_cached_anchor_dag_order_count(*pbft_manager_runtime_.value());
+    return report;
+  };
+  auto apply_advance_period_for_finalization = [&]() -> std::optional<PbftManagerFinalizationAdvancePeriodReport> {
+    if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
+      return std::nullopt;
+    }
+    PbftManagerFinalizationAdvancePeriodReport report{};
+    report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
     return report;
   };
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> first_persistence_stages;
@@ -3999,14 +4027,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   if (finalization_plan.cleanup.advance_period) {
-    if (!applyRustPlannedAdvancePeriod_(finalization_plan.storage_write_intent.block_period)) {
+    const auto advance_period = apply_advance_period_for_finalization();
+    if (!advance_period.has_value()) {
       report_failure_boundary(boundary);
       return false;
     }
     rustaxa::PbftFinalizationExternalEffectReport advance_report{};
     advance_report.success = true;
     advance_report.status = 0;
-    advance_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+    advance_report.manager_period = advance_period->manager_period;
     if (!report_live_mutation("advance period", advance_report, boundary)) {
       return false;
     }

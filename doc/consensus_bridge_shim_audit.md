@@ -528,6 +528,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `blocks_per_year` and observed FinalChain `last_block`; `pbft_manager_shim` converts those facts at the manager
   executor boundary. Remaining generic finalization report producers are manager-local advance/pillar reports and the
   manager executor boundary itself.
+- PBFT manager advance-period finalization facts now use the manager-local
+  `PbftManagerFinalizationAdvancePeriodReport` before conversion to `PbftFinalizationExternalEffectReport` at the
+  executor boundary. Remaining generic finalization report producers are manager-local pillar post-processing reports and
+  the manager executor boundary itself.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

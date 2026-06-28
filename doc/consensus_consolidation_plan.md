@@ -650,6 +650,9 @@ Implementation notes:
   FinalChain reads at each callsite. The shim-owned `finalize_` wrapper now returns
   `FinalChainPbftFinalizationDispatchReport`, containing only `blocks_per_year` and the observed FinalChain
   `last_block`, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor boundary.
+- PBFT manager advance-period finalization now uses `PbftManagerFinalizationAdvancePeriodReport`, containing only the
+  post-advance manager period, before `pbft_manager_shim` builds the final external-effect envelope at the manager
+  executor boundary.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -767,6 +770,11 @@ Implementation notes:
     keeping success/status/error/PBFT identity/action identity at the PBFT manager executor boundary.
   - `cpp-pro`: called out the replay non-sequential guard, move-only `PeriodData`/DAG order handling, and post-dispatch
     `last_block` validation as the main risks to preserve.
+- Custom-agent guidance applied to the advance-period finalization report cleanup:
+  - `cpp-pro`: recommended the advance-period pair as the lowest-risk overlay-only follow-up and identified the minimal
+    typed payload as the post-advance `manager_period`.
+  - `api-designer`: noted advance-period is manager-local bookkeeping and should not include success/status/error or
+    PBFT/action identity in the subsystem report shape.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -950,6 +958,9 @@ Implementation notes:
   - `rg -n "FinalChainPbftFinalizationDispatchReport|final_chain_dispatched|final_chain_blocks_per_year|final_chain_last_block|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/include/pbft/pbft_manager_shim.hpp libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows `finalize_` returning a typed FinalChain report and only manager-local conversion populating the generic
     executor report fields.
+  - `rg -n "PbftManagerFinalizationAdvancePeriodReport|manager_period|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.cpp'`
+    shows the advance-period finalization path producing a typed manager report before conversion to the generic manager
+    executor report.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -1028,7 +1039,7 @@ Implementation notes:
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
 - The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
-  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are manager-local advance/pillar reports. Later
+  `PbftFinalizationExternalEffectReport` facts. The remaining candidate is manager-local pillar post-processing. Later
   pillar-chain runtime slices still need external DPoS fact ports and legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
