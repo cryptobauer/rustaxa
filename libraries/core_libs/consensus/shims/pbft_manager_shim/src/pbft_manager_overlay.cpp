@@ -3416,8 +3416,9 @@ void PbftManager::reorderTransactions(SharedTransactions &transactions) {
   }
 }
 
-void PbftManager::finalize_(PeriodData &&period_data, std::vector<h256> &&finalized_dag_blk_hashes,
-                            uint32_t blocks_per_year, bool synchronous_processing) {
+FinalChainPbftFinalizationDispatchReport PbftManager::finalize_(PeriodData &&period_data,
+                                                                std::vector<h256> &&finalized_dag_blk_hashes,
+                                                                uint32_t blocks_per_year, bool synchronous_processing) {
   std::shared_ptr<DagBlock> anchor_block = nullptr;
 
   if (const auto anchor = period_data.pbft_blk->getPivotDagBlockHash()) {
@@ -3434,6 +3435,11 @@ void PbftManager::finalize_(PeriodData &&period_data, std::vector<h256> &&finali
   if (synchronous_processing) {
     result.wait();
   }
+
+  FinalChainPbftFinalizationDispatchReport report{};
+  report.blocks_per_year = blocks_per_year;
+  report.last_block = rustFinalChainLastBlockNumber(final_chain_);
+  return report;
 }
 
 bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shared_ptr<PbftVote>> &&cert_votes) {
@@ -3640,9 +3646,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                               kPbftFinalizationRuntimeActionFinalizeFinalChain)) {
             return false;
           }
-          finalize_(std::move(period_data), std::move(dag_blocks_order),
-                    finalization_plan.storage_write_intent.blocks_per_year);
-          if (rustFinalChainLastBlockNumber(final_chain_) < block_pbft_period) {
+          const auto final_chain_dispatch =
+              finalize_(std::move(period_data), std::move(dag_blocks_order),
+                        finalization_plan.storage_write_intent.blocks_per_year);
+          if (final_chain_dispatch.last_block < block_pbft_period) {
             report_resume_failure(resume_boundary);
             return false;
           }
@@ -3650,8 +3657,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           final_chain_report.success = true;
           final_chain_report.status = 0;
           final_chain_report.final_chain_dispatched = true;
-          final_chain_report.final_chain_blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
-          final_chain_report.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
+          final_chain_report.final_chain_blocks_per_year = final_chain_dispatch.blocks_per_year;
+          final_chain_report.final_chain_last_block = final_chain_dispatch.last_block;
           if (!report_resume_live_mutation("FinalChain replay", final_chain_report, resume_boundary)) {
             return false;
           }
@@ -3974,13 +3981,13 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   if (finalization_plan.cleanup.finalize_final_chain) {
-    finalize_(std::move(period_data), std::move(dag_blocks_order), blocks_per_year);
+    const auto final_chain_dispatch = finalize_(std::move(period_data), std::move(dag_blocks_order), blocks_per_year);
     rustaxa::PbftFinalizationExternalEffectReport final_chain_report{};
     final_chain_report.success = true;
     final_chain_report.status = 0;
     final_chain_report.final_chain_dispatched = true;
-    final_chain_report.final_chain_blocks_per_year = blocks_per_year;
-    final_chain_report.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
+    final_chain_report.final_chain_blocks_per_year = final_chain_dispatch.blocks_per_year;
+    final_chain_report.final_chain_last_block = final_chain_dispatch.last_block;
     if (!report_live_mutation("FinalChain dispatch", final_chain_report, boundary)) {
       return false;
     }

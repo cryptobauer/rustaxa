@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <shared_mutex>
@@ -29,6 +30,19 @@ class PillarChainManager;
 class FullNode;
 class PeriodData;
 class VoteManager;
+
+/**
+ * FinalChain dispatch facts returned to PBFT finalization after a finalized PBFT block is sent to FinalChain.
+ *
+ * Inputs are the finalized PBFT period data, finalized DAG block hashes, and the expected blocks-per-year value used by
+ * FinalChain rewards execution. Outputs carry only FinalChain facts needed by the PBFT manager finalization executor:
+ * the blocks-per-year value used for dispatch and the observed FinalChain last block after the dispatch call. Success,
+ * status, error, PBFT identity, and action identity remain owned by the PBFT manager executor boundary.
+ */
+struct FinalChainPbftFinalizationDispatchReport {
+  uint32_t blocks_per_year = 0;
+  uint64_t last_block = 0;
+};
 
 /**
  * @brief PbftManager class is a daemon that is used to finalize a bench of directed acyclic graph (DAG) blocks by using
@@ -578,8 +592,9 @@ class PbftManager {
    * @param blocks_per_year - expected number of blocks generated per year based on pbft block dynamic lambda
    * @param synchronous_processing wait for block finalization to finish
    */
-  void finalize_(PeriodData &&period_data, std::vector<h256> &&finalized_dag_blk_hashes, uint32_t blocks_per_year,
-                 bool synchronous_processing = false);
+  FinalChainPbftFinalizationDispatchReport finalize_(PeriodData &&period_data,
+                                                     std::vector<h256> &&finalized_dag_blk_hashes,
+                                                     uint32_t blocks_per_year, bool synchronous_processing = false);
 
   /**
    * @brief Push a new PBFT block into the PBFT chain

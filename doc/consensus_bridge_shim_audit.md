@@ -523,6 +523,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - Anchor-DAG-cache clear facts now use the manager-local `AnchorDagCacheFinalizationClearReport` helper before conversion
   to `PbftFinalizationExternalEffectReport` at the executor boundary. Remaining generic finalization report producers
   are manager-local final-chain/advance/pillar reports and the manager executor boundary itself.
+- FinalChain PBFT finalization dispatch/replay facts now use the shim-owned
+  `FinalChainPbftFinalizationDispatchReport` returned by `PbftManager::finalize_`. The report carries only
+  `blocks_per_year` and observed FinalChain `last_block`; `pbft_manager_shim` converts those facts at the manager
+  executor boundary. Remaining generic finalization report producers are manager-local advance/pillar reports and the
+  manager executor boundary itself.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,
