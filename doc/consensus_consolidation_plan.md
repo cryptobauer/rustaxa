@@ -529,6 +529,10 @@ Implementation notes:
   `pillar_votes_period_data_initialized`, `pillar_votes_init_period_data`, `pillar_votes_vote_exists`,
   `pillar_votes_is_unique_identity`, `pillar_votes_is_unique_vote`, and `pillar_votes_insert_vote` are deleted along
   with `PillarVotePayload`, `PillarVoteIdentityPayload`, `PillarVoteUniqueOutcome`, and `PillarVoteInsertOutcome`.
+- Follow-up relevance cleanup routes `PillarChainManager::isRelevantPillarVote` through
+  `BridgePillarChainRuntime::pillar_chain_runtime_plan_vote_relevance`. Rust now decodes the vote RLP and derives
+  duplicate membership from runtime-owned vote state, so the C++ shim no longer materializes Rust-retained payloads or
+  scans them only to supply `vote_already_known`.
 - PBFT-facing pillar-block finalization now calls
   `BridgePillarChainRuntime::pillar_chain_runtime_finalize_block_for_pbft`. Rust owns selected-vote lookup,
   deterministic pillar finalization planning, finalized-block storage persistence, and vote cleanup ordering. The

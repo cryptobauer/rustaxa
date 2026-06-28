@@ -367,6 +367,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `pillar_votes_vote_exists`, `pillar_votes_is_unique_identity`, `pillar_votes_is_unique_vote`, and
   `pillar_votes_insert_vote` are deleted along with `PillarVotePayload`, `PillarVoteIdentityPayload`,
   `PillarVoteUniqueOutcome`, and `PillarVoteInsertOutcome`.
+- `PillarChainManager::isRelevantPillarVote` now enters the pillar runtime through
+  `pillar_chain_runtime_plan_vote_relevance`. The obsolete C++ `pillarVoteExistsByLookup` payload materialization and
+  hash scan are deleted; Rust owns duplicate detection from the runtime vote index before running the relevance planner.
 - PBFT-facing pillar-block finalization now enters through
   `BridgePillarChainRuntime::pillar_chain_runtime_finalize_block_for_pbft`, which owns selected-vote lookup,
   deterministic finalization planning, finalized-block storage persistence, and vote cleanup ordering. The old CXX

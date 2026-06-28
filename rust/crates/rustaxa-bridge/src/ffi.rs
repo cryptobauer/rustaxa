@@ -2533,6 +2533,19 @@ pub mod rustaxa_ffi {
         check_identity_uniqueness: bool,
     }
 
+    /// Local context for a runtime-owned pillar-vote relevance check.
+    ///
+    /// C++ supplies current-pillar anchor facts. Rust decodes the canonical vote
+    /// RLP and derives duplicate membership from the runtime-owned vote index
+    /// instead of accepting a C++ `vote_already_known` fact.
+    struct PillarVoteRuntimeRelevanceContext {
+        has_current_pillar_block: bool,
+        current_pillar_block_period: u64,
+        current_pillar_block_hash: [u8; 32],
+        first_pillar_block_period: u64,
+        pillar_blocks_interval: u64,
+    }
+
     /// Prepared identity for one pillar vote before external DPoS lookup.
     ///
     /// Status values match `PillarVoteValidationPlanStatus` in the C++ shim:
@@ -5537,6 +5550,11 @@ pub mod rustaxa_ffi {
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
         ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
+        pub fn pillar_chain_runtime_plan_vote_relevance(
+            self: &BridgePillarChainRuntime,
+            vote_rlp: Vec<u8>,
+            context: PillarVoteRuntimeRelevanceContext,
+        ) -> Result<PillarVoteRelevancePlan>;
         pub fn pillar_chain_runtime_apply_prepared_single_vote_admission(
             self: &mut BridgePillarChainRuntime,
             input: PillarVoteSingleAdmissionApplyInput,

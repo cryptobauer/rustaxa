@@ -15,9 +15,9 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteBundleInspectionPlan, PillarVoteInspection, PillarVoteRecord,
     PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
-    PillarVoteSingleAdmissionApplyInput, PillarVoteSingleAdmissionApplyPlan,
-    PillarVoteSingleAdmissionContext, PillarVoteSingleAdmissionPreparePlan,
-    PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
+    PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionApplyInput,
+    PillarVoteSingleAdmissionApplyPlan, PillarVoteSingleAdmissionContext,
+    PillarVoteSingleAdmissionPreparePlan, PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
 };
 use crate::ffi::BridgePillarChainRuntime;
 #[cfg(test)]
@@ -188,6 +188,28 @@ impl BridgePillarChainRuntime {
         context: PillarVoteSingleAdmissionContext,
     ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
         prepare_single_vote_admission(&self.votes, vote_rlp, context)
+    }
+
+    /// Evaluates one canonical pillar vote against runtime-owned vote state.
+    ///
+    /// Inputs:
+    /// - `vote_rlp` is the canonical C++ vote payload.
+    /// - `context` carries current pillar-block timing and hash facts.
+    ///
+    /// Outputs:
+    /// - Returns the same stable relevance status DTO used by the network facade.
+    /// - Duplicate detection is derived from the runtime-owned Rust vote index.
+    ///
+    /// Invariants and edge behavior:
+    /// - This method does not call FinalChain, request network data, emit events,
+    ///   or materialize C++ `PillarVote` objects.
+    /// - Malformed vote bytes map to the existing unknown relevance status.
+    pub fn pillar_chain_runtime_plan_vote_relevance(
+        &self,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteRuntimeRelevanceContext,
+    ) -> Result<FfiPillarVoteRelevancePlan> {
+        runtime_plan_vote_relevance(&self.votes, vote_rlp, context)
     }
 
     /// Applies one prepared pillar vote to the runtime-owned pillar-vote index.
@@ -672,6 +694,45 @@ pub fn plan_pillar_vote_relevance(
     let fact = relevance_fact_to_consensus_fact(fact)?;
     Ok(FfiPillarVoteRelevancePlan::from(
         rustaxa_consensus::plan_pillar_vote_relevance(fact)?,
+    ))
+}
+
+fn unknown_relevance_plan() -> FfiPillarVoteRelevancePlan {
+    FfiPillarVoteRelevancePlan {
+        status: 255,
+        is_relevant: false,
+    }
+}
+
+fn runtime_plan_vote_relevance(
+    pillar_votes: &PillarVotes,
+    vote_rlp: Vec<u8>,
+    context: PillarVoteRuntimeRelevanceContext,
+) -> Result<FfiPillarVoteRelevancePlan> {
+    let Ok(vote) = PillarVote::decode_rlp(&vote_rlp) else {
+        return Ok(unknown_relevance_plan());
+    };
+    let vote_hash = vote.hash(true);
+    let lookup = pillar_votes.get_verified_votes(vote.period, vote.block_hash, false);
+    let vote_already_known = lookup
+        .votes
+        .iter()
+        .any(|known| known.vote_hash == vote_hash);
+
+    Ok(FfiPillarVoteRelevancePlan::from(
+        rustaxa_consensus::plan_pillar_vote_relevance(ConsensusPillarVoteRelevanceFact {
+            vote_period: vote.period,
+            vote_block_hash: vote.block_hash,
+            current_pillar_block_period: context
+                .has_current_pillar_block
+                .then_some(context.current_pillar_block_period),
+            current_pillar_block_hash: context
+                .has_current_pillar_block
+                .then_some(H256::from(context.current_pillar_block_hash)),
+            first_pillar_block_period: context.first_pillar_block_period,
+            pillar_blocks_interval: context.pillar_blocks_interval,
+            vote_already_known,
+        })?,
     ))
 }
 
@@ -1700,5 +1761,35 @@ mod tests {
 
         assert!(!plan.is_relevant);
         assert_eq!(plan.status, 1);
+    }
+
+    #[test]
+    fn runtime_relevance_derives_known_vote_from_owned_index() {
+        let storage_dir = unique_temp_dir("pillar_runtime_relevance");
+        let storage = create_storage(storage_dir.to_str().unwrap()).expect("storage should open");
+        let mut runtime = create_pillar_chain_runtime(&storage);
+        let vote = vote(31, 888, 1, 0xD4, 6);
+        runtime.votes.initialize_period_data(31, 1);
+        runtime
+            .votes
+            .add_verified_vote(payload_to_vote(clone_payload(&vote)).unwrap())
+            .unwrap();
+
+        let plan = runtime
+            .pillar_chain_runtime_plan_vote_relevance(
+                vote.vote_rlp,
+                PillarVoteRuntimeRelevanceContext {
+                    has_current_pillar_block: true,
+                    current_pillar_block_period: 20,
+                    current_pillar_block_hash: H256::from_low_u64_be(333).into(),
+                    first_pillar_block_period: 10,
+                    pillar_blocks_interval: 10,
+                },
+            )
+            .unwrap();
+
+        assert!(!plan.is_relevant);
+        assert_eq!(plan.status, 1);
+        let _ = fs::remove_dir_all(storage_dir);
     }
 }

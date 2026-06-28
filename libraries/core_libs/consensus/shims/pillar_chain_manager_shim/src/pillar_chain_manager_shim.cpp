@@ -284,22 +284,6 @@ std::vector<std::shared_ptr<PillarVote>> materializePillarVotes(
   return votes;
 }
 
-bool pillarVoteExistsByLookup(const rustaxa::BridgePillarChainRuntime& runtime,
-                              const std::shared_ptr<PillarVote>& vote) {
-  if (!vote) {
-    return false;
-  }
-  try {
-    const auto lookup = runtime.pillar_chain_runtime_get_verified_vote_payloads(
-        vote->getPeriod(), toBridgeHash(vote->getBlockHash()), false);
-    const auto vote_hash = toBridgeHash(vote->getHash());
-    return std::any_of(lookup.votes.begin(), lookup.votes.end(),
-                       [&](const auto& record) { return record.vote_hash == vote_hash; });
-  } catch (const std::exception&) {
-    return false;
-  }
-}
-
 rustaxa::PillarBlockLinkageFact toBridgeLinkageFact(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarBlock>& pillar_block,
                                                     const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
@@ -413,25 +397,26 @@ const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPi
   return "unknown";
 }
 
-PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
-                                                const std::shared_ptr<PillarVote>& vote,
-                                                const std::shared_ptr<PillarBlock>& current_pillar_block,
-                                                bool vote_already_known) {
-  rustaxa::PillarVoteRelevanceFact fact{};
-  fact.vote_period = vote->getPeriod();
-  fact.vote_block_hash = toBridgeHash(vote->getBlockHash());
-  fact.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
-  fact.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
-  fact.vote_already_known = vote_already_known;
+PillarVoteRelevancePlan planPillarVoteRelevance(
+    const FicusHardforkConfig& ficus_hf_config, const std::shared_ptr<PillarVote>& vote,
+    const std::shared_ptr<PillarBlock>& current_pillar_block,
+    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime) {
+  if (!vote) {
+    return {PillarVoteRelevancePlanStatus::kUnknown, false};
+  }
+
+  rustaxa::PillarVoteRuntimeRelevanceContext context{};
+  context.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
+  context.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
 
   if (current_pillar_block) {
-    fact.current_pillar_block_period = current_pillar_block->getPeriod();
-    fact.current_pillar_block_hash = toBridgeHash(current_pillar_block->getHash());
-    fact.has_current_pillar_block = true;
+    context.current_pillar_block_period = current_pillar_block->getPeriod();
+    context.current_pillar_block_hash = toBridgeHash(current_pillar_block->getHash());
+    context.has_current_pillar_block = true;
   }
 
   try {
-    const auto plan = rustaxa::plan_pillar_vote_relevance(fact);
+    const auto plan = runtime->pillar_chain_runtime_plan_vote_relevance(toRustBytes(vote->rlp()), context);
     return {fromStatusCode(plan.status), plan.is_relevant};
   } catch (const std::exception&) {
     return {PillarVoteRelevancePlanStatus::kUnknown, false};
@@ -990,9 +975,8 @@ PillarChainManager::RestartPillarPostProcessingDecision PillarChainManager::rest
 }
 
 bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const {
-  const auto vote_exists = pillarVoteExistsByLookup(*pillar_runtime_, vote);
   const auto current_pillar_block = getCurrentPillarBlock();
-  const auto relevance_plan = planPillarVoteRelevance(kFicusHfConfig, vote, current_pillar_block, vote_exists);
+  const auto relevance_plan = planPillarVoteRelevance(kFicusHfConfig, vote, current_pillar_block, pillar_runtime_);
 
   if (!relevance_plan.is_relevant) {
     switch (relevance_plan.status) {

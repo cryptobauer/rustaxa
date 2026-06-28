@@ -73,10 +73,10 @@ struct PillarVoteRelevancePlan {
  * - Bridge exceptions and invalid Rust input are mapped to `kUnknown` and
  *   `is_relevant == false`.
  */
-PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
-                                                const std::shared_ptr<PillarVote>& vote,
-                                                const std::shared_ptr<PillarBlock>& current_pillar_block,
-                                                bool vote_already_known);
+PillarVoteRelevancePlan planPillarVoteRelevance(
+    const FicusHardforkConfig& ficus_hf_config, const std::shared_ptr<PillarVote>& vote,
+    const std::shared_ptr<PillarBlock>& current_pillar_block,
+    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
 
 /**
  * Stable logging helper for explicit reason reporting.
