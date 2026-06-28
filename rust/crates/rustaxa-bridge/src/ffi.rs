@@ -955,16 +955,17 @@ pub mod rustaxa_ffi {
         balance: [u8; 32],
     }
 
-    /// C++-originated facts for planning a double-voting proof transaction.
+    /// C++-originated evidence for planning a double-voting proof transaction.
+    ///
+    /// The two vote payloads must belong to the shared PBFT slot described by
+    /// `period`, `round`, and `step`. Rust consensus still validates the
+    /// canonical vote bytes before generating contract call data.
     struct DoubleVotingProofInput {
         vote_a_hash: [u8; 32],
         vote_b_hash: [u8; 32],
-        vote_a_period: u64,
-        vote_b_period: u64,
-        vote_a_round: u64,
-        vote_b_round: u64,
-        vote_a_step: u64,
-        vote_b_step: u64,
+        period: u64,
+        round: u64,
+        step: u64,
         vote_a_rlp: Vec<u8>,
         vote_b_rlp: Vec<u8>,
         submitters: Vec<SlashingSubmitterFact>,

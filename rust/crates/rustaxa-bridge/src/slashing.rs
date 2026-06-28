@@ -1,9 +1,9 @@
 //! CXX bridge wrappers for deterministic slashing proof planning.
 //!
-//! The bridge takes plain C++ inputs for vote hashes and submitter wallet
-//! candidate facts, then returns a deterministic plan that describes whether to
-//! construct a slashing transaction, the target contract+gas limit, and ABI call
-//! payload.
+//! The bridge takes one normalized double-vote evidence payload and submitter
+//! wallet candidate facts from the C++ executor edge, then returns a
+//! deterministic plan that describes whether to construct a slashing
+//! transaction, the target contract+gas limit, and ABI call payload.
 use crate::ffi::rustaxa_ffi::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofSubmissionPlan,
     DoubleVotingProofSubmissionReport, SlashingSubmitterFact,
@@ -77,12 +77,12 @@ impl From<DoubleVotingProofInput> for rustaxa_consensus::DoubleVotingProofInput 
         Self {
             vote_a_hash: H256::from(input.vote_a_hash),
             vote_b_hash: H256::from(input.vote_b_hash),
-            vote_a_period: input.vote_a_period,
-            vote_b_period: input.vote_b_period,
-            vote_a_round: input.vote_a_round,
-            vote_b_round: input.vote_b_round,
-            vote_a_step: input.vote_a_step,
-            vote_b_step: input.vote_b_step,
+            vote_a_period: input.period,
+            vote_b_period: input.period,
+            vote_a_round: input.round,
+            vote_b_round: input.round,
+            vote_a_step: input.step,
+            vote_b_step: input.step,
             vote_a_rlp: input.vote_a_rlp,
             vote_b_rlp: input.vote_b_rlp,
             submitters: input.submitters.into_iter().map(Into::into).collect(),
@@ -171,12 +171,9 @@ mod tests {
         DoubleVotingProofInput {
             vote_a_hash: h256(a).0,
             vote_b_hash: h256(b).0,
-            vote_a_period: 100,
-            vote_b_period: 100,
-            vote_a_round: 2,
-            vote_b_round: 2,
-            vote_a_step: 3,
-            vote_b_step: 3,
+            period: 100,
+            round: 2,
+            step: 3,
             vote_a_rlp: vec![0xc1, 0x01],
             vote_b_rlp: vec![0xc1, 0x02],
             submitters,

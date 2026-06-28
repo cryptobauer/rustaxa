@@ -13,6 +13,7 @@ namespace taraxa {
 
 class PbftBlock;
 class ProposedBlocks;
+struct SlashingDoubleVoteEvidence;
 
 /**
  * Reward-vote-owned result after applying live metadata for a PBFT-finalization reset.
@@ -948,10 +949,8 @@ class VoteManager : public VoteManagerOld {
    *   Rust-owned PBFT vote admission state machine.
    *
    * Inputs:
-   * - `incoming_vote` and `conflicting_vote` are Rust-normalized canonical vote
-   *   records selected by verified-vote admission.
-   * - `period`, `round`, and `step` are the admitted vote coordinates attached
-   *   to the double-vote proof.
+   * - `evidence` is the Rust-normalized double-vote payload selected by
+   *   verified-vote admission.
    *
    * Outputs:
    * - Returns the SlashingManager submission result.
@@ -961,9 +960,7 @@ class VoteManager : public VoteManagerOld {
    * - This is a temporary executor boundary until slashing proof submission has
    *   a Rust-owned port.
    */
-  bool submitRustPlannedSlashingProof(const rustaxa::PbftVoteStorageRecord& incoming_vote,
-                                      const rustaxa::PbftVoteStorageRecord& conflicting_vote, PbftPeriod period,
-                                      PbftRound round, PbftStep step);
+  bool submitRustPlannedSlashingProof(const SlashingDoubleVoteEvidence& evidence);
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
 };
 

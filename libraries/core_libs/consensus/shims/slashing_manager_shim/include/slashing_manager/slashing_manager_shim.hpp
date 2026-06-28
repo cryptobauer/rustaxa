@@ -15,6 +15,21 @@ class FinalChain;
 }
 
 /**
+ * Rust-normalized double-vote evidence selected by PBFT vote admission.
+ *
+ * The two payload records are canonical signed PBFT votes for one shared
+ * `(period, round, step)` slot. Keeping the slot once at this boundary avoids
+ * re-expanding Rust-owned admission state into loose C++ scalar pairs.
+ */
+struct SlashingDoubleVoteEvidence {
+  rustaxa::PbftVoteStorageRecord incoming_vote;
+  rustaxa::PbftVoteStorageRecord conflicting_vote;
+  PbftPeriod period = 0;
+  PbftRound round = 0;
+  PbftStep step = 0;
+};
+
+/**
  * Rust-mode SlashingManager facade.
  *
  * The public `SlashingManager` API is preserved while deterministic
@@ -53,22 +68,20 @@ class SlashingManager {
   bool submitDoubleVotingProof(const std::shared_ptr<PbftVote>& vote_a, const std::shared_ptr<PbftVote>& vote_b);
 
   /**
-   * Attempts to submit a double-voting proof from Rust-normalized vote payloads.
+   * Attempts to submit a double-voting proof from Rust-normalized evidence.
    *
    * Inputs:
-   * - `vote_a`, `vote_b`: unweighted signed PBFT vote records produced by the
-   *   Rust admission runtime.
-   * - `period`, `round`, `step`: shared PBFT slot metadata for both votes.
+   * - `evidence`: unweighted signed PBFT vote records plus the shared PBFT slot
+   *   selected by the Rust admission runtime.
    *
    * Output and error behavior match the live-vote overload. This overload is
    * used by Rust-owned vote admission so slashing no longer needs a live C++
    * sidecar for the conflicting vote.
    */
-  bool submitDoubleVotingProof(const rustaxa::PbftVoteStorageRecord& vote_a,
-                               const rustaxa::PbftVoteStorageRecord& vote_b, PbftPeriod period, PbftRound round,
-                               PbftStep step);
+  bool submitDoubleVotingProof(const SlashingDoubleVoteEvidence& evidence);
 
  private:
+  rustaxa::DoubleVotingProofInput makeDoubleVotingProofInput(const SlashingDoubleVoteEvidence& evidence) const;
   bool submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInput input);
 
   std::shared_ptr<final_chain::FinalChain> final_chain_;

@@ -395,6 +395,11 @@ Implementation notes:
   shim-owned method that routes to a lock stored on `TransactionManager` itself through the existing friend access helper.
 - `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
   network pointer at this seam.
+- `slashing_manager_shim` now exposes one Rust-admission `SlashingDoubleVoteEvidence` API containing the two canonical
+  vote payloads and a single shared PBFT slot. The live `PbftVote` overload is kept as a compatibility adapter that
+  validates same-slot evidence before constructing the payload. This removes the loose two-record-plus-slot-scalar
+  slashing route from `vote_manager_shim` without moving the external FinalChain account read, gas-price lookup,
+  signing, or transaction insertion boundary yet.
 - Replacement bridge coverage is in the Rust `rustaxa-bridge` PBFT manager runtime test for period-data queue metadata,
   the Rust `rustaxa-bridge` PBFT manager runtime test for queue-drain planner ownership, plus the existing Rust
   `rustaxa-consensus` period-data queue and PBFT sync queue-drain domain tests.
@@ -1630,6 +1635,9 @@ Implementation status:
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use
   `create_pbft_chain_from_storage`, `slashing_report_double_voting_proof_submission`, and runtime-owned
   pillar vote payload lookup APIs.
+- The slashing CXX planner input is narrowed from duplicated vote coordinate fields to one shared PBFT slot plus the two
+  canonical vote payloads. Rust bridge code expands this evidence-shaped CXX DTO into the consensus-domain input while
+  the C++ compatibility adapter rejects mismatched live `PbftVote` slots before planning.
 - The remaining standalone pillar-vote CXX surface is deleted after
   `PillarVoteBundleBridgeTest.applyPillarVoteBundleFromWeightedRlpsInsertsAcceptedVotes` moved to
   `BridgePillarChainRuntime`. Follow-up cleanup moved the residual Rust-only pillar-vote fixture out of `ffi.rs`,
