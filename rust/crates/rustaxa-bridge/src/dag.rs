@@ -5,18 +5,17 @@ use crate::ffi::rustaxa_ffi::{
     DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload,
     DagOrder, DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
     DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
-    DagProposerBlockIntentInput, DagProposerBlockIntentNowInput, DagProposerFrontierFacts,
-    DagProposerSessionStep, DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput,
-    DagProposerSigningReport, DagProposerStaleProofReport,
-    DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
-    DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
-    DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
-    DagProposerVdfWaitReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
-    DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
-    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
-    DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionResult, HashLookup, PeriodLookup,
-    SortitionRuntimeParams,
+    DagProposerBlockIntentNowInput, DagProposerFrontierFacts, DagProposerSessionStep,
+    DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput, DagProposerSigningReport,
+    DagProposerStaleProofReport, DagProposerStorageBlockConstructionInput,
+    DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
+    DagProposerTransactionPackReport, DagProposerTransactionPackRequest,
+    DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitReport,
+    DagProposerWorkerCommand, DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash,
+    DagTransactionRlpLookup, DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport,
+    DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport,
+    DagVerifyBlockVdfReport, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionResult,
+    HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -1762,30 +1761,6 @@ fn to_domain_unsigned_block_intent(
         block_gas_estimation: intent.block_gas_estimation,
         signing_hash: H256::from(intent.signing_hash),
     }
-}
-
-pub fn dag_proposer_plan_block_intent(
-    input: DagProposerBlockIntentInput,
-) -> Result<DagProposerUnsignedBlockIntent> {
-    Ok(to_bridge_unsigned_block_intent(
-        plan_dag_proposer_block_intent(DomainDagProposerBlockIntentInput {
-            pivot: H256::from(input.pivot),
-            level: input.level,
-            timestamp: input.timestamp,
-            vdf_rlp: input.vdf_rlp,
-            selected_tips: input
-                .selected_tips
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            transaction_hashes: input
-                .transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            block_gas_estimation: input.block_gas_estimation,
-        }),
-    ))
 }
 
 pub fn dag_proposer_plan_block_intent_with_current_timestamp(
@@ -4296,16 +4271,16 @@ mod tests {
 
     #[test]
     fn dag_proposer_block_intent_bridge_returns_signed_canonical_rlp() {
-        let unsigned = dag_proposer_plan_block_intent(DagProposerBlockIntentInput {
-            pivot: [0x11; 32],
-            level: 9,
-            timestamp: 12345,
-            vdf_rlp: vec![0xC0],
-            selected_tips: vec![DagHash { hash: [0x22; 32] }],
-            transaction_hashes: vec![DagHash { hash: [0x33; 32] }],
-            block_gas_estimation: 77,
-        })
-        .expect("intent");
+        let unsigned =
+            dag_proposer_plan_block_intent_with_current_timestamp(DagProposerBlockIntentNowInput {
+                pivot: [0x11; 32],
+                level: 9,
+                vdf_rlp: vec![0xC0],
+                selected_tips: vec![DagHash { hash: [0x22; 32] }],
+                transaction_hashes: vec![DagHash { hash: [0x33; 32] }],
+                block_gas_estimation: 77,
+            })
+            .expect("intent");
         let signing_key = SigningKey::from_slice(&[0x44; 32]).expect("signing key");
         let (signature, recovery_id) = signing_key
             .sign_prehash_recoverable(&unsigned.signing_hash)

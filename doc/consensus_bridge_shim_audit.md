@@ -281,6 +281,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `DagExpiredTransactionCleanupPayload`. Live C++ uses storage restore, `dag_manager_runtime_is_block_known`, verify
   sessions, finalized-order application, and the retained `dag_vdf_message` public helper; native
   `rustaxa-consensus` DAG tests cover the deleted lower-level behavior.
+- The direct timestamp-supplied DAG proposer intent CXX export is deleted:
+  `dag_proposer_plan_block_intent` and `DagProposerBlockIntentInput`. Live C++ DAG proposal construction uses
+  `dag_proposer_plan_block_intent_with_current_timestamp` and `dag_proposer_finalize_signed_block_intent`, so the CXX
+  bridge no longer offers an alternate route where C++ supplies the proposal timestamp. The deterministic fixed-timestamp
+  planner remains native `rustaxa-consensus` behavior covered by Rust tests.
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is deleted from the CXX surface. The live proposed-block shim uses
   `proposed_blocks_snapshot_entries`, which carries the block payload and validation flag; grouped hash snapshots remain
   Rust-only test coverage.

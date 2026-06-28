@@ -1043,6 +1043,28 @@ Implementation status:
   `dag_vdf_message` public helper; native `rustaxa-consensus` DAG tests cover the deleted precheck, VRF-input, and
   expired-transaction cleanup behavior.
   Custom agents used: `architect-reviewer` confirmed the no-caller status and live-route replacements.
+- The direct timestamp-supplied DAG proposer intent CXX export is deleted:
+  `dag_proposer_plan_block_intent` and its bridge-only `DagProposerBlockIntentInput` DTO are no longer part of the CXX
+  surface. Live C++ proposal construction uses `dag_proposer_plan_block_intent_with_current_timestamp` followed by
+  `dag_proposer_finalize_signed_block_intent`, so Rust owns timestamp selection and signed-block intent derivation at
+  the bridge boundary. Native `rustaxa-consensus` keeps the lower-level deterministic planner and fixed-timestamp tests.
+  Custom agents used: `api-designer` confirmed this preserves the minimal external DAG proposer API, and
+  `architect-reviewer` confirmed there is no in-repo live C++ caller, fallback path, or boundary ownership regression.
+  Validation for this CXX export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge dag_proposer_block_intent -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus dag_proposer_block_intent -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='*Dag*Proposer*:*DAG*Proposer*:*dag*proposer*' --gtest_print_time=1`
+    returned zero matching tests; the C++ bridge target build above covers generated CXX header integration for this
+    deleted export.
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `rg -n "dag_proposer_plan_block_intent\\(|DagProposerBlockIntentInput" libraries tests/rust rust/crates/rustaxa-bridge/src rust/crates/rustaxa-consensus/src -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    now returns only native `rustaxa-consensus` planner/test references plus the retained bridge module's private domain
+    type alias used by `dag_proposer_plan_block_intent_with_current_timestamp`.
+  - `git diff --check`
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is no longer a CXX export. Production C++ uses
   `proposed_blocks_snapshot_entries`, which preserves validation flags and payloads needed by the shim facade; grouped
   hash snapshots remain Rust test-only coverage.

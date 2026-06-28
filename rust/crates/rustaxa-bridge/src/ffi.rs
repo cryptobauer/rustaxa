@@ -3979,17 +3979,6 @@ pub mod rustaxa_ffi {
         skipped_missing_tips: u64,
     }
 
-    /// Final unsigned DAG block fields selected by Rust before temporary C++ signing.
-    struct DagProposerBlockIntentInput {
-        pivot: [u8; 32],
-        level: u64,
-        timestamp: u64,
-        vdf_rlp: Vec<u8>,
-        selected_tips: Vec<DagHash>,
-        transaction_hashes: Vec<DagHash>,
-        block_gas_estimation: u64,
-    }
-
     /// Final unsigned DAG block fields whose timestamp is selected by Rust.
     struct DagProposerBlockIntentNowInput {
         pivot: [u8; 32],
@@ -4724,9 +4713,6 @@ pub mod rustaxa_ffi {
             input: DagVerifyVdfSortitionFromBlockInput,
         ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
-        pub fn dag_proposer_plan_block_intent(
-            input: DagProposerBlockIntentInput,
-        ) -> Result<DagProposerUnsignedBlockIntent>;
         pub fn dag_proposer_plan_block_intent_with_current_timestamp(
             input: DagProposerBlockIntentNowInput,
         ) -> Result<DagProposerUnsignedBlockIntent>;
