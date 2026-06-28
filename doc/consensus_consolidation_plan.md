@@ -583,6 +583,14 @@ Implementation notes:
 - The direct CXX exports `pbft_manager_runtime_apply_dynamic_lambda` and
   `pbft_manager_runtime_apply_finalization_executed_status` are deleted; their behavior now exists only inside the
   manager-owned finalization drain API.
+- PBFT manager period-data queue metadata reads now use one runtime-owned snapshot API:
+  `pbft_manager_runtime_period_data_queue_snapshot`. The individual CXX getters
+  `pbft_manager_runtime_period_data_queue_period`,
+  `pbft_manager_runtime_period_data_queue_syncing_period`,
+  `pbft_manager_runtime_period_data_queue_last_block_hash_or_chain`,
+  `pbft_manager_runtime_period_data_queue_size`, and `pbft_manager_runtime_period_data_queue_empty` are deleted. C++
+  still supplies PBFT-chain size/current-period/last-hash facts, while Rust owns the queue-derived period, sync-period,
+  link-hash, size, and empty view.
 - Custom-agent delegation was attempted for this Slice 6 increment (`cpp-pro` and `rust-engineer`), but the agent
   backend rejected both starts due to a GPT-5.3-Codex-Spark usage limit. Local implementation and validation proceeded
   using the `$implement-rustaxa-consensus-slice` workflow.
@@ -1135,6 +1143,20 @@ Implementation status:
   planners and lambda lookup.
   Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
   PBFT manager standalone planner lane as a secondary cleanup candidate.
+- PBFT manager period-data queue scalar/hash metadata getters are no longer CXX exports:
+  `pbft_manager_runtime_period_data_queue_period`,
+  `pbft_manager_runtime_period_data_queue_syncing_period`,
+  `pbft_manager_runtime_period_data_queue_last_block_hash_or_chain`,
+  `pbft_manager_runtime_period_data_queue_size`, and `pbft_manager_runtime_period_data_queue_empty` are replaced by the
+  single `pbft_manager_runtime_period_data_queue_snapshot` API. Live C++ still pushes, pops, clears, and cleans queue
+  entries through command-style methods, but metadata reads now cross as one runtime-owned snapshot DTO.
+  Validation for this CXX export shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge bridge_runtime_owns_period_data_queue_metadata -- --nocapture`
+  - `cmake --build /build --target pbft_manager_test rust_consensus_tests --parallel 12`
+  - `rg -n "pbft_manager_runtime_period_data_queue_(period|syncing_period|last_block_hash_or_chain|size|empty)\\b" rust/crates libraries tests -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    returns no matches.
 - `plan_pbft_manager_state_action` and `plan_pbft_manager_state_action_effects` are deleted from the CXX surface.
   Their behavior is covered through `BridgePbftManagerRuntime` state-action sessions (`begin`/`next`/`report`), and the
   removed route no longer appears in `rust/crates/rustaxa-bridge/src/ffi.rs`.

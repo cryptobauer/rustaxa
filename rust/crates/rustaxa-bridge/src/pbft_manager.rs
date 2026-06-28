@@ -65,6 +65,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueuePillarVotePayload as FfiPeriodDataQueuePillarVotePayload,
     PeriodDataQueuePopPlan as FfiPeriodDataQueuePopPlan,
     PeriodDataQueuePushOutcome as FfiPeriodDataQueuePushOutcome,
+    PeriodDataQueueSnapshot as FfiPeriodDataQueueSnapshot,
     PeriodDataQueueTransactionIdentity as FfiPeriodDataQueueTransactionIdentity,
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
 };
@@ -305,42 +306,38 @@ pub fn pbft_manager_runtime_snapshot(
     runtime.state.snapshot().into()
 }
 
-/// Returns the current PBFT sync period-data queue marker from PBFT manager runtime state.
+/// Returns the Rust-owned PBFT sync period-data queue snapshot.
 ///
-/// The queue is intentionally live/in-memory state: restart behavior remains the legacy
-/// non-persistent sync queue contract while ownership moves out of the standalone CXX bridge handle.
-pub fn pbft_manager_runtime_period_data_queue_period(runtime: &BridgePbftManagerRuntime) -> u64 {
-    runtime.period_data_queue.period()
-}
-
-/// Returns the queue-aware PBFT syncing period from PBFT manager runtime state.
-pub fn pbft_manager_runtime_period_data_queue_syncing_period(
+/// Inputs:
+/// - `runtime` owns the in-memory period-data queue metadata.
+/// - `pbft_chain_size`, `current_period`, and `chain_last_hash` are the
+///   remaining PBFT-chain compatibility facts supplied by the C++ shell.
+///
+/// Outputs:
+/// - Returns the queue marker, syncing period, chain-link hash decision, size,
+///   and empty flag in one stable DTO.
+///
+/// Invariants and edge behavior:
+/// - The queue remains intentionally in-memory; restart behavior is unchanged
+///   from the legacy non-persistent sync queue contract.
+/// - C++ no longer reads individual queue internals through separate bridge
+///   exports.
+pub fn pbft_manager_runtime_period_data_queue_snapshot(
     runtime: &BridgePbftManagerRuntime,
     pbft_chain_size: u64,
-) -> u64 {
-    runtime.period_data_queue.syncing_period(pbft_chain_size)
-}
-
-/// Returns the queue-selected PBFT chain-link hash, or the supplied PBFT-chain hash.
-pub fn pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
-    runtime: &BridgePbftManagerRuntime,
     current_period: u64,
     chain_last_hash: [u8; 32],
-) -> [u8; 32] {
-    runtime
-        .period_data_queue
-        .last_block_hash_or_chain(current_period, ethereum_types::H256::from(chain_last_hash))
-        .into()
-}
-
-/// Returns the processable PBFT sync queue size from PBFT manager runtime state.
-pub fn pbft_manager_runtime_period_data_queue_size(runtime: &BridgePbftManagerRuntime) -> usize {
-    runtime.period_data_queue.size()
-}
-
-/// Returns whether PBFT manager runtime queue metadata is empty.
-pub fn pbft_manager_runtime_period_data_queue_empty(runtime: &BridgePbftManagerRuntime) -> bool {
-    runtime.period_data_queue.is_empty()
+) -> FfiPeriodDataQueueSnapshot {
+    FfiPeriodDataQueueSnapshot {
+        period: runtime.period_data_queue.period(),
+        syncing_period: runtime.period_data_queue.syncing_period(pbft_chain_size),
+        last_block_hash_or_chain: runtime
+            .period_data_queue
+            .last_block_hash_or_chain(current_period, ethereum_types::H256::from(chain_last_hash))
+            .into(),
+        size: runtime.period_data_queue.size(),
+        empty: runtime.period_data_queue.is_empty(),
+    }
 }
 
 /// Clears PBFT manager runtime queue metadata.
@@ -3808,12 +3805,11 @@ mod tests {
             .expect("first push should succeed");
             assert!(first.accepted);
             assert!(!first.clear_existing);
-            assert_eq!(pbft_manager_runtime_period_data_queue_period(&runtime), 1);
-            assert_eq!(
-                pbft_manager_runtime_period_data_queue_syncing_period(&runtime, 5),
-                5
-            );
-            assert_eq!(pbft_manager_runtime_period_data_queue_size(&runtime), 1);
+            let first_snapshot =
+                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
+            assert_eq!(first_snapshot.period, 1);
+            assert_eq!(first_snapshot.syncing_period, 5);
+            assert_eq!(first_snapshot.size, 1);
 
             let second = pbft_manager_runtime_period_data_queue_push(
                 &mut runtime,
@@ -3840,14 +3836,9 @@ mod tests {
             )
             .expect("second push should succeed");
             assert!(second.accepted);
-            assert_eq!(
-                pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
-                    &runtime,
-                    1,
-                    queue_hash(0xee)
-                ),
-                queue_hash(0x22)
-            );
+            let second_snapshot =
+                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
+            assert_eq!(second_snapshot.last_block_hash_or_chain, queue_hash(0x22));
 
             let first_pop = pbft_manager_runtime_period_data_queue_pop(&mut runtime)
                 .expect("first pop should produce a handoff");
@@ -3864,8 +3855,10 @@ mod tests {
             assert_eq!(second_pop.entry_id, 22);
             assert_eq!(second_pop.cert_vote_rlps[0].vote_rlp, vec![0x82, 0x83]);
             assert!(second_pop.use_last_block_cert_votes);
-            assert!(pbft_manager_runtime_period_data_queue_empty(&runtime));
-            assert_eq!(pbft_manager_runtime_period_data_queue_period(&runtime), 0);
+            let empty_snapshot =
+                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
+            assert!(empty_snapshot.empty);
+            assert_eq!(empty_snapshot.period, 0);
 
             pbft_manager_runtime_period_data_queue_push(
                 &mut runtime,
@@ -3894,10 +3887,14 @@ mod tests {
             let removed = pbft_manager_runtime_period_data_queue_clean_old_data(&mut runtime, 7);
             assert_eq!(removed.len(), 1);
             assert_eq!(removed[0].entry_id, 33);
-            assert!(pbft_manager_runtime_period_data_queue_empty(&runtime));
+            let cleaned_snapshot =
+                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
+            assert!(cleaned_snapshot.empty);
 
             pbft_manager_runtime_period_data_queue_clear(&mut runtime);
-            assert_eq!(pbft_manager_runtime_period_data_queue_period(&runtime), 0);
+            let cleared_snapshot =
+                pbft_manager_runtime_period_data_queue_snapshot(&runtime, 5, 1, queue_hash(0xee));
+            assert_eq!(cleared_snapshot.period, 0);
         }
 
         let _ = fs::remove_dir_all(temp_dir);

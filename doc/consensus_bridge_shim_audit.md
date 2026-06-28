@@ -463,6 +463,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `pbft_manager_runtime_drain_owned_finalization_actions` surfaces are deleted. Duplicate-finalization resume tails
   include the paired `SetExecutedFlag` replay after executed-status persistence so Rust-owned drain completion keeps
   durable and live manager state aligned.
+- PBFT manager period-data queue metadata now crosses CXX through one
+  `pbft_manager_runtime_period_data_queue_snapshot` API. The separate queue period, syncing-period,
+  last-block-hash-or-chain, size, and empty getters are deleted; C++ supplies only the PBFT-chain compatibility facts
+  needed to compute the snapshot.
 - Additional no-caller standalone PBFT runtime wrappers are retired from the CXX surface:
   `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
   `load_pbft_finalization_last_period_lambda_storage`, `plan_pbft_dynamic_lambda`,

@@ -4092,8 +4092,10 @@ void PbftManager::processPillarBlock(PbftPeriod current_pbft_chain_size) {
 
 PbftPeriod PbftManager::pbftSyncingPeriod() const {
   std::shared_lock lock(period_data_queue_access_);
-  return rustaxa::pbft_manager_runtime_period_data_queue_syncing_period(*pbft_manager_runtime_.value(),
-                                                                        pbft_chain_->getPbftChainSize());
+  const auto snapshot = rustaxa::pbft_manager_runtime_period_data_queue_snapshot(
+      *pbft_manager_runtime_.value(), pbft_chain_->getPbftChainSize(), getPbftPeriod(),
+      pbft_chain_->getLastPbftBlockHash().asArray());
+  return snapshot.syncing_period;
 }
 
 PbftManager::PbftSyncEgressPayload PbftManager::getPbftSyncEgressPayload(PbftPeriod period, bool last_block,
@@ -4555,14 +4557,19 @@ std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> PbftManager::getPr
 
 blk_hash_t PbftManager::lastPbftBlockHashFromQueueOrChain() {
   std::shared_lock lock(period_data_queue_access_);
-  const auto hash = rustaxa::pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
-      *pbft_manager_runtime_.value(), getPbftPeriod(), pbft_chain_->getLastPbftBlockHash().asArray());
+  const auto snapshot = rustaxa::pbft_manager_runtime_period_data_queue_snapshot(
+      *pbft_manager_runtime_.value(), pbft_chain_->getPbftChainSize(), getPbftPeriod(),
+      pbft_chain_->getLastPbftBlockHash().asArray());
+  const auto hash = snapshot.last_block_hash_or_chain;
   return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
 }
 
 bool PbftManager::periodDataQueueEmpty() const {
   std::shared_lock lock(period_data_queue_access_);
-  return rustaxa::pbft_manager_runtime_period_data_queue_empty(*pbft_manager_runtime_.value());
+  const auto snapshot = rustaxa::pbft_manager_runtime_period_data_queue_snapshot(
+      *pbft_manager_runtime_.value(), pbft_chain_->getPbftChainSize(), getPbftPeriod(),
+      pbft_chain_->getLastPbftBlockHash().asArray());
+  return snapshot.empty;
 }
 
 void PbftManager::periodDataQueuePush(PeriodData &&period_data, dev::p2p::NodeID const &node_id,
@@ -4627,8 +4634,11 @@ void PbftManager::periodDataQueuePush(PeriodData &&period_data, dev::p2p::NodeID
   }
 
   if (!outcome.accepted) {
+    const auto snapshot = rustaxa::pbft_manager_runtime_period_data_queue_snapshot(
+        *pbft_manager_runtime_.value(), pbft_chain_->getPbftChainSize(), getPbftPeriod(),
+        pbft_chain_->getLastPbftBlockHash().asArray());
     LOG(log_er_) << "Trying to push period data with " << period << " period, but current period is "
-                 << rustaxa::pbft_manager_runtime_period_data_queue_period(*pbft_manager_runtime_.value());
+                 << snapshot.period;
     return;
   }
 
@@ -4642,7 +4652,10 @@ void PbftManager::periodDataQueuePush(PeriodData &&period_data, dev::p2p::NodeID
 
 size_t PbftManager::periodDataQueueSize() const {
   std::shared_lock lock(period_data_queue_access_);
-  return rustaxa::pbft_manager_runtime_period_data_queue_size(*pbft_manager_runtime_.value());
+  const auto snapshot = rustaxa::pbft_manager_runtime_period_data_queue_snapshot(
+      *pbft_manager_runtime_.value(), pbft_chain_->getPbftChainSize(), getPbftPeriod(),
+      pbft_chain_->getLastPbftBlockHash().asArray());
+  return snapshot.size;
 }
 
 bool PbftManager::checkBlockWeight(const std::vector<std::shared_ptr<DagBlock>> &dag_blocks, PbftPeriod period) const {

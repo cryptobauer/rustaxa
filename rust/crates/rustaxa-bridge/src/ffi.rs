@@ -2139,6 +2139,20 @@ pub mod rustaxa_ffi {
         extra_data_pillar_block_hash_present: bool,
     }
 
+    /// Runtime-owned PBFT sync period-data queue snapshot for C++ shell reads.
+    ///
+    /// C++ supplies the current PBFT-chain size and last chain hash facts that
+    /// are still owned by the PBFT-chain compatibility facade. Rust returns
+    /// the queue-derived view in one call instead of exposing individual queue
+    /// metadata getters.
+    struct PeriodDataQueueSnapshot {
+        period: u64,
+        syncing_period: u64,
+        last_block_hash_or_chain: [u8; 32],
+        size: usize,
+        empty: bool,
+    }
+
     struct PeriodDataQueuePushOutcome {
         accepted: bool,
         clear_existing: bool,
@@ -4735,24 +4749,12 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_snapshot(
             runtime: &BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_period_data_queue_period(
-            runtime: &BridgePbftManagerRuntime,
-        ) -> u64;
-        pub fn pbft_manager_runtime_period_data_queue_syncing_period(
+        pub fn pbft_manager_runtime_period_data_queue_snapshot(
             runtime: &BridgePbftManagerRuntime,
             pbft_chain_size: u64,
-        ) -> u64;
-        pub fn pbft_manager_runtime_period_data_queue_last_block_hash_or_chain(
-            runtime: &BridgePbftManagerRuntime,
             current_period: u64,
             chain_last_hash: [u8; 32],
-        ) -> [u8; 32];
-        pub fn pbft_manager_runtime_period_data_queue_size(
-            runtime: &BridgePbftManagerRuntime,
-        ) -> usize;
-        pub fn pbft_manager_runtime_period_data_queue_empty(
-            runtime: &BridgePbftManagerRuntime,
-        ) -> bool;
+        ) -> PeriodDataQueueSnapshot;
         pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &mut BridgePbftManagerRuntime);
         pub fn pbft_manager_runtime_period_data_queue_push(
             runtime: &mut BridgePbftManagerRuntime,
