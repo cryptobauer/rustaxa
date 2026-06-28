@@ -1977,7 +1977,6 @@ pub mod rustaxa_ffi {
 
     /// External PBFT finalization effect report from the C++ executor.
     struct PbftFinalizationExternalEffectReport {
-        action: u8,
         success: bool,
         status: u8,
         error_code: String,

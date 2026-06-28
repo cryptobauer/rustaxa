@@ -18,8 +18,6 @@ use rustaxa_storage::Storage;
 const PBFT_VALIDATION_VALID: u8 = 0;
 const PBFT_VALIDATION_PERIOD_MISMATCH: u8 = 1;
 const PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH: u8 = 2;
-const PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN: u8 = 6;
-
 /// Creates a Rust PBFT chain state model from a C++-parsed head payload.
 ///
 /// The bridge intentionally receives structured state instead of raw JSON so C++ can preserve the legacy JsonCpp
@@ -127,7 +125,6 @@ impl BridgePbftChain {
             H256::from(write_intent.anchor_hash),
         )?;
         Ok(FfiPbftFinalizationExternalEffectReport {
-            action: PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN,
             success: true,
             status: 0,
             error_code: String::new(),
@@ -434,10 +431,6 @@ mod tests {
             .pbft_chain_update_for_finalization(&write_intent)
             .unwrap();
 
-        assert_eq!(
-            report.action,
-            PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN
-        );
         assert!(report.success);
         assert_eq!(report.status, 0);
         assert_eq!(report.pbft_chain_size, 10);

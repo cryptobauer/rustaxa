@@ -3559,11 +3559,8 @@ mod tests {
         period_data.out().to_vec()
     }
 
-    fn finalization_live_report(
-        action: PbftFinalizationRuntimeAction,
-    ) -> FfiPbftFinalizationExternalEffectReport {
+    fn finalization_live_report() -> FfiPbftFinalizationExternalEffectReport {
         FfiPbftFinalizationExternalEffectReport {
-            action: action.as_u8(),
             success: true,
             status: 0,
             error_code: String::new(),
@@ -3697,9 +3694,7 @@ mod tests {
         let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
         let accepted_report = external_effect_live_report(
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-            finalization_advance_report(finalization_live_report(
-                PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-            )),
+            finalization_advance_report(finalization_live_report()),
             &write_set,
         );
         let accepted =
@@ -3720,8 +3715,7 @@ mod tests {
             &mut runtime,
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
         );
-        let mut rejected_report =
-            finalization_live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions);
+        let mut rejected_report = finalization_live_report();
         rejected_report.finalized_transaction_count = 0;
         let rejected_report = external_effect_live_report(
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,

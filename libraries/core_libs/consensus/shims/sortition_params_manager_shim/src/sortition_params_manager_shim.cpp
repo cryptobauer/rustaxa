@@ -8,8 +8,6 @@
 namespace taraxa {
 namespace {
 
-constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
-
 struct PeriodEfficiencyCounts {
   bool has_pivot = false;
   uint64_t unique_transactions = 0;
@@ -85,7 +83,6 @@ rustaxa::PbftFinalizationExternalEffectReport makeSortitionFinalizationLiveRepor
     const rustaxa::SortitionParamsChangeResult& outcome, uint16_t current_threshold_upper,
     uint64_t params_changes_count) {
   rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.action = kPbftFinalizationRuntimeActionCommitSortitionRuntime;
   report.success = true;
   report.status = 0;
   report.sortition_changed = outcome.changed;

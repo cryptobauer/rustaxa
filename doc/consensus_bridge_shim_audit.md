@@ -482,6 +482,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `makeFinalizationExternalEffectReport` mapper is deleted. The PBFT manager executor consumes cursor-keyed
   `PbftFinalizationExecutorAdvanceReport` values, so subsystem `PbftFinalizationExternalEffectReport` outputs are now
   adapted at the PBFT manager boundary rather than passed through as the manager advancement contract.
+- `PbftFinalizationExternalEffectReport` no longer carries an `action` field. The PBFT manager shim still validates the
+  expected action on `PbftManagerFinalizationExecutorState` before executing each external side effect, then reports only
+  success/failure facts by cursor. This keeps the manager cursor as the only accepted action identity source and prevents
+  sortition, reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain, advance-period, or pillar
+  reports from echoing a second action value back into Rust.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

@@ -19,8 +19,6 @@
 namespace taraxa {
 namespace {
 
-constexpr uint8_t kPbftFinalizationRuntimeActionUpdateFinalizedTransactions = 5;
-
 std::array<uint8_t, 32> toBridgeHash(const trx_hash_t& hash) {
   std::array<uint8_t, 32> bytes{};
   std::memcpy(bytes.data(), hash.data(), bytes.size());
@@ -1454,7 +1452,6 @@ rustaxa::PbftFinalizationExternalEffectReport TransactionManager::updateFinalize
       TransactionManagerRustShimAccess::updateFinalizedTransactionsStatusReport(*this, period_data);
 
   rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.action = kPbftFinalizationRuntimeActionUpdateFinalizedTransactions;
   report.success = true;
   report.status = 0;
   report.finalized_transaction_count = status_report.accepted_count;

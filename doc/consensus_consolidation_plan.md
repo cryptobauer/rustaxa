@@ -595,6 +595,11 @@ Implementation notes:
   derives finalization identity from the manager-runtime retained plan and converts the external-effect report into the
   native live-mutation report internally, so C++ no longer owns the duplicate live-report DTO or the
   `makeFinalizationExternalEffectReport` mapping helper.
+- `PbftFinalizationExternalEffectReport` is now actionless. The manager executor still checks the expected action before
+  each C++ side effect runs, but subsystem reports only carry observed success/failure facts. The executor cursor is the
+  only identity source accepted by `pbft_manager_runtime_advance_finalization_executor`, which removes the last duplicated
+  action echo from sortition, reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain,
+  advance-period, and pillar reports.
 - The legacy Rust bridge-crate finalization cursor primitives
   `pbft_manager_runtime_begin_finalization_session`,
   `pbft_manager_runtime_begin_finalization_resume_session`,
@@ -853,6 +858,21 @@ Implementation notes:
   - `rg -n "PbftFinalizationLiveMutationReport|FfiPbftFinalizationLiveMutationReport|makeFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src libraries/core_libs/consensus/shims tests/rust/consensus -g'*.rs' -g'*.cpp' -g'*.hpp'`
     now returns only native Rust-domain `PbftFinalizationLiveMutationReport` references in `pbft_manager.rs`, not CXX
     bridge DTOs or shim helpers.
+- Additional validation for PBFT finalization external-effect action-echo cleanup:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_chain -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.Finalization*Boundary*:RustPbftSyncTest.Finalization*Executor*:RustPbftSyncTest.FinalizationRuntime*:RustPbftSyncTest.FinalizationResumeRuntime*' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `git diff --check`
+  - `.githooks/pre-commit`
+  - `rg -n "external_report\\.action|\\.action = kPbftFinalizationRuntimeAction" libraries/core_libs/consensus/shims tests/rust/consensus rust/crates/rustaxa-bridge/src -g'*.cpp' -g'*.hpp' -g'*.rs'`
+    returns no matches, and the `PbftFinalizationExternalEffectReport` FFI struct no longer declares an `action` field.
 - Additional validation for PBFT finalization executor API consolidation:
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
   - `cmake --build /build --target rust_consensus_tests --parallel 12`

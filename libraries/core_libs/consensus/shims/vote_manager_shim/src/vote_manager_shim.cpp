@@ -25,7 +25,6 @@ constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
 constexpr uint8_t kPbftFinalizationStorageStageRewardVotesReset = 4;
-constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardVotesReset = 3;
 constexpr uint8_t kPbftVoteValidationStatusValid = 1;
 constexpr uint8_t kPbftVoteValidationStatusZeroStake = 2;
 constexpr uint8_t kPbftVoteValidationStatusMissingVrfKey = 3;
@@ -147,7 +146,6 @@ rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPe
 rustaxa::PbftFinalizationExternalEffectReport makeRewardVotesResetLiveReport(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t extra_reward_votes_count) {
   rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.action = kPbftFinalizationRuntimeActionCommitRewardVotesReset;
   report.success = true;
   report.status = 0;
   report.reward_votes_period = write_intent.reward_vote_period;

@@ -29,7 +29,6 @@ constexpr uint8_t kDagVerifySessionActionTransactionQuery = 1;
 constexpr uint8_t kDagVerifySessionActionAuthorizationFacts = 2;
 constexpr uint8_t kDagVerifySessionActionVdfSortition = 3;
 constexpr uint8_t kDagVerifySessionActionGas = 4;
-constexpr uint8_t kPbftFinalizationRuntimeActionSetDagBlockOrder = 4;
 
 std::array<uint8_t, 32> to_bridge_hash(const blk_hash_t &hash) { return hash.asArray(); }
 
@@ -807,7 +806,6 @@ rustaxa::PbftFinalizationExternalEffectReport DagManager::setDagBlockOrderForPbf
   const auto finalized_count = setDagBlockOrder(anchor, period, dag_order);
 
   rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.action = kPbftFinalizationRuntimeActionSetDagBlockOrder;
   report.success = true;
   report.status = 0;
   report.dag_finalized_count = finalized_count;
