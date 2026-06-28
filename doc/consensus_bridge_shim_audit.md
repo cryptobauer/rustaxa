@@ -317,8 +317,13 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - Transaction-manager lower-level DAG-save/finalized-status result APIs are deleted from the CXX surface:
   `save_transactions_from_dag_block_with_runtime`, `update_finalized_transactions_status_with_runtime`,
   `DagTransactionSaveAccepted`, `DagTransactionSaveOutcome`, `FinalizedTransactionStatusAction`, and
-  `FinalizedTransactionStatusPlan`. Live C++ callers use command-report APIs, while the lower helpers and result structs
-  are private Rust implementation details.
+  `FinalizedTransactionStatusPlan`. Live C++ callers use command-report APIs, while the lower production helpers and
+  result structs are private Rust implementation details; deleted wrapper exports retained for direct Rust unit coverage
+  are test-only.
+- Additional no-caller transaction-manager CXX exports are deleted:
+  `create_transaction_manager_runtime` and
+  `update_finalized_transactions_status_command_report_with_runtime`. Production C++ constructs the runtime from storage
+  and reports finalized-status updates through the account-nonce/purge-aware command-report API.
 - No-caller bridge-test-only CXX exports have been deleted from remaining compatibility handles:
   `create_pbft_chain_with_storage`, `slashing_mark_double_voting_proof_submission`,
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ callers use the storage-restoring PBFT
@@ -351,6 +356,8 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - The standalone `BridgePillarVotes` CXX handle is deleted from `ffi.rs` after the last C++ bridge test moved to
   `BridgePillarChainRuntime` for weighted-bundle apply and payload lookup coverage. `BridgePillarVotes` remains only as
   a Rust-internal compatibility fixture for bridge-module unit tests.
+- The no-caller `pillar_chain_runtime_cleanup_votes_by_period` CXX export is deleted after callsite audit confirmed the
+  runtime cleanup method had no live C++ shim or bridge-test caller.
 - Single pillar-vote admission in `pillar_chain_manager_shim` now uses
   `BridgePillarChainRuntime::pillar_chain_runtime_prepare_single_vote_admission` plus
   `BridgePillarChainRuntime::pillar_chain_runtime_apply_prepared_single_vote_admission`. Rust owns canonical RLP decode, signature

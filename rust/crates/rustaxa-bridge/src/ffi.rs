@@ -5147,10 +5147,6 @@ pub mod rustaxa_ffi {
         // Consensus transaction manager planning
 
         type BridgeTransactionManagerRuntime;
-        pub fn create_transaction_manager_runtime(
-            initial_transaction_count: u64,
-            config: TransactionQueueConfig,
-        ) -> Box<BridgeTransactionManagerRuntime>;
         pub fn create_transaction_manager_runtime_from_storage(
             storage: &BridgeStorage,
             initial_transaction_count: u64,
@@ -5270,13 +5266,6 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgeTransactionManagerRuntime,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
-        /// Applies finalized status updates and returns a typed command report.
-        pub fn update_finalized_transactions_status_command_report_with_runtime(
-            runtime: &mut BridgeTransactionManagerRuntime,
-            period: u64,
-            retention_window: u64,
-            facts: Vec<FinalizedTransactionStatusSidecarFact>,
-        ) -> Result<TransactionManagerFinalizedStatusCommandReport>;
         /// Applies finalized status updates plus periodic purge and returns a typed command report.
         pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
             runtime: &mut BridgeTransactionManagerRuntime,
@@ -5565,10 +5554,6 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             above_threshold: bool,
         ) -> PillarVotesPayloadLookup;
-        pub fn pillar_chain_runtime_cleanup_votes_by_period(
-            self: &mut BridgePillarChainRuntime,
-            min_period: u64,
-        );
         pub fn pillar_chain_runtime_finalize_block_for_pbft(
             self: &mut BridgePillarChainRuntime,
             request: PillarBlockFinalizationRequest,

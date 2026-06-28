@@ -795,6 +795,7 @@ fn update_finalized_transactions_status_with_runtime(
 }
 
 /// Applies finalized-transaction status changes and returns typed command actions.
+#[cfg(test)]
 pub fn update_finalized_transactions_status_command_report_with_runtime(
     runtime: &mut BridgeTransactionManagerRuntime,
     period: u64,
@@ -1302,6 +1303,7 @@ pub fn transaction_manager_recover_nonfinalized_with_runtime(
 /// reads, and gas estimation. Latest-state admission, DAG-save, verification,
 /// and finalized-account queue purge can source account facts directly from
 /// Rust FinalChain through runtime APIs.
+#[cfg(test)]
 pub fn create_transaction_manager_runtime(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,

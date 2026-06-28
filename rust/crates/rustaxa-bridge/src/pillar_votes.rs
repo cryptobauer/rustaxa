@@ -227,11 +227,6 @@ impl BridgePillarChainRuntime {
             .into()
     }
 
-    /// Removes all pillar-vote state for periods lower than `min_period`.
-    pub fn pillar_chain_runtime_cleanup_votes_by_period(&mut self, min_period: u64) {
-        self.votes.erase_votes(min_period);
-    }
-
     /// Finalizes one pillar block for the PBFT finalization boundary.
     ///
     /// Inputs:

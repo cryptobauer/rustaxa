@@ -1159,11 +1159,16 @@ Implementation status:
   `save_transactions_from_dag_block_with_runtime`, `update_finalized_transactions_status_with_runtime`,
   `DagTransactionSaveAccepted`, `DagTransactionSaveOutcome`, `FinalizedTransactionStatusAction`, and
   `FinalizedTransactionStatusPlan` are deleted from the bridge surface. Live C++ uses the DAG-save command-report API
-  and `update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts`; private Rust helpers still
-  own
-  the storage-first mutation and command-report conversion.
+  and `update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts`; Rust-private helpers
+  own the storage-first mutation and command-report conversion, while deleted wrapper exports that remain for direct Rust
+  unit coverage are explicitly test-only.
   Custom agents used: `architect-reviewer` confirmed the live C++ command-report boundary; `rust-engineer` confirmed the
   private DTO/test impact.
+- Follow-up no-caller transaction-manager exports are also deleted from the CXX surface:
+  `create_transaction_manager_runtime` and
+  `update_finalized_transactions_status_command_report_with_runtime`. Live C++ constructs the runtime from storage and
+  reports finalized-status updates through the account-nonce/purge-aware command-report API; the deleted wrappers remain
+  Rust-test-only fixtures behind `#[cfg(test)]`.
 - Additional standalone PBFT runtime wrappers are no longer CXX exports:
   `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
   `load_pbft_finalization_last_period_lambda_storage`, `plan_pbft_dynamic_lambda`,
@@ -1278,6 +1283,8 @@ Implementation status:
 - The remaining standalone `BridgePillarVotes` CXX surface is deleted after
   `PillarVoteBundleBridgeTest.applyPillarVoteBundleFromWeightedRlpsInsertsAcceptedVotes` moved to
   `BridgePillarChainRuntime`. Rust bridge-module tests still cover the Rust-only compatibility helper directly.
+- The no-caller `pillar_chain_runtime_cleanup_votes_by_period` CXX export is deleted; live pillar cleanup remains
+  manager/runtime-owned and no C++ shim or bridge test calls the standalone cleanup method.
 - Additional no-caller verified-vote and sortition CXX exports are deleted:
   `verified_votes_check_unique_voter`, `verified_votes_vote_in_verified_map`,
   `verified_votes_get_network_t_plus_one_step`, `verified_votes_get_two_t_plus_one_voted_block_votes`,
