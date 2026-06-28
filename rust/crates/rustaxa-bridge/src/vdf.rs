@@ -271,62 +271,6 @@ pub fn vdf_sortition_payload_verify(
     })
 }
 
-pub fn vdf_sortition_payload_verify_with_modulus(
-    payload: &VdfSortitionPayload,
-    vdf_input: &[u8],
-    config: VdfSortitionVerifyConfig,
-    vrf_output: &[u8],
-    sender_eligible_vote_count: u64,
-    vdf_sortition_max_vote_count: u64,
-    modulus: &[u8],
-) -> anyhow::Result<VdfSortitionPayloadVerifyResult> {
-    domain_sortition_vdf::verify_vdf_sortition_with_modulus(
-        &to_domain_vdf_sortition_payload(payload),
-        vdf_input,
-        to_domain_vdf_sortition_config(config),
-        vrf_output,
-        sender_eligible_vote_count,
-        vdf_sortition_max_vote_count,
-        modulus,
-    )
-    .map(|result| VdfSortitionPayloadVerifyResult {
-        vdf_status: result.vdf_status,
-        difficulty: result.difficulty,
-        expected_difficulty: result.expected_difficulty,
-    })
-}
-
-pub fn vdf_sortition_threshold_from_output(
-    vrf_output: &[u8],
-    vote_count: u16,
-) -> anyhow::Result<u16> {
-    domain_sortition_vdf::threshold_from_vrf_output(vrf_output, vote_count)
-}
-
-pub fn vdf_sortition_normalize_vote_count(
-    sender_eligible_vote_count: u64,
-    vdf_sortition_max_vote_count: u64,
-) -> anyhow::Result<u16> {
-    domain_sortition_vdf::normalize_vote_count(
-        sender_eligible_vote_count,
-        vdf_sortition_max_vote_count,
-    )
-}
-
-pub fn vdf_sortition_difficulty(
-    config: VdfSortitionVerifyConfig,
-    threshold: u16,
-) -> anyhow::Result<u16> {
-    domain_sortition_vdf::calculate_vdf_sortition_difficulty(
-        to_domain_vdf_sortition_config(config),
-        threshold,
-    )
-}
-
-pub fn vdf_sortition_legacy_modulus() -> Vec<u8> {
-    domain_sortition_vdf::legacy_vdf_modulus_ascii_hex().to_vec()
-}
-
 pub fn vrf_verify_output(
     vrf_public_key: &[u8],
     vrf_proof: &[u8],
@@ -343,14 +287,6 @@ pub fn vrf_verify_output(
             output: Vec::new(),
         },
     })
-}
-
-pub fn vrf_proof_to_hash(vrf_proof: &[u8]) -> anyhow::Result<Vec<u8>> {
-    domain_vrf::proof_to_hash(vrf_proof).map(|output| output.to_vec())
-}
-
-pub fn vrf_prove_output(vrf_secret_key: &[u8], message: &[u8]) -> anyhow::Result<Vec<u8>> {
-    domain_vrf::prove(vrf_secret_key, message).map(|output| output.to_vec())
 }
 
 fn to_domain_sortition_params(params: LegacySortitionParams) -> DomainLegacySortitionParams {

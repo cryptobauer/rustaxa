@@ -4422,42 +4422,11 @@ pub mod rustaxa_ffi {
             vdf_sortition_max_vote_count: u64,
         ) -> Result<VdfSortitionPayloadVerifyResult>;
 
-        pub fn vdf_sortition_payload_verify_with_modulus(
-            payload: &VdfSortitionPayload,
-            vdf_input: &[u8],
-            config: VdfSortitionVerifyConfig,
-            vrf_output: &[u8],
-            sender_eligible_vote_count: u64,
-            vdf_sortition_max_vote_count: u64,
-            modulus: &[u8],
-        ) -> Result<VdfSortitionPayloadVerifyResult>;
-
-        pub fn vdf_sortition_threshold_from_output(
-            vrf_output: &[u8],
-            vote_count: u16,
-        ) -> Result<u16>;
-
-        pub fn vdf_sortition_normalize_vote_count(
-            sender_eligible_vote_count: u64,
-            vdf_sortition_max_vote_count: u64,
-        ) -> Result<u16>;
-
-        pub fn vdf_sortition_difficulty(
-            config: VdfSortitionVerifyConfig,
-            threshold: u16,
-        ) -> Result<u16>;
-
-        pub fn vdf_sortition_legacy_modulus() -> Vec<u8>;
-
         pub fn vrf_verify_output(
             vrf_public_key: &[u8],
             vrf_proof: &[u8],
             message: &[u8],
         ) -> Result<VrfVerifyOutput>;
-
-        pub fn vrf_proof_to_hash(vrf_proof: &[u8]) -> Result<Vec<u8>>;
-
-        pub fn vrf_prove_output(vrf_secret_key: &[u8], message: &[u8]) -> Result<Vec<u8>>;
 
         pub fn verify_legacy_vrf_sortition(
             public_key: &[u8; 32],

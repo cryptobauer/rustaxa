@@ -40,7 +40,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/transaction_queue.rs` | `BridgeTransactionQueue`, `create_transaction_queue`, live queue facade methods | `transaction_queue_shim` | C++ public compatibility facade | Delete after queue ownership moves fully to Rust transaction manager and C++ queue facade is no longer constructed. Queue-only planning/hash-view CXX helpers with no shim callers are deleted. |
 | `rust/crates/rustaxa-bridge/src/gas_pricer.rs` | `BridgeGasPricer`, `create_gas_pricer*`, bid/update methods | `gas_pricer_shim`, transaction/RPC gas estimation | C++ public compatibility facade | Delete after gas pricing history and query are Rust-owned behind the transaction/final-chain runtime API. The CXX-only storage init method has been removed; storage restoration is construction-time only. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | `BridgeSlashingProofPlanner`, `create_slashing_proof_planner` | `slashing_manager_shim` | C++ public compatibility facade | Delete after slashing proof planning is invoked by Rust consensus runtime instead of C++ manager facade. Direct mark-only CXX export is deleted; C++ reports executor outcomes through the submission-report API. |
-| `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF bridge helpers | VDF C++ integration/tests | External boundary | Keep until VDF boundary is explicitly folded into native Rust or a dedicated external VDF API. |
+| `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF bridge helpers | VDF C++ integration/tests | External boundary | Keep the live VDF/prove/verify and legacy sortition APIs until VDF is explicitly folded into native Rust or a dedicated external VDF API. No-caller scalar/helper exports are deleted when they are covered by native `rustaxa-vdf` tests. |
 
 ## Exported CXX Bridge Handles
 
@@ -286,6 +286,14 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `dag_proposer_plan_block_intent_with_current_timestamp` and `dag_proposer_finalize_signed_block_intent`, so the CXX
   bridge no longer offers an alternate route where C++ supplies the proposal timestamp. The deterministic fixed-timestamp
   planner remains native `rustaxa-consensus` behavior covered by Rust tests.
+- No-caller lower-level VDF/VRF helper exports are deleted from the CXX bridge surface:
+  `vdf_sortition_payload_verify_with_modulus`, `vdf_sortition_threshold_from_output`,
+  `vdf_sortition_normalize_vote_count`, `vdf_sortition_difficulty`, `vdf_sortition_legacy_modulus`,
+  `vrf_proof_to_hash`, and `vrf_prove_output`. Live C++ keeps the coarse VDF object/prove/verify APIs, legacy
+  VDF/VRF sortition prove/verify APIs, and the payload encode API used by DAG proposer code. Payload decode/verify and
+  VRF output verification remain retained bridge/test compatibility APIs until a later VDF cleanup removes or routes
+  them. The deleted scalar helpers remain native `rustaxa-vdf` behavior covered by Rust tests rather than CXX surface
+  area.
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is deleted from the CXX surface. The live proposed-block shim uses
   `proposed_blocks_snapshot_entries`, which carries the block payload and validation flag; grouped hash snapshots remain
   Rust-only test coverage.
