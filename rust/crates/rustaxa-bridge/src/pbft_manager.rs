@@ -10,7 +10,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport,
     PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
     PbftFinalizationExecutorStartRequest as FfiPbftFinalizationExecutorStartRequest,
-    PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport,
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
@@ -1809,81 +1808,6 @@ fn base_finalization_live_report(
     }
 }
 
-fn external_effect_live_report(
-    action: PbftFinalizationRuntimeAction,
-    report: FfiPbftFinalizationExternalEffectReport,
-    write_set: &PbftFinalizationStorageWriteIntent,
-) -> PbftFinalizationLiveMutationReport {
-    PbftFinalizationLiveMutationReport {
-        action,
-        block_period: write_set.block_period,
-        pbft_block_hash: write_set.pbft_block_hash,
-        anchor_hash: write_set.anchor_hash,
-        dag_finalized_count: report.dag_finalized_count,
-        finalized_transaction_count: report.finalized_transaction_count,
-        pbft_chain_size: report.pbft_chain_size,
-        pbft_chain_head_hash: report.pbft_chain_head_hash.into(),
-        pbft_chain_last_anchor_hash: report.pbft_chain_last_anchor_hash.into(),
-        reward_votes_period: report.reward_votes_period,
-        reward_votes_round: report.reward_votes_round,
-        reward_votes_block_hash: report.reward_votes_block_hash.into(),
-        reward_votes_extra_count: report.reward_votes_extra_count,
-        sortition_changed: report.sortition_changed,
-        sortition_change_period: report.sortition_change_period,
-        sortition_change_interval_efficiency: report.sortition_change_interval_efficiency,
-        sortition_change_threshold_upper: report.sortition_change_threshold_upper,
-        sortition_current_threshold_upper: report.sortition_current_threshold_upper,
-        sortition_params_changes_count: report.sortition_params_changes_count,
-        rounds_count_dynamic_lambda: report.rounds_count_dynamic_lambda,
-        dynamic_lambda: report.dynamic_lambda,
-        executed_pbft_block: report.executed_pbft_block,
-        manager_period: report.manager_period,
-        pillar_processed_period: report.pillar_processed_period,
-        pillar_request_period: report.pillar_request_period,
-        anchor_dag_cache_count: report.anchor_dag_cache_count,
-        final_chain_dispatched: report.final_chain_dispatched,
-        final_chain_blocks_per_year: report.final_chain_blocks_per_year,
-        final_chain_last_block: report.final_chain_last_block,
-    }
-}
-
-fn empty_finalization_external_effect_report(
-    success: bool,
-    status: u8,
-    error_code: String,
-) -> FfiPbftFinalizationExternalEffectReport {
-    FfiPbftFinalizationExternalEffectReport {
-        success,
-        status,
-        error_code,
-        dag_finalized_count: 0,
-        finalized_transaction_count: 0,
-        pbft_chain_size: 0,
-        pbft_chain_head_hash: [0; 32],
-        pbft_chain_last_anchor_hash: [0; 32],
-        reward_votes_period: 0,
-        reward_votes_round: 0,
-        reward_votes_block_hash: [0; 32],
-        reward_votes_extra_count: 0,
-        sortition_changed: false,
-        sortition_change_period: 0,
-        sortition_change_interval_efficiency: 0,
-        sortition_change_threshold_upper: 0,
-        sortition_current_threshold_upper: 0,
-        sortition_params_changes_count: 0,
-        rounds_count_dynamic_lambda: 0,
-        dynamic_lambda: 0,
-        executed_pbft_block: false,
-        manager_period: 0,
-        pillar_processed_period: 0,
-        pillar_request_period: 0,
-        anchor_dag_cache_count: 0,
-        final_chain_dispatched: false,
-        final_chain_blocks_per_year: 0,
-        final_chain_last_block: 0,
-    }
-}
-
 /// Starts a PBFT finalization runtime cursor inside the long-lived PBFT manager runtime.
 ///
 /// Inputs are the accepted finalization intent plan already built by the C++
@@ -2073,8 +1997,8 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 /// - Resume mode uses the supplied durable resume transcript and does not
 ///   reapply primary storage.
 /// - The caller must echo the returned `cursor` to
-///   `pbft_manager_runtime_advance_finalization_external_effect` after
-///   executing one external action.
+///   one of the typed finalization advancement APIs after executing one
+///   external action.
 pub fn pbft_manager_runtime_start_finalization_executor(
     runtime: &mut BridgePbftManagerRuntime,
     request: FfiPbftFinalizationExecutorStartRequest,
@@ -2130,29 +2054,31 @@ pub fn pbft_manager_runtime_start_finalization_executor(
     drain_finalization_executor_state(runtime)
 }
 
-/// Reports one external finalization executor outcome and advances to the next boundary.
+/// Advances one successful external finalization action with native live-mutation facts.
 ///
 /// Inputs:
 /// - `runtime`: manager runtime that owns the finalization cursor.
 /// - `cursor`: cursor previously returned for the current external action.
-/// - `report`: external executor success/failure plus post-state facts for the
-///   current action.
+/// - `build_report`: typed API mapper that turns the current Rust-planned
+///   action and storage write intent into the native live-mutation report.
 ///
 /// Outputs:
-/// - Returns the terminal failure boundary, or the next external action after
-///   Rust validates the success report and drains any manager-owned actions that
-///   immediately follow it.
+/// - Returns the next external boundary after Rust validates the success report
+///   and drains any manager-owned actions that immediately follow it.
 ///
 /// Invariants and edge behavior:
-/// - The report action is derived from the runtime cursor; C++ only echoes the
-///   cursor and facts in the one external-effect report type.
-/// - Failure, validation failure, and cursor mismatch are reported to the same
+/// - The action is derived from the runtime cursor; C++ only echoes the cursor
+///   and sends facts through a typed subsystem API.
+/// - Validation failure and cursor mismatch are reported to the same
 ///   manager-owned finalization cursor.
 /// - External side effects are never executed here.
-pub fn pbft_manager_runtime_advance_finalization_external_effect(
+fn pbft_manager_runtime_advance_finalization_live_mutation(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
-    report: FfiPbftFinalizationExternalEffectReport,
+    build_report: impl FnOnce(
+        PbftFinalizationRuntimeAction,
+        &PbftFinalizationStorageWriteIntent,
+    ) -> PbftFinalizationLiveMutationReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
     if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
@@ -2199,26 +2125,8 @@ pub fn pbft_manager_runtime_advance_finalization_external_effect(
         ));
     }
 
-    if !report.success {
-        let next_step = pbft_manager_runtime_finalization_session_report_action(
-            runtime,
-            FinalizationRuntimeActionReport {
-                cursor: current_step.cursor,
-                action: current_step.action,
-                success: false,
-                status: report.status,
-                error_code: report.error_code,
-            },
-        );
-        return Ok(finalization_executor_state_from_step(
-            runtime,
-            next_step,
-            String::new(),
-        ));
-    }
-
     let plan = stored_finalization_plan(runtime)?;
-    let live_report = external_effect_live_report(action, report, &plan.storage_write_intent);
+    let live_report = build_report(action, &plan.storage_write_intent);
     let next_step = pbft_manager_runtime_report_finalization_live_mutation(runtime, live_report)?;
     if next_step.status != PbftFinalizationRuntimeStatus::Active.as_u8() || !next_step.can_continue
     {
@@ -2229,6 +2137,90 @@ pub fn pbft_manager_runtime_advance_finalization_external_effect(
         ));
     }
     drain_finalization_executor_state(runtime)
+}
+
+/// Reports failure for the current external PBFT finalization action.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `status` and `error_code`: failure facts observed while C++ executed the
+///   external action.
+///
+/// Outputs:
+/// - Returns the terminal executor state after recording the failed action.
+///
+/// Invariants and edge behavior:
+/// - C++ reports only failure facts through this API. Successful subsystem
+///   reports must use the typed advancement API for that subsystem.
+/// - Cursor mismatch, missing action, and unknown action preserve the same
+///   finalization executor contract as successful typed advancement APIs.
+pub fn pbft_manager_runtime_fail_finalization_external_effect(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    status: u8,
+    error_code: String,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let current_step = pbft_manager_runtime_finalization_session_next(runtime);
+    if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+        || !current_step.has_action
+    {
+        return Ok(finalization_executor_state_from_step(
+            runtime,
+            current_step,
+            String::new(),
+        ));
+    }
+    if PbftFinalizationRuntimeAction::from_u8(current_step.action).is_none() {
+        let next_step = pbft_manager_runtime_finalization_session_report_action(
+            runtime,
+            FinalizationRuntimeActionReport {
+                cursor: current_step.cursor,
+                action: current_step.action,
+                success: false,
+                status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
+                error_code: "PBFT_FINALIZE_RUNTIME_UNKNOWN_ACTION".to_string(),
+            },
+        );
+        return Ok(finalization_executor_state_from_step(
+            runtime,
+            next_step,
+            String::new(),
+        ));
+    }
+    if cursor != current_step.cursor {
+        let next_step = pbft_manager_runtime_finalization_session_report_action(
+            runtime,
+            FinalizationRuntimeActionReport {
+                cursor,
+                action: current_step.action,
+                success: false,
+                status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
+                error_code: "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH".to_string(),
+            },
+        );
+        return Ok(finalization_executor_state_from_step(
+            runtime,
+            next_step,
+            String::new(),
+        ));
+    }
+
+    let next_step = pbft_manager_runtime_finalization_session_report_action(
+        runtime,
+        FinalizationRuntimeActionReport {
+            cursor: current_step.cursor,
+            action: current_step.action,
+            success: false,
+            status,
+            error_code,
+        },
+    );
+    Ok(finalization_executor_state_from_step(
+        runtime,
+        next_step,
+        String::new(),
+    ))
 }
 
 /// Reports a transaction-manager finalized-status command result to the
@@ -2248,16 +2240,18 @@ pub fn pbft_manager_runtime_advance_finalization_external_effect(
 ///   for the transaction-manager client.
 /// - Rust derives the PBFT finalization action from the cursor and maps only the
 ///   transaction facts needed for live-mutation validation.
-/// - Cursor mismatch, validation failure, and transaction execution failure use
-///   the same executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_transaction_status(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiTransactionManagerFinalizedStatusCommandReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.finalized_transaction_count = report.accepted_count;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.finalized_transaction_count = report.accepted_count;
+        live_report
+    })
 }
 
 /// Reports PBFT-chain finalized-head update facts to the manager-owned PBFT
@@ -2278,18 +2272,20 @@ pub fn pbft_manager_runtime_advance_finalization_transaction_status(
 /// - Rust derives the PBFT finalization action from the cursor and maps only the
 ///   PBFT-chain size, head hash, and last non-null anchor hash needed for
 ///   live-mutation validation.
-/// - Cursor mismatch, validation failure, and PBFT-chain execution failure use
-///   the same executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiPbftChainFinalizationUpdateReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.pbft_chain_size = report.size;
-    external_report.pbft_chain_head_hash = report.last_pbft_block_hash;
-    external_report.pbft_chain_last_anchor_hash = report.last_non_null_anchor_hash;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.pbft_chain_size = report.size;
+        live_report.pbft_chain_head_hash = report.last_pbft_block_hash.into();
+        live_report.pbft_chain_last_anchor_hash = report.last_non_null_anchor_hash.into();
+        live_report
+    })
 }
 
 /// Reports finalized DAG-order facts to the manager-owned PBFT finalization executor.
@@ -2308,16 +2304,18 @@ pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
 ///   for the DAG-order client.
 /// - Rust derives the PBFT finalization action from the cursor and maps only the
 ///   finalized DAG-block count needed for live-mutation validation.
-/// - Cursor mismatch, validation failure, and DAG execution failure use the same
-///   executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_dag_order(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     finalized_count: u64,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.dag_finalized_count = finalized_count;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.dag_finalized_count = finalized_count;
+        live_report
+    })
 }
 
 /// Reports sortition finalization commit facts to the manager-owned PBFT
@@ -2338,21 +2336,23 @@ pub fn pbft_manager_runtime_advance_finalization_dag_order(
 /// - Rust derives the PBFT finalization action from the cursor and maps only
 ///   sortition change/current-threshold/cache-count facts needed for
 ///   live-mutation validation.
-/// - Cursor mismatch, validation failure, and sortition execution failure use
-///   the same executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiPbftManagerFinalizationSortitionCommitReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.sortition_changed = report.changed;
-    external_report.sortition_change_period = report.change_period;
-    external_report.sortition_change_interval_efficiency = report.change_interval_efficiency;
-    external_report.sortition_change_threshold_upper = report.change_threshold_upper;
-    external_report.sortition_current_threshold_upper = report.current_threshold_upper;
-    external_report.sortition_params_changes_count = report.params_changes_count;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.sortition_changed = report.changed;
+        live_report.sortition_change_period = report.change_period;
+        live_report.sortition_change_interval_efficiency = report.change_interval_efficiency;
+        live_report.sortition_change_threshold_upper = report.change_threshold_upper;
+        live_report.sortition_current_threshold_upper = report.current_threshold_upper;
+        live_report.sortition_params_changes_count = report.params_changes_count;
+        live_report
+    })
 }
 
 /// Reports reward-vote reset finalization facts to the manager-owned PBFT
@@ -2373,20 +2373,21 @@ pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
 /// - Rust derives the PBFT finalization action from the cursor and maps only
 ///   reward-vote period/round/block-hash/extra-count facts needed for
 ///   live-mutation validation.
-/// - Cursor mismatch, validation failure, and reward-vote reset execution
-///   failure use the same executor-state contract as the generic
-///   external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiPbftManagerFinalizationRewardVotesResetReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.reward_votes_period = report.period;
-    external_report.reward_votes_round = report.round;
-    external_report.reward_votes_block_hash = report.block_hash;
-    external_report.reward_votes_extra_count = report.remaining_extra_reward_votes_count;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.reward_votes_period = report.period;
+        live_report.reward_votes_round = report.round;
+        live_report.reward_votes_block_hash = report.block_hash.into();
+        live_report.reward_votes_extra_count = report.remaining_extra_reward_votes_count;
+        live_report
+    })
 }
 
 /// Reports FinalChain dispatch or replay facts to the manager-owned PBFT
@@ -2407,18 +2408,20 @@ pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
 /// - Rust derives the PBFT finalization action from the cursor, marks the
 ///   FinalChain dispatch as observed, and maps only the blocks-per-year and
 ///   last-block facts needed for live-mutation validation.
-/// - Cursor mismatch, validation failure, and FinalChain execution failure use
-///   the same executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiPbftManagerFinalizationFinalChainDispatchReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.final_chain_dispatched = true;
-    external_report.final_chain_blocks_per_year = report.blocks_per_year;
-    external_report.final_chain_last_block = report.last_block;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.final_chain_dispatched = true;
+        live_report.final_chain_blocks_per_year = report.blocks_per_year;
+        live_report.final_chain_last_block = report.last_block;
+        live_report
+    })
 }
 
 /// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
@@ -2439,18 +2442,21 @@ pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
 /// - Rust derives the PBFT finalization action from the cursor, injects the
 ///   manager period from the runtime snapshot, and maps only the
 ///   processed/request period facts needed for live-mutation validation.
-/// - Cursor mismatch, validation failure, and pillar execution failure use the
-///   same executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiPbftManagerFinalizationPillarPostProcessingReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.manager_period = pbft_manager_runtime_snapshot(runtime).period;
-    external_report.pillar_processed_period = report.processed_period;
-    external_report.pillar_request_period = report.request_period;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    let manager_period = pbft_manager_runtime_snapshot(runtime).period;
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.manager_period = manager_period;
+        live_report.pillar_processed_period = report.processed_period;
+        live_report.pillar_request_period = report.request_period;
+        live_report
+    })
 }
 
 /// Reports PBFT finalization anchor-cache clear facts to the manager-owned executor.
@@ -2471,16 +2477,18 @@ pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
 /// - Rust derives the PBFT finalization action from the cursor and maps only
 ///   the remaining anchor-cache cardinality needed for live-mutation
 ///   validation.
-/// - Cursor mismatch, validation failure, and clear execution failure use the
-///   same executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_anchor_cache_clear(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiPbftManagerFinalizationAnchorCacheClearReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.anchor_dag_cache_count = report.remaining_anchor_count;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.anchor_dag_cache_count = report.remaining_anchor_count;
+        live_report
+    })
 }
 
 /// Reports PBFT finalization advance-period facts to the manager-owned executor.
@@ -2499,16 +2507,18 @@ pub fn pbft_manager_runtime_advance_finalization_anchor_cache_clear(
 ///   for the advance-period client.
 /// - Rust derives the PBFT finalization action from the cursor and maps only the
 ///   post-advance manager period needed for live-mutation validation.
-/// - Cursor mismatch, validation failure, and advance execution failure use the
-///   same executor-state contract as the generic external-effect boundary.
+/// - Cursor mismatch and validation failure use the same executor-state
+///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_advance_period(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     report: FfiPbftManagerFinalizationAdvancePeriodReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
-    external_report.manager_period = report.manager_period;
-    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
+        let mut live_report = base_finalization_live_report(action, write_set);
+        live_report.manager_period = report.manager_period;
+        live_report
+    })
 }
 
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
@@ -3384,7 +3394,6 @@ mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport;
     use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
-    use crate::ffi::rustaxa_ffi::PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport;
@@ -3934,19 +3943,19 @@ mod tests {
         period_data.out().to_vec()
     }
 
-    fn finalization_live_report() -> FfiPbftFinalizationExternalEffectReport {
-        FfiPbftFinalizationExternalEffectReport {
-            success: true,
-            status: 0,
-            error_code: String::new(),
+    fn finalization_live_report(
+        action: PbftFinalizationRuntimeAction,
+        write_set: &PbftFinalizationStorageWriteIntent,
+    ) -> PbftFinalizationLiveMutationReport {
+        PbftFinalizationLiveMutationReport {
             dag_finalized_count: 2,
             finalized_transaction_count: 1,
             pbft_chain_size: 11,
-            pbft_chain_head_hash: [7; 32],
-            pbft_chain_last_anchor_hash: [4; 32],
+            pbft_chain_head_hash: [7; 32].into(),
+            pbft_chain_last_anchor_hash: [4; 32].into(),
             reward_votes_period: 10,
             reward_votes_round: 2,
-            reward_votes_block_hash: [7; 32],
+            reward_votes_block_hash: [7; 32].into(),
             reward_votes_extra_count: 0,
             sortition_changed: true,
             sortition_change_period: 10,
@@ -3964,6 +3973,7 @@ mod tests {
             final_chain_dispatched: true,
             final_chain_blocks_per_year: 1_000,
             final_chain_last_block: 10,
+            ..base_finalization_live_report(action, write_set)
         }
     }
 
@@ -4031,9 +4041,8 @@ mod tests {
         );
 
         let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
-        let accepted_report = external_effect_live_report(
+        let accepted_report = finalization_live_report(
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-            finalization_live_report(),
             &write_set,
         );
         let accepted =
@@ -4054,13 +4063,11 @@ mod tests {
             &mut runtime,
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
         );
-        let mut rejected_report = finalization_live_report();
-        rejected_report.finalized_transaction_count = 0;
-        let rejected_report = external_effect_live_report(
+        let mut rejected_report = finalization_live_report(
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-            rejected_report,
             &write_set,
         );
+        rejected_report.finalized_transaction_count = 0;
         let rejected =
             pbft_manager_runtime_report_finalization_live_mutation(&mut runtime, rejected_report)
                 .expect("live mutation report should validate");

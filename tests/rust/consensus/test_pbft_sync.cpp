@@ -839,13 +839,15 @@ TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
   auto boundary = startFreshFinalizationExecutor(
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
 
-  PbftFinalizationExternalEffectReport report{};
-  report.success = true;
-  report.sortition_changed = true;
-  report.sortition_change_period = 999;
-  report.sortition_params_changes_count = 1;
+  PbftManagerFinalizationSortitionCommitReport report{};
+  report.changed = true;
+  report.change_period = 999;
+  report.change_interval_efficiency = 2500;
+  report.change_threshold_upper = 1300;
+  report.current_threshold_upper = 1300;
+  report.params_changes_count = 1;
 
-  boundary = pbft_manager_runtime_advance_finalization_external_effect(*runtime, boundary.cursor, report);
+  boundary = pbft_manager_runtime_advance_finalization_sortition_commit(*runtime, boundary.cursor, report);
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_FALSE(boundary.can_continue);
@@ -943,11 +945,8 @@ TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  PbftFinalizationExternalEffectReport report{};
-  report.success = false;
-  report.status = 77;
-  report.error_code = "TEST_EXTERNAL_FAILURE";
-  boundary = pbft_manager_runtime_advance_finalization_external_effect(*runtime, boundary.cursor, report);
+  boundary =
+      pbft_manager_runtime_fail_finalization_external_effect(*runtime, boundary.cursor, 77, "TEST_EXTERNAL_FAILURE");
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_EQ(std::string(boundary.error_code), "TEST_EXTERNAL_FAILURE");
@@ -960,10 +959,7 @@ TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   ASSERT_EQ(state.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  PbftFinalizationExternalEffectReport report{};
-  report.success = true;
-
-  state = pbft_manager_runtime_advance_finalization_external_effect(*runtime, state.cursor + 1, report);
+  state = pbft_manager_runtime_fail_finalization_external_effect(*runtime, state.cursor + 1, 77, "STALE_CURSOR");
   EXPECT_EQ(state.status, kPbftFinalizationRuntimeStatusActionMismatch);
   EXPECT_FALSE(state.has_action);
   EXPECT_EQ(std::string(state.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");

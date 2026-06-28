@@ -174,14 +174,6 @@ struct PbftManagerFinalizationPillarPostProcessingReport {
   uint64_t request_period = 0;
 };
 
-rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectFailure(uint8_t action_status,
-                                                                                   const std::string &error_code) {
-  rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.success = false;
-  report.status = action_status;
-  report.error_code = error_code;
-  return report;
-}
 constexpr uint8_t kPbftManagerAdvancePeriodActionUpdateWalletEligibility = 6;
 constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupVotes = 7;
 constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupProposedBlocks = 8;
@@ -3617,9 +3609,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           return true;
         };
         auto report_resume_failure = [&](const rustaxa::PbftManagerFinalizationExecutorState &boundary_state) {
-          const auto boundary = rustaxa::pbft_manager_runtime_advance_finalization_external_effect(
-              *pbft_manager_runtime_.value(), boundary_state.cursor,
-              makeFinalizationExternalEffectFailure(255, "PBFT_FINALIZE_RESUME_ACTION_FAILED"));
+          const auto boundary = rustaxa::pbft_manager_runtime_fail_finalization_external_effect(
+              *pbft_manager_runtime_.value(), boundary_state.cursor, 255, "PBFT_FINALIZE_RESUME_ACTION_FAILED");
           apply_resume_boundary_snapshot(boundary);
         };
         auto report_resume_pillar_post_processing =
@@ -3833,9 +3824,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return true;
   };
   auto report_failure_boundary = [&](const rustaxa::PbftManagerFinalizationExecutorState &boundary_state) {
-    const auto boundary = rustaxa::pbft_manager_runtime_advance_finalization_external_effect(
-        *pbft_manager_runtime_.value(), boundary_state.cursor,
-        makeFinalizationExternalEffectFailure(255, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED"));
+    const auto boundary = rustaxa::pbft_manager_runtime_fail_finalization_external_effect(
+        *pbft_manager_runtime_.value(), boundary_state.cursor, 255, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED");
     apply_boundary_snapshot(boundary);
   };
   auto report_pillar_post_processing = [&](const PbftManagerFinalizationPillarPostProcessingReport &report,

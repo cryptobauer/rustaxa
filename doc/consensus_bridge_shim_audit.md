@@ -477,27 +477,26 @@ Current snapshot after DAG proposer-session cursor consolidation:
   validation into Rust; the later executor APIs below delete that interim CXX export and fold reporting into the
   manager-owned finalization executor.
 - Normal PBFT finalization and duplicate-finalization resume now enter through the manager-owned executor APIs
-  `pbft_manager_runtime_start_finalization_executor` and
-  `pbft_manager_runtime_advance_finalization_external_effect`. The direct CXX exports for finalization runtime planning,
+  `pbft_manager_runtime_start_finalization_executor`, typed success advancement APIs, and
+  `pbft_manager_runtime_fail_finalization_external_effect`. The direct CXX exports for finalization runtime planning,
   cursor next/report, standalone live-mutation report, separate boundary failure report, owned-action drain,
   manager-runtime storage apply, and the older piecemeal finalization boundary APIs are deleted. Rust retains the
   accepted finalization plan inside `BridgePbftManagerRuntime`, derives the current action from the cursor, derives base
-  finalization identity for reports, and returns explicit cursor/action executor states. C++ remains the executor for
+  finalization identity for typed reports, and returns explicit cursor/action executor states. C++ remains the executor for
   FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache
   side effects.
 - `PbftFinalizationRuntimeActionReport` is no longer a CXX DTO. It is a private Rust helper used inside
-  `pbft_manager.rs`; C++ reports finalization external effects with `PbftFinalizationExternalEffectReport`.
-- `PbftFinalizationLiveMutationReport` is no longer a CXX DTO. External finalization executors now return or construct
-  `PbftFinalizationExternalEffectReport` directly, and `BridgePbftManagerRuntime` derives the finalization identity from
-  the retained Rust plan before converting to the native live-mutation validation report. The shim-local
-  `makeFinalizationExternalEffectReport` mapper is deleted. The duplicate cursor-stuffed
-  `PbftFinalizationExecutorAdvanceReport` CXX DTO and field-copy helper are also deleted; the PBFT manager executor now
-  advances with a scalar cursor plus the subsystem `PbftFinalizationExternalEffectReport` output directly.
-- `PbftFinalizationExternalEffectReport` no longer carries an `action` field. The PBFT manager shim still validates the
-  expected action on `PbftManagerFinalizationExecutorState` before executing each external side effect, then reports only
-  success/failure facts by cursor. This keeps the manager cursor as the only accepted action identity source and prevents
-  sortition, reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain, advance-period, or pillar
-  reports from echoing a second action value back into Rust.
+  `pbft_manager.rs`; C++ no longer owns the scalar action report DTO.
+- `PbftFinalizationLiveMutationReport` and `PbftFinalizationExternalEffectReport` are no longer CXX DTOs. External
+  finalization executors now return or construct only subsystem-specific reports, and `BridgePbftManagerRuntime` derives
+  the finalization identity from the retained Rust plan before building the native live-mutation validation report. The
+  shim-local `makeFinalizationExternalEffectReport` mapper, duplicate cursor-stuffed
+  `PbftFinalizationExecutorAdvanceReport` CXX DTO, generic external-effect DTO, and field-copy helpers are deleted.
+- The PBFT manager shim still validates the expected action on `PbftManagerFinalizationExecutorState` before executing
+  each external side effect, then reports typed success facts by cursor or failure with status/error only. This keeps the
+  manager cursor as the only accepted action identity source and prevents sortition, reward-vote, DAG,
+  transaction-manager, PBFT-chain, anchor-cache, FinalChain, advance-period, or pillar reports from echoing a second
+  action value or a generic success/failure envelope back into Rust.
 - `PbftFinalizationRuntimeSessionStep` and `PbftManagerFinalizationOwnedActionDrainResult` are no longer CXX DTOs. The
   manager-owned finalization cursor/drain internals remain Rust-private in `pbft_manager.rs`, and C++ only receives the
   stable `PbftManagerFinalizationExecutorState` executor boundary.
@@ -508,48 +507,40 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - PBFT-chain finalization update facts no longer leak through `pbft_chain_shim` as
   `PbftFinalizationExternalEffectReport`. `pbft_chain_update_for_finalization` returns
   `PbftChainFinalizationUpdateReport` with only head size/hash/anchor facts; `pbft_manager_shim` advances through
-  `pbft_manager_runtime_advance_finalization_pbft_chain`, so Rust fills the temporary executor envelope internally.
-  Remaining generic finalization report producers are reward-vote reset, FinalChain dispatch/replay, and the manager
-  executor boundary itself.
+  `pbft_manager_runtime_advance_finalization_pbft_chain`, so Rust fills the native live-mutation report internally.
 - Sortition finalization update facts no longer leak through `sortition_params_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitPreparedBlockForSortitionFinalization` returns
   `SortitionFinalizationCommitReport` with only changed/change/current-threshold/cache-count facts; `pbft_manager_shim`
-  advances through `pbft_manager_runtime_advance_finalization_sortition_commit`, so Rust fills the temporary executor
-  envelope internally. Remaining generic finalization report producers are reward-vote reset, FinalChain
-  dispatch/replay, and the manager executor boundary itself.
+  advances through `pbft_manager_runtime_advance_finalization_sortition_commit`, so Rust fills the native live-mutation
+  report internally.
 - Reward-vote reset finalization facts no longer leak through `vote_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitRewardVotesResetForFinalization` returns
   `RewardVotesFinalizationResetReport` with only period/round/block-hash/extra-count facts; `pbft_manager_shim`
-  advances through `pbft_manager_runtime_advance_finalization_reward_votes_reset`, so Rust fills the temporary executor
-  envelope internally. Remaining generic finalization report producers are FinalChain dispatch/replay and the manager
-  executor boundary itself.
+  advances through `pbft_manager_runtime_advance_finalization_reward_votes_reset`, so Rust fills the native
+  live-mutation report internally.
 - DAG-order finalization facts no longer leak through `dag_manager_shim` as `PbftFinalizationExternalEffectReport`.
   `setDagBlockOrderForPbftFinalization` returns `DagFinalizationOrderReport` with only the finalized DAG-block count;
-  `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order`, so Rust fills the
-  temporary executor envelope internally. Remaining generic finalization report producers are FinalChain dispatch/replay
-  and the manager executor boundary itself.
+  `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order`, so Rust fills the native
+  live-mutation report internally.
 - Anchor-DAG-cache clear facts now advance through
   `pbft_manager_runtime_advance_finalization_anchor_cache_clear`. C++ passes only the typed
-  `AnchorDagCacheFinalizationClearReport` fact (`remaining_anchor_count`), and Rust fills the temporary
-  `PbftFinalizationExternalEffectReport` executor envelope internally. Remaining generic finalization report producers
-  were manager-local final-chain/advance/pillar reports and the manager executor boundary itself.
+  `AnchorDagCacheFinalizationClearReport` fact (`remaining_anchor_count`), and Rust fills the native live-mutation report
+  internally.
 - FinalChain PBFT finalization dispatch/replay facts now use the shim-owned
   `FinalChainPbftFinalizationDispatchReport` returned by `PbftManager::finalize_`. The report carries only
   `blocks_per_year` and observed FinalChain `last_block`; `pbft_manager_shim` advances through
-  `pbft_manager_runtime_advance_finalization_final_chain_dispatch`, so Rust fills the temporary
-  `PbftFinalizationExternalEffectReport` executor envelope internally. Remaining generic finalization report use is the
-  manager executor/failure envelope itself.
+  `pbft_manager_runtime_advance_finalization_final_chain_dispatch`, so Rust fills the native live-mutation report
+  internally.
 - PBFT manager advance-period finalization facts now advance through
   `pbft_manager_runtime_advance_finalization_advance_period`. C++ passes only the typed
-  `PbftManagerFinalizationAdvancePeriodReport` fact (`manager_period`), and Rust fills the temporary
-  `PbftFinalizationExternalEffectReport` executor envelope internally. Remaining generic finalization report producers
-  were manager-local pillar post-processing reports and the manager executor boundary itself.
+  `PbftManagerFinalizationAdvancePeriodReport` fact (`manager_period`), and Rust fills the native live-mutation report
+  internally.
 - PBFT manager pillar post-processing facts now use the manager-local
   `PbftManagerFinalizationPillarPostProcessingReport` and advance through
   `pbft_manager_runtime_advance_finalization_pillar_post_processing` instead of constructing
   `PbftFinalizationExternalEffectReport` in C++. The report carries only the pillar processed/request periods, and the
   shim now rejects invalid delegation-delay request-period derivation before executing the pillar side effect. The
-  remaining generic finalization report use is the temporary Rust executor envelope plus C++ failure-envelope plumbing.
+  only remaining external failure reporting is the scalar `pbft_manager_runtime_fail_finalization_external_effect` API.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

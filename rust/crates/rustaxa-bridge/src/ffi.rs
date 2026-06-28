@@ -1948,38 +1948,6 @@ pub mod rustaxa_ffi {
         last_block: u64,
     }
 
-    /// External PBFT finalization effect report from the C++ executor.
-    struct PbftFinalizationExternalEffectReport {
-        success: bool,
-        status: u8,
-        error_code: String,
-        dag_finalized_count: u64,
-        finalized_transaction_count: u64,
-        pbft_chain_size: u64,
-        pbft_chain_head_hash: [u8; 32],
-        pbft_chain_last_anchor_hash: [u8; 32],
-        reward_votes_period: u64,
-        reward_votes_round: u64,
-        reward_votes_block_hash: [u8; 32],
-        reward_votes_extra_count: u64,
-        sortition_changed: bool,
-        sortition_change_period: u64,
-        sortition_change_interval_efficiency: u16,
-        sortition_change_threshold_upper: u16,
-        sortition_current_threshold_upper: u16,
-        sortition_params_changes_count: u64,
-        rounds_count_dynamic_lambda: u32,
-        dynamic_lambda: u32,
-        executed_pbft_block: bool,
-        manager_period: u64,
-        pillar_processed_period: u64,
-        pillar_request_period: u64,
-        anchor_dag_cache_count: u64,
-        final_chain_dispatched: bool,
-        final_chain_blocks_per_year: u32,
-        final_chain_last_block: u64,
-    }
-
     /// Typed PBFT finalization pillar post-processing report from the C++
     /// executor.
     ///
@@ -4882,10 +4850,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             request: PbftFinalizationExecutorStartRequest,
         ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_external_effect(
+        pub fn pbft_manager_runtime_fail_finalization_external_effect(
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
-            report: PbftFinalizationExternalEffectReport,
+            status: u8,
+            error_code: String,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_transaction_status(
             runtime: &mut BridgePbftManagerRuntime,
