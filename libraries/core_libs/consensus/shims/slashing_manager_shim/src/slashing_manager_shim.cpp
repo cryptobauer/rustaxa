@@ -43,10 +43,6 @@ rust::Vec<uint8_t> to_bridge_bytes(const bytes& input) {
   return out;
 }
 
-rust::Slice<const uint8_t> to_bridge_byte_slice(const rust::Vec<uint8_t>& bytes) {
-  return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
-}
-
 addr_t from_bridge_address(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
@@ -56,11 +52,9 @@ rustaxa::PbftVoteStorageRecord make_slashing_vote_payload(const std::shared_ptr<
     throw std::runtime_error("SlashingManager cannot build a payload for a null PBFT vote");
   }
 
-  auto canonical_vote_rlp = to_bridge_bytes(vote->rlp(true, false));
-  auto record = rustaxa::pbft_vote_slashing_payload_from_canonical_vote(to_bridge_byte_slice(canonical_vote_rlp));
-  if (record.hash != to_bridge_hash(vote->getHash())) {
-    throw std::runtime_error("Rust PBFT slashing payload hash mismatches live vote hash");
-  }
+  rustaxa::PbftVoteStorageRecord record;
+  record.hash = to_bridge_hash(vote->getHash());
+  record.vote_rlp = to_bridge_bytes(vote->rlp(true, false));
   return record;
 }
 
@@ -176,8 +170,7 @@ bool SlashingManager::submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInp
   rustaxa::DoubleVotingProofSubmissionReport report;
   report.proof_hash = plan.proof_hash;
   report.transaction_inserted = trx_manager_->insertTransaction(trx).first;
-  const auto submission_plan = planner_->slashing_report_double_voting_proof_submission(std::move(report));
-  return submission_plan.submitted;
+  return planner_->slashing_report_double_voting_proof_submission(std::move(report));
 }
 
 }  // namespace taraxa

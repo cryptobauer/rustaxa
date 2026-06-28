@@ -1334,8 +1334,8 @@ Implementation status:
   `pbft_validate_canonical_vote`, `pbft_vote_event_fact_from_canonical_vote`, and
   `pbft_derive_vote_progress_fact_from_canonical_vote`. Live C++ ingress now uses `BridgeConsensusNetworkApi`, live
   validation/admission/reward-vote materialization uses `BridgeVerifiedVotes`, and the bridge-only DTOs/modules that
-  existed solely for the removed free functions are deleted. `pbft_inspect_canonical_vote`, vote payload conversion, and
-  vote generation helpers remain because `vote_manager_shim` and `slashing_manager_shim` still call them directly.
+  existed solely for the removed free functions are deleted. `pbft_inspect_canonical_vote`, weighted vote payload
+  conversion, and vote generation helpers remain because `vote_manager_shim` still calls them directly.
 - The no-caller scalar threshold helper `pbft_vote_sortition_threshold_for_bridge` is also deleted from the CXX surface.
   Native `rustaxa-consensus` keeps `pbft_vote_sortition_threshold` for validation, threshold planning, and vote
   generation; live C++ proposer screening still uses `pbft_proposer_sortition_plan`.
@@ -1638,6 +1638,12 @@ Implementation status:
 - The slashing CXX planner input is narrowed from duplicated vote coordinate fields to one shared PBFT slot plus the two
   canonical vote payloads. Rust bridge code expands this evidence-shaped CXX DTO into the consensus-domain input while
   the C++ compatibility adapter rejects mismatched live `PbftVote` slots before planning.
+- The slashing-only `pbft_vote_slashing_payload_from_canonical_vote` CXX helper is deleted. Rust vote admission still
+  normalizes slashing evidence inside `rustaxa-consensus`; the live `PbftVote` compatibility adapter now constructs the
+  evidence DTO directly from unweighted canonical vote bytes and the live vote hash.
+- The bridge-only `DoubleVotingProofSubmissionPlan` CXX DTO is deleted. Rust consensus keeps the richer submission
+  classification internally, while the C++ slashing facade receives only the submitted/not-submitted boolean it uses for
+  executor flow.
 - The remaining standalone pillar-vote CXX surface is deleted after
   `PillarVoteBundleBridgeTest.applyPillarVoteBundleFromWeightedRlpsInsertsAcceptedVotes` moved to
   `BridgePillarChainRuntime`. Follow-up cleanup moved the residual Rust-only pillar-vote fixture out of `ffi.rs`,

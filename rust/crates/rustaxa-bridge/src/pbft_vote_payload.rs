@@ -9,8 +9,7 @@
 use crate::ffi::rustaxa_ffi::PbftVoteStorageRecord;
 use anyhow::Result;
 use rustaxa_consensus::{
-    build_slashing_pbft_vote_payload, build_weighted_pbft_vote_bundle,
-    build_weighted_pbft_vote_payload, PbftVotePayloadRecord,
+    build_weighted_pbft_vote_bundle, build_weighted_pbft_vote_payload, PbftVotePayloadRecord,
 };
 
 /// Builds a weighted PBFT vote storage record from canonical signed vote bytes.
@@ -23,17 +22,6 @@ pub fn pbft_vote_weighted_payload_from_canonical_vote(
     weight: u64,
 ) -> Result<PbftVoteStorageRecord> {
     Ok(build_weighted_pbft_vote_payload(canonical_vote_rlp, weight)?.into())
-}
-
-/// Builds a normalized unweighted PBFT vote record for slashing evidence.
-///
-/// Inputs may contain an embedded storage weight; Rust strips that fourth field
-/// before returning calldata evidence bytes so slashing never receives weighted
-/// storage RLP by accident.
-pub fn pbft_vote_slashing_payload_from_canonical_vote(
-    canonical_vote_rlp: &[u8],
-) -> Result<PbftVoteStorageRecord> {
-    Ok(build_slashing_pbft_vote_payload(canonical_vote_rlp)?.into())
 }
 
 /// Builds a raw RLP list of weighted PBFT vote payload records.
@@ -119,16 +107,6 @@ mod tests {
         assert_eq!(decoded.item_count().unwrap(), 4);
         assert_eq!(decoded.val_at::<u64>(3).unwrap(), 44);
         assert_eq!(record.hash.len(), 32);
-    }
-
-    #[test]
-    fn bridge_normalizes_slashing_payload_without_storage_weight() {
-        let weighted =
-            pbft_vote_weighted_payload_from_canonical_vote(&canonical_vote(0x12), 8).unwrap();
-        let slashing = pbft_vote_slashing_payload_from_canonical_vote(&weighted.vote_rlp).unwrap();
-
-        assert_eq!(slashing.hash, weighted.hash);
-        assert_eq!(Rlp::new(&slashing.vote_rlp).item_count().unwrap(), 3);
     }
 
     #[test]

@@ -990,13 +990,6 @@ pub mod rustaxa_ffi {
         transaction_inserted: bool,
     }
 
-    /// Rust-owned classification of a slashing transaction executor report.
-    struct DoubleVotingProofSubmissionPlan {
-        status: u8,
-        submitted: bool,
-        mark_inserted: bool,
-    }
-
     struct HashPeriod {
         hash: [u8; 32],
         period: u64,
@@ -5119,7 +5112,7 @@ pub mod rustaxa_ffi {
         pub fn slashing_report_double_voting_proof_submission(
             self: &BridgeSlashingProofPlanner,
             report: DoubleVotingProofSubmissionReport,
-        ) -> Result<DoubleVotingProofSubmissionPlan>;
+        ) -> Result<bool>;
 
         // Consensus transaction manager planning
 
@@ -5431,9 +5424,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_vote_weighted_payload_from_canonical_vote(
             canonical_vote_rlp: &[u8],
             weight: u64,
-        ) -> Result<PbftVoteStorageRecord>;
-        pub fn pbft_vote_slashing_payload_from_canonical_vote(
-            canonical_vote_rlp: &[u8],
         ) -> Result<PbftVoteStorageRecord>;
         pub fn pbft_vote_bundle_payload_from_records(
             records: Vec<PbftVoteStorageRecord>,
