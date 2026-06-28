@@ -1539,10 +1539,17 @@ Implementation status:
   `consensus_execution_persist_pending_publication`, and `consensus_execution_publication_audit`. The live
   `final_chain_shim` path still uses `BridgeConsensusExecutionApi` for external-EVM/`StateAPI` interaction, and the CXX
   bridge keeps session creation/commit plus the minimal step/report/publish methods that are still called by that
-  external execution adapter. The remaining Rust-internal wrapper methods and bridge-only DTOs are follow-up Slice 8/9
-  cleanup once bridge tests move to native consensus APIs.
+  external execution adapter. Follow-up cleanup moved bridge tests off the obsolete publication-plan DTOs and deleted
+  `FinalChainExternalEvmPublicationPlan` plus `FinalChainExternalEvmTransactionPublication` from the CXX surface. The
+  remaining oversized external-EVM DTO is `FinalChainExternalEvmCommitPlan`; live C++ uses it only to inspect the
+  rewards-report error before calling the one-shot state-commit preparation API.
   Custom agents used: `rust-engineer` confirmed the live C++ route and identified the remaining Rust-internal wrapper
-  callsites that must be migrated before deleting the implementation helpers.
+  callsites, while `api-designer` confirmed the publication-plan DTOs are not live C++ and recommended shrinking
+  `FinalChainExternalEvmCommitPlan` next.
+  Validation for this publication-plan DTO shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain -- --nocapture`
 - The older direct `BridgeFinalChain::finalize_block*` compatibility exports and bridge-only `FinalizationOutcome` DTO
   are deleted. FinalChain execution now crosses the CXX bridge through `BridgeFinalChainExecutionSession` and
   `BridgeConsensusExecutionApi`; native `rustaxa-consensus` FinalChain tests cover direct native finalization.

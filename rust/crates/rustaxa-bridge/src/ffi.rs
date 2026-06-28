@@ -3255,13 +3255,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    struct FinalChainExternalEvmTransactionPublication {
-        transaction_hash: [u8; 32],
-        position: u32,
-        is_system: bool,
-        receipt_rlp: Vec<u8>,
-    }
-
     struct FinalChainExternalEvmRewardsStatsUpdate {
         current_period: u64,
         cache_current_period: bool,
@@ -3272,25 +3265,6 @@ pub mod rustaxa_ffi {
     struct FinalChainProposalPeriodDagLevelUpdate {
         has_update: bool,
         level: u64,
-    }
-
-    #[allow(dead_code)]
-    struct FinalChainExternalEvmPublicationPlan {
-        request_id: [u8; 32],
-        plan_id: [u8; 32],
-        period: u64,
-        block_hash: [u8; 32],
-        block_header_rlp: Vec<u8>,
-        stored_header_rlp: Vec<u8>,
-        receipts_rlp: Vec<u8>,
-        indexed_log_bloom: Vec<u8>,
-        system_transaction_hashes_rlp: Vec<u8>,
-        transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
-        executed_dag_blocks: u64,
-        executed_transactions: u64,
-        proposal_period_dag_level_update: FinalChainProposalPeriodDagLevelUpdate,
-        rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
-        error_code: String,
     }
 
     struct FinalChainExternalEvmStateCommitIntent {

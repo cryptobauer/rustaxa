@@ -329,64 +329,6 @@ fn external_evm_commit_plan_to_ffi(
     }
 }
 
-#[cfg(test)]
-fn external_evm_publication_plan_to_ffi(
-    plan: rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
-) -> rustaxa_ffi::FinalChainExternalEvmPublicationPlan {
-    rustaxa_ffi::FinalChainExternalEvmPublicationPlan {
-        request_id: plan.request_id,
-        plan_id: plan.plan_id,
-        period: plan.period,
-        block_hash: plan.block_hash,
-        block_header_rlp: plan.block_header_rlp,
-        stored_header_rlp: plan.stored_header_rlp,
-        receipts_rlp: plan.receipts_rlp,
-        indexed_log_bloom: plan.indexed_log_bloom,
-        system_transaction_hashes_rlp: plan.system_transaction_hashes_rlp,
-        transaction_publications: plan
-            .transaction_publications
-            .into_iter()
-            .map(
-                |publication| rustaxa_ffi::FinalChainExternalEvmTransactionPublication {
-                    transaction_hash: publication.transaction_hash,
-                    position: publication.position,
-                    is_system: publication.is_system,
-                    receipt_rlp: publication.receipt_rlp,
-                },
-            )
-            .collect(),
-        executed_dag_blocks: plan.executed_dag_blocks,
-        executed_transactions: plan.executed_transactions,
-        proposal_period_dag_level_update: proposal_period_dag_level_update_to_ffi(
-            plan.proposal_period_dag_level_update,
-        ),
-        rewards_stats_update: external_evm_rewards_stats_update_to_ffi(plan.rewards_stats_update),
-        error_code: plan.error_code,
-    }
-}
-
-#[cfg(test)]
-fn external_evm_rewards_stats_update_to_ffi(
-    update: rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate,
-) -> rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate {
-    rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate {
-        current_period: update.current_period,
-        cache_current_period: update.cache_current_period,
-        clear_cached_stats: update.clear_cached_stats,
-        current_block_stats_rlp: update.current_block_stats_rlp,
-    }
-}
-
-#[cfg(test)]
-fn proposal_period_dag_level_update_to_ffi(
-    update: rustaxa_consensus::FinalChainProposalPeriodDagLevelUpdate,
-) -> rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate {
-    rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate {
-        has_update: update.has_update,
-        level: update.level,
-    }
-}
-
 fn proposal_period_dag_level_update_from_ffi(
     update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
 ) -> rustaxa_consensus::FinalChainProposalPeriodDagLevelUpdate {
@@ -404,85 +346,6 @@ fn external_evm_rewards_stats_update_from_ffi(
         cache_current_period: update.cache_current_period,
         clear_cached_stats: update.clear_cached_stats,
         current_block_stats_rlp: update.current_block_stats_rlp,
-    }
-}
-
-#[cfg(test)]
-fn external_evm_publication_plan_from_ffi(
-    plan: rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
-) -> rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
-    rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
-        request_id: plan.request_id,
-        plan_id: plan.plan_id,
-        period: plan.period,
-        block_hash: plan.block_hash,
-        block_header_rlp: plan.block_header_rlp,
-        stored_header_rlp: plan.stored_header_rlp,
-        receipts_rlp: plan.receipts_rlp,
-        indexed_log_bloom: plan.indexed_log_bloom,
-        system_transaction_hashes_rlp: plan.system_transaction_hashes_rlp,
-        transaction_publications: plan
-            .transaction_publications
-            .into_iter()
-            .map(
-                |publication| rustaxa_consensus::FinalChainExternalEvmTransactionPublication {
-                    transaction_hash: publication.transaction_hash,
-                    position: publication.position,
-                    is_system: publication.is_system,
-                    receipt_rlp: publication.receipt_rlp,
-                },
-            )
-            .collect(),
-        executed_dag_blocks: plan.executed_dag_blocks,
-        executed_transactions: plan.executed_transactions,
-        proposal_period_dag_level_update: proposal_period_dag_level_update_from_ffi(
-            plan.proposal_period_dag_level_update,
-        ),
-        rewards_stats_update: external_evm_rewards_stats_update_from_ffi(plan.rewards_stats_update),
-        error_code: plan.error_code,
-    }
-}
-
-#[cfg(test)]
-fn external_evm_publication_plan_from_ffi_ref(
-    plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
-) -> rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
-    rustaxa_consensus::FinalChainExternalEvmPublicationPlan {
-        request_id: plan.request_id,
-        plan_id: plan.plan_id,
-        period: plan.period,
-        block_hash: plan.block_hash,
-        block_header_rlp: plan.block_header_rlp.clone(),
-        stored_header_rlp: plan.stored_header_rlp.clone(),
-        receipts_rlp: plan.receipts_rlp.clone(),
-        indexed_log_bloom: plan.indexed_log_bloom.clone(),
-        system_transaction_hashes_rlp: plan.system_transaction_hashes_rlp.clone(),
-        transaction_publications: plan
-            .transaction_publications
-            .iter()
-            .map(
-                |publication| rustaxa_consensus::FinalChainExternalEvmTransactionPublication {
-                    transaction_hash: publication.transaction_hash,
-                    position: publication.position,
-                    is_system: publication.is_system,
-                    receipt_rlp: publication.receipt_rlp.clone(),
-                },
-            )
-            .collect(),
-        executed_dag_blocks: plan.executed_dag_blocks,
-        executed_transactions: plan.executed_transactions,
-        proposal_period_dag_level_update:
-            rustaxa_consensus::FinalChainProposalPeriodDagLevelUpdate {
-                has_update: plan.proposal_period_dag_level_update.has_update,
-                level: plan.proposal_period_dag_level_update.level,
-            },
-        rewards_stats_update: rustaxa_consensus::FinalChainExternalEvmRewardsStatsUpdate {
-            current_period: plan.rewards_stats_update.current_period,
-            cache_current_period: plan.rewards_stats_update.cache_current_period,
-            clear_cached_stats: plan.rewards_stats_update.clear_cached_stats,
-            current_block_stats_rlp: plan.rewards_stats_update.current_block_stats_rlp.clone(),
-        },
-        error_code: plan.error_code.clone(),
     }
 }
 
@@ -505,21 +368,6 @@ fn external_evm_state_commit_result_from_ffi(
     rustaxa_consensus::FinalChainExternalEvmStateCommitResult {
         status: result.status,
         error_code: result.error_code,
-    }
-}
-
-#[cfg(test)]
-fn external_evm_commit_decision_from_ffi(
-    decision: rustaxa_ffi::FinalChainExternalEvmCommitDecision,
-) -> rustaxa_consensus::FinalChainExternalEvmCommitDecision {
-    rustaxa_consensus::FinalChainExternalEvmCommitDecision {
-        request_id: decision.request_id,
-        plan_id: decision.plan_id,
-        decision_id: decision.decision_id,
-        period: decision.period,
-        publication_block_hash: decision.publication_block_hash,
-        status: decision.status,
-        error_code: decision.error_code,
     }
 }
 
@@ -924,15 +772,6 @@ impl BridgeFinalChain {
                 *committed_state_root,
             )?,
         ))
-    }
-
-    #[cfg(test)]
-    pub fn audit_external_evm_publication(
-        self: &BridgeFinalChain,
-        plan: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
-    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationAuditReport, anyhow::Error> {
-        self.0
-            .audit_external_evm_publication(external_evm_publication_plan_from_ffi_ref(plan))
     }
 
     pub fn get_account(
@@ -1627,13 +1466,13 @@ mod tests {
     fn execution_session_plan_external_evm_publication(
         final_chain: &BridgeFinalChain,
         session: &mut BridgeFinalChainExecutionSession,
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
-        Ok(external_evm_publication_plan_to_ffi(
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(
             rustaxa_consensus::final_chain_execution_session_plan_external_evm_publication(
                 &final_chain.0,
                 &mut session.state,
             ),
-        ))
+        )
     }
 
     fn execution_session_request_external_evm_state_commit(
@@ -1663,25 +1502,25 @@ mod tests {
     fn execution_session_attach_external_evm_rewards_stats(
         session: &mut BridgeFinalChainExecutionSession,
         rewards_stats_update: rustaxa_ffi::FinalChainExternalEvmRewardsStatsUpdate,
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
-        Ok(external_evm_publication_plan_to_ffi(
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(
             rustaxa_consensus::final_chain_execution_session_attach_external_evm_rewards_stats(
                 &mut session.state,
                 external_evm_rewards_stats_update_from_ffi(rewards_stats_update),
             ),
-        ))
+        )
     }
 
     fn execution_session_attach_external_evm_proposal_period_dag_level(
         session: &mut BridgeFinalChainExecutionSession,
         update: rustaxa_ffi::FinalChainProposalPeriodDagLevelUpdate,
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
-        Ok(external_evm_publication_plan_to_ffi(
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationPlan, anyhow::Error> {
+        Ok(
             rustaxa_consensus::final_chain_execution_session_attach_external_evm_proposal_period_dag_level(
                 &mut session.state,
                 proposal_period_dag_level_update_from_ffi(update),
             ),
-        ))
+        )
     }
 
     fn execution_session_publish_external_evm_publication(
@@ -1712,14 +1551,12 @@ mod tests {
         final_chain: &BridgeFinalChain,
         session: &mut BridgeFinalChainExecutionSession,
         result: rustaxa_ffi::FinalChainExternalEvmStateCommitResult,
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitDecision, anyhow::Error> {
-        Ok(external_evm_commit_decision_to_ffi(
-            rustaxa_consensus::final_chain_execution_session_report_external_evm_state_commit_result(
-                &final_chain.0,
-                &mut session.state,
-                external_evm_state_commit_result_from_ffi(result),
-            )?,
-        ))
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmCommitDecision, anyhow::Error> {
+        rustaxa_consensus::final_chain_execution_session_report_external_evm_state_commit_result(
+            &final_chain.0,
+            &mut session.state,
+            external_evm_state_commit_result_from_ffi(result),
+        )
     }
 
     fn assert_transaction_location(
@@ -1749,7 +1586,7 @@ mod tests {
         Box<BridgeFinalChain>,
         Box<BridgeFinalChainExecutionSession>,
         rustaxa_ffi::FinalChainExternalEvmCommitPlan,
-        rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+        rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
     ) {
         let temp_dir = unique_temp_dir(prefix);
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
@@ -1901,7 +1738,7 @@ mod tests {
     fn request_external_evm_state_commit(
         session: &mut BridgeFinalChainExecutionSession,
         plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
-        publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+        publication: &rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
     ) -> rustaxa_ffi::FinalChainExternalEvmStateCommitIntent {
         let intent = execution_session_request_external_evm_state_commit(
             session,
@@ -1936,8 +1773,8 @@ mod tests {
         final_chain: &BridgeFinalChain,
         session: &mut BridgeFinalChainExecutionSession,
         plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
-        publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
-    ) -> rustaxa_ffi::FinalChainExternalEvmCommitDecision {
+        publication: &rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
+    ) -> rustaxa_consensus::FinalChainExternalEvmCommitDecision {
         let intent = request_external_evm_state_commit(session, plan, publication);
         let decision = execution_session_report_external_evm_state_commit_result(
             final_chain,
@@ -1978,13 +1815,12 @@ mod tests {
 
     fn publish_external_evm_publication_via_rust(
         final_chain: &BridgeFinalChain,
-        publication: rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
-        decision: rustaxa_ffi::FinalChainExternalEvmCommitDecision,
+        publication: rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
+        decision: rustaxa_consensus::FinalChainExternalEvmCommitDecision,
     ) -> Result<rustaxa_consensus::FinalChainExternalEvmPublicationReport, anyhow::Error> {
-        final_chain.0.publish_external_evm_publication(
-            external_evm_publication_plan_from_ffi(publication),
-            external_evm_commit_decision_from_ffi(decision),
-        )
+        final_chain
+            .0
+            .publish_external_evm_publication(publication, decision)
     }
 
     fn ready_external_evm_commit_decision_via_execution_api(
@@ -2058,10 +1894,11 @@ mod tests {
 
     fn assert_external_evm_publication_audit_matches(
         final_chain: &BridgeFinalChain,
-        publication: &rustaxa_ffi::FinalChainExternalEvmPublicationPlan,
+        publication: &rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
     ) {
         let audit = final_chain
-            .audit_external_evm_publication(publication)
+            .0
+            .audit_external_evm_publication(publication.clone())
             .expect("external EVM publication audit should run");
         assert_eq!(
             audit.status,
@@ -3153,7 +2990,7 @@ mod tests {
             vec![1]
         );
         assert_external_evm_publication_audit_matches(&final_chain, &publication);
-        let mut mutated_publication = external_evm_publication_plan_from_ffi_ref(&publication);
+        let mut mutated_publication = publication.clone();
         mutated_publication.receipts_rlp.push(0xff);
         let mutated_audit = final_chain
             .0
@@ -3578,7 +3415,7 @@ mod tests {
                 1,
             );
         let intent = request_external_evm_state_commit(&mut session, &plan, &publication);
-        let forged_decision = rustaxa_ffi::FinalChainExternalEvmCommitDecision {
+        let forged_decision = rustaxa_consensus::FinalChainExternalEvmCommitDecision {
             request_id: intent.request_id,
             plan_id: intent.plan_id,
             decision_id: [0; 32],

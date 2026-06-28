@@ -576,8 +576,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `consensus_execution_attach_proposal_period_dag_level`, `consensus_execution_next_state_commit_request`,
   `consensus_execution_persist_pending_publication`, and `consensus_execution_publication_audit`. Live C++ drives
   external EVM and `StateAPI` through the remaining `BridgeConsensusExecutionApi` methods; the CXX surface still keeps
-  session creation/commit plus the minimal step/report/publish methods called by `final_chain_shim`. Remaining
-  Rust-internal wrappers are tracked as follow-up bridge-test cleanup before their DTOs can be deleted.
+  session creation/commit plus the minimal step/report/publish methods called by `final_chain_shim`. The obsolete
+  `FinalChainExternalEvmPublicationPlan` and `FinalChainExternalEvmTransactionPublication` CXX DTOs are deleted; bridge
+  tests that still inspect publication internals use native `rustaxa-consensus` publication-plan structs. The remaining
+  oversized external-EVM CXX DTO is `FinalChainExternalEvmCommitPlan`, which live C++ currently uses only as the
+  rewards-report boundary status/error carrier before the one-shot state-commit preparation call.
 - The older direct `BridgeFinalChain::finalize_block*` compatibility exports and bridge-only `FinalizationOutcome` DTO
   are retired. FinalChain execution now crosses the bridge through `BridgeFinalChainExecutionSession` and
   `BridgeConsensusExecutionApi`, while native direct finalization remains covered in `rustaxa-consensus`.
