@@ -141,9 +141,45 @@ scan_diff() {
   '
 }
 
+check_conformance_fixture_helper_scope() {
+  root="${1:-.}"
+  helper="storage_shim_seed_final_chain_conformance_lookup_rows"
+  violations="$(
+    find "$root" \
+      \( -path "$root/.git" -o -path "$root/rust/target" -o -path "$root/build" -o -path "$root/.cache" \) -prune -o \
+      -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o \
+                 -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' -o \
+                 -name '*.rs' -o -name '*.sh' \) \
+      -exec grep -Hn "$helper" {} + 2>/dev/null |
+    sed "s#^$root/##" |
+    awk -F: '
+      $1 != "tests/storage_conformance/storage_conformance_runner.cpp" &&
+      $1 != "rust/crates/rustaxa-bridge/src/ffi.rs" &&
+      $1 != "rust/crates/rustaxa-bridge/src/storage.rs" &&
+      $1 != "scripts/rewrite_storage_boundary_guard.sh" {
+        print
+      }
+    '
+  )"
+  if [ -n "$violations" ]; then
+    cat >&2 <<'EOF'
+Rust storage-boundary guard failed.
+
+The FinalChain conformance lookup-row fixture helper is intentionally limited
+to the storage conformance runner and its Rust bridge implementation. Add a
+dedicated Rust storage/query API instead of creating new C++ callers.
+
+Violations:
+EOF
+    printf '%s\n' "$violations" >&2
+    return 1
+  fi
+}
+
 if [ "$self_test" -eq 1 ]; then
   violations_file="$(mktemp)"
-  trap 'rm -f "$violations_file"' EXIT
+  fixture_scope_root="$(mktemp -d)"
+  trap 'rm -f "$violations_file"; rm -rf "$fixture_scope_root"' EXIT
 
   cat <<'EOF' | scan_diff >"$violations_file" || true
 diff --git a/libraries/core_libs/network/rpc/Taraxa.cpp b/libraries/core_libs/network/rpc/Taraxa.cpp
@@ -305,6 +341,27 @@ EOF
     exit 1
   fi
 
+  mkdir -p "$fixture_scope_root/tests/storage_conformance" \
+           "$fixture_scope_root/rust/crates/rustaxa-bridge/src" \
+           "$fixture_scope_root/libraries/core_libs/consensus/shims/vote_manager_shim/src"
+  echo 'rustaxa::storage_shim_seed_final_chain_conformance_lookup_rows(*storage);' \
+    >"$fixture_scope_root/tests/storage_conformance/storage_conformance_runner.cpp"
+  echo 'pub fn storage_shim_seed_final_chain_conformance_lookup_rows() {}' \
+    >"$fixture_scope_root/rust/crates/rustaxa-bridge/src/storage.rs"
+  echo 'pub fn storage_shim_seed_final_chain_conformance_lookup_rows();' \
+    >"$fixture_scope_root/rust/crates/rustaxa-bridge/src/ffi.rs"
+  if ! check_conformance_fixture_helper_scope "$fixture_scope_root"; then
+    echo "storage-boundary guard self-test failed: allowed conformance fixture scope was rejected" >&2
+    exit 1
+  fi
+
+  echo 'rustaxa::storage_shim_seed_final_chain_conformance_lookup_rows(*storage);' \
+    >"$fixture_scope_root/libraries/core_libs/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp"
+  if check_conformance_fixture_helper_scope "$fixture_scope_root" >/dev/null 2>&1; then
+    echo "storage-boundary guard self-test failed: new conformance fixture helper caller was not rejected" >&2
+    exit 1
+  fi
+
   echo "Rust storage-boundary guard self-test passed."
   exit 0
 fi
@@ -343,5 +400,7 @@ EOF
   cat "$violations_file" >&2
   exit 1
 fi
+
+check_conformance_fixture_helper_scope
 
 echo "Rust storage-boundary guard passed."

@@ -1274,7 +1274,9 @@ Implementation status:
   identified it as a broad storage-method export with no production callsites. Rust bridge query fixtures now seed
   FinalChain lookup rows through native `rustaxa-storage` `FinalChainStore::write_conformance_lookup_rows` test setup,
   and the storage conformance runner uses the dedicated
-  `storage_shim_seed_final_chain_conformance_lookup_rows` fixture helper instead of a broad storage bridge mutator.
+  `storage_shim_seed_final_chain_conformance_lookup_rows` fixture helper instead of a broad storage bridge mutator. The
+  storage-boundary guard now fails if that fixture helper gains new callers outside the conformance runner or bridge
+  implementation.
 - `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted from the CXX bridge surface. Production
   DAG transaction availability and sync payload lookup continue through runtime-owned DAG APIs; the direct
   storage-query method only backed bridge-test scaffolding, and Rust bridge storage tests now cover pending, finalized,
