@@ -4967,13 +4967,6 @@ pub mod rustaxa_ffi {
             report: PbftManagerRuntimeActionReport,
         ) -> PbftManagerRuntimeSessionStep;
         pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime);
-        pub fn apply_pbft_finalization_storage_writes(
-            storage: &BridgeStorage,
-            write_set: &PbftFinalizationStorageWritePlan,
-            stages: Vec<PbftFinalizationStorageWriteStage>,
-            sync: bool,
-        ) -> Result<PbftFinalizedPeriodApplyResult>;
-
         // Consensus proposed PBFT blocks
 
         type BridgeProposedBlocks;

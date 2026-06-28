@@ -23,28 +23,8 @@ std::array<uint8_t, 32> h256(uint8_t last_byte) {
 
 PbftSyncTransactionHash tx(uint8_t last_byte) { return PbftSyncTransactionHash{h256(last_byte)}; }
 
-rust::Box<BridgePbftVoteStorageQueries> voteQueries(const rust::Box<BridgeStorage>& storage) {
-  return create_pbft_vote_storage_queries(*storage);
-}
-
 rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& storage) {
   return create_pbft_storage_queries(*storage);
-}
-
-rust::Box<BridgeMetadataStorageQueries> metadataQueries(const rust::Box<BridgeStorage>& storage) {
-  return create_metadata_storage_queries(*storage);
-}
-
-rust::Box<BridgeDagStorageQueries> dagQueries(const rust::Box<BridgeStorage>& storage) {
-  return create_dag_storage_queries(*storage);
-}
-
-rust::Box<BridgeTransactionStorageQueries> transactionQueries(const rust::Box<BridgeStorage>& storage) {
-  return create_transaction_storage_queries(*storage);
-}
-
-rust::Box<BridgePeriodStorageQueries> periodQueries(const rust::Box<BridgeStorage>& storage) {
-  return create_period_storage_queries(*storage);
 }
 
 std::vector<std::array<uint8_t, 32>> hashes(const rust::Vec<PbftSyncTransactionHash>& input) {
@@ -88,20 +68,12 @@ constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
 constexpr uint8_t kPbftFinalizationExecutorModeFresh = 0;
 constexpr uint8_t kPbftFinalizationExecutorModeResume = 1;
 constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
-constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
-constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
-constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
-constexpr uint8_t kPbftFinalizedPeriodApplyStatusMissingPayload = 3;
 constexpr uint8_t kPbftMgrFieldRound = 0;
 constexpr uint8_t kPbftMgrFieldStep = 1;
 constexpr uint8_t kPbftMgrFieldLambda = 2;
 constexpr uint8_t kPbftMgrStatusExecutedBlock = 0;
 constexpr uint8_t kPbftMgrStatusNextVotedValue = 2;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
-constexpr uint8_t kPbftFinalizationStorageStageDynamicLambda = 1;
-constexpr uint8_t kPbftFinalizationStorageStageExecutedStatus = 2;
-constexpr uint8_t kPbftFinalizationStorageStageSortition = 3;
-constexpr uint8_t kPbftFinalizationStorageStageRewardReset = 4;
 constexpr uint8_t kPbftManagerStartupStatusReady = 0;
 constexpr uint8_t kPbftManagerRuntimeStateValueProposal = 0;
 constexpr uint8_t kPbftManagerRuntimeStateFinish = 3;
@@ -156,16 +128,6 @@ PbftFinalizationStorageWriteStage finalizationStorageStage(uint8_t stage) {
   return write_stage;
 }
 
-PbftFinalizationStorageWriteStage sortitionFinalizationStorageStage(uint64_t period, uint16_t interval_efficiency,
-                                                                    uint16_t threshold_upper) {
-  auto stage = finalizationStorageStage(kPbftFinalizationStorageStageSortition);
-  stage.has_sortition_params_change = true;
-  stage.sortition_params_change_period = period;
-  stage.sortition_params_change_interval_efficiency = interval_efficiency;
-  stage.sortition_params_change_threshold_upper = threshold_upper;
-  return stage;
-}
-
 rust::Vec<PbftFinalizationStorageWriteStage> storageStages(
     std::initializer_list<PbftFinalizationStorageWriteStage> stages) {
   rust::Vec<PbftFinalizationStorageWriteStage> out;
@@ -205,19 +167,6 @@ PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(BridgePbftM
   request.sync = false;
   request.resume = resume;
   return pbft_manager_runtime_start_finalization_executor(runtime, request);
-}
-
-PbftFinalizationStorageWriteStage rewardResetFinalizationStorageStage(
-    rust::Vec<uint8_t> cert_votes_bundle_rlp,
-    const std::vector<std::array<uint8_t, 32>>& stale_extra_reward_vote_hashes) {
-  auto stage = finalizationStorageStage(kPbftFinalizationStorageStageRewardReset);
-  stage.has_reward_votes_reset = true;
-  stage.reward_votes_bundle_rlp = std::move(cert_votes_bundle_rlp);
-  stage.extra_reward_vote_hashes.reserve(stale_extra_reward_vote_hashes.size());
-  for (const auto& hash : stale_extra_reward_vote_hashes) {
-    stage.extra_reward_vote_hashes.push_back(PbftFinalizationHash{hash});
-  }
-  return stage;
 }
 
 PbftSyncProcessPeriodDataRuntimeFact makeRuntimeFact() {
@@ -412,15 +361,6 @@ rust::Box<BridgePbftManagerRuntime> managerRuntimeForFinalizationSession() {
   auto startup_fact = makePbftManagerStartupFact();
   startup_fact.cacti_active_at_chain_size = false;
   return create_pbft_manager_runtime_from_storage(*storage, startup_fact);
-}
-
-rust::Vec<uint8_t> bytes(std::initializer_list<uint8_t> values) {
-  rust::Vec<uint8_t> out;
-  out.reserve(values.size());
-  for (auto value : values) {
-    out.push_back(value);
-  }
-  return out;
 }
 
 void expectNoFinalizationCleanup(const PbftFinalizationCleanupPlan& cleanup) {
@@ -1018,177 +958,4 @@ TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {
   EXPECT_FALSE(plan.apply_dynamic_lambda_update);
   EXPECT_EQ(plan.blocks_per_year, 500);
   EXPECT_EQ(plan.dynamic_lambda, 1500);
-}
-
-TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyWritesPrimaryBatch) {
-  const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_apply");
-
-  auto storage = create_storage(test_dir.string());
-  auto dag_seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_dag_block(*dag_seed_batch, h256(2), 1, bytes({0xda}), 1, 1);
-  storage_shim_commit_batch(std::move(dag_seed_batch), false);
-  auto tx_seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_transaction(*tx_seed_batch, h256(4), bytes({0xd0}));
-  storage_shim_commit_batch(std::move(tx_seed_batch), false);
-  auto period_queries = periodQueries(storage);
-
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
-  const auto result = apply_pbft_finalization_storage_writes(
-      *storage, plan.storage_write_intent,
-      storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
-
-  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
-  EXPECT_TRUE(result.wrote_pbft_head);
-  EXPECT_TRUE(result.wrote_period_data);
-  EXPECT_EQ(result.dag_index_writes, 2);
-  EXPECT_EQ(result.transaction_location_writes, 1);
-
-  auto pbft_queries = pbftQueries(storage);
-  const auto pbft_head = pbft_queries->get_pbft_head(h256(8));
-  EXPECT_EQ(std::vector<uint8_t>(pbft_head.begin(), pbft_head.end()),
-            (std::vector<uint8_t>{'{', '"', 'h', 'e', 'a', 'd', '"', ':', 't', 'r', 'u', 'e', '}'}));
-  const auto period_data = period_queries->get_period_data_raw(101);
-  EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
-  auto transaction_queries = transactionQueries(storage);
-  EXPECT_TRUE(transaction_queries->get_transaction(h256(4)).empty());
-
-  const auto dag_lookup = dagQueries(storage)->get_dag_block_period_lookup(h256(2));
-  EXPECT_TRUE(dag_lookup.found);
-  EXPECT_EQ(dag_lookup.period, 101);
-  EXPECT_EQ(dag_lookup.position, 0);
-  EXPECT_FALSE(transaction_queries->get_transaction_location(h256(4)).empty());
-  auto metadata_queries = metadataQueries(storage);
-  const auto period_lambda = metadata_queries->get_period_lambda(101, false);
-  EXPECT_FALSE(period_lambda.found);
-  EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock));
-
-  const auto sortition_result = apply_pbft_finalization_storage_writes(
-      *storage, plan.storage_write_intent, storageStages({sortitionFinalizationStorageStage(101, 2500, 1300)}), false);
-
-  EXPECT_EQ(sortition_result.status, kPbftFinalizedPeriodApplyStatusApplied);
-  EXPECT_FALSE(sortition_result.wrote_pbft_head);
-  EXPECT_FALSE(sortition_result.wrote_period_data);
-
-  EXPECT_FALSE(metadata_queries->get_params_change_for_period(101).empty());
-
-  const auto reward_reset_result = apply_pbft_finalization_storage_writes(
-      *storage, plan.storage_write_intent,
-      storageStages({rewardResetFinalizationStorageStage(bytes({0xc2, 0x01, 0x02}), {})}), false);
-
-  EXPECT_EQ(reward_reset_result.status, kPbftFinalizedPeriodApplyStatusApplied);
-  EXPECT_FALSE(reward_reset_result.wrote_pbft_head);
-  EXPECT_FALSE(reward_reset_result.wrote_period_data);
-
-  const auto reward_votes = voteQueries(storage)->get_all_two_t_plus_one_votes();
-  ASSERT_EQ(reward_votes.size(), 2);
-  EXPECT_EQ(std::vector<uint8_t>(reward_votes[0].data.begin(), reward_votes[0].data.end()),
-            (std::vector<uint8_t>{0x01}));
-  EXPECT_EQ(std::vector<uint8_t>(reward_votes[1].data.begin(), reward_votes[1].data.end()),
-            (std::vector<uint8_t>{0x02}));
-
-  const auto reward_reset_retry_result = apply_pbft_finalization_storage_writes(
-      *storage, plan.storage_write_intent,
-      storageStages({rewardResetFinalizationStorageStage(bytes({0xc2, 0x01, 0x02}), {})}), false);
-
-  EXPECT_EQ(reward_reset_retry_result.status, kPbftFinalizedPeriodApplyStatusAlreadyApplied);
-
-  auto dynamic_lambda_stage = finalizationStorageStage(kPbftFinalizationStorageStageDynamicLambda);
-  dynamic_lambda_stage.rounds_count_dynamic_lambda = 7;
-  dynamic_lambda_stage.dynamic_lambda = 1450;
-  const auto dynamic_lambda_result = apply_pbft_finalization_storage_writes(
-      *storage, plan.storage_write_intent, storageStages({dynamic_lambda_stage}), false);
-
-  EXPECT_EQ(dynamic_lambda_result.status, kPbftFinalizedPeriodApplyStatusApplied);
-  EXPECT_FALSE(dynamic_lambda_result.wrote_pbft_head);
-  EXPECT_FALSE(dynamic_lambda_result.wrote_period_data);
-
-  const auto persisted_period_lambda = metadata_queries->get_period_lambda(101, false);
-  EXPECT_TRUE(persisted_period_lambda.found);
-  EXPECT_EQ(persisted_period_lambda.value, 1500);
-  EXPECT_EQ(metadata_queries->get_rounds_count_dynamic_lambda(), 7);
-  EXPECT_EQ(pbftQueries(storage)->get_pbft_mgr_field(kPbftMgrFieldLambda), 1450);
-
-  const auto executed_status_result = apply_pbft_finalization_storage_writes(
-      *storage, plan.storage_write_intent,
-      storageStages({finalizationStorageStage(kPbftFinalizationStorageStageExecutedStatus)}), false);
-
-  EXPECT_EQ(executed_status_result.status, kPbftFinalizedPeriodApplyStatusApplied);
-
-  EXPECT_EQ(pbftQueries(storage)->get_pbft_mgr_status(kPbftMgrStatusExecutedBlock),
-            plan.storage_write_intent.executed_pbft_status);
-
-  std::filesystem::remove_all(test_dir);
-}
-
-TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyCommitsOwnedBatch) {
-  const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_owned_apply");
-
-  auto storage = create_storage(test_dir.string());
-  auto dag_seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_dag_block(*dag_seed_batch, h256(2), 1, bytes({0xda}), 1, 1);
-  storage_shim_commit_batch(std::move(dag_seed_batch), false);
-  auto tx_seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_transaction(*tx_seed_batch, h256(4), bytes({0xd0}));
-  storage_shim_commit_batch(std::move(tx_seed_batch), false);
-  auto seed_batch = create_storage_shim_batch(*storage);
-  storage_shim_save_extra_reward_vote(*seed_batch, h256(12), bytes({0xee}));
-  storage_shim_commit_batch(std::move(seed_batch), false);
-  auto period_queries = periodQueries(storage);
-
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
-  rust::Vec<PbftFinalizationStorageWriteStage> stages;
-  stages.push_back(finalizationStorageStage(kPbftFinalizationStorageStagePrimary));
-  stages.push_back(rewardResetFinalizationStorageStage(bytes({0xc2, 0x01, 0x02}), {h256(12)}));
-  stages.push_back(sortitionFinalizationStorageStage(101, 2500, 1300));
-
-  const auto result =
-      apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, std::move(stages), false);
-
-  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusApplied);
-  EXPECT_TRUE(result.wrote_pbft_head);
-  EXPECT_TRUE(result.wrote_period_data);
-  EXPECT_EQ(result.dag_index_writes, 2);
-  EXPECT_EQ(result.transaction_location_writes, 1);
-  const auto period_data = period_queries->get_period_data_raw(101);
-  EXPECT_EQ(std::vector<uint8_t>(period_data.begin(), period_data.end()), (std::vector<uint8_t>{0xc0}));
-  EXPECT_TRUE(transactionQueries(storage)->get_transaction(h256(4)).empty());
-  const auto reward_votes = voteQueries(storage)->get_all_two_t_plus_one_votes();
-  ASSERT_EQ(reward_votes.size(), 2);
-  EXPECT_EQ(std::vector<uint8_t>(reward_votes[0].data.begin(), reward_votes[0].data.end()),
-            (std::vector<uint8_t>{0x01}));
-  EXPECT_FALSE(metadataQueries(storage)->get_params_change_for_period(101).empty());
-
-  std::filesystem::remove_all(test_dir);
-}
-
-TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyRejectsRewardResetMissingFacts) {
-  const auto test_dir = uniqueTempDir("rustaxa_pbft_reward_reset_stage_rejected");
-  auto storage = create_storage(test_dir.string());
-  auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
-
-  auto stage = finalizationStorageStage(kPbftFinalizationStorageStageRewardReset);
-  const auto result =
-      apply_pbft_finalization_storage_writes(*storage, plan.storage_write_intent, storageStages({stage}), false);
-
-  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusRejected);
-  EXPECT_EQ(std::string(result.error_code), "PBFT_FINALIZE_MISSING_REWARD_VOTES_RESET_FACTS");
-
-  std::filesystem::remove_all(test_dir);
-}
-
-TEST(RustPbftSyncTest, FinalizedPeriodStorageApplyRejectsMissingPayload) {
-  const auto test_dir = uniqueTempDir("rustaxa_pbft_finalized_period_missing_payload");
-  auto storage = create_storage(test_dir.string());
-  auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
-  plan.storage_write_intent.pbft_head_payload.clear();
-
-  const auto result = apply_pbft_finalization_storage_writes(
-      *storage, plan.storage_write_intent,
-      storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
-
-  EXPECT_EQ(result.status, kPbftFinalizedPeriodApplyStatusMissingPayload);
-  EXPECT_FALSE(result.wrote_pbft_head);
-  EXPECT_FALSE(result.wrote_period_data);
-
-  std::filesystem::remove_all(test_dir);
 }

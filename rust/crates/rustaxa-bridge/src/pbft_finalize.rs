@@ -24,13 +24,16 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
+#[cfg(test)]
 use crate::ffi::BridgeStorage;
 #[cfg(test)]
 use crate::storage::create_period_storage_queries;
+#[cfg(test)]
 use anyhow::Result;
 use ethereum_types::H256;
+#[cfg(test)]
+use rustaxa_consensus::pbft_finalize::apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes;
 use rustaxa_consensus::pbft_finalize::{
-    apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent, PbftDynamicLambdaConfig,
     PbftDynamicLambdaFact, PbftFinalizationAnchor, PbftFinalizationCleanupIntent,
     PbftFinalizationIntentFact, PbftFinalizationPlan, PbftFinalizationPositionedHash,
@@ -41,6 +44,7 @@ use rustaxa_consensus::pbft_finalize::{
 #[cfg(test)]
 use rustaxa_storage::Column;
 
+#[cfg(test)]
 const APPLY_STATUS_REJECTED_WRITE_SET: u8 = 2;
 #[cfg(test)]
 const APPEND_STAGE_PRIMARY_FINALIZATION: u8 = 0;
@@ -78,6 +82,7 @@ const PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE: u8 = 1;
 /// - Empty stage lists are rejected without creating durable writes.
 /// - Rust storage failures are returned as bridge errors. The bridge does not
 ///   create, own, or commit a batch for this production apply path.
+#[cfg(test)]
 pub fn apply_pbft_finalization_storage_writes(
     storage: &BridgeStorage,
     write_set: &FfiPbftFinalizationStorageWritePlan,
@@ -414,6 +419,7 @@ impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWrite
     }
 }
 
+#[cfg(test)]
 fn sidecar_apply_result(
     status: u8,
     write_set: &FfiPbftFinalizationStorageWritePlan,

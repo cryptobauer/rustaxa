@@ -1685,6 +1685,10 @@ Implementation status:
   executors now report success through typed subsystem APIs and failure through
   `pbft_manager_runtime_fail_finalization_external_effect`; Rust bridge internals build native live-mutation reports
   after deriving finalization identity from `BridgePbftManagerRuntime`.
+- The standalone `apply_pbft_finalization_storage_writes` CXX export is deleted. Live manager-owned finalization storage
+  writes enter through `BridgePbftManagerRuntime`, while the retained verified-votes storage API remains the compatibility
+  surface for vote-manager finalization storage facts. The lower bridge wrapper and direct storage-apply scenarios remain
+  Rust test-only coverage.
 
 ## Slice 9: Delete Compatibility Tests That Only Protect Retired Scaffolding
 
