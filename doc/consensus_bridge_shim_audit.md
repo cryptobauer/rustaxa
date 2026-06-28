@@ -494,6 +494,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   success/failure facts by cursor. This keeps the manager cursor as the only accepted action identity source and prevents
   sortition, reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain, advance-period, or pillar
   reports from echoing a second action value back into Rust.
+- `PbftFinalizationRuntimeSessionStep` and `PbftManagerFinalizationOwnedActionDrainResult` are no longer CXX DTOs. The
+  manager-owned finalization cursor/drain internals remain Rust-private in `pbft_manager.rs`, and C++ only receives the
+  stable `PbftManagerFinalizationExecutorState` executor boundary.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

@@ -20,7 +20,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
-    PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftFinalizationStorageWriteStage as FfiPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
@@ -57,9 +56,6 @@ const APPEND_STAGE_REWARD_VOTES_RESET: u8 = 4;
 const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
 #[cfg(test)]
 const PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE: u8 = 1;
-const RUNTIME_STATUS_ACTIVE: u8 = 0;
-const RUNTIME_STATUS_COMPLETE: u8 = 1;
-const RUNTIME_NO_ACTION: u8 = 255;
 
 /// Applies one or more PBFT finalization persistence stages in a Rust-owned
 /// storage batch.
@@ -466,26 +462,6 @@ impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
             cleanup: (&value.cleanup).into(),
             storage_write_intent: (&value.storage_write_intent).into(),
             status: PbftFinalizationStatus::from_u8(value.status),
-        }
-    }
-}
-
-impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
-    for FfiPbftFinalizationRuntimeSessionStep
-{
-    fn from(value: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep) -> Self {
-        let status = value.runtime_status.as_u8();
-        Self {
-            status,
-            cursor: value.action_index,
-            action: value
-                .action
-                .map(PbftFinalizationRuntimeAction::as_u8)
-                .unwrap_or(RUNTIME_NO_ACTION),
-            has_action: value.has_action,
-            complete: value.complete,
-            can_continue: status == RUNTIME_STATUS_ACTIVE || status == RUNTIME_STATUS_COMPLETE,
-            error_code: value.error_code,
         }
     }
 }

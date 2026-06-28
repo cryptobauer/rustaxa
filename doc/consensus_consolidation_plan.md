@@ -618,6 +618,10 @@ Implementation notes:
   `pbft_manager_runtime_drain_owned_finalization_actions` are now private implementation helpers. C++ and external bridge
   consumers can only drive the manager-owned finalization path through the executor APIs listed above plus the explicit
   abort call.
+- The bridge-only finalization cursor/drain DTOs `PbftFinalizationRuntimeSessionStep` and
+  `PbftManagerFinalizationOwnedActionDrainResult` are no longer CXX exports. The same internal facts now live in
+  Rust-private `pbft_manager.rs` helper structs, and C++ receives only the stable
+  `PbftManagerFinalizationExecutorState` executor boundary.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -853,8 +857,14 @@ Implementation notes:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.FinalizationBoundary*:RustPbftSyncTest.FinalizationExecutorRejectsStaleCursor:RustPbftSyncTest.FinalizationResumeBoundaryOwnsManagerTailDrain' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - `scripts/rewrite_bridge_inventory_guard.sh`
   - `rg -n "pub fn pbft_manager_runtime_(begin_finalization_session|begin_finalization_resume_session|finalization_session_next|finalization_session_report|finalization_session_report_action|report_finalization_live_mutation|drain_owned_finalization_actions)" rust/crates/rustaxa-bridge/src/pbft_manager.rs` returns only the retained public boundary function.
+  - `rg -n "PbftFinalizationRuntimeSessionStep|PbftManagerFinalizationOwnedActionDrainResult" rust/crates/rustaxa-bridge/src libraries tests -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    returns no live code references.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`

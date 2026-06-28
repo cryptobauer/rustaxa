@@ -1890,31 +1890,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// One Rust-owned PBFT finalization runtime-session step.
-    struct PbftFinalizationRuntimeSessionStep {
-        status: u8,
-        cursor: u32,
-        action: u8,
-        has_action: bool,
-        complete: bool,
-        can_continue: bool,
-        error_code: String,
-    }
-
-    /// Result from draining PBFT-manager-owned finalization runtime actions.
-    struct PbftManagerFinalizationOwnedActionDrainResult {
-        status: u8,
-        drained_actions: u32,
-        applied_dynamic_lambda: bool,
-        persisted_executed_status: bool,
-        set_executed_flag: bool,
-        has_snapshot: bool,
-        snapshot: PbftManagerRuntimeSnapshot,
-        last_storage_status: u8,
-        next_step: PbftFinalizationRuntimeSessionStep,
-        error_code: String,
-    }
-
     /// Request that starts the manager-owned PBFT finalization executor.
     struct PbftFinalizationExecutorStartRequest {
         mode: u8,

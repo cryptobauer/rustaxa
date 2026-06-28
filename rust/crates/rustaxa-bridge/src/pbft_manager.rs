@@ -12,7 +12,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
-    PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftManagerAdvancePeriodActionReport as FfiPbftManagerAdvancePeriodActionReport,
     PbftManagerAdvancePeriodActionReportResult as FfiPbftManagerAdvancePeriodActionReportResult,
@@ -29,7 +28,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
-    PbftManagerFinalizationOwnedActionDrainResult as FfiPbftManagerFinalizationOwnedActionDrainResult,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -1572,8 +1570,8 @@ pub fn plan_pbft_manager_transition(
     plan_domain_pbft_manager_transition(fact.into()).into()
 }
 
-fn pbft_finalization_session_missing_step() -> FfiPbftFinalizationRuntimeSessionStep {
-    FfiPbftFinalizationRuntimeSessionStep {
+fn pbft_finalization_session_missing_step() -> FinalizationRuntimeSessionStep {
+    FinalizationRuntimeSessionStep {
         status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
         cursor: 0,
         action: 255,
@@ -1602,6 +1600,29 @@ fn empty_finalization_stage(stage: u8) -> PbftFinalizationStorageWriteStage {
         reward_votes_bundle_rlp: Vec::new(),
         extra_reward_vote_hashes: Vec::new(),
     }
+}
+
+struct FinalizationRuntimeSessionStep {
+    status: u8,
+    cursor: u32,
+    action: u8,
+    has_action: bool,
+    complete: bool,
+    can_continue: bool,
+    error_code: String,
+}
+
+struct FinalizationOwnedActionDrainResult {
+    status: u8,
+    drained_actions: u32,
+    applied_dynamic_lambda: bool,
+    persisted_executed_status: bool,
+    set_executed_flag: bool,
+    has_snapshot: bool,
+    snapshot: FfiPbftManagerRuntimeSnapshot,
+    last_storage_status: u8,
+    next_step: FinalizationRuntimeSessionStep,
+    error_code: String,
 }
 
 struct FinalizationOwnedActionDrainState {
@@ -1634,13 +1655,33 @@ impl FinalizationOwnedActionDrainState {
     }
 }
 
+impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
+    for FinalizationRuntimeSessionStep
+{
+    fn from(value: rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep) -> Self {
+        let status = value.runtime_status.as_u8();
+        Self {
+            status,
+            cursor: value.action_index,
+            action: value
+                .action
+                .map(PbftFinalizationRuntimeAction::as_u8)
+                .unwrap_or(ACTION_NO_ACTION),
+            has_action: value.has_action,
+            complete: value.complete,
+            can_continue: status == RUNTIME_STATUS_ACTIVE || status == RUNTIME_STATUS_COMPLETE,
+            error_code: value.error_code,
+        }
+    }
+}
+
 fn finalization_drain_result(
     runtime: &BridgePbftManagerRuntime,
     drain: &FinalizationOwnedActionDrainState,
-    next_step: FfiPbftFinalizationRuntimeSessionStep,
+    next_step: FinalizationRuntimeSessionStep,
     error_code: String,
-) -> FfiPbftManagerFinalizationOwnedActionDrainResult {
-    FfiPbftManagerFinalizationOwnedActionDrainResult {
+) -> FinalizationOwnedActionDrainResult {
+    FinalizationOwnedActionDrainResult {
         status: next_step.status,
         drained_actions: drain.drained_actions,
         applied_dynamic_lambda: drain.applied_dynamic_lambda,
@@ -1656,7 +1697,7 @@ fn finalization_drain_result(
 
 fn finalization_executor_state_from_step(
     runtime: &BridgePbftManagerRuntime,
-    step: FfiPbftFinalizationRuntimeSessionStep,
+    step: FinalizationRuntimeSessionStep,
     error_code: String,
 ) -> FfiPbftManagerFinalizationExecutorState {
     FfiPbftManagerFinalizationExecutorState {
@@ -1682,7 +1723,7 @@ fn finalization_executor_state_from_step(
 }
 
 fn finalization_executor_state_from_drain(
-    drain: FfiPbftManagerFinalizationOwnedActionDrainResult,
+    drain: FinalizationOwnedActionDrainResult,
 ) -> FfiPbftManagerFinalizationExecutorState {
     FfiPbftManagerFinalizationExecutorState {
         status: drain.status,
@@ -1832,7 +1873,7 @@ fn pbft_manager_runtime_begin_finalization_resume_session(
 /// Returns the next manager-owned PBFT finalization action without advancing the cursor.
 fn pbft_manager_runtime_finalization_session_next(
     runtime: &mut BridgePbftManagerRuntime,
-) -> FfiPbftFinalizationRuntimeSessionStep {
+) -> FinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_ref() else {
         return pbft_finalization_session_missing_step();
     };
@@ -1851,7 +1892,7 @@ fn pbft_manager_runtime_finalization_session_report(
     action: u8,
     success: bool,
     action_status: u8,
-) -> FfiPbftFinalizationRuntimeSessionStep {
+) -> FinalizationRuntimeSessionStep {
     let error_code = if success {
         String::new()
     } else {
@@ -1876,7 +1917,7 @@ fn pbft_manager_runtime_finalization_session_report(
 fn pbft_manager_runtime_finalization_session_report_action(
     runtime: &mut BridgePbftManagerRuntime,
     report: FinalizationRuntimeActionReport,
-) -> FfiPbftFinalizationRuntimeSessionStep {
+) -> FinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_mut() else {
         return pbft_finalization_session_missing_step();
     };
@@ -1939,7 +1980,7 @@ fn pbft_manager_runtime_finalization_session_report_action(
 fn pbft_manager_runtime_report_finalization_live_mutation(
     runtime: &mut BridgePbftManagerRuntime,
     report: PbftFinalizationLiveMutationReport,
-) -> anyhow::Result<FfiPbftFinalizationRuntimeSessionStep> {
+) -> anyhow::Result<FinalizationRuntimeSessionStep> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
     if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
         || !current_step.has_action
@@ -2168,7 +2209,7 @@ pub fn pbft_manager_runtime_advance_finalization_external_effect(
 ///   centralized.
 fn pbft_manager_runtime_drain_owned_finalization_actions(
     runtime: &mut BridgePbftManagerRuntime,
-) -> anyhow::Result<FfiPbftManagerFinalizationOwnedActionDrainResult> {
+) -> anyhow::Result<FinalizationOwnedActionDrainResult> {
     let domain_plan = stored_finalization_plan(runtime)?;
     let write_set = domain_plan.storage_write_intent.clone();
     let mut drain = FinalizationOwnedActionDrainState::new();
