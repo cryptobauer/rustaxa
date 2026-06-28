@@ -3821,9 +3821,17 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     if (should_commit_sortition_runtime) {
-      const auto sortition_report = dag_mgr_->sortitionParamsManager().commitPreparedBlockForSortitionFinalization(
-          period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1, prepared_sortition_params_change,
-          finalization_plan.storage_write_intent);
+      const auto sortition_commit = dag_mgr_->sortitionParamsManager().commitPreparedBlockForSortitionFinalization(
+          period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1, prepared_sortition_params_change);
+      rustaxa::PbftFinalizationExternalEffectReport sortition_report{};
+      sortition_report.success = true;
+      sortition_report.status = 0;
+      sortition_report.sortition_changed = sortition_commit.changed;
+      sortition_report.sortition_change_period = sortition_commit.change_period;
+      sortition_report.sortition_change_interval_efficiency = sortition_commit.change_interval_efficiency;
+      sortition_report.sortition_change_threshold_upper = sortition_commit.change_threshold_upper;
+      sortition_report.sortition_current_threshold_upper = sortition_commit.current_threshold_upper;
+      sortition_report.sortition_params_changes_count = sortition_commit.params_changes_count;
       if (!report_live_mutation("sortition runtime commit", sortition_report, boundary)) {
         return false;
       }

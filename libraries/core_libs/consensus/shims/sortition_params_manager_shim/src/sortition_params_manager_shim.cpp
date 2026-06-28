@@ -78,19 +78,16 @@ PeriodEfficiencyCounts period_efficiency_counts(const PeriodData& block) {
   return counts;
 }
 
-rustaxa::PbftFinalizationExternalEffectReport makeSortitionFinalizationLiveReport(
-    const rustaxa::PbftFinalizationStorageWritePlan&,
+SortitionFinalizationCommitReport makeSortitionFinalizationCommitReport(
     const rustaxa::SortitionParamsChangeResult& outcome, uint16_t current_threshold_upper,
     uint64_t params_changes_count) {
-  rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.success = true;
-  report.status = 0;
-  report.sortition_changed = outcome.changed;
-  report.sortition_change_period = outcome.period;
-  report.sortition_change_interval_efficiency = outcome.interval_efficiency;
-  report.sortition_change_threshold_upper = outcome.threshold_upper;
-  report.sortition_current_threshold_upper = current_threshold_upper;
-  report.sortition_params_changes_count = params_changes_count;
+  SortitionFinalizationCommitReport report{};
+  report.changed = outcome.changed;
+  report.change_period = outcome.period;
+  report.change_interval_efficiency = outcome.interval_efficiency;
+  report.change_threshold_upper = outcome.threshold_upper;
+  report.current_threshold_upper = current_threshold_upper;
+  report.params_changes_count = params_changes_count;
   return report;
 }
 
@@ -173,10 +170,9 @@ std::optional<SortitionParamsChange> SortitionParamsManager::prepareBlockForSort
   return std::nullopt;
 }
 
-rustaxa::PbftFinalizationExternalEffectReport SortitionParamsManager::commitPreparedBlockForSortitionFinalization(
+SortitionFinalizationCommitReport SortitionParamsManager::commitPreparedBlockForSortitionFinalization(
     const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
-    const std::optional<SortitionParamsChange>& prepared_change,
-    const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
+    const std::optional<SortitionParamsChange>& prepared_change) {
   const auto counts = period_efficiency_counts(block);
   const auto period = block.pbft_blk->getPeriod();
   rustaxa::SortitionParamsChangePayload expected_change{};
@@ -189,8 +185,7 @@ rustaxa::PbftFinalizationExternalEffectReport SortitionParamsManager::commitPrep
   params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
   const auto current_params = rust_sortition_params_manager_.value()->sortition_current_params();
   apply_rust_params(sortition_config_, current_params);
-  return makeSortitionFinalizationLiveReport(write_intent, outcome, current_params.threshold_upper,
-                                             params_changes_.size());
+  return makeSortitionFinalizationCommitReport(outcome, current_params.threshold_upper, params_changes_.size());
 }
 
 uint16_t SortitionParamsManager::averageDagEfficiency() {

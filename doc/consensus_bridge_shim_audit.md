@@ -506,6 +506,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `PbftChainFinalizationUpdateReport` with only head size/hash/anchor facts; `pbft_manager_shim` converts those facts at
   the manager executor boundary. Remaining generic finalization report producers are sortition, reward-vote reset, DAG
   order, manager-local cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
+- Sortition finalization update facts no longer leak through `sortition_params_manager_shim` as
+  `PbftFinalizationExternalEffectReport`. `commitPreparedBlockForSortitionFinalization` returns
+  `SortitionFinalizationCommitReport` with only changed/change/current-threshold/cache-count facts; `pbft_manager_shim`
+  converts those facts at the manager executor boundary. Remaining generic finalization report producers are reward-vote
+  reset, DAG order, manager-local cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

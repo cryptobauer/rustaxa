@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <optional>
@@ -11,6 +12,23 @@
 #include "vdf/config.hpp"
 
 namespace taraxa {
+
+/**
+ * Sortition-owned result after committing a PBFT-finalization threshold update.
+ *
+ * Inputs are produced by the Rust sortition runtime after live state is committed. Outputs carry only sortition facts:
+ * whether the finalized period emitted a threshold change, the emitted change payload, the current threshold after the
+ * commit, and the number of cached parameter changes. PBFT manager code converts these facts into its executor report at
+ * the manager boundary.
+ */
+struct SortitionFinalizationCommitReport {
+  bool changed = false;
+  PbftPeriod change_period = 0;
+  uint16_t change_interval_efficiency = 0;
+  uint16_t change_threshold_upper = 0;
+  uint16_t current_threshold_upper = 0;
+  uint64_t params_changes_count = 0;
+};
 
 /**
  * Rust-mode sortition parameter manager facade.
@@ -115,20 +133,17 @@ class SortitionParamsManager {
    *   size used for the preview.
    * - The optional previewed change that was included in the committed primary
    *   finalization storage batch.
-   * - The Rust-planned PBFT finalization write intent used for live proof identity.
-   *
    * Outputs:
-   * - A PBFT finalization external-effect report for manager-runtime validation.
+   * - Sortition-owned live threshold facts for manager-runtime validation.
    *
    * Invariants and edge behavior:
    * - Mutates live sortition state only after the caller has committed primary
    *   finalization storage.
    * - Throws if the live Rust transition diverges from the previewed change.
    */
-  rustaxa::PbftFinalizationExternalEffectReport commitPreparedBlockForSortitionFinalization(
+  SortitionFinalizationCommitReport commitPreparedBlockForSortitionFinalization(
       const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
-      const std::optional<SortitionParamsChange>& prepared_change,
-      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
+      const std::optional<SortitionParamsChange>& prepared_change);
 
   /**
    * Returns the current interval average DAG efficiency.

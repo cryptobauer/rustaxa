@@ -632,6 +632,10 @@ Implementation notes:
   `pbft_chain_update_for_finalization`. The bridge method now returns `PbftChainFinalizationUpdateReport`, containing
   only PBFT-chain head facts, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor
   boundary.
+- The sortition finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
+  `commitPreparedBlockForSortitionFinalization`. The shim now returns `SortitionFinalizationCommitReport`, containing
+  only live threshold/change/cache-count facts, and `pbft_manager_shim` builds the final external-effect envelope at the
+  manager executor boundary.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -721,6 +725,12 @@ Implementation notes:
     transaction cut, with a PBFT-chain-owned head update report and manager-local conversion.
   - `cpp-pro`: mapped the remaining C++ producers of `PbftFinalizationExternalEffectReport` and confirmed the generic
     DTO should continue to be the manager executor boundary while individual subsystem helper APIs narrow one by one.
+- Custom agents used for the sortition finalization client cleanup:
+  - `api-designer`: confirmed sortition should keep the existing Rust bridge `SortitionParamsChangeResult` and use only a
+    C++ shim-local `SortitionFinalizationCommitReport`, with no new CXX bridge DTO.
+  - `cpp-pro`: confirmed the sortition finalization call graph and recommended removing the unused
+    `PbftFinalizationStorageWritePlan` argument from the sortition shim while converting to the manager report only in
+    `pbft_manager_overlay`.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -876,6 +886,7 @@ Implementation notes:
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge bridge_pbft_chain_finalization_update -- --nocapture`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize -- --nocapture`
   - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.Finalization*' --gtest_print_time=1`
   - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftChainTest.*:RustPbftSyncTest.Finalization*' --gtest_print_time=1`
   - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.FinalizationBoundary*:RustPbftSyncTest.FinalizationExecutorRejectsStaleCursor:RustPbftSyncTest.FinalizationResumeBoundaryOwnsManagerTailDrain' --gtest_print_time=1`
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
@@ -888,6 +899,9 @@ Implementation notes:
   - `rg -n "pbft_chain_update_for_finalization\\(|PbftChainFinalizationUpdateReport|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_chain.rs libraries/core_libs/consensus/shims/pbft_chain_shim -g'*.rs' -g'*.cpp' -g'*.hpp'`
     shows PBFT-chain finalization update returning only `PbftChainFinalizationUpdateReport`, with no generic
     external-effect report in the PBFT-chain shim or bridge module.
+  - `rg -n "PbftFinalizationExternalEffectReport|PbftFinalizationStorageWritePlan|commitPreparedBlockForSortitionFinalization|SortitionFinalizationCommitReport" libraries/core_libs/consensus/shims/sortition_params_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
+    shows no generic finalization report or write-plan dependency in the sortition shim; only manager-local conversion
+    uses `PbftFinalizationExternalEffectReport`.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -966,9 +980,9 @@ Implementation notes:
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
 - The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
-  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are sortition, reward-vote reset, DAG order, and
-  manager-local cache/final-chain/advance/pillar reports. Later pillar-chain runtime slices still need external DPoS
-  fact ports and legacy materialization removal.
+  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are reward-vote reset, DAG order, and manager-local
+  cache/final-chain/advance/pillar reports. Later pillar-chain runtime slices still need external DPoS fact ports and
+  legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
