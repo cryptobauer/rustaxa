@@ -367,6 +367,9 @@ Implementation notes:
 
 - `period_data_queue_shim` is retired. Period-data queue metadata now lives in `BridgePbftManagerRuntime` and is exposed
   only through `pbft_manager_runtime_period_data_queue_*` methods used by `pbft_manager_shim`.
+- The bridge-only `rustaxa-bridge/src/period_data_queue.rs` module is deleted. Its remaining conversion code is folded
+  into `pbft_manager.rs` next to the manager-owned queue APIs, so the retired queue shim no longer leaves a separate
+  bridge-shaped Rust module behind.
 - `verified_votes_shim` compatibility sidecar fallback was removed from snapshot and conflict-handling paths. The shim now
   materializes vote state exclusively from Rust-retained weighted payloads for conflict resolution, snapshot rebuilds, and
   threshold-weighted vote aggregation. `live_votes_` storage was deleted from production flow, and missing payloads now
@@ -1178,6 +1181,8 @@ Implementation status:
   `pbft_manager_runtime_period_data_queue_size`, and `pbft_manager_runtime_period_data_queue_empty` are replaced by the
   single `pbft_manager_runtime_period_data_queue_snapshot` API. Live C++ still pushes, pops, clears, and cleans queue
   entries through command-style methods, but metadata reads now cross as one runtime-owned snapshot DTO.
+- Follow-up cleanup removes the standalone bridge helper module `period_data_queue.rs`; push/pop/cleanup conversions are
+  now private PBFT-manager runtime implementation details in `pbft_manager.rs`.
   Validation for this CXX export shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`

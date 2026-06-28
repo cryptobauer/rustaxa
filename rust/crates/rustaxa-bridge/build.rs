@@ -9,7 +9,6 @@ fn main() {
     println!("cargo:rerun-if-changed=src/final_chain.rs");
     println!("cargo:rerun-if-changed=src/lib.rs");
     println!("cargo:rerun-if-changed=src/network.rs");
-    println!("cargo:rerun-if-changed=src/period_data_queue.rs");
     println!("cargo:rerun-if-changed=src/pbft_sync.rs");
     println!("cargo:rerun-if-changed=src/pbft_chain.rs");
     println!("cargo:rerun-if-changed=src/proposed_blocks.rs");

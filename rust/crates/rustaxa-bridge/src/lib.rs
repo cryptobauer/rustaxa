@@ -12,7 +12,6 @@ mod pbft_vote_ingress;
 mod pbft_vote_payload;
 mod pbft_vote_progress;
 mod pbft_vote_validation;
-mod period_data_queue;
 mod pillar_chain;
 mod pillar_votes;
 mod proposed_blocks;
