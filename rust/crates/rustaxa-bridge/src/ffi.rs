@@ -4903,6 +4903,11 @@ pub mod rustaxa_ffi {
             cursor: u32,
             report: TransactionManagerFinalizedStatusCommandReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
+        pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            report: PbftChainFinalizationUpdateReport,
+        ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,

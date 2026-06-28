@@ -503,9 +503,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `pbft_manager_runtime_advance_finalization_transaction_status` so the PBFT-specific report mapping is Rust-private.
 - PBFT-chain finalization update facts no longer leak through `pbft_chain_shim` as
   `PbftFinalizationExternalEffectReport`. `pbft_chain_update_for_finalization` returns
-  `PbftChainFinalizationUpdateReport` with only head size/hash/anchor facts; `pbft_manager_shim` converts those facts at
-  the manager executor boundary. Remaining generic finalization report producers are sortition, reward-vote reset, DAG
-  order, manager-local cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
+  `PbftChainFinalizationUpdateReport` with only head size/hash/anchor facts; `pbft_manager_shim` advances through
+  `pbft_manager_runtime_advance_finalization_pbft_chain`, so Rust fills the temporary executor envelope internally.
+  Remaining generic finalization report producers are sortition, reward-vote reset, DAG order, FinalChain
+  dispatch/replay, and the manager executor boundary itself.
 - Sortition finalization update facts no longer leak through `sortition_params_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitPreparedBlockForSortitionFinalization` returns
   `SortitionFinalizationCommitReport` with only changed/change/current-threshold/cache-count facts; `pbft_manager_shim`

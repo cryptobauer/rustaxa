@@ -630,8 +630,9 @@ Implementation notes:
   their subsystem-specific reports are introduced.
 - The PBFT-chain finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `pbft_chain_update_for_finalization`. The bridge method now returns `PbftChainFinalizationUpdateReport`, containing
-  only PBFT-chain head facts, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor
-  boundary.
+  only PBFT-chain head facts, and `pbft_manager_shim` advances through
+  `pbft_manager_runtime_advance_finalization_pbft_chain` so Rust builds the temporary external-effect envelope at the
+  manager executor boundary.
 - The sortition finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `commitPreparedBlockForSortitionFinalization`. The shim now returns `SortitionFinalizationCommitReport`, containing
   only live threshold/change/cache-count facts, and `pbft_manager_shim` builds the final external-effect envelope at the
@@ -672,6 +673,11 @@ Implementation notes:
   `PbftFinalizationExternalEffectReport` for that manager-local client. Rust maps the single post-advance
   `manager_period` fact into the temporary executor envelope internally before running the existing cursor validation and
   drain path.
+- Follow-up API narrowing moved PBFT-chain update reporting onto
+  `pbft_manager_runtime_advance_finalization_pbft_chain`, so C++ no longer constructs
+  `PbftFinalizationExternalEffectReport` for that external PBFT-chain client. Rust maps the existing
+  `PbftChainFinalizationUpdateReport` head facts into the temporary executor envelope internally before running the
+  existing cursor validation and drain path.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -812,6 +818,10 @@ Implementation notes:
     snapshot semantics remain unchanged.
   - `rust-engineer`: requested for the Rust bridge helper/test; local implementation proceeded while the agent was still
     running, using the established typed pillar and anchor-cache helper pattern.
+- Custom agents used for the PBFT-chain typed advancement cleanup:
+  - `rust-engineer`: implemented/reviewed the Rust helper/test over the existing
+    `PbftChainFinalizationUpdateReport` and confirmed the report size must match the finalization period.
+  - `cpp-pro`: requested for C++ shim wiring review preserving abort, snapshot, and failure semantics.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -977,9 +987,9 @@ Implementation notes:
     returns no live code references.
   - `rg -n "PbftFinalizationExternalEffectReport|updateFinalizedTransactionsStatusForPbftFinalization\\([^\\n]*PbftFinalizationStorageWritePlan" libraries/core_libs/consensus/shims/transaction_manager_shim -g'*.cpp' -g'*.hpp'`
     returns no live transaction-shim references.
-  - `rg -n "pbft_chain_update_for_finalization\\(|PbftChainFinalizationUpdateReport|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_chain.rs libraries/core_libs/consensus/shims/pbft_chain_shim -g'*.rs' -g'*.cpp' -g'*.hpp'`
-    shows PBFT-chain finalization update returning only `PbftChainFinalizationUpdateReport`, with no generic
-    external-effect report in the PBFT-chain shim or bridge module.
+  - `rg -n "advance_finalization_pbft_chain|pbft_chain_update_for_finalization\\(|PbftChainFinalizationUpdateReport|pbft_chain_(size|head_hash|last_anchor_hash)|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_chain.rs rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/pbft_chain_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    shows PBFT-chain finalization update returning only `PbftChainFinalizationUpdateReport`, with the manager using the
+    typed Rust bridge advancement helper and no generic external-effect DTO in the PBFT-chain update path.
   - `rg -n "PbftFinalizationExternalEffectReport|PbftFinalizationStorageWritePlan|commitPreparedBlockForSortitionFinalization|SortitionFinalizationCommitReport" libraries/core_libs/consensus/shims/sortition_params_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows no generic finalization report or write-plan dependency in the sortition shim; only manager-local conversion
     uses `PbftFinalizationExternalEffectReport`.

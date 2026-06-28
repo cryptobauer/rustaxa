@@ -3917,6 +3917,23 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
+  auto report_pbft_chain_update = [&](const rustaxa::PbftChainFinalizationUpdateReport &report,
+                                      rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_pbft_chain(
+          *pbft_manager_runtime_.value(), boundary.cursor, report);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context PBFT-chain update: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("PBFT-chain update", boundary);
+    }
+    return true;
+  };
   auto clear_anchor_dag_cache_for_finalization = [&]() {
     anchor_dag_block_order_cache_.clear();
     const auto clear_cache_snapshot =
@@ -4092,13 +4109,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (finalization_plan.cleanup.update_pbft_chain) {
       const auto pbft_chain_update =
           pbft_chain_->updatePbftChainForPbftFinalization(finalization_plan.storage_write_intent);
-      rustaxa::PbftFinalizationExternalEffectReport pbft_chain_report{};
-      pbft_chain_report.success = true;
-      pbft_chain_report.status = 0;
-      pbft_chain_report.pbft_chain_size = pbft_chain_update.size;
-      pbft_chain_report.pbft_chain_head_hash = pbft_chain_update.last_pbft_block_hash;
-      pbft_chain_report.pbft_chain_last_anchor_hash = pbft_chain_update.last_non_null_anchor_hash;
-      if (!report_live_mutation("PBFT-chain update", pbft_chain_report, boundary)) {
+      if (!report_pbft_chain_update(pbft_chain_update, boundary)) {
         return false;
       }
     }

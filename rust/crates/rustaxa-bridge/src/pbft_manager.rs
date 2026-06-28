@@ -6,7 +6,9 @@
 //! advances.
 
 use crate::ffi::rustaxa_ffi::{
-    BlockPeriodLookup as FfiBlockPeriodLookup, PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
+    BlockPeriodLookup as FfiBlockPeriodLookup,
+    PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport,
+    PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
     PbftFinalizationExecutorStartRequest as FfiPbftFinalizationExecutorStartRequest,
     PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport,
     PbftFinalizationHash as FfiPbftFinalizationHash,
@@ -2255,6 +2257,38 @@ pub fn pbft_manager_runtime_advance_finalization_transaction_status(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports PBFT-chain finalized-head update facts to the manager-owned PBFT
+/// finalization executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: PBFT-chain head facts after the PBFT-chain facade applies the
+///   finalized head update.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the PBFT-chain client.
+/// - Rust derives the PBFT finalization action from the cursor and maps only the
+///   PBFT-chain size, head hash, and last non-null anchor hash needed for
+///   live-mutation validation.
+/// - Cursor mismatch, validation failure, and PBFT-chain execution failure use
+///   the same executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiPbftChainFinalizationUpdateReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.pbft_chain_size = report.size;
+    external_report.pbft_chain_head_hash = report.last_pbft_block_hash;
+    external_report.pbft_chain_last_anchor_hash = report.last_non_null_anchor_hash;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
 ///
 /// Inputs:
@@ -3216,6 +3250,7 @@ impl From<PbftManagerAdvancePeriodActionReportResult>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi::PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport;
     use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::rustaxa_ffi::PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
@@ -3934,6 +3969,36 @@ mod tests {
         assert_eq!(
             state.action,
             PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_pbft_chain_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_pbft_chain_report");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::UpdatePbftChain,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_pbft_chain(
+            &mut runtime,
+            step.cursor,
+            FfiPbftChainFinalizationUpdateReport {
+                size: 10,
+                last_pbft_block_hash: [7; 32],
+                last_non_null_anchor_hash: [4; 32],
+            },
+        )
+        .expect("typed PBFT-chain report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::ClearAnchorDagCache.as_u8()
         );
     }
 
