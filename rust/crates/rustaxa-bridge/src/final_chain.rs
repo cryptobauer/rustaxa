@@ -301,30 +301,12 @@ fn evm_rewards_report_from_ffi(
     }
 }
 
-fn external_evm_commit_plan_to_ffi(
+fn external_evm_commit_report_to_ffi(
     plan: rustaxa_consensus::FinalChainExternalEvmCommitPlan,
-) -> rustaxa_ffi::FinalChainExternalEvmCommitPlan {
-    rustaxa_ffi::FinalChainExternalEvmCommitPlan {
+) -> rustaxa_ffi::FinalChainExternalEvmCommitReport {
+    rustaxa_ffi::FinalChainExternalEvmCommitReport {
         request_id: plan.request_id,
         period: plan.period,
-        post_execution_state_root: plan.post_execution_state_root,
-        state_root: plan.state_root,
-        total_reward: plan.total_reward,
-        transactions_root: plan.transactions_root,
-        receipts_root: plan.receipts_root,
-        header_log_bloom: plan.header_log_bloom,
-        indexed_log_bloom: plan.indexed_log_bloom,
-        receipts_rlp: plan.receipts_rlp,
-        encoded_receipts: plan
-            .encoded_receipts
-            .into_iter()
-            .map(|data| rustaxa_ffi::ReceiptRlp { data })
-            .collect(),
-        gas_used: plan.gas_used,
-        executed_dag_blocks: plan.executed_dag_blocks,
-        executed_transactions: plan.executed_transactions,
-        regular_transaction_count: plan.regular_transaction_count,
-        system_transaction_count: plan.system_transaction_count,
         error_code: plan.error_code,
     }
 }
@@ -638,8 +620,8 @@ impl BridgeConsensusExecutionApi {
         &self,
         session: &mut BridgeFinalChainExecutionSession,
         report: rustaxa_ffi::FinalChainEvmRewardsReport,
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitPlan, anyhow::Error> {
-        Ok(external_evm_commit_plan_to_ffi(
+    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitReport, anyhow::Error> {
+        Ok(external_evm_commit_report_to_ffi(
             self.0
                 .report_rewards_result(&mut session.state, evm_rewards_report_from_ffi(report)),
         ))
@@ -1454,13 +1436,13 @@ mod tests {
     fn execution_session_plan_external_evm_commit(
         session: &mut BridgeFinalChainExecutionSession,
         rewards_report: rustaxa_ffi::FinalChainEvmRewardsReport,
-    ) -> Result<rustaxa_ffi::FinalChainExternalEvmCommitPlan, anyhow::Error> {
-        Ok(external_evm_commit_plan_to_ffi(
+    ) -> Result<rustaxa_consensus::FinalChainExternalEvmCommitPlan, anyhow::Error> {
+        Ok(
             rustaxa_consensus::final_chain_execution_session_plan_external_evm_commit(
                 &mut session.state,
                 evm_rewards_report_from_ffi(rewards_report),
             ),
-        ))
+        )
     }
 
     fn execution_session_plan_external_evm_publication(
@@ -1585,7 +1567,7 @@ mod tests {
         PathBuf,
         Box<BridgeFinalChain>,
         Box<BridgeFinalChainExecutionSession>,
-        rustaxa_ffi::FinalChainExternalEvmCommitPlan,
+        rustaxa_consensus::FinalChainExternalEvmCommitPlan,
         rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
     ) {
         let temp_dir = unique_temp_dir(prefix);
@@ -1737,7 +1719,7 @@ mod tests {
 
     fn request_external_evm_state_commit(
         session: &mut BridgeFinalChainExecutionSession,
-        plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
+        plan: &rustaxa_consensus::FinalChainExternalEvmCommitPlan,
         publication: &rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
     ) -> rustaxa_ffi::FinalChainExternalEvmStateCommitIntent {
         let intent = execution_session_request_external_evm_state_commit(
@@ -1772,7 +1754,7 @@ mod tests {
     fn ready_external_evm_commit_decision(
         final_chain: &BridgeFinalChain,
         session: &mut BridgeFinalChainExecutionSession,
-        plan: &rustaxa_ffi::FinalChainExternalEvmCommitPlan,
+        plan: &rustaxa_consensus::FinalChainExternalEvmCommitPlan,
         publication: &rustaxa_consensus::FinalChainExternalEvmPublicationPlan,
     ) -> rustaxa_consensus::FinalChainExternalEvmCommitDecision {
         let intent = request_external_evm_state_commit(session, plan, publication);
@@ -2573,7 +2555,7 @@ mod tests {
         let encoded_receipts = commit_plan
             .encoded_receipts
             .iter()
-            .map(|receipt| receipt.data.clone())
+            .cloned()
             .collect::<Vec<_>>();
         assert_eq!(encoded_receipts, expected_receipts);
         assert_eq!(
@@ -2845,7 +2827,7 @@ mod tests {
         let encoded_receipts = commit_plan
             .encoded_receipts
             .iter()
-            .map(|receipt| receipt.data.clone())
+            .cloned()
             .collect::<Vec<_>>();
         assert_eq!(encoded_receipts, expected_receipts);
         assert_eq!(

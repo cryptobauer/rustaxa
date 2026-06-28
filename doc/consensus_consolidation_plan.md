@@ -1540,13 +1540,25 @@ Implementation status:
   `final_chain_shim` path still uses `BridgeConsensusExecutionApi` for external-EVM/`StateAPI` interaction, and the CXX
   bridge keeps session creation/commit plus the minimal step/report/publish methods that are still called by that
   external execution adapter. Follow-up cleanup moved bridge tests off the obsolete publication-plan DTOs and deleted
-  `FinalChainExternalEvmPublicationPlan` plus `FinalChainExternalEvmTransactionPublication` from the CXX surface. The
-  remaining oversized external-EVM DTO is `FinalChainExternalEvmCommitPlan`; live C++ uses it only to inspect the
-  rewards-report error before calling the one-shot state-commit preparation API.
+  `FinalChainExternalEvmPublicationPlan` plus `FinalChainExternalEvmTransactionPublication` from the CXX surface. A
+  second cleanup deleted the oversized `FinalChainExternalEvmCommitPlan` CXX DTO; live C++ now receives only
+  `FinalChainExternalEvmCommitReport` with request id, period, and error text before calling the one-shot state-commit
+  preparation API, while Rust tests assert roots, blooms, receipts, and counters through the native commit plan.
   Custom agents used: `rust-engineer` confirmed the live C++ route and identified the remaining Rust-internal wrapper
-  callsites, while `api-designer` confirmed the publication-plan DTOs are not live C++ and recommended shrinking
-  `FinalChainExternalEvmCommitPlan` next.
+  callsites, while `api-designer` confirmed the publication-plan DTOs were not live C++ and recommended the follow-up
+  `FinalChainExternalEvmCommitPlan` shrink that is now complete.
   Validation for this publication-plan DTO shrink:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain -- --nocapture`
+  - `cmake --build /build --target final_chain_test rust_consensus_tests --parallel 12`
+  - `/build/bin/final_chain_test --gtest_filter='FinalChainTest.*' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `rg -n "FinalChainExternalEvmCommitPlan|FinalChainExternalEvmCommitReport" rust/crates/rustaxa-bridge/src/ffi.rs rust/crates/rustaxa-bridge/src/final_chain.rs libraries/core_libs/consensus/shims/final_chain_shim tests/rust/consensus -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    now returns only the CXX `FinalChainExternalEvmCommitReport` plus native Rust test/internal commit-plan references,
+    not a CXX `FinalChainExternalEvmCommitPlan` export.
+  Validation for this commit-plan DTO shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge final_chain -- --nocapture`

@@ -3235,23 +3235,14 @@ pub mod rustaxa_ffi {
         total_reward: Vec<u8>,
     }
 
-    struct FinalChainExternalEvmCommitPlan {
+    /// Minimal CXX report after external reward execution is accepted by Rust.
+    ///
+    /// The full external-EVM commit plan remains session-owned Rust state; C++
+    /// only needs correlation fields and any validation error before calling
+    /// the one-shot state-commit preparation API.
+    struct FinalChainExternalEvmCommitReport {
         request_id: [u8; 32],
         period: u64,
-        post_execution_state_root: [u8; 32],
-        state_root: [u8; 32],
-        total_reward: Vec<u8>,
-        transactions_root: [u8; 32],
-        receipts_root: [u8; 32],
-        header_log_bloom: Vec<u8>,
-        indexed_log_bloom: Vec<u8>,
-        receipts_rlp: Vec<u8>,
-        encoded_receipts: Vec<ReceiptRlp>,
-        gas_used: u64,
-        executed_dag_blocks: u64,
-        executed_transactions: u64,
-        regular_transaction_count: u64,
-        system_transaction_count: u64,
         error_code: String,
     }
 
@@ -6147,7 +6138,7 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusExecutionApi,
             session: &mut BridgeFinalChainExecutionSession,
             report: FinalChainEvmRewardsReport,
-        ) -> Result<FinalChainExternalEvmCommitPlan>;
+        ) -> Result<FinalChainExternalEvmCommitReport>;
         pub fn consensus_execution_prepare_external_evm_state_commit(
             self: &BridgeConsensusExecutionApi,
             final_chain: &BridgeFinalChain,
