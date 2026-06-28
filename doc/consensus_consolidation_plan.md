@@ -1465,6 +1465,9 @@ Implementation status:
 - `BridgePbftChain::pbft_chain_project_update` is no longer a CXX export. The non-mutating append projection is covered
   by native `rustaxa-consensus` PBFT-chain tests, while live C++ bridge callers use `pbft_chain_update`,
   `pbft_chain_update_for_finalization`, or the retained legacy JSON projection facade.
+- The duplicate storage-taking free `pbft_chain_block_exists(storage, hash)` and `pbft_chain_block_rlp(storage, hash)`
+  CXX exports are deleted. The live `pbft_chain_shim` uses the storage-backed `BridgePbftChain` handle methods, keeping
+  PBFT-chain block lookup tied to the runtime facade instead of a second direct `BridgeStorage` API.
 - The direct `create_pbft_chain(PbftChainHeadPayload)` CXX constructor is no longer exported. C++ PBFT-chain bridge
   tests now seed legacy `pbft_head` JSON through the storage shim and construct via `create_pbft_chain_from_storage`,
   matching the production shim path; the direct structured-head constructor remains Rust test-only for in-memory bridge

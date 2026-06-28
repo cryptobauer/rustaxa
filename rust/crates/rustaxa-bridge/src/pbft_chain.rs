@@ -48,22 +48,6 @@ pub fn create_pbft_chain_from_storage(
     }))
 }
 
-/// Returns whether Rust storage contains a finalized PBFT block hash.
-pub fn pbft_chain_block_exists(
-    storage: &BridgeStorage,
-    block_hash: &[u8; 32],
-) -> Result<bool, anyhow::Error> {
-    pbft_block_exists_in_storage(storage.0.as_ref(), H256::from(*block_hash))
-}
-
-/// Loads canonical signed PBFT block RLP by hash from Rust storage.
-pub fn pbft_chain_block_rlp(
-    storage: &BridgeStorage,
-    block_hash: &[u8; 32],
-) -> Result<FfiPbftBlockStorageLookup, anyhow::Error> {
-    Ok(load_pbft_block_from_storage(storage.0.as_ref(), H256::from(*block_hash))?.into())
-}
-
 impl BridgePbftChain {
     /// Returns whether storage recovery initialized the default PBFT chain head.
     pub fn pbft_chain_initialized_default(&self) -> bool {
