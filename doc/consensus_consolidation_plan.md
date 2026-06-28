@@ -1515,8 +1515,11 @@ Implementation status:
   `plan_pbft_manager_block_validation`, proposal runtime sessions, and
   `pbft_manager_runtime_plan_finalization_dynamic_lambda`; native `rustaxa-consensus` tests cover the deleted lower-level
   planners and lambda lookup.
-  Custom agents used: `architect-reviewer` identified the next FinalChain execution-session cleanup and confirmed the
-  PBFT manager standalone planner lane as a secondary cleanup candidate.
+- FinalChain execution-session construction no longer takes a `BridgeFinalChain` parameter. The Rust bridge function
+  ignored that handle, so C++ now creates the session from only `FinalChainExecutionRequest`; explicit `BridgeFinalChain`
+  parameters remain only on commit, recovery, and publication calls that actually touch FinalChain storage/state.
+  Custom agents used: `architect-reviewer` identified this cleanup and confirmed the PBFT manager standalone planner
+  lane as a secondary cleanup candidate.
 - PBFT manager period-data queue scalar/hash metadata getters are no longer CXX exports:
   `pbft_manager_runtime_period_data_queue_period`,
   `pbft_manager_runtime_period_data_queue_syncing_period`,

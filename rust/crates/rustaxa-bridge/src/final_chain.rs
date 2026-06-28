@@ -538,10 +538,8 @@ pub fn create_final_chain_with_rewards_config(
 }
 
 pub fn create_final_chain_execution_session(
-    final_chain: &BridgeFinalChain,
     request: rustaxa_ffi::FinalChainExecutionRequest,
 ) -> Result<Box<BridgeFinalChainExecutionSession>, anyhow::Error> {
-    let _ = final_chain;
     Ok(Box::new(BridgeFinalChainExecutionSession {
         state: rustaxa_consensus::create_final_chain_execution_session(
             final_chain_execution_request_from_ffi(request),
@@ -1573,9 +1571,8 @@ mod tests {
         let temp_dir = unique_temp_dir(prefix);
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
         let final_chain = make_final_chain(storage_path, vec![]);
-        let mut session = create_final_chain_execution_session(
-            &final_chain,
-            rustaxa_ffi::FinalChainExecutionRequest {
+        let mut session =
+            create_final_chain_execution_session(rustaxa_ffi::FinalChainExecutionRequest {
                 pbft_block_rlp: signed_pbft_block_rlp(period),
                 transactions: vec![
                     ffi_transaction(1, true, [9; 20], Vec::new()),
@@ -1586,9 +1583,8 @@ mod tests {
                 cert_votes: Vec::new(),
                 block_gas_limit: 1_000_000,
                 mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
-            },
-        )
-        .expect("session should be created");
+            })
+            .expect("session should be created");
         let system_step =
             execution_session_next(&mut session).expect("session step should convert");
         let step = execution_session_report_system_transactions(
@@ -1652,9 +1648,8 @@ mod tests {
         let temp_dir = unique_temp_dir(prefix);
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
         let final_chain = make_final_chain(storage_path, vec![]);
-        let mut session = create_final_chain_execution_session(
-            &final_chain,
-            rustaxa_ffi::FinalChainExecutionRequest {
+        let mut session =
+            create_final_chain_execution_session(rustaxa_ffi::FinalChainExecutionRequest {
                 pbft_block_rlp: signed_pbft_block_rlp(period),
                 transactions: vec![
                     ffi_transaction(1, true, [9; 20], Vec::new()),
@@ -1665,9 +1660,8 @@ mod tests {
                 cert_votes: Vec::new(),
                 block_gas_limit: 1_000_000,
                 mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
-            },
-        )
-        .expect("session should be created");
+            })
+            .expect("session should be created");
         let system_step =
             execution_session_next(&mut session).expect("session step should convert");
         let step = execution_session_report_system_transactions(
@@ -2191,9 +2185,8 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_session");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
         let final_chain = make_final_chain(storage_path, vec![]);
-        let mut session = create_final_chain_execution_session(
-            &final_chain,
-            rustaxa_ffi::FinalChainExecutionRequest {
+        let mut session =
+            create_final_chain_execution_session(rustaxa_ffi::FinalChainExecutionRequest {
                 pbft_block_rlp: signed_pbft_block_rlp(7),
                 transactions: vec![
                     ffi_transaction(1, true, [9; 20], Vec::new()),
@@ -2205,9 +2198,8 @@ mod tests {
                 cert_votes: Vec::new(),
                 block_gas_limit: 1_000_000,
                 mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
-            },
-        )
-        .expect("session should be created");
+            })
+            .expect("session should be created");
 
         let step = execution_session_next(&mut session).expect("session step should convert");
 
@@ -2292,9 +2284,8 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_report");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
         let final_chain = make_final_chain(storage_path, vec![]);
-        let mut session = create_final_chain_execution_session(
-            &final_chain,
-            rustaxa_ffi::FinalChainExecutionRequest {
+        let mut session =
+            create_final_chain_execution_session(rustaxa_ffi::FinalChainExecutionRequest {
                 pbft_block_rlp: signed_pbft_block_rlp(7),
                 transactions: vec![
                     ffi_transaction(1, true, [9; 20], Vec::new()),
@@ -2305,9 +2296,8 @@ mod tests {
                 cert_votes: Vec::new(),
                 block_gas_limit: 1_000_000,
                 mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
-            },
-        )
-        .expect("session should be created");
+            })
+            .expect("session should be created");
         let step = execution_session_next(&mut session).expect("session step should convert");
         assert_eq!(
             step.action,
@@ -2425,9 +2415,8 @@ mod tests {
             rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(&pbft_block_rlp),
         )
         .expect("PBFT metadata should decode");
-        let mut session = create_final_chain_execution_session(
-            &final_chain,
-            rustaxa_ffi::FinalChainExecutionRequest {
+        let mut session =
+            create_final_chain_execution_session(rustaxa_ffi::FinalChainExecutionRequest {
                 pbft_block_rlp: pbft_block_rlp.clone(),
                 transactions,
                 finalized_dag_blocks: vec![
@@ -2446,9 +2435,8 @@ mod tests {
                 cert_votes: Vec::new(),
                 block_gas_limit: 1_000_000,
                 mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
-            },
-        )
-        .expect("session should be created");
+            })
+            .expect("session should be created");
         let step = execution_session_next(&mut session).expect("system step should convert");
         let step = execution_session_report_system_transactions(
             &mut session,
@@ -2691,9 +2679,8 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_external_evm_diff_system");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
         let final_chain = make_final_chain(storage_path, vec![]);
-        let mut session = create_final_chain_execution_session(
-            &final_chain,
-            rustaxa_ffi::FinalChainExecutionRequest {
+        let mut session =
+            create_final_chain_execution_session(rustaxa_ffi::FinalChainExecutionRequest {
                 pbft_block_rlp: signed_pbft_block_rlp(1),
                 transactions: vec![
                     ffi_transaction_with_fee(0x21, true, [0x81; 20], vec![0x01], 7, 50_000),
@@ -2704,9 +2691,8 @@ mod tests {
                 cert_votes: Vec::new(),
                 block_gas_limit: 1_000_000,
                 mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
-            },
-        )
-        .expect("session should be created");
+            })
+            .expect("session should be created");
         let system_step = execution_session_next(&mut session).expect("system step should convert");
         let system_plan = plan_external_evm_system_transactions(
             rustaxa_ffi::FinalChainSystemTransactionPlanFact {

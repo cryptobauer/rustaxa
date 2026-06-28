@@ -6010,7 +6010,6 @@ pub mod rustaxa_ffi {
         ) -> Result<FinalChainCallOutcome>;
         type BridgeFinalChainExecutionSession;
         pub fn create_final_chain_execution_session(
-            final_chain: &BridgeFinalChain,
             request: FinalChainExecutionRequest,
         ) -> Result<Box<BridgeFinalChainExecutionSession>>;
         pub fn plan_external_evm_system_transactions(

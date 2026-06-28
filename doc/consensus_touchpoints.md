@@ -303,9 +303,10 @@ Implementation status:
   - pending-publication marker persistence
   - state-commit result reporting
   - Rust FinalChain storage publication
-- `ConsensusExecutionApi` is intentionally stateless. C++ still passes the live `BridgeFinalChain` and
-  `BridgeFinalChainExecutionSession` handles, while Rust owns request identity, report validation, publication plans,
-  pending marker handling, storage publication, and publication audit decisions.
+- `ConsensusExecutionApi` is intentionally stateless. C++ creates a `BridgeFinalChainExecutionSession` from only the
+  execution request, then passes the live `BridgeFinalChain` handle only to commit, recovery, and publication operations
+  that actually need FinalChain storage/state. Rust owns request identity, report validation, publication plans, pending
+  marker handling, storage publication, and publication audit decisions.
 - `FinalChain::finalizeExternalEvm` now uses one dedicated API call, `prepare_external_evm_state_commit`, that executes the
   remaining publication-prep flow (plan, rewards-stat attach, proposal-period mapping, intent derivation, marker persistence)
   before external-state commit.

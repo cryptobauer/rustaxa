@@ -602,7 +602,7 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
     PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t blocks_per_year,
     std::shared_ptr<DagBlock>&& anchor) {
   auto session = rustaxa::create_final_chain_execution_session(
-      *rust_final_chain_.value(), make_final_chain_execution_request(period_data, blocks_per_year, block_gas_limit_));
+      make_final_chain_execution_request(period_data, blocks_per_year, block_gas_limit_));
   auto step = rust_execution_api_.value()->consensus_execution_next_execution_request(*session);
   if (step.action == kFinalChainExecutionActionProvideSystemTransactions ||
       step.action == kFinalChainExecutionActionExecuteExternalEvm) {
