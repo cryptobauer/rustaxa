@@ -1942,6 +1942,12 @@ pub mod rustaxa_ffi {
         remaining_extra_reward_votes_count: u64,
     }
 
+    /// FinalChain dispatch/replay finalization facts reported to the PBFT manager executor.
+    struct PbftManagerFinalizationFinalChainDispatchReport {
+        blocks_per_year: u32,
+        last_block: u64,
+    }
+
     /// External PBFT finalization effect report from the C++ executor.
     struct PbftFinalizationExternalEffectReport {
         success: bool,
@@ -4940,6 +4946,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
             report: PbftManagerFinalizationRewardVotesResetReport,
+        ) -> Result<PbftManagerFinalizationExecutorState>;
+        pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            report: PbftManagerFinalizationFinalChainDispatchReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
             runtime: &mut BridgePbftManagerRuntime,

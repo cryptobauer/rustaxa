@@ -3622,24 +3622,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
               makeFinalizationExternalEffectFailure(255, "PBFT_FINALIZE_RESUME_ACTION_FAILED"));
           apply_resume_boundary_snapshot(boundary);
         };
-        auto report_resume_live_mutation = [&](const char *context,
-                                               const rustaxa::PbftFinalizationExternalEffectReport &report,
-                                               rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-          try {
-            boundary = rustaxa::pbft_manager_runtime_advance_finalization_external_effect(
-                *pbft_manager_runtime_.value(), boundary.cursor, report);
-          } catch (const std::exception &e) {
-            LOG(log_er_) << "Rust PBFT finalization resume boundary report threw for block " << pbft_block_hash
-                         << ", period " << block_pbft_period << ", context " << context << ": " << e.what();
-            rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
-            return false;
-          }
-          apply_resume_boundary_snapshot(boundary);
-          if (!boundary.can_continue) {
-            return fail_resume_boundary(context, boundary);
-          }
-          return true;
-        };
         auto report_resume_pillar_post_processing =
             [&](const PbftManagerFinalizationPillarPostProcessingReport &report,
                 rustaxa::PbftManagerFinalizationExecutorState &boundary) {
@@ -3677,6 +3659,26 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           apply_resume_boundary_snapshot(boundary);
           if (!boundary.can_continue) {
             return fail_resume_boundary("advance period", boundary);
+          }
+          return true;
+        };
+        auto report_resume_final_chain_dispatch = [&](const FinalChainPbftFinalizationDispatchReport &report,
+                                                      rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+          rustaxa::PbftManagerFinalizationFinalChainDispatchReport bridge_report{};
+          bridge_report.blocks_per_year = report.blocks_per_year;
+          bridge_report.last_block = report.last_block;
+          try {
+            boundary = rustaxa::pbft_manager_runtime_advance_finalization_final_chain_dispatch(
+                *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+          } catch (const std::exception &e) {
+            LOG(log_er_) << "Rust PBFT finalization resume boundary report threw for block " << pbft_block_hash
+                         << ", period " << block_pbft_period << ", context FinalChain replay: " << e.what();
+            rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+            return false;
+          }
+          apply_resume_boundary_snapshot(boundary);
+          if (!boundary.can_continue) {
+            return fail_resume_boundary("FinalChain replay", boundary);
           }
           return true;
         };
@@ -3739,13 +3741,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             report_resume_failure(resume_boundary);
             return false;
           }
-          rustaxa::PbftFinalizationExternalEffectReport final_chain_report{};
-          final_chain_report.success = true;
-          final_chain_report.status = 0;
-          final_chain_report.final_chain_dispatched = true;
-          final_chain_report.final_chain_blocks_per_year = final_chain_dispatch.blocks_per_year;
-          final_chain_report.final_chain_last_block = final_chain_dispatch.last_block;
-          if (!report_resume_live_mutation("FinalChain replay", final_chain_report, resume_boundary)) {
+          if (!report_resume_final_chain_dispatch(final_chain_dispatch, resume_boundary)) {
             return false;
           }
         }
@@ -3841,23 +3837,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
         *pbft_manager_runtime_.value(), boundary_state.cursor,
         makeFinalizationExternalEffectFailure(255, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED"));
     apply_boundary_snapshot(boundary);
-  };
-  auto report_live_mutation = [&](const char *context, const rustaxa::PbftFinalizationExternalEffectReport &report,
-                                  rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_external_effect(
-          *pbft_manager_runtime_.value(), boundary.cursor, report);
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context " << context << ": " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
-      return false;
-    }
-    apply_boundary_snapshot(boundary);
-    if (!boundary.can_continue) {
-      return fail_boundary(context, boundary);
-    }
-    return true;
   };
   auto report_pillar_post_processing = [&](const PbftManagerFinalizationPillarPostProcessingReport &report,
                                            rustaxa::PbftManagerFinalizationExecutorState &boundary) {
@@ -3993,6 +3972,26 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     apply_boundary_snapshot(boundary);
     if (!boundary.can_continue) {
       return fail_boundary("reward-vote reset", boundary);
+    }
+    return true;
+  };
+  auto report_final_chain_dispatch = [&](const FinalChainPbftFinalizationDispatchReport &report,
+                                         rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    rustaxa::PbftManagerFinalizationFinalChainDispatchReport bridge_report{};
+    bridge_report.blocks_per_year = report.blocks_per_year;
+    bridge_report.last_block = report.last_block;
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_final_chain_dispatch(
+          *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context FinalChain dispatch: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("FinalChain dispatch", boundary);
     }
     return true;
   };
@@ -4190,13 +4189,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   }
   if (finalization_plan.cleanup.finalize_final_chain) {
     const auto final_chain_dispatch = finalize_(std::move(period_data), std::move(dag_blocks_order), blocks_per_year);
-    rustaxa::PbftFinalizationExternalEffectReport final_chain_report{};
-    final_chain_report.success = true;
-    final_chain_report.status = 0;
-    final_chain_report.final_chain_dispatched = true;
-    final_chain_report.final_chain_blocks_per_year = final_chain_dispatch.blocks_per_year;
-    final_chain_report.final_chain_last_block = final_chain_dispatch.last_block;
-    if (!report_live_mutation("FinalChain dispatch", final_chain_report, boundary)) {
+    if (!report_final_chain_dispatch(final_chain_dispatch, boundary)) {
       return false;
     }
   }

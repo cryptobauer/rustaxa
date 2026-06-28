@@ -531,9 +531,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   were manager-local final-chain/advance/pillar reports and the manager executor boundary itself.
 - FinalChain PBFT finalization dispatch/replay facts now use the shim-owned
   `FinalChainPbftFinalizationDispatchReport` returned by `PbftManager::finalize_`. The report carries only
-  `blocks_per_year` and observed FinalChain `last_block`; `pbft_manager_shim` converts those facts at the manager
-  executor boundary. Remaining generic finalization report producers were manager-local advance/pillar reports and the
-  manager executor boundary itself.
+  `blocks_per_year` and observed FinalChain `last_block`; `pbft_manager_shim` advances through
+  `pbft_manager_runtime_advance_finalization_final_chain_dispatch`, so Rust fills the temporary
+  `PbftFinalizationExternalEffectReport` executor envelope internally. Remaining generic finalization report use is the
+  manager executor/failure envelope itself.
 - PBFT manager advance-period finalization facts now advance through
   `pbft_manager_runtime_advance_finalization_advance_period`. C++ passes only the typed
   `PbftManagerFinalizationAdvancePeriodReport` fact (`manager_period`), and Rust fills the temporary
@@ -544,8 +545,7 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `pbft_manager_runtime_advance_finalization_pillar_post_processing` instead of constructing
   `PbftFinalizationExternalEffectReport` in C++. The report carries only the pillar processed/request periods, and the
   shim now rejects invalid delegation-delay request-period derivation before executing the pillar side effect. The
-  remaining generic finalization report use is the temporary Rust executor envelope for manager-local and subsystem
-  conversions that have not yet moved onto typed Rust advancement helpers.
+  remaining generic finalization report use is the temporary Rust executor envelope plus C++ failure-envelope plumbing.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

@@ -32,6 +32,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
+    PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport,
     PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
     PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport,
     PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport,
@@ -2388,6 +2389,38 @@ pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports FinalChain dispatch or replay facts to the manager-owned PBFT
+/// finalization executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: FinalChain post-dispatch facts after C++ executes the external
+///   FinalChain/EVM boundary.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the FinalChain dispatch/replay client.
+/// - Rust derives the PBFT finalization action from the cursor, marks the
+///   FinalChain dispatch as observed, and maps only the blocks-per-year and
+///   last-block facts needed for live-mutation validation.
+/// - Cursor mismatch, validation failure, and FinalChain execution failure use
+///   the same executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiPbftManagerFinalizationFinalChainDispatchReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.final_chain_dispatched = true;
+    external_report.final_chain_blocks_per_year = report.blocks_per_year;
+    external_report.final_chain_last_block = report.last_block;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
 ///
 /// Inputs:
@@ -3355,6 +3388,7 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport;
+    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
@@ -4356,6 +4390,69 @@ mod tests {
         assert_eq!(
             state.action,
             PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_final_chain_dispatch_report() {
+        let (_temp_dir, mut runtime) = runtime_for_finalization_test(
+            "rustaxa_bridge_pbft_manager_final_chain_dispatch_report",
+        );
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::FinalizeFinalChain,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_final_chain_dispatch(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationFinalChainDispatchReport {
+                blocks_per_year: 1_000,
+                last_block: 10,
+            },
+        )
+        .expect("typed FinalChain dispatch report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::AdvancePeriod.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_rejects_final_chain_dispatch_last_block_mismatch() {
+        let (_temp_dir, mut runtime) = runtime_for_finalization_test(
+            "rustaxa_bridge_pbft_manager_final_chain_dispatch_reject",
+        );
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::FinalizeFinalChain,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_final_chain_dispatch(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationFinalChainDispatchReport {
+                blocks_per_year: 1_000,
+                last_block: 9,
+            },
+        )
+        .expect("FinalChain last-block mismatch should return failed executor state");
+
+        assert_eq!(
+            state.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert_eq!(
+            state.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_FINAL_CHAIN_LAST_BLOCK_MISMATCH"
         );
     }
 

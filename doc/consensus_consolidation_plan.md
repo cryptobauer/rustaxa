@@ -653,7 +653,9 @@ Implementation notes:
 - FinalChain PBFT finalization dispatch and resume replay no longer build the generic finalization report from direct
   FinalChain reads at each callsite. The shim-owned `finalize_` wrapper now returns
   `FinalChainPbftFinalizationDispatchReport`, containing only `blocks_per_year` and the observed FinalChain
-  `last_block`, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor boundary.
+  `last_block`, and `pbft_manager_shim` advances through
+  `pbft_manager_runtime_advance_finalization_final_chain_dispatch` so Rust builds the temporary external-effect envelope
+  at the manager executor boundary.
 - PBFT manager advance-period finalization now uses `PbftManagerFinalizationAdvancePeriodReport`, containing only the
   post-advance manager period, before `pbft_manager_shim` builds the final external-effect envelope at the manager
   executor boundary.
@@ -695,6 +697,12 @@ Implementation notes:
   `PbftFinalizationExternalEffectReport` for that vote-manager client. C++ maps the vote-manager-owned report into a
   manager-scoped CXX DTO, and Rust maps only period/round/block-hash/remaining-extra-count facts into the temporary
   executor envelope internally before running the existing cursor validation and drain path.
+- Follow-up API narrowing moved FinalChain dispatch/replay reporting onto
+  `pbft_manager_runtime_advance_finalization_final_chain_dispatch`, so C++ no longer constructs
+  `PbftFinalizationExternalEffectReport` for that FinalChain/EVM client. C++ maps the shim-owned
+  `FinalChainPbftFinalizationDispatchReport` into a manager-scoped CXX DTO, and Rust maps only blocks-per-year plus
+  observed last-block facts into the temporary executor envelope internally before running the existing cursor
+  validation and drain path.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -800,6 +808,13 @@ Implementation notes:
     extra-reward-vote count, with success/status/cursor/action identity still owned by the PBFT manager executor.
   - `cpp-pro`: confirmed the C++ replacement should preserve the existing require-action, abort, snapshot, and
     `commitRewardVotesResetForFinalization` ordering semantics.
+- Custom agents used for the FinalChain dispatch/replay typed advancement cleanup:
+  - `api-designer`: recommended a manager-scoped
+    `PbftManagerFinalizationFinalChainDispatchReport` with only `blocks_per_year` and `last_block`, while Rust derives
+    success/action identity from the cursor and maps the temporary executor envelope internally.
+  - `cpp-pro`: confirmed the duplicate-resume sequentiality guard, `finalize_` external FinalChain/EVM boundary, abort
+    semantics, and fresh/resume snapshot application order should remain unchanged while both paths use the same typed
+    Rust advancement helper.
 - Custom agents used for the DAG-order finalization client cleanup:
   - `api-designer`: recommended a C++ shim-local `DagFinalizationOrderReport` with only `finalized_count` and no Rust
     FFI changes; PBFT manager remains the only generic executor-report owner.
@@ -1036,9 +1051,10 @@ Implementation notes:
     shows the anchor DAG cache clear path using a typed Rust bridge advancement instead of C++ constructing the generic
     external-effect report. The remaining `anchor_dag_cache_count` assignment is Rust-private temporary executor
     envelope construction.
-  - `rg -n "FinalChainPbftFinalizationDispatchReport|final_chain_dispatched|final_chain_blocks_per_year|final_chain_last_block|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/include/pbft/pbft_manager_shim.hpp libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
-    shows `finalize_` returning a typed FinalChain report and only manager-local conversion populating the generic
-    executor report fields.
+  - `rg -n "advance_finalization_final_chain_dispatch|PbftManagerFinalizationFinalChainDispatchReport|FinalChainPbftFinalizationDispatchReport|final_chain_(dispatched|blocks_per_year|last_block)|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/pbft_manager_shim/include/pbft/pbft_manager_shim.hpp libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.hpp' -g'*.cpp'`
+    shows `finalize_` returning a typed FinalChain report and both fresh dispatch plus duplicate-resume replay using the
+    typed Rust bridge advancement helper. Any remaining `final_chain_*` assignment is Rust-private temporary
+    executor-envelope mapping, not C++ generic report construction in the FinalChain dispatch path.
   - `rg -n "advance_finalization_advance_period|PbftManagerFinalizationAdvancePeriodReport|manager_period|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.cpp'`
     shows the advance-period finalization path using a typed Rust bridge advancement instead of C++ constructing the
     generic external-effect report. The remaining `manager_period` assignment for this path is Rust-private temporary
@@ -1126,9 +1142,9 @@ Implementation notes:
   - `rg -n "getVerifiedPillarVotes\\(" libraries/core_libs/network libraries/core_libs/consensus/shims tests/rust/consensus -g'*.cpp' -g'*.hpp'`
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
-- The immediate follow-up is replacing the remaining temporary generic PBFT finalization executor envelope callsites
-  with narrower executor-advance APIs, or collapsing the whole loop into a one-shot manager-owned operation. Later
-  pillar-chain runtime slices still need external DPoS fact ports and legacy materialization removal.
+- The immediate follow-up is collapsing the now-typed PBFT finalization executor loop into a smaller manager-owned
+  operation where practical, then continuing Slice 6 service consolidation and the later pillar-chain runtime work that
+  still needs external DPoS fact ports plus legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
