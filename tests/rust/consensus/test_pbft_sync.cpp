@@ -83,7 +83,10 @@ constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
+constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
+constexpr uint8_t kPbftFinalizationExecutorModeFresh = 0;
+constexpr uint8_t kPbftFinalizationExecutorModeResume = 1;
 constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
@@ -170,6 +173,73 @@ rust::Vec<PbftFinalizationStorageWriteStage> storageStages(
     out.push_back(std::move(stage));
   }
   return out;
+}
+
+PbftFinalizationResumePlan emptyFinalizationResumePlan() {
+  PbftFinalizationResumePlan resume{};
+  resume.status = 0;
+  resume.duplicate_classified = false;
+  resume.complete = false;
+  resume.error_code = "";
+  return resume;
+}
+
+PbftManagerFinalizationExecutorState startFreshFinalizationExecutor(
+    BridgePbftManagerRuntime& runtime, const PbftFinalizationIntentPlan& plan,
+    rust::Vec<PbftFinalizationStorageWriteStage> primary_stages) {
+  PbftFinalizationExecutorStartRequest request{};
+  request.mode = kPbftFinalizationExecutorModeFresh;
+  request.plan = plan;
+  request.primary_stages = std::move(primary_stages);
+  request.sync = false;
+  request.resume = emptyFinalizationResumePlan();
+  return pbft_manager_runtime_start_finalization_executor(runtime, request);
+}
+
+PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(BridgePbftManagerRuntime& runtime,
+                                                                     const PbftFinalizationIntentPlan& plan,
+                                                                     const PbftFinalizationResumePlan& resume) {
+  PbftFinalizationExecutorStartRequest request{};
+  request.mode = kPbftFinalizationExecutorModeResume;
+  request.plan = plan;
+  request.sync = false;
+  request.resume = resume;
+  return pbft_manager_runtime_start_finalization_executor(runtime, request);
+}
+
+PbftFinalizationExecutorAdvanceReport finalizationAdvanceReport(
+    uint32_t cursor, const PbftFinalizationExternalEffectReport& external_report) {
+  PbftFinalizationExecutorAdvanceReport report{};
+  report.cursor = cursor;
+  report.success = external_report.success;
+  report.status = external_report.status;
+  report.error_code = external_report.error_code;
+  report.dag_finalized_count = external_report.dag_finalized_count;
+  report.finalized_transaction_count = external_report.finalized_transaction_count;
+  report.pbft_chain_size = external_report.pbft_chain_size;
+  report.pbft_chain_head_hash = external_report.pbft_chain_head_hash;
+  report.pbft_chain_last_anchor_hash = external_report.pbft_chain_last_anchor_hash;
+  report.reward_votes_period = external_report.reward_votes_period;
+  report.reward_votes_round = external_report.reward_votes_round;
+  report.reward_votes_block_hash = external_report.reward_votes_block_hash;
+  report.reward_votes_extra_count = external_report.reward_votes_extra_count;
+  report.sortition_changed = external_report.sortition_changed;
+  report.sortition_change_period = external_report.sortition_change_period;
+  report.sortition_change_interval_efficiency = external_report.sortition_change_interval_efficiency;
+  report.sortition_change_threshold_upper = external_report.sortition_change_threshold_upper;
+  report.sortition_current_threshold_upper = external_report.sortition_current_threshold_upper;
+  report.sortition_params_changes_count = external_report.sortition_params_changes_count;
+  report.rounds_count_dynamic_lambda = external_report.rounds_count_dynamic_lambda;
+  report.dynamic_lambda = external_report.dynamic_lambda;
+  report.executed_pbft_block = external_report.executed_pbft_block;
+  report.manager_period = external_report.manager_period;
+  report.pillar_processed_period = external_report.pillar_processed_period;
+  report.pillar_request_period = external_report.pillar_request_period;
+  report.anchor_dag_cache_count = external_report.anchor_dag_cache_count;
+  report.final_chain_dispatched = external_report.final_chain_dispatched;
+  report.final_chain_blocks_per_year = external_report.final_chain_blocks_per_year;
+  report.final_chain_last_block = external_report.final_chain_last_block;
+  return report;
 }
 
 PbftFinalizationStorageWriteStage rewardResetFinalizationStorageStage(
@@ -801,17 +871,17 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
 TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
-  auto boundary = pbft_manager_runtime_begin_finalization_boundary(
-      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
+  auto boundary = startFreshFinalizationExecutor(
+      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
 
   PbftFinalizationExternalEffectReport report{};
-  report.action = boundary.action;
   report.success = true;
   report.sortition_changed = true;
   report.sortition_change_period = 999;
   report.sortition_params_changes_count = 1;
 
-  boundary = pbft_manager_runtime_report_finalization_external_effect_boundary(*runtime, report);
+  boundary =
+      pbft_manager_runtime_advance_finalization_executor(*runtime, finalizationAdvanceReport(boundary.cursor, report));
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_FALSE(boundary.can_continue);
@@ -822,10 +892,11 @@ TEST(RustPbftSyncTest, FinalizationBoundaryBeginsAtFirstExternalAction) {
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
 
-  const auto boundary = pbft_manager_runtime_begin_finalization_boundary(
-      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
+  const auto boundary = startFreshFinalizationExecutor(
+      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
 
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
+  EXPECT_EQ(boundary.cursor, 1);
   EXPECT_TRUE(boundary.has_action);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
   EXPECT_TRUE(boundary.can_continue);
@@ -904,19 +975,36 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
 TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
   const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
-  auto boundary = pbft_manager_runtime_begin_finalization_boundary(
-      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}), false);
+  auto boundary = startFreshFinalizationExecutor(
+      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  PbftFinalizationExternalEffectReport report{};
-  report.action = kPbftFinalizationRuntimeActionCommitSortitionRuntime;
+  PbftFinalizationExecutorAdvanceReport report{};
+  report.cursor = boundary.cursor;
   report.success = false;
   report.status = 77;
   report.error_code = "TEST_EXTERNAL_FAILURE";
-  boundary = pbft_manager_runtime_report_finalization_external_effect_boundary(*runtime, report);
+  boundary = pbft_manager_runtime_advance_finalization_executor(*runtime, report);
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_EQ(std::string(boundary.error_code), "TEST_EXTERNAL_FAILURE");
+}
+
+TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
+  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  auto runtime = managerRuntimeForFinalizationSession();
+  auto state = startFreshFinalizationExecutor(
+      *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
+  ASSERT_EQ(state.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
+
+  PbftFinalizationExecutorAdvanceReport report{};
+  report.cursor = state.cursor + 1;
+  report.success = true;
+
+  state = pbft_manager_runtime_advance_finalization_executor(*runtime, report);
+  EXPECT_EQ(state.status, kPbftFinalizationRuntimeStatusActionMismatch);
+  EXPECT_FALSE(state.has_action);
+  EXPECT_EQ(std::string(state.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
 }
 
 TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {
@@ -932,9 +1020,10 @@ TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {
   resume.error_code = "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY";
   auto runtime = managerRuntimeForFinalizationSession();
 
-  const auto boundary = pbft_manager_runtime_begin_finalization_resume_boundary(*runtime, plan, resume);
+  const auto boundary = startResumeFinalizationExecutor(*runtime, plan, resume);
 
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
+  EXPECT_EQ(boundary.cursor, 0);
   EXPECT_TRUE(boundary.has_action);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionFinalizeFinalChain);
 }

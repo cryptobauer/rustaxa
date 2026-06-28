@@ -566,13 +566,13 @@ Implementation notes:
   executor facts into Rust and replaced the standalone `validate_pbft_finalization_live_mutation_report` CXX export and
   bridge-only `PbftFinalizationLiveMutationValidation` DTO. The later boundary consolidation below deletes the interim
   CXX export and folds reporting into manager-owned finalization boundary APIs.
-- `pbft_manager_shim` normal finalization and duplicate-resume paths now use manager-owned finalization boundary APIs:
-  `pbft_manager_runtime_begin_finalization_boundary`,
-  `pbft_manager_runtime_begin_finalization_resume_boundary`,
-  and `pbft_manager_runtime_report_finalization_external_effect_boundary`. Rust owns cursor setup, primary storage apply
-  through the runtime storage handle, live mutation validation, manager-owned action drains, final completion
-  classification, and the retained finalization plan used by later external-effect reports. C++ still prepares primary
-  storage stages under the existing DAG/transaction locks and still executes external sortition, reward-vote, DAG,
+- `pbft_manager_shim` normal finalization and duplicate-resume paths now use the manager-owned two-call finalization
+  executor APIs: `pbft_manager_runtime_start_finalization_executor` and
+  `pbft_manager_runtime_advance_finalization_executor`. Rust owns cursor setup, primary storage apply through the runtime
+  storage handle, live mutation validation, manager-owned action drains, final completion classification, and the
+  retained finalization plan used by later external-effect reports. C++ echoes the executor cursor instead of passing an
+  action back into the manager; Rust derives the current action from the cursor. C++ still prepares primary storage
+  stages under the existing DAG/transaction locks and still executes external sortition, reward-vote, DAG,
   transaction-manager, PBFT-chain, anchor-cache, FinalChain/EVM, advance-period, and pillar side effects before reporting
   facts back to Rust. The CXX exports for `plan_pbft_finalization_runtime`,
   `pbft_manager_runtime_finalization_session_next`, `pbft_manager_runtime_finalization_session_report`,
@@ -581,13 +581,14 @@ Implementation notes:
   `pbft_manager_runtime_report_finalization_live_mutation_boundary`,
   `pbft_manager_runtime_report_finalization_failure_boundary`,
   `pbft_manager_runtime_drain_owned_finalization_actions`, and
-  `pbft_manager_runtime_apply_finalization_storage_writes` are deleted.
-- The finalization external-effect report boundary now uses one CXX API for both success and failure:
-  `PbftFinalizationExternalEffectReport` carries the boundary action, success flag, executor status/error, and
-  action-specific observed facts. Rust derives the base finalization identity (`block_period`, PBFT block hash, and
-  anchor hash) from the plan retained inside `BridgePbftManagerRuntime`, so C++ no longer passes the accepted
-  `PbftFinalizationIntentPlan` back into every report call. `PbftFinalizationRuntimeActionReport` is now a private Rust
-  helper, not a CXX DTO.
+  `pbft_manager_runtime_apply_finalization_storage_writes` plus the older piecemeal finalization boundary APIs are
+  deleted.
+- The finalization external-effect report boundary now uses a cursor-keyed CXX API for both success and failure:
+  `PbftFinalizationExecutorAdvanceReport` carries the executor cursor, success flag, executor status/error, and
+  action-specific observed facts. Rust derives the current action plus base finalization identity (`block_period`, PBFT
+  block hash, and anchor hash) from the cursor and plan retained inside `BridgePbftManagerRuntime`, so C++ no longer
+  passes the accepted `PbftFinalizationIntentPlan` or action identity back into every manager advancement call.
+  `PbftFinalizationRuntimeActionReport` is now a private Rust helper, not a CXX DTO.
 - Follow-up report-surface cleanup removes `PbftFinalizationLiveMutationReport` from the CXX bridge. Sortition,
   reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain replay/dispatch, advance-period, and
   pillar post-processing executors now return or construct `PbftFinalizationExternalEffectReport` directly. Rust still
@@ -601,7 +602,7 @@ Implementation notes:
   `pbft_manager_runtime_finalization_session_report_action`,
   `pbft_manager_runtime_report_finalization_live_mutation`, and
   `pbft_manager_runtime_drain_owned_finalization_actions` are now private implementation helpers. C++ and external bridge
-  consumers can only drive the manager-owned finalization path through the boundary APIs listed above plus the explicit
+  consumers can only drive the manager-owned finalization path through the executor APIs listed above plus the explicit
   abort call.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
@@ -674,8 +675,14 @@ Implementation notes:
     requested action.
   - `architect-reviewer`: confirmed the safe next large cut is a Rust-owned finalization executor operation that keeps
     FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, network, and
-    local cache effects as explicit external actions for now. This increment removes the obsolete CXX live-report layer
-    as a prerequisite and leaves the two-call executor API as the immediate follow-up.
+    local cache effects as explicit external actions for now. The follow-up executor cut below implements that API.
+- Custom agents used for the PBFT finalization executor API consolidation:
+  - `rust-engineer`: recommended replacing the three piecemeal finalization boundary exports with
+    `pbft_manager_runtime_start_finalization_executor` and
+    `pbft_manager_runtime_advance_finalization_executor`, adding cursor to the returned state, and deriving action
+    identity from the Rust cursor.
+  - `cpp-pro`: reviewed the C++ migration and called out the lock partition, move-only FinalChain payloads, duplicate
+    resume replay guard, anchor-cache pairing, and failure/abort semantics that the executor cut must preserve.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -846,6 +853,12 @@ Implementation notes:
   - `rg -n "PbftFinalizationLiveMutationReport|FfiPbftFinalizationLiveMutationReport|makeFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src libraries/core_libs/consensus/shims tests/rust/consensus -g'*.rs' -g'*.cpp' -g'*.hpp'`
     now returns only native Rust-domain `PbftFinalizationLiveMutationReport` references in `pbft_manager.rs`, not CXX
     bridge DTOs or shim helpers.
+- Additional validation for PBFT finalization executor API consolidation:
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `cmake --build /build --target pbft_manager_test --parallel 12`
+  - `rg -n "pbft_manager_runtime_begin_finalization_boundary|pbft_manager_runtime_begin_finalization_resume_boundary|pbft_manager_runtime_report_finalization_external_effect_boundary|PbftManagerFinalizationBoundary" rust/crates libraries tests doc -g'*.rs' -g'*.cpp' -g'*.hpp' -g'*.md'`
+    now returns no live code references; docs retain only historical validation notes where relevant.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining pillar-chain external DPoS/materialization/event paths are still present and remain Slice 6 work.
 - Additional validation for the pillar-chain runtime PBFT-finalization consolidation:
@@ -861,9 +874,9 @@ Implementation notes:
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - A parallel all-pillar gtest run failed from test-environment lock/port conflicts while another gtest process was
     active; the focused pillar tests and PBFT smoke passed when rerun sequentially.
-- The immediate follow-up is the broader two-call PBFT finalization executor cut that absorbs the remaining
-  external-effect report loop behind `BridgePbftManagerRuntime`, plus later pillar-chain runtime slices for external
-  DPoS fact ports and legacy materialization removal.
+- The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
+  `PbftFinalizationExternalEffectReport` facts, plus later pillar-chain runtime slices for external DPoS fact ports and
+  legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
