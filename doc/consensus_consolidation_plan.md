@@ -1520,6 +1520,9 @@ Implementation status:
   parameters remain only on commit, recovery, and publication calls that actually touch FinalChain storage/state.
   Custom agents used: `architect-reviewer` identified this cleanup and confirmed the PBFT manager standalone planner
   lane as a secondary cleanup candidate.
+- The standalone `plan_external_evm_system_transactions` CXX export is also gone. `final_chain_shim` now plans external
+  EVM system transactions through `BridgeConsensusExecutionApi::consensus_execution_plan_system_transactions`, so the
+  execution client stays on the dedicated API while C++ still supplies the external StateAPI facts.
 - PBFT manager period-data queue scalar/hash metadata getters are no longer CXX exports:
   `pbft_manager_runtime_period_data_queue_period`,
   `pbft_manager_runtime_period_data_queue_syncing_period`,

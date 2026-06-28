@@ -6,6 +6,7 @@ use crate::{
     FinalChainExternalEvmPublicationReport, FinalChainExternalEvmRewardsStatsUpdate,
     FinalChainExternalEvmStateCommitIntent, FinalChainExternalEvmStateCommitRequest,
     FinalChainExternalEvmStateCommitResult, FinalChainProposalPeriodDagLevelUpdate,
+    FinalChainSystemTransactionPlan, FinalChainSystemTransactionPlanFact,
     FinalChainSystemTransactionReport,
     final_chain_execution_session_attach_external_evm_proposal_period_dag_level,
     final_chain_execution_session_attach_external_evm_rewards_stats,
@@ -19,6 +20,7 @@ use crate::{
     final_chain_execution_session_report_external_evm_state_commit_result,
     final_chain_execution_session_report_system_transactions,
     final_chain_execution_session_request_external_evm_state_commit,
+    plan_external_evm_system_transactions,
 };
 
 /// External EVM and StateAPI facade for Rust-owned FinalChain execution.
@@ -54,6 +56,20 @@ impl ConsensusExecutionApi {
         session: &mut FinalChainExecutionSession,
     ) -> FinalChainExecutionStep {
         final_chain_execution_session_next(session)
+    }
+
+    /// Plans system transaction bytes from external StateAPI facts.
+    ///
+    /// The caller still owns gathering bridge-contract code status,
+    /// pillar-period status, epoch-finalization status, and the system account
+    /// nonce from the external execution environment. Rust owns the
+    /// deterministic decision to emit no transaction or a legacy encoded system
+    /// transaction.
+    pub fn plan_system_transactions(
+        &self,
+        fact: FinalChainSystemTransactionPlanFact,
+    ) -> Result<FinalChainSystemTransactionPlan, anyhow::Error> {
+        plan_external_evm_system_transactions(fact)
     }
 
     /// Reports an external EVM transaction execution result.

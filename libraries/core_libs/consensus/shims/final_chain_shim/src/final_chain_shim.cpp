@@ -650,8 +650,9 @@ std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
   const auto bridge_contract_address = config_.genesis.state.hardforks.ficus_hf.bridge_contract_address;
   const auto is_pillar_block_period =
       config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
-  auto plan = rustaxa::plan_external_evm_system_transactions(external_evm_state_api_.collectSystemTransactionFacts(
-      request, is_pillar_block_period, block_gas_limit_, bridge_contract_address));
+  auto plan = rust_execution_api_.value()->consensus_execution_plan_system_transactions(
+      external_evm_state_api_.collectSystemTransactionFacts(request, is_pillar_block_period, block_gas_limit_,
+                                                           bridge_contract_address));
   if (plan.request_id != request.request_id || plan.period != request.period) {
     throw DbException("FinalChain::makeSystemTransactions Rust plan identity mismatch");
   }

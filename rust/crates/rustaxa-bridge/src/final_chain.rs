@@ -555,15 +555,6 @@ pub fn final_chain_execution_session_commit(
         .map(commit_report_to_ffi)
 }
 
-pub fn plan_external_evm_system_transactions(
-    fact: rustaxa_ffi::FinalChainSystemTransactionPlanFact,
-) -> Result<rustaxa_ffi::FinalChainSystemTransactionPlan, anyhow::Error> {
-    rustaxa_consensus::plan_external_evm_system_transactions(system_transaction_plan_fact_from_ffi(
-        fact,
-    ))
-    .map(system_transaction_plan_to_ffi)
-}
-
 pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionApi>, anyhow::Error> {
     Ok(Box::new(BridgeConsensusExecutionApi(
         rustaxa_consensus::ConsensusExecutionApi::new(),
@@ -571,6 +562,20 @@ pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionAp
 }
 
 impl BridgeConsensusExecutionApi {
+    /// Plans system transactions for a pending external-EVM execution request.
+    ///
+    /// C++ still gathers external `StateAPI` facts, while Rust owns the
+    /// deterministic system-transaction decision and legacy RLP construction
+    /// behind the dedicated execution API.
+    pub fn consensus_execution_plan_system_transactions(
+        &self,
+        fact: rustaxa_ffi::FinalChainSystemTransactionPlanFact,
+    ) -> Result<rustaxa_ffi::FinalChainSystemTransactionPlan, anyhow::Error> {
+        self.0
+            .plan_system_transactions(system_transaction_plan_fact_from_ffi(fact))
+            .map(system_transaction_plan_to_ffi)
+    }
+
     /// Returns the next external-EVM/StateAPI boundary request for a FinalChain session.
     ///
     /// The facade keeps C++ executor code from reaching directly into the lower-level
@@ -2249,20 +2254,23 @@ mod tests {
     fn bridge_plans_external_evm_system_transaction_rlp() {
         let request_id = [0x42; 32];
         let bridge_address = [0x77; 20];
-        let plan = plan_external_evm_system_transactions(
-            rustaxa_ffi::FinalChainSystemTransactionPlanFact {
-                request_id,
-                period: 7,
-                is_pillar_block_period: true,
-                bridge_contract_address: bridge_address,
-                bridge_contract_found: true,
-                bridge_contract_has_code: true,
-                should_finalize_epoch: true,
-                system_account_nonce: 4,
-                block_gas_limit: 1_000_000,
-            },
-        )
-        .expect("system transaction planner should convert");
+        let execution_api =
+            create_consensus_execution_api().expect("execution API should be created");
+        let plan = execution_api
+            .consensus_execution_plan_system_transactions(
+                rustaxa_ffi::FinalChainSystemTransactionPlanFact {
+                    request_id,
+                    period: 7,
+                    is_pillar_block_period: true,
+                    bridge_contract_address: bridge_address,
+                    bridge_contract_found: true,
+                    bridge_contract_has_code: true,
+                    should_finalize_epoch: true,
+                    system_account_nonce: 4,
+                    block_gas_limit: 1_000_000,
+                },
+            )
+            .expect("system transaction planner should convert");
 
         assert_eq!(plan.request_id, request_id);
         assert_eq!(plan.period, 7);
@@ -2694,20 +2702,23 @@ mod tests {
             })
             .expect("session should be created");
         let system_step = execution_session_next(&mut session).expect("system step should convert");
-        let system_plan = plan_external_evm_system_transactions(
-            rustaxa_ffi::FinalChainSystemTransactionPlanFact {
-                request_id: system_step.system_transaction_request.request_id,
-                period: 1,
-                is_pillar_block_period: true,
-                bridge_contract_address: [0xAB; 20],
-                bridge_contract_found: true,
-                bridge_contract_has_code: true,
-                should_finalize_epoch: true,
-                system_account_nonce: 6,
-                block_gas_limit: 1_000_000,
-            },
-        )
-        .expect("system transaction plan should convert");
+        let execution_api =
+            create_consensus_execution_api().expect("execution API should be created");
+        let system_plan = execution_api
+            .consensus_execution_plan_system_transactions(
+                rustaxa_ffi::FinalChainSystemTransactionPlanFact {
+                    request_id: system_step.system_transaction_request.request_id,
+                    period: 1,
+                    is_pillar_block_period: true,
+                    bridge_contract_address: [0xAB; 20],
+                    bridge_contract_found: true,
+                    bridge_contract_has_code: true,
+                    should_finalize_epoch: true,
+                    system_account_nonce: 6,
+                    block_gas_limit: 1_000_000,
+                },
+            )
+            .expect("system transaction plan should convert");
         assert_eq!(system_plan.transactions.len(), 1);
         let step = execution_session_report_system_transactions(
             &mut session,

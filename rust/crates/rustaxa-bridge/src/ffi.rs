@@ -6012,9 +6012,6 @@ pub mod rustaxa_ffi {
         pub fn create_final_chain_execution_session(
             request: FinalChainExecutionRequest,
         ) -> Result<Box<BridgeFinalChainExecutionSession>>;
-        pub fn plan_external_evm_system_transactions(
-            fact: FinalChainSystemTransactionPlanFact,
-        ) -> Result<FinalChainSystemTransactionPlan>;
         pub fn recover_external_evm_pending_publication(
             self: &BridgeFinalChain,
             committed_period: u64,
@@ -6022,6 +6019,10 @@ pub mod rustaxa_ffi {
         ) -> Result<FinalChainExternalEvmPublicationReport>;
         type BridgeConsensusExecutionApi;
         pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionApi>>;
+        pub fn consensus_execution_plan_system_transactions(
+            self: &BridgeConsensusExecutionApi,
+            fact: FinalChainSystemTransactionPlanFact,
+        ) -> Result<FinalChainSystemTransactionPlan>;
         pub fn consensus_execution_next_execution_request(
             self: &BridgeConsensusExecutionApi,
             session: &mut BridgeFinalChainExecutionSession,
