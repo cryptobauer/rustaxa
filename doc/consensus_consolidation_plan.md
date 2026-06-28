@@ -640,6 +640,9 @@ Implementation notes:
   `commitRewardVotesResetForFinalization`. The shim now returns `RewardVotesFinalizationResetReport`, containing only
   live reward-vote period/round/block-hash/remaining-extra-count facts, and `pbft_manager_shim` builds the final
   external-effect envelope at the manager executor boundary.
+- The DAG-order finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
+  `setDagBlockOrderForPbftFinalization`. The shim now returns `DagFinalizationOrderReport`, containing only the finalized
+  DAG-block count, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor boundary.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -740,6 +743,11 @@ Implementation notes:
     no Rust FFI changes; PBFT manager remains responsible for canonical success/failure reporting.
   - `cpp-pro`: confirmed the reward-vote reset flow now stages storage in Rust, mutates live C++ metadata after commit,
     and converts to `PbftFinalizationExternalEffectReport` only in `pbft_manager_overlay`.
+- Custom agents used for the DAG-order finalization client cleanup:
+  - `api-designer`: recommended a C++ shim-local `DagFinalizationOrderReport` with only `finalized_count` and no Rust
+    FFI changes; PBFT manager remains the only generic executor-report owner.
+  - `cpp-pro`: confirmed `setDagBlockOrderForPbftFinalization` did not use the finalization write intent and that the
+    only in-repo caller is the PBFT manager overlay.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -914,6 +922,9 @@ Implementation notes:
   - `rg -n "PbftFinalizationExternalEffectReport|commitRewardVotesResetForFinalization|RewardVotesFinalizationResetReport|makeRewardVotesResetLiveReport" libraries/core_libs/consensus/shims/vote_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows no generic finalization report in the vote-manager shim; only manager-local conversion uses
     `PbftFinalizationExternalEffectReport`.
+  - `rg -n "PbftFinalizationExternalEffectReport|PbftFinalizationStorageWritePlan|setDagBlockOrderForPbftFinalization|DagFinalizationOrderReport" libraries/core_libs/consensus/shims/dag_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
+    shows no generic finalization report or finalization write-plan dependency in the DAG-manager shim; only
+    manager-local conversion uses `PbftFinalizationExternalEffectReport`.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -992,9 +1003,8 @@ Implementation notes:
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
 - The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
-  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are DAG order and manager-local
-  cache/final-chain/advance/pillar reports. Later pillar-chain runtime slices still need external DPoS fact ports and
-  legacy materialization removal.
+  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are manager-local cache/final-chain/advance/pillar
+  reports. Later pillar-chain runtime slices still need external DPoS fact ports and legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 

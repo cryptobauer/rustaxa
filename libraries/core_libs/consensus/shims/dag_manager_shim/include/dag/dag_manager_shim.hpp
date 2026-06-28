@@ -1,10 +1,22 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
+
+/**
+ * DAG-owned result after applying finalized DAG order for PBFT finalization.
+ *
+ * Inputs are the finalized anchor, PBFT period, and ordered DAG blocks after the Rust DAG runtime applies the finalized
+ * order. Outputs carry only DAG facts: the number of DAG blocks finalized by the mutation. PBFT manager code converts
+ * this fact into its executor report at the manager boundary.
+ */
+struct DagFinalizationOrderReport {
+  uint64_t finalized_count = 0;
+};
 
 /**
  * Rust-mode DagManager migration facade.
@@ -57,14 +69,13 @@ class DagManager : public DagManagerOld {
   vec_blk_t getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period);
   uint setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order);
   /**
-   * Apply finalized DAG ordering and return a PBFT finalization external-effect report.
+   * Apply finalized DAG ordering and return DAG-owned finalization facts.
    *
-   * Inputs are the finalized anchor, PBFT period, ordered DAG blocks, and the Rust-planned finalization write intent.
-   * The returned report carries post-mutation facts that Rust validates before the PBFT runtime cursor advances.
+   * Inputs are the finalized anchor, PBFT period, and ordered DAG blocks. The returned report carries post-mutation DAG
+   * facts that the PBFT manager forwards to Rust before the PBFT runtime cursor advances.
    */
-  rustaxa::PbftFinalizationExternalEffectReport setDagBlockOrderForPbftFinalization(
-      blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order,
-      const rustaxa::PbftFinalizationStorageWritePlan &write_intent);
+  DagFinalizationOrderReport setDagBlockOrderForPbftFinalization(blk_hash_t const &anchor, PbftPeriod period,
+                                                                 vec_blk_t const &dag_order);
   std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> getLatestPivotAndTips() const;
   std::vector<blk_hash_t> getGhostPath(const blk_hash_t &source) const;
   std::vector<blk_hash_t> getGhostPath() const;

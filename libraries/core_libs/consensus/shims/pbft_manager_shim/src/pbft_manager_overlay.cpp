@@ -3862,8 +3862,12 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     if (finalization_plan.cleanup.set_dag_block_order) {
-      const auto dag_report = dag_mgr_->setDagBlockOrderForPbftFinalization(
-          anchor_hash, block_pbft_period, dag_blocks_order, finalization_plan.storage_write_intent);
+      const auto dag_order_report =
+          dag_mgr_->setDagBlockOrderForPbftFinalization(anchor_hash, block_pbft_period, dag_blocks_order);
+      rustaxa::PbftFinalizationExternalEffectReport dag_report{};
+      dag_report.success = true;
+      dag_report.status = 0;
+      dag_report.dag_finalized_count = dag_order_report.finalized_count;
       if (!report_live_mutation("DAG block order", dag_report, boundary)) {
         return false;
       }

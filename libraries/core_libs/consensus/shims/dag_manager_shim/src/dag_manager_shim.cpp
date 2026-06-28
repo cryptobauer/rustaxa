@@ -800,15 +800,13 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
   }
 }
 
-rustaxa::PbftFinalizationExternalEffectReport DagManager::setDagBlockOrderForPbftFinalization(
-    blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order,
-    const rustaxa::PbftFinalizationStorageWritePlan &) {
+DagFinalizationOrderReport DagManager::setDagBlockOrderForPbftFinalization(blk_hash_t const &anchor,
+                                                                           PbftPeriod period,
+                                                                           vec_blk_t const &dag_order) {
   const auto finalized_count = setDagBlockOrder(anchor, period, dag_order);
 
-  rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.success = true;
-  report.status = 0;
-  report.dag_finalized_count = finalized_count;
+  DagFinalizationOrderReport report{};
+  report.finalized_count = finalized_count;
   return report;
 }
 
