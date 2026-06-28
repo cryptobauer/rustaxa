@@ -2491,23 +2491,6 @@ pub mod rustaxa_ffi {
         sortition_threshold: u64,
     }
 
-    /// Plain payload for a pillar vote carried across the CXX boundary.
-    struct PillarVotePayload {
-        vote_hash: [u8; 32],
-        block_hash: [u8; 32],
-        voter: [u8; 20],
-        period: u64,
-        weight: u64,
-        vote_rlp: Vec<u8>,
-    }
-
-    /// Pre-weight pillar-vote identity supplied after Rust signature recovery.
-    struct PillarVoteIdentityPayload {
-        vote_hash: [u8; 32],
-        voter: [u8; 20],
-        period: u64,
-    }
-
     /// Result of inspecting one PillarVote RLP payload in Rust.
     struct PillarVoteInspection {
         status: u8,
@@ -2545,13 +2528,51 @@ pub mod rustaxa_ffi {
         first_bad_vote_hash: [u8; 32],
     }
 
-    /// Result of a uniqueness check for one pillar vote.
-    struct PillarVoteUniqueOutcome {
-        is_unique: bool,
+    /// Local context for preparing one pillar-vote admission.
+    ///
+    /// C++ supplies current-pillar anchor facts while Rust owns RLP decoding,
+    /// signature recovery, duplicate detection, relevance, and identity
+    /// uniqueness checks. FinalChain DPoS facts remain outside this DTO.
+    struct PillarVoteSingleAdmissionContext {
+        has_current_pillar_block: bool,
+        current_pillar_block_period: u64,
+        current_pillar_block_hash: [u8; 32],
+        first_pillar_block_period: u64,
+        pillar_blocks_interval: u64,
+        check_relevance: bool,
+        check_identity_uniqueness: bool,
     }
 
-    /// Result of inserting one pillar vote into Rust-owned aggregation.
-    struct PillarVoteInsertOutcome {
+    /// Prepared identity for one pillar vote before external DPoS lookup.
+    ///
+    /// Status values match `PillarVoteValidationPlanStatus` in the C++ shim:
+    /// `0` is ready for DPoS lookup and `can_query_dpos == true`; non-zero
+    /// values identify the deterministic rejection reason.
+    struct PillarVoteSingleAdmissionPreparePlan {
+        status: u8,
+        can_query_dpos: bool,
+        needs_threshold: bool,
+        period: u64,
+        block_hash: [u8; 32],
+        vote_hash: [u8; 32],
+        voter: [u8; 20],
+    }
+
+    /// External DPoS facts needed to apply one prepared pillar vote.
+    ///
+    /// C++ supplies these facts from the FinalChain boundary. Rust derives the
+    /// vote identity from canonical RLP, initializes period state when needed,
+    /// and performs the deterministic insert.
+    struct PillarVoteSingleAdmissionApplyInput {
+        vote_rlp: Vec<u8>,
+        validator_vote_count: u64,
+        has_threshold: bool,
+        threshold: u64,
+    }
+
+    /// Result of applying one prepared pillar vote to Rust aggregation state.
+    struct PillarVoteSingleAdmissionApplyPlan {
+        status: u8,
         accepted: bool,
         duplicate: bool,
         conflict_found: bool,
@@ -5567,32 +5588,19 @@ pub mod rustaxa_ffi {
         type BridgePillarVotes;
 
         pub fn create_pillar_votes_index() -> Box<BridgePillarVotes>;
-        pub fn pillar_votes_period_data_initialized(self: &BridgePillarVotes, period: u64) -> bool;
-        pub fn pillar_votes_init_period_data(
-            self: &mut BridgePillarVotes,
-            period: u64,
-            threshold: u64,
-        ) -> bool;
-        pub fn pillar_votes_vote_exists(
-            self: &BridgePillarVotes,
-            vote: PillarVotePayload,
-        ) -> Result<bool>;
         pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
         pub fn inspect_pillar_vote_bundle_rlps(
             votes: Vec<PillarVoteRlpPayload>,
         ) -> Result<PillarVoteBundleInspectionPlan>;
-        pub fn pillar_votes_is_unique_identity(
+        pub fn pillar_votes_prepare_single_vote_admission(
             self: &BridgePillarVotes,
-            vote: PillarVoteIdentityPayload,
-        ) -> Result<PillarVoteUniqueOutcome>;
-        pub fn pillar_votes_is_unique_vote(
-            self: &BridgePillarVotes,
-            vote: PillarVotePayload,
-        ) -> Result<PillarVoteUniqueOutcome>;
-        pub fn pillar_votes_insert_vote(
+            vote_rlp: Vec<u8>,
+            context: PillarVoteSingleAdmissionContext,
+        ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
+        pub fn pillar_votes_apply_prepared_single_vote_admission(
             self: &mut BridgePillarVotes,
-            vote: PillarVotePayload,
-        ) -> Result<PillarVoteInsertOutcome>;
+            input: PillarVoteSingleAdmissionApplyInput,
+        ) -> Result<PillarVoteSingleAdmissionApplyPlan>;
         pub fn pillar_votes_apply_weighted_rlp_bundle(
             self: &mut BridgePillarVotes,
             votes: Vec<PillarVoteWeightedRlpPayload>,

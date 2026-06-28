@@ -167,7 +167,9 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
 struct AddVerifiedPillarVoteWithRustPlan {
   PillarVoteValidationPlanStatus status{PillarVoteValidationPlanStatus::kUnknown};
   bool can_insert{false};
+  bool needs_threshold{false};
   PbftPeriod period{0};
+  blk_hash_t block_hash{};
   vote_hash_t vote_hash{};
   addr_t recovered_voter{};
   uint64_t validator_vote_count{0};
@@ -186,7 +188,8 @@ struct AddVerifiedPillarVoteWithRustPlan {
  *   zero-weight validators all return `can_insert == false`.
  */
 AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
-    const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain);
+    const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain,
+    const ::rust::Box<rustaxa::BridgePillarVotes>& pillar_votes);
 
 /**
  * Inspects one vote RLP in Rust and returns decoded identity plus signature status.

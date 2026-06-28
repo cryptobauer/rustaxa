@@ -136,6 +136,33 @@ PillarVoteRelevancePlanStatus fromStatusCode(uint8_t status) {
   }
 }
 
+PillarVoteValidationPlanStatus toPillarVoteValidationStatus(uint8_t status) {
+  switch (status) {
+    case 0:
+      return PillarVoteValidationPlanStatus::kValid;
+    case 1:
+      return PillarVoteValidationPlanStatus::kDuplicate;
+    case 2:
+      return PillarVoteValidationPlanStatus::kMissingCurrentPillarBlock;
+    case 3:
+      return PillarVoteValidationPlanStatus::kVotePeriodMismatch;
+    case 4:
+      return PillarVoteValidationPlanStatus::kVoteBlockHashMismatch;
+    case 5:
+      return PillarVoteValidationPlanStatus::kNotUnique;
+    case 6:
+      return PillarVoteValidationPlanStatus::kSignatureInvalid;
+    case 7:
+      return PillarVoteValidationPlanStatus::kNotEligible;
+    case 8:
+      return PillarVoteValidationPlanStatus::kFuturePeriod;
+    case 9:
+      return PillarVoteValidationPlanStatus::kInspectionFailure;
+    default:
+      return PillarVoteValidationPlanStatus::kUnknown;
+  }
+}
+
 ValidateSyncPillarVotesBundlePlanStatus toSyncPillarVotesBundlePlanStatus(uint8_t status) {
   switch (status) {
     case 0:
@@ -163,23 +190,6 @@ ValidateSyncPillarVotesBundlePlanStatus toSyncPillarVotesBundlePlanStatus(uint8_
 
 uint8_t toSyncPillarVotesBundlePlanStatusCode(ValidateSyncPillarVotesBundlePlanStatus status) {
   return static_cast<uint8_t>(status);
-}
-
-PillarVoteValidationPlanStatus fromRelevanceStatus(PillarVoteRelevancePlanStatus status) {
-  switch (status) {
-    case PillarVoteRelevancePlanStatus::kRelevant:
-      return PillarVoteValidationPlanStatus::kValid;
-    case PillarVoteRelevancePlanStatus::kVoteAlreadyKnown:
-      return PillarVoteValidationPlanStatus::kDuplicate;
-    case PillarVoteRelevancePlanStatus::kMissingCurrentPillarBlock:
-      return PillarVoteValidationPlanStatus::kMissingCurrentPillarBlock;
-    case PillarVoteRelevancePlanStatus::kVotePeriodMismatch:
-      return PillarVoteValidationPlanStatus::kVotePeriodMismatch;
-    case PillarVoteRelevancePlanStatus::kVoteBlockHashMismatch:
-      return PillarVoteValidationPlanStatus::kVoteBlockHashMismatch;
-    default:
-      return PillarVoteValidationPlanStatus::kUnknown;
-  }
 }
 
 rustaxa::PillarValidatorVoteCount toBridgeVoteCount(const state_api::ValidatorVoteCount& vote_count) {
@@ -224,23 +234,20 @@ std::runtime_error pillarVotesError(const std::string& message) {
   return std::runtime_error("PillarChainManager: " + message);
 }
 
-rustaxa::PillarVotePayload toBridgeVotePayload(const std::shared_ptr<PillarVote>& vote, const addr_t& recovered_voter,
-                                              uint64_t validator_vote_count) {
-  if (!vote) {
-    throw pillarVotesError("cannot bridge null pillar vote");
+rustaxa::PillarVoteSingleAdmissionContext toSingleVoteAdmissionContext(
+    const FicusHardforkConfig& ficus_hf_config, const std::shared_ptr<PillarBlock>& current_pillar_block,
+    bool check_relevance, bool check_identity_uniqueness) {
+  rustaxa::PillarVoteSingleAdmissionContext context{};
+  context.has_current_pillar_block = static_cast<bool>(current_pillar_block);
+  if (current_pillar_block) {
+    context.current_pillar_block_period = current_pillar_block->getPeriod();
+    context.current_pillar_block_hash = toBridgeHash(current_pillar_block->getHash());
   }
-  if (validator_vote_count == 0) {
-    throw pillarVotesError("validator vote count must be non-zero");
-  }
-
-  return rustaxa::PillarVotePayload{
-      toBridgeHash(vote->getHash()), toBridgeHash(vote->getBlockHash()), toBridgeAddress(recovered_voter),
-      vote->getPeriod(), validator_vote_count, toRustBytes(vote->rlp())};
-}
-
-rustaxa::PillarVoteIdentityPayload toBridgeVoteIdentityPayload(PbftPeriod period, const vote_hash_t& vote_hash,
-                                                              const addr_t& recovered_voter) {
-  return rustaxa::PillarVoteIdentityPayload{toBridgeHash(vote_hash), toBridgeAddress(recovered_voter), period};
+  context.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
+  context.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
+  context.check_relevance = check_relevance;
+  context.check_identity_uniqueness = check_identity_uniqueness;
+  return context;
 }
 
 std::shared_ptr<PillarVote> materializePillarVoteRecord(const rustaxa::PillarVoteRecord& vote_record) {
@@ -451,72 +458,71 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
     return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
   }
 
+  rustaxa::PillarVoteSingleAdmissionPreparePlan prepared{};
   try {
-    const auto vote_already_known = pillarVoteExistsByLookup(*pillar_votes, vote);
-    const auto relevance_plan =
-        planPillarVoteRelevance(ficus_hf_config, vote, current_pillar_block, vote_already_known);
-    if (!relevance_plan.is_relevant) {
-      return {fromRelevanceStatus(relevance_plan.status), false, vote->getPeriod(), vote->getHash(), {}};
+    prepared = pillar_votes->pillar_votes_prepare_single_vote_admission(
+        toRustBytes(vote->rlp()),
+        toSingleVoteAdmissionContext(ficus_hf_config, current_pillar_block, true, true));
+    if (!prepared.can_query_dpos) {
+      return {toPillarVoteValidationStatus(prepared.status), false, prepared.period, fromBridgeHash(prepared.vote_hash),
+              fromBridgeAddress(prepared.voter)};
     }
-  } catch (...) {
+  } catch (const std::exception&) {
     return {PillarVoteValidationPlanStatus::kUnknown, false, vote->getPeriod(), vote->getHash(), {}};
   }
 
-  auto inspection = inspectPillarVoteWithRust(vote);
-  if (!inspection.is_valid) {
-    return inspection;
-  }
-  auto recovered_voter = inspection.recovered_voter;
-
+  const auto recovered_voter = fromBridgeAddress(prepared.voter);
   try {
-    if (!pillar_votes
-             ->pillar_votes_is_unique_identity(
-                 toBridgeVoteIdentityPayload(inspection.period, inspection.vote_hash, recovered_voter))
-             .is_unique) {
-      return {PillarVoteValidationPlanStatus::kNotUnique, false, inspection.period, inspection.vote_hash, recovered_voter};
-    }
-  } catch (const std::exception&) {
-    return {PillarVoteValidationPlanStatus::kNotUnique, false, inspection.period, inspection.vote_hash,
-            recovered_voter};
-  }
-
-  try {
-    const auto dpos_facts = collectPillarDposFacts(final_chain, inspection.period - 1, false, {recovered_voter});
+    const auto dpos_facts = collectPillarDposFacts(final_chain, prepared.period - 1, false, {recovered_voter});
     if (!firstAddressFactReady(dpos_facts)) {
-      return {PillarVoteValidationPlanStatus::kFuturePeriod, false, inspection.period, inspection.vote_hash,
+      return {PillarVoteValidationPlanStatus::kFuturePeriod, false, prepared.period, fromBridgeHash(prepared.vote_hash),
               recovered_voter};
     }
     if (!dpos_facts.address_facts[0].eligible) {
-      return {PillarVoteValidationPlanStatus::kNotEligible, false, inspection.period, inspection.vote_hash,
+      return {PillarVoteValidationPlanStatus::kNotEligible, false, prepared.period, fromBridgeHash(prepared.vote_hash),
               recovered_voter};
     }
   } catch (...) {
-    return {PillarVoteValidationPlanStatus::kUnknown, false, inspection.period, inspection.vote_hash, recovered_voter};
+    return {PillarVoteValidationPlanStatus::kUnknown, false, prepared.period, fromBridgeHash(prepared.vote_hash),
+            recovered_voter};
   }
 
-  return {PillarVoteValidationPlanStatus::kValid, true, inspection.period, inspection.vote_hash, recovered_voter};
+  return {PillarVoteValidationPlanStatus::kValid, true, prepared.period, fromBridgeHash(prepared.vote_hash),
+          recovered_voter};
 }
 
 AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
-    const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain) {
+    const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain,
+    const ::rust::Box<rustaxa::BridgePillarVotes>& pillar_votes) {
   if (!vote || !final_chain) {
-    return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}, 0};
+    return {PillarVoteValidationPlanStatus::kInspectionFailure, false, false, 0, {}, {}, {}, 0};
   }
 
-  const auto inspection = inspectPillarVoteWithRust(vote);
-  if (!inspection.is_valid || inspection.period == 0) {
-    return {inspection.status, false, inspection.period, inspection.vote_hash, inspection.recovered_voter, 0};
-  }
-
+  rustaxa::PillarVoteSingleAdmissionPreparePlan prepared{};
   try {
-    const auto dpos_facts =
-        collectPillarDposFacts(final_chain, inspection.period - 1, false, {inspection.recovered_voter});
+    prepared = pillar_votes->pillar_votes_prepare_single_vote_admission(
+        toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(FicusHardforkConfig{}, {}, false, false));
+  } catch (...) {
+    return {PillarVoteValidationPlanStatus::kUnknown, false, false, vote->getPeriod(), vote->getBlockHash(),
+            vote->getHash(), {}, 0};
+  }
+  if (!prepared.can_query_dpos || prepared.period == 0) {
+    return {toPillarVoteValidationStatus(prepared.status), false, prepared.needs_threshold, prepared.period,
+            fromBridgeBlockHash(prepared.block_hash), fromBridgeHash(prepared.vote_hash), fromBridgeAddress(prepared.voter),
+            0};
+  }
+
+  const auto recovered_voter = fromBridgeAddress(prepared.voter);
+  try {
+    const auto dpos_facts = collectPillarDposFacts(final_chain, prepared.period - 1, false, {recovered_voter});
     if (!firstAddressFactReady(dpos_facts)) {
       return {PillarVoteValidationPlanStatus::kFuturePeriod,
               false,
-              inspection.period,
-              inspection.vote_hash,
-              inspection.recovered_voter,
+              prepared.needs_threshold,
+              prepared.period,
+              fromBridgeBlockHash(prepared.block_hash),
+              fromBridgeHash(prepared.vote_hash),
+              recovered_voter,
               0};
     }
 
@@ -524,24 +530,30 @@ AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
     if (validator_vote_count == 0) {
       return {PillarVoteValidationPlanStatus::kNotEligible,
               false,
-              inspection.period,
-              inspection.vote_hash,
-              inspection.recovered_voter,
+              prepared.needs_threshold,
+              prepared.period,
+              fromBridgeBlockHash(prepared.block_hash),
+              fromBridgeHash(prepared.vote_hash),
+              recovered_voter,
               0};
     }
 
     return {PillarVoteValidationPlanStatus::kValid,
             true,
-            inspection.period,
-            inspection.vote_hash,
-            inspection.recovered_voter,
+            prepared.needs_threshold,
+            prepared.period,
+            fromBridgeBlockHash(prepared.block_hash),
+            fromBridgeHash(prepared.vote_hash),
+            recovered_voter,
             validator_vote_count};
   } catch (...) {
     return {PillarVoteValidationPlanStatus::kUnknown,
             false,
-            inspection.period,
-            inspection.vote_hash,
-            inspection.recovered_voter,
+            prepared.needs_threshold,
+            prepared.period,
+            fromBridgeBlockHash(prepared.block_hash),
+            fromBridgeHash(prepared.vote_hash),
+            recovered_voter,
             0};
   }
 }
@@ -1088,29 +1100,39 @@ bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vo
 }
 
 uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarVote>& vote) {
-  const auto add_plan = planAddVerifiedPillarVoteWithRust(vote, final_chain_);
+  const auto add_plan = planAddVerifiedPillarVoteWithRust(vote, final_chain_, pillar_votes_);
   if (!add_plan.can_insert) {
     LOG(log_er_) << "Unable to add pillar vote in Rust production path: "
                  << pillarVoteValidationPlanStatusString(add_plan.status);
     return 0;
   }
 
-  if (!pillar_votes_->pillar_votes_period_data_initialized(add_plan.period)) {
+  rustaxa::PillarVoteSingleAdmissionApplyInput apply_input{};
+  apply_input.vote_rlp = toRustBytes(vote->rlp());
+  apply_input.validator_vote_count = add_plan.validator_vote_count;
+
+  if (add_plan.needs_threshold) {
     const auto threshold = getPillarConsensusThreshold(add_plan.period - 1);
     if (!threshold) {
       LOG(log_er_) << "Unable to get pillar consensus threshold for period " << add_plan.period - 1;
       return 0;
     }
-    pillar_votes_->pillar_votes_init_period_data(add_plan.period, *threshold);
+    apply_input.has_threshold = true;
+    apply_input.threshold = *threshold;
   }
 
-  rustaxa::PillarVoteInsertOutcome insert_outcome;
+  rustaxa::PillarVoteSingleAdmissionApplyPlan insert_outcome;
   try {
-    insert_outcome = pillar_votes_->pillar_votes_insert_vote(
-        toBridgeVotePayload(vote, add_plan.recovered_voter, add_plan.validator_vote_count));
+    insert_outcome = pillar_votes_->pillar_votes_apply_prepared_single_vote_admission(std::move(apply_input));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to insert pillar vote " << add_plan.vote_hash << ", period " << add_plan.period << ", validator "
                  << add_plan.recovered_voter << ": " << e.what();
+    return 0;
+  }
+  if (toPillarVoteValidationStatus(insert_outcome.status) != PillarVoteValidationPlanStatus::kValid) {
+    LOG(log_er_) << "Unable to insert pillar vote " << add_plan.vote_hash << ", period " << add_plan.period
+                 << ", validator " << add_plan.recovered_voter << ": "
+                 << pillarVoteValidationPlanStatusString(toPillarVoteValidationStatus(insert_outcome.status));
     return 0;
   }
   if (insert_outcome.conflict_found) {

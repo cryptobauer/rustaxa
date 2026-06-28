@@ -510,6 +510,16 @@ Implementation notes:
   passes canonical weighted RLPs into the `BridgePillarVotes` apply API and receives only aggregate status, weights, and
   insertion failure facts. C++ still owns the one external FinalChain DPoS weight read until a broader pillar-chain
   runtime owns that port.
+- Single pillar-vote admission now uses the same minimal prepare/apply shape. `pillar_chain_manager_shim` calls
+  `BridgePillarVotes::pillar_votes_prepare_single_vote_admission` to decode canonical RLP, recover the voter, perform
+  duplicate/relevance/identity checks, and report whether a period threshold is needed. C++ performs only the external
+  FinalChain DPoS eligibility or vote-count lookup and, when needed, threshold lookup, then calls
+  `BridgePillarVotes::pillar_votes_apply_prepared_single_vote_admission` with only canonical RLP and external DPoS
+  facts; Rust re-derives signature identity, initializes period state, and inserts into Rust-owned aggregation. The
+  piecemeal single-vote CXX exports
+  `pillar_votes_period_data_initialized`, `pillar_votes_init_period_data`, `pillar_votes_vote_exists`,
+  `pillar_votes_is_unique_identity`, `pillar_votes_is_unique_vote`, and `pillar_votes_insert_vote` are deleted along
+  with `PillarVotePayload`, `PillarVoteIdentityPayload`, `PillarVoteUniqueOutcome`, and `PillarVoteInsertOutcome`.
 - `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
@@ -617,6 +627,11 @@ Implementation notes:
     PBFT-chain, sortition, vote-manager, advance-period, pillar, and network execution external.
   - `architect-reviewer`: recommended single pillar-vote admission as the next pillar-chain candidate after this PBFT
     slice; this remains the preferred follow-up before introducing a broad `BridgePillarChainRuntime`.
+- Custom agents used for the single pillar-vote admission API consolidation:
+  - `api-designer`: requested to review whether the new prepare/apply CXX surface is minimal for the external C++ client
+    and whether obsolete piecemeal bridge APIs remain exposed.
+  - `architect-reviewer`: requested to review whether the C++ shim now retains only the external FinalChain
+    DPoS/threshold/logging boundary and whether any legacy fallback remains in production routing.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -747,6 +762,23 @@ Implementation notes:
   - `/build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarVoteInspectionBridgeTest.*:PillarVoteRelevanceBridgeTest.*' --gtest_print_time=1`
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - `rg -n "plan_pillar_vote_bundle_from_weighted_rlps|addPlannedVerifiedPillarVoteForRust|ValidateSyncPillarVotesBundleAcceptedVote|live_pillar_votes|PillarVoteBundleWeightedPlan|PillarVoteBundleAcceptedVoter" libraries tests/rust/consensus rust/crates/rustaxa-bridge/src -g'*.rs' -g'*.cpp' -g'*.hpp'` returned no matches.
+- Additional validation for single pillar-vote admission API consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_votes -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pillar_chain_test pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='PillarVote*:*PillarChainPlanningBridgeTest.*' --gtest_print_time=1`
+  - `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.pillar_blocks_create' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - The obsolete single-vote bridge API search for
+    `pillar_votes_period_data_initialized`, `pillar_votes_init_period_data`, `pillar_votes_vote_exists`,
+    `pillar_votes_is_unique_identity`, `pillar_votes_is_unique_vote`, `pillar_votes_insert_vote`,
+    `PillarVotePayload`, `PillarVoteIdentityPayload`, `PillarVoteUniqueOutcome`, and `PillarVoteInsertOutcome` returned
+    no matches in the exported bridge surface or C++ shim/test callers after the consolidation.
+  - `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.votes_count_changes' --gtest_print_time=1` still fails
+    in isolation with PBFT progress timing out and no validator vote-count changes on the new pillar block. The observed
+    logs did not include the new single-vote admission failure messages, so this remains a broader pillar/PBFT progress
+    validation gap rather than evidence of a rejected admission path.
 - Additional validation for PBFT finalization cursor helper privacy:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
