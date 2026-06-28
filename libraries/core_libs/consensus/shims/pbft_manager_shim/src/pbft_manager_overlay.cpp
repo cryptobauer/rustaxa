@@ -3974,6 +3974,28 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
+  auto report_reward_votes_reset = [&](const RewardVotesFinalizationResetReport &report,
+                                       rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    rustaxa::PbftManagerFinalizationRewardVotesResetReport bridge_report{};
+    bridge_report.period = report.period;
+    bridge_report.round = report.round;
+    bridge_report.block_hash = toBridgeHash(report.block_hash);
+    bridge_report.remaining_extra_reward_votes_count = report.remaining_extra_reward_votes_count;
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_reward_votes_reset(
+          *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context reward-vote reset: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("reward-vote reset", boundary);
+    }
+    return true;
+  };
   auto clear_anchor_dag_cache_for_finalization = [&]() {
     anchor_dag_block_order_cache_.clear();
     const auto clear_cache_snapshot =
@@ -4079,14 +4101,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (should_commit_reward_vote_metadata) {
       const auto reward_votes_reset =
           vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
-      rustaxa::PbftFinalizationExternalEffectReport reward_votes_report{};
-      reward_votes_report.success = true;
-      reward_votes_report.status = 0;
-      reward_votes_report.reward_votes_period = reward_votes_reset.period;
-      reward_votes_report.reward_votes_round = reward_votes_reset.round;
-      reward_votes_report.reward_votes_block_hash = toBridgeHash(reward_votes_reset.block_hash);
-      reward_votes_report.reward_votes_extra_count = reward_votes_reset.remaining_extra_reward_votes_count;
-      if (!report_live_mutation("reward-vote reset", reward_votes_report, boundary)) {
+      if (!report_reward_votes_reset(reward_votes_reset, boundary)) {
         return false;
       }
     }

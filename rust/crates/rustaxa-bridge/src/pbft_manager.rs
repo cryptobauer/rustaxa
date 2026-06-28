@@ -33,6 +33,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
     PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
+    PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport,
     PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
@@ -2353,6 +2354,40 @@ pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports reward-vote reset finalization facts to the manager-owned PBFT
+/// finalization executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: reward-vote metadata facts after the vote manager applies the
+///   Rust-planned reward-vote reset.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the reward-vote reset client.
+/// - Rust derives the PBFT finalization action from the cursor and maps only
+///   reward-vote period/round/block-hash/extra-count facts needed for
+///   live-mutation validation.
+/// - Cursor mismatch, validation failure, and reward-vote reset execution
+///   failure use the same executor-state contract as the generic
+///   external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiPbftManagerFinalizationRewardVotesResetReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.reward_votes_period = report.period;
+    external_report.reward_votes_round = report.round;
+    external_report.reward_votes_block_hash = report.block_hash;
+    external_report.reward_votes_extra_count = report.remaining_extra_reward_votes_count;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
 ///
 /// Inputs:
@@ -3320,6 +3355,7 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport;
+    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
@@ -4189,6 +4225,71 @@ mod tests {
         assert_eq!(
             state.error_code,
             "PBFT_FINALIZE_LIVE_MUTATION_SORTITION_CHANGE_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_reward_votes_reset_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_reward_votes_reset_report");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationRewardVotesResetReport {
+                period: 10,
+                round: 2,
+                block_hash: [7; 32],
+                remaining_extra_reward_votes_count: 0,
+            },
+        )
+        .expect("typed reward-vote reset report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::SetDagBlockOrder.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_rejects_reward_votes_reset_block_hash_mismatch() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_reward_votes_reset_reject");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationRewardVotesResetReport {
+                period: 10,
+                round: 2,
+                block_hash: [8; 32],
+                remaining_extra_reward_votes_count: 0,
+            },
+        )
+        .expect("reward-vote reset mismatch should return failed executor state");
+
+        assert_eq!(
+            state.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert_eq!(
+            state.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_METADATA_MISMATCH"
         );
     }
 

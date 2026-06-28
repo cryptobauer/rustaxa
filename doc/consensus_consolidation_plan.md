@@ -640,8 +640,9 @@ Implementation notes:
   the manager executor boundary.
 - The reward-vote reset finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `commitRewardVotesResetForFinalization`. The shim now returns `RewardVotesFinalizationResetReport`, containing only
-  live reward-vote period/round/block-hash/remaining-extra-count facts, and `pbft_manager_shim` builds the final
-  external-effect envelope at the manager executor boundary.
+  live reward-vote period/round/block-hash/remaining-extra-count facts, and `pbft_manager_shim` advances through
+  `pbft_manager_runtime_advance_finalization_reward_votes_reset` so Rust builds the temporary external-effect envelope
+  at the manager executor boundary.
 - The DAG-order finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `setDagBlockOrderForPbftFinalization`. The shim now returns `DagFinalizationOrderReport`, containing only the finalized
   DAG-block count, and `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order` so
@@ -689,6 +690,11 @@ Implementation notes:
   `PbftFinalizationExternalEffectReport` for that external sortition client. C++ maps the sortition-owned report into a
   manager-scoped CXX DTO, and Rust maps only threshold/change/cache-count facts into the temporary executor envelope
   internally before running the existing cursor validation and drain path.
+- Follow-up API narrowing moved reward-vote reset reporting onto
+  `pbft_manager_runtime_advance_finalization_reward_votes_reset`, so C++ no longer constructs
+  `PbftFinalizationExternalEffectReport` for that vote-manager client. C++ maps the vote-manager-owned report into a
+  manager-scoped CXX DTO, and Rust maps only period/round/block-hash/remaining-extra-count facts into the temporary
+  executor envelope internally before running the existing cursor validation and drain path.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -789,6 +795,11 @@ Implementation notes:
     no Rust FFI changes; PBFT manager remains responsible for canonical success/failure reporting.
   - `cpp-pro`: confirmed the reward-vote reset flow now stages storage in Rust, mutates live C++ metadata after commit,
     and converts to `PbftFinalizationExternalEffectReport` only in `pbft_manager_overlay`.
+- Custom agents used for the reward-vote reset typed advancement cleanup:
+  - `api-designer`: confirmed the manager-scoped CXX DTO should contain only period, round, block hash, and remaining
+    extra-reward-vote count, with success/status/cursor/action identity still owned by the PBFT manager executor.
+  - `cpp-pro`: confirmed the C++ replacement should preserve the existing require-action, abort, snapshot, and
+    `commitRewardVotesResetForFinalization` ordering semantics.
 - Custom agents used for the DAG-order finalization client cleanup:
   - `api-designer`: recommended a C++ shim-local `DagFinalizationOrderReport` with only `finalized_count` and no Rust
     FFI changes; PBFT manager remains the only generic executor-report owner.
@@ -1015,9 +1026,9 @@ Implementation notes:
   - `rg -n "advance_finalization_sortition_commit|PbftManagerFinalizationSortitionCommitReport|SortitionFinalizationCommitReport|sortition_(changed|change_period|change_interval_efficiency|change_threshold_upper|current_threshold_upper|params_changes_count)|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/sortition_params_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.hpp' -g'*.cpp'`
     shows sortition runtime commit using the typed Rust bridge advancement helper; any remaining sortition field
     assignment is Rust-private temporary executor envelope construction, not a C++ generic report in the sortition path.
-  - `rg -n "PbftFinalizationExternalEffectReport|commitRewardVotesResetForFinalization|RewardVotesFinalizationResetReport|makeRewardVotesResetLiveReport" libraries/core_libs/consensus/shims/vote_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
-    shows no generic finalization report in the vote-manager shim; only manager-local conversion uses
-    `PbftFinalizationExternalEffectReport`.
+  - `rg -n "advance_finalization_reward_votes_reset|PbftManagerFinalizationRewardVotesResetReport|commitRewardVotesResetForFinalization|RewardVotesFinalizationResetReport|reward_votes_(period|round|block_hash|extra_count)|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/vote_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.hpp' -g'*.cpp'`
+    shows reward-vote reset using the typed Rust bridge advancement helper; any remaining reward-vote field assignment
+    is Rust-private temporary executor-envelope mapping, not a C++ generic report.
   - `rg -n "advance_finalization_dag_order|dag_finalized_count|setDagBlockOrderForPbftFinalization|DagFinalizationOrderReport|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/dag_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.hpp' -g'*.cpp'`
     shows DAG order using the scalar typed Rust bridge advancement helper; any remaining `dag_finalized_count`
     assignment is Rust-private temporary executor envelope construction, not a C++ generic report in the DAG-order path.

@@ -19,7 +19,7 @@ class ProposedBlocks;
  *
  * Inputs are the Rust-planned reset identity after the finalization storage batch has committed. Outputs carry only
  * reward-vote facts: the accepted period, round, block hash, and remaining extra-reward vote count after live cleanup.
- * PBFT manager code converts these facts into its executor report at the manager boundary.
+ * PBFT manager code passes these facts through the typed reward-reset bridge at the manager boundary.
  */
 struct RewardVotesFinalizationResetReport {
   PbftPeriod period = 0;

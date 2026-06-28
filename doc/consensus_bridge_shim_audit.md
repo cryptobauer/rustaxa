@@ -515,9 +515,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   dispatch/replay, and the manager executor boundary itself.
 - Reward-vote reset finalization facts no longer leak through `vote_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitRewardVotesResetForFinalization` returns
-  `RewardVotesFinalizationResetReport` with only period/round/block-hash/extra-count facts; `pbft_manager_shim` converts
-  those facts at the manager executor boundary. Remaining generic finalization report producers are FinalChain
-  dispatch/replay and the manager executor boundary itself.
+  `RewardVotesFinalizationResetReport` with only period/round/block-hash/extra-count facts; `pbft_manager_shim`
+  advances through `pbft_manager_runtime_advance_finalization_reward_votes_reset`, so Rust fills the temporary executor
+  envelope internally. Remaining generic finalization report producers are FinalChain dispatch/replay and the manager
+  executor boundary itself.
 - DAG-order finalization facts no longer leak through `dag_manager_shim` as `PbftFinalizationExternalEffectReport`.
   `setDagBlockOrderForPbftFinalization` returns `DagFinalizationOrderReport` with only the finalized DAG-block count;
   `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order`, so Rust fills the

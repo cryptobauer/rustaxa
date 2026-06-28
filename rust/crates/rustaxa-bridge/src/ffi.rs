@@ -1934,6 +1934,14 @@ pub mod rustaxa_ffi {
         params_changes_count: u64,
     }
 
+    /// Reward-vote reset finalization facts reported to the PBFT manager executor.
+    struct PbftManagerFinalizationRewardVotesResetReport {
+        period: u64,
+        round: u64,
+        block_hash: [u8; 32],
+        remaining_extra_reward_votes_count: u64,
+    }
+
     /// External PBFT finalization effect report from the C++ executor.
     struct PbftFinalizationExternalEffectReport {
         success: bool,
@@ -4927,6 +4935,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
             report: PbftManagerFinalizationSortitionCommitReport,
+        ) -> Result<PbftManagerFinalizationExecutorState>;
+        pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            report: PbftManagerFinalizationRewardVotesResetReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
             runtime: &mut BridgePbftManagerRuntime,
