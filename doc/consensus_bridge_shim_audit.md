@@ -376,6 +376,12 @@ Current snapshot after DAG proposer-session cursor consolidation:
   planner exports `plan_pbft_finalization_pillar_preflight`, `report_pbft_finalization_pillar_preflight`, and
   `plan_pillar_block_finalization` plus their bridge-only DTOs are deleted. C++ still owns network vote-bundle requests,
   legacy vote materialization for `PeriodData`, live mirror assignment, and event emission.
+- Pillar-vote network egress no longer materializes C++ `PillarVote` objects. `GetPillarVotesBundlePacketHandler`
+  requests packet-ready optimized bundle chunks from `pillar_chain_manager_shim`, which delegates to
+  `BridgePillarChainRuntime::pillar_chain_runtime_build_verified_vote_network_bundles`. Rust returns inner optimized
+  bundle RLP bytes plus matching vote hashes for peer-known bookkeeping, using live runtime votes first and a strict
+  stored `PeriodData` fallback only when the embedded bundle matches the requested period/hash. Network/tarcap still owns
+  request validation, packet wrapping, send execution, and peer-known marking.
 - The no-caller broad `apply_rewards_stats_storage_writes` CXX export is deleted. Live rewards-stat persistence uses the
   runtime-owned `rewards_stats_runtime_apply_storage_writes` method or the dedicated storage-shim batch appender.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for

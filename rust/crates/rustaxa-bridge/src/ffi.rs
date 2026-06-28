@@ -2607,6 +2607,28 @@ pub mod rustaxa_ffi {
         votes: Vec<PillarVoteRecord>,
     }
 
+    /// Pillar vote hash included in one network-serving bundle.
+    struct PillarVoteBundleHash {
+        hash: [u8; 32],
+    }
+
+    /// Packet-ready optimized pillar-votes bundle payload.
+    ///
+    /// `votes_bundle_rlp` is the inner `OptimizedPillarVotesBundle` RLP, not
+    /// the tarcap packet wrapper. `vote_hashes` mirrors the votes in the same
+    /// order so C++ network code can mark them as known without materializing
+    /// `PillarVote` objects.
+    struct PillarVoteNetworkBundleChunk {
+        vote_hashes: Vec<PillarVoteBundleHash>,
+        votes_bundle_rlp: Vec<u8>,
+    }
+
+    /// Network-facing pillar-vote bundle lookup result.
+    struct PillarVoteNetworkBundleLookup {
+        from_storage: bool,
+        chunks: Vec<PillarVoteNetworkBundleChunk>,
+    }
+
     /// Result of validating and applying canonical pillar-vote bytes.
     ///
     /// C++ supplies DPoS weights from the external FinalChain boundary. Rust
@@ -5574,6 +5596,12 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             above_threshold: bool,
         ) -> PillarVotesPayloadLookup;
+        pub fn pillar_chain_runtime_build_verified_vote_network_bundles(
+            self: &BridgePillarChainRuntime,
+            period: u64,
+            block_hash: &[u8; 32],
+            max_votes_per_bundle: usize,
+        ) -> Result<PillarVoteNetworkBundleLookup>;
         pub fn pillar_chain_runtime_finalize_block_for_pbft(
             self: &mut BridgePillarChainRuntime,
             request: PillarBlockFinalizationRequest,

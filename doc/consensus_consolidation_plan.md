@@ -475,8 +475,8 @@ Acceptance:
   `BridgePbftManagerRuntime` in normal finalization and duplicate-resume paths. Slice 6 remains incomplete because
   `pbft_manager_shim` still coordinates external finalization effects and lifecycle paths. `pillar_chain_manager_shim`
   now routes live vote state and PBFT-facing pillar finalization through `BridgePillarChainRuntime`, but still owns
-  external FinalChain DPoS reads, temporary `PillarBlock`/`PillarVote` materialization, current-block sidecar mirrors,
-  network vote-bundle requests, and event emission.
+  external FinalChain DPoS reads, temporary `PillarBlock` materialization, PBFT `PeriodData` vote materialization,
+  current-block sidecar mirrors, network vote-bundle requests, and event emission.
 
 Implementation notes:
 
@@ -540,6 +540,13 @@ Implementation notes:
   `report_pbft_finalization_pillar_preflight`, and `plan_pillar_block_finalization` plus their DTOs are deleted. C++
   still owns the missing-vote network request, legacy vote materialization for PBFT `PeriodData`, live
   `last_finalized_pillar_block_` mirror assignment, and pillar-finalized event emission.
+- `GetPillarVotesBundlePacketHandler` no longer calls `PillarChainManager::getVerifiedPillarVotes()` or reconstructs
+  C++ `PillarVote` objects for network serving. It now asks `pillar_chain_manager_shim` for packet-ready optimized
+  bundle chunks from `BridgePillarChainRuntime::pillar_chain_runtime_build_verified_vote_network_bundles`, wraps each
+  inner bundle RLP as the tarcap packet payload, sends it, and marks the returned vote hashes known. Rust serves
+  runtime-retained votes first and falls back to stored `PeriodData` only when the embedded optimized bundle matches the
+  requested period/hash. `getVerifiedPillarVotes()` remains only for public compatibility/tests and later PBFT
+  `PeriodData` cleanup.
 - `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
@@ -894,6 +901,20 @@ Implementation notes:
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - A parallel all-pillar gtest run failed from test-environment lock/port conflicts while another gtest process was
     active; the focused pillar tests and PBFT smoke passed when rerun sequentially.
+- Additional validation for pillar-vote network egress bundle serving:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge network_bundle_chunks -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_votes -- --nocapture`
+  - `cmake --build /build --target pillar_chain_test network_test --parallel 12`
+  - `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.pillar_blocks_create:PillarChainTest.addVerifiedPillarVote_insertsWithRecoveredIdentityWeight:PillarChainTest.validatePillarVote_usesRustRecoveredIdentityForUniqueness:PillarChainTest.addVerifiedPillarVote_rejectsInvalidRustInspectedSignature' --gtest_print_time=1`
+  - `/build/bin/network_test --gtest_filter='*Pillar*:*pillar*' --gtest_print_time=1` ran zero matching tests; the
+    `network_test` target build provides the current tarcap handler link coverage.
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `git diff --check`
+  - `rg -n "getVerifiedPillarVotes\\(" libraries/core_libs/network libraries/core_libs/consensus/shims tests/rust/consensus -g'*.cpp' -g'*.hpp'`
+    shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
+    routes.
 - The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
   `PbftFinalizationExternalEffectReport` facts, plus later pillar-chain runtime slices for external DPoS fact ports and
   legacy materialization removal.

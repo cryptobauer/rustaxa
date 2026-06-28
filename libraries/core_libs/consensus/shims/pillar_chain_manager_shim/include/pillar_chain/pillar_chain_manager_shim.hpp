@@ -623,6 +623,31 @@ class PillarChainManager {
   std::vector<std::shared_ptr<PillarVote>> getVerifiedPillarVotes(PbftPeriod period, const blk_hash_t pillar_block_hash,
                                                                   bool above_threshold = false) const;
 
+  struct PillarVoteNetworkBundleChunk {
+    std::vector<vote_hash_t> vote_hashes;
+    bytes optimized_bundle_rlp;
+  };
+
+  /**
+   * Builds packet-ready optimized pillar-vote bundles for network serving.
+   *
+   * Purpose:
+   * - Lets tarcap answer `GetPillarVotesBundlePacket` requests without
+   *   materializing C++ `PillarVote` objects only to re-encode them.
+   *
+   * Outputs:
+   * - Each chunk contains the inner optimized pillar-votes bundle RLP plus the
+   *   matching vote hashes, in send order, for peer-known bookkeeping.
+   *
+   * Edge behavior:
+   * - Uses Rust-retained runtime votes first and falls back to stored period
+   *   data only when the runtime has no votes for the requested key.
+   * - Returns an empty vector when no matching votes are available or when the
+   *   fallback storage payload is malformed/mismatched.
+   */
+  std::vector<PillarVoteNetworkBundleChunk> buildVerifiedPillarVoteNetworkBundles(
+      PbftPeriod period, const blk_hash_t& pillar_block_hash, size_t max_votes_per_bundle) const;
+
   /**
    * Checks whether a proposed pillar block properly links to the finalized pillar chain.
    */
