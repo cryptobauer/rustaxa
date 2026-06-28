@@ -140,10 +140,13 @@ TEST(RustRewardsStatsBridgeTest, appendsCacheWritesAndBoundaryClearToStorageBatc
 
   auto cache_plan = runtime->process_finalized_period_rewards_stats(rewardsFact(1));
   ASSERT_TRUE(cache_plan.cache_current_period);
-  auto apply_result = runtime->rewards_stats_runtime_apply_storage_writes(cache_plan, false);
+  auto cache_batch = create_storage_shim_batch(*storage);
+  auto apply_result = rewards_stats_append_storage_writes_to_batch(*cache_batch, cache_plan);
   ASSERT_EQ(apply_result.status, 0);
   EXPECT_TRUE(apply_result.wrote_current_period);
   auto metadata_queries = metadataQueries(storage);
+  EXPECT_TRUE(metadata_queries->get_blocks_rewards_stats().empty());
+  storage_shim_commit_batch(std::move(cache_batch), false);
   ASSERT_EQ(metadata_queries->get_blocks_rewards_stats().size(), 1);
   ASSERT_EQ(runtime->rewards_stats_runtime_cached_stats().size(), 1);
 

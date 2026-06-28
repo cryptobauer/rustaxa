@@ -15,10 +15,11 @@ use crate::ffi::{BridgeRewardsStatsRuntime, BridgeStorage, BridgeStorageBatch};
 use anyhow::{anyhow, Result};
 use ethereum_types::{H160, H256, U256};
 #[cfg(test)]
+use rustaxa_consensus::apply_rewards_stats_storage_writes as domain_apply_rewards_stats_storage_writes;
+#[cfg(test)]
 use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_consensus::{
     append_rewards_stats_storage_writes_to_batch as domain_append_rewards_stats_storage_writes_to_batch,
-    apply_rewards_stats_storage_writes as domain_apply_rewards_stats_storage_writes,
     clear_rewards_stats_storage as domain_clear_rewards_stats_storage,
     rewards_stats_runtime_from_storage, FinalizedRewardsPeriodFact, RewardCertVoteFact,
     RewardDagBlockFact, RewardTransactionFact, RewardsFrequencyRule, RewardsStatsApplyStatus,
@@ -90,16 +91,6 @@ impl BridgeRewardsStatsRuntime {
     /// Returns this runtime's cached reward-stat rows as legacy RLP DTOs.
     pub fn rewards_stats_runtime_cached_stats(&self) -> Vec<FfiPeriodRlp> {
         rewards_stats_runtime_cached_stats(self)
-    }
-
-    /// Applies this runtime's reward-stat storage writes through its owned
-    /// Rust storage handle.
-    pub fn rewards_stats_runtime_apply_storage_writes(
-        &self,
-        plan: &RewardsStatsProcessResult,
-        sync: bool,
-    ) -> Result<RewardsStatsApplyResult> {
-        rewards_stats_runtime_apply_storage_writes(self, plan, sync)
     }
 
     /// Clears persisted reward-stat rows and in-memory state after a committed
@@ -216,6 +207,7 @@ pub fn rewards_stats_runtime_cached_stats(
 }
 
 /// Applies reward-stat writes through the storage handle owned by the runtime.
+#[cfg(test)]
 pub fn rewards_stats_runtime_apply_storage_writes(
     runtime: &BridgeRewardsStatsRuntime,
     plan: &RewardsStatsProcessResult,

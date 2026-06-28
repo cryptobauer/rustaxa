@@ -5064,11 +5064,6 @@ pub mod rustaxa_ffi {
         pub fn rewards_stats_runtime_cached_stats(
             self: &BridgeRewardsStatsRuntime,
         ) -> Vec<PeriodRlp>;
-        pub fn rewards_stats_runtime_apply_storage_writes(
-            self: &BridgeRewardsStatsRuntime,
-            plan: &RewardsStatsProcessResult,
-            sync: bool,
-        ) -> Result<RewardsStatsApplyResult>;
         pub fn rewards_stats_append_storage_writes_to_batch(
             batch: &mut BridgeStorageBatch,
             plan: &RewardsStatsProcessResult,

@@ -1651,9 +1651,10 @@ Implementation status:
   - `rtk scripts/rewrite_storage_boundary_guard.sh`
   - `rtk rg -n "pub fn plan_pillar_vote_relevance|\\bplan_pillar_vote_relevance\\(" rust/crates/rustaxa-bridge/src/ffi.rs tests/rust/consensus libraries/core_libs/consensus/shims libraries/core_libs/network -g'*.rs' -g'*.cpp' -g'*.hpp'`
     returns no matches, proving the direct CXX export and its C++ bridge-test callers are gone.
-- The standalone broad `apply_rewards_stats_storage_writes` CXX export is deleted. Rewards-stat storage writes now enter
-  through either `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` with runtime-owned storage or
-  the dedicated storage-shim batch appender.
+- The standalone broad `apply_rewards_stats_storage_writes` CXX export is deleted. The follow-up no-production-caller
+  `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` CXX method is also deleted. Rewards-stat
+  storage writes now enter through the dedicated storage-shim batch appender for staged compatibility writes, while
+  direct runtime-owned storage apply coverage remains Rust-private.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also
