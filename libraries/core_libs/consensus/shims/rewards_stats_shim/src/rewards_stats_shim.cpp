@@ -112,11 +112,15 @@ FinalChainPublicationRewardsStats Stats::processStatsForFinalChainPublication(
   if (plan.cache_current_period) {
     result.storage_update.current_block_stats_rlp = plan.current_block_stats_rlp;
   }
-  result.process_plan = std::move(plan);
+  pending_publication_plan_.emplace(std::move(plan));
   return result;
 }
 
-void Stats::commitStatsAfterFinalChainPublication(const rustaxa::RewardsStatsProcessResult& plan) {
+void Stats::commitStatsAfterFinalChainPublication() {
+  if (!pending_publication_plan_) {
+    throw rewardsStatsError("cannot commit publication rewards stats without a pending plan");
+  }
+  const auto& plan = *pending_publication_plan_;
   auto result = rust_stats_->rewards_stats_runtime_commit_process_result(plan);
   if (result.status != kRewardsStatsApplied) {
     throw rewardsStatsError("runtime commit rejected period " + std::to_string(result.current_period) + ": " +
@@ -127,6 +131,7 @@ void Stats::commitStatsAfterFinalChainPublication(const rustaxa::RewardsStatsPro
   } else if (plan.clear_cached_stats) {
     replaceCacheView(plan.distribution_stats);
   }
+  pending_publication_plan_.reset();
 }
 
 void Stats::clear(uint64_t current_period) {

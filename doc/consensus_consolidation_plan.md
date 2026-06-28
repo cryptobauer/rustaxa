@@ -1682,6 +1682,11 @@ Implementation status:
   `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` CXX method is also deleted. Rewards-stat
   storage writes now enter through the dedicated storage-shim batch appender for staged compatibility writes, while
   direct runtime-owned storage apply coverage remains Rust-private.
+- FinalChain rewards-stat publication no longer exposes the full `RewardsStatsProcessResult` through
+  `FinalChainPublicationRewardsStats`. The rewards shim keeps the previewed process plan as internal pending state and
+  FinalChain receives only decoded distribution stats plus the storage-update DTO that `BridgeConsensusExecutionApi`
+  needs for the atomic publication batch. The C++ commit call is now a zero-argument acknowledgement after Rust
+  FinalChain publication succeeds.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also

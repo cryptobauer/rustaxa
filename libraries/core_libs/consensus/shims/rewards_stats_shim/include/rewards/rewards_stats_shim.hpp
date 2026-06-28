@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -15,7 +16,6 @@ namespace taraxa::rewards {
 struct FinalChainPublicationRewardsStats {
   std::vector<BlockStats> distribution_stats;
   rustaxa::FinalChainExternalEvmRewardsStatsUpdate storage_update;
-  rustaxa::RewardsStatsProcessResult process_plan;
 };
 
 /**
@@ -83,10 +83,10 @@ class Stats {
                                                                          const std::vector<gas_t>& trxs_gas_used);
 
   /**
-   * Commits a previously previewed publication rewards-stat plan after the
+   * Commits the previously previewed publication rewards-stat plan after the
    * surrounding FinalChain storage publication succeeds.
    */
-  void commitStatsAfterFinalChainPublication(const rustaxa::RewardsStatsProcessResult& plan);
+  void commitStatsAfterFinalChainPublication();
 
   /**
    * Clears the runtime cache after the surrounding finalization commit has
@@ -124,6 +124,7 @@ class Stats {
   void appendStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch);
 
   rust::Box<rustaxa::BridgeRewardsStatsRuntime> rust_stats_;
+  std::optional<rustaxa::RewardsStatsProcessResult> pending_publication_plan_;
 };
 
 }  // namespace taraxa::rewards
