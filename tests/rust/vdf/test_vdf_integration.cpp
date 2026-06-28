@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <atomic>
 #include <vector>
 
 #include <chrono>
@@ -19,9 +20,14 @@ class VDFIntegrationTest : public ::testing::Test {
   }
 };
 
+inline rust::Box<CancellationToken> make_test_cancellation_token(std::atomic_bool& cancelled) {
+  return make_cancellation_token_with_atomic(reinterpret_cast<const bool*>(&cancelled));
+}
+
 TEST_F(VDFIntegrationTest, MainExampleTest) {
   const auto vdf1 = make_vdf(20, 8, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto const solution1 = prove(*vdf1, *cancellation_token);
   auto const is_valid1 = verify(*vdf1, *solution1);
@@ -45,7 +51,8 @@ TEST_F(VDFIntegrationTest, MainExampleTest) {
 TEST_F(VDFIntegrationTest, ConsistencyTest) {
   std::vector<uint8_t> input = {42, 123, 255};
   std::vector<uint8_t> modulus = {213, 166, 245, 127, 146, 139, 45, 0};
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   // Create multiple VDFs with same parameters
   auto vdf1 = make_vdf(20, 7, to_slice(input), to_slice(modulus));  // Reduced time_bits for performance
@@ -64,7 +71,8 @@ TEST_F(VDFIntegrationTest, ConsistencyTest) {
 
 // Test with edge case parameters
 TEST_F(VDFIntegrationTest, EdgeCaseParameters) {
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   // Test with minimal time_bits
   auto vdf_min = make_vdf(16, 4, to_slice({1}), to_slice({7, 11}));
@@ -90,7 +98,8 @@ TEST_F(VDFIntegrationTest, EdgeCaseParameters) {
 // Test VDF behavior with different modulus values
 TEST_F(VDFIntegrationTest, DifferentModulusTest) {
   std::vector<uint8_t> input = {97};
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto vdf1 = make_vdf(20, 6, to_slice(input), to_slice({7, 11}));
   auto vdf2 = make_vdf(20, 6, to_slice(input), to_slice({13, 17}));
@@ -115,7 +124,8 @@ TEST_F(VDFIntegrationTest, DifferentModulusTest) {
 TEST_F(VDFIntegrationTest, PerformanceCharacteristics) {
   auto vdf_fast = make_vdf(20, 4, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));  // 2^4 = 16 iterations
   auto vdf_slow = make_vdf(20, 6, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));  // 2^6 = 64 iterations
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto start_fast = std::chrono::high_resolution_clock::now();
   auto solution_fast = prove(*vdf_fast, *cancellation_token);
@@ -141,10 +151,11 @@ TEST_F(VDFIntegrationTest, PerformanceCharacteristics) {
 // Test cancellation token behavior
 TEST_F(VDFIntegrationTest, CancellationBehavior) {
   auto vdf = make_vdf(20, 8, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
-  auto token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto token = make_test_cancellation_token(cancelled);
 
   // Cancel the token before proving
-  cancellation_token_cancel(*token);
+  cancelled.store(true);
 
   // Prove should still complete (implementation dependent)
   auto solution = prove(*vdf, *token);
@@ -156,7 +167,8 @@ TEST_F(VDFIntegrationTest, CancellationBehavior) {
   std::cout << "Cancelled token VDF verification result: " << (is_valid ? "Valid" : "Invalid") << std::endl;
 
   // Test with fresh token should work
-  auto fresh_token = make_cancellation_token();
+  std::atomic_bool fresh_cancelled{false};
+  auto fresh_token = make_test_cancellation_token(fresh_cancelled);
   auto fresh_solution = prove(*vdf, *fresh_token);
   EXPECT_TRUE(verify(*vdf, *fresh_solution));
 }

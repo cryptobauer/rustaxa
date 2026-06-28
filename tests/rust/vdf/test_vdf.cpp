@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include <array>
+#include <atomic>
 #include <vector>
 
 #include "rust/cxx.h"
@@ -16,6 +17,10 @@ inline rust::Slice<const uint8_t> to_rust_vec_slice(const rust::Vec<uint8_t>& v)
 }
 
 class VDFTest : public ::testing::Test {};
+
+inline rust::Box<CancellationToken> make_test_cancellation_token(std::atomic_bool& cancelled) {
+  return make_cancellation_token_with_atomic(reinterpret_cast<const bool*>(&cancelled));
+}
 
 const std::array<uint8_t, 64> kVrfSecretKey = {
     0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4, 0xe0,
@@ -72,23 +77,27 @@ TEST_F(VDFTest, CreateVDFWithDifferentInputs) {
 
 // Test cancellation token creation
 TEST_F(VDFTest, CreateCancellationToken) {
-  auto token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto token = make_test_cancellation_token(cancelled);
   // rust::Box cannot be null, so just testing that creation doesn't throw
   SUCCEED();
 }
 
 // Test cancellation token cancellation
 TEST_F(VDFTest, CancelCancellationToken) {
-  auto token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto token = make_test_cancellation_token(cancelled);
 
-  // Should not throw
-  EXPECT_NO_THROW(cancellation_token_cancel(*token));
+  cancelled.store(true);
+  auto vdf = make_vdf(20, 4, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
+  EXPECT_NO_THROW(prove(*vdf, *token));
 }
 
 // Test basic prove operation
 TEST_F(VDFTest, BasicProve) {
   auto vdf = make_vdf(20, 6, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));  // Smaller time_bits for faster test
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto solution = prove(*vdf, *cancellation_token);
   // rust::Box cannot be null, so just testing that prove doesn't throw
@@ -98,7 +107,8 @@ TEST_F(VDFTest, BasicProve) {
 // Test basic verify operation
 TEST_F(VDFTest, BasicVerify) {
   auto vdf = make_vdf(20, 6, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));  // Smaller time_bits for faster test
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto solution = prove(*vdf, *cancellation_token);
 
@@ -110,7 +120,8 @@ TEST_F(VDFTest, BasicVerify) {
 TEST_F(VDFTest, DifferentVDFsDifferentSolutions) {
   auto vdf1 = make_vdf(20, 6, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
   auto vdf2 = make_vdf(20, 6, to_slice({98}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto solution1 = prove(*vdf1, *cancellation_token);
   auto solution2 = prove(*vdf2, *cancellation_token);
@@ -125,7 +136,8 @@ TEST_F(VDFTest, DifferentVDFsDifferentSolutions) {
 TEST_F(VDFTest, CrossVerificationShouldFail) {
   auto vdf1 = make_vdf(20, 6, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
   auto vdf2 = make_vdf(20, 6, to_slice({98}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto solution1 = prove(*vdf1, *cancellation_token);
 
@@ -137,7 +149,8 @@ TEST_F(VDFTest, CrossVerificationShouldFail) {
 // Test multiple proofs with same VDF
 TEST_F(VDFTest, MultipleProofsWithSameVDF) {
   auto vdf = make_vdf(20, 6, to_slice({97}), to_slice({213, 166, 245, 127, 146, 139, 45, 0}));
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
 
   auto solution1 = prove(*vdf, *cancellation_token);
   auto solution2 = prove(*vdf, *cancellation_token);
@@ -147,27 +160,18 @@ TEST_F(VDFTest, MultipleProofsWithSameVDF) {
   EXPECT_TRUE(verify(*vdf, *solution2));
 }
 
-TEST_F(VDFTest, LegacyVrfSortitionBridgeRoundTrip) {
+TEST_F(VDFTest, LegacyVrfSortitionBridgeProof) {
   const auto vrf_input = std::vector<uint8_t>{0xa1, 0x02, 0x03};
   const auto proof = prove_legacy_vrf_sortition(kVrfSecretKey, to_slice(vrf_input), 1000);
   ASSERT_TRUE(proof.ok) << proof.error;
-
-  const auto verified =
-      verify_legacy_vrf_sortition(proof.public_key, proof.proof, to_slice(vrf_input), 1000, true);
-  EXPECT_TRUE(verified.ok) << verified.error;
-  EXPECT_EQ(verified.output, proof.output);
-  EXPECT_EQ(verified.threshold, proof.threshold);
-
-  const auto wrong_input = std::vector<uint8_t>{0xff};
-  const auto rejected =
-      verify_legacy_vrf_sortition(proof.public_key, proof.proof, to_slice(wrong_input), 1000, true);
-  EXPECT_FALSE(rejected.ok);
+  EXPECT_NE(proof.threshold, 0);
 }
 
 TEST_F(VDFTest, LegacyVdfSortitionBridgeRoundTrip) {
   const auto vrf_input = std::vector<uint8_t>{0xa1, 0x02, 0x03};
   const auto vdf_input = std::vector<uint8_t>{0xb1, 0x04};
-  auto cancellation_token = make_cancellation_token();
+  std::atomic_bool cancelled{false};
+  auto cancellation_token = make_test_cancellation_token(cancelled);
   const auto vrf = prove_legacy_vrf_sortition(kVrfSecretKey, to_slice(vrf_input), 1000);
   ASSERT_TRUE(vrf.ok) << vrf.error;
 

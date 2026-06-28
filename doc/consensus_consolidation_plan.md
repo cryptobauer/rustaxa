@@ -1436,6 +1436,10 @@ Implementation status:
   Custom agents used: `api-designer` confirmed the retained operation-level VDF API shape and corrected the retained
   payload API wording; `architect-reviewer` confirmed no in-repo live C++ caller or fallback regression and noted the
   separate legacy `vrf_wrapper.cpp` C crypto compatibility path as remaining VRF ownership debt.
+  Follow-up CXX surface cleanup deleted the test-only default `make_cancellation_token`, `cancellation_token_cancel`, and
+  direct `verify_legacy_vrf_sortition` exports. The Rust bridge now exposes only the production atomic-backed
+  cancellation-token constructor plus operation-level VDF/prove/verify and legacy sortition APIs; direct VRF verification
+  is covered in native `rustaxa-vdf` tests instead of the CXX bridge surface.
   Validation for this CXX export shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`

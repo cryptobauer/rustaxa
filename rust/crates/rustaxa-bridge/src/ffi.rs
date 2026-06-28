@@ -4114,14 +4114,6 @@ pub mod rustaxa_ffi {
         vdf_lambda_bound: u16,
     }
 
-    struct VrfVerifyResult {
-        ok: bool,
-        status: u8,
-        error: String,
-        output: [u8; 64],
-        threshold: u16,
-    }
-
     struct VrfProofResult {
         ok: bool,
         status: u8,
@@ -4351,11 +4343,9 @@ pub mod rustaxa_ffi {
 
         pub fn make_solution(proof: &[u8], output: &[u8]) -> Box<Solution>;
 
-        pub fn make_cancellation_token() -> Box<CancellationToken>;
         pub unsafe fn make_cancellation_token_with_atomic(
             atomic_ptr: *const bool,
         ) -> Box<CancellationToken>;
-        pub fn cancellation_token_cancel(token: &CancellationToken);
 
         pub fn prove(vdf: &WesolowskiVdf, cancelled: &CancellationToken) -> Box<Solution>;
         pub fn verify(vdf: &WesolowskiVdf, solution: &Solution) -> bool;
@@ -4364,14 +4354,6 @@ pub mod rustaxa_ffi {
         pub fn solution_get_output(solution: &Solution) -> &[u8];
 
         pub fn vdf_sortition_payload_encode(payload: &VdfSortitionPayload) -> Vec<u8>;
-
-        pub fn verify_legacy_vrf_sortition(
-            public_key: &[u8; 32],
-            proof: &[u8; 80],
-            message: &[u8],
-            vote_count: u16,
-            strict: bool,
-        ) -> VrfVerifyResult;
 
         pub fn prove_legacy_vrf_sortition(
             secret_key: &[u8; 64],

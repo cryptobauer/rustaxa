@@ -1,6 +1,6 @@
 use crate::ffi::rustaxa_ffi::{
     LegacySortitionParams, VdfSortitionPayload, VdfSortitionProofResult,
-    VdfSortitionVerifyResult as LegacyVdfSortitionVerifyResult, VrfProofResult, VrfVerifyResult,
+    VdfSortitionVerifyResult as LegacyVdfSortitionVerifyResult, VrfProofResult,
 };
 use rustaxa_vdf::prover::{CancellationToken as InnerCancellationToken, WesolowskiProver};
 use rustaxa_vdf::sortition::{
@@ -33,18 +33,10 @@ pub fn make_solution(proof: &[u8], output: &[u8]) -> Box<Solution> {
     }))
 }
 
-pub fn make_cancellation_token() -> Box<CancellationToken> {
-    Box::new(CancellationToken(InnerCancellationToken::new()))
-}
-
 pub fn make_cancellation_token_with_atomic(atomic_ptr: *const bool) -> Box<CancellationToken> {
     Box::new(CancellationToken(InnerCancellationToken::from_atomic_ptr(
         atomic_ptr,
     )))
-}
-
-pub fn cancellation_token_cancel(token: &CancellationToken) {
-    token.0.cancel();
 }
 
 pub fn verify(vdf: &WesolowskiVdf, solution: &Solution) -> bool {
@@ -63,44 +55,6 @@ pub fn solution_get_proof(solution: &Solution) -> &[u8] {
 
 pub fn solution_get_output(solution: &Solution) -> &[u8] {
     &solution.0.second
-}
-
-pub fn verify_legacy_vrf_sortition(
-    public_key: &[u8; 32],
-    proof: &[u8; 80],
-    message: &[u8],
-    vote_count: u16,
-    strict: bool,
-) -> VrfVerifyResult {
-    let output = if strict {
-        match domain_vrf::verify_output(public_key, proof, message) {
-            Ok(Some(output)) => output,
-            Ok(None) => {
-                return vrf_failure(
-                    domain_sortition::LEGACY_SORTITION_STATUS_INVALID_VRF_PROOF,
-                    "",
-                )
-            }
-            Err(err) => {
-                return vrf_failure(LEGACY_SORTITION_STATUS_INVALID_ARGUMENT, &err.to_string())
-            }
-        }
-    } else {
-        match domain_vrf::proof_to_hash(proof) {
-            Ok(output) => output,
-            Err(err) => {
-                return vrf_failure(LEGACY_SORTITION_STATUS_INVALID_ARGUMENT, &err.to_string())
-            }
-        }
-    };
-    let threshold = domain_vrf::threshold_from_output(&output, vote_count);
-    VrfVerifyResult {
-        ok: true,
-        status: LEGACY_SORTITION_STATUS_VALID,
-        error: String::new(),
-        output,
-        threshold,
-    }
 }
 
 pub fn prove_legacy_vrf_sortition(
@@ -243,16 +197,6 @@ fn to_domain_sortition_params(params: LegacySortitionParams) -> DomainLegacySort
         vdf_difficulty_max: params.vdf_difficulty_max,
         vdf_difficulty_stale: params.vdf_difficulty_stale,
         vdf_lambda_bound: params.vdf_lambda_bound,
-    }
-}
-
-fn vrf_failure(status: u8, error: &str) -> VrfVerifyResult {
-    VrfVerifyResult {
-        ok: false,
-        status,
-        error: error.to_string(),
-        output: [0_u8; 64],
-        threshold: 0,
     }
 }
 
