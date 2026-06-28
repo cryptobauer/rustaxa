@@ -522,16 +522,21 @@ Current snapshot after DAG proposer-session cursor consolidation:
   producers are manager-local cache/final-chain/advance/pillar reports and the manager executor boundary itself.
 - Anchor-DAG-cache clear facts now use the manager-local `AnchorDagCacheFinalizationClearReport` helper before conversion
   to `PbftFinalizationExternalEffectReport` at the executor boundary. Remaining generic finalization report producers
-  are manager-local final-chain/advance/pillar reports and the manager executor boundary itself.
+  were manager-local final-chain/advance/pillar reports and the manager executor boundary itself.
 - FinalChain PBFT finalization dispatch/replay facts now use the shim-owned
   `FinalChainPbftFinalizationDispatchReport` returned by `PbftManager::finalize_`. The report carries only
   `blocks_per_year` and observed FinalChain `last_block`; `pbft_manager_shim` converts those facts at the manager
-  executor boundary. Remaining generic finalization report producers are manager-local advance/pillar reports and the
+  executor boundary. Remaining generic finalization report producers were manager-local advance/pillar reports and the
   manager executor boundary itself.
 - PBFT manager advance-period finalization facts now use the manager-local
   `PbftManagerFinalizationAdvancePeriodReport` before conversion to `PbftFinalizationExternalEffectReport` at the
-  executor boundary. Remaining generic finalization report producers are manager-local pillar post-processing reports and
+  executor boundary. Remaining generic finalization report producers were manager-local pillar post-processing reports and
   the manager executor boundary itself.
+- PBFT manager pillar post-processing facts now use the manager-local
+  `PbftManagerFinalizationPillarPostProcessingReport` before conversion to `PbftFinalizationExternalEffectReport` at the
+  executor boundary. The report carries only the pillar processed/request periods, and the shim now rejects invalid
+  delegation-delay request-period derivation before executing the pillar side effect. The generic finalization report is
+  now limited to the manager executor envelope and manager-local conversions from typed subsystem reports.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

@@ -161,6 +161,19 @@ struct PbftManagerFinalizationAdvancePeriodReport {
   uint64_t manager_period = 0;
 };
 
+/**
+ * Manager-owned result after PBFT finalization pillar post-processing.
+ *
+ * Inputs are the finalized PBFT period, the FinalChain delegation-delay read, and the C++ pillar post-processing
+ * executor. Outputs carry only the pillar post-processing facts needed by the finalization executor: the pillar
+ * processed/request periods. Success, status, error, manager-period validation, PBFT identity, and action identity
+ * remain owned by the PBFT manager executor boundary.
+ */
+struct PbftManagerFinalizationPillarPostProcessingReport {
+  uint64_t processed_period = 0;
+  uint64_t request_period = 0;
+};
+
 rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectFailure(uint8_t action_status,
                                                                                    const std::string &error_code) {
   rustaxa::PbftFinalizationExternalEffectReport report{};
@@ -3635,6 +3648,20 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
           return report;
         };
+        auto process_pillar_block_for_finalization =
+            [&]() -> std::optional<PbftManagerFinalizationPillarPostProcessingReport> {
+          assert(block_pbft_period == pbft_chain_->getPbftChainSize());
+          const auto delegation_delay = final_chain_->delegationDelay();
+          if (delegation_delay >= block_pbft_period) {
+            return std::nullopt;
+          }
+          const auto pillar_request_period = block_pbft_period - delegation_delay;
+          processPillarBlock(block_pbft_period);
+          PbftManagerFinalizationPillarPostProcessingReport report{};
+          report.processed_period = block_pbft_period;
+          report.request_period = pillar_request_period;
+          return report;
+        };
 
         rustaxa::PbftManagerFinalizationExecutorState resume_boundary{};
         try {
@@ -3707,15 +3734,17 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                               kPbftFinalizationRuntimeActionProcessPillarBlock)) {
             return false;
           }
-          assert(block_pbft_period == pbft_chain_->getPbftChainSize());
-          const auto pillar_request_period = block_pbft_period - final_chain_->delegationDelay();
-          processPillarBlock(block_pbft_period);
+          const auto pillar_post_processing = process_pillar_block_for_finalization();
+          if (!pillar_post_processing.has_value()) {
+            report_resume_failure(resume_boundary);
+            return false;
+          }
           rustaxa::PbftFinalizationExternalEffectReport pillar_report{};
           pillar_report.success = true;
           pillar_report.status = 0;
           pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
-          pillar_report.pillar_processed_period = block_pbft_period;
-          pillar_report.pillar_request_period = pillar_request_period;
+          pillar_report.pillar_processed_period = pillar_post_processing->processed_period;
+          pillar_report.pillar_request_period = pillar_post_processing->request_period;
           if (!report_resume_live_mutation("pillar post-processing", pillar_report, resume_boundary)) {
             return false;
           }
@@ -3817,6 +3846,20 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     PbftManagerFinalizationAdvancePeriodReport report{};
     report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
+    return report;
+  };
+  auto process_pillar_block_for_finalization =
+      [&]() -> std::optional<PbftManagerFinalizationPillarPostProcessingReport> {
+    assert(block_pbft_period == pbft_chain_->getPbftChainSize());
+    const auto delegation_delay = final_chain_->delegationDelay();
+    if (delegation_delay >= block_pbft_period) {
+      return std::nullopt;
+    }
+    const auto pillar_request_period = block_pbft_period - delegation_delay;
+    processPillarBlock(block_pbft_period);
+    PbftManagerFinalizationPillarPostProcessingReport report{};
+    report.processed_period = block_pbft_period;
+    report.request_period = pillar_request_period;
     return report;
   };
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> first_persistence_stages;
@@ -4046,15 +4089,17 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   if (finalization_plan.cleanup.process_pillar_block) {
-    assert(block_pbft_period == pbft_chain_->getPbftChainSize());
-    const auto pillar_request_period = block_pbft_period - final_chain_->delegationDelay();
-    processPillarBlock(block_pbft_period);
+    const auto pillar_post_processing = process_pillar_block_for_finalization();
+    if (!pillar_post_processing.has_value()) {
+      report_failure_boundary(boundary);
+      return false;
+    }
     rustaxa::PbftFinalizationExternalEffectReport pillar_report{};
     pillar_report.success = true;
     pillar_report.status = 0;
     pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
-    pillar_report.pillar_processed_period = block_pbft_period;
-    pillar_report.pillar_request_period = pillar_request_period;
+    pillar_report.pillar_processed_period = pillar_post_processing->processed_period;
+    pillar_report.pillar_request_period = pillar_post_processing->request_period;
     if (!report_live_mutation("pillar post-processing", pillar_report, boundary)) {
       return false;
     }

@@ -653,6 +653,11 @@ Implementation notes:
 - PBFT manager advance-period finalization now uses `PbftManagerFinalizationAdvancePeriodReport`, containing only the
   post-advance manager period, before `pbft_manager_shim` builds the final external-effect envelope at the manager
   executor boundary.
+- PBFT manager pillar post-processing now uses `PbftManagerFinalizationPillarPostProcessingReport`, containing only the
+  pillar processed/request periods, before `pbft_manager_shim` builds the final external-effect envelope at the manager
+  executor boundary. The shim derives the request period once with checked delegation-delay arithmetic before executing
+  the pillar side effect. All current PBFT finalization subsystem/local facts now have typed reports before the
+  temporary generic executor envelope.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -775,6 +780,13 @@ Implementation notes:
     typed payload as the post-advance `manager_period`.
   - `api-designer`: noted advance-period is manager-local bookkeeping and should not include success/status/error or
     PBFT/action identity in the subsystem report shape.
+- Custom-agent guidance applied to the pillar post-processing finalization report cleanup:
+  - `api-designer`: recommended a manager-local report containing only processed/request-period post-processing facts
+    and leaving success/status, errors, cursor identity, action identity, and manager-period validation at the PBFT
+    manager executor boundary.
+  - `cpp-pro`: identified the duplicate-resume and fresh callsites around `processPillarBlock(block_pbft_period)` and
+    called out the delegation-delay/request-period calculation, unsigned underflow risk, and `processPillarBlock` side
+    effects as the invariants to preserve.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -961,6 +973,9 @@ Implementation notes:
   - `rg -n "PbftManagerFinalizationAdvancePeriodReport|manager_period|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.cpp'`
     shows the advance-period finalization path producing a typed manager report before conversion to the generic manager
     executor report.
+  - `rg -n "PbftManagerFinalizationPillarPostProcessingReport|pillar_processed_period|pillar_request_period|PbftFinalizationExternalEffectReport" libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.cpp'`
+    shows the pillar post-processing path producing a typed manager report before conversion to the generic manager
+    executor report.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -1038,9 +1053,9 @@ Implementation notes:
   - `rg -n "getVerifiedPillarVotes\\(" libraries/core_libs/network libraries/core_libs/consensus/shims tests/rust/consensus -g'*.cpp' -g'*.hpp'`
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
-- The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
-  `PbftFinalizationExternalEffectReport` facts. The remaining candidate is manager-local pillar post-processing. Later
-  pillar-chain runtime slices still need external DPoS fact ports and legacy materialization removal.
+- The immediate follow-up is replacing the temporary generic PBFT finalization executor envelope with narrower
+  executor-advance APIs or a one-shot manager-owned operation. Later pillar-chain runtime slices still need external DPoS
+  fact ports and legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
