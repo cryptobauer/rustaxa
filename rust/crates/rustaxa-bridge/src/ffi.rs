@@ -1133,6 +1133,13 @@ pub mod rustaxa_ffi {
         last_non_null_anchor_hash: [u8; 32],
     }
 
+    /// PBFT-chain-owned result after applying a finalization head update.
+    struct PbftChainFinalizationUpdateReport {
+        size: u64,
+        last_pbft_block_hash: [u8; 32],
+        last_non_null_anchor_hash: [u8; 32],
+    }
+
     struct PbftBlockStorageLookup {
         found: bool,
         block_rlp: Vec<u8>,
@@ -4663,7 +4670,7 @@ pub mod rustaxa_ffi {
         pub fn pbft_chain_update_for_finalization(
             self: &mut BridgePbftChain,
             write_intent: &PbftFinalizationStorageWritePlan,
-        ) -> Result<PbftFinalizationExternalEffectReport>;
+        ) -> Result<PbftChainFinalizationUpdateReport>;
         pub fn pbft_chain_block_exists(
             self: &BridgePbftChain,
             block_hash: &[u8; 32],

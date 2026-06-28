@@ -1,8 +1,7 @@
 use crate::ffi::rustaxa_ffi::{
     PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
-    PbftChainHeadPayload,
-    PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport,
-    PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
+    PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport,
+    PbftChainHeadPayload, PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
 };
 use crate::ffi::BridgePbftChain;
 use crate::ffi::BridgeStorage;
@@ -101,7 +100,7 @@ impl BridgePbftChain {
     }
 
     /// Applies the PBFT-chain finalization mutation described by a Rust-planned
-    /// storage intent and returns the C++ executor's external-effect report.
+    /// storage intent and returns PBFT-chain-owned head facts.
     ///
     /// Inputs:
     /// - `write_intent`: accepted finalization write plan from the Rust planner.
@@ -119,40 +118,15 @@ impl BridgePbftChain {
     pub fn pbft_chain_update_for_finalization(
         &mut self,
         write_intent: &FfiPbftFinalizationStorageWritePlan,
-    ) -> Result<FfiPbftFinalizationExternalEffectReport, anyhow::Error> {
+    ) -> Result<FfiPbftChainFinalizationUpdateReport, anyhow::Error> {
         let head = self.state.update(
             H256::from(write_intent.pbft_block_hash),
             H256::from(write_intent.anchor_hash),
         )?;
-        Ok(FfiPbftFinalizationExternalEffectReport {
-            success: true,
-            status: 0,
-            error_code: String::new(),
-            dag_finalized_count: 0,
-            finalized_transaction_count: 0,
-            pbft_chain_size: head.size,
-            pbft_chain_head_hash: head.last_pbft_block_hash.into(),
-            pbft_chain_last_anchor_hash: head.last_non_null_pbft_dag_anchor_hash.into(),
-            reward_votes_period: 0,
-            reward_votes_round: 0,
-            reward_votes_block_hash: [0; 32],
-            reward_votes_extra_count: 0,
-            sortition_changed: false,
-            sortition_change_period: 0,
-            sortition_change_interval_efficiency: 0,
-            sortition_change_threshold_upper: 0,
-            sortition_current_threshold_upper: 0,
-            sortition_params_changes_count: 0,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            executed_pbft_block: false,
-            manager_period: 0,
-            pillar_processed_period: 0,
-            pillar_request_period: 0,
-            anchor_dag_cache_count: 0,
-            final_chain_dispatched: false,
-            final_chain_blocks_per_year: 0,
-            final_chain_last_block: 0,
+        Ok(FfiPbftChainFinalizationUpdateReport {
+            size: head.size,
+            last_pbft_block_hash: head.last_pbft_block_hash.into(),
+            last_non_null_anchor_hash: head.last_non_null_pbft_dag_anchor_hash.into(),
         })
     }
 
@@ -431,11 +405,9 @@ mod tests {
             .pbft_chain_update_for_finalization(&write_intent)
             .unwrap();
 
-        assert!(report.success);
-        assert_eq!(report.status, 0);
-        assert_eq!(report.pbft_chain_size, 10);
-        assert_eq!(H256::from(report.pbft_chain_head_hash), hash(99));
-        assert_eq!(H256::from(report.pbft_chain_last_anchor_hash), hash(123));
+        assert_eq!(report.size, 10);
+        assert_eq!(H256::from(report.last_pbft_block_hash), hash(99));
+        assert_eq!(H256::from(report.last_non_null_anchor_hash), hash(123));
 
         write_intent.pbft_block_hash = hash(100).into();
         write_intent.anchor_hash = H256::zero().into();
@@ -444,13 +416,13 @@ mod tests {
             .pbft_chain_update_for_finalization(&write_intent)
             .unwrap();
 
-        assert_eq!(null_anchor_report.pbft_chain_size, 11);
+        assert_eq!(null_anchor_report.size, 11);
         assert_eq!(
-            H256::from(null_anchor_report.pbft_chain_head_hash),
+            H256::from(null_anchor_report.last_pbft_block_hash),
             hash(100)
         );
         assert_eq!(
-            H256::from(null_anchor_report.pbft_chain_last_anchor_hash),
+            H256::from(null_anchor_report.last_non_null_anchor_hash),
             hash(123)
         );
     }

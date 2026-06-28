@@ -3883,8 +3883,14 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     if (finalization_plan.cleanup.update_pbft_chain) {
-      const auto pbft_chain_report =
+      const auto pbft_chain_update =
           pbft_chain_->updatePbftChainForPbftFinalization(finalization_plan.storage_write_intent);
+      rustaxa::PbftFinalizationExternalEffectReport pbft_chain_report{};
+      pbft_chain_report.success = true;
+      pbft_chain_report.status = 0;
+      pbft_chain_report.pbft_chain_size = pbft_chain_update.size;
+      pbft_chain_report.pbft_chain_head_hash = pbft_chain_update.last_pbft_block_hash;
+      pbft_chain_report.pbft_chain_last_anchor_hash = pbft_chain_update.last_non_null_anchor_hash;
       if (!report_live_mutation("PBFT-chain update", pbft_chain_report, boundary)) {
         return false;
       }

@@ -501,8 +501,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `transaction_manager_shim` as `PbftFinalizationExternalEffectReport`. The shim returns its typed
   `TransactionManagerFinalizedStatusCommandReport`, and `pbft_manager_shim` advances through
   `pbft_manager_runtime_advance_finalization_transaction_status` so the PBFT-specific report mapping is Rust-private.
-  Remaining generic finalization report producers are PBFT-chain, sortition, reward-vote reset, DAG order, manager-local
-  cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
+- PBFT-chain finalization update facts no longer leak through `pbft_chain_shim` as
+  `PbftFinalizationExternalEffectReport`. `pbft_chain_update_for_finalization` returns
+  `PbftChainFinalizationUpdateReport` with only head size/hash/anchor facts; `pbft_manager_shim` converts those facts at
+  the manager executor boundary. Remaining generic finalization report producers are sortition, reward-vote reset, DAG
+  order, manager-local cache/final-chain/advance/pillar reports, and the manager executor boundary itself.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

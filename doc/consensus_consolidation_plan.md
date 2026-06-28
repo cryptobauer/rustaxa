@@ -628,6 +628,10 @@ Implementation notes:
   `pbft_manager_runtime_advance_finalization_transaction_status`, which maps the finalized transaction count inside the
   Rust bridge. The generic external-effect DTO remains the manager executor boundary for other external clients until
   their subsystem-specific reports are introduced.
+- The PBFT-chain finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
+  `pbft_chain_update_for_finalization`. The bridge method now returns `PbftChainFinalizationUpdateReport`, containing
+  only PBFT-chain head facts, and `pbft_manager_shim` builds the final external-effect envelope at the manager executor
+  boundary.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -869,8 +873,10 @@ Implementation notes:
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_advances_finalization_with_transaction_status_report -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge bridge_pbft_chain_finalization_update -- --nocapture`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize -- --nocapture`
   - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftChainTest.*:RustPbftSyncTest.Finalization*' --gtest_print_time=1`
   - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.FinalizationBoundary*:RustPbftSyncTest.FinalizationExecutorRejectsStaleCursor:RustPbftSyncTest.FinalizationResumeBoundaryOwnsManagerTailDrain' --gtest_print_time=1`
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - `scripts/rewrite_bridge_inventory_guard.sh`
@@ -879,6 +885,9 @@ Implementation notes:
     returns no live code references.
   - `rg -n "PbftFinalizationExternalEffectReport|updateFinalizedTransactionsStatusForPbftFinalization\\([^\\n]*PbftFinalizationStorageWritePlan" libraries/core_libs/consensus/shims/transaction_manager_shim -g'*.cpp' -g'*.hpp'`
     returns no live transaction-shim references.
+  - `rg -n "pbft_chain_update_for_finalization\\(|PbftChainFinalizationUpdateReport|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_chain.rs libraries/core_libs/consensus/shims/pbft_chain_shim -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    shows PBFT-chain finalization update returning only `PbftChainFinalizationUpdateReport`, with no generic
+    external-effect report in the PBFT-chain shim or bridge module.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -957,9 +966,9 @@ Implementation notes:
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
 - The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
-  `PbftFinalizationExternalEffectReport` facts. The next bridge-facing candidate is PBFT-chain finalization update:
-  return a PBFT-chain-owned head update report from `pbft_chain_update_for_finalization` and convert it at the manager
-  boundary. Later pillar-chain runtime slices still need external DPoS fact ports and legacy materialization removal.
+  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are sortition, reward-vote reset, DAG order, and
+  manager-local cache/final-chain/advance/pillar reports. Later pillar-chain runtime slices still need external DPoS
+  fact ports and legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
