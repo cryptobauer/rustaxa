@@ -1924,6 +1924,16 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
+    /// Sortition finalization commit facts reported to the PBFT manager executor.
+    struct PbftManagerFinalizationSortitionCommitReport {
+        changed: bool,
+        change_period: u64,
+        change_interval_efficiency: u16,
+        change_threshold_upper: u16,
+        current_threshold_upper: u16,
+        params_changes_count: u64,
+    }
+
     /// External PBFT finalization effect report from the C++ executor.
     struct PbftFinalizationExternalEffectReport {
         success: bool,
@@ -4912,6 +4922,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
             finalized_count: u64,
+        ) -> Result<PbftManagerFinalizationExecutorState>;
+        pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            report: PbftManagerFinalizationSortitionCommitReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
             runtime: &mut BridgePbftManagerRuntime,

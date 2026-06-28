@@ -33,6 +33,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
     PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
+    PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -2317,6 +2318,41 @@ pub fn pbft_manager_runtime_advance_finalization_dag_order(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports sortition finalization commit facts to the manager-owned PBFT
+/// finalization executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: sortition post-commit facts after the sortition manager applies
+///   the finalized-period runtime update.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the sortition client.
+/// - Rust derives the PBFT finalization action from the cursor and maps only
+///   sortition change/current-threshold/cache-count facts needed for
+///   live-mutation validation.
+/// - Cursor mismatch, validation failure, and sortition execution failure use
+///   the same executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiPbftManagerFinalizationSortitionCommitReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.sortition_changed = report.changed;
+    external_report.sortition_change_period = report.change_period;
+    external_report.sortition_change_interval_efficiency = report.change_interval_efficiency;
+    external_report.sortition_change_threshold_upper = report.change_threshold_upper;
+    external_report.sortition_current_threshold_upper = report.current_threshold_upper;
+    external_report.sortition_params_changes_count = report.params_changes_count;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
 ///
 /// Inputs:
@@ -3284,6 +3320,7 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport;
+    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
     use crate::storage::{
@@ -4050,6 +4087,108 @@ mod tests {
         assert_eq!(
             state.action,
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_sortition_commit_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_commit_report");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_sortition_commit(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationSortitionCommitReport {
+                changed: true,
+                change_period: 10,
+                change_interval_efficiency: 2_500,
+                change_threshold_upper: 1_300,
+                current_threshold_upper: 1_300,
+                params_changes_count: 1,
+            },
+        )
+        .expect("typed sortition commit report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_unchanged_sortition_commit_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_no_change");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_sortition_commit(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationSortitionCommitReport {
+                changed: false,
+                change_period: 0,
+                change_interval_efficiency: 0,
+                change_threshold_upper: 0,
+                current_threshold_upper: 1_300,
+                params_changes_count: 0,
+            },
+        )
+        .expect("unchanged sortition report should still advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8()
+        );
+    }
+
+    #[test]
+    fn manager_runtime_rejects_sortition_commit_period_mismatch() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_reject");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_sortition_commit(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationSortitionCommitReport {
+                changed: true,
+                change_period: 11,
+                change_interval_efficiency: 2_500,
+                change_threshold_upper: 1_300,
+                current_threshold_upper: 1_300,
+                params_changes_count: 1,
+            },
+        )
+        .expect("sortition period mismatch should return failed executor state");
+
+        assert_eq!(
+            state.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert_eq!(
+            state.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_SORTITION_CHANGE_MISMATCH"
         );
     }
 

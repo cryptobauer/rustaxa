@@ -635,8 +635,9 @@ Implementation notes:
   manager executor boundary.
 - The sortition finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `commitPreparedBlockForSortitionFinalization`. The shim now returns `SortitionFinalizationCommitReport`, containing
-  only live threshold/change/cache-count facts, and `pbft_manager_shim` builds the final external-effect envelope at the
-  manager executor boundary.
+  only live threshold/change/cache-count facts, and `pbft_manager_shim` advances through
+  `pbft_manager_runtime_advance_finalization_sortition_commit` so Rust builds the temporary external-effect envelope at
+  the manager executor boundary.
 - The reward-vote reset finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
   `commitRewardVotesResetForFinalization`. The shim now returns `RewardVotesFinalizationResetReport`, containing only
   live reward-vote period/round/block-hash/remaining-extra-count facts, and `pbft_manager_shim` builds the final
@@ -683,6 +684,11 @@ Implementation notes:
   `pbft_manager_runtime_advance_finalization_dag_order`, so C++ no longer constructs
   `PbftFinalizationExternalEffectReport` for that external DAG client. Rust maps the single finalized DAG-block count
   into the temporary executor envelope internally before running the existing cursor validation and drain path.
+- Follow-up API narrowing moved sortition commit reporting onto
+  `pbft_manager_runtime_advance_finalization_sortition_commit`, so C++ no longer constructs
+  `PbftFinalizationExternalEffectReport` for that external sortition client. C++ maps the sortition-owned report into a
+  manager-scoped CXX DTO, and Rust maps only threshold/change/cache-count facts into the temporary executor envelope
+  internally before running the existing cursor validation and drain path.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -832,6 +838,12 @@ Implementation notes:
     DAG identity/action/status at the PBFT manager boundary.
   - `cpp-pro`: confirmed DAG order is the lowest-risk remaining generic producer and that the helper preserves abort,
     snapshot, `can_continue`, and `fail_boundary` semantics without touching the resume path.
+- Custom agents used for the sortition typed advancement cleanup:
+  - `api-designer`: confirmed the six-field sortition report should use a manager-scoped CXX DTO instead of scalar
+    arguments, with success/status/cursor/action identity still owned by the PBFT manager executor.
+  - `cpp-pro`: confirmed the typed helper should preserve `should_commit_sortition_runtime` and
+    `prepared_sortition_params_change` semantics, cover changed and unchanged outcomes, keep failures on the generic
+    failure path, and update the sortition shim comment.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -1000,9 +1012,9 @@ Implementation notes:
   - `rg -n "advance_finalization_pbft_chain|pbft_chain_update_for_finalization\\(|PbftChainFinalizationUpdateReport|pbft_chain_(size|head_hash|last_anchor_hash)|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_chain.rs rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/pbft_chain_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.cpp' -g'*.hpp'`
     shows PBFT-chain finalization update returning only `PbftChainFinalizationUpdateReport`, with the manager using the
     typed Rust bridge advancement helper and no generic external-effect DTO in the PBFT-chain update path.
-  - `rg -n "PbftFinalizationExternalEffectReport|PbftFinalizationStorageWritePlan|commitPreparedBlockForSortitionFinalization|SortitionFinalizationCommitReport" libraries/core_libs/consensus/shims/sortition_params_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
-    shows no generic finalization report or write-plan dependency in the sortition shim; only manager-local conversion
-    uses `PbftFinalizationExternalEffectReport`.
+  - `rg -n "advance_finalization_sortition_commit|PbftManagerFinalizationSortitionCommitReport|SortitionFinalizationCommitReport|sortition_(changed|change_period|change_interval_efficiency|change_threshold_upper|current_threshold_upper|params_changes_count)|PbftFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src/pbft_manager.rs rust/crates/rustaxa-bridge/src/ffi.rs libraries/core_libs/consensus/shims/sortition_params_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.rs' -g'*.hpp' -g'*.cpp'`
+    shows sortition runtime commit using the typed Rust bridge advancement helper; any remaining sortition field
+    assignment is Rust-private temporary executor envelope construction, not a C++ generic report in the sortition path.
   - `rg -n "PbftFinalizationExternalEffectReport|commitRewardVotesResetForFinalization|RewardVotesFinalizationResetReport|makeRewardVotesResetLiveReport" libraries/core_libs/consensus/shims/vote_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows no generic finalization report in the vote-manager shim; only manager-local conversion uses
     `PbftFinalizationExternalEffectReport`.

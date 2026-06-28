@@ -505,13 +505,14 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `PbftFinalizationExternalEffectReport`. `pbft_chain_update_for_finalization` returns
   `PbftChainFinalizationUpdateReport` with only head size/hash/anchor facts; `pbft_manager_shim` advances through
   `pbft_manager_runtime_advance_finalization_pbft_chain`, so Rust fills the temporary executor envelope internally.
-  Remaining generic finalization report producers are sortition, reward-vote reset, FinalChain dispatch/replay, and the
-  manager executor boundary itself.
+  Remaining generic finalization report producers are reward-vote reset, FinalChain dispatch/replay, and the manager
+  executor boundary itself.
 - Sortition finalization update facts no longer leak through `sortition_params_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitPreparedBlockForSortitionFinalization` returns
   `SortitionFinalizationCommitReport` with only changed/change/current-threshold/cache-count facts; `pbft_manager_shim`
-  converts those facts at the manager executor boundary. Remaining generic finalization report producers are reward-vote
-  reset, FinalChain dispatch/replay, and the manager executor boundary itself.
+  advances through `pbft_manager_runtime_advance_finalization_sortition_commit`, so Rust fills the temporary executor
+  envelope internally. Remaining generic finalization report producers are reward-vote reset, FinalChain
+  dispatch/replay, and the manager executor boundary itself.
 - Reward-vote reset finalization facts no longer leak through `vote_manager_shim` as
   `PbftFinalizationExternalEffectReport`. `commitRewardVotesResetForFinalization` returns
   `RewardVotesFinalizationResetReport` with only period/round/block-hash/extra-count facts; `pbft_manager_shim` converts

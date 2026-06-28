@@ -18,8 +18,8 @@ namespace taraxa {
  *
  * Inputs are produced by the Rust sortition runtime after live state is committed. Outputs carry only sortition facts:
  * whether the finalized period emitted a threshold change, the emitted change payload, the current threshold after the
- * commit, and the number of cached parameter changes. PBFT manager code converts these facts into its executor report at
- * the manager boundary.
+ * commit, and the number of cached parameter changes. PBFT manager code forwards these facts through its typed
+ * finalization helper at the manager boundary.
  */
 struct SortitionFinalizationCommitReport {
   bool changed = false;

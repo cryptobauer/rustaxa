@@ -3950,6 +3950,30 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
+  auto report_sortition_commit = [&](const SortitionFinalizationCommitReport &report,
+                                     rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    rustaxa::PbftManagerFinalizationSortitionCommitReport bridge_report{};
+    bridge_report.changed = report.changed;
+    bridge_report.change_period = report.change_period;
+    bridge_report.change_interval_efficiency = report.change_interval_efficiency;
+    bridge_report.change_threshold_upper = report.change_threshold_upper;
+    bridge_report.current_threshold_upper = report.current_threshold_upper;
+    bridge_report.params_changes_count = report.params_changes_count;
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_sortition_commit(
+          *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context sortition runtime commit: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("sortition runtime commit", boundary);
+    }
+    return true;
+  };
   auto clear_anchor_dag_cache_for_finalization = [&]() {
     anchor_dag_block_order_cache_.clear();
     const auto clear_cache_snapshot =
@@ -4044,16 +4068,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (should_commit_sortition_runtime) {
       const auto sortition_commit = dag_mgr_->sortitionParamsManager().commitPreparedBlockForSortitionFinalization(
           period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1, prepared_sortition_params_change);
-      rustaxa::PbftFinalizationExternalEffectReport sortition_report{};
-      sortition_report.success = true;
-      sortition_report.status = 0;
-      sortition_report.sortition_changed = sortition_commit.changed;
-      sortition_report.sortition_change_period = sortition_commit.change_period;
-      sortition_report.sortition_change_interval_efficiency = sortition_commit.change_interval_efficiency;
-      sortition_report.sortition_change_threshold_upper = sortition_commit.change_threshold_upper;
-      sortition_report.sortition_current_threshold_upper = sortition_commit.current_threshold_upper;
-      sortition_report.sortition_params_changes_count = sortition_commit.params_changes_count;
-      if (!report_live_mutation("sortition runtime commit", sortition_report, boundary)) {
+      if (!report_sortition_commit(sortition_commit, boundary)) {
         return false;
       }
     }
