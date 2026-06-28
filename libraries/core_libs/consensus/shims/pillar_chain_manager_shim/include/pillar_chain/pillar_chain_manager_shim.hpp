@@ -15,7 +15,7 @@
 
 namespace rustaxa {
 struct BridgePillarChainStorage;
-struct BridgePillarVotes;
+struct BridgePillarChainRuntime;
 }
 
 namespace taraxa {
@@ -148,7 +148,7 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const std::shared_ptr<final_chain::FinalChain>& final_chain,
                                                     const std::shared_ptr<PillarBlock>& current_pillar_block,
-                                                    const ::rust::Box<rustaxa::BridgePillarVotes>& pillar_votes);
+                                                    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
 
 /**
  * Prepared insertion facts for one Rust-inspected pillar vote.
@@ -189,7 +189,7 @@ struct AddVerifiedPillarVoteWithRustPlan {
  */
 AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
     const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain,
-    const ::rust::Box<rustaxa::BridgePillarVotes>& pillar_votes);
+    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
 
 /**
  * Inspects one vote RLP in Rust and returns decoded identity plus signature status.
@@ -655,6 +655,7 @@ class PillarChainManager {
   const FicusHardforkConfig& kFicusHfConfig;
 
   ::rust::Box<rustaxa::BridgePillarChainStorage> rust_storage_;
+  ::rust::Box<rustaxa::BridgePillarChainRuntime> pillar_runtime_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<KeyManager> key_manager_;
@@ -664,8 +665,6 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> last_finalized_pillar_block_;
   std::shared_ptr<PillarBlock> current_pillar_block_;
   std::vector<state_api::ValidatorVoteCount> current_pillar_block_vote_counts_;
-
-  ::rust::Box<rustaxa::BridgePillarVotes> pillar_votes_;
 
   mutable std::shared_mutex mutex_;
 

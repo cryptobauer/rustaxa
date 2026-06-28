@@ -470,8 +470,10 @@ Acceptance:
   `BridgePbftManagerRuntime`. Dynamic-lambda planning and the previous persisted period-lambda lookup are also
   manager-runtime-owned through one finalization-specific API. Manager-owned finalization actions are now drained by
   `BridgePbftManagerRuntime` in normal finalization and duplicate-resume paths. Slice 6 remains incomplete because
-  `pbft_manager_shim` still coordinates external finalization effects and lifecycle paths, and
-  `pillar_chain_manager_shim` still owns orchestration loops that are not yet routed through one-shot Rust service calls.
+  `pbft_manager_shim` still coordinates external finalization effects and lifecycle paths. `pillar_chain_manager_shim`
+  now routes live vote state and PBFT-facing pillar finalization through `BridgePillarChainRuntime`, but still owns
+  external FinalChain DPoS reads, temporary `PillarBlock`/`PillarVote` materialization, current-block sidecar mirrors,
+  network vote-bundle requests, and event emission.
 
 Implementation notes:
 
@@ -484,11 +486,15 @@ Implementation notes:
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
+- `pillar_chain_manager_shim` now constructs `BridgePillarChainRuntime`, which owns live pillar-vote aggregation state
+  and the native pillar storage handle used by PBFT-facing finalization. The previous live manager field
+  `BridgePillarVotes` is gone; the standalone `BridgePillarVotes` CXX handle remains only for compatibility tests and
+  non-manager bridge callers until they move to the runtime or native Rust modules.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` now routes synced bundle RLPs through
-  Rust-owned batch inspection and weighted planning APIs. C++ only performs the external FinalChain DPoS weight lookup in
-  one batched read, then passes canonical RLP bytes and weights back to Rust for signature validation, duplicate/conflict
-  checks, threshold selection, and accepted-voter materialization. The previous shim-local per-vote inspection/weight
-  loop and `getPillarVoteWeight()` helper are gone.
+  Rust-owned batch inspection and `BridgePillarChainRuntime` weighted apply APIs. C++ only performs the external
+  FinalChain DPoS weight lookup in one batched read, then passes canonical RLP bytes and weights back to Rust for
+  signature validation, duplicate/conflict checks, threshold selection, and selected-vote insertion. The previous
+  shim-local per-vote inspection/weight loop and `getPillarVoteWeight()` helper are gone.
 - `pillar_chain_manager_shim::createPillarBlock()` now calls
   `plan_pillar_block_creation_with_vote_counts`, which combines pillar-block shell planning with ordered validator
   vote-count delta planning behind one Rust API. C++ still owns FinalChain DPoS vote-count reads, temporary
@@ -500,26 +506,33 @@ Implementation notes:
   `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and
   `plan_pillar_vote_bundle` are no longer bridge exports. Live pillar-chain sync keeps the canonical RLP boundary:
   `inspect_pillar_vote_bundle_rlps` returns recovered voters for the one external FinalChain DPoS weight read, then
-  `BridgePillarVotes::pillar_votes_apply_weighted_rlp_bundle` owns weighted validation, threshold initialization,
+  `BridgePillarChainRuntime::pillar_chain_runtime_apply_weighted_rlp_bundle` owns weighted validation, threshold initialization,
   selected-vote insertion, and duplicate/idempotent apply classification. Native `rustaxa-consensus` pillar-vote tests
   keep coverage for the plain domain planner.
 - The old weighted synced-pillar-vote planner bridge is deleted:
   `plan_pillar_vote_bundle_from_weighted_rlps`, `PillarVoteBundleWeightedPlan`, and
   `PillarVoteBundleAcceptedVoter` are no longer CXX exports. `pillar_chain_manager_shim` no longer maps accepted hashes
   back to live `PillarVote` sidecars and no longer calls `addPlannedVerifiedPillarVoteForRust`; the sync validation path
-  passes canonical weighted RLPs into the `BridgePillarVotes` apply API and receives only aggregate status, weights, and
-  insertion failure facts. C++ still owns the one external FinalChain DPoS weight read until a broader pillar-chain
-  runtime owns that port.
+  passes canonical weighted RLPs into the `BridgePillarChainRuntime` apply API and receives only aggregate status,
+  weights, and insertion failure facts. C++ still owns the one external FinalChain DPoS weight read until a broader
+  pillar-chain runtime owns that port.
 - Single pillar-vote admission now uses the same minimal prepare/apply shape. `pillar_chain_manager_shim` calls
-  `BridgePillarVotes::pillar_votes_prepare_single_vote_admission` to decode canonical RLP, recover the voter, perform
+  `BridgePillarChainRuntime::pillar_chain_runtime_prepare_single_vote_admission` to decode canonical RLP, recover the voter, perform
   duplicate/relevance/identity checks, and report whether a period threshold is needed. C++ performs only the external
   FinalChain DPoS eligibility or vote-count lookup and, when needed, threshold lookup, then calls
-  `BridgePillarVotes::pillar_votes_apply_prepared_single_vote_admission` with only canonical RLP and external DPoS
+  `BridgePillarChainRuntime::pillar_chain_runtime_apply_prepared_single_vote_admission` with only canonical RLP and external DPoS
   facts; Rust re-derives signature identity, initializes period state, and inserts into Rust-owned aggregation. The
   piecemeal single-vote CXX exports
   `pillar_votes_period_data_initialized`, `pillar_votes_init_period_data`, `pillar_votes_vote_exists`,
   `pillar_votes_is_unique_identity`, `pillar_votes_is_unique_vote`, and `pillar_votes_insert_vote` are deleted along
   with `PillarVotePayload`, `PillarVoteIdentityPayload`, `PillarVoteUniqueOutcome`, and `PillarVoteInsertOutcome`.
+- PBFT-facing pillar-block finalization now calls
+  `BridgePillarChainRuntime::pillar_chain_runtime_finalize_block_for_pbft`. Rust owns selected-vote lookup,
+  deterministic pillar finalization planning, finalized-block storage persistence, and vote cleanup ordering. The
+  bridge-only CXX exports `plan_pbft_finalization_pillar_preflight`,
+  `report_pbft_finalization_pillar_preflight`, and `plan_pillar_block_finalization` plus their DTOs are deleted. C++
+  still owns the missing-vote network request, legacy vote materialization for PBFT `PeriodData`, live
+  `last_finalized_pillar_block_` mirror assignment, and pillar-finalized event emission.
 - `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in
@@ -795,9 +808,23 @@ Implementation notes:
   - `rg -n "pub fn pbft_manager_runtime_(begin_finalization_session|begin_finalization_resume_session|finalization_session_next|finalization_session_report|finalization_session_report_action|report_finalization_live_mutation|drain_owned_finalization_actions)" rust/crates/rustaxa-bridge/src/pbft_manager.rs` returns only the retained public boundary function.
   - `git diff --check`
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
-  remaining `pillar_chain_manager_shim` orchestration paths are still present and remain Slice 6 work.
-- The immediate follow-up is either the broader PBFT finalization executor cut that absorbs the remaining external-effect
-  report loop behind one manager API, or a return to pillar-chain loop reduction before Slice 6 can be marked complete.
+  remaining pillar-chain external DPoS/materialization/event paths are still present and remain Slice 6 work.
+- Additional validation for the pillar-chain runtime PBFT-finalization consolidation:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain_runtime_finalizes_block_for_pbft_with_owned_storage -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_chain -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pillar_chain_test pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='*Pillar*:*pillar*:*Pbft*Final*' --gtest_print_time=1`
+  - `/build/bin/pillar_chain_test --gtest_filter='PillarChainTest.pillar_blocks_create:PillarChainTest.addVerifiedPillarVote_insertsWithRecoveredIdentityWeight:PillarChainTest.validatePillarVote_usesRustRecoveredIdentityForUniqueness:PillarChainTest.addVerifiedPillarVote_rejectsInvalidRustInspectedSignature:PillarChainTest.validatePillarVote_rejectsInvalidRustInspectedSignature' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - A parallel all-pillar gtest run failed from test-environment lock/port conflicts while another gtest process was
+    active; the focused pillar tests and PBFT smoke passed when rerun sequentially.
+- The immediate follow-up is the broader PBFT finalization executor cut that absorbs the remaining external-effect
+  report loop behind one manager API, plus later pillar-chain runtime slices for external DPoS fact ports and legacy
+  materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 

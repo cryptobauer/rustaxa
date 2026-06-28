@@ -66,8 +66,6 @@ constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
 constexpr uint8_t kPbftFinalizationRuntimeActionProcessPillarBlock = 15;
-constexpr uint8_t kPbftFinalizationPillarPreflightActionFinalizePillarBlock = 1;
-constexpr uint8_t kPbftFinalizationPillarPreflightStatusAccepted = 0;
 constexpr uint8_t kPbftManagerRuntimeStatusActive = 0;
 constexpr uint8_t kPbftManagerRuntimeStatusComplete = 1;
 constexpr uint8_t kPbftManagerRuntimeActionProcessSyncedPbftBlocks = 0;
@@ -3509,44 +3507,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                                      : std::optional<blk_hash_t>();
   const auto pillar_finalization_required =
       kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(block_pbft_period);
-  rustaxa::PbftFinalizationPillarPreflightFact pillar_preflight_fact;
-  pillar_preflight_fact.pbft_block_hash = toBridgeHash(pbft_block_hash);
-  pillar_preflight_fact.block_period = block_pbft_period;
-  pillar_preflight_fact.block_in_chain = block_in_chain;
-  pillar_preflight_fact.pillar_finalization_required = pillar_finalization_required;
-  pillar_preflight_fact.has_pillar_block_hash = pillar_block_hash.has_value();
-  pillar_preflight_fact.pillar_block_hash =
-      pillar_block_hash ? toBridgeHash(*pillar_block_hash) : toBridgeHash(kNullBlockHash);
-  pillar_preflight_fact.pillar_block_finalized = false;
-  const auto pillar_preflight_plan = rustaxa::plan_pbft_finalization_pillar_preflight(pillar_preflight_fact);
-  if (!pillar_preflight_plan.accepted) {
-    LOG(log_er_) << "Rust PBFT pillar preflight rejected block " << pbft_block_hash << ", period " << block_pbft_period
-                 << ", action " << static_cast<uint32_t>(pillar_preflight_plan.action) << ", status "
-                 << static_cast<uint32_t>(pillar_preflight_plan.status) << ", error "
-                 << static_cast<std::string>(pillar_preflight_plan.error_code);
-    return false;
-  }
-  if (pillar_preflight_plan.action == kPbftFinalizationPillarPreflightActionFinalizePillarBlock) {
-    assert(pillar_block_hash.has_value());
+  if (!block_in_chain && pillar_finalization_required) {
+    if (!pillar_block_hash.has_value()) {
+      LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_pbft_period
+                   << " requires pillar finalization but has no pillar block hash";
+      return false;
+    }
     auto pillar_finalization = pillar_chain_mgr_->finalizePillarBlockForPbftPreflight(*pillar_block_hash);
-    rustaxa::PbftFinalizationPillarPreflightReport pillar_preflight_report;
-    pillar_preflight_report.action = pillar_preflight_plan.action;
-    pillar_preflight_report.success = pillar_finalization.success;
-    pillar_preflight_report.status =
-        pillar_preflight_report.success ? kPbftFinalizationPillarPreflightStatusAccepted : 255;
-    pillar_preflight_report.error_code =
-        pillar_preflight_report.success ? "" : "PBFT_FINALIZE_PILLAR_PREFLIGHT_EMPTY_VOTES";
-    pillar_preflight_report.block_period = block_pbft_period;
-    pillar_preflight_report.pbft_block_hash = toBridgeHash(pbft_block_hash);
-    pillar_preflight_report.pillar_block_hash = toBridgeHash(*pillar_block_hash);
-    pillar_preflight_report.pillar_vote_count = pillar_finalization.pillar_vote_count;
-    const auto pillar_preflight_result =
-        rustaxa::report_pbft_finalization_pillar_preflight(pillar_preflight_plan, pillar_preflight_report);
-    if (!pillar_preflight_result.accepted) {
-      LOG(log_er_) << "Rust PBFT pillar preflight report rejected block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", action " << static_cast<uint32_t>(pillar_preflight_result.action)
-                   << ", status " << static_cast<uint32_t>(pillar_preflight_result.status) << ", error "
-                   << static_cast<std::string>(pillar_preflight_result.error_code);
+    if (!pillar_finalization.success) {
+      LOG(log_er_) << "PBFT block " << pbft_block_hash << ", period " << block_pbft_period
+                   << " could not finalize pillar block " << *pillar_block_hash;
       return false;
     }
     period_data.pillar_votes_ = std::move(pillar_finalization.pillar_votes);

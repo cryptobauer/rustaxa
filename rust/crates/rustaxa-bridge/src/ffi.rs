@@ -245,6 +245,16 @@ pub struct BridgeVerifiedVotes {
 
 pub struct BridgePillarVotes(pub PillarVotes);
 
+/// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
+///
+/// The runtime keeps pillar-vote aggregation and typed pillar-chain storage
+/// together for operations that need both, avoiding ad hoc bridge-handle
+/// composition in live consensus routes.
+pub struct BridgePillarChainRuntime {
+    pub storage: Arc<Storage>,
+    pub votes: PillarVotes,
+}
+
 /// Bridge wrapper for the Rust sortition parameter manager.
 ///
 /// The manager owns deterministic threshold/runtime state. Production
@@ -1316,41 +1326,6 @@ pub mod rustaxa_ffi {
         ordered_dag_block_hashes: Vec<PbftFinalizationHash>,
         ordered_transaction_hashes: Vec<PbftFinalizationHash>,
         process_pillar_block_after_advance: bool,
-    }
-
-    /// Rust preflight fact for pillar finalization before PBFT finalization intent bytes are built.
-    struct PbftFinalizationPillarPreflightFact {
-        pbft_block_hash: [u8; 32],
-        block_period: u64,
-        block_in_chain: bool,
-        pillar_finalization_required: bool,
-        has_pillar_block_hash: bool,
-        pillar_block_hash: [u8; 32],
-        pillar_block_finalized: bool,
-    }
-
-    /// Rust-owned pillar preflight plan for the C++ executor.
-    struct PbftFinalizationPillarPreflightPlan {
-        pbft_block_hash: [u8; 32],
-        block_period: u64,
-        pillar_block_hash: [u8; 32],
-        action: u8,
-        finalize_pillar_block: bool,
-        accepted: bool,
-        status: u8,
-        error_code: String,
-    }
-
-    /// C++ report for one Rust-planned pillar preflight action.
-    struct PbftFinalizationPillarPreflightReport {
-        action: u8,
-        success: bool,
-        status: u8,
-        error_code: String,
-        block_period: u64,
-        pbft_block_hash: [u8; 32],
-        pillar_block_hash: [u8; 32],
-        pillar_vote_count: u64,
     }
 
     /// Rust-planned cleanup flags for the PBFT finalization side-effect sequence.
@@ -2766,38 +2741,40 @@ pub mod rustaxa_ffi {
         vote_count_changes: Vec<PillarValidatorVoteCountChange>,
     }
 
-    /// Compact facts for Rust-side pillar-block finalization planning.
-    struct PillarBlockFinalizationFact {
+    /// Compact request for Rust-owned pillar-block finalization execution.
+    ///
+    /// C++ supplies only current/last block sidecar facts and the current
+    /// block's canonical RLP. Rust owns verified-vote lookup, deterministic
+    /// finalization planning, storage persistence, and vote cleanup.
+    struct PillarBlockFinalizationRequest {
         requested_pillar_block_hash: [u8; 32],
         has_current_pillar_block: bool,
         current_period: u64,
         current_hash: [u8; 32],
-        threshold_met: bool,
-        block_weight: u64,
-        selected_weight: u64,
-        selected_vote_count: u64,
+        current_block_rlp: Vec<u8>,
         has_last_finalized_pillar_block: bool,
         last_finalized_hash: [u8; 32],
     }
 
-    /// Rust-planned finalization status and executor effects.
+    /// Result of Rust-owned pillar-block finalization execution.
     ///
-    /// Status values:
-    /// - `0` - ready to persist and emit
-    /// - `1` - missing current pillar block
-    /// - `2` - current block hash mismatch
-    /// - `3` - missing selected votes
-    /// - `4` - already finalized; return selected votes only
-    struct PillarBlockFinalizationPlan {
+    /// Status values match the native pillar finalization planner: `0` ready,
+    /// `1` missing current block, `2` current hash mismatch, `3` missing
+    /// votes, and `4` already finalized. `success` is true only when
+    /// finalization produced selected pillar-vote payloads for the PBFT
+    /// period-data boundary.
+    struct PillarBlockFinalizationResult {
         status: u8,
-        return_votes: bool,
+        success: bool,
         should_request_votes: bool,
-        should_persist: bool,
+        persisted: bool,
+        cleaned_votes: bool,
         should_emit: bool,
         current_period: u64,
         block_weight: u64,
         selected_weight: u64,
         selected_vote_count: u64,
+        votes: Vec<PillarVoteRecord>,
     }
 
     struct UniqueVoterInsertOutcome {
@@ -4729,13 +4706,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_finalization_intent(
             fact: PbftFinalizationIntentFact,
         ) -> PbftFinalizationIntentPlan;
-        pub fn plan_pbft_finalization_pillar_preflight(
-            fact: PbftFinalizationPillarPreflightFact,
-        ) -> PbftFinalizationPillarPreflightPlan;
-        pub fn report_pbft_finalization_pillar_preflight(
-            plan: &PbftFinalizationPillarPreflightPlan,
-            report: PbftFinalizationPillarPreflightReport,
-        ) -> PbftFinalizationPillarPreflightPlan;
         type BridgePbftManagerRuntime;
         pub fn create_pbft_manager_runtime_from_storage(
             storage: &BridgeStorage,
@@ -5557,15 +5527,16 @@ pub mod rustaxa_ffi {
             current_vote_counts: Vec<PillarValidatorVoteCount>,
             previous_vote_counts: Vec<PillarValidatorVoteCount>,
         ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
-        pub fn plan_pillar_block_finalization(
-            fact: PillarBlockFinalizationFact,
-        ) -> Result<PillarBlockFinalizationPlan>;
 
         type BridgePillarChainStorage;
+        type BridgePillarChainRuntime;
 
         pub fn create_pillar_chain_storage(
             storage: &BridgeStorage,
         ) -> Box<BridgePillarChainStorage>;
+        pub fn create_pillar_chain_runtime(
+            storage: &BridgeStorage,
+        ) -> Box<BridgePillarChainRuntime>;
         pub fn pillar_chain_storage_apply_current_block_data(
             self: &BridgePillarChainStorage,
             data_rlp: Vec<u8>,
@@ -5596,6 +5567,36 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_runtime_prepare_single_vote_admission(
+            self: &BridgePillarChainRuntime,
+            vote_rlp: Vec<u8>,
+            context: PillarVoteSingleAdmissionContext,
+        ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
+        pub fn pillar_chain_runtime_apply_prepared_single_vote_admission(
+            self: &mut BridgePillarChainRuntime,
+            input: PillarVoteSingleAdmissionApplyInput,
+        ) -> Result<PillarVoteSingleAdmissionApplyPlan>;
+        pub fn pillar_chain_runtime_apply_weighted_rlp_bundle(
+            self: &mut BridgePillarChainRuntime,
+            votes: Vec<PillarVoteWeightedRlpPayload>,
+            expected_period: u64,
+            expected_block_hash: &[u8; 32],
+            threshold: u64,
+        ) -> Result<PillarVoteBundleApplyPlan>;
+        pub fn pillar_chain_runtime_get_verified_vote_payloads(
+            self: &BridgePillarChainRuntime,
+            period: u64,
+            block_hash: &[u8; 32],
+            above_threshold: bool,
+        ) -> PillarVotesPayloadLookup;
+        pub fn pillar_chain_runtime_cleanup_votes_by_period(
+            self: &mut BridgePillarChainRuntime,
+            min_period: u64,
+        );
+        pub fn pillar_chain_runtime_finalize_block_for_pbft(
+            self: &mut BridgePillarChainRuntime,
+            request: PillarBlockFinalizationRequest,
+        ) -> Result<PillarBlockFinalizationResult>;
 
         // Consensus sortition
 

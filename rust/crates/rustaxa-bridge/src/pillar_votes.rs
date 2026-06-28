@@ -11,14 +11,15 @@
 //! to [`PillarVotes`].
 
 use crate::ffi::rustaxa_ffi::{
-    PillarVoteBundleApplyPlan, PillarVoteBundleInspectionPlan, PillarVoteInspection,
-    PillarVoteRecord, PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
+    PillarBlockFinalizationRequest, PillarBlockFinalizationResult, PillarVoteBundleApplyPlan,
+    PillarVoteBundleInspectionPlan, PillarVoteInspection, PillarVoteRecord,
+    PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
     PillarVoteSingleAdmissionApplyInput, PillarVoteSingleAdmissionApplyPlan,
     PillarVoteSingleAdmissionContext, PillarVoteSingleAdmissionPreparePlan,
     PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
 };
-use crate::ffi::BridgePillarVotes;
+use crate::ffi::{BridgePillarChainRuntime, BridgePillarVotes};
 use anyhow::{ensure, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::{
@@ -27,6 +28,10 @@ use rustaxa_consensus::{
     PillarVoteInspection as ConsensusPillarVoteInspection,
     PillarVoteRelevanceFact as ConsensusPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as ConsensusPillarVoteRelevancePlan, PillarVotes, VerifiedPillarVote,
+};
+use rustaxa_consensus::{
+    plan_pillar_block_finalization, save_finalized_pillar_block_storage,
+    PillarBlockFinalizationFact, PillarBlockFinalizationStatus,
 };
 use rustaxa_types::PillarVote;
 use std::collections::HashMap;
@@ -168,7 +173,159 @@ impl BridgePillarVotes {
     pub fn pillar_votes_cleanup_votes_by_period(&mut self, min_period: u64) {
         self.0.erase_votes(min_period);
     }
+}
 
+impl BridgePillarChainRuntime {
+    /// Prepares one pillar vote for admission through the runtime-owned
+    /// pillar-vote index.
+    pub fn pillar_chain_runtime_prepare_single_vote_admission(
+        &self,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteSingleAdmissionContext,
+    ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
+        prepare_single_vote_admission(&self.votes, vote_rlp, context)
+    }
+
+    /// Applies one prepared pillar vote to the runtime-owned pillar-vote index.
+    pub fn pillar_chain_runtime_apply_prepared_single_vote_admission(
+        &mut self,
+        input: PillarVoteSingleAdmissionApplyInput,
+    ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
+        apply_prepared_single_vote_admission(&mut self.votes, input)
+    }
+
+    /// Applies one weighted RLP bundle to the runtime-owned pillar-vote index.
+    pub fn pillar_chain_runtime_apply_weighted_rlp_bundle(
+        &mut self,
+        votes: Vec<PillarVoteWeightedRlpPayload>,
+        expected_period: u64,
+        expected_block_hash: &[u8; 32],
+        threshold: u64,
+    ) -> Result<PillarVoteBundleApplyPlan> {
+        apply_weighted_rlp_bundle(
+            &mut self.votes,
+            votes,
+            expected_period,
+            expected_block_hash,
+            threshold,
+        )
+    }
+
+    /// Looks up Rust-retained vote payloads from the runtime-owned index.
+    pub fn pillar_chain_runtime_get_verified_vote_payloads(
+        &self,
+        period: u64,
+        block_hash: &[u8; 32],
+        above_threshold: bool,
+    ) -> PillarVotesPayloadLookup {
+        self.votes
+            .get_verified_votes(period, H256::from(*block_hash), above_threshold)
+            .into()
+    }
+
+    /// Removes all pillar-vote state for periods lower than `min_period`.
+    pub fn pillar_chain_runtime_cleanup_votes_by_period(&mut self, min_period: u64) {
+        self.votes.erase_votes(min_period);
+    }
+
+    /// Finalizes one pillar block for the PBFT finalization boundary.
+    ///
+    /// Inputs:
+    /// - `storage` is the typed pillar-chain storage handle that owns durable
+    ///   finalized pillar-block persistence.
+    /// - `request` carries only current/last pillar sidecar facts and the
+    ///   current block's canonical RLP from the temporary C++ materializer.
+    ///
+    /// Outputs:
+    /// - Returns the deterministic pillar-finalization status plus selected
+    ///   vote payloads when finalization or already-finalized replay succeeds.
+    /// - Requests a network vote bundle through `should_request_votes` when
+    ///   Rust detects missing threshold votes.
+    ///
+    /// Invariants and edge behavior:
+    /// - Rust owns verified-vote lookup, finalization planning, storage
+    ///   persistence, and vote cleanup ordering.
+    /// - Storage is committed before in-memory vote cleanup. Cleanup is skipped
+    ///   if persistence fails.
+    /// - C++ still owns network requests, legacy `PillarVote` materialization,
+    ///   event emission, and PBFT `PeriodData` payload assembly.
+    pub fn pillar_chain_runtime_finalize_block_for_pbft(
+        &mut self,
+        request: PillarBlockFinalizationRequest,
+    ) -> Result<PillarBlockFinalizationResult> {
+        let requested_hash = H256::from(request.requested_pillar_block_hash);
+        let current_hash = H256::from(request.current_hash);
+        let lookup = if request.has_current_pillar_block && current_hash == requested_hash {
+            self.votes.get_verified_votes(
+                request.current_period.saturating_add(1),
+                requested_hash,
+                true,
+            )
+        } else {
+            rustaxa_consensus::PillarVotesLookup {
+                threshold_met: false,
+                block_weight: 0,
+                selected_weight: 0,
+                votes: Vec::new(),
+            }
+        };
+
+        let selected_vote_count = lookup.votes.len() as u64;
+        let plan = plan_pillar_block_finalization(PillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested_hash,
+            has_current_pillar_block: request.has_current_pillar_block,
+            current_period: request.current_period,
+            current_hash,
+            threshold_met: lookup.threshold_met,
+            block_weight: lookup.block_weight,
+            selected_weight: lookup.selected_weight,
+            selected_vote_count,
+            has_last_finalized_pillar_block: request.has_last_finalized_pillar_block,
+            last_finalized_hash: H256::from(request.last_finalized_hash),
+        });
+
+        let mut persisted = false;
+        let mut cleaned_votes = false;
+        if plan.status == PillarBlockFinalizationStatus::Ready && plan.should_persist {
+            save_finalized_pillar_block_storage(
+                self.storage.as_ref(),
+                plan.current_period,
+                &request.current_block_rlp,
+            )?;
+            persisted = true;
+            self.votes
+                .erase_votes(plan.current_period.saturating_add(1));
+            cleaned_votes = true;
+        }
+
+        let votes = if plan.return_votes {
+            lookup
+                .votes
+                .into_iter()
+                .map(PillarVoteRecord::from)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let success = plan.return_votes && !votes.is_empty();
+
+        Ok(PillarBlockFinalizationResult {
+            status: plan.status.as_u8(),
+            success,
+            should_request_votes: plan.should_request_votes,
+            persisted,
+            cleaned_votes,
+            should_emit: plan.should_emit,
+            current_period: plan.current_period,
+            block_weight: plan.block_weight,
+            selected_weight: plan.selected_weight,
+            selected_vote_count: plan.selected_vote_count,
+            votes,
+        })
+    }
+}
+
+impl BridgePillarVotes {
     /// Prepares one pillar vote for validation or insertion without reading
     /// FinalChain or mutating aggregation state.
     ///
@@ -530,6 +687,86 @@ fn single_admission_plan(status: u8) -> PillarVoteSingleAdmissionPreparePlan {
     }
 }
 
+fn prepare_single_vote_admission(
+    pillar_votes: &PillarVotes,
+    vote_rlp: Vec<u8>,
+    context: PillarVoteSingleAdmissionContext,
+) -> Result<PillarVoteSingleAdmissionPreparePlan> {
+    let decoded_vote = match PillarVote::decode_rlp(&vote_rlp) {
+        Ok(vote) => vote,
+        Err(_) => return Ok(single_admission_plan(PILLAR_VOTE_STATUS_INSPECTION_FAILURE)),
+    };
+    let inspection = match inspect_pillar_vote_from_rlp(&vote_rlp) {
+        Ok(inspection) => inspection,
+        Err(_) => return Ok(single_admission_plan(PILLAR_VOTE_STATUS_INSPECTION_FAILURE)),
+    };
+    let mut plan = single_admission_plan(PILLAR_VOTE_STATUS_VALID);
+    plan.period = inspection.period;
+    plan.block_hash = inspection.block_hash.into();
+    plan.vote_hash = inspection.vote_hash.into();
+    plan.voter = inspection.voter.into();
+
+    ensure!(
+        decoded_vote.period == inspection.period,
+        "pillar vote decoded period does not match recovered inspection"
+    );
+    ensure!(
+        decoded_vote.block_hash == inspection.block_hash,
+        "pillar vote decoded block hash does not match recovered inspection"
+    );
+    ensure!(
+        decoded_vote.hash(true) == inspection.vote_hash,
+        "pillar vote decoded hash does not match recovered inspection"
+    );
+
+    if !inspection.signature_valid {
+        plan.status = PILLAR_VOTE_STATUS_SIGNATURE_INVALID;
+        return Ok(plan);
+    }
+
+    if context.check_relevance {
+        let duplicate_probe = VerifiedPillarVote::from_parts(
+            decoded_vote.clone(),
+            inspection.vote_hash,
+            inspection.voter,
+            1,
+        )?;
+        let relevance =
+            rustaxa_consensus::plan_pillar_vote_relevance(ConsensusPillarVoteRelevanceFact {
+                vote_period: inspection.period,
+                vote_block_hash: inspection.block_hash,
+                current_pillar_block_period: context
+                    .has_current_pillar_block
+                    .then_some(context.current_pillar_block_period),
+                current_pillar_block_hash: context
+                    .has_current_pillar_block
+                    .then_some(H256::from(context.current_pillar_block_hash)),
+                first_pillar_block_period: context.first_pillar_block_period,
+                pillar_blocks_interval: context.pillar_blocks_interval,
+                vote_already_known: pillar_votes.vote_exists(&duplicate_probe),
+            })?;
+        if !relevance.is_relevant {
+            plan.status = relevance.status_code();
+            return Ok(plan);
+        }
+    }
+
+    if context.check_identity_uniqueness
+        && !pillar_votes.is_unique_vote_identity(ConsensusPillarVoteIdentity {
+            period: inspection.period,
+            vote_hash: inspection.vote_hash,
+            voter: inspection.voter,
+        })
+    {
+        plan.status = PILLAR_VOTE_STATUS_NOT_UNIQUE;
+        return Ok(plan);
+    }
+
+    plan.needs_threshold = !pillar_votes.period_data_initialized(inspection.period);
+    plan.can_query_dpos = true;
+    Ok(plan)
+}
+
 fn single_admission_apply_plan(status: u8) -> PillarVoteSingleAdmissionApplyPlan {
     PillarVoteSingleAdmissionApplyPlan {
         status,
@@ -539,6 +776,112 @@ fn single_admission_apply_plan(status: u8) -> PillarVoteSingleAdmissionApplyPlan
         conflicting_vote_hash: [0; 32],
         block_weight: 0,
     }
+}
+
+fn apply_prepared_single_vote_admission(
+    pillar_votes: &mut PillarVotes,
+    input: PillarVoteSingleAdmissionApplyInput,
+) -> Result<PillarVoteSingleAdmissionApplyPlan> {
+    if input.validator_vote_count == 0 {
+        return Ok(single_admission_apply_plan(PILLAR_VOTE_STATUS_NOT_ELIGIBLE));
+    }
+
+    let (vote, period) =
+        match signed_rlp_to_verified_vote(input.vote_rlp, input.validator_vote_count) {
+            Ok(Some(vote)) => vote,
+            Ok(None) => {
+                return Ok(single_admission_apply_plan(
+                    PILLAR_VOTE_STATUS_SIGNATURE_INVALID,
+                ));
+            }
+            Err(_) => {
+                return Ok(single_admission_apply_plan(
+                    PILLAR_VOTE_STATUS_INSPECTION_FAILURE,
+                ));
+            }
+        };
+
+    if !pillar_votes.period_data_initialized(period) {
+        if !input.has_threshold {
+            return Ok(single_admission_apply_plan(PILLAR_VOTE_STATUS_UNKNOWN));
+        }
+        pillar_votes.initialize_period_data(period, input.threshold);
+    }
+
+    let outcome = pillar_votes.add_verified_vote(vote)?;
+    Ok(PillarVoteSingleAdmissionApplyPlan {
+        status: PILLAR_VOTE_STATUS_VALID,
+        accepted: outcome.accepted,
+        duplicate: outcome.duplicate,
+        conflict_found: outcome.conflicting_vote_hash.is_some(),
+        conflicting_vote_hash: outcome.conflicting_vote_hash.unwrap_or_default().into(),
+        block_weight: outcome.block_weight,
+    })
+}
+
+fn apply_weighted_rlp_bundle(
+    pillar_votes: &mut PillarVotes,
+    votes: Vec<PillarVoteWeightedRlpPayload>,
+    expected_period: u64,
+    expected_block_hash: &[u8; 32],
+    threshold: u64,
+) -> Result<PillarVoteBundleApplyPlan> {
+    let work = plan_weighted_rlp_bundle(votes, expected_period, expected_block_hash, threshold)?;
+    if work.plan.status != PILLAR_VOTE_BUNDLE_STATUS_VALID {
+        return Ok(PillarVoteBundleApplyPlan {
+            status: work.plan.status,
+            block_weight: work.plan.block_weight,
+            selected_weight: work.plan.selected_weight,
+            first_bad_vote_hash: work.plan.first_bad_vote_hash,
+            insert_failed: false,
+            insert_failed_vote_hash: [0; 32],
+            applied_votes: 0,
+        });
+    }
+
+    pillar_votes.initialize_period_data(expected_period, threshold);
+    let mut applied_votes = 0u64;
+    for accepted_vote_hash in &work.plan.accepted_vote_hashes {
+        let vote_hash = *accepted_vote_hash;
+        let Some(vote) = work.votes_by_hash.get(&vote_hash).cloned() else {
+            return Ok(PillarVoteBundleApplyPlan {
+                status: work.plan.status,
+                block_weight: work.plan.block_weight,
+                selected_weight: work.plan.selected_weight,
+                first_bad_vote_hash: work.plan.first_bad_vote_hash,
+                insert_failed: true,
+                insert_failed_vote_hash: accepted_vote_hash.0,
+                applied_votes,
+            });
+        };
+
+        match pillar_votes.add_verified_vote(vote) {
+            Ok(outcome) if outcome.accepted || outcome.duplicate => {
+                applied_votes = applied_votes.saturating_add(1);
+            }
+            Ok(_) | Err(_) => {
+                return Ok(PillarVoteBundleApplyPlan {
+                    status: work.plan.status,
+                    block_weight: work.plan.block_weight,
+                    selected_weight: work.plan.selected_weight,
+                    first_bad_vote_hash: work.plan.first_bad_vote_hash,
+                    insert_failed: true,
+                    insert_failed_vote_hash: accepted_vote_hash.0,
+                    applied_votes,
+                });
+            }
+        }
+    }
+
+    Ok(PillarVoteBundleApplyPlan {
+        status: work.plan.status,
+        block_weight: work.plan.block_weight,
+        selected_weight: work.plan.selected_weight,
+        first_bad_vote_hash: work.plan.first_bad_vote_hash,
+        insert_failed: false,
+        insert_failed_vote_hash: [0; 32],
+        applied_votes,
+    })
 }
 
 fn relevance_fact_to_consensus_fact(
@@ -683,8 +1026,21 @@ impl From<ConsensusPillarVoteInspection> for PillarVoteInspection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pillar_chain::{create_pillar_chain_runtime, create_pillar_chain_storage};
+    use crate::storage::create_storage;
     use ethereum_types::H160;
     use k256::ecdsa::SigningKey;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be available")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
 
     fn signature(seed: u8) -> [u8; 65] {
         let mut signature = [seed; 65];
@@ -861,6 +1217,64 @@ mod tests {
             .unwrap();
         assert_eq!(duplicate_prepare.status, 1);
         assert!(!duplicate_prepare.can_query_dpos);
+    }
+
+    #[test]
+    fn pillar_chain_runtime_finalizes_block_for_pbft_with_owned_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_finalization");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut runtime = create_pillar_chain_runtime(&storage);
+            let pillar_storage = create_pillar_chain_storage(&storage);
+            let (vote, _) = signed_vote(0x24, 42, 77);
+            let block_rlp = vec![0xC1, 0x03];
+
+            let applied = runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_rlp: vote.encode_rlp(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .expect("vote should apply");
+            assert_eq!(applied.status, PILLAR_VOTE_STATUS_VALID);
+            assert!(applied.accepted);
+
+            let finalized = runtime
+                .pillar_chain_runtime_finalize_block_for_pbft(PillarBlockFinalizationRequest {
+                    requested_pillar_block_hash: vote.block_hash.into(),
+                    has_current_pillar_block: true,
+                    current_period: 41,
+                    current_hash: vote.block_hash.into(),
+                    current_block_rlp: block_rlp.clone(),
+                    has_last_finalized_pillar_block: false,
+                    last_finalized_hash: [0; 32],
+                })
+                .expect("pillar finalization should run");
+
+            assert_eq!(finalized.status, 0);
+            assert!(finalized.success);
+            assert!(finalized.persisted);
+            assert!(finalized.cleaned_votes);
+            assert!(finalized.should_emit);
+            assert_eq!(finalized.selected_vote_count, 1);
+            assert_eq!(finalized.votes.len(), 1);
+            assert_eq!(
+                finalized.votes[0].vote_hash,
+                Into::<[u8; 32]>::into(vote.hash(true))
+            );
+            assert_eq!(
+                pillar_storage
+                    .pillar_chain_storage_load_block(41)
+                    .expect("finalized block should load"),
+                block_rlp,
+            );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
