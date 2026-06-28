@@ -207,41 +207,6 @@ PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(BridgePbftM
   return pbft_manager_runtime_start_finalization_executor(runtime, request);
 }
 
-PbftFinalizationExecutorAdvanceReport finalizationAdvanceReport(
-    uint32_t cursor, const PbftFinalizationExternalEffectReport& external_report) {
-  PbftFinalizationExecutorAdvanceReport report{};
-  report.cursor = cursor;
-  report.success = external_report.success;
-  report.status = external_report.status;
-  report.error_code = external_report.error_code;
-  report.dag_finalized_count = external_report.dag_finalized_count;
-  report.finalized_transaction_count = external_report.finalized_transaction_count;
-  report.pbft_chain_size = external_report.pbft_chain_size;
-  report.pbft_chain_head_hash = external_report.pbft_chain_head_hash;
-  report.pbft_chain_last_anchor_hash = external_report.pbft_chain_last_anchor_hash;
-  report.reward_votes_period = external_report.reward_votes_period;
-  report.reward_votes_round = external_report.reward_votes_round;
-  report.reward_votes_block_hash = external_report.reward_votes_block_hash;
-  report.reward_votes_extra_count = external_report.reward_votes_extra_count;
-  report.sortition_changed = external_report.sortition_changed;
-  report.sortition_change_period = external_report.sortition_change_period;
-  report.sortition_change_interval_efficiency = external_report.sortition_change_interval_efficiency;
-  report.sortition_change_threshold_upper = external_report.sortition_change_threshold_upper;
-  report.sortition_current_threshold_upper = external_report.sortition_current_threshold_upper;
-  report.sortition_params_changes_count = external_report.sortition_params_changes_count;
-  report.rounds_count_dynamic_lambda = external_report.rounds_count_dynamic_lambda;
-  report.dynamic_lambda = external_report.dynamic_lambda;
-  report.executed_pbft_block = external_report.executed_pbft_block;
-  report.manager_period = external_report.manager_period;
-  report.pillar_processed_period = external_report.pillar_processed_period;
-  report.pillar_request_period = external_report.pillar_request_period;
-  report.anchor_dag_cache_count = external_report.anchor_dag_cache_count;
-  report.final_chain_dispatched = external_report.final_chain_dispatched;
-  report.final_chain_blocks_per_year = external_report.final_chain_blocks_per_year;
-  report.final_chain_last_block = external_report.final_chain_last_block;
-  return report;
-}
-
 PbftFinalizationStorageWriteStage rewardResetFinalizationStorageStage(
     rust::Vec<uint8_t> cert_votes_bundle_rlp,
     const std::vector<std::array<uint8_t, 32>>& stale_extra_reward_vote_hashes) {
@@ -880,8 +845,7 @@ TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
   report.sortition_change_period = 999;
   report.sortition_params_changes_count = 1;
 
-  boundary =
-      pbft_manager_runtime_advance_finalization_executor(*runtime, finalizationAdvanceReport(boundary.cursor, report));
+  boundary = pbft_manager_runtime_advance_finalization_external_effect(*runtime, boundary.cursor, report);
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_FALSE(boundary.can_continue);
@@ -979,12 +943,11 @@ TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  PbftFinalizationExecutorAdvanceReport report{};
-  report.cursor = boundary.cursor;
+  PbftFinalizationExternalEffectReport report{};
   report.success = false;
   report.status = 77;
   report.error_code = "TEST_EXTERNAL_FAILURE";
-  boundary = pbft_manager_runtime_advance_finalization_executor(*runtime, report);
+  boundary = pbft_manager_runtime_advance_finalization_external_effect(*runtime, boundary.cursor, report);
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_EQ(std::string(boundary.error_code), "TEST_EXTERNAL_FAILURE");
@@ -997,11 +960,10 @@ TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   ASSERT_EQ(state.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
 
-  PbftFinalizationExecutorAdvanceReport report{};
-  report.cursor = state.cursor + 1;
+  PbftFinalizationExternalEffectReport report{};
   report.success = true;
 
-  state = pbft_manager_runtime_advance_finalization_executor(*runtime, report);
+  state = pbft_manager_runtime_advance_finalization_external_effect(*runtime, state.cursor + 1, report);
   EXPECT_EQ(state.status, kPbftFinalizationRuntimeStatusActionMismatch);
   EXPECT_FALSE(state.has_action);
   EXPECT_EQ(std::string(state.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");

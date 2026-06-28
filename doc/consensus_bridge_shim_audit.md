@@ -474,20 +474,21 @@ Current snapshot after DAG proposer-session cursor consolidation:
   manager-owned finalization executor.
 - Normal PBFT finalization and duplicate-finalization resume now enter through the manager-owned executor APIs
   `pbft_manager_runtime_start_finalization_executor` and
-  `pbft_manager_runtime_advance_finalization_executor`. The direct CXX exports for finalization runtime planning, cursor
-  next/report, standalone live-mutation report, separate boundary failure report, owned-action drain, manager-runtime
-  storage apply, and the older piecemeal finalization boundary APIs are deleted. Rust retains the accepted finalization
-  plan inside `BridgePbftManagerRuntime`, derives the current action from the cursor, derives base finalization identity
-  for reports, and returns explicit cursor/action executor states. C++ remains the executor for FinalChain/EVM, DAG,
-  transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache side effects.
+  `pbft_manager_runtime_advance_finalization_external_effect`. The direct CXX exports for finalization runtime planning,
+  cursor next/report, standalone live-mutation report, separate boundary failure report, owned-action drain,
+  manager-runtime storage apply, and the older piecemeal finalization boundary APIs are deleted. Rust retains the
+  accepted finalization plan inside `BridgePbftManagerRuntime`, derives the current action from the cursor, derives base
+  finalization identity for reports, and returns explicit cursor/action executor states. C++ remains the executor for
+  FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache
+  side effects.
 - `PbftFinalizationRuntimeActionReport` is no longer a CXX DTO. It is a private Rust helper used inside
   `pbft_manager.rs`; C++ reports finalization external effects with `PbftFinalizationExternalEffectReport`.
 - `PbftFinalizationLiveMutationReport` is no longer a CXX DTO. External finalization executors now return or construct
   `PbftFinalizationExternalEffectReport` directly, and `BridgePbftManagerRuntime` derives the finalization identity from
   the retained Rust plan before converting to the native live-mutation validation report. The shim-local
-  `makeFinalizationExternalEffectReport` mapper is deleted. The PBFT manager executor consumes cursor-keyed
-  `PbftFinalizationExecutorAdvanceReport` values, so subsystem `PbftFinalizationExternalEffectReport` outputs are now
-  adapted at the PBFT manager boundary rather than passed through as the manager advancement contract.
+  `makeFinalizationExternalEffectReport` mapper is deleted. The duplicate cursor-stuffed
+  `PbftFinalizationExecutorAdvanceReport` CXX DTO and field-copy helper are also deleted; the PBFT manager executor now
+  advances with a scalar cursor plus the subsystem `PbftFinalizationExternalEffectReport` output directly.
 - `PbftFinalizationExternalEffectReport` no longer carries an `action` field. The PBFT manager shim still validates the
   expected action on `PbftManagerFinalizationExecutorState` before executing each external side effect, then reports only
   success/failure facts by cursor. This keeps the manager cursor as the only accepted action identity source and prevents

@@ -1942,39 +1942,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Cursor-keyed PBFT finalization effect outcome reported by the C++ executor.
-    struct PbftFinalizationExecutorAdvanceReport {
-        cursor: u32,
-        success: bool,
-        status: u8,
-        error_code: String,
-        dag_finalized_count: u64,
-        finalized_transaction_count: u64,
-        pbft_chain_size: u64,
-        pbft_chain_head_hash: [u8; 32],
-        pbft_chain_last_anchor_hash: [u8; 32],
-        reward_votes_period: u64,
-        reward_votes_round: u64,
-        reward_votes_block_hash: [u8; 32],
-        reward_votes_extra_count: u64,
-        sortition_changed: bool,
-        sortition_change_period: u64,
-        sortition_change_interval_efficiency: u16,
-        sortition_change_threshold_upper: u16,
-        sortition_current_threshold_upper: u16,
-        sortition_params_changes_count: u64,
-        rounds_count_dynamic_lambda: u32,
-        dynamic_lambda: u32,
-        executed_pbft_block: bool,
-        manager_period: u64,
-        pillar_processed_period: u64,
-        pillar_request_period: u64,
-        anchor_dag_cache_count: u64,
-        final_chain_dispatched: bool,
-        final_chain_blocks_per_year: u32,
-        final_chain_last_block: u64,
-    }
-
     /// External PBFT finalization effect report from the C++ executor.
     struct PbftFinalizationExternalEffectReport {
         success: bool,
@@ -4911,9 +4878,10 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             request: PbftFinalizationExecutorStartRequest,
         ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_executor(
+        pub fn pbft_manager_runtime_advance_finalization_external_effect(
             runtime: &mut BridgePbftManagerRuntime,
-            report: PbftFinalizationExecutorAdvanceReport,
+            cursor: u32,
+            report: PbftFinalizationExternalEffectReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn abort_pbft_manager_runtime_finalization_session(
             runtime: &mut BridgePbftManagerRuntime,

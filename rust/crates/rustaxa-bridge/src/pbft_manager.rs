@@ -7,8 +7,8 @@
 
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup, PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
-    PbftFinalizationExecutorAdvanceReport as FfiPbftFinalizationExecutorAdvanceReport,
     PbftFinalizationExecutorStartRequest as FfiPbftFinalizationExecutorStartRequest,
+    PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport,
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
@@ -1761,7 +1761,7 @@ fn base_finalization_live_report(
 
 fn external_effect_live_report(
     action: PbftFinalizationRuntimeAction,
-    report: FfiPbftFinalizationExecutorAdvanceReport,
+    report: FfiPbftFinalizationExternalEffectReport,
     write_set: &PbftFinalizationStorageWriteIntent,
 ) -> PbftFinalizationLiveMutationReport {
     PbftFinalizationLiveMutationReport {
@@ -1986,8 +1986,8 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 /// - Resume mode uses the supplied durable resume transcript and does not
 ///   reapply primary storage.
 /// - The caller must echo the returned `cursor` to
-///   `pbft_manager_runtime_advance_finalization_executor` after executing one
-///   external action.
+///   `pbft_manager_runtime_advance_finalization_external_effect` after
+///   executing one external action.
 pub fn pbft_manager_runtime_start_finalization_executor(
     runtime: &mut BridgePbftManagerRuntime,
     request: FfiPbftFinalizationExecutorStartRequest,
@@ -2047,8 +2047,9 @@ pub fn pbft_manager_runtime_start_finalization_executor(
 ///
 /// Inputs:
 /// - `runtime`: manager runtime that owns the finalization cursor.
-/// - `report`: cursor-keyed external executor success/failure plus post-state
-///   facts for the current action.
+/// - `cursor`: cursor previously returned for the current external action.
+/// - `report`: external executor success/failure plus post-state facts for the
+///   current action.
 ///
 /// Outputs:
 /// - Returns the terminal failure boundary, or the next external action after
@@ -2057,13 +2058,14 @@ pub fn pbft_manager_runtime_start_finalization_executor(
 ///
 /// Invariants and edge behavior:
 /// - The report action is derived from the runtime cursor; C++ only echoes the
-///   cursor and facts.
+///   cursor and facts in the one external-effect report type.
 /// - Failure, validation failure, and cursor mismatch are reported to the same
 ///   manager-owned finalization cursor.
 /// - External side effects are never executed here.
-pub fn pbft_manager_runtime_advance_finalization_executor(
+pub fn pbft_manager_runtime_advance_finalization_external_effect(
     runtime: &mut BridgePbftManagerRuntime,
-    report: FfiPbftFinalizationExecutorAdvanceReport,
+    cursor: u32,
+    report: FfiPbftFinalizationExternalEffectReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
     if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
@@ -2092,11 +2094,11 @@ pub fn pbft_manager_runtime_advance_finalization_executor(
             String::new(),
         ));
     };
-    if report.cursor != current_step.cursor {
+    if cursor != current_step.cursor {
         let next_step = pbft_manager_runtime_finalization_session_report_action(
             runtime,
             FinalizationRuntimeActionReport {
-                cursor: report.cursor,
+                cursor,
                 action: current_step.action,
                 success: false,
                 status: PbftFinalizationRuntimeStatus::ActionMismatch.as_u8(),
@@ -3592,42 +3594,6 @@ mod tests {
         }
     }
 
-    fn finalization_advance_report(
-        report: FfiPbftFinalizationExternalEffectReport,
-    ) -> FfiPbftFinalizationExecutorAdvanceReport {
-        FfiPbftFinalizationExecutorAdvanceReport {
-            cursor: 0,
-            success: report.success,
-            status: report.status,
-            error_code: report.error_code,
-            dag_finalized_count: report.dag_finalized_count,
-            finalized_transaction_count: report.finalized_transaction_count,
-            pbft_chain_size: report.pbft_chain_size,
-            pbft_chain_head_hash: report.pbft_chain_head_hash,
-            pbft_chain_last_anchor_hash: report.pbft_chain_last_anchor_hash,
-            reward_votes_period: report.reward_votes_period,
-            reward_votes_round: report.reward_votes_round,
-            reward_votes_block_hash: report.reward_votes_block_hash,
-            reward_votes_extra_count: report.reward_votes_extra_count,
-            sortition_changed: report.sortition_changed,
-            sortition_change_period: report.sortition_change_period,
-            sortition_change_interval_efficiency: report.sortition_change_interval_efficiency,
-            sortition_change_threshold_upper: report.sortition_change_threshold_upper,
-            sortition_current_threshold_upper: report.sortition_current_threshold_upper,
-            sortition_params_changes_count: report.sortition_params_changes_count,
-            rounds_count_dynamic_lambda: report.rounds_count_dynamic_lambda,
-            dynamic_lambda: report.dynamic_lambda,
-            executed_pbft_block: report.executed_pbft_block,
-            manager_period: report.manager_period,
-            pillar_processed_period: report.pillar_processed_period,
-            pillar_request_period: report.pillar_request_period,
-            anchor_dag_cache_count: report.anchor_dag_cache_count,
-            final_chain_dispatched: report.final_chain_dispatched,
-            final_chain_blocks_per_year: report.final_chain_blocks_per_year,
-            final_chain_last_block: report.final_chain_last_block,
-        }
-    }
-
     fn advance_finalization_cursor_to_action(
         runtime: &mut BridgePbftManagerRuntime,
         expected_action: PbftFinalizationRuntimeAction,
@@ -3694,7 +3660,7 @@ mod tests {
         let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
         let accepted_report = external_effect_live_report(
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-            finalization_advance_report(finalization_live_report()),
+            finalization_live_report(),
             &write_set,
         );
         let accepted =
@@ -3719,7 +3685,7 @@ mod tests {
         rejected_report.finalized_transaction_count = 0;
         let rejected_report = external_effect_live_report(
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
-            finalization_advance_report(rejected_report),
+            rejected_report,
             &write_set,
         );
         let rejected =
