@@ -1619,9 +1619,10 @@ Implementation status:
   `pillar_votes_get_verified_votes`, and `pillar_votes_snapshot_refs`. Live C++ paths use
   `create_pbft_chain_from_storage`, `slashing_report_double_voting_proof_submission`, and runtime-owned
   pillar vote payload lookup APIs.
-- The remaining standalone `BridgePillarVotes` CXX surface is deleted after
+- The remaining standalone pillar-vote CXX surface is deleted after
   `PillarVoteBundleBridgeTest.applyPillarVoteBundleFromWeightedRlpsInsertsAcceptedVotes` moved to
-  `BridgePillarChainRuntime`. Rust bridge-module tests still cover the Rust-only compatibility helper directly.
+  `BridgePillarChainRuntime`. Follow-up cleanup moved the residual Rust-only pillar-vote fixture out of `ffi.rs`,
+  renamed it as a module-local test fixture in `pillar_votes.rs`, and removed the retired handle name from bridge code.
 - The no-caller `pillar_chain_runtime_cleanup_votes_by_period` CXX export is deleted; live pillar cleanup remains
   manager/runtime-owned and no C++ shim or bridge test calls the standalone cleanup method.
 - Additional no-caller verified-vote and sortition CXX exports are deleted:

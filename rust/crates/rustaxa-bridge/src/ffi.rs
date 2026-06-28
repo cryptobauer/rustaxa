@@ -243,9 +243,6 @@ pub struct BridgeVerifiedVotes {
     pub storage: Option<Arc<Storage>>,
 }
 
-#[cfg(test)]
-pub struct BridgePillarVotes(pub PillarVotes);
-
 /// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
 ///
 /// The runtime keeps pillar-vote aggregation and typed pillar-chain storage

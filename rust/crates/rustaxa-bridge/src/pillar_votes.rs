@@ -22,8 +22,6 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteSingleAdmissionPreparePlan, PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
 };
 use crate::ffi::BridgePillarChainRuntime;
-#[cfg(test)]
-use crate::ffi::BridgePillarVotes;
 use anyhow::{ensure, Result};
 use ethereum_types::H256;
 use rlp::Rlp;
@@ -55,6 +53,9 @@ const PILLAR_VOTE_STATUS_NOT_ELIGIBLE: u8 = 7;
 const PILLAR_VOTE_STATUS_INSPECTION_FAILURE: u8 = 9;
 const PILLAR_VOTE_STATUS_UNKNOWN: u8 = 255;
 
+#[cfg(test)]
+struct PillarVotesTestFixture(PillarVotes);
+
 struct WeightedRlpBundlePlanWork {
     plan: WeightedRlpBundlePlan,
     votes_by_hash: HashMap<H256, VerifiedPillarVote>,
@@ -68,14 +69,14 @@ struct WeightedRlpBundlePlan {
     first_bad_vote_hash: [u8; 32],
 }
 
-/// Creates an empty Rust pillar-vote registry for the C++ pillar-vote shim.
+/// Creates an empty Rust pillar-vote registry for bridge-module tests.
 #[cfg(test)]
-pub fn create_pillar_votes_index() -> Box<BridgePillarVotes> {
-    Box::new(BridgePillarVotes(PillarVotes::new()))
+fn create_pillar_votes_index() -> Box<PillarVotesTestFixture> {
+    Box::new(PillarVotesTestFixture(PillarVotes::new()))
 }
 
 #[cfg(test)]
-impl BridgePillarVotes {
+impl PillarVotesTestFixture {
     /// Validates and applies one weighted synced pillar-vote bundle.
     ///
     /// Inputs:
@@ -470,7 +471,7 @@ fn load_stored_period_pillar_votes(
 }
 
 #[cfg(test)]
-impl BridgePillarVotes {
+impl PillarVotesTestFixture {
     /// Prepares one pillar vote for validation or insertion without reading
     /// FinalChain or mutating aggregation state.
     ///
