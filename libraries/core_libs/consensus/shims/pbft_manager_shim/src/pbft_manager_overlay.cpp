@@ -3841,8 +3841,15 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       return false;
     }
     if (should_commit_reward_vote_metadata) {
-      const auto reward_votes_report =
+      const auto reward_votes_reset =
           vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
+      rustaxa::PbftFinalizationExternalEffectReport reward_votes_report{};
+      reward_votes_report.success = true;
+      reward_votes_report.status = 0;
+      reward_votes_report.reward_votes_period = reward_votes_reset.period;
+      reward_votes_report.reward_votes_round = reward_votes_reset.round;
+      reward_votes_report.reward_votes_block_hash = toBridgeHash(reward_votes_reset.block_hash);
+      reward_votes_report.reward_votes_extra_count = reward_votes_reset.remaining_extra_reward_votes_count;
       if (!report_live_mutation("reward-vote reset", reward_votes_report, boundary)) {
         return false;
       }

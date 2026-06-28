@@ -636,6 +636,10 @@ Implementation notes:
   `commitPreparedBlockForSortitionFinalization`. The shim now returns `SortitionFinalizationCommitReport`, containing
   only live threshold/change/cache-count facts, and `pbft_manager_shim` builds the final external-effect envelope at the
   manager executor boundary.
+- The reward-vote reset finalization client no longer returns the generic `PbftFinalizationExternalEffectReport` from
+  `commitRewardVotesResetForFinalization`. The shim now returns `RewardVotesFinalizationResetReport`, containing only
+  live reward-vote period/round/block-hash/remaining-extra-count facts, and `pbft_manager_shim` builds the final
+  external-effect envelope at the manager executor boundary.
 - Duplicate-finalization resume plans now replay `SetExecutedFlag` after executed-status persistence in executed-only
   tails as well as dynamic-lambda-already-finalized tails, so the owned-action drain cannot complete with durable
   executed status persisted but the live PBFT manager snapshot left stale.
@@ -731,6 +735,11 @@ Implementation notes:
   - `cpp-pro`: confirmed the sortition finalization call graph and recommended removing the unused
     `PbftFinalizationStorageWritePlan` argument from the sortition shim while converting to the manager report only in
     `pbft_manager_overlay`.
+- Custom agents used for the reward-vote reset finalization client cleanup:
+  - `api-designer`: recommended a C++ shim-local `RewardVotesFinalizationResetReport` with no failure/status fields and
+    no Rust FFI changes; PBFT manager remains responsible for canonical success/failure reporting.
+  - `cpp-pro`: confirmed the reward-vote reset flow now stages storage in Rust, mutates live C++ metadata after commit,
+    and converts to `PbftFinalizationExternalEffectReport` only in `pbft_manager_overlay`.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -902,6 +911,9 @@ Implementation notes:
   - `rg -n "PbftFinalizationExternalEffectReport|PbftFinalizationStorageWritePlan|commitPreparedBlockForSortitionFinalization|SortitionFinalizationCommitReport" libraries/core_libs/consensus/shims/sortition_params_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
     shows no generic finalization report or write-plan dependency in the sortition shim; only manager-local conversion
     uses `PbftFinalizationExternalEffectReport`.
+  - `rg -n "PbftFinalizationExternalEffectReport|commitRewardVotesResetForFinalization|RewardVotesFinalizationResetReport|makeRewardVotesResetLiveReport" libraries/core_libs/consensus/shims/vote_manager_shim libraries/core_libs/consensus/shims/pbft_manager_shim/src/pbft_manager_overlay.cpp -g'*.hpp' -g'*.cpp'`
+    shows no generic finalization report in the vote-manager shim; only manager-local conversion uses
+    `PbftFinalizationExternalEffectReport`.
   - `git diff --check`
 - Additional validation for PBFT finalization external-effect report-surface cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all`
@@ -980,7 +992,7 @@ Implementation notes:
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
 - The immediate follow-up is narrowing the remaining PBFT finalization external clients that still produce subsystem
-  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are reward-vote reset, DAG order, and manager-local
+  `PbftFinalizationExternalEffectReport` facts. Remaining candidates are DAG order and manager-local
   cache/final-chain/advance/pillar reports. Later pillar-chain runtime slices still need external DPoS fact ports and
   legacy materialization removal.
 

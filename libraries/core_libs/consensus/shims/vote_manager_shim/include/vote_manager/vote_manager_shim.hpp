@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -12,6 +13,20 @@ namespace taraxa {
 
 class PbftBlock;
 class ProposedBlocks;
+
+/**
+ * Reward-vote-owned result after applying live metadata for a PBFT-finalization reset.
+ *
+ * Inputs are the Rust-planned reset identity after the finalization storage batch has committed. Outputs carry only
+ * reward-vote facts: the accepted period, round, block hash, and remaining extra-reward vote count after live cleanup.
+ * PBFT manager code converts these facts into its executor report at the manager boundary.
+ */
+struct RewardVotesFinalizationResetReport {
+  PbftPeriod period = 0;
+  PbftRound round = 0;
+  blk_hash_t block_hash;
+  uint64_t remaining_extra_reward_votes_count = 0;
+};
 
 /**
  * Rust-mode VoteManager overlay.
@@ -918,10 +933,10 @@ class VoteManager : public VoteManagerOld {
    * - Clears stale extra-reward vote tracking to match the committed storage.
    *
    * Outputs:
-   * - A PBFT finalization external-effect report proving the live metadata now
+   * - Reward-vote-owned live metadata facts proving the live metadata now
    *   matches the accepted finalization plan and stale extra votes were cleared.
    */
-  rustaxa::PbftFinalizationExternalEffectReport commitRewardVotesResetForFinalization(
+  RewardVotesFinalizationResetReport commitRewardVotesResetForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
 
  private:

@@ -143,15 +143,14 @@ rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPe
   return result;
 }
 
-rustaxa::PbftFinalizationExternalEffectReport makeRewardVotesResetLiveReport(
-    const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t extra_reward_votes_count) {
-  rustaxa::PbftFinalizationExternalEffectReport report{};
-  report.success = true;
-  report.status = 0;
-  report.reward_votes_period = write_intent.reward_vote_period;
-  report.reward_votes_round = write_intent.reward_vote_round;
-  report.reward_votes_block_hash = write_intent.reward_vote_block_hash;
-  report.reward_votes_extra_count = extra_reward_votes_count;
+RewardVotesFinalizationResetReport makeRewardVotesResetLiveReport(PbftPeriod period, PbftRound round,
+                                                                  const blk_hash_t& block_hash,
+                                                                  uint64_t remaining_extra_reward_votes_count) {
+  RewardVotesFinalizationResetReport report{};
+  report.period = period;
+  report.round = round;
+  report.block_hash = block_hash;
+  report.remaining_extra_reward_votes_count = remaining_extra_reward_votes_count;
   return report;
 }
 
@@ -1925,7 +1924,7 @@ rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFina
                                 false);
 }
 
-rustaxa::PbftFinalizationExternalEffectReport VoteManager::commitRewardVotesResetForFinalization(
+RewardVotesFinalizationResetReport VoteManager::commitRewardVotesResetForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
   const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
@@ -1941,7 +1940,7 @@ rustaxa::PbftFinalizationExternalEffectReport VoteManager::commitRewardVotesRese
 
   LOG(log_dg_) << "Reward votes info reset to: block_hash: " << block_hash << ", period: " << period
                << ", round: " << round;
-  return makeRewardVotesResetLiveReport(write_intent, extra_reward_votes_.size());
+  return makeRewardVotesResetLiveReport(period, round, block_hash, extra_reward_votes_.size());
 }
 
 rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(
