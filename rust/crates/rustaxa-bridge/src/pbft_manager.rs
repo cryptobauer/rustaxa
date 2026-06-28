@@ -10,7 +10,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport,
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
-    PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
@@ -1759,23 +1758,23 @@ fn base_finalization_live_report(
 fn external_effect_live_report(
     report: FfiPbftFinalizationExternalEffectReport,
     write_set: &PbftFinalizationStorageWriteIntent,
-) -> anyhow::Result<FfiPbftFinalizationLiveMutationReport> {
+) -> anyhow::Result<PbftFinalizationLiveMutationReport> {
     let Some(action) = PbftFinalizationRuntimeAction::from_u8(report.action) else {
         return Err(anyhow!("PBFT_FINALIZE_EXTERNAL_EFFECT_UNKNOWN_ACTION"));
     };
-    Ok(FfiPbftFinalizationLiveMutationReport {
-        action: action.as_u8(),
+    Ok(PbftFinalizationLiveMutationReport {
+        action,
         block_period: write_set.block_period,
-        pbft_block_hash: write_set.pbft_block_hash.0,
-        anchor_hash: write_set.anchor_hash.0,
+        pbft_block_hash: write_set.pbft_block_hash,
+        anchor_hash: write_set.anchor_hash,
         dag_finalized_count: report.dag_finalized_count,
         finalized_transaction_count: report.finalized_transaction_count,
         pbft_chain_size: report.pbft_chain_size,
-        pbft_chain_head_hash: report.pbft_chain_head_hash,
-        pbft_chain_last_anchor_hash: report.pbft_chain_last_anchor_hash,
+        pbft_chain_head_hash: report.pbft_chain_head_hash.into(),
+        pbft_chain_last_anchor_hash: report.pbft_chain_last_anchor_hash.into(),
         reward_votes_period: report.reward_votes_period,
         reward_votes_round: report.reward_votes_round,
-        reward_votes_block_hash: report.reward_votes_block_hash,
+        reward_votes_block_hash: report.reward_votes_block_hash.into(),
         reward_votes_extra_count: report.reward_votes_extra_count,
         sortition_changed: report.sortition_changed,
         sortition_change_period: report.sortition_change_period,
@@ -1937,7 +1936,7 @@ fn pbft_manager_runtime_finalization_session_report_action(
 ///   `pbft_manager_runtime_finalization_session_report_action` contract.
 fn pbft_manager_runtime_report_finalization_live_mutation(
     runtime: &mut BridgePbftManagerRuntime,
-    report: FfiPbftFinalizationLiveMutationReport,
+    report: PbftFinalizationLiveMutationReport,
 ) -> anyhow::Result<FfiPbftFinalizationRuntimeSessionStep> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
     if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
@@ -1946,20 +1945,10 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
         return Ok(current_step);
     }
 
-    let validation = if PbftFinalizationRuntimeAction::from_u8(report.action).is_none() {
-        FinalizationRuntimeActionReport {
-            cursor: current_step.cursor,
-            action: report.action,
-            success: false,
-            status:
-                rustaxa_consensus::pbft_finalize::PbftFinalizationLiveMutationStatus::UnknownAction
-                    .as_u8(),
-            error_code: "PBFT_FINALIZE_LIVE_MUTATION_UNKNOWN_ACTION".to_string(),
-        }
-    } else {
+    let validation = {
         let domain_plan = stored_finalization_plan(runtime)?;
         let validation =
-            validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report.into());
+            validate_domain_pbft_finalization_live_mutation_report(&domain_plan, report);
         FinalizationRuntimeActionReport {
             cursor: current_step.cursor,
             action: validation.action.as_u8(),
@@ -3549,12 +3538,12 @@ mod tests {
 
     fn finalization_live_report(
         action: PbftFinalizationRuntimeAction,
-    ) -> FfiPbftFinalizationLiveMutationReport {
-        FfiPbftFinalizationLiveMutationReport {
+    ) -> FfiPbftFinalizationExternalEffectReport {
+        FfiPbftFinalizationExternalEffectReport {
             action: action.as_u8(),
-            block_period: 10,
-            pbft_block_hash: [7; 32],
-            anchor_hash: [4; 32],
+            success: true,
+            status: 0,
+            error_code: String::new(),
             dag_finalized_count: 2,
             finalized_transaction_count: 1,
             pbft_chain_size: 11,
@@ -3646,11 +3635,15 @@ mod tests {
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
         );
 
-        let accepted = pbft_manager_runtime_report_finalization_live_mutation(
-            &mut runtime,
+        let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
+        let accepted_report = external_effect_live_report(
             finalization_live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions),
+            &write_set,
         )
-        .expect("live mutation report should validate");
+        .expect("external report should map to live mutation report");
+        let accepted =
+            pbft_manager_runtime_report_finalization_live_mutation(&mut runtime, accepted_report)
+                .expect("live mutation report should validate");
 
         assert_eq!(
             accepted.status,
@@ -3669,6 +3662,8 @@ mod tests {
         let mut rejected_report =
             finalization_live_report(PbftFinalizationRuntimeAction::UpdateFinalizedTransactions);
         rejected_report.finalized_transaction_count = 0;
+        let rejected_report = external_effect_live_report(rejected_report, &write_set)
+            .expect("external report should map to live mutation report");
         let rejected =
             pbft_manager_runtime_report_finalization_live_mutation(&mut runtime, rejected_report)
                 .expect("live mutation report should validate");

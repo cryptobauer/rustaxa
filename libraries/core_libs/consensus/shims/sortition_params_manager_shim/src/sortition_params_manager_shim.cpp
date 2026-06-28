@@ -80,15 +80,14 @@ PeriodEfficiencyCounts period_efficiency_counts(const PeriodData& block) {
   return counts;
 }
 
-rustaxa::PbftFinalizationLiveMutationReport makeSortitionFinalizationLiveReport(
-    const rustaxa::PbftFinalizationStorageWritePlan& write_intent,
+rustaxa::PbftFinalizationExternalEffectReport makeSortitionFinalizationLiveReport(
+    const rustaxa::PbftFinalizationStorageWritePlan&,
     const rustaxa::SortitionParamsChangeResult& outcome, uint16_t current_threshold_upper,
     uint64_t params_changes_count) {
-  rustaxa::PbftFinalizationLiveMutationReport report{};
+  rustaxa::PbftFinalizationExternalEffectReport report{};
   report.action = kPbftFinalizationRuntimeActionCommitSortitionRuntime;
-  report.block_period = write_intent.block_period;
-  report.pbft_block_hash = write_intent.pbft_block_hash;
-  report.anchor_hash = write_intent.anchor_hash;
+  report.success = true;
+  report.status = 0;
   report.sortition_changed = outcome.changed;
   report.sortition_change_period = outcome.period;
   report.sortition_change_interval_efficiency = outcome.interval_efficiency;
@@ -177,7 +176,7 @@ std::optional<SortitionParamsChange> SortitionParamsManager::prepareBlockForSort
   return std::nullopt;
 }
 
-rustaxa::PbftFinalizationLiveMutationReport SortitionParamsManager::commitPreparedBlockForSortitionFinalization(
+rustaxa::PbftFinalizationExternalEffectReport SortitionParamsManager::commitPreparedBlockForSortitionFinalization(
     const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
     const std::optional<SortitionParamsChange>& prepared_change,
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {

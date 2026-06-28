@@ -588,6 +588,12 @@ Implementation notes:
   anchor hash) from the plan retained inside `BridgePbftManagerRuntime`, so C++ no longer passes the accepted
   `PbftFinalizationIntentPlan` back into every report call. `PbftFinalizationRuntimeActionReport` is now a private Rust
   helper, not a CXX DTO.
+- Follow-up report-surface cleanup removes `PbftFinalizationLiveMutationReport` from the CXX bridge. Sortition,
+  reward-vote, DAG, transaction-manager, PBFT-chain, anchor-cache, FinalChain replay/dispatch, advance-period, and
+  pillar post-processing executors now return or construct `PbftFinalizationExternalEffectReport` directly. Rust still
+  derives finalization identity from the manager-runtime retained plan and converts the external-effect report into the
+  native live-mutation report internally, so C++ no longer owns the duplicate live-report DTO or the
+  `makeFinalizationExternalEffectReport` mapping helper.
 - The legacy Rust bridge-crate finalization cursor primitives
   `pbft_manager_runtime_begin_finalization_session`,
   `pbft_manager_runtime_begin_finalization_resume_session`,
@@ -661,6 +667,15 @@ Implementation notes:
     and whether obsolete piecemeal bridge APIs remain exposed.
   - `architect-reviewer`: requested to review whether the C++ shim now retains only the external FinalChain
     DPoS/threshold/logging boundary and whether any legacy fallback remains in production routing.
+- Custom agents used for the PBFT finalization report-surface cleanup:
+  - `api-designer`: recommended the next larger two-call finalization executor API:
+    `pbft_manager_runtime_start_finalization_executor` plus
+    `pbft_manager_runtime_advance_finalization_executor`, with C++ reporting outcomes by cursor while Rust derives the
+    requested action.
+  - `architect-reviewer`: confirmed the safe next large cut is a Rust-owned finalization executor operation that keeps
+    FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, network, and
+    local cache effects as explicit external actions for now. This increment removes the obsolete CXX live-report layer
+    as a prerequisite and leaves the two-call executor API as the immediate follow-up.
 
 ### Slice 6 validation checkpoint (2026-06-27)
 
@@ -815,6 +830,22 @@ Implementation notes:
   - `scripts/rewrite_bridge_inventory_guard.sh`
   - `rg -n "pub fn pbft_manager_runtime_(begin_finalization_session|begin_finalization_resume_session|finalization_session_next|finalization_session_report|finalization_session_report_action|report_finalization_live_mutation|drain_owned_finalization_actions)" rust/crates/rustaxa-bridge/src/pbft_manager.rs` returns only the retained public boundary function.
   - `git diff --check`
+- Additional validation for PBFT finalization external-effect report-surface cleanup:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all`
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_chain -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_finalize -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.Finalization*Boundary*:RustPbftSyncTest.FinalizationRuntime*:RustPbftSyncTest.FinalizationResumeRuntime*' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `git diff --check`
+  - `rg -n "PbftFinalizationLiveMutationReport|FfiPbftFinalizationLiveMutationReport|makeFinalizationExternalEffectReport" rust/crates/rustaxa-bridge/src libraries/core_libs/consensus/shims tests/rust/consensus -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    now returns only native Rust-domain `PbftFinalizationLiveMutationReport` references in `pbft_manager.rs`, not CXX
+    bridge DTOs or shim helpers.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining pillar-chain external DPoS/materialization/event paths are still present and remain Slice 6 work.
 - Additional validation for the pillar-chain runtime PBFT-finalization consolidation:
@@ -830,9 +861,9 @@ Implementation notes:
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - A parallel all-pillar gtest run failed from test-environment lock/port conflicts while another gtest process was
     active; the focused pillar tests and PBFT smoke passed when rerun sequentially.
-- The immediate follow-up is the broader PBFT finalization executor cut that absorbs the remaining external-effect
-  report loop behind one manager API, plus later pillar-chain runtime slices for external DPoS fact ports and legacy
-  materialization removal.
+- The immediate follow-up is the broader two-call PBFT finalization executor cut that absorbs the remaining
+  external-effect report loop behind `BridgePbftManagerRuntime`, plus later pillar-chain runtime slices for external
+  DPoS fact ports and legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
@@ -1323,6 +1354,10 @@ Implementation status:
   rows through native Rust storage. `StateAPI` remains the external EVM/state database boundary.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
+- PBFT finalization report-surface cleanup removed the bridge-only `PbftFinalizationLiveMutationReport` CXX DTO and the
+  PBFT manager shim's `makeFinalizationExternalEffectReport` mapper. Live C++ finalization executors now speak only
+  `PbftFinalizationExternalEffectReport`; Rust bridge internals convert that report into the native live-mutation report
+  after deriving finalization identity from `BridgePbftManagerRuntime`.
 
 ## Slice 9: Delete Compatibility Tests That Only Protect Retired Scaffolding
 

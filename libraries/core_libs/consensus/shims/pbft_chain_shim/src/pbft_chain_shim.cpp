@@ -88,7 +88,7 @@ void PbftChain::updatePbftChain(blk_hash_t const& pbft_block_hash, blk_hash_t co
   rust_chain_.value()->pbft_chain_update(to_bridge_hash(pbft_block_hash), to_bridge_hash(anchor_hash));
 }
 
-rustaxa::PbftFinalizationLiveMutationReport PbftChain::updatePbftChainForPbftFinalization(
+rustaxa::PbftFinalizationExternalEffectReport PbftChain::updatePbftChainForPbftFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   std::scoped_lock lock(chain_head_access_);
   return rust_chain_.value()->pbft_chain_update_for_finalization(write_intent);

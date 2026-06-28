@@ -118,14 +118,14 @@ class SortitionParamsManager {
    * - The Rust-planned PBFT finalization write intent used for live proof identity.
    *
    * Outputs:
-   * - A Rust-verifiable PBFT finalization live-mutation report.
+   * - A PBFT finalization external-effect report for manager-runtime validation.
    *
    * Invariants and edge behavior:
    * - Mutates live sortition state only after the caller has committed primary
    *   finalization storage.
    * - Throws if the live Rust transition diverges from the previewed change.
    */
-  rustaxa::PbftFinalizationLiveMutationReport commitPreparedBlockForSortitionFinalization(
+  rustaxa::PbftFinalizationExternalEffectReport commitPreparedBlockForSortitionFinalization(
       const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
       const std::optional<SortitionParamsChange>& prepared_change,
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);

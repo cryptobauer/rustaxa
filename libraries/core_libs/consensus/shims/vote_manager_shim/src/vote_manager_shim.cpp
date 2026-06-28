@@ -144,13 +144,12 @@ rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPe
   return result;
 }
 
-rustaxa::PbftFinalizationLiveMutationReport makeRewardVotesResetLiveReport(
+rustaxa::PbftFinalizationExternalEffectReport makeRewardVotesResetLiveReport(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t extra_reward_votes_count) {
-  rustaxa::PbftFinalizationLiveMutationReport report{};
+  rustaxa::PbftFinalizationExternalEffectReport report{};
   report.action = kPbftFinalizationRuntimeActionCommitRewardVotesReset;
-  report.block_period = write_intent.block_period;
-  report.pbft_block_hash = write_intent.pbft_block_hash;
-  report.anchor_hash = write_intent.anchor_hash;
+  report.success = true;
+  report.status = 0;
   report.reward_votes_period = write_intent.reward_vote_period;
   report.reward_votes_round = write_intent.reward_vote_round;
   report.reward_votes_block_hash = write_intent.reward_vote_block_hash;
@@ -1928,7 +1927,7 @@ rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFina
                                 false);
 }
 
-rustaxa::PbftFinalizationLiveMutationReport VoteManager::commitRewardVotesResetForFinalization(
+rustaxa::PbftFinalizationExternalEffectReport VoteManager::commitRewardVotesResetForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
   const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);

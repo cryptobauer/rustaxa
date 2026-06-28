@@ -476,6 +476,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   vote-manager, advance-period, pillar, and local cache side effects.
 - `PbftFinalizationRuntimeActionReport` is no longer a CXX DTO. It is a private Rust helper used inside
   `pbft_manager.rs`; C++ reports finalization external effects with `PbftFinalizationExternalEffectReport`.
+- `PbftFinalizationLiveMutationReport` is no longer a CXX DTO. External finalization executors now return or construct
+  `PbftFinalizationExternalEffectReport` directly, and `BridgePbftManagerRuntime` derives the finalization identity from
+  the retained Rust plan before converting to the native live-mutation validation report. The shim-local
+  `makeFinalizationExternalEffectReport` mapper is deleted; the remaining failure helper only creates failed
+  external-effect reports until the two-call executor API replaces the piecemeal boundary driver.
 - Manager-owned PBFT finalization actions are now drained inside the boundary implementation. The drain owns
   dynamic-lambda persistence/state and executed-status persistence/state inside `BridgePbftManagerRuntime`, while
   stopping at external FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period,

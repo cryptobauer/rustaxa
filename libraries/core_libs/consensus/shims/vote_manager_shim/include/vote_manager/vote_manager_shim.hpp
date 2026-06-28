@@ -918,10 +918,10 @@ class VoteManager : public VoteManagerOld {
    * - Clears stale extra-reward vote tracking to match the committed storage.
    *
    * Outputs:
-   * - A Rust-verifiable post-mutation report proving the live metadata now
+   * - A PBFT finalization external-effect report proving the live metadata now
    *   matches the accepted finalization plan and stale extra votes were cleared.
    */
-  rustaxa::PbftFinalizationLiveMutationReport commitRewardVotesResetForFinalization(
+  rustaxa::PbftFinalizationExternalEffectReport commitRewardVotesResetForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
 
  private:

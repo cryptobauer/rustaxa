@@ -1,7 +1,7 @@
 use crate::ffi::rustaxa_ffi::{
     PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
     PbftChainHeadPayload,
-    PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
+    PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
 };
 use crate::ffi::BridgePbftChain;
@@ -103,14 +103,13 @@ impl BridgePbftChain {
     }
 
     /// Applies the PBFT-chain finalization mutation described by a Rust-planned
-    /// storage intent and returns the Rust-verifiable live-mutation report.
+    /// storage intent and returns the C++ executor's external-effect report.
     ///
     /// Inputs:
     /// - `write_intent`: accepted finalization write plan from the Rust planner.
     ///
     /// Outputs:
-    /// - Post-mutation PBFT-chain head facts for Rust finalization runtime
-    ///   validation.
+    /// - Post-mutation PBFT-chain head facts for manager-runtime validation.
     ///
     /// Invariants and edge behavior:
     /// - Block hash, anchor hash, and period are derived from the accepted Rust
@@ -122,16 +121,16 @@ impl BridgePbftChain {
     pub fn pbft_chain_update_for_finalization(
         &mut self,
         write_intent: &FfiPbftFinalizationStorageWritePlan,
-    ) -> Result<FfiPbftFinalizationLiveMutationReport, anyhow::Error> {
+    ) -> Result<FfiPbftFinalizationExternalEffectReport, anyhow::Error> {
         let head = self.state.update(
             H256::from(write_intent.pbft_block_hash),
             H256::from(write_intent.anchor_hash),
         )?;
-        Ok(FfiPbftFinalizationLiveMutationReport {
+        Ok(FfiPbftFinalizationExternalEffectReport {
             action: PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN,
-            block_period: write_intent.block_period,
-            pbft_block_hash: write_intent.pbft_block_hash,
-            anchor_hash: write_intent.anchor_hash,
+            success: true,
+            status: 0,
+            error_code: String::new(),
             dag_finalized_count: 0,
             finalized_transaction_count: 0,
             pbft_chain_size: head.size,
@@ -439,9 +438,8 @@ mod tests {
             report.action,
             PBFT_FINALIZATION_RUNTIME_ACTION_UPDATE_PBFT_CHAIN
         );
-        assert_eq!(report.block_period, 10);
-        assert_eq!(H256::from(report.pbft_block_hash), hash(99));
-        assert_eq!(H256::from(report.anchor_hash), hash(123));
+        assert!(report.success);
+        assert_eq!(report.status, 0);
         assert_eq!(report.pbft_chain_size, 10);
         assert_eq!(H256::from(report.pbft_chain_head_hash), hash(99));
         assert_eq!(H256::from(report.pbft_chain_last_anchor_hash), hash(123));

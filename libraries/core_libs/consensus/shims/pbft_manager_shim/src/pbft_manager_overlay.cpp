@@ -137,40 +137,6 @@ constexpr uint8_t kPbftManagerAdvancePeriodActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetPeriodTimer = 5;
 
-rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectReport(
-    const rustaxa::PbftFinalizationLiveMutationReport &report) {
-  rustaxa::PbftFinalizationExternalEffectReport external_report{};
-  external_report.action = report.action;
-  external_report.success = true;
-  external_report.status = 0;
-  external_report.dag_finalized_count = report.dag_finalized_count;
-  external_report.finalized_transaction_count = report.finalized_transaction_count;
-  external_report.pbft_chain_size = report.pbft_chain_size;
-  external_report.pbft_chain_head_hash = report.pbft_chain_head_hash;
-  external_report.pbft_chain_last_anchor_hash = report.pbft_chain_last_anchor_hash;
-  external_report.reward_votes_period = report.reward_votes_period;
-  external_report.reward_votes_round = report.reward_votes_round;
-  external_report.reward_votes_block_hash = report.reward_votes_block_hash;
-  external_report.reward_votes_extra_count = report.reward_votes_extra_count;
-  external_report.sortition_changed = report.sortition_changed;
-  external_report.sortition_change_period = report.sortition_change_period;
-  external_report.sortition_change_interval_efficiency = report.sortition_change_interval_efficiency;
-  external_report.sortition_change_threshold_upper = report.sortition_change_threshold_upper;
-  external_report.sortition_current_threshold_upper = report.sortition_current_threshold_upper;
-  external_report.sortition_params_changes_count = report.sortition_params_changes_count;
-  external_report.rounds_count_dynamic_lambda = report.rounds_count_dynamic_lambda;
-  external_report.dynamic_lambda = report.dynamic_lambda;
-  external_report.executed_pbft_block = report.executed_pbft_block;
-  external_report.manager_period = report.manager_period;
-  external_report.pillar_processed_period = report.pillar_processed_period;
-  external_report.pillar_request_period = report.pillar_request_period;
-  external_report.anchor_dag_cache_count = report.anchor_dag_cache_count;
-  external_report.final_chain_dispatched = report.final_chain_dispatched;
-  external_report.final_chain_blocks_per_year = report.final_chain_blocks_per_year;
-  external_report.final_chain_last_block = report.final_chain_last_block;
-  return external_report;
-}
-
 rustaxa::PbftFinalizationExternalEffectReport makeFinalizationExternalEffectFailure(uint8_t action,
                                                                                    uint8_t action_status,
                                                                                    const std::string &error_code) {
@@ -3616,11 +3582,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           apply_resume_boundary_snapshot(boundary);
         };
         auto report_resume_live_mutation = [&](const char *context,
-                                               const rustaxa::PbftFinalizationLiveMutationReport &report,
+                                               const rustaxa::PbftFinalizationExternalEffectReport &report,
                                                rustaxa::PbftManagerFinalizationBoundary &boundary) {
           try {
             boundary = rustaxa::pbft_manager_runtime_report_finalization_external_effect_boundary(
-                *pbft_manager_runtime_.value(), makeFinalizationExternalEffectReport(report));
+                *pbft_manager_runtime_.value(), report);
           } catch (const std::exception &e) {
             LOG(log_er_) << "Rust PBFT finalization resume boundary report threw for block " << pbft_block_hash
                          << ", period " << block_pbft_period << ", context " << context << ": " << e.what();
@@ -3665,11 +3631,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             report_resume_failure(kPbftFinalizationRuntimeActionFinalizeFinalChain);
             return false;
           }
-          rustaxa::PbftFinalizationLiveMutationReport final_chain_report{};
+          rustaxa::PbftFinalizationExternalEffectReport final_chain_report{};
           final_chain_report.action = kPbftFinalizationRuntimeActionFinalizeFinalChain;
-          final_chain_report.block_period = finalization_plan.storage_write_intent.block_period;
-          final_chain_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-          final_chain_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+          final_chain_report.success = true;
+          final_chain_report.status = 0;
           final_chain_report.final_chain_dispatched = true;
           final_chain_report.final_chain_blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
           final_chain_report.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
@@ -3687,11 +3652,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             report_resume_failure(kPbftFinalizationRuntimeActionAdvancePeriod);
             return false;
           }
-          rustaxa::PbftFinalizationLiveMutationReport advance_report{};
+          rustaxa::PbftFinalizationExternalEffectReport advance_report{};
           advance_report.action = kPbftFinalizationRuntimeActionAdvancePeriod;
-          advance_report.block_period = finalization_plan.storage_write_intent.block_period;
-          advance_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-          advance_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+          advance_report.success = true;
+          advance_report.status = 0;
           advance_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
           if (!report_resume_live_mutation("advance period", advance_report, resume_boundary)) {
             return false;
@@ -3706,11 +3670,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           assert(block_pbft_period == pbft_chain_->getPbftChainSize());
           const auto pillar_request_period = block_pbft_period - final_chain_->delegationDelay();
           processPillarBlock(block_pbft_period);
-          rustaxa::PbftFinalizationLiveMutationReport pillar_report{};
+          rustaxa::PbftFinalizationExternalEffectReport pillar_report{};
           pillar_report.action = kPbftFinalizationRuntimeActionProcessPillarBlock;
-          pillar_report.block_period = finalization_plan.storage_write_intent.block_period;
-          pillar_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-          pillar_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+          pillar_report.success = true;
+          pillar_report.status = 0;
           pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
           pillar_report.pillar_processed_period = block_pbft_period;
           pillar_report.pillar_request_period = pillar_request_period;
@@ -3781,11 +3744,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
         makeFinalizationExternalEffectFailure(action, 255, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED"));
     apply_boundary_snapshot(boundary);
   };
-  auto report_live_mutation = [&](const char *context, const rustaxa::PbftFinalizationLiveMutationReport &report,
+  auto report_live_mutation = [&](const char *context, const rustaxa::PbftFinalizationExternalEffectReport &report,
                                   rustaxa::PbftManagerFinalizationBoundary &boundary) {
     try {
       boundary = rustaxa::pbft_manager_runtime_report_finalization_external_effect_boundary(
-          *pbft_manager_runtime_.value(), makeFinalizationExternalEffectReport(report));
+          *pbft_manager_runtime_.value(), report);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context " << context << ": " << e.what();
@@ -3923,11 +3886,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     const auto clear_cache_snapshot =
         rustaxa::pbft_manager_runtime_clear_cached_anchor_dag_order(*pbft_manager_runtime_.value());
     ensurePbftManagerRuntimeSnapshotReady(clear_cache_snapshot, "Clear cached PBFT DAG order anchors");
-    rustaxa::PbftFinalizationLiveMutationReport clear_cache_report{};
+    rustaxa::PbftFinalizationExternalEffectReport clear_cache_report{};
     clear_cache_report.action = kPbftFinalizationRuntimeActionClearAnchorDagCache;
-    clear_cache_report.block_period = finalization_plan.storage_write_intent.block_period;
-    clear_cache_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-    clear_cache_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    clear_cache_report.success = true;
+    clear_cache_report.status = 0;
     clear_cache_report.anchor_dag_cache_count =
         rustaxa::pbft_manager_runtime_cached_anchor_dag_order_count(*pbft_manager_runtime_.value());
     if (!report_live_mutation("anchor DAG cache clear", clear_cache_report, boundary)) {
@@ -3958,11 +3920,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   }
   if (finalization_plan.cleanup.finalize_final_chain) {
     finalize_(std::move(period_data), std::move(dag_blocks_order), blocks_per_year);
-    rustaxa::PbftFinalizationLiveMutationReport final_chain_report{};
+    rustaxa::PbftFinalizationExternalEffectReport final_chain_report{};
     final_chain_report.action = kPbftFinalizationRuntimeActionFinalizeFinalChain;
-    final_chain_report.block_period = finalization_plan.storage_write_intent.block_period;
-    final_chain_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-    final_chain_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    final_chain_report.success = true;
+    final_chain_report.status = 0;
     final_chain_report.final_chain_dispatched = true;
     final_chain_report.final_chain_blocks_per_year = blocks_per_year;
     final_chain_report.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
@@ -3981,11 +3942,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       report_failure_boundary(kPbftFinalizationRuntimeActionAdvancePeriod);
       return false;
     }
-    rustaxa::PbftFinalizationLiveMutationReport advance_report{};
+    rustaxa::PbftFinalizationExternalEffectReport advance_report{};
     advance_report.action = kPbftFinalizationRuntimeActionAdvancePeriod;
-    advance_report.block_period = finalization_plan.storage_write_intent.block_period;
-    advance_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-    advance_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    advance_report.success = true;
+    advance_report.status = 0;
     advance_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
     if (!report_live_mutation("advance period", advance_report, boundary)) {
       return false;
@@ -4000,11 +3960,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     assert(block_pbft_period == pbft_chain_->getPbftChainSize());
     const auto pillar_request_period = block_pbft_period - final_chain_->delegationDelay();
     processPillarBlock(block_pbft_period);
-    rustaxa::PbftFinalizationLiveMutationReport pillar_report{};
+    rustaxa::PbftFinalizationExternalEffectReport pillar_report{};
     pillar_report.action = kPbftFinalizationRuntimeActionProcessPillarBlock;
-    pillar_report.block_period = finalization_plan.storage_write_intent.block_period;
-    pillar_report.pbft_block_hash = finalization_plan.storage_write_intent.pbft_block_hash;
-    pillar_report.anchor_hash = finalization_plan.storage_write_intent.anchor_hash;
+    pillar_report.success = true;
+    pillar_report.status = 0;
     pillar_report.manager_period = rustaxa::pbft_manager_runtime_snapshot(*pbft_manager_runtime_.value()).period;
     pillar_report.pillar_processed_period = block_pbft_period;
     pillar_report.pillar_request_period = pillar_request_period;

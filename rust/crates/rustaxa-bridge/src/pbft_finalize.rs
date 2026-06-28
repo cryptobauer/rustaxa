@@ -18,7 +18,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
-    PbftFinalizationLiveMutationReport as FfiPbftFinalizationLiveMutationReport,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationRuntimeSessionStep as FfiPbftFinalizationRuntimeSessionStep,
@@ -35,9 +34,9 @@ use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent, PbftDynamicLambdaConfig,
     PbftDynamicLambdaFact, PbftFinalizationAnchor, PbftFinalizationCleanupIntent,
-    PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport, PbftFinalizationPlan,
-    PbftFinalizationPositionedHash, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
-    PbftFinalizationStatus, PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+    PbftFinalizationIntentFact, PbftFinalizationPlan, PbftFinalizationPositionedHash,
+    PbftFinalizationResumePlan, PbftFinalizationRuntimeAction, PbftFinalizationStatus,
+    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult,
 };
 #[cfg(test)]
@@ -487,43 +486,6 @@ impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
             complete: value.complete,
             can_continue: status == RUNTIME_STATUS_ACTIVE || status == RUNTIME_STATUS_COMPLETE,
             error_code: value.error_code,
-        }
-    }
-}
-
-impl From<FfiPbftFinalizationLiveMutationReport> for PbftFinalizationLiveMutationReport {
-    fn from(value: FfiPbftFinalizationLiveMutationReport) -> Self {
-        Self {
-            action: PbftFinalizationRuntimeAction::from_u8(value.action)
-                .unwrap_or(PbftFinalizationRuntimeAction::Complete),
-            block_period: value.block_period,
-            pbft_block_hash: H256::from(value.pbft_block_hash),
-            anchor_hash: H256::from(value.anchor_hash),
-            dag_finalized_count: value.dag_finalized_count,
-            finalized_transaction_count: value.finalized_transaction_count,
-            pbft_chain_size: value.pbft_chain_size,
-            pbft_chain_head_hash: H256::from(value.pbft_chain_head_hash),
-            pbft_chain_last_anchor_hash: H256::from(value.pbft_chain_last_anchor_hash),
-            reward_votes_period: value.reward_votes_period,
-            reward_votes_round: value.reward_votes_round,
-            reward_votes_block_hash: H256::from(value.reward_votes_block_hash),
-            reward_votes_extra_count: value.reward_votes_extra_count,
-            sortition_changed: value.sortition_changed,
-            sortition_change_period: value.sortition_change_period,
-            sortition_change_interval_efficiency: value.sortition_change_interval_efficiency,
-            sortition_change_threshold_upper: value.sortition_change_threshold_upper,
-            sortition_current_threshold_upper: value.sortition_current_threshold_upper,
-            sortition_params_changes_count: value.sortition_params_changes_count,
-            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
-            dynamic_lambda: value.dynamic_lambda,
-            executed_pbft_block: value.executed_pbft_block,
-            manager_period: value.manager_period,
-            pillar_processed_period: value.pillar_processed_period,
-            pillar_request_period: value.pillar_request_period,
-            anchor_dag_cache_count: value.anchor_dag_cache_count,
-            final_chain_dispatched: value.final_chain_dispatched,
-            final_chain_blocks_per_year: value.final_chain_blocks_per_year,
-            final_chain_last_block: value.final_chain_last_block,
         }
     }
 }

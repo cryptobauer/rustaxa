@@ -57,12 +57,12 @@ class DagManager : public DagManagerOld {
   vec_blk_t getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period);
   uint setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order);
   /**
-   * Apply finalized DAG ordering and return a Rust-verifiable PBFT finalization live-action report.
+   * Apply finalized DAG ordering and return a PBFT finalization external-effect report.
    *
    * Inputs are the finalized anchor, PBFT period, ordered DAG blocks, and the Rust-planned finalization write intent.
    * The returned report carries post-mutation facts that Rust validates before the PBFT runtime cursor advances.
    */
-  rustaxa::PbftFinalizationLiveMutationReport setDagBlockOrderForPbftFinalization(
+  rustaxa::PbftFinalizationExternalEffectReport setDagBlockOrderForPbftFinalization(
       blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order,
       const rustaxa::PbftFinalizationStorageWritePlan &write_intent);
   std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> getLatestPivotAndTips() const;
