@@ -1969,6 +1969,17 @@ pub mod rustaxa_ffi {
         request_period: u64,
     }
 
+    /// Typed PBFT finalization anchor-cache clear report from the C++
+    /// executor.
+    ///
+    /// C++ supplies only the remaining anchor-cache cardinality observed after
+    /// clearing the anchor DAG cache. Success/status, manager period, action
+    /// identity, and cursor identity are derived by the manager finalization
+    /// executor.
+    struct PbftManagerFinalizationAnchorCacheClearReport {
+        remaining_anchor_count: u64,
+    }
+
     /// Rust classification of durable PBFT finalization resume state.
     struct PbftFinalizationResumePlan {
         status: u8,
@@ -4887,6 +4898,11 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
             report: PbftManagerFinalizationPillarPostProcessingReport,
+        ) -> Result<PbftManagerFinalizationExecutorState>;
+        pub fn pbft_manager_runtime_advance_finalization_anchor_cache_clear(
+            runtime: &mut BridgePbftManagerRuntime,
+            cursor: u32,
+            report: PbftManagerFinalizationAnchorCacheClearReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn abort_pbft_manager_runtime_finalization_session(
             runtime: &mut BridgePbftManagerRuntime,

@@ -26,6 +26,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerCandidateAdmissionPlan as FfiPbftManagerCandidateAdmissionPlan,
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
+    PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
     PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
@@ -2285,6 +2286,36 @@ pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
     pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
 }
 
+/// Reports PBFT finalization anchor-cache clear facts to the manager-owned executor.
+///
+/// Inputs:
+/// - `runtime`: PBFT manager runtime that owns the current finalization cursor
+///   and live manager snapshot.
+/// - `cursor`: executor cursor previously returned to C++.
+/// - `report`: typed anchor-cache clear facts after C++ clears the anchor DAG
+///   cache.
+///
+/// Outputs:
+/// - The next PBFT finalization executor state.
+///
+/// Invariants and edge behavior:
+/// - C++ does not construct a generic PBFT finalization external-effect report
+///   for the anchor-cache-clear client.
+/// - Rust derives the PBFT finalization action from the cursor and maps only
+///   the remaining anchor-cache cardinality needed for live-mutation
+///   validation.
+/// - Cursor mismatch, validation failure, and clear execution failure use the
+///   same executor-state contract as the generic external-effect boundary.
+pub fn pbft_manager_runtime_advance_finalization_anchor_cache_clear(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    report: FfiPbftManagerFinalizationAnchorCacheClearReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut external_report = empty_finalization_external_effect_report(true, 0, String::new());
+    external_report.anchor_dag_cache_count = report.remaining_anchor_count;
+    pbft_manager_runtime_advance_finalization_external_effect(runtime, cursor, external_report)
+}
+
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
 ///
 /// Inputs:
@@ -3159,6 +3190,7 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::rustaxa_ffi::PbftFinalizationExternalEffectReport as FfiPbftFinalizationExternalEffectReport;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
+    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_chain_storage;
     use crate::storage::{
@@ -3911,6 +3943,34 @@ mod tests {
         );
         assert!(state.complete);
         assert!(!state.has_action);
+    }
+
+    #[test]
+    fn manager_runtime_advances_finalization_with_anchor_cache_clear_report() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_anchor_cache_clear_report");
+        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::ClearAnchorDagCache,
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_anchor_cache_clear(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationAnchorCacheClearReport {
+                remaining_anchor_count: 0,
+            },
+        )
+        .expect("typed anchor cache clear report should advance finalization");
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            state.action,
+            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
+        );
     }
 
     #[test]

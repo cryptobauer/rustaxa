@@ -3864,6 +3864,25 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
+  auto report_anchor_dag_cache_clear = [&](const AnchorDagCacheFinalizationClearReport &report,
+                                           rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    rustaxa::PbftManagerFinalizationAnchorCacheClearReport bridge_report{};
+    bridge_report.remaining_anchor_count = report.remaining_anchor_count;
+    try {
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_anchor_cache_clear(
+          *pbft_manager_runtime_.value(), boundary.cursor, bridge_report);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ", context anchor DAG cache clear: " << e.what();
+      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
+      return false;
+    }
+    apply_boundary_snapshot(boundary);
+    if (!boundary.can_continue) {
+      return fail_boundary("anchor DAG cache clear", boundary);
+    }
+    return true;
+  };
   auto clear_anchor_dag_cache_for_finalization = [&]() {
     anchor_dag_block_order_cache_.clear();
     const auto clear_cache_snapshot =
@@ -4058,11 +4077,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   }
   if (finalization_plan.cleanup.clear_anchor_dag_cache) {
     const auto clear_cache = clear_anchor_dag_cache_for_finalization();
-    rustaxa::PbftFinalizationExternalEffectReport clear_cache_report{};
-    clear_cache_report.success = true;
-    clear_cache_report.status = 0;
-    clear_cache_report.anchor_dag_cache_count = clear_cache.remaining_anchor_count;
-    if (!report_live_mutation("anchor DAG cache clear", clear_cache_report, boundary)) {
+    if (!report_anchor_dag_cache_clear(clear_cache, boundary)) {
       return false;
     }
   }
