@@ -1,10 +1,10 @@
 //! DAG-facing VDF sortition payload helpers.
 //!
-//! The types in this module expose a smaller standalone API for C++ and Rust
-//! callers that already have a VRF output and need to encode, decode, or verify
-//! only the VDF portion of a legacy sortition payload. The module deliberately
-//! keeps owned byte vectors at the boundary so FFI callers do not borrow Rust
-//! internals across calls.
+//! The types in this module expose a smaller standalone API for Rust callers
+//! and bridge adapters that already have a VRF output and need to encode,
+//! decode, or verify only the VDF portion of a legacy sortition payload. The
+//! module deliberately keeps owned byte vectors at the boundary so adapters do
+//! not borrow Rust internals across calls.
 
 use crate::sortition::{self, LEGACY_ASCII_HEX_MODULUS, LegacySortitionParams, LegacyVdfSortition};
 use crate::vdf::WesolowskiVdf;

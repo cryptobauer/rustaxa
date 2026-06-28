@@ -4159,11 +4159,6 @@ pub mod rustaxa_ffi {
         threshold: u16,
     }
 
-    struct VrfVerifyOutput {
-        is_valid: bool,
-        output: Vec<u8>,
-    }
-
     struct VdfSortitionVerifyResult {
         ok: bool,
         status: u8,
@@ -4179,20 +4174,6 @@ pub mod rustaxa_ffi {
         vdf_solution_proof: Vec<u8>,
         vdf_solution_output: Vec<u8>,
         difficulty: u16,
-    }
-
-    struct VdfSortitionVerifyConfig {
-        threshold_upper: u16,
-        difficulty_min: u16,
-        difficulty_max: u16,
-        difficulty_stale: u16,
-        lambda_bound: u16,
-    }
-
-    struct VdfSortitionPayloadVerifyResult {
-        vdf_status: u8,
-        difficulty: u16,
-        expected_difficulty: u16,
     }
 
     struct VdfSortitionProofResult {
@@ -4410,23 +4391,6 @@ pub mod rustaxa_ffi {
         pub fn solution_get_output(solution: &Solution) -> &[u8];
 
         pub fn vdf_sortition_payload_encode(payload: &VdfSortitionPayload) -> Vec<u8>;
-
-        pub fn vdf_sortition_payload_decode(payload: &[u8]) -> Result<VdfSortitionPayload>;
-
-        pub fn vdf_sortition_payload_verify(
-            payload: &VdfSortitionPayload,
-            vdf_input: &[u8],
-            config: VdfSortitionVerifyConfig,
-            vrf_output: &[u8],
-            sender_eligible_vote_count: u64,
-            vdf_sortition_max_vote_count: u64,
-        ) -> Result<VdfSortitionPayloadVerifyResult>;
-
-        pub fn vrf_verify_output(
-            vrf_public_key: &[u8],
-            vrf_proof: &[u8],
-            message: &[u8],
-        ) -> Result<VrfVerifyOutput>;
 
         pub fn verify_legacy_vrf_sortition(
             public_key: &[u8; 32],

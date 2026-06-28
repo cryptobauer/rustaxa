@@ -290,10 +290,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `vdf_sortition_payload_verify_with_modulus`, `vdf_sortition_threshold_from_output`,
   `vdf_sortition_normalize_vote_count`, `vdf_sortition_difficulty`, `vdf_sortition_legacy_modulus`,
   `vrf_proof_to_hash`, and `vrf_prove_output`. Live C++ keeps the coarse VDF object/prove/verify APIs, legacy
-  VDF/VRF sortition prove/verify APIs, and the payload encode API used by DAG proposer code. Payload decode/verify and
-  VRF output verification remain retained bridge/test compatibility APIs until a later VDF cleanup removes or routes
-  them. The deleted scalar helpers remain native `rustaxa-vdf` behavior covered by Rust tests rather than CXX surface
-  area.
+  VDF/VRF sortition prove/verify APIs, and the payload encode API used by DAG proposer code. The later bridge-test-only
+  payload decode/verify and VRF output verification exports are also deleted from the CXX surface, along with
+  `VdfSortitionVerifyConfig`, `VdfSortitionPayloadVerifyResult`, and `VrfVerifyOutput`. All deleted VDF/VRF helper
+  behavior remains native `rustaxa-vdf` behavior covered by Rust tests rather than CXX surface area.
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is deleted from the CXX surface. The live proposed-block shim uses
   `proposed_blocks_snapshot_entries`, which carries the block payload and validation flag; grouped hash snapshots remain
   Rust-only test coverage.

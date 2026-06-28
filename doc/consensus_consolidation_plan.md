@@ -1070,17 +1070,18 @@ Implementation status:
   `vdf_sortition_normalize_vote_count`, `vdf_sortition_difficulty`, `vdf_sortition_legacy_modulus`,
   `vrf_proof_to_hash`, and `vrf_prove_output` are deleted from `rustaxa-bridge`'s CXX surface. Live C++ VDF integration
   keeps the coarse VDF object/prove/verify APIs, legacy VDF/VRF sortition prove/verify APIs, and the payload encode API
-  used by DAG proposer code. Payload decode/verify and VRF output verification remain retained bridge/test compatibility
-  APIs until a later VDF cleanup removes or routes them. Native `rustaxa-vdf` tests retain coverage for the scalar
-  difficulty, vote-count normalization, explicit-modulus verification, legacy modulus, and VRF proof/hash behavior.
+  used by DAG proposer code. The later bridge-test-only payload decode/verify and VRF output verification exports are
+  also deleted from the CXX surface, along with `VdfSortitionVerifyConfig`, `VdfSortitionPayloadVerifyResult`, and
+  `VrfVerifyOutput`. Native `rustaxa-vdf` tests retain coverage for payload decode/verify, scalar difficulty,
+  vote-count normalization, explicit-modulus verification, legacy modulus, and VRF proof/hash behavior.
   Custom agents used: `api-designer` confirmed the retained operation-level VDF API shape and corrected the retained
   payload API wording; `architect-reviewer` confirmed no in-repo live C++ caller or fallback regression and noted the
   separate legacy `vrf_wrapper.cpp` C crypto compatibility path as remaining VRF ownership debt.
   Validation for this CXX export shrink:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
-  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge vdf::tests -- --nocapture`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-vdf vdf_sortition -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-vdf vrf -- --nocapture`
   - `cmake --build /build --target rust_vdf_tests --parallel 12`
   - `/build/bin/rust_vdf_tests --gtest_print_time=1`
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
@@ -1088,6 +1089,8 @@ Implementation status:
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `rg -n "vdf_sortition_payload_verify_with_modulus|vdf_sortition_threshold_from_output|vdf_sortition_normalize_vote_count|vdf_sortition_difficulty|vdf_sortition_legacy_modulus|vrf_proof_to_hash|vrf_prove_output" libraries tests rust/crates/rustaxa-bridge/src rust/crates/rustaxa-vdf/src -g'*.rs' -g'*.cpp' -g'*.hpp'`
     now returns only native `rustaxa-vdf` internals/tests and the legacy C crypto symbol, not removed CXX bridge exports.
+  - `rg -n "vdf_sortition_payload_decode|vdf_sortition_payload_verify|vrf_verify_output|VdfSortitionPayloadVerifyResult|VrfVerifyOutput|VdfSortitionVerifyConfig" libraries tests rust/crates/rustaxa-bridge/src rust/crates/rustaxa-vdf/src -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    now returns only native `rustaxa-vdf` and `rustaxa-consensus` internals/tests, not removed CXX bridge exports.
   - `git diff --check`
 - `BridgeProposedBlocks::proposed_blocks_snapshot` is no longer a CXX export. Production C++ uses
   `proposed_blocks_snapshot_entries`, which preserves validation flags and payloads needed by the shim facade; grouped
