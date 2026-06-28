@@ -1630,6 +1630,22 @@ Implementation status:
   Taraxa RPC pillar block-data reads use `BridgeConsensusQueryApi::consensus_query_pillar_block_data_by_period`, while
   pillar/storage shims retain only the narrower current/latest block, own-vote, finalized-block, and period-data storage
   methods they call.
+- The standalone `plan_pillar_vote_relevance` CXX export is deleted. The live network/tarcap client uses
+  `BridgeConsensusNetworkApi::consensus_network_plan_pillar_vote_relevance`, and the live pillar-chain manager client
+  uses `BridgePillarChainRuntime::pillar_chain_runtime_plan_vote_relevance`. The removed direct bridge export only
+  protected bridge-shaped C++ test scaffolding; direct planner coverage remains in native `rustaxa-consensus` tests and
+  bridge-module tests, while C++ network API coverage exercises the external tarcap-facing facade.
+  Validation for this pillar relevance export shrink:
+  - `rtk cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `rtk cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `rtk cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_vote -- --nocapture`
+  - `rtk cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_vote -- --nocapture`
+  - `rtk cmake --build /build --target rust_consensus_tests --parallel 12`
+  - `rtk /build/bin/rust_consensus_tests --gtest_filter='PillarVoteBundleBridgeTest.*:PillarChainPlanningBridgeTest.*:PillarVoteInspectionBridgeTest.*:ConsensusNetworkApiBridgeTest.pillarVoteRelevancePlanningRoutesThroughNetworkApi' --gtest_print_time=1`
+  - `rtk scripts/rewrite_bridge_inventory_guard.sh`
+  - `rtk scripts/rewrite_storage_boundary_guard.sh`
+  - `rtk rg -n "pub fn plan_pillar_vote_relevance|\\bplan_pillar_vote_relevance\\(" rust/crates/rustaxa-bridge/src/ffi.rs tests/rust/consensus libraries/core_libs/consensus/shims libraries/core_libs/network -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    returns no matches, proving the direct CXX export and its C++ bridge-test callers are gone.
 - The standalone broad `apply_rewards_stats_storage_writes` CXX export is deleted. Rewards-stat storage writes now enter
   through either `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` with runtime-owned storage or
   the dedicated storage-shim batch appender.

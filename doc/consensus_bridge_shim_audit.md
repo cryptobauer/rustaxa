@@ -341,6 +341,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   inspection and weight accumulation. It calls the Rust batch RLP inspection API, performs the one remaining external
   FinalChain DPoS weight read as a batch, then calls `BridgePillarChainRuntime` for weighted bundle apply into
   runtime-owned vote state. The obsolete shim helper `getPillarVoteWeight()` has been removed.
+- The standalone `plan_pillar_vote_relevance` CXX export is deleted. Production tarcap relevance checks use
+  `BridgeConsensusNetworkApi::consensus_network_plan_pillar_vote_relevance`, while the pillar-chain manager uses
+  `BridgePillarChainRuntime::pillar_chain_runtime_plan_vote_relevance` so duplicate detection comes from runtime-owned
+  pillar-vote state. Native `rustaxa-consensus` and bridge-module tests keep direct planner coverage.
 - `pillar_chain_manager_shim::createPillarBlock()` now calls
   `plan_pillar_block_creation_with_vote_counts`, which combines pillar-block shell planning and ordered validator
   vote-count delta planning behind one Rust bridge call. The creation-only `plan_pillar_block_creation` CXX export and

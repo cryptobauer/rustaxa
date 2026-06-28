@@ -10,11 +10,12 @@
 //! enforces local bridge-domain invariants before delegating aggregation rules
 //! to [`PillarVotes`].
 
+#[cfg(test)]
+use crate::ffi::rustaxa_ffi::PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact;
 use crate::ffi::rustaxa_ffi::{
     PillarBlockFinalizationRequest, PillarBlockFinalizationResult, PillarVoteBundleApplyPlan,
     PillarVoteBundleHash, PillarVoteBundleInspectionPlan, PillarVoteInspection,
     PillarVoteNetworkBundleChunk, PillarVoteNetworkBundleLookup, PillarVoteRecord,
-    PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
     PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionApplyInput,
     PillarVoteSingleAdmissionApplyPlan, PillarVoteSingleAdmissionContext,
@@ -810,6 +811,7 @@ fn plan_weighted_rlp_bundle(
 }
 
 /// Evaluates one pillar-vote relevance query and returns a deterministic reason.
+#[cfg(test)]
 pub fn plan_pillar_vote_relevance(
     fact: FfiPillarVoteRelevanceFact,
 ) -> Result<FfiPillarVoteRelevancePlan> {
@@ -1067,6 +1069,7 @@ fn apply_weighted_rlp_bundle(
     })
 }
 
+#[cfg(test)]
 fn relevance_fact_to_consensus_fact(
     value: FfiPillarVoteRelevanceFact,
 ) -> Result<ConsensusPillarVoteRelevanceFact> {

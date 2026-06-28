@@ -30,22 +30,6 @@ std::array<uint8_t, 20> makeVoter(uint8_t first_byte) {
   return out;
 }
 
-rustaxa::PillarVoteRelevanceFact makeRelevanceFact(uint64_t vote_period, uint64_t vote_block_hash,
-                                                   bool has_current_pillar_block, uint64_t current_pillar_block_period,
-                                                   uint64_t current_pillar_block_hash,
-                                                   bool vote_already_known = false) {
-  rustaxa::PillarVoteRelevanceFact fact{};
-  fact.vote_period = vote_period;
-  fact.vote_block_hash = makeHash(vote_block_hash);
-  fact.has_current_pillar_block = has_current_pillar_block;
-  fact.current_pillar_block_period = current_pillar_block_period;
-  fact.current_pillar_block_hash = makeHash(current_pillar_block_hash);
-  fact.first_pillar_block_period = 10;
-  fact.pillar_blocks_interval = 10;
-  fact.vote_already_known = vote_already_known;
-  return fact;
-}
-
 rustaxa::PillarValidatorVoteCount makeVoteCount(uint8_t address, uint64_t vote_count) {
   rustaxa::PillarValidatorVoteCount fact{};
   fact.address = makeVoter(address);
@@ -166,31 +150,6 @@ TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcc
   ASSERT_EQ(lookup.votes.size(), 2);
   EXPECT_EQ(lookup.votes[0].weight + lookup.votes[1].weight, 7);
   std::filesystem::remove_all(test_dir);
-}
-
-TEST(PillarVoteRelevanceBridgeTest, planPillarVoteRelevanceMatchesManagerPeriodRules) {
-  auto first_vote = rustaxa::plan_pillar_vote_relevance(makeRelevanceFact(11, 1111, false, 0, 0));
-  EXPECT_TRUE(first_vote.is_relevant);
-  EXPECT_EQ(first_vote.status, 0);
-
-  auto wrong_first_vote = rustaxa::plan_pillar_vote_relevance(makeRelevanceFact(12, 1111, false, 0, 0));
-  EXPECT_FALSE(wrong_first_vote.is_relevant);
-  EXPECT_EQ(wrong_first_vote.status, 2);
-
-  auto next_period_wrong_hash = rustaxa::plan_pillar_vote_relevance(makeRelevanceFact(21, 2222, true, 20, 3333));
-  EXPECT_FALSE(next_period_wrong_hash.is_relevant);
-  EXPECT_EQ(next_period_wrong_hash.status, 4);
-
-  auto future_period = rustaxa::plan_pillar_vote_relevance(makeRelevanceFact(31, 2222, true, 20, 3333));
-  EXPECT_TRUE(future_period.is_relevant);
-  EXPECT_EQ(future_period.status, 0);
-}
-
-TEST(PillarVoteRelevanceBridgeTest, planPillarVoteRelevanceRejectsKnownVote) {
-  auto known_vote = rustaxa::plan_pillar_vote_relevance(makeRelevanceFact(31, 2222, true, 20, 3333, true));
-
-  EXPECT_FALSE(known_vote.is_relevant);
-  EXPECT_EQ(known_vote.status, 1);
 }
 
 TEST(PillarChainPlanningBridgeTest, planPillarVoteCountChangesMatchesLegacyOrdering) {

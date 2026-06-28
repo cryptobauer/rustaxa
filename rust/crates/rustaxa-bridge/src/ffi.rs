@@ -5526,11 +5526,6 @@ pub mod rustaxa_ffi {
             votes: Vec<PillarVoteRlpPayload>,
         ) -> Result<PillarVoteBundleInspectionPlan>;
 
-        /// Evaluates one pillar-vote relevance query.
-        pub fn plan_pillar_vote_relevance(
-            fact: PillarVoteRelevanceFact,
-        ) -> Result<PillarVoteRelevancePlan>;
-
         /// Computes ordered validator vote-count changes for a pillar block.
         pub fn plan_pillar_vote_count_changes(
             current_vote_counts: Vec<PillarValidatorVoteCount>,
