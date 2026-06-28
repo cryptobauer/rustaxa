@@ -2779,7 +2779,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
   }
 
   try {
-    ProposedBlocks propose_blocks{nullptr};
+    ProposedBlocks propose_blocks{db_};
     std::vector<std::shared_ptr<PbftVote>> propose_votes;
 
     for (const auto &wallet : eligible_wallets) {

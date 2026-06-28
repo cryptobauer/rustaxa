@@ -13,14 +13,6 @@ use rustaxa_consensus::proposed_blocks::{
 use rustaxa_storage::Storage;
 use std::sync::Arc;
 
-/// Creates an empty Rust proposed-block index for the C++ PBFT shim.
-pub fn create_proposed_blocks_index() -> Box<BridgeProposedBlocks> {
-    Box::new(BridgeProposedBlocks {
-        index: ProposedBlocks::new(),
-        storage: None,
-    })
-}
-
 /// Creates a Rust proposed-block index bound to a shared Rust storage handle.
 ///
 /// The runtime clones the storage owner from `BridgeStorage` during
@@ -141,25 +133,6 @@ impl BridgeProposedBlocks {
         self.index.contains(period, H256::from(*block_hash))
     }
 
-    /// Returns cleanup candidates for all periods lower than `period`.
-    pub fn proposed_blocks_cleanup_candidates(
-        &self,
-        period: u64,
-    ) -> Vec<ProposedBlockPeriodHashes> {
-        self.index
-            .cleanup_candidates(period)
-            .into_iter()
-            .map(|period| ProposedBlockPeriodHashes {
-                period: period.period,
-                block_hashes: period
-                    .block_hashes
-                    .into_iter()
-                    .map(|hash| DagHash { hash: hash.into() })
-                    .collect(),
-            })
-            .collect()
-    }
-
     /// Restores Rust-owned proposed-block metadata from persisted PBFT block RLPs.
     ///
     /// Inputs:
@@ -259,11 +232,6 @@ impl BridgeProposedBlocks {
                     .collect(),
             })
             .collect())
-    }
-
-    /// Removes one period from the in-memory proposed-block index.
-    pub fn proposed_blocks_remove_period(&mut self, period: u64) {
-        self.index.remove_period(period);
     }
 
     /// Returns all proposed PBFT block entries with validation flags.

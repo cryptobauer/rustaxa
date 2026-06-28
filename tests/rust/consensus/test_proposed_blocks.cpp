@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <string>
 #include <vector>
 
 #include "rustaxa-bridge/ffi.rs.h"
@@ -10,6 +13,13 @@ using namespace rustaxa;
 
 class RustProposedBlocksTest : public ::testing::Test {
  protected:
+  static std::filesystem::path uniqueTempDir(const std::string& name) {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    auto path = std::filesystem::temp_directory_path() / (name + "_" + std::to_string(nonce));
+    std::filesystem::create_directories(path);
+    return path;
+  }
+
   static std::array<uint8_t, 32> h256(uint8_t last_byte) {
     std::array<uint8_t, 32> hash{};
     hash[31] = last_byte;
@@ -31,7 +41,9 @@ class RustProposedBlocksTest : public ::testing::Test {
 };
 
 TEST_F(RustProposedBlocksTest, PushGetMarkValidAndSnapshotEntries) {
-  auto proposed_blocks = create_proposed_blocks_index();
+  const auto test_dir = uniqueTempDir("rustaxa_proposed_blocks_bridge");
+  auto storage = create_storage(test_dir.string());
+  auto proposed_blocks = create_proposed_blocks_index_from_storage(*storage);
 
   EXPECT_TRUE(proposed_blocks->proposed_blocks_push(2, h256(0x11), h256(0x99), bytes({0xAA, 0xBB})));
   EXPECT_FALSE(proposed_blocks->proposed_blocks_push(2, h256(0x11), h256(0x88), bytes({0xCC})));
@@ -62,39 +74,16 @@ TEST_F(RustProposedBlocksTest, PushGetMarkValidAndSnapshotEntries) {
   EXPECT_EQ(entries[0].pivot_hash, h256(0x99));
   EXPECT_EQ(to_std(entries[0].block_rlp), std::vector<uint8_t>({0xAA, 0xBB}));
   EXPECT_TRUE(entries[0].is_valid);
-}
 
-TEST_F(RustProposedBlocksTest, CleanupCandidatesAndRemovePeriodMatchLegacyBehavior) {
-  auto proposed_blocks = create_proposed_blocks_index();
-
-  proposed_blocks->proposed_blocks_push(1, h256(0x21), h256(0xa1), bytes({0x01}));
-  proposed_blocks->proposed_blocks_push(1, h256(0x22), h256(0xa2), bytes({0x02}));
-  proposed_blocks->proposed_blocks_push(2, h256(0x31), h256(0xa3), bytes({0x03}));
-  proposed_blocks->proposed_blocks_push(3, h256(0x41), h256(0xa4), bytes({0x04}));
-
-  auto cleanup = proposed_blocks->proposed_blocks_cleanup_candidates(3);
-  ASSERT_EQ(cleanup.size(), 2);
-  EXPECT_EQ(cleanup[0].period, 1u);
-  EXPECT_EQ(cleanup[0].block_hashes.size(), 2);
-  EXPECT_EQ(cleanup[1].period, 2u);
-  EXPECT_EQ(cleanup[1].block_hashes.size(), 1);
-
-  for (const auto& removed : cleanup) {
-    proposed_blocks->proposed_blocks_remove_period(removed.period);
-  }
-
-  EXPECT_FALSE(proposed_blocks->proposed_blocks_contains(1, h256(0x21)));
-  EXPECT_FALSE(proposed_blocks->proposed_blocks_contains(2, h256(0x31)));
-  EXPECT_TRUE(proposed_blocks->proposed_blocks_contains(3, h256(0x41)));
-
-  auto entries = proposed_blocks->proposed_blocks_snapshot_entries();
-  ASSERT_EQ(entries.size(), 1);
-  EXPECT_EQ(entries[0].period, 3u);
-  EXPECT_EQ(entries[0].block_hash, h256(0x41));
+  std::filesystem::remove_all(test_dir);
 }
 
 TEST_F(RustProposedBlocksTest, MarkValidThrowsForMissingBlock) {
-  auto proposed_blocks = create_proposed_blocks_index();
+  const auto test_dir = uniqueTempDir("rustaxa_proposed_blocks_missing");
+  auto storage = create_storage(test_dir.string());
+  auto proposed_blocks = create_proposed_blocks_index_from_storage(*storage);
 
   EXPECT_THROW(proposed_blocks->proposed_blocks_mark_valid(9, h256(0x90)), std::exception);
+
+  std::filesystem::remove_all(test_dir);
 }

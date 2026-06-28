@@ -30,8 +30,13 @@ TEST(ProposedBlocksShimTest, rustModeProposedBlocksDoesNotInheritLegacyImplement
 
 struct ProposedBlocksShimDataTest : WithDataDir {};
 
-TEST_F(ProposedBlocksShimDataTest, nullDbWorksWhenPersistenceIsDisabled) {
-  ProposedBlocks proposed_blocks(nullptr);
+TEST_F(ProposedBlocksShimDataTest, nullDbConstructionIsUnsupportedInRustMode) {
+  EXPECT_THROW(ProposedBlocks(nullptr), std::runtime_error);
+}
+
+TEST_F(ProposedBlocksShimDataTest, inMemoryPushWorksWithStorageBackedIndex) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  ProposedBlocks proposed_blocks(db);
   auto block = makeBlock(1, 10);
 
   EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(block, false));
@@ -65,6 +70,7 @@ TEST_F(ProposedBlocksShimDataTest, nullDbWorksWhenPersistenceIsDisabled) {
   proposed_blocks.cleanupProposedPbftBlocksByPeriod(2);
   EXPECT_FALSE(proposed_blocks.isInProposedBlocks(block->getPeriod(), block->getBlockHash()));
   EXPECT_FALSE(proposed_blocks.isInProposedBlocks(identity_block->getPeriod(), identity_block->getBlockHash()));
+  EXPECT_TRUE(db->getProposedPbftBlocks().empty());
 }
 
 TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
@@ -86,11 +92,6 @@ TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
       proposed_blocks.getPbftProposedBlockMetadata(period_two_block->getPeriod(), period_two_block->getBlockHash());
   ASSERT_TRUE(metadata.has_value());
   EXPECT_EQ(metadata->pivot_hash, period_two_block->getPivotDagBlockHash());
-}
-
-TEST_F(ProposedBlocksShimDataTest, restoreFromStorageRequiresDb) {
-  ProposedBlocks proposed_blocks(nullptr);
-  EXPECT_THROW(proposed_blocks.restoreFromStorage(), std::runtime_error);
 }
 
 TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndexAndDb) {
@@ -120,7 +121,8 @@ TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndexAndDb) {
 }
 
 TEST_F(ProposedBlocksShimDataTest, missingMarkValidThrows) {
-  ProposedBlocks proposed_blocks(nullptr);
+  auto db = std::make_shared<DbStorage>(data_dir);
+  ProposedBlocks proposed_blocks(db);
   const auto block = makeBlock(7, 707);
   EXPECT_THROW(proposed_blocks.markBlockAsValid(block), std::runtime_error);
   EXPECT_THROW(proposed_blocks.markBlockAsValid(block->getPeriod(), block->getBlockHash()), std::runtime_error);

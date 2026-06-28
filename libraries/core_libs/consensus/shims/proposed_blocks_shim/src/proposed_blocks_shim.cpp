@@ -29,10 +29,10 @@ std::shared_ptr<PbftBlock> ProposedBlocks::makeBlock(const rust::Vec<uint8_t>& b
 namespace {
 
 ::rust::Box<rustaxa::BridgeProposedBlocks> makeRustProposedBlocks(std::shared_ptr<DbStorage> const& storage_owner) {
-  if (storage_owner) {
-    return rustaxa::create_proposed_blocks_index_from_storage(storage_owner->rustStorage());
+  if (!storage_owner) {
+    throw std::runtime_error("Rust-backed ProposedBlocks requires DbStorage");
   }
-  return rustaxa::create_proposed_blocks_index();
+  return rustaxa::create_proposed_blocks_index_from_storage(storage_owner->rustStorage());
 }
 
 }  // namespace
@@ -130,14 +130,6 @@ bool ProposedBlocks::isInProposedBlocks(PbftPeriod period, const blk_hash_t& blo
 
 void ProposedBlocks::cleanupProposedPbftBlocksByPeriod(PbftPeriod period) {
   std::unique_lock lock(proposed_blocks_mutex_);
-  if (!storage_owner_) {
-    auto removed_periods = rust_blocks_->proposed_blocks_cleanup_candidates(period);
-    for (const auto& removed_period : removed_periods) {
-      rust_blocks_->proposed_blocks_remove_period(removed_period.period);
-    }
-    return;
-  }
-
   try {
     rust_blocks_->proposed_blocks_cleanup_with_storage(period);
   } catch (const std::exception& e) {

@@ -4971,7 +4971,6 @@ pub mod rustaxa_ffi {
 
         type BridgeProposedBlocks;
 
-        pub fn create_proposed_blocks_index() -> Box<BridgeProposedBlocks>;
         pub fn create_proposed_blocks_index_from_storage(
             storage: &BridgeStorage,
         ) -> Box<BridgeProposedBlocks>;
@@ -5009,10 +5008,6 @@ pub mod rustaxa_ffi {
             period: u64,
             block_hash: &[u8; 32],
         ) -> bool;
-        pub fn proposed_blocks_cleanup_candidates(
-            self: &BridgeProposedBlocks,
-            period: u64,
-        ) -> Vec<ProposedBlockPeriodHashes>;
         pub fn proposed_blocks_restore_from_storage(
             self: &mut BridgeProposedBlocks,
         ) -> Result<usize>;
@@ -5023,7 +5018,6 @@ pub mod rustaxa_ffi {
             self: &mut BridgeProposedBlocks,
             period: u64,
         ) -> Result<Vec<ProposedBlockPeriodHashes>>;
-        pub fn proposed_blocks_remove_period(self: &mut BridgeProposedBlocks, period: u64);
         pub fn proposed_blocks_snapshot_entries(
             self: &BridgeProposedBlocks,
         ) -> Vec<ProposedBlockSnapshotEntry>;
