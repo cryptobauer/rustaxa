@@ -16,7 +16,6 @@ use crate::ffi::rustaxa_ffi::{
     VotedValueInsertOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeVerifiedVotes};
-use crate::pbft_finalize::apply_result_from_domain;
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use crate::pbft_vote_validation::threshold_plan_to_ffi;
 use ethereum_types::{H160, H256};
@@ -24,7 +23,7 @@ use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes, apply_pbft_reward_votes_reset_storage,
     PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage as DomainPbftFinalizationStorageWriteStage,
-    PbftRewardVotesResetStorageRequest,
+    PbftFinalizedPeriodApplyResult, PbftRewardVotesResetStorageRequest,
 };
 use rustaxa_consensus::pbft_reward_votes::PbftRewardVotesStatus;
 use rustaxa_consensus::pbft_thresholds::{
@@ -86,6 +85,21 @@ fn pbft_vote_persistence_to_ffi(
     crate::ffi::rustaxa_ffi::PbftVotePersistenceResult {
         status: value.status.as_u8(),
         applied_writes: value.applied_writes,
+        error_code: value.error_code,
+    }
+}
+
+fn pbft_finalization_apply_result_to_ffi(
+    value: PbftFinalizedPeriodApplyResult,
+) -> crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult {
+    crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult {
+        status: value.status.as_u8(),
+        wrote_pbft_head: value.wrote_pbft_head,
+        wrote_period_data: value.wrote_period_data,
+        dag_index_writes: value.dag_index_writes,
+        transaction_location_writes: value.transaction_location_writes,
+        block_period: value.block_period,
+        pbft_block_hash: value.pbft_block_hash.0,
         error_code: value.error_code,
     }
 }
@@ -798,7 +812,7 @@ impl BridgeVerifiedVotes {
                 .collect(),
             sync,
         )
-        .map(apply_result_from_domain)
+        .map(pbft_finalization_apply_result_to_ffi)
     }
 
     /// Applies reward-vote reset persistence through a task-specific Rust port.
@@ -822,7 +836,7 @@ impl BridgeVerifiedVotes {
             },
             request.sync,
         )
-        .map(apply_result_from_domain)
+        .map(pbft_finalization_apply_result_to_ffi)
     }
 
     fn optimized_vote_bundle_plan(
@@ -1356,6 +1370,7 @@ impl From<VerifiedVote> for VerifiedVotePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyStatus;
     use rustaxa_consensus::pbft_vote_admission::{
         PbftVoteAdmissionExecution, PbftVoteAdmissionPrecheck, PbftVoteAdmissionStatus,
     };
@@ -1368,7 +1383,11 @@ mod tests {
     use rustaxa_consensus::pbft_vote_runtime::PbftVoteRuntimeReplayOutcome;
     use rustaxa_consensus::pbft_vote_validation::PbftVoteValidationStatus;
     use rustaxa_consensus::{generate_pbft_vote, PbftVoteGenerationInput};
+    use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::vrf;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tiny_keccak::{Hasher, Keccak};
 
     const NODE_SECRET: [u8; 32] = [0x35; 32];
@@ -1387,6 +1406,19 @@ mod tests {
 
     fn address(id: u64) -> [u8; 20] {
         H160::from_low_u64_be(id).into()
+    }
+
+    fn temp_bridge_storage(name: &str) -> BridgeStorage {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = PathBuf::from(format!(
+            "/tmp/rustaxa_bridge_verified_votes_{name}_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        BridgeStorage(Arc::new(Storage::new(Config::new(path)).unwrap()))
     }
 
     fn voter_from_secret(secret: &[u8; 32]) -> [u8; 20] {
@@ -1890,5 +1922,101 @@ mod tests {
         assert!(result.drive_pbft_progress);
         assert_eq!(result.progress_period, 3);
         assert_eq!(result.progress_round, 2);
+    }
+
+    #[test]
+    fn bridge_applies_reward_votes_reset_storage_request() {
+        let storage = temp_bridge_storage("reward_reset");
+        let mut votes = create_verified_votes_index();
+        votes.verified_votes_attach_storage(&storage);
+
+        let result = votes
+            .verified_votes_apply_reward_votes_reset(FfiPbftRewardVotesResetRequest {
+                period: 7,
+                round: 3,
+                step: 5,
+                block_hash: hash(700),
+                reward_votes_bundle_rlp: vec![0xc1, 0x01],
+                extra_reward_vote_hashes: vec![PbftFinalizationHash { hash: hash(701) }],
+                sync: true,
+            })
+            .expect("reward-vote reset storage request applies");
+
+        assert_eq!(
+            result.status,
+            PbftFinalizedPeriodApplyStatus::Applied.as_u8()
+        );
+        assert_eq!(result.block_period, 7);
+        assert_eq!(result.pbft_block_hash, hash(700));
+        assert!(!result.wrote_pbft_head);
+        assert!(!result.wrote_period_data);
+        assert_eq!(result.dag_index_writes, 0);
+        assert_eq!(result.transaction_location_writes, 0);
+        assert!(result.error_code.is_empty());
+    }
+
+    #[test]
+    fn bridge_maps_finalization_storage_apply_rejection_status() {
+        let storage = temp_bridge_storage("rejected_storage_write");
+        let mut votes = create_verified_votes_index();
+        votes.verified_votes_attach_storage(&storage);
+        let write_intent = crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan {
+            persist_pbft_head: false,
+            persist_period_data: false,
+            reset_reward_votes: false,
+            update_sortition_params: false,
+            apply_dynamic_lambda_update: false,
+            persist_period_lambda: false,
+            persist_executed_pbft_status: false,
+            process_pillar_block: false,
+            pbft_block_hash: hash(800),
+            pbft_head_hash: hash(801),
+            block_period: 11,
+            null_anchor: true,
+            anchor_hash: [0; 32],
+            reward_vote_period: 0,
+            reward_vote_round: 0,
+            reward_vote_step: 0,
+            reward_vote_block_hash: [0; 32],
+            period_lambda: 0,
+            blocks_per_year: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            executed_pbft_status: false,
+            pbft_head_payload: Vec::new(),
+            period_data_rlp: Vec::new(),
+            dag_block_period_writes: Vec::new(),
+            transaction_location_writes: Vec::new(),
+        };
+        let primary_stage = crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage {
+            stage: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: false,
+            reward_votes_bundle_rlp: Vec::new(),
+            extra_reward_vote_hashes: Vec::new(),
+        };
+
+        let result = votes
+            .verified_votes_apply_pbft_finalization_storage_writes(
+                &write_intent,
+                vec![primary_stage],
+                false,
+            )
+            .expect("rejected write-set reports through bridge");
+
+        assert_eq!(
+            result.status,
+            PbftFinalizedPeriodApplyStatus::RejectedWriteSet.as_u8()
+        );
+        assert_eq!(result.block_period, 11);
+        assert_eq!(result.pbft_block_hash, hash(800));
+        assert!(!result.wrote_pbft_head);
+        assert!(!result.wrote_period_data);
+        assert_eq!(result.error_code, "PBFT_FINALIZE_REJECTED_WRITE_SET");
     }
 }

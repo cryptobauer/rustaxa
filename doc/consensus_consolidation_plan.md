@@ -1749,7 +1749,11 @@ Implementation status:
 - The standalone `apply_pbft_finalization_storage_writes` CXX export is deleted. Live manager-owned finalization storage
   writes enter through `BridgePbftManagerRuntime`, while the retained verified-votes storage API remains the compatibility
   surface for vote-manager finalization storage facts. The lower test-only bridge wrapper is deleted; direct
-  storage-apply scenarios now call the native consensus helper through a private bridge-module test adapter.
+  storage-apply behavior is covered by native `rustaxa-consensus` finalization tests and retained live bridge coverage
+  through the verified-votes compatibility API.
+- The standalone `rustaxa-bridge/src/pbft_finalize.rs` bridge module is retired. Live finalization CXX APIs now sit on
+  `BridgePbftManagerRuntime` in `pbft_manager.rs`, finalization FFI/domain conversion impls moved beside those manager
+  APIs, and the only live storage-apply result mapper moved to `verified_votes.rs`.
 
 ## Slice 9: Delete Compatibility Tests That Only Protect Retired Scaffolding
 

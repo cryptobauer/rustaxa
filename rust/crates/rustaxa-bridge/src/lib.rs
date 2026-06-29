@@ -4,7 +4,6 @@ mod final_chain;
 mod gas_pricer;
 mod network;
 mod pbft_chain;
-mod pbft_finalize;
 mod pbft_manager;
 mod pbft_sync;
 mod pbft_vote_generation;

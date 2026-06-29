@@ -8,11 +8,14 @@
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup,
     PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport,
+    PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
     PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
+    PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
     PbftFinalizationExecutorStartRequest as FfiPbftFinalizationExecutorStartRequest,
     PbftFinalizationHash as FfiPbftFinalizationHash,
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
+    PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftManagerAdvancePeriodActionReport as FfiPbftManagerAdvancePeriodActionReport,
@@ -89,10 +92,12 @@ use rustaxa_consensus::pbft_finalize::{
     report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
     start_pbft_finalization_runtime,
     validate_pbft_finalization_live_mutation_report as validate_domain_pbft_finalization_live_mutation_report,
-    PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationLiveMutationReport,
-    PbftFinalizationPlan, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
-    PbftFinalizationRuntimeActionResult, PbftFinalizationRuntimeStatus,
-    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftDynamicLambdaPlan, PbftFinalizationAnchor,
+    PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationLiveMutationReport,
+    PbftFinalizationPlan, PbftFinalizationPositionedHash, PbftFinalizationResumePlan,
+    PbftFinalizationRuntimeAction, PbftFinalizationRuntimeActionResult,
+    PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
+    PbftFinalizationStorageWriteStage,
 };
 use rustaxa_consensus::pbft_manager::{
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
@@ -155,6 +160,317 @@ use rustaxa_consensus::pbft_sync::{
 };
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
+
+impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
+    for PbftFinalizationStorageWriteStage
+{
+    fn from(value: crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage) -> Self {
+        Self {
+            stage: value.stage,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda: value.dynamic_lambda,
+            has_sortition_params_change: value.has_sortition_params_change,
+            sortition_params_change_period: value.sortition_params_change_period,
+            sortition_params_change_interval_efficiency: value
+                .sortition_params_change_interval_efficiency,
+            sortition_params_change_threshold_upper: value.sortition_params_change_threshold_upper,
+            has_reward_votes_reset: value.has_reward_votes_reset,
+            reward_votes_bundle_rlp: value.reward_votes_bundle_rlp,
+            extra_reward_vote_hashes: value
+                .extra_reward_vote_hashes
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+        }
+    }
+}
+
+impl From<FfiPbftFinalizationIntentFact> for PbftFinalizationIntentFact {
+    fn from(value: FfiPbftFinalizationIntentFact) -> Self {
+        Self {
+            block_hash: ethereum_types::H256::from(value.block_hash),
+            pbft_head_hash: ethereum_types::H256::from(value.pbft_head_hash),
+            block_period: value.block_period,
+            block_prev_hash: ethereum_types::H256::from(value.block_prev_hash),
+            chain_last_hash: ethereum_types::H256::from(value.chain_last_hash),
+            chain_last_period: value.chain_last_period,
+            block_in_chain: value.block_in_chain,
+            pivot_dag_anchor_hash: ethereum_types::H256::from(value.pivot_dag_anchor_hash),
+            has_pillar_block: value.has_pillar_block,
+            pillar_block_finalized: value.pillar_block_finalized,
+            request_dynamic_lambda_update: value.request_dynamic_lambda_update,
+            cert_vote_count: value.cert_vote_count,
+            sample_cert_vote_block_hash: ethereum_types::H256::from(
+                value.sample_cert_vote_block_hash,
+            ),
+            sample_cert_vote_period: value.sample_cert_vote_period,
+            sample_cert_vote_round: value.sample_cert_vote_round,
+            sample_cert_vote_step: value.sample_cert_vote_step,
+            block_lambda: value.block_lambda,
+            last_saved_period_lambda_found: value.last_saved_period_lambda_found,
+            last_saved_period_lambda: value.last_saved_period_lambda,
+            dynamic_blocks_per_year: value.dynamic_blocks_per_year,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda: value.dynamic_lambda,
+            dpos_blocks_per_year: value.dpos_blocks_per_year,
+            pbft_head_payload: value.pbft_head_payload,
+            period_data_rlp: value.period_data_rlp,
+            ordered_dag_block_hashes: value
+                .ordered_dag_block_hashes
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+            ordered_transaction_hashes: value
+                .ordered_transaction_hashes
+                .into_iter()
+                .map(|hash| ethereum_types::H256::from(hash.hash))
+                .collect(),
+            process_pillar_block_after_advance: value.process_pillar_block_after_advance,
+        }
+    }
+}
+
+impl From<FfiPbftDynamicLambdaConfig> for PbftDynamicLambdaConfig {
+    fn from(value: FfiPbftDynamicLambdaConfig) -> Self {
+        Self {
+            cacti_block_num: value.cacti_block_num,
+            lambda_min: value.lambda_min,
+            lambda_max: value.lambda_max,
+            lambda_default: value.lambda_default,
+            lambda_change_interval: value.lambda_change_interval,
+            lambda_change: value.lambda_change,
+            consensus_delay: value.consensus_delay,
+            dpos_blocks_per_year: value.dpos_blocks_per_year,
+        }
+    }
+}
+
+impl From<FfiPbftDynamicLambdaFact> for PbftDynamicLambdaFact {
+    fn from(value: FfiPbftDynamicLambdaFact) -> Self {
+        Self {
+            dynamic_lambda_active: value.dynamic_lambda_active,
+            finalized_period: value.finalized_period,
+            finalized_round: value.finalized_round,
+            pre_adjust_rounds_count_dynamic_lambda: value.pre_adjust_rounds_count_dynamic_lambda,
+            pre_adjust_dynamic_lambda: value.pre_adjust_dynamic_lambda,
+            config: value.config.into(),
+        }
+    }
+}
+
+impl From<PbftFinalizationCleanupIntent> for FfiPbftFinalizationCleanupPlan {
+    fn from(value: PbftFinalizationCleanupIntent) -> Self {
+        Self {
+            persist_pbft_block_metadata: value.persist_pbft_block_metadata,
+            reset_reward_votes: value.reset_reward_votes,
+            set_dag_block_order: value.set_dag_block_order,
+            update_sortition_params: value.update_sortition_params,
+            update_finalized_transactions_status: value.update_finalized_transactions_status,
+            update_pbft_chain: value.update_pbft_chain,
+            clear_anchor_dag_cache: value.clear_anchor_dag_cache,
+            finalize_final_chain: value.finalize_final_chain,
+            maybe_update_dynamic_lambda: value.maybe_update_dynamic_lambda,
+            advance_period: value.advance_period,
+            process_pillar_block: value.process_pillar_block,
+        }
+    }
+}
+
+impl From<&FfiPbftFinalizationResumePlan> for PbftFinalizationResumePlan {
+    fn from(value: &FfiPbftFinalizationResumePlan) -> Self {
+        Self {
+            status: match value.status {
+                0 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NotPersisted,
+                1 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Complete,
+                2 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsFinalChainReplay
+                }
+                3 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence
+                }
+                4 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::MissingPrimaryFacts
+                }
+                5 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::ConflictingPrimaryFacts
+                }
+                6 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
+                }
+                7 => {
+                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsPillarPostProcessingReplay
+                }
+                255 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::ContractError,
+                _ => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Unknown,
+            },
+            duplicate_classified: value.duplicate_classified,
+            complete: value.complete,
+            replay_actions: value
+                .replay_actions
+                .iter()
+                .filter_map(|action| PbftFinalizationRuntimeAction::from_u8(*action))
+                .collect(),
+            error_code: value.error_code.to_string(),
+        }
+    }
+}
+
+impl From<PbftFinalizationResumePlan> for FfiPbftFinalizationResumePlan {
+    fn from(value: PbftFinalizationResumePlan) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            duplicate_classified: value.duplicate_classified,
+            complete: value.complete,
+            replay_actions: value
+                .replay_actions
+                .into_iter()
+                .map(PbftFinalizationRuntimeAction::as_u8)
+                .collect(),
+            error_code: value.error_code,
+        }
+    }
+}
+
+impl From<&FfiPbftFinalizationCleanupPlan> for PbftFinalizationCleanupIntent {
+    fn from(value: &FfiPbftFinalizationCleanupPlan) -> Self {
+        Self {
+            persist_pbft_block_metadata: value.persist_pbft_block_metadata,
+            reset_reward_votes: value.reset_reward_votes,
+            set_dag_block_order: value.set_dag_block_order,
+            update_sortition_params: value.update_sortition_params,
+            update_finalized_transactions_status: value.update_finalized_transactions_status,
+            update_pbft_chain: value.update_pbft_chain,
+            clear_anchor_dag_cache: value.clear_anchor_dag_cache,
+            finalize_final_chain: value.finalize_final_chain,
+            maybe_update_dynamic_lambda: value.maybe_update_dynamic_lambda,
+            advance_period: value.advance_period,
+            process_pillar_block: value.process_pillar_block,
+        }
+    }
+}
+
+impl From<PbftFinalizationStorageWriteIntent> for FfiPbftFinalizationStorageWritePlan {
+    fn from(value: PbftFinalizationStorageWriteIntent) -> Self {
+        Self {
+            persist_pbft_head: value.persist_pbft_head,
+            persist_period_data: value.persist_period_data,
+            reset_reward_votes: value.reset_reward_votes,
+            update_sortition_params: value.update_sortition_params,
+            apply_dynamic_lambda_update: value.apply_dynamic_lambda_update,
+            persist_period_lambda: value.persist_period_lambda,
+            persist_executed_pbft_status: value.persist_executed_pbft_status,
+            process_pillar_block: value.process_pillar_block,
+            pbft_block_hash: value.pbft_block_hash.0,
+            pbft_head_hash: value.pbft_head_hash.0,
+            block_period: value.block_period,
+            null_anchor: value.null_anchor,
+            anchor_hash: value.anchor_hash.0,
+            reward_vote_period: value.reward_vote_period,
+            reward_vote_round: value.reward_vote_round,
+            reward_vote_step: value.reward_vote_step,
+            reward_vote_block_hash: value.reward_vote_block_hash.0,
+            period_lambda: value.period_lambda,
+            blocks_per_year: value.blocks_per_year,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda: value.dynamic_lambda,
+            executed_pbft_status: value.executed_pbft_status,
+            pbft_head_payload: value.pbft_head_payload,
+            period_data_rlp: value.period_data_rlp,
+            dag_block_period_writes: value
+                .dag_block_period_writes
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            transaction_location_writes: value
+                .transaction_location_writes
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
+}
+
+impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWriteIntent {
+    fn from(value: &FfiPbftFinalizationStorageWritePlan) -> Self {
+        Self {
+            persist_pbft_head: value.persist_pbft_head,
+            persist_period_data: value.persist_period_data,
+            reset_reward_votes: value.reset_reward_votes,
+            update_sortition_params: value.update_sortition_params,
+            apply_dynamic_lambda_update: value.apply_dynamic_lambda_update,
+            persist_period_lambda: value.persist_period_lambda,
+            persist_executed_pbft_status: value.persist_executed_pbft_status,
+            process_pillar_block: value.process_pillar_block,
+            pbft_block_hash: ethereum_types::H256::from(value.pbft_block_hash),
+            pbft_head_hash: ethereum_types::H256::from(value.pbft_head_hash),
+            block_period: value.block_period,
+            null_anchor: value.null_anchor,
+            anchor_hash: ethereum_types::H256::from(value.anchor_hash),
+            reward_vote_period: value.reward_vote_period,
+            reward_vote_round: value.reward_vote_round,
+            reward_vote_step: value.reward_vote_step,
+            reward_vote_block_hash: ethereum_types::H256::from(value.reward_vote_block_hash),
+            period_lambda: value.period_lambda,
+            blocks_per_year: value.blocks_per_year,
+            rounds_count_dynamic_lambda: value.rounds_count_dynamic_lambda,
+            dynamic_lambda: value.dynamic_lambda,
+            executed_pbft_status: value.executed_pbft_status,
+            pbft_head_payload: value.pbft_head_payload.clone(),
+            period_data_rlp: value.period_data_rlp.clone(),
+            dag_block_period_writes: value
+                .dag_block_period_writes
+                .iter()
+                .map(|hash| PbftFinalizationPositionedHash {
+                    hash: ethereum_types::H256::from(hash.hash),
+                    position: hash.position,
+                })
+                .collect(),
+            transaction_location_writes: value
+                .transaction_location_writes
+                .iter()
+                .map(|hash| PbftFinalizationPositionedHash {
+                    hash: ethereum_types::H256::from(hash.hash),
+                    position: hash.position,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<PbftFinalizationPositionedHash> for FfiPbftFinalizationPositionedHash {
+    fn from(value: PbftFinalizationPositionedHash) -> Self {
+        Self {
+            hash: value.hash.0,
+            position: value.position,
+        }
+    }
+}
+
+impl From<PbftFinalizationPlan> for FfiPbftFinalizationIntentPlan {
+    fn from(value: PbftFinalizationPlan) -> Self {
+        Self {
+            finalize_block: value.finalize_block,
+            anchor: value.anchor.as_u8(),
+            executed_pbft_block: value.executed_pbft_block,
+            status: value.status.as_u8(),
+            cleanup: value.cleanup.into(),
+            storage_write_intent: value.storage_write_intent.into(),
+        }
+    }
+}
+
+impl From<&FfiPbftFinalizationIntentPlan> for PbftFinalizationPlan {
+    fn from(value: &FfiPbftFinalizationIntentPlan) -> Self {
+        Self {
+            finalize_block: value.finalize_block,
+            anchor: PbftFinalizationAnchor::from_u8(value.anchor),
+            executed_pbft_block: value.executed_pbft_block,
+            cleanup: (&value.cleanup).into(),
+            storage_write_intent: (&value.storage_write_intent).into(),
+            status: PbftFinalizationStatus::from_u8(value.status),
+        }
+    }
+}
 
 const RUNTIME_STATUS_ACTIVE: u8 = 0;
 const RUNTIME_STATUS_COMPLETE: u8 = 1;
