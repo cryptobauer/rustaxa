@@ -1523,6 +1523,10 @@ Implementation status:
 - The standalone `plan_external_evm_system_transactions` CXX export is also gone. `final_chain_shim` now plans external
   EVM system transactions through `BridgeConsensusExecutionApi::consensus_execution_plan_system_transactions`, so the
   execution client stays on the dedicated API while C++ still supplies the external StateAPI facts.
+- The standalone `final_chain_execution_session_commit` CXX export is also gone. Native session commit now routes through
+  `BridgeConsensusExecutionApi::consensus_execution_commit_session`, keeping both native and external-EVM execution
+  advancement on the dedicated execution facade while still passing `BridgeFinalChain` only at the storage commit
+  boundary.
 - PBFT manager period-data queue scalar/hash metadata getters are no longer CXX exports:
   `pbft_manager_runtime_period_data_queue_period`,
   `pbft_manager_runtime_period_data_queue_syncing_period`,

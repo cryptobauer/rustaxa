@@ -547,14 +547,6 @@ pub fn create_final_chain_execution_session(
     }))
 }
 
-pub fn final_chain_execution_session_commit(
-    final_chain: &BridgeFinalChain,
-    session: Box<BridgeFinalChainExecutionSession>,
-) -> Result<rustaxa_ffi::FinalChainExecutionCommitReport, anyhow::Error> {
-    rustaxa_consensus::commit_final_chain_execution_session(&final_chain.0, session.state)
-        .map(commit_report_to_ffi)
-}
-
 pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionApi>, anyhow::Error> {
     Ok(Box::new(BridgeConsensusExecutionApi(
         rustaxa_consensus::ConsensusExecutionApi::new(),
@@ -562,6 +554,20 @@ pub fn create_consensus_execution_api() -> Result<Box<BridgeConsensusExecutionAp
 }
 
 impl BridgeConsensusExecutionApi {
+    /// Commits a completed native FinalChain execution session.
+    ///
+    /// The method consumes the session so C++ cannot reuse an already committed
+    /// native execution transcript.
+    pub fn consensus_execution_commit_session(
+        &self,
+        final_chain: &BridgeFinalChain,
+        session: Box<BridgeFinalChainExecutionSession>,
+    ) -> Result<rustaxa_ffi::FinalChainExecutionCommitReport, anyhow::Error> {
+        self.0
+            .commit_session(&final_chain.0, session.state)
+            .map(commit_report_to_ffi)
+    }
+
     /// Plans system transactions for a pending external-EVM execution request.
     ///
     /// C++ still gathers external `StateAPI` facts, while Rust owns the
@@ -2245,6 +2251,46 @@ mod tests {
         assert!(step.evm_request.transactions[1].receiver_found);
         assert_eq!(step.evm_request.transactions[2].position, 2);
         assert!(!step.evm_request.transactions[2].receiver_found);
+
+        drop(final_chain);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_execution_api_commits_native_session() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_final_chain_execution_commit_api");
+        let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let final_chain = make_final_chain(storage_path, vec![]);
+        let mut session =
+            create_final_chain_execution_session(rustaxa_ffi::FinalChainExecutionRequest {
+                pbft_block_rlp: signed_pbft_block_rlp(1),
+                transactions: Vec::new(),
+                finalized_dag_blocks: Vec::new(),
+                blocks_per_year: 0,
+                cert_votes: Vec::new(),
+                block_gas_limit: 1_000_000,
+                mode: rustaxa_consensus::FINAL_CHAIN_EXECUTION_MODE_NATIVE_ONLY,
+            })
+            .expect("session should be created");
+
+        let step = execution_session_next(&mut session).expect("session step should convert");
+        assert_eq!(
+            step.action,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE
+        );
+
+        let execution_api =
+            create_consensus_execution_api().expect("execution API should be created");
+        let report = execution_api
+            .consensus_execution_commit_session(&final_chain, session)
+            .expect("native commit should convert");
+        assert_eq!(
+            report.status,
+            rustaxa_consensus::FINAL_CHAIN_EXECUTION_STATUS_COMPLETE
+        );
+        assert_eq!(report.period, 1);
+        assert!(report.error_code.is_empty());
+        assert!(!report.block_header_rlp.is_empty());
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

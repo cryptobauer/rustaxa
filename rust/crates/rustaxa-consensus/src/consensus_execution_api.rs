@@ -1,13 +1,14 @@
 use crate::{
     FinalChain, FinalChainEvmExecutionReport, FinalChainEvmRewardsReport,
-    FinalChainExecutionSession, FinalChainExecutionStep, FinalChainExternalEvmCommitDecision,
-    FinalChainExternalEvmCommitPlan, FinalChainExternalEvmCommittedStateDescriptor,
-    FinalChainExternalEvmPublicationAuditReport, FinalChainExternalEvmPublicationPlan,
-    FinalChainExternalEvmPublicationReport, FinalChainExternalEvmRewardsStatsUpdate,
-    FinalChainExternalEvmStateCommitIntent, FinalChainExternalEvmStateCommitRequest,
-    FinalChainExternalEvmStateCommitResult, FinalChainProposalPeriodDagLevelUpdate,
-    FinalChainSystemTransactionPlan, FinalChainSystemTransactionPlanFact,
-    FinalChainSystemTransactionReport,
+    FinalChainExecutionCommitReport, FinalChainExecutionSession, FinalChainExecutionStep,
+    FinalChainExternalEvmCommitDecision, FinalChainExternalEvmCommitPlan,
+    FinalChainExternalEvmCommittedStateDescriptor, FinalChainExternalEvmPublicationAuditReport,
+    FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
+    FinalChainExternalEvmRewardsStatsUpdate, FinalChainExternalEvmStateCommitIntent,
+    FinalChainExternalEvmStateCommitRequest, FinalChainExternalEvmStateCommitResult,
+    FinalChainProposalPeriodDagLevelUpdate, FinalChainSystemTransactionPlan,
+    FinalChainSystemTransactionPlanFact, FinalChainSystemTransactionReport,
+    commit_final_chain_execution_session,
     final_chain_execution_session_attach_external_evm_proposal_period_dag_level,
     final_chain_execution_session_attach_external_evm_rewards_stats,
     final_chain_execution_session_next,
@@ -56,6 +57,20 @@ impl ConsensusExecutionApi {
         session: &mut FinalChainExecutionSession,
     ) -> FinalChainExecutionStep {
         final_chain_execution_session_next(session)
+    }
+
+    /// Commits a completed native FinalChain execution session.
+    ///
+    /// This is the native-execution counterpart to the external-EVM publication
+    /// APIs on this facade. Only sessions whose next action is `COMMIT_NATIVE`
+    /// can publish FinalChain storage; external-EVM sessions continue through
+    /// the explicit external state-commit and publication methods.
+    pub fn commit_session(
+        &self,
+        final_chain: &FinalChain,
+        session: FinalChainExecutionSession,
+    ) -> Result<FinalChainExecutionCommitReport, anyhow::Error> {
+        commit_final_chain_execution_session(final_chain, session)
     }
 
     /// Plans system transaction bytes from external StateAPI facts.

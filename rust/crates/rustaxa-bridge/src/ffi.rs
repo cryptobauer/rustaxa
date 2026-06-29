@@ -6023,6 +6023,11 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusExecutionApi,
             fact: FinalChainSystemTransactionPlanFact,
         ) -> Result<FinalChainSystemTransactionPlan>;
+        pub fn consensus_execution_commit_session(
+            self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
+            session: Box<BridgeFinalChainExecutionSession>,
+        ) -> Result<FinalChainExecutionCommitReport>;
         pub fn consensus_execution_next_execution_request(
             self: &BridgeConsensusExecutionApi,
             session: &mut BridgeFinalChainExecutionSession,
@@ -6060,10 +6065,6 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
         ) -> Result<FinalChainExternalEvmPublicationReport>;
-        pub fn final_chain_execution_session_commit(
-            final_chain: &BridgeFinalChain,
-            session: Box<BridgeFinalChainExecutionSession>,
-        ) -> Result<FinalChainExecutionCommitReport>;
         pub fn get_transaction_rlps(self: &BridgeFinalChain, period: u64) -> Result<Vec<TxRlp>>;
         pub fn get_transaction_receipt(
             self: &BridgeFinalChain,

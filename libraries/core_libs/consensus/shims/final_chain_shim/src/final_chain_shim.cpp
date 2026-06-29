@@ -18,6 +18,7 @@ namespace taraxa::final_chain {
 namespace {
 
 constexpr uint8_t kFinalChainExecutionModeExternalEvmAllowed = 1;
+constexpr uint8_t kFinalChainExecutionStatusComplete = 1;
 constexpr uint8_t kFinalChainExecutionActionComplete = 0;
 constexpr uint8_t kFinalChainExecutionActionCommitNative = 1;
 constexpr uint8_t kFinalChainExecutionActionExecuteExternalEvm = 2;
@@ -617,8 +618,9 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
     throw DbException("FinalChain::finalize Rust execution runtime returned unexpected action " +
                       std::to_string(step.action));
   }
-  auto commit_report = rustaxa::final_chain_execution_session_commit(*rust_final_chain_.value(), std::move(session));
-  if (!commit_report.error_code.empty()) {
+  auto commit_report =
+      rust_execution_api_.value()->consensus_execution_commit_session(*rust_final_chain_.value(), std::move(session));
+  if (commit_report.status != kFinalChainExecutionStatusComplete || !commit_report.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust execution runtime failed commit: " +
                       std::string(commit_report.error_code));
   }

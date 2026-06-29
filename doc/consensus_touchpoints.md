@@ -295,6 +295,7 @@ Implementation status:
   EVM/session boundary through it for:
   - system-transaction planning from external StateAPI facts
   - next execution/action requests
+  - native execution-session commit
   - system-transaction report validation
   - arbitrary EVM execution report validation
   - rewards execution report validation and commit-plan derivation
@@ -305,9 +306,10 @@ Implementation status:
   - state-commit result reporting
   - Rust FinalChain storage publication
 - `ConsensusExecutionApi` is intentionally stateless. C++ creates a `BridgeFinalChainExecutionSession` from only the
-  execution request, then passes the live `BridgeFinalChain` handle only to commit, recovery, and publication operations
-  that actually need FinalChain storage/state. Rust owns request identity, report validation, publication plans, pending
-  marker handling, system-transaction planning, storage publication, and publication audit decisions.
+  execution request, then passes the live `BridgeFinalChain` handle only to native commit, recovery, and publication
+  operations that actually need FinalChain storage/state. Rust owns request identity, native commit validation, report
+  validation, publication plans, pending marker handling, system-transaction planning, storage publication, and
+  publication audit decisions.
 - `FinalChain::finalizeExternalEvm` now uses one dedicated API call, `prepare_external_evm_state_commit`, that executes the
   remaining publication-prep flow (plan, rewards-stat attach, proposal-period mapping, intent derivation, marker persistence)
   before external-state commit.
