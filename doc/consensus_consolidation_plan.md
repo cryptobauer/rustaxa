@@ -591,7 +591,7 @@ Implementation notes:
   finalization plan used by later typed reports. C++ echoes the executor cursor as a scalar argument instead of passing
   an action back into the manager; Rust derives the current action from the cursor. C++ still prepares primary storage
   stages under the existing DAG/transaction locks and still executes external sortition, reward-vote, DAG,
-  transaction-manager, PBFT-chain, anchor-cache, FinalChain/EVM, advance-period, and pillar side effects before reporting
+  transaction-manager, PBFT-chain, FinalChain/EVM, advance-period, and pillar side effects before reporting
   typed facts or explicit failure back to Rust. The CXX exports for `plan_pbft_finalization_runtime`,
   `pbft_manager_runtime_finalization_session_next`, `pbft_manager_runtime_finalization_session_report`,
   `pbft_manager_runtime_finalization_session_report_action`,
@@ -611,7 +611,7 @@ Implementation notes:
   `PbftFinalizationRuntimeActionReport` is now a private Rust helper, not a CXX DTO.
 - Follow-up report-surface cleanup removes both `PbftFinalizationLiveMutationReport` and
   `PbftFinalizationExternalEffectReport` from the CXX bridge. Sortition, reward-vote, DAG, transaction-manager,
-  PBFT-chain, anchor-cache, FinalChain replay/dispatch, advance-period, and pillar post-processing executors now return
+  PBFT-chain, FinalChain replay/dispatch, advance-period, and pillar post-processing executors now return
   or construct only subsystem-specific reports. Rust derives finalization identity from the manager-runtime retained plan
   and maps those typed reports into the native live-mutation report internally, so C++ no longer owns the duplicate
   live-report DTO, the generic external-effect DTO, or the `makeFinalizationExternalEffectReport` mapping helper.
@@ -619,7 +619,7 @@ Implementation notes:
   only subsystem facts. The executor cursor is the only accepted action identity source for typed success APIs and the
   failure-only `pbft_manager_runtime_fail_finalization_external_effect` API, which removes the last duplicated action
   echo and generic success/failure envelope from sortition, reward-vote, DAG, transaction-manager, PBFT-chain,
-  anchor-cache, FinalChain, advance-period, and pillar reports.
+  FinalChain, advance-period, and pillar reports.
 - The legacy Rust bridge-crate finalization cursor primitives
   `pbft_manager_runtime_begin_finalization_session`,
   `pbft_manager_runtime_begin_finalization_resume_session`,
@@ -656,8 +656,9 @@ Implementation notes:
   DAG-block count, and `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order` so Rust
   builds the native live-mutation report internally.
 - The manager-local anchor DAG cache clear path no longer constructs the generic finalization report directly from the
-  cache mutation. It now uses `AnchorDagCacheFinalizationClearReport`, containing only the remaining cached-anchor count,
-  and `pbft_manager_shim` advances through the typed Rust bridge API.
+  cache mutation. It first moved through a typed `AnchorDagCacheFinalizationClearReport`, and the current runtime-owned
+  drain has since absorbed the action completely, leaving C++ only the temporary sidecar-map clear signaled by
+  `cleared_anchor_dag_cache`.
 - FinalChain PBFT finalization dispatch and resume replay no longer build the generic finalization report from direct
   FinalChain reads at each callsite. The shim-owned `finalize_` wrapper now returns
   `FinalChainPbftFinalizationDispatchReport`, containing only `blocks_per_year` and the observed FinalChain
@@ -675,11 +676,13 @@ Implementation notes:
   `pbft_manager_runtime_advance_finalization_pillar_post_processing`, so C++ no longer constructs
   `PbftFinalizationExternalEffectReport` for that client. Rust injects the live manager period and builds the native
   live-mutation report before using the existing finalization executor validation/drain path internally.
-- Follow-up API narrowing moved anchor-cache clear reporting onto
-  `pbft_manager_runtime_advance_finalization_anchor_cache_clear`, so C++ no longer constructs
-  `PbftFinalizationExternalEffectReport` for that manager-local client. Rust maps the single
-  `remaining_anchor_count` fact into the native live-mutation report internally before running the existing cursor
-  validation and drain path.
+- Follow-up API narrowing first moved anchor-cache clear reporting onto a typed Rust bridge advancement API. The current
+  runtime-owned drain has now absorbed that manager-local action entirely: `BridgePbftManagerRuntime` clears Rust
+  anchor-cache metadata, validates the native live-mutation report with zero remaining anchors, advances the
+  finalization cursor, and returns `cleared_anchor_dag_cache` so the C++ shim clears only its temporary materialized
+  `DagBlock` sidecar map. The `AnchorDagCacheFinalizationClearReport` C++ helper,
+  `PbftManagerFinalizationAnchorCacheClearReport` CXX DTO, and
+  `pbft_manager_runtime_advance_finalization_anchor_cache_clear` export are deleted.
 - Follow-up API narrowing moved advance-period reporting onto
   `pbft_manager_runtime_advance_finalization_advance_period`, so C++ no longer constructs
   `PbftFinalizationExternalEffectReport` for that manager-local client. Rust maps the single post-advance
@@ -867,6 +870,11 @@ Implementation notes:
   - `rust-engineer`: implemented/reviewed the typed Rust bridge advancement, added a targeted bridge test for the
     anchor-cache report, and confirmed the helper should map only `remaining_anchor_count` into the temporary executor
     envelope.
+- Custom agents used for the anchor-cache owned-drain cleanup:
+  - `architect-reviewer`: recommended moving `ClearAnchorDagCache` into the manager-owned finalization drain and keeping
+    only a C++ sidecar-clear signal for temporary `DagBlock` materialization.
+  - `code-mapper`: confirmed the broader surface candidates and helped separate this Slice 6-owned action from lower
+    value test-only FFI shrink candidates.
 - Custom agents used for the advance-period typed advancement cleanup:
   - `cpp-pro`: implemented/reviewed the fresh and duplicate-resume C++ success wiring and confirmed failure, abort, and
     snapshot semantics remain unchanged.
@@ -1117,6 +1125,19 @@ Implementation notes:
   - `rg -n "external_report\\.action|\\.action = kPbftFinalizationRuntimeAction" libraries/core_libs/consensus/shims tests/rust/consensus rust/crates/rustaxa-bridge/src -g'*.cpp' -g'*.hpp' -g'*.rs'`
     returns no matches; the follow-up generic-report removal check proves the whole
     `PbftFinalizationExternalEffectReport` FFI struct is gone from live code.
+- Additional validation for anchor-cache owned-drain cleanup:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_drains_anchor_cache_clear_as_owned_finalization_action -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge manager_runtime_finalization -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.Finalization*' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `git diff --check`
+  - `rg -n "AnchorDagCacheFinalizationClearReport|PbftManagerFinalizationAnchorCacheClearReport|advance_finalization_anchor_cache_clear" rust/crates/rustaxa-bridge/src libraries/core_libs/consensus/shims/pbft_manager_shim tests/rust/consensus -g'*.rs' -g'*.cpp' -g'*.hpp'`
+    returns no live code references.
 - Additional validation for PBFT finalization executor API consolidation:
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
   - `cmake --build /build --target rust_consensus_tests --parallel 12`
@@ -1144,7 +1165,9 @@ Implementation notes:
   finalization-boundary helper set for snapshot application, action requirement checks, failure reporting, and typed
   subsystem report advancement. This shrinks the remaining C++ executor loop without adding a generic Rust external
   effect API; FinalChain, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and
-  anchor-cache side effects still cross through the existing minimal typed APIs.
+  anchor-cache cleanup is now manager-runtime owned; remaining FinalChain, DAG, transaction-manager, PBFT-chain,
+  sortition, vote-manager, advance-period, pillar, and network side effects still cross through the existing minimal
+  typed APIs.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining pillar-chain external DPoS/materialization/event paths are still present and remain Slice 6 work.
 - Additional validation for the pillar-chain runtime PBFT-finalization consolidation:

@@ -1883,6 +1883,7 @@ pub mod rustaxa_ffi {
         applied_dynamic_lambda: bool,
         persisted_executed_status: bool,
         set_executed_flag: bool,
+        cleared_anchor_dag_cache: bool,
         has_snapshot: bool,
         snapshot: PbftManagerRuntimeSnapshot,
         last_storage_status: u8,
@@ -1924,17 +1925,6 @@ pub mod rustaxa_ffi {
     struct PbftManagerFinalizationPillarPostProcessingReport {
         processed_period: u64,
         request_period: u64,
-    }
-
-    /// Typed PBFT finalization anchor-cache clear report from the C++
-    /// executor.
-    ///
-    /// C++ supplies only the remaining anchor-cache cardinality observed after
-    /// clearing the anchor DAG cache. Success/status, manager period, action
-    /// identity, and cursor identity are derived by the manager finalization
-    /// executor.
-    struct PbftManagerFinalizationAnchorCacheClearReport {
-        remaining_anchor_count: u64,
     }
 
     /// Typed PBFT finalization advance-period report from the C++ executor.
@@ -4798,11 +4788,6 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             cursor: u32,
             report: PbftManagerFinalizationPillarPostProcessingReport,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_anchor_cache_clear(
-            runtime: &mut BridgePbftManagerRuntime,
-            cursor: u32,
-            report: PbftManagerFinalizationAnchorCacheClearReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_advance_period(
             runtime: &mut BridgePbftManagerRuntime,

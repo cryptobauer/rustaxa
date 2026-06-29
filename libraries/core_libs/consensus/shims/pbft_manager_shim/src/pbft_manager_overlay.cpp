@@ -57,7 +57,6 @@ constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardVotesReset = 3;
 constexpr uint8_t kPbftFinalizationRuntimeActionSetDagBlockOrder = 4;
 constexpr uint8_t kPbftFinalizationRuntimeActionUpdateFinalizedTransactions = 5;
 constexpr uint8_t kPbftFinalizationRuntimeActionUpdatePbftChain = 6;
-constexpr uint8_t kPbftFinalizationRuntimeActionClearAnchorDagCache = 7;
 constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
 constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
@@ -134,17 +133,6 @@ constexpr uint8_t kPbftManagerAdvancePeriodActionSetVoteManagerPeriodRound = 2;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetCurrentRoundTimer = 3;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetRewardVoteCounters = 4;
 constexpr uint8_t kPbftManagerAdvancePeriodActionResetPeriodTimer = 5;
-
-/**
- * Manager-owned result after clearing cached anchor DAG order for PBFT finalization.
- *
- * Inputs are the C++ PBFT manager anchor-order cache and the Rust manager runtime cache. Outputs carry only the
- * manager-local cache fact needed by the finalization executor: the remaining cached anchor count after both caches are
- * cleared. The generic PBFT finalization external-effect report is constructed only at the executor boundary.
- */
-struct AnchorDagCacheFinalizationClearReport {
-  uint64_t remaining_anchor_count = 0;
-};
 
 /**
  * Manager-owned result after advancing the PBFT manager period during PBFT finalization.
@@ -3553,6 +3541,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   auto apply_boundary_snapshot = [&](const rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    if (boundary.cleared_anchor_dag_cache) {
+      anchor_dag_block_order_cache_.clear();
+    }
     if (boundary.has_snapshot) {
       applyPbftManagerRuntimeSnapshot(
           boundary.snapshot, round_, step_, state_, current_round_lambda_, next_step_time_ms_,
@@ -3601,25 +3592,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     apply_boundary_snapshot(boundary);
     if (!boundary.can_continue) {
       return fail_boundary("pillar post-processing", boundary);
-    }
-    return true;
-  };
-  auto report_anchor_dag_cache_clear = [&](const AnchorDagCacheFinalizationClearReport &report,
-                                           rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    rustaxa::PbftManagerFinalizationAnchorCacheClearReport bridge_report{};
-    bridge_report.remaining_anchor_count = report.remaining_anchor_count;
-    try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_anchor_cache_clear(*pbft_manager_runtime_.value(),
-                                                                                       boundary.cursor, bridge_report);
-    } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context anchor DAG cache clear: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
-      return false;
-    }
-    apply_boundary_snapshot(boundary);
-    if (!boundary.can_continue) {
-      return fail_boundary("anchor DAG cache clear", boundary);
     }
     return true;
   };
@@ -3868,17 +3840,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                  << block_pbft_period;
     return false;
   }
-  auto clear_anchor_dag_cache_for_finalization = [&]() {
-    anchor_dag_block_order_cache_.clear();
-    const auto clear_cache_snapshot =
-        rustaxa::pbft_manager_runtime_clear_cached_anchor_dag_order(*pbft_manager_runtime_.value());
-    ensurePbftManagerRuntimeSnapshotReady(clear_cache_snapshot, "Clear cached PBFT DAG order anchors");
-
-    AnchorDagCacheFinalizationClearReport report{};
-    report.remaining_anchor_count =
-        rustaxa::pbft_manager_runtime_cached_anchor_dag_order_count(*pbft_manager_runtime_.value());
-    return report;
-  };
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> first_persistence_stages;
   first_persistence_stages.push_back(makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary));
 
@@ -4004,18 +3965,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       if (!report_pbft_chain_update(pbft_chain_update, boundary)) {
         return false;
       }
-    }
-  }
-
-  // anchor_dag_block_order_cache_ is valid in one period, clear when period changes
-  if (finalization_plan.cleanup.clear_anchor_dag_cache &&
-      !require_boundary_action("anchor DAG cache clear", boundary, kPbftFinalizationRuntimeActionClearAnchorDagCache)) {
-    return false;
-  }
-  if (finalization_plan.cleanup.clear_anchor_dag_cache) {
-    const auto clear_cache = clear_anchor_dag_cache_for_finalization();
-    if (!report_anchor_dag_cache_clear(clear_cache, boundary)) {
-      return false;
     }
   }
 

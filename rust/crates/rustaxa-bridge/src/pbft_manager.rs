@@ -31,7 +31,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerEligibleWalletPeriodWaitFact as FfiPbftManagerEligibleWalletPeriodWaitFact,
     PbftManagerEligibleWalletPeriodWaitPlan as FfiPbftManagerEligibleWalletPeriodWaitPlan,
     PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport,
-    PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport,
     PbftManagerFinalizationDynamicLambdaPlan as FfiPbftManagerFinalizationDynamicLambdaPlan,
     PbftManagerFinalizationExecutorState as FfiPbftManagerFinalizationExecutorState,
     PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport,
@@ -1845,6 +1844,7 @@ struct FinalizationOwnedActionDrainResult {
     applied_dynamic_lambda: bool,
     persisted_executed_status: bool,
     set_executed_flag: bool,
+    cleared_anchor_dag_cache: bool,
     has_snapshot: bool,
     snapshot: FfiPbftManagerRuntimeSnapshot,
     last_storage_status: u8,
@@ -1857,6 +1857,7 @@ struct FinalizationOwnedActionDrainState {
     applied_dynamic_lambda: bool,
     persisted_executed_status: bool,
     set_executed_flag: bool,
+    cleared_anchor_dag_cache: bool,
     has_snapshot: bool,
     last_storage_status: u8,
 }
@@ -1876,6 +1877,7 @@ impl FinalizationOwnedActionDrainState {
             applied_dynamic_lambda: false,
             persisted_executed_status: false,
             set_executed_flag: false,
+            cleared_anchor_dag_cache: false,
             has_snapshot: false,
             last_storage_status: 0,
         }
@@ -1914,6 +1916,7 @@ fn finalization_drain_result(
         applied_dynamic_lambda: drain.applied_dynamic_lambda,
         persisted_executed_status: drain.persisted_executed_status,
         set_executed_flag: drain.set_executed_flag,
+        cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
         has_snapshot: drain.has_snapshot,
         snapshot: runtime.state.snapshot().into(),
         last_storage_status: drain.last_storage_status,
@@ -1938,6 +1941,7 @@ fn finalization_executor_state_from_step(
         applied_dynamic_lambda: false,
         persisted_executed_status: false,
         set_executed_flag: false,
+        cleared_anchor_dag_cache: false,
         has_snapshot: false,
         snapshot: runtime.state.snapshot().into(),
         last_storage_status: 0,
@@ -1963,6 +1967,7 @@ fn finalization_executor_state_from_drain(
         applied_dynamic_lambda: drain.applied_dynamic_lambda,
         persisted_executed_status: drain.persisted_executed_status,
         set_executed_flag: drain.set_executed_flag,
+        cleared_anchor_dag_cache: drain.cleared_anchor_dag_cache,
         has_snapshot: drain.has_snapshot,
         snapshot: drain.snapshot,
         last_storage_status: drain.last_storage_status,
@@ -2685,38 +2690,6 @@ pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
     })
 }
 
-/// Reports PBFT finalization anchor-cache clear facts to the manager-owned executor.
-///
-/// Inputs:
-/// - `runtime`: PBFT manager runtime that owns the current finalization cursor
-///   and live manager snapshot.
-/// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: typed anchor-cache clear facts after C++ clears the anchor DAG
-///   cache.
-///
-/// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the anchor-cache-clear client.
-/// - Rust derives the PBFT finalization action from the cursor and maps only
-///   the remaining anchor-cache cardinality needed for live-mutation
-///   validation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
-pub fn pbft_manager_runtime_advance_finalization_anchor_cache_clear(
-    runtime: &mut BridgePbftManagerRuntime,
-    cursor: u32,
-    report: FfiPbftManagerFinalizationAnchorCacheClearReport,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.anchor_dag_cache_count = report.remaining_anchor_count;
-        live_report
-    })
-}
-
 /// Reports PBFT finalization advance-period facts to the manager-owned executor.
 ///
 /// Inputs:
@@ -2938,6 +2911,40 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
                 }
                 drain.drained_actions += 1;
                 drain.set_executed_flag = true;
+            }
+            PbftFinalizationRuntimeAction::ClearAnchorDagCache => {
+                runtime.state.clear_cached_anchor_dag_order();
+                drain.has_snapshot = true;
+                let validation =
+                    validate_domain_pbft_finalization_live_mutation_report(&domain_plan, {
+                        PbftFinalizationLiveMutationReport {
+                            anchor_dag_cache_count: runtime.state.cached_anchor_dag_order_count(),
+                            ..base_finalization_live_report(action, &write_set)
+                        }
+                    });
+                let accepted = validation.accepted;
+                let status = validation.status.as_u8();
+                let error_code = validation.error_code;
+                let next_step = pbft_manager_runtime_finalization_session_report_action(
+                    runtime,
+                    FinalizationRuntimeActionReport {
+                        cursor: current_step.cursor,
+                        action: current_step.action,
+                        success: accepted,
+                        status,
+                        error_code,
+                    },
+                );
+                if !accepted {
+                    return Ok(finalization_drain_result(
+                        runtime,
+                        &drain,
+                        next_step,
+                        "PBFT_FINALIZE_ANCHOR_DAG_CACHE_LIVE_REJECTED".to_string(),
+                    ));
+                }
+                drain.drained_actions += 1;
+                drain.cleared_anchor_dag_cache = true;
             }
             _ => {
                 return Ok(finalization_drain_result(
@@ -3612,7 +3619,6 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
-    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAnchorCacheClearReport as FfiPbftManagerFinalizationAnchorCacheClearReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport;
@@ -4356,8 +4362,9 @@ mod tests {
         assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
         assert_eq!(
             state.action,
-            PbftFinalizationRuntimeAction::ClearAnchorDagCache.as_u8()
+            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
         );
+        assert!(state.cleared_anchor_dag_cache);
     }
 
     #[test]
@@ -4589,9 +4596,15 @@ mod tests {
     }
 
     #[test]
-    fn manager_runtime_advances_finalization_with_anchor_cache_clear_report() {
+    fn manager_runtime_drains_anchor_cache_clear_as_owned_finalization_action() {
         let (_temp_dir, mut runtime) =
-            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_anchor_cache_clear_report");
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_anchor_cache_owned_drain");
+        pbft_manager_runtime_record_cached_anchor_dag_order(&mut runtime, [42; 32]);
+        assert_eq!(
+            pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
+            1
+        );
+
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
@@ -4599,20 +4612,19 @@ mod tests {
             PbftFinalizationRuntimeAction::ClearAnchorDagCache,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
-        let state = pbft_manager_runtime_advance_finalization_anchor_cache_clear(
-            &mut runtime,
-            step.cursor,
-            FfiPbftManagerFinalizationAnchorCacheClearReport {
-                remaining_anchor_count: 0,
-            },
-        )
-        .expect("typed anchor cache clear report should advance finalization");
+        let state = drain_finalization_executor_state(&mut runtime)
+            .expect("owned anchor cache clear should drain");
 
         assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
         assert_eq!(
             state.action,
             PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
+        );
+        assert!(state.drained_actions >= 1);
+        assert!(state.cleared_anchor_dag_cache);
+        assert_eq!(
+            pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
+            0
         );
     }
 

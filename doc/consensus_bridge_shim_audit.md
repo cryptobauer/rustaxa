@@ -581,10 +581,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `setDagBlockOrderForPbftFinalization` returns `DagFinalizationOrderReport` with only the finalized DAG-block count;
   `pbft_manager_shim` advances through `pbft_manager_runtime_advance_finalization_dag_order`, so Rust fills the native
   live-mutation report internally.
-- Anchor-DAG-cache clear facts now advance through
-  `pbft_manager_runtime_advance_finalization_anchor_cache_clear`. C++ passes only the typed
-  `AnchorDagCacheFinalizationClearReport` fact (`remaining_anchor_count`), and Rust fills the native live-mutation report
-  internally.
+- Anchor-DAG-cache clear no longer has a CXX report path. `BridgePbftManagerRuntime` now drains
+  `ClearAnchorDagCache` as a manager-owned finalization action, clears Rust anchor-cache metadata, validates the native
+  live-mutation report with zero remaining anchors, and returns `cleared_anchor_dag_cache` so the C++ shim clears only
+  its temporary materialized `DagBlock` sidecar map. The typed
+  `pbft_manager_runtime_advance_finalization_anchor_cache_clear` export and anchor-cache report DTO/helper are deleted.
 - FinalChain PBFT finalization dispatch/replay facts now use the shim-owned
   `FinalChainPbftFinalizationDispatchReport` returned by `PbftManager::finalize_`. The report carries only
   `blocks_per_year` and observed FinalChain `last_block`; `pbft_manager_shim` advances through
