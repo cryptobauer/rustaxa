@@ -1134,6 +1134,11 @@ Implementation notes:
   `pbft_manager_runtime_inspect_finalization_resume` method are deleted; native Rust resume plans remain only for
   domain/private bridge tests. Complete duplicates return a completed no-action executor state, making no-op duplicate
   acceptance explicit at the manager boundary.
+- The PBFT manager shim's duplicate-finalization resume and fresh-finalization paths now share one local
+  finalization-boundary helper set for snapshot application, action requirement checks, failure reporting, and typed
+  subsystem report advancement. This shrinks the remaining C++ executor loop without adding a generic Rust external
+  effect API; FinalChain, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and
+  anchor-cache side effects still cross through the existing minimal typed APIs.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining pillar-chain external DPoS/materialization/event paths are still present and remain Slice 6 work.
 - Additional validation for the pillar-chain runtime PBFT-finalization consolidation:
@@ -1163,9 +1168,8 @@ Implementation notes:
   - `rg -n "getVerifiedPillarVotes\\(" libraries/core_libs/network libraries/core_libs/consensus/shims tests/rust/consensus -g'*.cpp' -g'*.hpp'`
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
-- The immediate follow-up is collapsing the remaining typed PBFT finalization external-action loop into a smaller
-  manager-owned operation where practical, then continuing Slice 6 service consolidation and the later pillar-chain
-  runtime work that still needs external DPoS fact ports plus legacy materialization removal.
+- The immediate follow-up is continuing Slice 6 service consolidation and the later pillar-chain runtime work that still
+  needs external DPoS fact ports plus legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 

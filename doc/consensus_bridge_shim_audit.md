@@ -519,6 +519,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   mode. C++ supplies only `final_chain_last_block`; the manager runtime inspects its Rust storage internally, starts the
   replay cursor, and returns either the next external action or a completed no-op state. The public runtime inspector and
   `PbftFinalizationResumePlan` CXX DTO are deleted.
+- The PBFT manager shim no longer carries separate fresh-finalization and duplicate-resume boundary helper stacks.
+  `pushPbftBlock_()` uses one local helper set for snapshot application, action checks, failure reporting, and typed
+  advancement while retaining the explicit external FinalChain, DAG, transaction-manager, PBFT-chain, sortition,
+  vote-manager, advance-period, pillar, and anchor-cache client APIs.
 - The standalone `plan_pbft_finalization_intent` CXX export is retired. C++ now calls
   `pbft_manager_runtime_plan_finalization_intent` on the long-lived `BridgePbftManagerRuntime`, making the manager
   runtime the required bridge owner for finalization intent planning. The planner is still stateless and fact-driven at
