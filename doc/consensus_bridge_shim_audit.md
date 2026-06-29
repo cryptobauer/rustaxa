@@ -199,7 +199,7 @@ Current snapshot after DAG proposer-session cursor consolidation:
   query fixtures that still need exact FinalChain lookup rows seed them through native `rustaxa-storage`
   `FinalChainStore::write_conformance_lookup_rows` test setup, and the storage conformance runner uses the dedicated
   `storage_shim_seed_final_chain_conformance_lookup_rows` fixture helper. `scripts/rewrite_storage_boundary_guard.sh`
-  now enforces that this fixture helper remains limited to the conformance runner and its Rust bridge implementation.
+  enforces that this fixture helper remains limited to the conformance runner and its Rust bridge implementation.
 - `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted. Live DAG transaction availability and
   sync materialization use runtime-owned DAG APIs; the direct storage query had only a C++ bridge-test caller, with
   native Rust coverage retained for pending, finalized, system, and missing transaction RLP lookups.

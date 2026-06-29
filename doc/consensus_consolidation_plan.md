@@ -771,28 +771,32 @@ Implementation notes:
 - Custom agents used for the PBFT finalization report-surface cleanup:
   - `api-designer`: recommended the next larger two-call finalization executor API:
     `pbft_manager_runtime_start_finalization_executor` plus
-    `pbft_manager_runtime_advance_finalization_external_effect`, with C++ reporting outcomes by cursor while Rust
-    derives the requested action.
+    the now-retired generic `pbft_manager_runtime_advance_finalization_external_effect`, with C++ reporting outcomes by
+    cursor while Rust derives the requested action. Follow-up typed-success/failure-only cleanup superseded that generic
+    advancement API.
   - `architect-reviewer`: confirmed the safe next large cut is a Rust-owned finalization executor operation that keeps
     FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, network, and
     local cache effects as explicit external actions for now. The follow-up executor cut below implements that API.
 - Custom agents used for the PBFT finalization executor API consolidation:
   - `rust-engineer`: recommended replacing the three piecemeal finalization boundary exports with
     `pbft_manager_runtime_start_finalization_executor` and
-    `pbft_manager_runtime_advance_finalization_external_effect`, adding cursor to the returned state, and deriving
-    action identity from the Rust cursor.
+    the intermediate generic advancement API, adding cursor to the returned state, and deriving action identity from the
+    Rust cursor. The later generic-report removal replaced this with typed success APIs plus
+    `pbft_manager_runtime_fail_finalization_external_effect`.
   - `cpp-pro`: reviewed the C++ migration and called out the lock partition, move-only FinalChain payloads, duplicate
     resume replay guard, anchor-cache pairing, and failure/abort semantics that the executor cut must preserve.
 - Custom agents used for the PBFT finalization external-effect advance DTO cleanup:
   - `api-designer`: recommended deleting the duplicated `PbftFinalizationExecutorAdvanceReport` copy DTO and advancing
-    the manager runtime with a separate cursor plus the existing external-effect report.
+    the manager runtime with a separate cursor plus the then-existing external-effect report; the later typed-success
+    cleanup removed that generic report from the CXX surface entirely.
   - `cpp-pro`: mapped all C++ report constructors and confirmed the repeated copy wrapper was the narrow removable
-    boundary; subsystem reports should stay as `PbftFinalizationExternalEffectReport` for this cut.
+    boundary for that slice. Later slices converted subsystem reports to typed manager APIs and deleted the generic
+    report boundary.
 - Custom agents used for the transaction finalized-status finalization client cleanup:
   - `api-designer`: recommended PBFT-chain as the smallest standalone bridge-facing generic-report cleanup after this
     transaction cut, with a PBFT-chain-owned head update report and manager-local conversion.
-  - `cpp-pro`: mapped the remaining C++ producers of `PbftFinalizationExternalEffectReport` and confirmed the generic
-    DTO should continue to be the manager executor boundary while individual subsystem helper APIs narrow one by one.
+  - `cpp-pro`: mapped the then-remaining C++ producers of `PbftFinalizationExternalEffectReport`; subsequent slices
+    narrowed those producers one by one and then removed the generic DTO from the manager executor boundary.
 - Custom agents used for the sortition finalization client cleanup:
   - `api-designer`: confirmed sortition should keep the existing Rust bridge `SortitionParamsChangeResult` and use only a
     C++ shim-local `SortitionFinalizationCommitReport`, with no new CXX bridge DTO.
@@ -803,7 +807,8 @@ Implementation notes:
   - `api-designer`: recommended a C++ shim-local `RewardVotesFinalizationResetReport` with no failure/status fields and
     no Rust FFI changes; PBFT manager remains responsible for canonical success/failure reporting.
   - `cpp-pro`: confirmed the reward-vote reset flow now stages storage in Rust, mutates live C++ metadata after commit,
-    and converts to `PbftFinalizationExternalEffectReport` only in `pbft_manager_overlay`.
+    and, at that intermediate point, converted to `PbftFinalizationExternalEffectReport` only in
+    `pbft_manager_overlay`. The later typed advancement cleanup removed that conversion.
 - Custom agents used for the reward-vote reset typed advancement cleanup:
   - `api-designer`: confirmed the manager-scoped CXX DTO should contain only period, round, block hash, and remaining
     extra-reward-vote count, with success/status/cursor/action identity still owned by the PBFT manager executor.
@@ -1271,12 +1276,11 @@ Implementation status:
   native `rustaxa-consensus` transaction storage helper directly, matching the runtime commit path and preserving the
   atomic accepted-transaction RLP plus `TrxCount` write group without a broad `BridgeStorage` mutator.
 - `BridgeStorage::seed_final_chain_conformance_lookup_rows` is deleted from the CXX bridge surface. A code-mapper audit
-  identified it as a broad storage-method export with no production callsites. Rust bridge query fixtures now seed
-  FinalChain lookup rows through native `rustaxa-storage` `FinalChainStore::write_conformance_lookup_rows` test setup,
-  and the storage conformance runner uses the dedicated
-  `storage_shim_seed_final_chain_conformance_lookup_rows` fixture helper instead of a broad storage bridge mutator. The
-  storage-boundary guard now fails if that fixture helper gains new callers outside the conformance runner or bridge
-  implementation.
+  identified it as a broad storage-method export with no production callsites. Rust bridge query fixtures seed FinalChain
+  lookup rows through native `rustaxa-storage` `FinalChainStore::write_conformance_lookup_rows` test setup, and the
+  storage conformance runner uses the dedicated `storage_shim_seed_final_chain_conformance_lookup_rows` fixture helper
+  instead of a broad storage bridge mutator. The storage-boundary guard fails if that fixture helper gains new callers
+  outside the conformance runner or bridge implementation.
 - `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted from the CXX bridge surface. Production
   DAG transaction availability and sync payload lookup continue through runtime-owned DAG APIs; the direct
   storage-query method only backed bridge-test scaffolding, and Rust bridge storage tests now cover pending, finalized,
