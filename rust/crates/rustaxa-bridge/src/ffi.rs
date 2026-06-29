@@ -1559,14 +1559,6 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// C++-originated timer facts for planning the PBFT manager sleep before
-    /// the next step.
-    struct PbftManagerSleepFact {
-        next_step_time_ms: i64,
-        round_elapsed_ms: i64,
-        step: u64,
-    }
-
     /// Rust-owned PBFT manager sleep plan for the C++ condition-variable executor.
     struct PbftManagerSleepPlan {
         accepted: bool,
@@ -4873,9 +4865,6 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerRuntimeTickFact,
         );
-        pub fn plan_pbft_manager_sleep_until_next_step(
-            fact: PbftManagerSleepFact,
-        ) -> PbftManagerSleepPlan;
         pub fn plan_pbft_manager_runtime_sleep_until_next_step(
             runtime: &BridgePbftManagerRuntime,
             round_elapsed_ms: i64,

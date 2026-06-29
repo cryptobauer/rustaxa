@@ -1305,6 +1305,9 @@ Implementation status:
   PBFT manager CXX session surface by one internal handle.
 - `BridgePbftManagerRuntimeSession` is deleted. The outer PBFT manager daemon-loop transcript is now a cursor inside
   `BridgePbftManagerRuntime`, so the scheduler no longer creates a standalone bridge handle each tick.
+- The standalone PBFT manager sleep CXX planner and `PbftManagerSleepFact` DTO are deleted. The C++ PBFT manager shim
+  now requires the long-lived runtime before sleeping and calls only the runtime-owned sleep API; the direct domain
+  planner remains covered inside `rustaxa-consensus` rather than exported as an alternate bridge route.
 - `BridgePbftManagerProposalSession` is deleted. PBFT block proposal planning is now a cursor inside
   `BridgePbftManagerRuntime`, so `pbft_manager_shim` no longer creates a standalone bridge handle for proposal
   construction.

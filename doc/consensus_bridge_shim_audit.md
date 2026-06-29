@@ -480,6 +480,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_session`, `pbft_manager_runtime_session_next`,
   `pbft_manager_runtime_session_report`, and `abort_pbft_manager_runtime_session`, so C++ no longer allocates a
   standalone bridge handle for the scheduler transcript.
+- The standalone PBFT manager sleep CXX planner `plan_pbft_manager_sleep_until_next_step` and its
+  `PbftManagerSleepFact` DTO are retired. `pbft_manager_shim::sleep_()` now requires `BridgePbftManagerRuntime` and
+  calls `plan_pbft_manager_runtime_sleep_until_next_step`, so C++ no longer copies deadline and step facts out of the
+  manager snapshot to drive a fallback route. The native `rustaxa-consensus` planner remains internal domain logic behind
+  the runtime-owned bridge API.
 - `BridgePbftManagerProposalSession` is retired. PBFT block proposal planning is now a cursor inside
   `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_proposal_session`,
   `pbft_manager_proposal_session_next`, and `pbft_manager_proposal_session_report_dag_order`, so C++ no longer allocates

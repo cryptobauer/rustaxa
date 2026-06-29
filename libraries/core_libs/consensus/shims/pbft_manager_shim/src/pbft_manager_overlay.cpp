@@ -1731,19 +1731,13 @@ std::chrono::milliseconds PbftManager::elapsedTimeInMs(const time_point &start_t
 
 void PbftManager::sleep_() {
   // Run "wait_for" sleep in loop due to potential spurious wakeup on lock
+  if (!pbft_manager_runtime_.has_value()) {
+    throw std::runtime_error("PBFT manager runtime must be initialized before sleep");
+  }
   while (!stopped_) {
     const auto round_elapsed_time = elapsedTimeInMs(current_round_start_datetime_);
-    rustaxa::PbftManagerSleepPlan sleep_plan{};
-    if (pbft_manager_runtime_.has_value()) {
-      sleep_plan = rustaxa::plan_pbft_manager_runtime_sleep_until_next_step(*pbft_manager_runtime_.value(),
-                                                                            round_elapsed_time.count());
-    } else {
-      rustaxa::PbftManagerSleepFact sleep_fact{};
-      sleep_fact.next_step_time_ms = next_step_time_ms_.count();
-      sleep_fact.round_elapsed_ms = round_elapsed_time.count();
-      sleep_fact.step = static_cast<uint64_t>(step_);
-      sleep_plan = rustaxa::plan_pbft_manager_sleep_until_next_step(sleep_fact);
-    }
+    rustaxa::PbftManagerSleepPlan sleep_plan = rustaxa::plan_pbft_manager_runtime_sleep_until_next_step(
+        *pbft_manager_runtime_.value(), round_elapsed_time.count());
     if (!sleep_plan.accepted) {
       throw std::runtime_error("PBFT manager Rust sleep plan rejected: " +
                                static_cast<std::string>(sleep_plan.error_code));

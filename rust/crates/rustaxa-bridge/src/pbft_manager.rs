@@ -49,7 +49,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
-    PbftManagerSleepFact as FfiPbftManagerSleepFact,
     PbftManagerSleepPlan as FfiPbftManagerSleepPlan,
     PbftManagerStartupFact as FfiPbftManagerStartupFact,
     PbftManagerStartupReplayRangeFact as FfiPbftManagerStartupReplayRangeFact,
@@ -113,7 +112,6 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_finalization_wait as plan_domain_pbft_manager_finalization_wait,
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
-    plan_pbft_manager_sleep_until_next_step as plan_domain_pbft_manager_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
     plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
@@ -137,8 +135,8 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerProposalSessionStep, PbftManagerProposalStatus, PbftManagerProposalWalletFact,
     PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
     PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepFact,
-    PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
+    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepPlan,
+    PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
     PbftManagerStateActionEffect, PbftManagerStateActionEffectReport,
     PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
     PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
@@ -1303,33 +1301,8 @@ pub fn pbft_manager_runtime_session_report(
     pbft_manager_runtime_session_next(runtime)
 }
 
-/// Plans whether the C++ PBFT manager shell should wait before the next step.
-///
-/// Inputs:
-/// - `fact`: Rust snapshot deadline, observed round elapsed time, and current
-///   PBFT step.
-///
-/// Outputs:
-/// - A Rust-owned wait/no-wait decision. The C++ shell only executes the
-///   returned condition-variable wait and must not recompute the comparison.
-pub fn plan_pbft_manager_sleep_until_next_step(
-    fact: FfiPbftManagerSleepFact,
-) -> FfiPbftManagerSleepPlan {
-    plan_domain_pbft_manager_sleep_until_next_step(fact.into()).into()
-}
-
-/// Plans whether the C++ PBFT manager shell should wait using the Rust runtime deadline.
-///
-/// Inputs:
-/// - `runtime`: Rust-owned PBFT manager runtime containing the current
-///   next-step deadline and step.
-/// - `round_elapsed_ms`: C++-observed elapsed milliseconds for the current
-///   round.
-///
-/// Outputs:
-/// - A Rust-owned wait/no-wait decision. C++ remains the condition-variable
-///   executor and no longer copies deadline fields out of the snapshot to make
-///   this decision.
+/// Plans whether the C++ PBFT manager shell should wait using the Rust runtime
+/// deadline.
 pub fn plan_pbft_manager_runtime_sleep_until_next_step(
     runtime: &BridgePbftManagerRuntime,
     round_elapsed_ms: i64,
@@ -2790,16 +2763,6 @@ impl From<FfiPbftManagerRuntimeActionReport> for PbftManagerRuntimeActionReport 
             has_new_round: value.has_new_round,
             new_round: value.new_round,
             error_code: value.error_code,
-        }
-    }
-}
-
-impl From<FfiPbftManagerSleepFact> for PbftManagerSleepFact {
-    fn from(value: FfiPbftManagerSleepFact) -> Self {
-        Self {
-            next_step_time_ms: value.next_step_time_ms,
-            round_elapsed_ms: value.round_elapsed_ms,
-            step: value.step,
         }
     }
 }
@@ -5001,27 +4964,38 @@ mod tests {
 
     #[test]
     fn bridge_plans_sleep_wait_and_deadline_reached() {
-        let wait = plan_pbft_manager_sleep_until_next_step(FfiPbftManagerSleepFact {
-            next_step_time_ms: 1_000,
-            round_elapsed_ms: 250,
-            step: 2,
-        });
+        let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_runtime_sleep");
+        let transition = plan_pbft_manager_transition(transition_fact(TRANSITION_FILTER));
+        let applied = pbft_manager_runtime_apply_transition_storage_write(
+            &mut runtime,
+            transition,
+            Vec::new(),
+        )
+        .expect("runtime transition should apply");
+        assert_eq!(applied.status, TRANSITION_STORAGE_STATUS_APPLIED);
+
+        let snapshot = pbft_manager_runtime_snapshot(&runtime);
+        assert_eq!(snapshot.next_step_time_ms, 200);
+        let near_elapsed_ms = (snapshot.next_step_time_ms - 1)
+            .try_into()
+            .expect("snapshot value should fit i64");
+        let wait = plan_pbft_manager_runtime_sleep_until_next_step(&runtime, near_elapsed_ms);
         assert!(wait.accepted);
         assert!(wait.should_sleep);
-        assert_eq!(wait.sleep_ms, 750);
-        assert_eq!(wait.step, 2);
+        assert_eq!(wait.sleep_ms, 1);
         assert!(wait.error_code.is_empty());
+        assert_eq!(wait.step, snapshot.step);
 
-        let reached = plan_pbft_manager_sleep_until_next_step(FfiPbftManagerSleepFact {
-            next_step_time_ms: 1_000,
-            round_elapsed_ms: 1_000,
-            step: 3,
-        });
+        let reached_elapsed_ms = snapshot
+            .next_step_time_ms
+            .try_into()
+            .expect("snapshot value should fit i64");
+        let reached = plan_pbft_manager_runtime_sleep_until_next_step(&runtime, reached_elapsed_ms);
         assert!(reached.accepted);
         assert!(!reached.should_sleep);
         assert_eq!(reached.sleep_ms, 0);
-        assert_eq!(reached.step, 3);
         assert!(reached.error_code.is_empty());
+        assert_eq!(reached.step, snapshot.step);
     }
 
     #[test]
