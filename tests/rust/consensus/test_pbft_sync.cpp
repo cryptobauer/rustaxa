@@ -58,22 +58,19 @@ constexpr uint8_t kPbftFinalizationStatusPillarDependencyMissing = 4;
 constexpr uint8_t kPbftFinalizationStatusEmptyCertVotes = 5;
 constexpr uint8_t kPbftFinalizationStatusCertVoteBlockMismatch = 6;
 constexpr uint8_t kPbftFinalizationRuntimeActionFinalizeFinalChain = 9;
-constexpr uint8_t kPbftFinalizationRuntimeActionPersistExecutedStatus = 10;
-constexpr uint8_t kPbftFinalizationRuntimeActionSetExecutedFlag = 11;
-constexpr uint8_t kPbftFinalizationRuntimeActionAdvancePeriod = 12;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitSortitionRuntime = 14;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionMismatch = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActionFailed = 4;
 constexpr uint8_t kPbftFinalizationExecutorModeFresh = 0;
 constexpr uint8_t kPbftFinalizationExecutorModeResume = 1;
-constexpr uint8_t kPbftFinalizationResumeStatusNeedsFinalChainReplay = 2;
 constexpr uint8_t kPbftMgrFieldRound = 0;
 constexpr uint8_t kPbftMgrFieldStep = 1;
 constexpr uint8_t kPbftMgrFieldLambda = 2;
 constexpr uint8_t kPbftMgrStatusExecutedBlock = 0;
 constexpr uint8_t kPbftMgrStatusNextVotedValue = 2;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
+constexpr uint8_t kPbftFinalizationStorageStageDynamic = 1;
 constexpr uint8_t kPbftManagerStartupStatusReady = 0;
 constexpr uint8_t kPbftManagerRuntimeStateValueProposal = 0;
 constexpr uint8_t kPbftManagerRuntimeStateFinish = 3;
@@ -128,6 +125,13 @@ PbftFinalizationStorageWriteStage finalizationStorageStage(uint8_t stage) {
   return write_stage;
 }
 
+PbftFinalizationStorageWriteStage dynamicLambdaFinalizationStorageStage(const PbftFinalizationIntentPlan& plan) {
+  auto write_stage = finalizationStorageStage(kPbftFinalizationStorageStageDynamic);
+  write_stage.rounds_count_dynamic_lambda = plan.storage_write_intent.rounds_count_dynamic_lambda;
+  write_stage.dynamic_lambda = plan.storage_write_intent.dynamic_lambda;
+  return write_stage;
+}
+
 rust::Vec<PbftFinalizationStorageWriteStage> storageStages(
     std::initializer_list<PbftFinalizationStorageWriteStage> stages) {
   rust::Vec<PbftFinalizationStorageWriteStage> out;
@@ -135,15 +139,6 @@ rust::Vec<PbftFinalizationStorageWriteStage> storageStages(
     out.push_back(std::move(stage));
   }
   return out;
-}
-
-PbftFinalizationResumePlan emptyFinalizationResumePlan() {
-  PbftFinalizationResumePlan resume{};
-  resume.status = 0;
-  resume.duplicate_classified = false;
-  resume.complete = false;
-  resume.error_code = "";
-  return resume;
 }
 
 PbftManagerFinalizationExecutorState startFreshFinalizationExecutor(
@@ -154,18 +149,18 @@ PbftManagerFinalizationExecutorState startFreshFinalizationExecutor(
   request.plan = plan;
   request.primary_stages = std::move(primary_stages);
   request.sync = false;
-  request.resume = emptyFinalizationResumePlan();
+  request.final_chain_last_block = 0;
   return pbft_manager_runtime_start_finalization_executor(runtime, request);
 }
 
 PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(BridgePbftManagerRuntime& runtime,
                                                                      const PbftFinalizationIntentPlan& plan,
-                                                                     const PbftFinalizationResumePlan& resume) {
+                                                                     uint64_t final_chain_last_block) {
   PbftFinalizationExecutorStartRequest request{};
   request.mode = kPbftFinalizationExecutorModeResume;
   request.plan = plan;
   request.sync = false;
-  request.resume = resume;
+  request.final_chain_last_block = final_chain_last_block;
   return pbft_manager_runtime_start_finalization_executor(runtime, request);
 }
 
@@ -912,23 +907,18 @@ TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
 
 TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {
   const auto plan = finalizationIntentPlan(makeFinalizationFact());
-  PbftFinalizationResumePlan resume;
-  resume.status = kPbftFinalizationResumeStatusNeedsFinalChainReplay;
-  resume.duplicate_classified = true;
-  resume.complete = false;
-  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionFinalizeFinalChain);
-  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionPersistExecutedStatus);
-  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionSetExecutedFlag);
-  resume.replay_actions.push_back(kPbftFinalizationRuntimeActionAdvancePeriod);
-  resume.error_code = "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY";
   auto runtime = managerRuntimeForFinalizationSession();
+  startFreshFinalizationExecutor(
+      *runtime, plan,
+      storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary),
+                     dynamicLambdaFinalizationStorageStage(plan)}));
 
-  const auto boundary = startResumeFinalizationExecutor(*runtime, plan, resume);
+  const auto boundary = startResumeFinalizationExecutor(*runtime, plan, plan.storage_write_intent.block_period - 1);
 
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActive);
-  EXPECT_EQ(boundary.cursor, 0);
   EXPECT_TRUE(boundary.has_action);
   EXPECT_EQ(boundary.action, kPbftFinalizationRuntimeActionFinalizeFinalChain);
+  EXPECT_FALSE(boundary.applied_dynamic_lambda);
 }
 
 TEST(RustPbftSyncTest, DynamicLambdaPlannerMatchesCactiAdjustmentPolicy) {

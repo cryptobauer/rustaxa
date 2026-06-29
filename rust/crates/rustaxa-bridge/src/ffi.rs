@@ -1868,7 +1868,7 @@ pub mod rustaxa_ffi {
         plan: PbftFinalizationIntentPlan,
         primary_stages: Vec<PbftFinalizationStorageWriteStage>,
         sync: bool,
-        resume: PbftFinalizationResumePlan,
+        final_chain_last_block: u64,
     }
 
     /// Manager-owned PBFT finalization executor state returned to C++.
@@ -1944,15 +1944,6 @@ pub mod rustaxa_ffi {
     /// identity are derived by the manager finalization executor.
     struct PbftManagerFinalizationAdvancePeriodReport {
         manager_period: u64,
-    }
-
-    /// Rust classification of durable PBFT finalization resume state.
-    struct PbftFinalizationResumePlan {
-        status: u8,
-        duplicate_classified: bool,
-        complete: bool,
-        replay_actions: Vec<u8>,
-        error_code: String,
     }
 
     /// Result from appending Rust-owned finalized-period storage writes to an existing batch.
@@ -4756,11 +4747,6 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftManagerRuntime,
             fact: PbftDynamicLambdaFact,
         ) -> Result<PbftManagerFinalizationDynamicLambdaPlan>;
-        pub fn pbft_manager_runtime_inspect_finalization_resume(
-            runtime: &BridgePbftManagerRuntime,
-            write_set: &PbftFinalizationStorageWritePlan,
-            final_chain_last_block: u64,
-        ) -> Result<PbftFinalizationResumePlan>;
         pub fn pbft_manager_runtime_plan_finalization_intent(
             runtime: &BridgePbftManagerRuntime,
             fact: PbftFinalizationIntentFact,

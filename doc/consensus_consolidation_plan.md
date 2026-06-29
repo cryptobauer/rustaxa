@@ -1127,6 +1127,13 @@ Implementation notes:
   - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
   - `rg -n "PbftFinalizationExecutorAdvanceReport|pbft_manager_runtime_advance_finalization_executor|makeFinalizationExecutorAdvanceReport" rust/crates/rustaxa-bridge/src libraries tests -g'*.rs' -g'*.cpp' -g'*.hpp'`
     returns no live code references.
+- PBFT duplicate-finalization resume inspection is folded into
+  `pbft_manager_runtime_start_finalization_executor`. Resume mode now takes the accepted finalization plan plus the
+  external FinalChain last-block fact, then `BridgePbftManagerRuntime` inspects runtime-owned storage and starts the
+  replay cursor internally. The CXX `PbftFinalizationResumePlan` DTO and public
+  `pbft_manager_runtime_inspect_finalization_resume` method are deleted; native Rust resume plans remain only for
+  domain/private bridge tests. Complete duplicates return a completed no-action executor state, making no-op duplicate
+  acceptance explicit at the manager boundary.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining pillar-chain external DPoS/materialization/event paths are still present and remain Slice 6 work.
 - Additional validation for the pillar-chain runtime PBFT-finalization consolidation:
@@ -1156,9 +1163,9 @@ Implementation notes:
   - `rg -n "getVerifiedPillarVotes\\(" libraries/core_libs/network libraries/core_libs/consensus/shims tests/rust/consensus -g'*.cpp' -g'*.hpp'`
     shows no network serving callsites; remaining callsites are public compatibility/tests and non-network pillar-chain
     routes.
-- The immediate follow-up is collapsing the now-typed PBFT finalization executor loop into a smaller manager-owned
-  operation where practical, then continuing Slice 6 service consolidation and the later pillar-chain runtime work that
-  still needs external DPoS fact ports plus legacy materialization removal.
+- The immediate follow-up is collapsing the remaining typed PBFT finalization external-action loop into a smaller
+  manager-owned operation where practical, then continuing Slice 6 service consolidation and the later pillar-chain
+  runtime work that still needs external DPoS fact ports plus legacy materialization removal.
 
 ## Slice 7: Narrow External Execution API and StateAPI Adapter
 
@@ -1285,9 +1292,11 @@ Implementation status:
   DAG transaction availability and sync payload lookup continue through runtime-owned DAG APIs; the direct
   storage-query method only backed bridge-test scaffolding, and Rust bridge storage tests now cover pending, finalized,
   system, and missing transaction RLP lookup through the native helper.
-- The standalone `inspect_pbft_finalization_resume` CXX export is deleted. Production duplicate-finalization recovery
-  uses the runtime-owned `pbft_manager_runtime_inspect_finalization_resume` API from `pbft_manager_shim`, while Rust
-  bridge and native consensus tests exercise the native resume inspector directly.
+- The standalone `inspect_pbft_finalization_resume` CXX export and later runtime-scoped
+  `pbft_manager_runtime_inspect_finalization_resume` CXX method are deleted. Production duplicate-finalization recovery
+  starts resume mode through `pbft_manager_runtime_start_finalization_executor`; C++ supplies only the FinalChain
+  last-block fact, and `BridgePbftManagerRuntime` inspects runtime-owned Rust storage internally before creating the
+  replay cursor. Rust bridge and native consensus tests exercise the native resume inspector directly.
 - The standalone `plan_pbft_finalization_intent` CXX export is deleted. Production PBFT finalization intent planning now
   enters through `pbft_manager_runtime_plan_finalization_intent`, and Rust bridge tests that need the bridge-shaped plan
   also construct a manager runtime before planning. The runtime is a boundary owner for this stateless fact-driven

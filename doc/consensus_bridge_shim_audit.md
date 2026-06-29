@@ -202,9 +202,11 @@ Current snapshot after DAG proposer-session cursor consolidation:
 - `BridgeTransactionStorageQueries::get_transaction_rlps_by_hashes` is deleted. Live DAG transaction availability and
   sync materialization use runtime-owned DAG APIs; the direct storage query had only a C++ bridge-test caller, with
   native Rust coverage retained for pending, finalized, system, and missing transaction RLP lookups.
-- The standalone `inspect_pbft_finalization_resume` CXX export is deleted. Live duplicate-finalization recovery enters
-  through `pbft_manager_runtime_inspect_finalization_resume`, which keeps storage ownership on
-  `BridgePbftManagerRuntime`; Rust tests call the native consensus resume inspector directly.
+- The standalone `inspect_pbft_finalization_resume` CXX export and later runtime-scoped
+  `pbft_manager_runtime_inspect_finalization_resume` CXX method are deleted. Live duplicate-finalization recovery enters
+  resume mode on `pbft_manager_runtime_start_finalization_executor`; C++ supplies only the FinalChain last-block fact,
+  and `BridgePbftManagerRuntime` inspects its Rust storage internally before starting the replay cursor. Rust tests call
+  the native consensus resume inspector directly.
 - `BridgePeriodStorageQueries::get_pbft_block_hash_by_period` is deleted. It had no C++ or Rust callers after public
   period lookups moved to the typed by-PBFT-hash query and raw period-data readers used by the storage shim,
   conformance fixtures, and PBFT sync tests.
@@ -513,6 +515,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   finalization identity for typed reports, and returns explicit cursor/action executor states. C++ remains the executor for
   FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache
   side effects.
+- Duplicate-finalization resume inspection is folded into `pbft_manager_runtime_start_finalization_executor` resume
+  mode. C++ supplies only `final_chain_last_block`; the manager runtime inspects its Rust storage internally, starts the
+  replay cursor, and returns either the next external action or a completed no-op state. The public runtime inspector and
+  `PbftFinalizationResumePlan` CXX DTO are deleted.
 - The standalone `plan_pbft_finalization_intent` CXX export is retired. C++ now calls
   `pbft_manager_runtime_plan_finalization_intent` on the long-lived `BridgePbftManagerRuntime`, making the manager
   runtime the required bridge owner for finalization intent planning. The planner is still stateless and fact-driven at

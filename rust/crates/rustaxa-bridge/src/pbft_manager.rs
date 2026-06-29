@@ -16,7 +16,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationPositionedHash as FfiPbftFinalizationPositionedHash,
-    PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
     PbftManagerAdvancePeriodActionReport as FfiPbftManagerAdvancePeriodActionReport,
     PbftManagerAdvancePeriodActionReportResult as FfiPbftManagerAdvancePeriodActionReportResult,
@@ -272,61 +271,6 @@ impl From<PbftFinalizationCleanupIntent> for FfiPbftFinalizationCleanupPlan {
             maybe_update_dynamic_lambda: value.maybe_update_dynamic_lambda,
             advance_period: value.advance_period,
             process_pillar_block: value.process_pillar_block,
-        }
-    }
-}
-
-impl From<&FfiPbftFinalizationResumePlan> for PbftFinalizationResumePlan {
-    fn from(value: &FfiPbftFinalizationResumePlan) -> Self {
-        Self {
-            status: match value.status {
-                0 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NotPersisted,
-                1 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Complete,
-                2 => {
-                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsFinalChainReplay
-                }
-                3 => {
-                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence
-                }
-                4 => {
-                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::MissingPrimaryFacts
-                }
-                5 => {
-                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::ConflictingPrimaryFacts
-                }
-                6 => {
-                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsDynamicLambdaPersistence
-                }
-                7 => {
-                    rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::NeedsPillarPostProcessingReplay
-                }
-                255 => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::ContractError,
-                _ => rustaxa_consensus::pbft_finalize::PbftFinalizationResumeStatus::Unknown,
-            },
-            duplicate_classified: value.duplicate_classified,
-            complete: value.complete,
-            replay_actions: value
-                .replay_actions
-                .iter()
-                .filter_map(|action| PbftFinalizationRuntimeAction::from_u8(*action))
-                .collect(),
-            error_code: value.error_code.to_string(),
-        }
-    }
-}
-
-impl From<PbftFinalizationResumePlan> for FfiPbftFinalizationResumePlan {
-    fn from(value: PbftFinalizationResumePlan) -> Self {
-        Self {
-            status: value.status.as_u8(),
-            duplicate_classified: value.duplicate_classified,
-            complete: value.complete,
-            replay_actions: value
-                .replay_actions
-                .into_iter()
-                .map(PbftFinalizationRuntimeAction::as_u8)
-                .collect(),
-            error_code: value.error_code,
         }
     }
 }
@@ -1557,36 +1501,6 @@ pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
     )))
 }
 
-/// Inspects duplicate PBFT finalization progress through runtime-owned storage.
-///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime with its Rust storage handle.
-/// - `write_set`: expected finalized-period storage intent for the duplicate block.
-/// - `final_chain_last_block`: C++ FinalChain durable height, which Rust
-///   consensus storage cannot infer.
-///
-/// Outputs:
-/// - A bridge-safe resume classification describing which durable stages are
-///   complete and which runtime replay actions remain.
-///
-/// Invariants and edge behavior:
-/// - FinalChain execution remains a typed runtime action owned by C++ for now.
-/// - Storage conflicts are reported by the Rust resume inspector and are never
-///   repaired by this wrapper.
-pub fn pbft_manager_runtime_inspect_finalization_resume(
-    runtime: &BridgePbftManagerRuntime,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-    final_chain_last_block: u64,
-) -> anyhow::Result<FfiPbftFinalizationResumePlan> {
-    let write_set: PbftFinalizationStorageWriteIntent = write_set.into();
-    inspect_domain_pbft_finalization_resume(
-        runtime.storage.as_ref(),
-        &write_set,
-        final_chain_last_block,
-    )
-    .map(Into::into)
-}
-
 /// Starts a runtime-owned PBFT manager daemon-tick session.
 ///
 /// Inputs:
@@ -2138,11 +2052,9 @@ fn pbft_manager_runtime_begin_finalization_session(
 /// existing manager runtime.
 fn pbft_manager_runtime_begin_finalization_resume_session(
     runtime: &mut BridgePbftManagerRuntime,
-    plan: &FfiPbftFinalizationResumePlan,
+    plan: PbftFinalizationResumePlan,
 ) {
-    let domain_plan = PbftFinalizationResumePlan::from(plan);
-    runtime.finalization_runtime_session =
-        Some(start_pbft_finalization_resume_runtime(&domain_plan));
+    runtime.finalization_runtime_session = Some(start_pbft_finalization_resume_runtime(&plan));
 }
 
 /// Returns the next manager-owned PBFT finalization action without advancing the cursor.
@@ -2287,7 +2199,8 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 /// - `runtime`: long-lived PBFT manager runtime that owns storage and the
 ///   finalization cursor.
 /// - `request`: accepted finalization intent plus either fresh primary-storage
-///   stages or a duplicate-finalization resume plan.
+///   stages or the FinalChain height needed to inspect duplicate-finalization
+///   resume from runtime-owned storage.
 ///
 /// Outputs:
 /// - Applies fresh primary storage when requested, drains Rust-owned manager
@@ -2299,8 +2212,8 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 ///   work.
 /// - Fresh mode requires the first Rust action to be primary storage and reports
 ///   storage apply success or failure to the same cursor before returning.
-/// - Resume mode uses the supplied durable resume transcript and does not
-///   reapply primary storage.
+/// - Resume mode derives the durable replay transcript from runtime-owned
+///   storage and does not reapply primary storage.
 /// - The caller must echo the returned `cursor` to
 ///   one of the typed finalization advancement APIs after executing one
 ///   external action.
@@ -2309,8 +2222,16 @@ pub fn pbft_manager_runtime_start_finalization_executor(
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
-        runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(&request.plan));
-        pbft_manager_runtime_begin_finalization_resume_session(runtime, &request.resume);
+        let plan = PbftFinalizationPlan::from(&request.plan);
+        let write_set =
+            PbftFinalizationStorageWriteIntent::from(&request.plan.storage_write_intent);
+        let resume = inspect_domain_pbft_finalization_resume(
+            runtime.storage.as_ref(),
+            &write_set,
+            request.final_chain_last_block,
+        )?;
+        runtime.finalization_runtime_plan = Some(plan);
+        pbft_manager_runtime_begin_finalization_resume_session(runtime, resume);
         return drain_finalization_executor_state(runtime);
     }
     if request.mode != FINALIZATION_EXECUTOR_MODE_FRESH {
@@ -3702,7 +3623,7 @@ mod tests {
         create_pbft_vote_storage_queries, create_storage,
     };
     use ethereum_types::H256;
-    use rustaxa_consensus::pbft_finalize::PbftFinalizationStatus;
+    use rustaxa_consensus::pbft_finalize::{PbftFinalizationResumeStatus, PbftFinalizationStatus};
     use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
     use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
     use std::fs;
@@ -4926,14 +4847,19 @@ mod tests {
     fn manager_runtime_finalization_resume_cursor_replays_tail_actions() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_resume");
-        let resume = FfiPbftFinalizationResumePlan {
-            status: 2,
+        let resume = PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsFinalChainReplay,
             duplicate_classified: true,
             complete: false,
-            replay_actions: vec![9, 10, 11, 12],
+            replay_actions: vec![
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                PbftFinalizationRuntimeAction::SetExecutedFlag,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+            ],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY".to_string(),
         };
-        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
+        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, resume);
 
         let mut step = pbft_manager_runtime_finalization_session_next(&mut runtime);
         let mut actions = Vec::new();
@@ -4954,6 +4880,49 @@ mod tests {
     }
 
     #[test]
+    fn manager_runtime_start_resume_executor_classifies_complete_duplicate() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_start_resume_complete");
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
+        let mut dynamic = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
+        dynamic.rounds_count_dynamic_lambda = plan.storage_write_intent.rounds_count_dynamic_lambda;
+        dynamic.dynamic_lambda = plan.storage_write_intent.dynamic_lambda;
+        apply_domain_pbft_finalization_storage_writes(
+            runtime.storage.as_ref(),
+            &write_set,
+            vec![
+                empty_finalization_stage(0),
+                dynamic,
+                empty_finalization_stage(FINALIZATION_STAGE_EXECUTED_STATUS),
+            ],
+            false,
+        )
+        .expect("complete duplicate storage state should seed");
+
+        let state = pbft_manager_runtime_start_finalization_executor(
+            &mut runtime,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_RESUME,
+                plan,
+                primary_stages: Vec::new(),
+                sync: false,
+                final_chain_last_block: 10,
+            },
+        )
+        .expect("resume executor should inspect storage-backed duplicate");
+
+        assert_eq!(
+            state.status,
+            PbftFinalizationRuntimeStatus::Complete.as_u8()
+        );
+        assert!(state.complete);
+        assert!(!state.has_action);
+        assert_eq!(state.drained_actions, 0);
+        assert!(state.can_continue);
+    }
+
+    #[test]
     fn manager_runtime_drain_replays_executed_status_resume_tail() {
         let temp_dir =
             unique_temp_dir("rustaxa_bridge_pbft_manager_finalization_resume_executed_drain");
@@ -4966,18 +4935,18 @@ mod tests {
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
                 .expect("runtime should initialize");
             let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-            let resume = FfiPbftFinalizationResumePlan {
-                status: 3,
+            let resume = PbftFinalizationResumePlan {
+                status: PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence,
                 duplicate_classified: true,
                 complete: false,
                 replay_actions: vec![
-                    PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8(),
-                    PbftFinalizationRuntimeAction::SetExecutedFlag.as_u8(),
+                    PbftFinalizationRuntimeAction::PersistExecutedStatus,
+                    PbftFinalizationRuntimeAction::SetExecutedFlag,
                 ],
                 error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
             };
             runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
-            pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
+            pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, resume);
 
             let drained = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
                 .expect("resume owned-action drain should run");
@@ -5006,15 +4975,15 @@ mod tests {
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_drain_reject");
         let mut plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         plan.storage_write_intent.persist_executed_pbft_status = false;
-        let resume = FfiPbftFinalizationResumePlan {
-            status: 3,
+        let resume = PbftFinalizationResumePlan {
+            status: PbftFinalizationResumeStatus::NeedsExecutedStatusPersistence,
             duplicate_classified: true,
             complete: false,
-            replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8()],
+            replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
         };
         runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
-        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, &resume);
+        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, resume);
 
         let rejected = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
             .expect("rejected owned-action drain should report through result");
