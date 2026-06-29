@@ -25,11 +25,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftFinalizedPeriodApplyResult as FfiPbftFinalizedPeriodApplyResult,
 };
 #[cfg(test)]
-use crate::ffi::BridgeStorage;
-#[cfg(test)]
 use crate::storage::create_period_storage_queries;
-#[cfg(test)]
-use anyhow::Result;
 use ethereum_types::H256;
 #[cfg(test)]
 use rustaxa_consensus::pbft_finalize::apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes;
@@ -46,8 +42,6 @@ use rustaxa_consensus::pbft_finalize::{
 use rustaxa_storage::Column;
 
 #[cfg(test)]
-const APPLY_STATUS_REJECTED_WRITE_SET: u8 = 2;
-#[cfg(test)]
 const APPEND_STAGE_PRIMARY_FINALIZATION: u8 = 0;
 #[cfg(test)]
 const APPEND_STAGE_DYNAMIC_LAMBDA: u8 = 1;
@@ -61,54 +55,6 @@ const APPEND_STAGE_REWARD_VOTES_RESET: u8 = 4;
 const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
 #[cfg(test)]
 const PBFT_TWO_T_PLUS_ONE_CERT_VOTED_TYPE: u8 = 1;
-
-/// Applies one or more PBFT finalization persistence stages in a Rust-owned
-/// storage batch.
-///
-/// Inputs:
-/// - `storage`: shared Rust storage bridge used only to access the native
-///   `rustaxa-storage` handle.
-/// - `write_set`: accepted PBFT finalization storage intent from the Rust planner.
-/// - `stages`: ordered persistence stages to append to one batch.
-/// - `sync`: whether the storage commit should use a synchronous write option.
-///
-/// Outputs:
-/// - The combined apply result. A rejected, missing-payload, or conflicting
-///   stage result is returned from the consensus-owned apply helper before any
-///   commit.
-///
-/// Invariants and edge behavior:
-/// - Stages are appended in the supplied order and committed atomically in one
-///   Rust storage batch.
-/// - Empty stage lists are rejected without creating durable writes.
-/// - Rust storage failures are returned as bridge errors. The bridge does not
-///   create, own, or commit a batch for this production apply path.
-#[cfg(test)]
-pub fn apply_pbft_finalization_storage_writes(
-    storage: &BridgeStorage,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-    stages: Vec<FfiPbftFinalizationStorageWriteStage>,
-    sync: bool,
-) -> Result<FfiPbftFinalizedPeriodApplyResult> {
-    if stages.is_empty() {
-        return Ok(sidecar_apply_result(
-            APPLY_STATUS_REJECTED_WRITE_SET,
-            write_set,
-            "PBFT_FINALIZE_NO_STORAGE_WRITE_STAGES",
-        ));
-    }
-
-    let domain_stages = stages.into_iter().map(Into::into).collect();
-
-    Ok(apply_result_from_domain(
-        apply_domain_pbft_finalization_storage_writes(
-            storage.0.as_ref(),
-            &PbftFinalizationStorageWriteIntent::from(write_set),
-            domain_stages,
-            sync,
-        )?,
-    ))
-}
 
 #[cfg(test)]
 fn empty_stage(stage: u8) -> FfiPbftFinalizationStorageWriteStage {
@@ -421,24 +367,6 @@ impl From<&FfiPbftFinalizationStorageWritePlan> for PbftFinalizationStorageWrite
     }
 }
 
-#[cfg(test)]
-fn sidecar_apply_result(
-    status: u8,
-    write_set: &FfiPbftFinalizationStorageWritePlan,
-    error_code: &str,
-) -> FfiPbftFinalizedPeriodApplyResult {
-    FfiPbftFinalizedPeriodApplyResult {
-        status,
-        wrote_pbft_head: false,
-        wrote_period_data: false,
-        dag_index_writes: 0,
-        transaction_location_writes: 0,
-        block_period: write_set.block_period,
-        pbft_block_hash: write_set.pbft_block_hash,
-        error_code: error_code.to_string(),
-    }
-}
-
 impl From<PbftFinalizationPositionedHash> for FfiPbftFinalizationPositionedHash {
     fn from(value: PbftFinalizationPositionedHash) -> Self {
         Self {
@@ -558,6 +486,23 @@ mod tests {
 
     fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
         create_transaction_storage_queries(storage)
+    }
+
+    fn apply_domain_storage_writes(
+        storage: &BridgeStorage,
+        write_set: &FfiPbftFinalizationStorageWritePlan,
+        stages: Vec<FfiPbftFinalizationStorageWriteStage>,
+        sync: bool,
+    ) -> anyhow::Result<FfiPbftFinalizedPeriodApplyResult> {
+        let domain_stages = stages.into_iter().map(Into::into).collect();
+        Ok(apply_result_from_domain(
+            apply_domain_pbft_finalization_storage_writes(
+                storage.0.as_ref(),
+                &PbftFinalizationStorageWriteIntent::from(write_set),
+                domain_stages,
+                sync,
+            )?,
+        ))
     }
 
     fn reward_vote_bundle_rlp(raw_votes: Vec<Vec<u8>>) -> Vec<u8> {
@@ -684,7 +629,7 @@ mod tests {
                 .expect("seed batch should commit");
 
             let plan = plan_pbft_finalization_intent(fact());
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION)],
@@ -739,7 +684,7 @@ mod tests {
                 .get_pbft_mgr_status(EXECUTED_BLOCK_STATUS_FIELD)
                 .expect("executed status should remain sidecar-owned"));
 
-            let retry_result = apply_pbft_finalization_storage_writes(
+            let retry_result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION)],
@@ -779,7 +724,7 @@ mod tests {
 
             let plan = plan_pbft_finalization_intent(fact());
             let bundle = reward_vote_bundle_rlp(vec![vec![0x01], vec![0x02]]);
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![
@@ -848,7 +793,7 @@ mod tests {
             );
             assert!(!missing.duplicate_classified);
 
-            let primary = apply_pbft_finalization_storage_writes(
+            let primary = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION)],
@@ -879,7 +824,7 @@ mod tests {
             let mut dynamic_stage = empty_stage(APPEND_STAGE_DYNAMIC_LAMBDA);
             dynamic_stage.rounds_count_dynamic_lambda = 7;
             dynamic_stage.dynamic_lambda = 1450;
-            let dynamic = apply_pbft_finalization_storage_writes(
+            let dynamic = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![dynamic_stage],
@@ -907,7 +852,7 @@ mod tests {
                 ]
             );
 
-            let executed = apply_pbft_finalization_storage_writes(
+            let executed = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_EXECUTED_STATUS)],
@@ -941,7 +886,7 @@ mod tests {
                     .expect("storage should initialize");
             let mut missing_plan = plan_pbft_finalization_intent(fact());
             missing_plan.storage_write_intent.pbft_head_payload.clear();
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &missing_plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION)],
@@ -957,7 +902,7 @@ mod tests {
                 .write_pbft_period(H256::from([7; 32]), 99)
                 .expect("conflicting PBFT block period should seed");
             let plan = plan_pbft_finalization_intent(fact());
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_PRIMARY_FINALIZATION)],
@@ -979,7 +924,7 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![FfiPbftFinalizationStorageWriteStage {
@@ -1009,7 +954,7 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![sortition_stage(10)],
@@ -1036,7 +981,7 @@ mod tests {
                 }
             );
 
-            let retry_result = apply_pbft_finalization_storage_writes(
+            let retry_result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![sortition_stage(10)],
@@ -1057,7 +1002,7 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_SORTITION_PARAMS_CHANGE)],
@@ -1085,7 +1030,7 @@ mod tests {
             let mut dynamic_stage = empty_stage(APPEND_STAGE_DYNAMIC_LAMBDA);
             dynamic_stage.rounds_count_dynamic_lambda = 7;
             dynamic_stage.dynamic_lambda = 1_450;
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![dynamic_stage],
@@ -1114,7 +1059,7 @@ mod tests {
                 1_450
             );
 
-            let retry_result = apply_pbft_finalization_storage_writes(
+            let retry_result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 {
@@ -1148,7 +1093,7 @@ mod tests {
             let mut dynamic_stage = empty_stage(APPEND_STAGE_DYNAMIC_LAMBDA);
             dynamic_stage.rounds_count_dynamic_lambda = 7;
             dynamic_stage.dynamic_lambda = 1_450;
-            let lambda_result = apply_pbft_finalization_storage_writes(
+            let lambda_result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![dynamic_stage],
@@ -1178,7 +1123,7 @@ mod tests {
                 .pbft()
                 .write_manager_status(EXECUTED_BLOCK_STATUS_FIELD, false)
                 .expect("previous executed status should seed");
-            let status_result = apply_pbft_finalization_storage_writes(
+            let status_result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![empty_stage(APPEND_STAGE_EXECUTED_STATUS)],
@@ -1227,7 +1172,7 @@ mod tests {
                 .expect("seed extras should commit");
 
             let bundle = reward_vote_bundle_rlp(vec![vec![0x01], vec![0x02]]);
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![FfiPbftFinalizationStorageWriteStage {
@@ -1300,7 +1245,7 @@ mod tests {
                 .commit_write_batch_with_sync(seed_batch, false)
                 .expect("seed batch should commit");
 
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![FfiPbftFinalizationStorageWriteStage {
@@ -1334,7 +1279,7 @@ mod tests {
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
 
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![FfiPbftFinalizationStorageWriteStage {
@@ -1364,7 +1309,7 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let plan = plan_pbft_finalization_intent(fact());
-            let result = apply_pbft_finalization_storage_writes(
+            let result = apply_domain_storage_writes(
                 &storage,
                 &plan.storage_write_intent,
                 vec![FfiPbftFinalizationStorageWriteStage {

@@ -1748,8 +1748,8 @@ Implementation status:
   after deriving finalization identity from `BridgePbftManagerRuntime`.
 - The standalone `apply_pbft_finalization_storage_writes` CXX export is deleted. Live manager-owned finalization storage
   writes enter through `BridgePbftManagerRuntime`, while the retained verified-votes storage API remains the compatibility
-  surface for vote-manager finalization storage facts. The lower bridge wrapper and direct storage-apply scenarios remain
-  Rust test-only coverage.
+  surface for vote-manager finalization storage facts. The lower test-only bridge wrapper is deleted; direct
+  storage-apply scenarios now call the native consensus helper through a private bridge-module test adapter.
 
 ## Slice 9: Delete Compatibility Tests That Only Protect Retired Scaffolding
 

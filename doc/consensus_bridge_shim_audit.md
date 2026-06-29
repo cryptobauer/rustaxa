@@ -522,8 +522,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   and delegates to the native `rustaxa-consensus` planner.
 - The standalone `apply_pbft_finalization_storage_writes` CXX export is deleted. Production primary, dynamic-lambda, and
   executed-status finalization storage writes are manager-runtime-owned, and the retained verified-votes storage API
-  remains a compatibility surface for vote-manager finalization storage facts. The lower bridge wrapper is now Rust
-  test-only coverage for the native storage apply helper.
+  remains a compatibility surface for vote-manager finalization storage facts. The lower test-only bridge wrapper is
+  deleted; bridge-module storage-apply coverage now calls the native consensus helper through a private test-local
+  adapter instead of preserving a public wrapper.
 - `PbftFinalizationRuntimeActionReport` is no longer a CXX DTO. It is a private Rust helper used inside
   `pbft_manager.rs`; C++ no longer owns the scalar action report DTO.
 - `PbftFinalizationLiveMutationReport` and `PbftFinalizationExternalEffectReport` are no longer CXX DTOs. External
