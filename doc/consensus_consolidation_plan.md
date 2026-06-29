@@ -1707,9 +1707,10 @@ Implementation status:
   - `rtk rg -n "pub fn plan_pillar_vote_relevance|\\bplan_pillar_vote_relevance\\(" rust/crates/rustaxa-bridge/src/ffi.rs tests/rust/consensus libraries/core_libs/consensus/shims libraries/core_libs/network -g'*.rs' -g'*.cpp' -g'*.hpp'`
     returns no matches, proving the direct CXX export and its C++ bridge-test callers are gone.
 - The standalone broad `apply_rewards_stats_storage_writes` CXX export is deleted. The follow-up no-production-caller
-  `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` CXX method is also deleted. Rewards-stat
-  storage writes now enter through the dedicated storage-shim batch appender for staged compatibility writes, while
-  direct runtime-owned storage apply coverage remains Rust-private.
+  `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` CXX method and its remaining test-only Rust
+  bridge wrapper are also deleted. Rewards-stat storage writes now enter through the dedicated storage-shim batch
+  appender for staged compatibility writes, while direct owned-storage apply coverage calls the native consensus helper
+  from bridge-module tests instead of preserving a bridge-shaped wrapper.
 - FinalChain rewards-stat publication no longer exposes the full `RewardsStatsProcessResult` through
   `FinalChainPublicationRewardsStats`. The rewards shim keeps the previewed process plan as internal pending state and
   FinalChain receives only decoded distribution stats plus the storage-update DTO that `BridgeConsensusExecutionApi`

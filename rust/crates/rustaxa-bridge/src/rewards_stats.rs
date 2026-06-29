@@ -206,17 +206,6 @@ pub fn rewards_stats_runtime_cached_stats(
         .collect()
 }
 
-/// Applies reward-stat writes through the storage handle owned by the runtime.
-#[cfg(test)]
-pub fn rewards_stats_runtime_apply_storage_writes(
-    runtime: &BridgeRewardsStatsRuntime,
-    plan: &RewardsStatsProcessResult,
-    sync: bool,
-) -> Result<RewardsStatsApplyResult> {
-    let plan = rewards_stats_process_plan_from_ffi(plan);
-    Ok(domain_apply_rewards_stats_storage_writes(&runtime.storage, &plan, sync)?.into())
-}
-
 /// Clears persisted reward-stat rows and updates the runtime cache after the
 /// storage commit succeeds.
 pub fn rewards_stats_runtime_clear_storage_and_state(
@@ -504,8 +493,11 @@ mod tests {
 
         let cache_plan = process_finalized_period_rewards_stats(&mut runtime, fact(1));
         assert!(cache_plan.cache_current_period);
-        let apply =
-            rewards_stats_runtime_apply_storage_writes(&runtime, &cache_plan, false).unwrap();
+        let domain_plan = rewards_stats_process_plan_from_ffi(&cache_plan);
+        let apply: RewardsStatsApplyResult =
+            domain_apply_rewards_stats_storage_writes(&runtime.storage, &domain_plan, false)
+                .unwrap()
+                .into();
         assert_eq!(apply.status, REWARDS_STATS_APPLY_STATUS_APPLIED);
         assert!(apply.wrote_current_period);
         assert_eq!(

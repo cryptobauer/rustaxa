@@ -402,9 +402,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   stored `PeriodData` fallback only when the embedded bundle matches the requested period/hash. Network/tarcap still owns
   request validation, packet wrapping, send execution, and peer-known marking.
 - The no-caller broad `apply_rewards_stats_storage_writes` CXX export is deleted. The later no-production-caller
-  `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` CXX method is also deleted. Live rewards-stat
-  persistence uses the dedicated storage-shim batch appender for staged `DbStorage` compatibility writes, while Rust
-  bridge-module tests retain direct owned-storage apply coverage without exporting that helper to C++.
+  `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` CXX method and its remaining test-only Rust
+  bridge wrapper are also deleted. Live rewards-stat persistence uses the dedicated storage-shim batch appender for
+  staged `DbStorage` compatibility writes, while Rust bridge-module tests call the native consensus owned-storage apply
+  helper directly for coverage instead of preserving a bridge-shaped wrapper.
 - `transaction_manager_shim::removeNonFinalizedTransactions` now routes through the Rust transaction-manager runtime for
   both pending-storage-row deletion and sidecar removal. Rust commits the native storage delete batch first and then
   mutates live sidecar state, matching the legacy C++ behavior without exposing public `DbStorage` batch usage in
