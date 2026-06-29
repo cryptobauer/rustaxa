@@ -3617,7 +3617,7 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
-    use crate::pillar_chain::create_pillar_chain_storage;
+    use crate::pillar_chain::create_pillar_chain_runtime;
     use crate::storage::{
         create_metadata_storage_queries, create_pbft_storage_queries,
         create_pbft_vote_storage_queries, create_storage,
@@ -6105,8 +6105,8 @@ mod tests {
                 .pbft()
                 .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
-            create_pillar_chain_storage(&storage)
-                .pillar_chain_storage_apply_own_vote(vec![0xC0])
+            create_pillar_chain_runtime(&storage)
+                .pillar_chain_runtime_apply_own_vote(vec![0xC0])
                 .expect("own pillar vote should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");

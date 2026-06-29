@@ -5434,6 +5434,14 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
+        pub fn pillar_chain_runtime_apply_current_block_data(
+            self: &BridgePillarChainRuntime,
+            data_rlp: Vec<u8>,
+        ) -> Result<()>;
+        pub fn pillar_chain_runtime_apply_own_vote(
+            self: &BridgePillarChainRuntime,
+            vote_rlp: Vec<u8>,
+        ) -> Result<()>;
         pub fn pillar_chain_runtime_prepare_single_vote_admission(
             self: &BridgePillarChainRuntime,
             vote_rlp: Vec<u8>,

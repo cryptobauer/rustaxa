@@ -506,9 +506,10 @@ Implementation notes:
 - `pillar_chain_manager_shim::createPillarBlock()` now calls
   `plan_pillar_block_creation_with_vote_counts`, which combines pillar-block shell planning with ordered validator
   vote-count delta planning behind one Rust API. C++ still owns FinalChain DPoS vote-count reads, temporary
-  `PillarBlock` materialization, current-block storage payload materialization, and live manager mirrors, but it no
-  longer separately orchestrates the creation planner and vote-count planner before constructing a candidate block. The
-  creation-only `plan_pillar_block_creation` CXX export and shell-only DTO are deleted; native Rust still owns the
+  `PillarBlock` materialization, current-block storage payload materialization, and live manager mirrors, but the
+  persisted current-block sidecar write now enters through `BridgePillarChainRuntime` instead of the storage-only handle.
+  It no longer separately orchestrates the creation planner and vote-count planner before constructing a candidate block.
+  The creation-only `plan_pillar_block_creation` CXX export and shell-only DTO are deleted; native Rust still owns the
   lower-level domain planner internally.
 - The no-caller plain-fact pillar-vote bundle CXX planner is deleted:
   `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and
@@ -529,7 +530,9 @@ Implementation notes:
   duplicate/relevance/identity checks, and report whether a period threshold is needed. C++ performs only the external
   FinalChain DPoS eligibility or vote-count lookup and, when needed, threshold lookup, then calls
   `BridgePillarChainRuntime::pillar_chain_runtime_apply_prepared_single_vote_admission` with only canonical RLP and external DPoS
-  facts; Rust re-derives signature identity, initializes period state, and inserts into Rust-owned aggregation. The
+  facts; Rust re-derives signature identity, initializes period state, and inserts into Rust-owned aggregation. The own
+  pillar-vote persistence write now also enters through `BridgePillarChainRuntime`, leaving the storage-only write API to
+  `storage_shim` compatibility. The
   piecemeal single-vote CXX exports
   `pillar_votes_period_data_initialized`, `pillar_votes_init_period_data`, `pillar_votes_vote_exists`,
   `pillar_votes_is_unique_identity`, `pillar_votes_is_unique_vote`, and `pillar_votes_insert_vote` are deleted along

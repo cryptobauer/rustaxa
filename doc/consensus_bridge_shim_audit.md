@@ -365,7 +365,8 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `plan_pillar_block_creation_with_vote_counts`, which combines pillar-block shell planning and ordered validator
   vote-count delta planning behind one Rust bridge call. The creation-only `plan_pillar_block_creation` CXX export and
   shell-only DTO are deleted. C++ still owns external FinalChain DPoS vote-count reads, temporary `PillarBlock`
-  materialization, current-block storage payload materialization, and live manager mirrors.
+  materialization, current-block storage payload materialization, and live manager mirrors, but the current-block sidecar
+  write now enters through `BridgePillarChainRuntime` instead of `BridgePillarChainStorage`.
 - The no-caller plain-fact pillar-vote bundle CXX planner is deleted:
   `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and `plan_pillar_vote_bundle`.
   Live pillar-chain sync uses canonical vote RLPs through `inspect_pillar_vote_bundle_rlps`, performs the one remaining
@@ -383,6 +384,8 @@ Current snapshot after DAG proposer-session cursor consolidation:
   `BridgePillarChainRuntime::pillar_chain_runtime_apply_prepared_single_vote_admission`. Rust owns canonical RLP decode, signature
   recovery, duplicate/relevance/identity checks, period-data initialization, insertion, and conflict/duplicate
   classification. C++ retains only external FinalChain DPoS eligibility/vote-count reads, threshold lookup, and logging.
+  The manager's own-vote persistence write now also enters through `BridgePillarChainRuntime`; the matching
+  `BridgePillarChainStorage` write methods remain for `storage_shim` compatibility only.
   The piecemeal single-vote CXX exports `pillar_votes_period_data_initialized`, `pillar_votes_init_period_data`,
   `pillar_votes_vote_exists`, `pillar_votes_is_unique_identity`, `pillar_votes_is_unique_vote`, and
   `pillar_votes_insert_vote` are deleted along with `PillarVotePayload`, `PillarVoteIdentityPayload`,

@@ -114,6 +114,46 @@ impl BridgePillarChainStorage {
     }
 }
 
+impl BridgePillarChainRuntime {
+    /// Persists current pillar-block sidecar data through the runtime-owned
+    /// native Rust storage handle.
+    ///
+    /// Inputs:
+    /// - `data_rlp` is the canonical legacy `CurrentPillarBlockDataDb` payload
+    ///   produced by the temporary C++ pillar-block materializer.
+    ///
+    /// Outputs:
+    /// - Commits the current-block sidecar row used for restart recovery.
+    ///
+    /// Invariants and edge behavior:
+    /// - Empty payloads are rejected by the consensus storage helper.
+    /// - This method does not mutate runtime vote state or C++ live mirrors; the
+    ///   caller remains responsible for installing temporary C++ sidecars until
+    ///   the pillar manager facade is retired.
+    pub fn pillar_chain_runtime_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
+        save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)
+    }
+
+    /// Persists this node's own pillar-block vote through the runtime-owned
+    /// native Rust storage handle.
+    ///
+    /// Inputs:
+    /// - `vote_rlp` is the canonical legacy `PillarVote` payload selected by the
+    ///   temporary C++ vote materializer.
+    ///
+    /// Outputs:
+    /// - Commits the own-vote row used for restart recovery.
+    ///
+    /// Invariants and edge behavior:
+    /// - Empty payloads are rejected by the consensus storage helper.
+    /// - Vote admission into the live runtime index remains a separate operation;
+    ///   this API only owns the persistence write that used to route through the
+    ///   storage-only bridge handle.
+    pub fn pillar_chain_runtime_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
+        save_own_pillar_block_vote_storage(self.storage.as_ref(), &vote_rlp)
+    }
+}
+
 /// Computes ordered validator vote-count changes for a pillar block.
 ///
 /// The C++ shim supplies the current DPoS vote-count snapshot and the previous
@@ -498,6 +538,40 @@ mod tests {
     }
 
     #[test]
+    fn bridge_runtime_applies_manager_pillar_storage_writes() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_storage_helpers");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let pillar_storage = create_pillar_chain_storage(&storage);
+            let pillar_runtime = create_pillar_chain_runtime(&storage);
+
+            pillar_runtime
+                .pillar_chain_runtime_apply_current_block_data(vec![0xC2, 0x01])
+                .expect("runtime current pillar data should persist");
+            pillar_runtime
+                .pillar_chain_runtime_apply_own_vote(vec![0xC2, 0x02])
+                .expect("runtime own pillar vote should persist");
+
+            assert_eq!(
+                pillar_storage
+                    .pillar_chain_storage_load_current_block_data()
+                    .expect("current pillar data should load"),
+                vec![0xC2, 0x01],
+            );
+            assert_eq!(
+                pillar_storage
+                    .pillar_chain_storage_load_own_vote()
+                    .expect("own pillar vote should load"),
+                vec![0xC2, 0x02],
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn bridge_pillar_storage_reads_return_empty_when_missing() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_storage_missing_reads");
         {
@@ -548,6 +622,17 @@ mod tests {
             assert!(pillar_storage
                 .pillar_chain_storage_apply_own_vote(Vec::new())
                 .expect_err("empty own vote should reject")
+                .to_string()
+                .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD"));
+            let pillar_runtime = create_pillar_chain_runtime(&storage);
+            assert!(pillar_runtime
+                .pillar_chain_runtime_apply_current_block_data(Vec::new())
+                .expect_err("empty runtime current data should reject")
+                .to_string()
+                .contains("PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"));
+            assert!(pillar_runtime
+                .pillar_chain_runtime_apply_own_vote(Vec::new())
+                .expect_err("empty runtime own vote should reject")
                 .to_string()
                 .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD"));
             assert!(pillar_storage
