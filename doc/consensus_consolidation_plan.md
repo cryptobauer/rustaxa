@@ -1568,6 +1568,8 @@ Implementation status:
   deleted from the bridge surface. Live C++ uses the staged `plan_pbft_sync_process_period_data_runtime` API, whose
   runtime plan still carries transaction-query output when the process-period executor needs it; native
   `rustaxa-consensus` tests cover the lower-level admission and transaction-query planners.
+  Follow-up cleanup also deleted the stale `PbftSyncPeriodAdmissionFact` CXX DTO that no live C++ caller used after the
+  direct admission planner was removed.
   Custom agents used: `rust-engineer` identified these two direct planners as bridge-test-only exports after the live
   PBFT sync route moved to the staged runtime API.
   Validation for this CXX export shrink:

@@ -599,6 +599,9 @@ Current snapshot after DAG proposer-session cursor consolidation:
   deleted. Live C++ uses the staged `plan_pbft_sync_process_period_data_runtime` API, whose nested runtime plan still
   carries transaction-query output when needed; native `rustaxa-consensus` tests keep coverage for the lower-level
   admission and transaction-query planners.
+- Follow-up cleanup removed the stale `PbftSyncPeriodAdmissionFact` CXX DTO that remained after the direct admission
+  planner export was deleted. Admission facts now stay native to `rustaxa-consensus`; the bridge exposes only the staged
+  runtime process-period fact used by the live PBFT manager shim.
 - Lower-level FinalChain execution API helpers that were superseded by the one-shot
   `consensus_execution_prepare_external_evm_state_commit` call are retired from the CXX surface:
   `consensus_execution_plan_publication`, `consensus_execution_attach_rewards_stats`,

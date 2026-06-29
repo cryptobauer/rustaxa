@@ -1183,23 +1183,6 @@ pub mod rustaxa_ffi {
         finalized_lookup_hashes: Vec<PbftSyncTransactionHash>,
     }
 
-    /// C++-originated PBFT sync admission fact.
-    struct PbftSyncPeriodAdmissionFact {
-        block_period: u64,
-        block_prev_hash: [u8; 32],
-        chain_last_hash: [u8; 32],
-        chain_last_period: u64,
-        block_in_chain: bool,
-        final_chain_hash_status: u8,
-        reward_votes_status: u8,
-        cert_votes_status: u8,
-        missing_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        finalized_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        contains_finalized_transactions: bool,
-        pillar_data_status: u8,
-        pillar_votes_status: u8,
-    }
-
     /// Storage-backed PBFT sync egress payload for packet materialization.
     struct PbftSyncEgressPayload {
         period_data_rlp: Vec<u8>,

@@ -10,7 +10,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftSyncCertVoteBundleValidation as FfiPbftSyncCertVoteBundleValidation,
     PbftSyncCertVoteFact as FfiPbftSyncCertVoteFact,
     PbftSyncEgressPayload as FfiPbftSyncEgressPayload,
-    PbftSyncPeriodAdmissionFact as FfiPbftSyncPeriodAdmissionFact,
     PbftSyncProcessPeriodDataRuntimeFact as FfiPbftSyncProcessPeriodDataRuntimeFact,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
     PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
@@ -24,8 +23,7 @@ use rustaxa_consensus::pbft_sync::{
     plan_pbft_sync_process_period_data_runtime as plan_domain_pbft_sync_process_period_data_runtime,
     validate_pbft_sync_cert_vote_bundle as validate_domain_pbft_sync_cert_vote_bundle,
     PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleValidation, PbftSyncCertVoteFact,
-    PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionFact,
-    PbftSyncProcessPeriodDataRuntimeFact, PbftSyncProcessPeriodDataRuntimePlan,
+    PbftSyncFactStatus, PbftSyncProcessPeriodDataRuntimeFact, PbftSyncProcessPeriodDataRuntimePlan,
     PbftSyncRewardVoteAttachmentFact, PbftSyncRuntimeFinalChainHashStatus,
     PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
 };
@@ -75,36 +73,6 @@ pub fn validate_pbft_sync_cert_vote_bundle(
     fact: FfiPbftSyncCertVoteBundleFact,
 ) -> FfiPbftSyncCertVoteBundleValidation {
     validate_domain_pbft_sync_cert_vote_bundle(fact.into()).into()
-}
-
-impl From<FfiPbftSyncPeriodAdmissionFact> for PbftSyncPeriodAdmissionFact {
-    fn from(value: FfiPbftSyncPeriodAdmissionFact) -> Self {
-        Self {
-            block_period: value.block_period,
-            block_prev_hash: H256::from(value.block_prev_hash),
-            chain_last_hash: H256::from(value.chain_last_hash),
-            chain_last_period: value.chain_last_period,
-            block_in_chain: value.block_in_chain,
-            final_chain_hash_status: PbftSyncFinalChainHashStatus::from_u8(
-                value.final_chain_hash_status,
-            ),
-            reward_votes_status: PbftSyncFactStatus::from_u8(value.reward_votes_status),
-            cert_votes_status: PbftSyncFactStatus::from_u8(value.cert_votes_status),
-            missing_transaction_hashes: value
-                .missing_transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            finalized_transaction_hashes: value
-                .finalized_transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            contains_finalized_transactions: value.contains_finalized_transactions,
-            pillar_data_status: PbftSyncFactStatus::from_u8(value.pillar_data_status),
-            pillar_votes_status: PbftSyncFactStatus::from_u8(value.pillar_votes_status),
-        }
-    }
 }
 
 impl From<FfiPbftSyncCertVoteFact> for PbftSyncCertVoteFact {
