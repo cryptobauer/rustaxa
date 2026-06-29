@@ -617,8 +617,10 @@ class PillarChainManager {
    * - `above_threshold` requests the minimum sorted above-threshold vote set.
    *
    * Edge behavior:
-   * - Falls back to persisted period votes only when the in-memory index has no
-   *   entries for the requested key.
+   * - Rust falls back to persisted period votes only when the live runtime lookup
+   *   has no retained state for the requested key.
+   * - Lookup or materialization errors are logged and reported as an empty vector
+   *   while this method remains a compatibility-only C++ vote materializer.
    */
   std::vector<std::shared_ptr<PillarVote>> getVerifiedPillarVotes(PbftPeriod period, const blk_hash_t pillar_block_hash,
                                                                   bool above_threshold = false) const;

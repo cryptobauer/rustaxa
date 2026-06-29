@@ -244,16 +244,45 @@ impl BridgePillarChainRuntime {
         )
     }
 
-    /// Looks up Rust-retained vote payloads from the runtime-owned index.
+    /// Looks up pillar-vote payloads through the runtime-owned index.
+    ///
+    /// Inputs:
+    /// - `period` and `block_hash` identify the requested pillar-vote set.
+    /// - `above_threshold` preserves the live runtime selection contract for
+    ///   callers that only want already-thresholded votes.
+    ///
+    /// Outputs:
+    /// - Returns live runtime vote payloads when retained.
+    /// - Falls back to the stored `PeriodData` pillar-vote bundle after restart
+    ///   when the live runtime has no retained votes for the request.
+    ///
+    /// Invariants and edge behavior:
+    /// - Storage fallback verifies the embedded period and block hash before
+    ///   returning payloads so C++ does not decode unrelated period sidecars.
+    /// - Stored period data does not preserve the original vote weights at this
+    ///   boundary; fallback records therefore carry zero weight while preserving
+    ///   canonical vote bytes and hashes for temporary C++ materialization.
     pub fn pillar_chain_runtime_get_verified_vote_payloads(
         &self,
         period: u64,
         block_hash: &[u8; 32],
         above_threshold: bool,
-    ) -> PillarVotesPayloadLookup {
-        self.votes
-            .get_verified_votes(period, H256::from(*block_hash), above_threshold)
-            .into()
+    ) -> Result<PillarVotesPayloadLookup> {
+        let requested_hash = H256::from(*block_hash);
+        let runtime_lookup = self
+            .votes
+            .get_verified_votes(period, requested_hash, above_threshold);
+        if !runtime_lookup.votes.is_empty()
+            || runtime_lookup.threshold_met
+            || runtime_lookup.block_weight > 0
+            || runtime_lookup.selected_weight > 0
+        {
+            return Ok(runtime_lookup.into());
+        }
+
+        let stored_votes =
+            load_stored_period_pillar_votes(self.storage.as_ref(), period, requested_hash)?;
+        Ok(stored_votes_to_payload_lookup(stored_votes))
     }
 
     /// Builds packet-ready pillar-vote bundle chunks for network serving.
@@ -468,6 +497,24 @@ fn load_stored_period_pillar_votes(
             (vote, vote_hash)
         })
         .collect())
+}
+
+fn stored_votes_to_payload_lookup(
+    stored_votes: Vec<(PillarVote, H256)>,
+) -> PillarVotesPayloadLookup {
+    PillarVotesPayloadLookup {
+        threshold_met: !stored_votes.is_empty(),
+        block_weight: 0,
+        selected_weight: 0,
+        votes: stored_votes
+            .into_iter()
+            .map(|(vote, vote_hash)| PillarVoteRecord {
+                vote_hash: vote_hash.into(),
+                weight: 0,
+                vote_rlp: vote.encode_rlp(),
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -1906,6 +1953,86 @@ mod tests {
         assert!(mismatched
             .to_string()
             .contains("stored pillar vote bundle does not match"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn verified_vote_payload_lookup_falls_back_to_matching_stored_period_data() {
+        let dir = unique_temp_dir("pillar_payload_lookup_storage_bundle");
+        let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
+        let runtime = create_pillar_chain_runtime(&storage);
+        let period = 94;
+        let block = H256::from_low_u64_be(9400);
+        let (vote, _) = signed_vote(0x65, period, 9400);
+        storage
+            .0
+            .period()
+            .write(
+                period,
+                &period_data_with_pillar_votes(std::slice::from_ref(&vote)),
+            )
+            .unwrap();
+
+        let lookup = runtime
+            .pillar_chain_runtime_get_verified_vote_payloads(period, block.as_fixed_bytes(), true)
+            .unwrap();
+
+        assert!(lookup.threshold_met);
+        assert_eq!(lookup.block_weight, 0);
+        assert_eq!(lookup.selected_weight, 0);
+        assert_eq!(lookup.votes.len(), 1);
+        assert_eq!(lookup.votes[0].vote_hash, <[u8; 32]>::from(vote.hash(true)));
+        assert_eq!(lookup.votes[0].weight, 0);
+        assert_eq!(lookup.votes[0].vote_rlp, vote.encode_rlp());
+
+        let mismatched = match runtime.pillar_chain_runtime_get_verified_vote_payloads(
+            period,
+            H256::from_low_u64_be(9401).as_fixed_bytes(),
+            true,
+        ) {
+            Ok(_) => panic!("mismatched storage bundle should be rejected"),
+            Err(err) => err,
+        };
+        assert!(mismatched
+            .to_string()
+            .contains("stored pillar vote bundle does not match"));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn verified_vote_payload_lookup_keeps_live_below_threshold_state() {
+        let dir = unique_temp_dir("pillar_payload_lookup_live_below_threshold");
+        let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
+        let mut runtime = create_pillar_chain_runtime(&storage);
+        let period = 95;
+        let block = H256::from_low_u64_be(9500);
+        let (live_vote, _) = signed_vote(0x66, period, 9500);
+        let (stored_vote, _) = signed_vote(0x67, period, 9500);
+        storage
+            .0
+            .period()
+            .write(
+                period,
+                &period_data_with_pillar_votes(std::slice::from_ref(&stored_vote)),
+            )
+            .unwrap();
+        let (verified_live_vote, _) = signed_rlp_to_verified_vote(live_vote.encode_rlp(), 2)
+            .unwrap()
+            .expect("signed live vote should verify");
+        assert!(runtime.votes.initialize_period_data(period, 10));
+        runtime
+            .votes
+            .add_verified_vote(verified_live_vote)
+            .expect("live below-threshold vote should be retained");
+
+        let lookup = runtime
+            .pillar_chain_runtime_get_verified_vote_payloads(period, block.as_fixed_bytes(), true)
+            .unwrap();
+
+        assert!(!lookup.threshold_met);
+        assert_eq!(lookup.block_weight, 2);
+        assert_eq!(lookup.selected_weight, 0);
+        assert!(lookup.votes.is_empty());
         fs::remove_dir_all(dir).ok();
     }
 

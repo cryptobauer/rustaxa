@@ -402,6 +402,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   bundle RLP bytes plus matching vote hashes for peer-known bookkeeping, using live runtime votes first and a strict
   stored `PeriodData` fallback only when the embedded bundle matches the requested period/hash. Network/tarcap still owns
   request validation, packet wrapping, send execution, and peer-known marking.
+- `PillarChainManager::getVerifiedPillarVotes()` no longer performs its own storage-byte fallback after an empty
+  runtime lookup. The compatibility method now calls
+  `BridgePillarChainRuntime::pillar_chain_runtime_get_verified_vote_payloads`, and Rust owns the live-vote-first,
+  stored-`PeriodData` fallback plus period/hash verification before the shim materializes temporary C++ votes.
 - The no-caller broad `apply_rewards_stats_storage_writes` CXX export is deleted. The later no-production-caller
   `BridgeRewardsStatsRuntime::rewards_stats_runtime_apply_storage_writes` CXX method and its remaining test-only Rust
   bridge wrapper are also deleted. Live rewards-stat persistence uses the dedicated storage-shim batch appender for

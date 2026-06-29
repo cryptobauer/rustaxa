@@ -550,8 +550,11 @@ Implementation notes:
   bundle chunks from `BridgePillarChainRuntime::pillar_chain_runtime_build_verified_vote_network_bundles`, wraps each
   inner bundle RLP as the tarcap packet payload, sends it, and marks the returned vote hashes known. Rust serves
   runtime-retained votes first and falls back to stored `PeriodData` only when the embedded optimized bundle matches the
-  requested period/hash. `getVerifiedPillarVotes()` remains only for public compatibility/tests and later PBFT
-  `PeriodData` cleanup.
+  requested period/hash.
+- `PillarChainManager::getVerifiedPillarVotes()` remains only for public compatibility/tests and later PBFT
+  `PeriodData` cleanup, but it no longer reads persisted period-data bytes directly. Its runtime API now returns
+  live vote payloads first and performs the same strict stored-`PeriodData` fallback in Rust, leaving the shim as
+  temporary C++ `PillarVote` materialization only.
 - `pbft_manager_shim` proposal and sync PBFT block validation now call the stateless
   `plan_pbft_manager_block_validation` API with a local fact bundle. The bridge-owned
   `block_validation_session` field and begin/next/report CXX exports are gone, so validation no longer stores a cursor in

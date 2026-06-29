@@ -1164,21 +1164,15 @@ ValidatePbftBlockPillarVotesWithRustResult PillarChainManager::validatePbftBlock
 std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVotes(PbftPeriod period,
                                                                                     const blk_hash_t pillar_block_hash,
                                                                                     bool above_threshold) const {
-  std::vector<std::shared_ptr<PillarVote>> pillar_votes;
   try {
-    pillar_votes = materializePillarVotes(
-        pillar_runtime_->pillar_chain_runtime_get_verified_vote_payloads(period, toBridgeHash(pillar_block_hash),
-                                                                         above_threshold));
-  } catch (const std::exception&) {
-    // Fall back to persisted sidecar bytes when the in-memory votes are unavailable.
+    return materializePillarVotes(pillar_runtime_->pillar_chain_runtime_get_verified_vote_payloads(
+        period, toBridgeHash(pillar_block_hash), above_threshold));
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to load verified pillar votes for period " << period << ", block " << pillar_block_hash
+                 << ": " << e.what();
   }
 
-  // No votes returned from memory, try db
-  if (pillar_votes.empty()) {
-    pillar_votes = decodePeriodPillarVotesFromRustBytes(rust_storage_->pillar_chain_storage_load_period_data(period));
-  }
-
-  return pillar_votes;
+  return {};
 }
 
 std::vector<PillarChainManager::PillarVoteNetworkBundleChunk> PillarChainManager::buildVerifiedPillarVoteNetworkBundles(

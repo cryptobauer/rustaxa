@@ -2522,7 +2522,10 @@ pub mod rustaxa_ffi {
         block_weight: u64,
     }
 
-    /// Rust-retained pillar vote payload selected for C++ edge materialization.
+    /// Pillar vote payload selected for C++ edge materialization.
+    ///
+    /// Records may come from live Rust runtime state or from a verified stored
+    /// `PeriodData` fallback, depending on the runtime lookup API used.
     struct PillarVoteRecord {
         vote_hash: [u8; 32],
         weight: u64,
@@ -5457,7 +5460,7 @@ pub mod rustaxa_ffi {
             period: u64,
             block_hash: &[u8; 32],
             above_threshold: bool,
-        ) -> PillarVotesPayloadLookup;
+        ) -> Result<PillarVotesPayloadLookup>;
         pub fn pillar_chain_runtime_build_verified_vote_network_bundles(
             self: &BridgePillarChainRuntime,
             period: u64,
