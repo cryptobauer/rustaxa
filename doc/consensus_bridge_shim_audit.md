@@ -235,6 +235,10 @@ Current snapshot after DAG proposer-session cursor consolidation:
   bridge-only `TransactionPackEstimateOutcome` DTO. Live C++ transaction packing uses the batch prepare/finalize route,
   and Rust bridge tests now cover candidate selection, sharding, declared-gas, cache, and finalization behavior through
   that route.
+- The stale `TransactionManagerInsertTransactionFact` and `TransactionManagerInsertTransactionOutcome` CXX DTOs are
+  deleted. They were not referenced by any exported bridge function or C++ caller; insertion precheck/admission planning
+  now uses private Rust structs inside `transaction_manager.rs`, and C++ still receives only the higher-level admission
+  command reports it already consumed.
 - The bridge-test-only transaction-manager recovery loader exports and DTOs are deleted:
   `transaction_manager_load_nonfinalized_recovery`, `transaction_manager_load_nonfinalized_recovery_inputs`,
   `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput`. The only C++ recovery boundary is

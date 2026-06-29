@@ -3466,27 +3466,6 @@ pub mod rustaxa_ffi {
         status: u8,
     }
 
-    /// Facts extracted by C++ for TransactionManager::insertTransaction admission checks.
-    struct TransactionManagerInsertTransactionFact {
-        /// Transaction hash being evaluated.
-        tx_hash: [u8; 32],
-        /// Already known in the live transaction pool.
-        hash_known: bool,
-        /// Post-queue insertion status as returned by Rust queue adapter.
-        queue_status: u8,
-        /// Finalized period hint is available.
-        has_finalized_period: bool,
-        /// Finalized period hint used when `status == AlreadyFinalized`.
-        finalized_period: u64,
-    }
-
-    /// TransactionManager::insertTransaction plan status for C++.
-    struct TransactionManagerInsertTransactionOutcome {
-        status: u8,
-        finalized_period_known: bool,
-        finalized_period: u64,
-    }
-
     /// Facts for runtime validated insert with account facts sourced from
     /// FinalChain at execution time.
     struct TransactionManagerValidatedInsertRuntimeFact {

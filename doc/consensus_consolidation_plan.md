@@ -1372,6 +1372,9 @@ Implementation status:
   `transaction_manager_runtime_pack_record_estimate_step`, and the bridge-only `TransactionPackEstimateOutcome` DTO.
   The retained C++ shim route is the batch prepare/finalize API; Rust bridge tests for sharding, declared-gas, cached
   gas, candidate selection, and finalization now exercise that route instead of the retired request/record cursor.
+- The stale `TransactionManagerInsertTransactionFact` and `TransactionManagerInsertTransactionOutcome` CXX DTOs are
+  deleted from the bridge surface. They were not part of any exported CXX function signature; insertion admission now uses
+  private Rust structs inside `transaction_manager.rs` before mapping to the higher-level admission command reports.
 - Transaction-manager non-finalized recovery loaders are no longer CXX exports:
   `transaction_manager_load_nonfinalized_recovery`, `transaction_manager_load_nonfinalized_recovery_inputs`,
   `TransactionManagerRecoveryEntry`, and `TransactionManagerSidecarRecoveryInsertInput` are deleted from the bridge

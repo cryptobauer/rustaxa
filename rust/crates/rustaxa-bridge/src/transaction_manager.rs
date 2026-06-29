@@ -19,7 +19,6 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerFinalChainAdmissionFact, TransactionManagerFinalizedStatusCommandReport,
     TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
     TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
-    TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionOutcome,
     TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
     TransactionManagerRuntimeAdmissionOutcome, TransactionManagerSidecarInsertInput,
     TransactionManagerSidecarLookupRequest, TransactionManagerTransactionView,
@@ -158,6 +157,30 @@ const TM_INSERT_TRANSACTION_STATUS_CANNOT_INSERT: u8 =
 const TM_ADMISSION_SHELL_INTENT_LOG_INSERTED: u8 = 1;
 const TM_ADMISSION_SHELL_INTENT_EMIT_TRANSACTION_ADDED: u8 = 2;
 const TRANSACTION_QUEUE_DROP_WINDOW: Duration = Duration::from_secs(600);
+
+/// Bridge-private facts for TransactionManager insertion planning.
+///
+/// These are assembled by Rust runtime admission commands from queue and
+/// FinalChain facts that C++ already supplied through higher-level command
+/// APIs. They intentionally stay out of the CXX surface; external callers see
+/// only command reports.
+struct TransactionManagerInsertTransactionFact {
+    tx_hash: [u8; 32],
+    hash_known: bool,
+    queue_status: u8,
+    has_finalized_period: bool,
+    finalized_period: u64,
+}
+
+/// Bridge-private insertion planning result.
+///
+/// The result feeds public admission command reports inside this module and is
+/// not a standalone CXX DTO.
+struct TransactionManagerInsertTransactionOutcome {
+    status: u8,
+    finalized_period_known: bool,
+    finalized_period: u64,
+}
 
 fn hash_command(hash: [u8; 32]) -> TransactionManagerHashCommand {
     TransactionManagerHashCommand { hash }
@@ -1967,10 +1990,10 @@ impl BridgeTransactionManagerRuntime {
 
     /// Returns the Rust-owned public insert precheck for known transactions.
     ///
-    /// C++ calls this before signature/gas verification so known hashes keep the
-    /// legacy fast path while Rust remains authoritative for queue-known plus
-    /// sidecar membership.
-    pub fn transaction_manager_runtime_insert_transaction_precheck(
+    /// Public admission commands call this before signature/gas verification so
+    /// known hashes keep the legacy fast path while Rust remains authoritative
+    /// for queue-known plus sidecar membership.
+    fn transaction_manager_runtime_insert_transaction_precheck(
         &self,
         hash: &[u8; 32],
     ) -> Result<TransactionManagerInsertTransactionOutcome> {
