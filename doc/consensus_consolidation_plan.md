@@ -1288,6 +1288,12 @@ Implementation status:
 - The standalone `inspect_pbft_finalization_resume` CXX export is deleted. Production duplicate-finalization recovery
   uses the runtime-owned `pbft_manager_runtime_inspect_finalization_resume` API from `pbft_manager_shim`, while Rust
   bridge and native consensus tests exercise the native resume inspector directly.
+- The standalone `plan_pbft_finalization_intent` CXX export is deleted. Production PBFT finalization intent planning now
+  enters through `pbft_manager_runtime_plan_finalization_intent`, and Rust bridge tests that need the bridge-shaped plan
+  also construct a manager runtime before planning. The runtime is a boundary owner for this stateless fact-driven
+  planner today, not an additional state source; future runtime policy should be added behind this API instead of
+  reviving the standalone export. The native planner remains in `rustaxa-consensus`; the bridge-level direct wrapper is
+  Rust-private test/support code only.
 - `BridgePeriodStorageQueries::get_pbft_block_hash_by_period` is deleted from the CXX bridge surface. A caller audit
   found no C++ or Rust users; live compatibility paths keep `get_period_data_raw`, `get_period_from_pbft_hash`, and
   receipt reads.

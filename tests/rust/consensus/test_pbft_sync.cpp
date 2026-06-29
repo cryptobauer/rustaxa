@@ -363,6 +363,11 @@ rust::Box<BridgePbftManagerRuntime> managerRuntimeForFinalizationSession() {
   return create_pbft_manager_runtime_from_storage(*storage, startup_fact);
 }
 
+PbftFinalizationIntentPlan finalizationIntentPlan(PbftFinalizationIntentFact fact) {
+  auto runtime = managerRuntimeForFinalizationSession();
+  return pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact));
+}
+
 void expectNoFinalizationCleanup(const PbftFinalizationCleanupPlan& cleanup) {
   EXPECT_FALSE(cleanup.persist_pbft_block_metadata);
   EXPECT_FALSE(cleanup.reset_reward_votes);
@@ -723,7 +728,7 @@ TEST(RustPbftSyncTest, ManagerAdvancePeriodRecordsEffectTranscript) {
 }
 
 TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  const auto plan = finalizationIntentPlan(makeFinalizationFact());
 
   EXPECT_TRUE(plan.finalize_block);
   EXPECT_EQ(plan.anchor, kPbftFinalizationAnchorAnchored);
@@ -774,7 +779,7 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
 }
 
 TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  const auto plan = finalizationIntentPlan(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
   auto boundary = startFreshFinalizationExecutor(
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
@@ -795,7 +800,7 @@ TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
 }
 
 TEST(RustPbftSyncTest, FinalizationBoundaryBeginsAtFirstExternalAction) {
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  const auto plan = finalizationIntentPlan(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
 
   const auto boundary = startFreshFinalizationExecutor(
@@ -812,7 +817,7 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsAlreadyPersistedBlock) {
   auto fact = makeFinalizationFact();
   fact.block_in_chain = true;
 
-  const auto plan = plan_pbft_finalization_intent(std::move(fact));
+  const auto plan = finalizationIntentPlan(std::move(fact));
 
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusBlockAlreadyInChain);
@@ -826,7 +831,7 @@ TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitl
   fact.pivot_dag_anchor_hash = h256(0);
   fact.request_dynamic_lambda_update = false;
 
-  auto plan = plan_pbft_finalization_intent(std::move(fact));
+  auto plan = finalizationIntentPlan(std::move(fact));
 
   EXPECT_TRUE(plan.finalize_block);
   EXPECT_EQ(plan.anchor, kPbftFinalizationAnchorNull);
@@ -840,7 +845,7 @@ TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitl
 
   fact = makeFinalizationFact();
   fact.block_in_chain = true;
-  plan = plan_pbft_finalization_intent(std::move(fact));
+  plan = finalizationIntentPlan(std::move(fact));
 
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusBlockAlreadyInChain);
@@ -850,7 +855,7 @@ TEST(RustPbftSyncTest, FinalizationIntentClassifiesNullAnchorAndRejectsExplicitl
   fact = makeFinalizationFact();
   fact.has_pillar_block = true;
   fact.pillar_block_finalized = false;
-  plan = plan_pbft_finalization_intent(std::move(fact));
+  plan = finalizationIntentPlan(std::move(fact));
 
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusPillarDependencyMissing);
@@ -863,7 +868,7 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
   auto fact = makeFinalizationFact();
   fact.cert_vote_count = 0;
 
-  auto plan = plan_pbft_finalization_intent(std::move(fact));
+  auto plan = finalizationIntentPlan(std::move(fact));
 
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusEmptyCertVotes);
@@ -871,7 +876,7 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
 
   fact = makeFinalizationFact();
   fact.sample_cert_vote_block_hash = h256(10);
-  plan = plan_pbft_finalization_intent(std::move(fact));
+  plan = finalizationIntentPlan(std::move(fact));
 
   EXPECT_FALSE(plan.finalize_block);
   EXPECT_EQ(plan.status, kPbftFinalizationStatusCertVoteBlockMismatch);
@@ -879,8 +884,8 @@ TEST(RustPbftSyncTest, FinalizationIntentRejectsMalformedCertVoteFacts) {
 }
 
 TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
+  const auto plan = finalizationIntentPlan(makeFinalizationFact());
   auto boundary = startFreshFinalizationExecutor(
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   ASSERT_EQ(boundary.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
@@ -893,8 +898,8 @@ TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
 }
 
 TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
+  const auto plan = finalizationIntentPlan(makeFinalizationFact());
   auto state = startFreshFinalizationExecutor(
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
   ASSERT_EQ(state.action, kPbftFinalizationRuntimeActionCommitSortitionRuntime);
@@ -906,7 +911,7 @@ TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
 }
 
 TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {
-  const auto plan = plan_pbft_finalization_intent(makeFinalizationFact());
+  const auto plan = finalizationIntentPlan(makeFinalizationFact());
   PbftFinalizationResumePlan resume;
   resume.status = kPbftFinalizationResumeStatusNeedsFinalChainReplay;
   resume.duplicate_classified = true;

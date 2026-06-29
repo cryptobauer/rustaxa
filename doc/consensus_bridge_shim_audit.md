@@ -509,6 +509,12 @@ Current snapshot after DAG proposer-session cursor consolidation:
   finalization identity for typed reports, and returns explicit cursor/action executor states. C++ remains the executor for
   FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache
   side effects.
+- The standalone `plan_pbft_finalization_intent` CXX export is retired. C++ now calls
+  `pbft_manager_runtime_plan_finalization_intent` on the long-lived `BridgePbftManagerRuntime`, making the manager
+  runtime the required bridge owner for finalization intent planning. The planner is still stateless and fact-driven at
+  this point; the runtime-scoped API prevents new CXX callers from bypassing the manager boundary and leaves room for
+  runtime policy without reviving the standalone export. The direct bridge wrapper remains Rust-private for module tests
+  and delegates to the native `rustaxa-consensus` planner.
 - The standalone `apply_pbft_finalization_storage_writes` CXX export is deleted. Production primary, dynamic-lambda, and
   executed-status finalization storage writes are manager-runtime-owned, and the retained verified-votes storage API
   remains a compatibility surface for vote-manager finalization storage facts. The lower bridge wrapper is now Rust

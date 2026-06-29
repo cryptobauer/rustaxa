@@ -3538,7 +3538,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       block_in_chain ? period_data.pbft_blk->getPrevBlockHash() : pbft_chain_->getHeadHash();
   const auto planner_chain_last_period = block_in_chain ? block_pbft_period - 1 : pbft_chain_->getPbftChainSize();
   const auto planner_pillar_block_finalized = block_in_chain ? true : pillar_block_finalized;
-  const auto finalization_plan = rustaxa::plan_pbft_finalization_intent(makePbftFinalizationIntentFact(
+  const auto finalization_intent_fact = makePbftFinalizationIntentFact(
       period_data, planner_chain_last_hash, pbft_chain_->getLastPbftBlockHash(), planner_chain_last_period,
       block_in_chain, planner_pillar_block_finalized, dynamic_lambda_enabled, cert_votes.size(),
       sample_cert_vote->getBlockHash(), sample_cert_vote->getPeriod(), sample_cert_vote->getRound(),
@@ -3547,7 +3547,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       dynamic_lambda_plan.rounds_count_dynamic_lambda, dynamic_lambda_plan.dynamic_lambda,
       kGenesisConfig.state.dpos.blocks_per_year, dag_blocks_order, transaction_order,
       pbft_chain_->getJsonStrForBlock(pbft_block_hash, null_anchor),
-      kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(block_pbft_period)));
+      kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(block_pbft_period));
+  const auto finalization_plan =
+      rustaxa::pbft_manager_runtime_plan_finalization_intent(*pbft_manager_runtime_.value(), finalization_intent_fact);
   if (!finalization_plan.finalize_block || finalization_plan.status != kPbftFinalizationStatusAccepted) {
     LOG(log_er_) << "Rust PBFT finalization planner rejected block " << pbft_block_hash << ", period "
                  << block_pbft_period << ", round " << block_pbft_round << ", status "

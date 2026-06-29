@@ -33,12 +33,13 @@ use anyhow::Result;
 use ethereum_types::H256;
 #[cfg(test)]
 use rustaxa_consensus::pbft_finalize::apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes;
+#[cfg(test)]
+use rustaxa_consensus::pbft_finalize::plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent;
 use rustaxa_consensus::pbft_finalize::{
-    plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent, PbftDynamicLambdaConfig,
-    PbftDynamicLambdaFact, PbftFinalizationAnchor, PbftFinalizationCleanupIntent,
-    PbftFinalizationIntentFact, PbftFinalizationPlan, PbftFinalizationPositionedHash,
-    PbftFinalizationResumePlan, PbftFinalizationRuntimeAction, PbftFinalizationStatus,
-    PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
+    PbftDynamicLambdaConfig, PbftDynamicLambdaFact, PbftFinalizationAnchor,
+    PbftFinalizationCleanupIntent, PbftFinalizationIntentFact, PbftFinalizationPlan,
+    PbftFinalizationPositionedHash, PbftFinalizationResumePlan, PbftFinalizationRuntimeAction,
+    PbftFinalizationStatus, PbftFinalizationStorageWriteIntent, PbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult,
 };
 #[cfg(test)]
@@ -162,8 +163,9 @@ pub(crate) fn apply_result_from_domain(
     }
 }
 
-/// C++/Rust bridge entry for one deterministic PBFT finalization intent.
-pub fn plan_pbft_finalization_intent(
+/// Bridge-internal entry for one deterministic PBFT finalization intent.
+#[cfg(test)]
+pub(crate) fn plan_pbft_finalization_intent(
     fact: FfiPbftFinalizationIntentFact,
 ) -> FfiPbftFinalizationIntentPlan {
     plan_domain_pbft_finalization_intent(fact.into()).into()

@@ -11,6 +11,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
     PbftFinalizationExecutorStartRequest as FfiPbftFinalizationExecutorStartRequest,
     PbftFinalizationHash as FfiPbftFinalizationHash,
+    PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact,
     PbftFinalizationIntentPlan as FfiPbftFinalizationIntentPlan,
     PbftFinalizationResumePlan as FfiPbftFinalizationResumePlan,
     PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
@@ -83,6 +84,7 @@ use rustaxa_consensus::pbft_finalize::{
     load_pbft_finalization_last_period_lambda as load_domain_pbft_finalization_last_period_lambda,
     next_pbft_finalization_runtime_action,
     plan_pbft_dynamic_lambda as plan_domain_pbft_dynamic_lambda,
+    plan_pbft_finalization_intent as plan_domain_pbft_finalization_intent,
     plan_pbft_finalization_runtime as plan_domain_pbft_finalization_runtime,
     report_pbft_finalization_runtime_action, start_pbft_finalization_resume_runtime,
     start_pbft_finalization_runtime,
@@ -1181,6 +1183,20 @@ pub fn pbft_manager_runtime_pbft_block_in_db(
     hash: &[u8; 32],
 ) -> anyhow::Result<bool> {
     pbft_block_exists_in_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))
+}
+
+/// Plans one deterministic PBFT finalization intent through Rust for a PBFT
+/// manager runtime.
+///
+/// The runtime argument is intentionally explicit to keep the API bound to
+/// the manager-runtime bridge boundary. The current planner is stateless and
+/// uses only the supplied fact; future runtime policy can be added here without
+/// reintroducing a standalone CXX entry point.
+pub fn pbft_manager_runtime_plan_finalization_intent(
+    _runtime: &BridgePbftManagerRuntime,
+    fact: FfiPbftFinalizationIntentFact,
+) -> FfiPbftFinalizationIntentPlan {
+    plan_domain_pbft_finalization_intent(fact.into()).into()
 }
 
 /// Plans finalization dynamic-lambda state and loads the prior persisted lambda through runtime storage.
@@ -3965,7 +3981,7 @@ mod tests {
     fn manager_runtime_owns_finalization_cursor_and_completion() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_cursor");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
 
         let mut step = pbft_manager_runtime_finalization_session_next(&mut runtime);
@@ -3996,7 +4012,7 @@ mod tests {
     fn manager_runtime_validates_and_reports_external_finalization_mutations() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_live_report");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4049,7 +4065,7 @@ mod tests {
     fn manager_runtime_advances_finalization_with_transaction_status_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_transaction_status_report");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4081,7 +4097,7 @@ mod tests {
     fn manager_runtime_advances_finalization_with_pbft_chain_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_pbft_chain_report");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4111,7 +4127,7 @@ mod tests {
     fn manager_runtime_advances_finalization_with_dag_order_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_dag_order_report");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4134,7 +4150,7 @@ mod tests {
     fn manager_runtime_advances_finalization_with_sortition_commit_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_commit_report");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4167,7 +4183,7 @@ mod tests {
     fn manager_runtime_advances_finalization_with_unchanged_sortition_commit_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_no_change");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4200,7 +4216,7 @@ mod tests {
     fn manager_runtime_rejects_sortition_commit_period_mismatch() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_reject");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4236,7 +4252,7 @@ mod tests {
     fn manager_runtime_advances_finalization_with_reward_votes_reset_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_reward_votes_reset_report");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4267,7 +4283,7 @@ mod tests {
     fn manager_runtime_rejects_reward_votes_reset_block_hash_mismatch() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_reward_votes_reset_reject");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4309,7 +4325,7 @@ mod tests {
             .expect("runtime should initialize");
         let mut fact = finalization_fact();
         fact.process_pillar_block_after_advance = true;
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(fact);
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, fact);
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4339,7 +4355,7 @@ mod tests {
     fn manager_runtime_advances_finalization_with_anchor_cache_clear_report() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_anchor_cache_clear_report");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4368,7 +4384,7 @@ mod tests {
         let (_temp_dir, mut runtime) = runtime_for_finalization_test(
             "rustaxa_bridge_pbft_manager_final_chain_dispatch_report",
         );
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4398,7 +4414,7 @@ mod tests {
         let (_temp_dir, mut runtime) = runtime_for_finalization_test(
             "rustaxa_bridge_pbft_manager_final_chain_dispatch_reject",
         );
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4432,7 +4448,7 @@ mod tests {
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_advance_period_report");
         let mut fact = finalization_fact();
         fact.process_pillar_block_after_advance = true;
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(fact);
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, fact);
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
@@ -4465,7 +4481,7 @@ mod tests {
             startup.cacti_active_at_chain_size = false;
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
                 .expect("runtime should initialize");
-            let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+            let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
             pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
 
             loop {
@@ -4541,7 +4557,7 @@ mod tests {
     fn manager_runtime_finalization_cursor_stops_on_failure_or_mismatch() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_failure");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
 
         let failed =
@@ -4569,7 +4585,7 @@ mod tests {
     fn manager_runtime_finalization_cursor_preserves_structured_error_codes() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_error_code");
-        let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
 
         let failed = pbft_manager_runtime_finalization_session_report_action(
@@ -4633,7 +4649,7 @@ mod tests {
             startup.cacti_active_at_chain_size = false;
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
                 .expect("runtime should initialize");
-            let plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+            let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
             let resume = FfiPbftFinalizationResumePlan {
                 status: 3,
                 duplicate_classified: true,
@@ -4672,7 +4688,7 @@ mod tests {
     fn manager_runtime_drain_reports_rejected_owned_storage_action() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_drain_reject");
-        let mut plan = crate::pbft_finalize::plan_pbft_finalization_intent(finalization_fact());
+        let mut plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         plan.storage_write_intent.persist_executed_pbft_status = false;
         let resume = FfiPbftFinalizationResumePlan {
             status: 3,

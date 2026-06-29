@@ -3,7 +3,6 @@ use crate::final_chain::*;
 use crate::gas_pricer::*;
 use crate::network::*;
 use crate::pbft_chain::*;
-use crate::pbft_finalize::*;
 use crate::pbft_manager::*;
 use crate::pbft_sync::*;
 use crate::pbft_vote_generation::*;
@@ -4645,9 +4644,6 @@ pub mod rustaxa_ffi {
         pub fn validate_pbft_sync_cert_vote_bundle(
             fact: PbftSyncCertVoteBundleFact,
         ) -> PbftSyncCertVoteBundleValidation;
-        pub fn plan_pbft_finalization_intent(
-            fact: PbftFinalizationIntentFact,
-        ) -> PbftFinalizationIntentPlan;
         type BridgePbftManagerRuntime;
         pub fn create_pbft_manager_runtime_from_storage(
             storage: &BridgeStorage,
@@ -4803,6 +4799,10 @@ pub mod rustaxa_ffi {
             write_set: &PbftFinalizationStorageWritePlan,
             final_chain_last_block: u64,
         ) -> Result<PbftFinalizationResumePlan>;
+        pub fn pbft_manager_runtime_plan_finalization_intent(
+            runtime: &BridgePbftManagerRuntime,
+            fact: PbftFinalizationIntentFact,
+        ) -> PbftFinalizationIntentPlan;
         pub fn pbft_manager_runtime_start_finalization_executor(
             runtime: &mut BridgePbftManagerRuntime,
             request: PbftFinalizationExecutorStartRequest,
