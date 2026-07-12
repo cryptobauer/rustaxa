@@ -2634,6 +2634,19 @@ pub mod rustaxa_ffi {
         signatures: Vec<PillarBlockViewSignature>,
     }
 
+    /// Durable pillar-chain rows required to reconstruct manager startup state.
+    ///
+    /// Empty byte vectors represent rows that have not yet been persisted. When
+    /// `latest_block_rlp` is present, Rust derives its following PBFT period and
+    /// returns that period's opaque data row in
+    /// `latest_pillar_votes_period_data_rlp`.
+    struct PillarChainStartupBootstrap {
+        own_vote_rlp: Vec<u8>,
+        current_block_data_rlp: Vec<u8>,
+        latest_block_rlp: Vec<u8>,
+        latest_pillar_votes_period_data_rlp: Vec<u8>,
+    }
+
     /// Public FinalChain block view returned by `ConsensusQueryApi`.
     ///
     /// The view is read-only and contains stable scalar/hash facts plus the
@@ -5418,6 +5431,9 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainRuntime,
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn pillar_chain_runtime_load_startup_bootstrap(
+            self: &BridgePillarChainRuntime,
+        ) -> Result<PillarChainStartupBootstrap>;
         pub fn pillar_chain_runtime_prepare_single_vote_admission(
             self: &BridgePillarChainRuntime,
             vote_rlp: Vec<u8>,

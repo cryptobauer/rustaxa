@@ -511,6 +511,11 @@ Implementation notes:
   and the native pillar storage handle used by PBFT-facing finalization. The previous live manager field
   `BridgePillarVotes` is gone; the standalone `BridgePillarVotes` CXX handle is also retired after the remaining C++
   bridge test moved to the runtime. The Rust helper remains only as a bridge-module unit-test fixture.
+- Pillar-chain manager startup now uses that same `BridgePillarChainRuntime` for one Rust-owned recovery snapshot instead
+  of constructing a parallel `BridgePillarChainStorage`. Rust loads the own vote, current-block data, and latest block,
+  decodes the latest block to derive its following period-data lookup, and propagates malformed or overflowing latest
+  blocks as startup errors. C++ retains only temporary pillar object materialization. The storage-only handle remains for
+  the separate `DbStorage` compatibility shim and is no longer part of pillar-manager bootstrap.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` now routes synced bundle RLPs through
   Rust-owned batch inspection and `BridgePillarChainRuntime` weighted apply APIs. C++ only performs the external
   FinalChain DPoS weight lookup in one batched read, then passes canonical RLP bytes and weights back to Rust for

@@ -633,7 +633,6 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
                                        std::shared_ptr<final_chain::FinalChain> final_chain,
                                        std::shared_ptr<KeyManager> key_manager, addr_t node_addr)
     : kFicusHfConfig(ficus_hf_config),
-      rust_storage_(rustaxa::create_pillar_chain_storage(db->rustStorage())),
       pillar_runtime_(rustaxa::create_pillar_chain_runtime(db->rustStorage())),
       network_{},
       final_chain_{std::move(final_chain)},
@@ -645,24 +644,23 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
       mutex_{} {
   LOG_OBJECTS_CREATE("PILLAR_CHAIN");
 
-  if (const auto vote = decodePillarVoteFromRustBytes(rust_storage_->pillar_chain_storage_load_own_vote()); vote) {
+  const auto bootstrap = pillar_runtime_->pillar_chain_runtime_load_startup_bootstrap();
+
+  if (const auto vote = decodePillarVoteFromRustBytes(bootstrap.own_vote_rlp); vote) {
     addVerifiedPillarVote(vote);
   }
 
-  if (auto&& current_pillar_block_data =
-          decodeCurrentPillarBlockDataFromRustBytes(rust_storage_->pillar_chain_storage_load_current_block_data());
+  if (auto&& current_pillar_block_data = decodeCurrentPillarBlockDataFromRustBytes(bootstrap.current_block_data_rlp);
       current_pillar_block_data.has_value()) {
     current_pillar_block_ = std::move(current_pillar_block_data->pillar_block);
     current_pillar_block_vote_counts_ = std::move(current_pillar_block_data->vote_counts);
   }
 
-  if (auto&& latest_pillar_block =
-          decodePillarBlockFromRustBytes(rust_storage_->pillar_chain_storage_load_latest_block());
-      latest_pillar_block) {
+  if (auto&& latest_pillar_block = decodePillarBlockFromRustBytes(bootstrap.latest_block_rlp); latest_pillar_block) {
     last_finalized_pillar_block_ = std::move(latest_pillar_block);
 
-    const auto last_finalized_pillar_block_votes = decodePeriodPillarVotesFromRustBytes(
-        rust_storage_->pillar_chain_storage_load_period_data(last_finalized_pillar_block_->getPeriod() + 1));
+    const auto last_finalized_pillar_block_votes =
+        decodePeriodPillarVotesFromRustBytes(bootstrap.latest_pillar_votes_period_data_rlp);
     // There should always be pillar votes stored in period data for finalized pillar block
     assert(!last_finalized_pillar_block_votes.empty());
     for (const auto& pillar_vote : last_finalized_pillar_block_votes) {

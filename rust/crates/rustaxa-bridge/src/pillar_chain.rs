@@ -12,6 +12,7 @@ use crate::ffi::rustaxa_ffi::{
     PillarBlockCreationWithVoteCountsPlan as FfiPillarBlockCreationWithVoteCountsPlan,
     PillarBlockLinkageFact as FfiPillarBlockLinkageFact,
     PillarBlockLinkagePlan as FfiPillarBlockLinkagePlan,
+    PillarChainStartupBootstrap as FfiPillarChainStartupBootstrap,
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
@@ -35,6 +36,7 @@ use rustaxa_consensus::{
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
+use rustaxa_types::pillar::PillarBlock;
 
 /// Creates a typed pillar-chain storage handle from the generic CXX storage
 /// facade.
@@ -151,6 +153,50 @@ impl BridgePillarChainRuntime {
     ///   storage-only bridge handle.
     pub fn pillar_chain_runtime_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
         save_own_pillar_block_vote_storage(self.storage.as_ref(), &vote_rlp)
+    }
+
+    /// Loads the durable rows required to reconstruct pillar-manager state.
+    ///
+    /// Inputs:
+    /// - Uses the native Rust storage handle owned by this runtime; C++ does not
+    ///   choose storage keys or compose a separate storage bridge handle.
+    ///
+    /// Outputs:
+    /// - Returns this node's own vote, current pillar sidecar, latest finalized
+    ///   pillar block, and the period-data row following that latest block.
+    /// - Missing rows are represented by empty byte vectors.
+    ///
+    /// Invariants and edge behavior:
+    /// - When a latest block exists, Rust decodes its canonical RLP and derives
+    ///   the pillar-vote recovery lookup as `latest.period + 1`.
+    /// - Malformed latest-block RLP and period overflow are returned as errors,
+    ///   preventing startup from silently reconstructing inconsistent state.
+    /// - When no latest block exists, no period-data lookup is needed and the
+    ///   corresponding output is empty.
+    pub fn pillar_chain_runtime_load_startup_bootstrap(
+        &self,
+    ) -> Result<FfiPillarChainStartupBootstrap> {
+        let own_vote_rlp = consensus_load_own_pillar_block_vote_storage(self.storage.as_ref())?;
+        let current_block_data_rlp =
+            consensus_load_current_pillar_block_data_storage(self.storage.as_ref())?;
+        let latest_block_rlp = consensus_load_latest_pillar_block_storage(self.storage.as_ref())?;
+        let latest_pillar_votes_period_data_rlp = if latest_block_rlp.is_empty() {
+            Vec::new()
+        } else {
+            let latest_block = PillarBlock::decode_rlp(&latest_block_rlp)?;
+            let vote_period = latest_block
+                .period
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("latest pillar block period overflow"))?;
+            consensus_load_pillar_period_data_storage(self.storage.as_ref(), vote_period)?
+        };
+
+        Ok(FfiPillarChainStartupBootstrap {
+            own_vote_rlp,
+            current_block_data_rlp,
+            latest_block_rlp,
+            latest_pillar_votes_period_data_rlp,
+        })
     }
 }
 
@@ -566,6 +612,102 @@ mod tests {
                     .expect("own pillar vote should load"),
                 vec![0xC2, 0x02],
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_loads_pillar_startup_bootstrap_after_restart() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_startup_bootstrap");
+        let latest_block = PillarBlock {
+            period: 42,
+            state_root: H256::from_low_u64_be(1),
+            previous_pillar_block_hash: H256::from_low_u64_be(2),
+            bridge_root: H256::from_low_u64_be(3),
+            epoch: 4,
+            validator_vote_count_changes: Vec::new(),
+        }
+        .encode_rlp();
+
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let runtime = create_pillar_chain_runtime(&storage);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(vec![0xC3, 0x01])
+                .expect("current pillar data should persist");
+            runtime
+                .pillar_chain_runtime_apply_own_vote(vec![0xC3, 0x02])
+                .expect("own vote should persist");
+            save_finalized_pillar_block_storage(storage.0.as_ref(), 42, &latest_block)
+                .expect("latest pillar block should persist");
+            storage
+                .0
+                .period()
+                .write(43, &[0xC3, 0x04])
+                .expect("following period data should persist");
+        }
+
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should reopen");
+            let runtime = create_pillar_chain_runtime(&storage);
+            let bootstrap = runtime
+                .pillar_chain_runtime_load_startup_bootstrap()
+                .expect("runtime should load restart bootstrap");
+
+            assert_eq!(bootstrap.own_vote_rlp, vec![0xC3, 0x02]);
+            assert_eq!(bootstrap.current_block_data_rlp, vec![0xC3, 0x01]);
+            assert_eq!(bootstrap.latest_block_rlp, latest_block);
+            assert_eq!(
+                bootstrap.latest_pillar_votes_period_data_rlp,
+                vec![0xC3, 0x04]
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_startup_bootstrap_is_empty_for_new_storage() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_empty_bootstrap");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let runtime = create_pillar_chain_runtime(&storage);
+            let bootstrap = runtime
+                .pillar_chain_runtime_load_startup_bootstrap()
+                .expect("empty bootstrap should load");
+
+            assert!(bootstrap.own_vote_rlp.is_empty());
+            assert!(bootstrap.current_block_data_rlp.is_empty());
+            assert!(bootstrap.latest_block_rlp.is_empty());
+            assert!(bootstrap.latest_pillar_votes_period_data_rlp.is_empty());
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_runtime_startup_bootstrap_rejects_malformed_latest_block() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_malformed_bootstrap");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            save_finalized_pillar_block_storage(storage.0.as_ref(), 42, &[0xC1, 0x01])
+                .expect("malformed latest bytes should persist opaquely");
+            let runtime = create_pillar_chain_runtime(&storage);
+
+            let error = match runtime.pillar_chain_runtime_load_startup_bootstrap() {
+                Ok(_) => panic!("malformed latest block should reject startup"),
+                Err(error) => error,
+            };
+            assert!(error.to_string().contains("six items"));
         }
 
         let _ = fs::remove_dir_all(temp_dir);

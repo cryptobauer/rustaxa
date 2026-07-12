@@ -14,7 +14,6 @@
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace rustaxa {
-struct BridgePillarChainStorage;
 struct BridgePillarChainRuntime;
 }
 
@@ -681,7 +680,6 @@ class PillarChainManager {
  private:
   const FicusHardforkConfig& kFicusHfConfig;
 
-  ::rust::Box<rustaxa::BridgePillarChainStorage> rust_storage_;
   ::rust::Box<rustaxa::BridgePillarChainRuntime> pillar_runtime_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
