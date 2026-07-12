@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <stdexcept>
+#include <type_traits>
 
 #include "common/init.hpp"
 #include "common/types.hpp"
@@ -12,6 +13,15 @@
 namespace taraxa::core_tests {
 
 struct DagTest : NodesTest {};
+
+TEST_F(DagTest, rustModeDagManagerDoesNotInheritLegacyImplementation) {
+#ifdef RUSTAXA_ENABLE
+  static_assert(!std::is_base_of_v<DagManagerOld, DagManager>);
+  SUCCEED();
+#else
+  GTEST_SKIP() << "Dag manager shim is disabled";
+#endif
+}
 
 TEST_F(DagTest, build_dag) {
   const blk_hash_t GENESIS("0000000000000000000000000000000000000000000000000000000000000001");

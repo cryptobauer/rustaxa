@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 #include "rustaxa-bridge/ffi.rs.h"
@@ -22,12 +23,10 @@ struct DagFinalizationOrderReport {
  * Rust-mode DagManager migration facade.
  *
  * This class preserves the public DagManager API while routing migrated behavior
- * through Rust-backed implementations. It still inherits `DagManagerOld` only as
- * temporary construction/identity compatibility until the remaining base-class
- * dependency is removed; method-level legacy forwarding is not part of the
- * Rust-mode path.
+ * through Rust-backed implementations. It owns shared-pointer identity directly
+ * and does not inherit from or delegate to `DagManagerOld` in Rust mode.
  */
-class DagManager : public DagManagerOld {
+class DagManager : public std::enable_shared_from_this<DagManager> {
   struct RustDagManagerGraphs;
 
  public:

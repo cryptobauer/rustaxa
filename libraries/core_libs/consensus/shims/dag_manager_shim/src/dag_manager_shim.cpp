@@ -344,8 +344,7 @@ struct DagManager::RustDagManagerGraphs {
 DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                        std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager)
-    : DagManagerOld(config, node_addr, trx_mgr, pbft_chain, final_chain, db, key_manager),
-      trx_mgr_(std::move(trx_mgr)),
+    : trx_mgr_(std::move(trx_mgr)),
       pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),
       db_(std::move(db)),
@@ -406,7 +405,7 @@ std::pair<blk_hash_t, std::vector<blk_hash_t>> DagManager::getRustFrontier() con
 
 std::shared_ptr<DagManager> DagManager::getShared() {
   try {
-    return std::static_pointer_cast<DagManager>(shared_from_this());
+    return shared_from_this();
   } catch (std::bad_weak_ptr &e) {
     std::cerr << "DagManager: " << e.what() << std::endl;
     return nullptr;

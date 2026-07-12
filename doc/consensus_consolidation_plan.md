@@ -398,6 +398,9 @@ Implementation notes:
 - `dag_manager_shim` now owns the public `VerifyBlockReturnType` enum locally instead of aliasing
   `DagManagerOld::VerifyBlockReturnType`. The public `DagManager::VerifyBlockReturnType` spelling and numeric values are
   preserved for tarcap/tests while reducing one remaining legacy type dependency.
+- `dag_manager_shim` no longer inherits from or constructs `DagManagerOld`. The shim owns `std::enable_shared_from_this`
+  identity directly, `getShared()` returns the shim-owned pointer, and `dag_test` asserts that Rust mode does not inherit
+  the legacy DAG manager implementation.
 - `slashing_manager_shim` now exposes one Rust-admission `SlashingDoubleVoteEvidence` API containing the two canonical
   vote payloads and a single shared PBFT slot. The live `PbftVote` overload is kept as a compatibility adapter that
   validates same-slot evidence before constructing the payload. This removes the loose two-record-plus-slot-scalar
@@ -494,9 +497,9 @@ Implementation notes:
 - `dag_manager_shim` now moved `getShared()` and `getDagMutex()` off inherited `DagManagerOld` access and onto shim-owned
   state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
   callers now perform the lock sequencing directly.
-- Follow-up DAG manager cleanup removed the `DagManagerOld::VerifyBlockReturnType` alias from the shim API; the remaining
-  `DagManagerOld` coupling is constructor/base-class compatibility and should be removed in a separate slice with full
-  DAG manager API parity validation.
+- Follow-up DAG manager cleanup removed the `DagManagerOld::VerifyBlockReturnType` alias and then removed
+  `DagManagerOld` inheritance/construction from the shim API. Remaining DAG manager compatibility debt is C++ graph
+  materialization and the broader public facade itself, not legacy DAG manager base identity.
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
