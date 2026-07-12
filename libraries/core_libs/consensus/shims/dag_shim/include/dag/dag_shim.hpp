@@ -1,16 +1,6 @@
 #pragma once
 
-#include <boost/function.hpp>
-#include <boost/graph/adjacency_list.hpp>
-#include <boost/graph/breadth_first_search.hpp>
-#include <boost/graph/depth_first_search.hpp>
-#include <boost/graph/graph_traits.hpp>
-#include <boost/graph/graphviz.hpp>
-#include <boost/graph/labeled_graph.hpp>
-#include <boost/graph/properties.hpp>
-#include <boost/property_map/property_map.hpp>
-#include <boost/thread.hpp>
-#include <iostream>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -41,21 +31,7 @@ class Network;
  */
 class Dag {
  public:
-  using vertex_property_t = DagOld::vertex_property_t;
-  using edge_property_t = DagOld::edge_property_t;
-  using adj_list_t = DagOld::adj_list_t;
-  using graph_t = DagOld::graph_t;
   using vertex_t = DagOld::vertex_t;
-  using edge_t = DagOld::edge_t;
-  using vertex_iter_t = DagOld::vertex_iter_t;
-  using edge_iter_t = DagOld::edge_iter_t;
-  using vertex_adj_iter_t = DagOld::vertex_adj_iter_t;
-  using vertex_index_map_const_t = DagOld::vertex_index_map_const_t;
-  using vertex_index_map_t = DagOld::vertex_index_map_t;
-  using vertex_period_map_const_t = DagOld::vertex_period_map_const_t;
-  using vertex_period_map_t = DagOld::vertex_period_map_t;
-  using edge_index_map_const_t = DagOld::edge_index_map_const_t;
-  using edge_index_map_t = DagOld::edge_index_map_t;
 
   friend DagManager;
 
@@ -194,8 +170,6 @@ class PivotTree : public Dag {
    */
   PivotTree& operator=(PivotTree&&) = default;
 
-  using Dag::vertex_adj_iter_t;
-  using Dag::vertex_index_map_const_t;
   using Dag::vertex_t;
 
   /**
