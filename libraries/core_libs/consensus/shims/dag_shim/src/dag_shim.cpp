@@ -50,10 +50,6 @@ void from_bridge_dag_hashes(rust::Vec<rustaxa::DagHash> const& hashes, std::vect
   }
 }
 
-[[noreturn]] void throw_unimplemented_dag_api(const char* api_name) {
-  throw std::logic_error("Dag::" + std::string(api_name) + " is not implemented in Rust shim mode");
-}
-
 }  // namespace
 
 struct Dag::RustDagGraphHolder {
@@ -123,10 +119,6 @@ bool Dag::computeOrder(const blk_hash_t& anchor, std::vector<blk_hash_t>& ordere
 }
 
 void Dag::clear() { rust_graph_->graph->dag_clear(); }
-
-bool Dag::reachable(vertex_t const&, vertex_t const&) const { throw_unimplemented_dag_api("reachable"); }
-
-void Dag::collectLeafVertices(std::vector<vertex_t>&) const { throw_unimplemented_dag_api("collectLeafVertices"); }
 
 std::vector<blk_hash_t> PivotTree::getGhostPath(const blk_hash_t& vertex) const {
   std::vector<blk_hash_t> pivot_chain;

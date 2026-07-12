@@ -27,12 +27,9 @@ class Network;
  * - the constructor creates a Rust graph containing the nonzero DAG genesis vertex
  * - public graph methods operate on canonical `blk_hash_t` values and preserve the legacy C++ return contracts
  * - copy operations throw instead of cloning the Rust graph implicitly
- * - protected Boost-vertex helper APIs are intentionally unavailable in Rust mode because no Boost graph is owned here
  */
 class Dag {
  public:
-  using vertex_t = DagOld::vertex_t;
-
   friend DagManager;
 
   /**
@@ -116,20 +113,6 @@ class Dag {
   void clear();
 
  protected:
-  /**
-   * Legacy Boost-vertex reachability helper.
-   *
-   * This Rust facade does not expose Boost vertices; calling it throws `std::logic_error`.
-   */
-  bool reachable(vertex_t const& from, vertex_t const& to) const;
-
-  /**
-   * Legacy Boost-vertex leaf collection helper.
-   *
-   * This Rust facade does not expose Boost vertices; calling it throws `std::logic_error`.
-   */
-  void collectLeafVertices(std::vector<vertex_t>& leaves) const;
-
   struct RustDagGraphHolder;
   std::unique_ptr<RustDagGraphHolder> rust_graph_;
 };
@@ -169,8 +152,6 @@ class PivotTree : public Dag {
    * Moves the Rust graph holder without changing graph contents.
    */
   PivotTree& operator=(PivotTree&&) = default;
-
-  using Dag::vertex_t;
 
   /**
    * Returns the Rust ghost path starting at `vertex`.

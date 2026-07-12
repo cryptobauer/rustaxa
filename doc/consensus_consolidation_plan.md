@@ -500,9 +500,10 @@ Implementation notes:
 - Follow-up DAG manager cleanup removed the `DagManagerOld::VerifyBlockReturnType` alias and then removed
   `DagManagerOld` inheritance/construction from the shim API. Remaining DAG manager compatibility debt is C++ graph
   materialization and the broader public facade itself, not legacy DAG manager base identity.
-- Follow-up DAG facade cleanup removed the unused `DagOld` Boost graph alias re-exports and direct Boost includes from
-  `dag_shim`. The only remaining `DagOld` type reference is `vertex_t`, kept for protected compatibility helpers that
-  throw in Rust mode; the next DAG cleanup decision is whether those protected Boost-vertex helpers can disappear too.
+- Follow-up DAG facade cleanup removed the unused `DagOld` Boost graph alias re-exports, direct Boost includes, and
+  protected Boost-vertex helper stubs from `dag_shim`. The Rust-mode DAG facade is now hash-only; the overlay still
+  imports the legacy header as `DagOld` before defining the standalone Rust facade, but `dag_shim.hpp` no longer exposes
+  legacy graph types.
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.

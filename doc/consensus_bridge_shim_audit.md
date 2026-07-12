@@ -81,7 +81,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | --- | --- | --- | --- | --- |
 | `dag_block_proposer_shim` | Rust retry state for DAG proposal attempts | DAG manager/proposer code | C++ public compatibility facade | Delete when DAG proposal planning lives fully inside Rust DAG runtime. |
 | `dag_manager_shim` | Rust DAG manager runtime behind C++ `DagManager` API | App/consensus code, DAG tests | C++ public compatibility facade | `DagManagerOld` inheritance/construction is removed. Remove the remaining C++ graph materialization when DAG manager callers can use Rust runtime or a thinner public facade. |
-| `dag_shim` | Rust-backed C++ DAG facade with legacy `vertex_t` compatibility only | DAG manager and DAG tests | C++ public compatibility facade | Delete after DAG graph types no longer leak through public C++ API and the protected Boost-vertex helpers are removed. |
+| `dag_shim` | Rust-backed C++ DAG facade with hash-only public graph compatibility | DAG manager and DAG tests | C++ public compatibility facade | Delete after public DAG graph callers can use the Rust runtime or a narrower external facade directly. |
 | `final_chain_shim` | Rust FinalChain runtime behind C++ FinalChain API | App, PBFT manager, transaction manager, RPC/EVM execution | External boundary | Keep EVM execution adapter; remove consensus fact/materialization methods after Rust consensus consumes FinalChain ports directly. |
 | `gas_pricer_shim` | Gas price oracle facade | Transaction/RPC gas price paths | C++ public compatibility facade | Delete after gas price API is native Rust and external RPC sees only a narrow query method. |
 | `key_manager_shim` | Key manager compatibility | App/bootstrap/key manager users | External boundary | Keep until key ownership is redesigned; not a consensus-internal deletion target. |
@@ -124,9 +124,9 @@ Current snapshot after DAG manager verify-result API cleanup:
 
 - Direct `*Old::method(...)` forwarding in consensus shims has no current matches. `dag_manager_shim` no longer inherits
   from or constructs `DagManagerOld`; it owns its public `VerifyBlockReturnType` enum and shared-pointer identity
-  locally. `dag_shim` no longer re-exports the unused `DagOld` Boost graph aliases or includes; the remaining
-  `DagOld::vertex_t` reference exists only for protected compatibility helpers that throw in Rust mode, not direct
-  runtime delegation callsites.
+  locally. `dag_shim` no longer re-exports unused `DagOld` Boost graph aliases, includes, or protected Boost-vertex
+  helpers; the overlay still imports the legacy header only to keep the pure C++ `DagOld` reference type available before
+  defining the Rust-mode `Dag` facade.
 - `vote_manager_shim::setNetwork` writes inherited protected state directly and no longer forwards to
   `VoteManagerOld::setNetwork`.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
