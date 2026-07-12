@@ -21,16 +21,36 @@ struct DagFinalizationOrderReport {
 /**
  * Rust-mode DagManager migration facade.
  *
- * This class preserves the public DagManager API while individual methods move
- * from legacy C++ behavior into Rust-backed implementations. Methods that have
- * not been migrated yet explicitly delegate to `DagManagerOld` at the call site
- * with a local TODO comment so remaining migration work stays visible.
+ * This class preserves the public DagManager API while routing migrated behavior
+ * through Rust-backed implementations. It still inherits `DagManagerOld` only as
+ * temporary construction/identity compatibility until the remaining base-class
+ * dependency is removed; method-level legacy forwarding is not part of the
+ * Rust-mode path.
  */
 class DagManager : public DagManagerOld {
   struct RustDagManagerGraphs;
 
  public:
-  using VerifyBlockReturnType = DagManagerOld::VerifyBlockReturnType;
+  /**
+   * Result of Rust-backed DAG block verification.
+   *
+   * The numeric values intentionally match the legacy public enum so tarcap and
+   * tests can keep the stable `DagManager::VerifyBlockReturnType` API while
+   * Rust mode no longer aliases the result type through `DagManagerOld`.
+   */
+  enum class VerifyBlockReturnType : uint32_t {
+    Verified = 0,
+    MissingTransaction,
+    AheadBlock,
+    FailedVdfVerification,
+    FutureBlock,
+    NotEligible,
+    ExpiredBlock,
+    IncorrectTransactionsEstimation,
+    BlockTooBig,
+    FailedTipsVerification,
+    MissingTip
+  };
 
   explicit DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                       std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,

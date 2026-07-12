@@ -395,6 +395,9 @@ Implementation notes:
   shim-owned method that routes to a lock stored on `TransactionManager` itself through the existing friend access helper.
 - `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
   network pointer at this seam.
+- `dag_manager_shim` now owns the public `VerifyBlockReturnType` enum locally instead of aliasing
+  `DagManagerOld::VerifyBlockReturnType`. The public `DagManager::VerifyBlockReturnType` spelling and numeric values are
+  preserved for tarcap/tests while reducing one remaining legacy type dependency.
 - `slashing_manager_shim` now exposes one Rust-admission `SlashingDoubleVoteEvidence` API containing the two canonical
   vote payloads and a single shared PBFT slot. The live `PbftVote` overload is kept as a compatibility adapter that
   validates same-slot evidence before constructing the payload. This removes the loose two-record-plus-slot-scalar
@@ -491,6 +494,9 @@ Implementation notes:
 - `dag_manager_shim` now moved `getShared()` and `getDagMutex()` off inherited `DagManagerOld` access and onto shim-owned
   state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
   callers now perform the lock sequencing directly.
+- Follow-up DAG manager cleanup removed the `DagManagerOld::VerifyBlockReturnType` alias from the shim API; the remaining
+  `DagManagerOld` coupling is constructor/base-class compatibility and should be removed in a separate slice with full
+  DAG manager API parity validation.
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.

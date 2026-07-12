@@ -80,7 +80,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | Shim directory | Current role | Current consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `dag_block_proposer_shim` | Rust retry state for DAG proposal attempts | DAG manager/proposer code | C++ public compatibility facade | Delete when DAG proposal planning lives fully inside Rust DAG runtime. |
-| `dag_manager_shim` | Rust DAG manager runtime behind C++ `DagManager` API | App/consensus code, DAG tests | C++ public compatibility facade | Remove `DagManagerOld` forwarding and C++ graph materialization when DAG manager callers can use Rust runtime or a thinner public facade. |
+| `dag_manager_shim` | Rust DAG manager runtime behind C++ `DagManager` API | App/consensus code, DAG tests | C++ public compatibility facade | Remove the remaining `DagManagerOld` construction/inheritance compatibility and C++ graph materialization when DAG manager callers can use Rust runtime or a thinner public facade. |
 | `dag_shim` | C++ DAG facade over legacy graph aliases | DAG manager and DAG tests | C++ public compatibility facade | Delete after DAG graph types no longer leak through public C++ API. |
 | `final_chain_shim` | Rust FinalChain runtime behind C++ FinalChain API | App, PBFT manager, transaction manager, RPC/EVM execution | External boundary | Keep EVM execution adapter; remove consensus fact/materialization methods after Rust consensus consumes FinalChain ports directly. |
 | `gas_pricer_shim` | Gas price oracle facade | Transaction/RPC gas price paths | C++ public compatibility facade | Delete after gas price API is native Rust and external RPC sees only a narrow query method. |
@@ -120,9 +120,12 @@ rg -n '^mod [a-z0-9_]+;' rust/crates/rustaxa-bridge/src/lib.rs
 rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 ```
 
-Current snapshot after DAG proposer-session cursor consolidation:
+Current snapshot after DAG manager verify-result API cleanup:
 
-- `Old::` forwarding remains in `dag_shim` only (temporary).
+- Direct `*Old::method(...)` forwarding in consensus shims has no current matches. `dag_manager_shim` now owns its
+  public `VerifyBlockReturnType` enum locally; the remaining `DagManagerOld` references are temporary
+  construction/inheritance compatibility, and the remaining `DagOld` references are public DAG graph type aliases, not
+  direct runtime delegation callsites.
 - `vote_manager_shim::setNetwork` writes inherited protected state directly and no longer forwards to
   `VoteManagerOld::setNetwork`.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
