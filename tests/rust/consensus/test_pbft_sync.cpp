@@ -890,6 +890,12 @@ TEST(RustPbftSyncTest, FinalizationBoundaryRecordsExternalFailure) {
   EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
   EXPECT_FALSE(boundary.has_action);
   EXPECT_EQ(std::string(boundary.error_code), "TEST_EXTERNAL_FAILURE");
+
+  const auto cleared =
+      pbft_manager_runtime_fail_finalization_external_effect(*runtime, boundary.cursor, 77, "AFTER_CLEAR");
+  EXPECT_EQ(cleared.status, kPbftFinalizationRuntimeStatusActionMismatch);
+  EXPECT_FALSE(cleared.has_action);
+  EXPECT_EQ(std::string(cleared.error_code), "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED");
 }
 
 TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
@@ -903,6 +909,12 @@ TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
   EXPECT_EQ(state.status, kPbftFinalizationRuntimeStatusActionMismatch);
   EXPECT_FALSE(state.has_action);
   EXPECT_EQ(std::string(state.error_code), "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
+
+  const auto cleared =
+      pbft_manager_runtime_fail_finalization_external_effect(*runtime, state.cursor, 77, "AFTER_CLEAR");
+  EXPECT_EQ(cleared.status, kPbftFinalizationRuntimeStatusActionMismatch);
+  EXPECT_FALSE(cleared.has_action);
+  EXPECT_EQ(std::string(cleared.error_code), "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED");
 }
 
 TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {

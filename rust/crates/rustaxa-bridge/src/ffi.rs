@@ -4788,9 +4788,6 @@ pub mod rustaxa_ffi {
             cursor: u32,
             report: PbftManagerFinalizationAdvancePeriodReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn abort_pbft_manager_runtime_finalization_session(
-            runtime: &mut BridgePbftManagerRuntime,
-        );
         pub fn pbft_manager_runtime_begin_session(
             runtime: &mut BridgePbftManagerRuntime,
             fact: PbftManagerRuntimeTickFact,

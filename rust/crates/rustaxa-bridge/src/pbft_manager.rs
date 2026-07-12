@@ -1949,6 +1949,37 @@ fn drain_finalization_executor_state(
         .map(finalization_executor_state_from_drain)
 }
 
+fn clear_finalization_runtime(runtime: &mut BridgePbftManagerRuntime) {
+    runtime.finalization_runtime_session = None;
+    runtime.finalization_runtime_plan = None;
+}
+
+fn finalization_executor_state_is_terminal(
+    state: &FfiPbftManagerFinalizationExecutorState,
+) -> bool {
+    state.complete
+        || state.status != PbftFinalizationRuntimeStatus::Active.as_u8()
+        || !state.can_continue
+}
+
+fn finish_finalization_executor_boundary(
+    runtime: &mut BridgePbftManagerRuntime,
+    result: anyhow::Result<FfiPbftManagerFinalizationExecutorState>,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    match result {
+        Ok(state) => {
+            if finalization_executor_state_is_terminal(&state) {
+                clear_finalization_runtime(runtime);
+            }
+            Ok(state)
+        }
+        Err(err) => {
+            clear_finalization_runtime(runtime);
+            Err(err)
+        }
+    }
+}
+
 fn stored_finalization_plan(
     runtime: &BridgePbftManagerRuntime,
 ) -> anyhow::Result<PbftFinalizationPlan> {
@@ -2189,6 +2220,15 @@ pub fn pbft_manager_runtime_start_finalization_executor(
     runtime: &mut BridgePbftManagerRuntime,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    clear_finalization_runtime(runtime);
+    let result = pbft_manager_runtime_start_finalization_executor_inner(runtime, request);
+    finish_finalization_executor_boundary(runtime, result)
+}
+
+fn pbft_manager_runtime_start_finalization_executor_inner(
+    runtime: &mut BridgePbftManagerRuntime,
+    request: FfiPbftFinalizationExecutorStartRequest,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
         let plan = PbftFinalizationPlan::from(&request.plan);
         let write_set =
@@ -2274,6 +2314,22 @@ fn pbft_manager_runtime_advance_finalization_live_mutation(
         &PbftFinalizationStorageWriteIntent,
     ) -> PbftFinalizationLiveMutationReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let result = pbft_manager_runtime_advance_finalization_live_mutation_inner(
+        runtime,
+        cursor,
+        build_report,
+    );
+    finish_finalization_executor_boundary(runtime, result)
+}
+
+fn pbft_manager_runtime_advance_finalization_live_mutation_inner(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    build_report: impl FnOnce(
+        PbftFinalizationRuntimeAction,
+        &PbftFinalizationStorageWriteIntent,
+    ) -> PbftFinalizationLiveMutationReport,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
     if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
         || !current_step.has_action
@@ -2350,6 +2406,18 @@ fn pbft_manager_runtime_advance_finalization_live_mutation(
 /// - Cursor mismatch, missing action, and unknown action preserve the same
 ///   finalization executor contract as successful typed advancement APIs.
 pub fn pbft_manager_runtime_fail_finalization_external_effect(
+    runtime: &mut BridgePbftManagerRuntime,
+    cursor: u32,
+    status: u8,
+    error_code: String,
+) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let result = pbft_manager_runtime_fail_finalization_external_effect_inner(
+        runtime, cursor, status, error_code,
+    );
+    finish_finalization_executor_boundary(runtime, result)
+}
+
+fn pbft_manager_runtime_fail_finalization_external_effect_inner(
     runtime: &mut BridgePbftManagerRuntime,
     cursor: u32,
     status: u8,
@@ -2919,15 +2987,6 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
             }
         }
     }
-}
-
-/// Drops the manager-owned PBFT finalization runtime cursor.
-///
-/// C++ calls this after early failures or after terminal verification fails so
-/// the next finalization attempt cannot accidentally observe stale cursor state.
-pub fn abort_pbft_manager_runtime_finalization_session(runtime: &mut BridgePbftManagerRuntime) {
-    runtime.finalization_runtime_session = None;
-    runtime.finalization_runtime_plan = None;
 }
 
 impl From<(PbftDynamicLambdaPlan, bool, u32)> for FfiPbftManagerFinalizationDynamicLambdaPlan {
@@ -4183,6 +4242,18 @@ mod tests {
         }
     }
 
+    fn assert_finalization_session_cleared(runtime: &mut BridgePbftManagerRuntime) {
+        let step = pbft_manager_runtime_finalization_session_next(runtime);
+        assert_eq!(
+            step.status,
+            PbftFinalizationRuntimeStatus::ActionMismatch.as_u8()
+        );
+        assert!(!step.has_action);
+        assert_eq!(step.error_code, "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED");
+        assert!(runtime.finalization_runtime_session.is_none());
+        assert!(runtime.finalization_runtime_plan.is_none());
+    }
+
     #[test]
     fn manager_runtime_owns_finalization_cursor_and_completion() {
         let (_temp_dir, mut runtime) =
@@ -4518,6 +4589,7 @@ mod tests {
             state.error_code,
             "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_METADATA_MISMATCH"
         );
+        assert_finalization_session_cleared(&mut runtime);
     }
 
     #[test]
@@ -4556,6 +4628,7 @@ mod tests {
         );
         assert!(state.complete);
         assert!(!state.has_action);
+        assert_finalization_session_cleared(&mut runtime);
     }
 
     #[test]

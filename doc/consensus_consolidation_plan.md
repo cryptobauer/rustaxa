@@ -636,8 +636,12 @@ Implementation notes:
   `pbft_manager_runtime_finalization_session_report_action`,
   `pbft_manager_runtime_report_finalization_live_mutation`, and
   `pbft_manager_runtime_drain_owned_finalization_actions` are now private implementation helpers. C++ and external bridge
-  consumers can only drive the manager-owned finalization path through the executor APIs listed above plus the explicit
-  abort call.
+  consumers can only drive the manager-owned finalization path through the executor APIs listed above.
+- The explicit abort/reset call is now removed as well. `pbft_manager_runtime_start_finalization_executor`, the
+  failure-only external-effect API, and all typed finalization advancement APIs clear the retained runtime cursor and
+  accepted plan internally whenever they return a terminal state or throw an error across CXX. C++ no longer performs
+  Rust cursor hygiene after failure; post-terminal reports now observe `PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED`
+  instead of stale cursor state.
 - The bridge-only finalization cursor/drain DTOs `PbftFinalizationRuntimeSessionStep` and
   `PbftManagerFinalizationOwnedActionDrainResult` are no longer CXX exports. The same internal facts now live in
   Rust-private `pbft_manager.rs` helper structs, and C++ receives only the stable

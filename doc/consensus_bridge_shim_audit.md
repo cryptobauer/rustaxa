@@ -524,6 +524,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   finalization identity for typed reports, and returns explicit cursor/action executor states. C++ remains the executor for
   FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache
   side effects.
+- The explicit `abort_pbft_manager_runtime_finalization_session` CXX export is deleted. The finalization executor
+  boundary now clears the retained session and accepted plan inside Rust on terminal completion, terminal failure, stale
+  cursor mismatch, and any `Result::Err` crossing CXX, so C++ no longer owns Rust cursor cleanup after failed
+  finalization attempts.
 - The no-caller `pbft_manager_runtime_cached_anchor_dag_order_count` and
   `pbft_manager_runtime_clear_cached_anchor_dag_order` CXX exports are deleted. C++ uses only the `has`, `record`, and
   `remove` anchor-cache metadata APIs required by the active PBFT manager shim; count/clear remain native

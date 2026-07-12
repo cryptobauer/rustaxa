@@ -3557,7 +3557,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                  << block_pbft_period << ", context " << context << ", status "
                  << static_cast<uint32_t>(boundary.status) << ", action " << static_cast<uint32_t>(boundary.action)
                  << ", error " << static_cast<std::string>(boundary.error_code);
-    rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
     return false;
   };
   auto require_boundary_action = [&](const char *context, const rustaxa::PbftManagerFinalizationExecutorState &boundary,
@@ -3586,7 +3585,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context pillar post-processing: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     apply_boundary_snapshot(boundary);
@@ -3605,7 +3603,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context advance period: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     apply_boundary_snapshot(boundary);
@@ -3622,7 +3619,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context PBFT-chain update: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     apply_boundary_snapshot(boundary);
@@ -3638,7 +3634,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context DAG block order: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     apply_boundary_snapshot(boundary);
@@ -3662,7 +3657,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context sortition runtime commit: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     apply_boundary_snapshot(boundary);
@@ -3684,7 +3678,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context reward-vote reset: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     apply_boundary_snapshot(boundary);
@@ -3704,7 +3697,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ", context FinalChain dispatch: " << e.what();
-      rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
       return false;
     }
     apply_boundary_snapshot(boundary);
@@ -3750,7 +3742,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       } catch (const std::exception &e) {
         LOG(log_er_) << "Rust PBFT finalization resume boundary begin threw for block " << pbft_block_hash
                      << ", period " << block_pbft_period << ": " << e.what();
-        rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
         return false;
       }
       apply_boundary_snapshot(resume_boundary);
@@ -3765,7 +3756,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           LOG(log_er_) << "Rust PBFT finalization resume refused non-sequential FinalChain replay for block "
                        << pbft_block_hash << ", period " << block_pbft_period << ", FinalChain last block "
                        << final_chain_last_block;
-          rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
           return false;
         }
         if (!require_boundary_action("FinalChain replay", resume_boundary,
@@ -3817,7 +3807,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                      << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(resume_boundary.status)
                      << ", action " << static_cast<uint32_t>(resume_boundary.action) << ", error "
                      << static_cast<std::string>(resume_boundary.error_code);
-        rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
         return false;
       }
       resume_executed = true;
@@ -3945,7 +3934,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       } catch (const std::exception &e) {
         LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
                      << block_pbft_period << ", context transaction finalized-status update: " << e.what();
-        rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
         return false;
       }
       apply_boundary_snapshot(boundary);
@@ -4030,7 +4018,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                  << block_pbft_period << ", status " << static_cast<uint32_t>(boundary.status) << ", action "
                  << static_cast<uint32_t>(boundary.action) << ", error "
                  << static_cast<std::string>(boundary.error_code);
-    rustaxa::abort_pbft_manager_runtime_finalization_session(*pbft_manager_runtime_.value());
     return false;
   }
 
