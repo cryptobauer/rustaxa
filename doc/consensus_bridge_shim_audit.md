@@ -524,6 +524,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   finalization identity for typed reports, and returns explicit cursor/action executor states. C++ remains the executor for
   FinalChain/EVM, DAG, transaction-manager, PBFT-chain, sortition, vote-manager, advance-period, pillar, and local cache
   side effects.
+- The no-caller `pbft_manager_runtime_cached_anchor_dag_order_count` and
+  `pbft_manager_runtime_clear_cached_anchor_dag_order` CXX exports are deleted. C++ uses only the `has`, `record`, and
+  `remove` anchor-cache metadata APIs required by the active PBFT manager shim; count/clear remain native
+  `BridgePbftManagerRuntime` state behavior covered by Rust tests and by the manager-owned finalization drain.
 - Duplicate-finalization resume inspection is folded into `pbft_manager_runtime_start_finalization_executor` resume
   mode. C++ supplies only `final_chain_last_block`; the manager runtime inspects its Rust storage internally, starts the
   replay cursor, and returns either the next external action or a completed no-op state. The public runtime inspector and

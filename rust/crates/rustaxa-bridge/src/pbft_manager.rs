@@ -1140,25 +1140,6 @@ pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
         .has_cached_anchor_dag_order(ethereum_types::H256::from(*anchor_hash))
 }
 
-/// Returns the count of Rust-owned DAG-order cache membership entries.
-///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime.
-///
-/// Outputs:
-/// - Number of materialized anchor DAG-order sidecars still tracked in Rust
-///   runtime metadata.
-///
-/// Invariants and edge behavior:
-/// - This is live metadata, not durable storage. Finalization cleanup reports
-///   use it to prove the Rust-side cache was cleared before the runtime cursor
-///   advances.
-pub fn pbft_manager_runtime_cached_anchor_dag_order_count(
-    runtime: &BridgePbftManagerRuntime,
-) -> u64 {
-    runtime.state.cached_anchor_dag_order_count()
-}
-
 /// Records Rust-owned DAG-order cache membership metadata.
 ///
 /// Inputs:
@@ -1206,24 +1187,6 @@ pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
         .state
         .remove_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
         .into()
-}
-
-/// Clears all Rust-owned DAG-order cache membership metadata.
-///
-/// Inputs:
-/// - `runtime`: long-lived PBFT manager runtime.
-///
-/// Outputs:
-/// - Returns the runtime snapshot for bridge consistency; scalar fields are
-///   unchanged.
-///
-/// Invariants and edge behavior:
-/// - C++ calls this after clearing the period-scoped materialized DAG-order
-///   sidecar map during finalization cleanup.
-pub fn pbft_manager_runtime_clear_cached_anchor_dag_order(
-    runtime: &mut BridgePbftManagerRuntime,
-) -> FfiPbftManagerRuntimeSnapshot {
-    runtime.state.clear_cached_anchor_dag_order().into()
 }
 
 /// Loads the local node's own pillar-block vote through PBFT-manager runtime storage.
@@ -4600,10 +4563,7 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_anchor_cache_owned_drain");
         pbft_manager_runtime_record_cached_anchor_dag_order(&mut runtime, [42; 32]);
-        assert_eq!(
-            pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
-            1
-        );
+        assert_eq!(runtime.state.cached_anchor_dag_order_count(), 1);
 
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
@@ -4622,10 +4582,7 @@ mod tests {
         );
         assert!(state.drained_actions >= 1);
         assert!(state.cleared_anchor_dag_cache);
-        assert_eq!(
-            pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
-            0
-        );
+        assert_eq!(runtime.state.cached_anchor_dag_order_count(), 0);
     }
 
     #[test]
@@ -6070,17 +6027,14 @@ mod tests {
                 &runtime,
                 &second_anchor
             ));
-            assert_eq!(
-                pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
-                2
-            );
+            assert_eq!(runtime.state.cached_anchor_dag_order_count(), 2);
 
-            let clear_snapshot = pbft_manager_runtime_clear_cached_anchor_dag_order(&mut runtime);
-            assert_eq!(clear_snapshot.status, STARTUP_STATUS_READY);
+            let clear_snapshot = runtime.state.clear_cached_anchor_dag_order();
             assert_eq!(
-                pbft_manager_runtime_cached_anchor_dag_order_count(&runtime),
-                0
+                clear_snapshot.status,
+                rustaxa_consensus::pbft_manager::PbftManagerStartupRestoreStatus::Ready
             );
+            assert_eq!(runtime.state.cached_anchor_dag_order_count(), 0);
             assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
                 &runtime,
                 &first_anchor

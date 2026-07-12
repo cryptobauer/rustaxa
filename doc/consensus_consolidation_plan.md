@@ -692,6 +692,11 @@ Implementation notes:
   `DagBlock` sidecar map. The `AnchorDagCacheFinalizationClearReport` C++ helper,
   `PbftManagerFinalizationAnchorCacheClearReport` CXX DTO, and
   `pbft_manager_runtime_advance_finalization_anchor_cache_clear` export are deleted.
+- Follow-up CXX surface cleanup deleted the no-caller anchor-cache metadata wrappers
+  `pbft_manager_runtime_cached_anchor_dag_order_count` and
+  `pbft_manager_runtime_clear_cached_anchor_dag_order`. The PBFT manager runtime still owns native count/clear behavior
+  and tests it inside `rustaxa-consensus`; bridge-module tests now inspect the native runtime state directly instead of
+  preserving CXX exports with no C++ shim caller.
 - Follow-up API narrowing moved advance-period reporting onto
   `pbft_manager_runtime_advance_finalization_advance_period`, so C++ no longer constructs
   `PbftFinalizationExternalEffectReport` for that manager-local client. Rust maps the single post-advance

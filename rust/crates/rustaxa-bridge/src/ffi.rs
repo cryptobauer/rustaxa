@@ -4694,9 +4694,6 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftManagerRuntime,
             anchor_hash: &[u8; 32],
         ) -> bool;
-        pub fn pbft_manager_runtime_cached_anchor_dag_order_count(
-            runtime: &BridgePbftManagerRuntime,
-        ) -> u64;
         pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
             runtime: &mut BridgePbftManagerRuntime,
             anchor_hash: [u8; 32],
@@ -4704,9 +4701,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
             runtime: &mut BridgePbftManagerRuntime,
             anchor_hash: [u8; 32],
-        ) -> PbftManagerRuntimeSnapshot;
-        pub fn pbft_manager_runtime_clear_cached_anchor_dag_order(
-            runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_own_pillar_block_vote(
             runtime: &BridgePbftManagerRuntime,
