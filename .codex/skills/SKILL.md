@@ -1,128 +1,143 @@
 ---
 name: implement-rustaxa-consensus-slice
-description: Workflow for Rustaxa consensus rewrite requests such as "implement the next slice", "continue with the next consensus slice", or "involve the api designer and architect reviewer; use the rust and cpp engineer to do the implementation." Use when Codex must advance the Taraxa/Rustaxa consensus rewrite with delegated design review and Rust/C++ implementation agents.
+description: Select, design, implement, validate, and close out a bounded Rustaxa consensus rewrite slice. Use for requests such as "implement the next consensus slice", "continue the consensus rewrite", audit a proposed slice, remove remaining C++ consensus authority, or advance Rust consensus ownership with optional API, architecture, Rust, and C++ agent delegation.
 ---
 
 # Implement Rustaxa Consensus Slice
 
-Use this workflow to turn a broad "next slice" request into a bounded consensus rewrite change that fits the repository rules.
+Turn a broad consensus rewrite request into a bounded change that advances the current roadmap without recreating completed work.
 
 ## Start
 
-Read repository instructions first:
+Read these repository sources before selecting a slice:
 
 - `AGENTS.md`
 - `PLAN.md`
-- `doc/rewrite_validation_strategy.md` when validation scope is not obvious
+- `doc/consensus_rewrite_tracker.md`
+- `doc/rewrite_validation_strategy.md`
 
-Inspect the current branch state and recent commits before deciding the slice. If commands fail because of sandboxing, rerun the necessary command with escalation rather than guessing.
+Inspect the current branch, worktree, recent commits, and relevant implementation. Preserve unrelated user changes. If an
+inspection command fails, diagnose it and use an available safe alternative rather than guessing.
 
 ## Agent Use
 
-The user has explicitly requested delegation when this skill triggers for implementation or design slices. Use agents where
-they materially help. For process reviews, status answers, or simple planning questions, answer directly unless delegation
-would add concrete value.
+Delegate when the user explicitly requests agents, repository instructions require them, or independent workstreams will
+materially improve a non-trivial design or implementation slice. Do not spawn agents merely because the skill triggered.
+Handle process reviews, status answers, and simple planning locally unless delegation adds concrete value.
 
 - Ask `api-designer` to review Rust/C++ bridge shape, compatibility, and future API direction.
 - Ask `architect-reviewer` to review boundaries, shim strategy, fallback risk, and maintainability.
 - Use `rust-engineer` for Rust domain, bridge, storage, codec, and test implementation.
 - Use `cpp-pro` for C++ shim, CMake, bridge wiring, and C++ test implementation.
 
-Delegate concrete, non-overlapping tasks. Keep the critical path local: inspect enough code yourself to integrate the work, resolve conflicts, and verify behavior.
+Assign concrete, non-overlapping tasks and name the expected artifact or decision. Keep the critical path local: inspect
+enough code yourself to integrate the work, resolve conflicts, review every change, and verify behavior.
 
 ## Slice Selection
 
-Choose a slice that moves consensus behavior from legacy C++ toward Rust without broad unrelated churn.
+Audit the roadmap and implementation before proposing work. The non-network/non-EVM native consensus closeout and PBFT
+manager protocol-runtime boundary are currently complete. Do not recreate completed ownership slices or treat accepted
+executor and compatibility boundaries as unfinished consensus logic.
+
+Choose a slice only when it does at least one of the following:
+
+- Closes a demonstrated regression against the consensus closeout definition.
+- Moves decision authority from an unclassified C++ path into an existing Rust runtime or typed port.
+- Removes obsolete compatibility materialization, bridge surface, shim scaffolding, or duplicated state.
+- Adds genuinely new consensus behavior in Rust while preserving established executor boundaries.
+- Implements network/tarcap pipeline or EVM/FinalChain execution work explicitly put in scope by the task owner.
 
 Prefer slices that:
 
-- Reduce `*Old` forwarding in shim classes.
-- Move deterministic consensus logic into Rust domain code.
-- Keep C++ changes inside shim-owned files where possible.
-- Add parity tests or runtime smoke coverage for any production-routed Rust behavior.
-- Avoid network-module work unless the user explicitly chooses it.
-- Reuse existing Rust rewrite paths in `rustaxa-storage`, `rustaxa-bridge`, `rustaxa-consensus`, `rustaxa-types`, and
-  shim-owned Rust handles instead of adding new C++ orchestration or C++ data materialization.
-- Prefer slices that retire or delete now-obsolete rewrite scaffolding, bridge helpers, shim helpers, docs, and tests
-  after a Rust route becomes authoritative. Do not leave newly unused code behind merely because the slice already
-  passes.
+- Reduce documented `*Old` parity scaffolding without moving authority back into C++.
+- Express deterministic consensus rules as Rust planners over explicit facts and borrowed state views.
+- Keep C++ changes inside shim-owned files.
+- Reuse `rustaxa-storage`, `rustaxa-bridge`, `rustaxa-consensus`, `rustaxa-types`, typed ports, and shim-owned Rust handles.
+- Preserve canonical bytes, decode late, avoid eager C++ object materialization, and return ordered typed effects.
+- Delete rewrite-owned helpers, sidecars, tests, and documentation made obsolete by the authoritative Rust route.
 
-For persistence-oriented consensus slices, prefer complete Rust-owned storage families over isolated helper migration. A
-valid storage slice should define the read/write/reload boundary, batch ownership, restart behavior, and C++ sidecar
-materialization that remains temporary. Examples of good storage-family boundaries include PBFT vote persistence,
-proposed-block persistence, period-data/finalization persistence, and transaction finalized-status persistence.
+Keep network/tarcap transport and EVM/state execution outside consensus-manager ownership unless explicitly re-scoped.
+Do not fix original upstream C++ bugs on `main`; track the divergence and implement the corrected rewrite behavior in Rust.
 
-For consensus pipeline or manager slices, prefer canonical bytes, compact facts, side-effect-free transitions/planners,
-and collected side-effect intents. Avoid designs that require eager C++ object materialization when Rust can operate on
-canonical RLP, stable hashes, scalar facts, or already-migrated Rust sidecars.
-
-Do not fix original upstream C++ bugs on `main`. Track divergences and implement the corrected behavior in the rewrite path.
+The migrated production consensus storage families are already Rust-owned. Select persistence work only after finding a
+real unclassified route or new operation. Migrate the complete operation: read/write/reload boundary, Rust-owned atomic
+batch, restart and duplicate behavior, and any temporary C++ sidecar materialization.
 
 ## Implementation Rules
 
-Follow the repository rewrite rules strictly:
+- Inspect adjacent Rust crates, bridge APIs, shim-owned handles, and migrated storage/FinalChain/DAG/transaction/vote
+  functionality before settling on a design. Extend those paths when doing so reduces C++ ownership.
+- Use a full overlay shim as the first design for upstream-owned C++ classes. Use the accepted protected-state inheritance
+  hook only with explicit task-owner approval, named migration-debt TODOs, shim-owned public forwarding methods, no Rust
+  bridge surface in the original class, and a documented upstream-file diff at closeout.
+- Call Rust when implemented; otherwise use explicit shim-local throws, stubs, or no-ops.
+- Forward to `*Old` only as temporary parity scaffolding, with a TODO naming the remaining Rust work at every call site.
+- Never route Rust-enabled production behavior through legacy C++ by delegation, forwarding, or inherited behavior.
+- Prefer Rust implementation over new C++ logic. Treat logging as observability, not a reason to retain C++ authority.
+- Use `anyhow` for Rust fallible APIs unless a narrower domain-boundary error is intentionally required.
+- Document changed modules, public types, and public functions as complete units: purpose, inputs, outputs, invariants,
+  and error or edge behavior.
+- Do not weaken or retarget tests to make Rust mode pass. Retire a legacy-only test only after equivalent or stronger Rust
+  or bridge coverage exists and the tested compatibility surface is intentionally removed; document the replacement.
+- Search for obsolete bridge structs/functions, shim helpers, payload builders, materialization, duplicated tests, and
+  TODO scaffolding after routing. Remove them unless required for parity, restart/reload, or public API compatibility;
+  document retained debt at the call site or tracker.
 
-- Before settling on a design, inspect nearby Rust crates, bridge APIs, shim-owned handles, and already migrated
-  storage/FinalChain/DAG/transaction/vote functionality. Prefer extending those Rust implementations, even when it makes
-  the slice moderately larger, if it reduces C++ ownership.
-- Use full shim classes for upstream-owned C++ classes.
-- Call Rust when implemented; otherwise prefer explicit shim-local throws/stubs.
-- Forward to `*Old` only as documented temporary parity scaffolding, with a TODO at every call site.
-- Never silently route Rust-enabled production behavior through legacy C++.
-- Do not weaken or retarget existing tests to make Rust mode pass.
-- Prefer Rust implementation over adding new C++ logic when missing behavior can live in Rust.
-- Use `anyhow` for Rust error handling.
-- Document new or changed modules, public types, and public functions as complete units.
-- Actively delete or simplify code made unused by the slice. After routing behavior to Rust, search for obsolete bridge
-  structs/functions, shim-local helpers, temporary C++ payload materialization, stale tests, and roadmap text introduced
-  by earlier rewrite slices. Remove them in the same slice when they are no longer needed for parity, restart/reload, or
-  public API compatibility. If compatibility code must remain, document the temporary debt at the call site or tracker.
-
-For storage work, Rust must own the full atomic write group for the migrated operation. Do not split one logical commit
-across unrelated C++ and Rust batches unless the split is explicitly documented as temporary debt. Keep `state_db/`
-distinct from `DbStorage`; it is a sibling database used by FinalChain state execution, not a `DbStorage` column family.
+For storage work, Rust must own the complete atomic write group. Do not split one logical commit across unrelated C++ and
+Rust batches unless the task owner accepts documented temporary debt. Keep `state_db/` distinct from `DbStorage`; it is a
+sibling database used by FinalChain state execution, not a `DbStorage` column family.
 
 ## Verification
 
-Run the narrowest validation tier that covers the change. At minimum for Rust consensus/bridge work, consider:
+Use `doc/rewrite_validation_strategy.md` as the source of truth and run the narrowest tier that fully covers the change.
+
+For every implementation slice, run Tier 1:
 
 ```bash
-cargo fmt --manifest-path rust/Cargo.toml --all --check
-cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge
-cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge
-cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus
-git diff --check
+make rewrite-validate-fast
 ```
 
-For C++ shim changes, build and run the affected targets under `/build`, such as `dag_test`, `dag_shim_test`, `rust_consensus_tests`, or more specific targets named by the touched subsystem.
-
-For storage changes, always run:
+For deterministic subsystem changes, bridge/shim routing, or runtime-facing consensus behavior, run Tier 2:
 
 ```bash
-cmake --build /build --target rust_storage_tests
+make rewrite-validate-consensus
+```
+
+Before production-routing deterministic behavior, require Rust unit coverage plus C++/Rust parity through a fixture,
+transcript, conformance check, or focused bridge/shim test. For startup, sync, consensus, or finalization paths, also
+require Rust-enabled subsystem or smoke coverage.
+
+Use Tier 3 for broad production routing, cross-subsystem behavior, upstream sync, or other high-risk changes. Ask the
+task owner before expensive repo-wide or differential gates when repository instructions require coordination. Never
+silently downgrade a required tier; report any residual validation gap.
+
+For every storage-module change, also run:
+
+```bash
+cmake --build /build --target rust_storage_tests --parallel 12
 /build/bin/rust_storage_tests
 ```
 
-Also run affected C++ tests. For larger storage refactors or serialization/key-layout changes, ask the task owner before
-running:
+Run affected C++ tests. Coordinate with the task owner before the expensive storage conformance diff when required:
 
 ```bash
 scripts/storage_conformance_diff.sh
 ```
 
-If `check-static` is relevant, remember it is repo-wide and may fail on pre-existing findings. Prefer targeted validation for routine slices unless the change is broad enough to justify the full gate.
+Prefer targeted C++ validation for routine changes. Run repo-wide `check-static` only when the change scope or repository
+instructions justify it, and distinguish pre-existing findings from regressions.
 
 ## Closeout
 
-Before final response:
-
-- Integrate and review any agent changes.
-- Confirm no accidental original C++ edits were made outside allowed shim/guard patterns.
-- Confirm docs or trackers are updated when the slice changes roadmap status.
-- Confirm newly obsolete rewrite-owned code was removed or explicitly documented as temporary compatibility debt. Use
-  targeted searches for replaced bridge APIs, shim helpers, payload builders, duplicated tests, and TODO scaffolding
-  before closeout.
-- Commit when the user asked for a commit, keeping docs and implementation separate if requested.
-- Report what changed, what passed, and any remaining consensus rewrite gap that should be the next slice.
-- For storage slices, report which storage family moved, which Rust batch owns the commit, what restart/reload path was
-  validated, and which C++ sidecars still remain.
+- Integrate and review all agent changes.
+- Confirm no accidental original C++ edits exist outside allowed shim or guarded patterns.
+- For every touched upstream-owned C++ path, run `git diff upstream-main -- <path>` and require an empty diff or document
+  the explicitly approved temporary exception.
+- Update `PLAN.md` or `doc/consensus_rewrite_tracker.md` when roadmap status or tracked debt changes.
+- Confirm newly obsolete rewrite-owned code was removed or explicitly documented as compatibility debt.
+- Run `git diff --check`, review the final diff, and preserve unrelated worktree changes.
+- Commit only when requested, using the repository's Conventional Commit rules.
+- Report what changed, the exact validation that passed, and only demonstrated remaining gaps. Do not manufacture a next
+  consensus slice when the audited boundary is already complete.
+- For storage work, report the migrated operation or family, the Rust batch owner, restart/reload coverage, and remaining
+  C++ sidecars.
