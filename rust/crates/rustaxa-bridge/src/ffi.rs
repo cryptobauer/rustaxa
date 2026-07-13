@@ -227,6 +227,12 @@ pub struct BridgePbftManagerRuntime {
     pub finalization_runtime_session:
         Option<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState>,
     pub finalization_runtime_plan: Option<rustaxa_consensus::pbft_finalize::PbftFinalizationPlan>,
+    /// Process-local reset proof bound to the active finalization session.
+    ///
+    /// It is cleared when the session terminates. A same-process resume may
+    /// preserve it only while it still matches the shared storage generation;
+    /// process restart initializes it to zero and requires a new reset commit.
+    pub finalization_reward_votes_reset_generation: u64,
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -1025,7 +1031,6 @@ pub mod rustaxa_ffi {
     /// Own-vote payloads are deliberately excluded and remain available from
     /// the fallible native-storage accessor on `BridgeVerifiedVotes`.
     struct VerifiedVotesStartupSnapshot {
-        extra_reward_vote_hashes: Vec<PbftFinalizationHash>,
         has_reward_vote_info: bool,
         reward_vote_period: u64,
         reward_vote_round: u64,
@@ -1297,8 +1302,6 @@ pub mod rustaxa_ffi {
         round: u64,
         step: u64,
         block_hash: [u8; 32],
-        reward_votes_bundle_rlp: Vec<u8>,
-        extra_reward_vote_hashes: Vec<PbftFinalizationHash>,
         sync: bool,
     }
 
@@ -1395,7 +1398,6 @@ pub mod rustaxa_ffi {
         sortition_params_change_threshold_upper: u16,
         has_reward_votes_reset: bool,
         reward_votes_bundle_rlp: Vec<u8>,
-        extra_reward_vote_hashes: Vec<PbftFinalizationHash>,
     }
 
     /// Cacti dynamic-lambda configuration for Rust PBFT finalization planning.
@@ -1901,6 +1903,7 @@ pub mod rustaxa_ffi {
         has_snapshot: bool,
         snapshot: PbftManagerRuntimeSnapshot,
         last_storage_status: u8,
+        reward_votes_reset_generation: u64,
         error_code: String,
     }
 
@@ -1919,7 +1922,7 @@ pub mod rustaxa_ffi {
         period: u64,
         round: u64,
         block_hash: [u8; 32],
-        remaining_extra_reward_votes_count: u64,
+        reward_votes_reset_generation: u64,
     }
 
     /// FinalChain dispatch/replay finalization facts reported to the PBFT manager executor.
@@ -1959,6 +1962,7 @@ pub mod rustaxa_ffi {
         transaction_location_writes: usize,
         block_period: u64,
         pbft_block_hash: [u8; 32],
+        reward_votes_reset_generation: u64,
         error_code: String,
     }
 
@@ -5366,6 +5370,10 @@ pub mod rustaxa_ffi {
             stages: Vec<PbftFinalizationStorageWriteStage>,
             sync: bool,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
+        pub fn verified_votes_prepare_reward_votes_reset_stage(
+            self: &BridgeVerifiedVotes,
+            write_intent: &PbftFinalizationStorageWritePlan,
+        ) -> Result<PbftFinalizationStorageWriteStage>;
         pub fn verified_votes_apply_reward_votes_reset(
             self: &BridgeVerifiedVotes,
             request: PbftRewardVotesResetRequest,

@@ -3452,7 +3452,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     bridge_report.period = report.period;
     bridge_report.round = report.round;
     bridge_report.block_hash = toBridgeHash(report.block_hash);
-    bridge_report.remaining_extra_reward_votes_count = report.remaining_extra_reward_votes_count;
+    bridge_report.reward_votes_reset_generation = report.reward_votes_reset_generation;
     try {
       boundary = rustaxa::pbft_manager_runtime_advance_finalization_reward_votes_reset(*pbft_manager_runtime_.value(),
                                                                                        boundary.cursor, bridge_report);
@@ -3560,7 +3560,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("reward-vote reset", "PBFT_FINALIZE_REWARD_RESET_PAYLOAD_UNAVAILABLE");
           }
           reward_votes_reset_prepared = false;
-          const auto report = vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
+          const auto report = vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent,
+                                                                               boundary.reward_votes_reset_generation);
           if (!report_reward_votes_reset(report, boundary)) {
             return FinalizationDispatchResult::kFailed;
           }

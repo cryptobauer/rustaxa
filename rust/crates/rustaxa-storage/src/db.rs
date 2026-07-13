@@ -13,6 +13,7 @@ use rocksdb::{
     DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options, WriteBatch, WriteOptions,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use crate::Column;
@@ -33,6 +34,51 @@ pub type IteratorItem = Result<(Box<[u8]>, Box<[u8]>)>;
 pub type KeyValueEntry = (Box<[u8]>, Box<[u8]>);
 /// Iterator type for database queries.
 pub type DbIterator<'a> = Box<dyn Iterator<Item = IteratorItem> + Send + Sync + 'a>;
+
+/// Exclusive process-local capability for extra-reward-vote operations.
+///
+/// Holding this value serializes admission and reset storage operations. The
+/// only public token-issuing operation commits the supplied reset batch before
+/// advancing generation, so consumers cannot mint provenance independently of
+/// a successful RocksDB commit.
+pub struct ExtraRewardVotesGuard<'a> {
+    _guard: MutexGuard<'a, ()>,
+    storage: &'a Storage,
+    reset_generation: &'a AtomicU64,
+}
+
+impl ExtraRewardVotesGuard<'_> {
+    fn record_committed_reset(&self) -> u64 {
+        let previous = self
+            .reset_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                Some(generation.saturating_add(1))
+            })
+            .expect("extra-reward reset generation update cannot fail");
+        previous.saturating_add(1)
+    }
+
+    fn commit_reset_batch_with(
+        &self,
+        batch: StorageWriteBatch,
+        sync: bool,
+        commit: impl FnOnce(StorageWriteBatch, bool) -> Result<()>,
+    ) -> Result<u64> {
+        commit(batch, sync)?;
+        Ok(self.record_committed_reset())
+    }
+
+    /// Commits one locked reward-reset batch and returns its provenance token.
+    ///
+    /// RocksDB commit failure is returned without changing generation. After a
+    /// successful commit the generation saturates at `u64::MAX`, preserving a
+    /// non-zero valid token instead of wrapping into reserved generation zero.
+    pub fn commit_reset_batch(&self, batch: StorageWriteBatch, sync: bool) -> Result<u64> {
+        self.commit_reset_batch_with(batch, sync, |batch, sync| {
+            self.storage.commit_write_batch_with_sync(batch, sync)
+        })
+    }
+}
 
 /// Trait abstracting database read operations.
 pub trait DbReader: Send + Sync {
@@ -224,6 +270,8 @@ pub struct Storage {
     metadata: MetadataRepository<DBWithThreadMode<MultiThreaded>>,
     final_chain: FinalChainRepository<DBWithThreadMode<MultiThreaded>>,
     own_verified_votes_lock: Mutex<()>,
+    extra_reward_votes_lock: Mutex<()>,
+    extra_reward_votes_reset_generation: AtomicU64,
 }
 
 impl Storage {
@@ -272,6 +320,8 @@ impl Storage {
             transaction,
             final_chain,
             own_verified_votes_lock: Mutex::new(()),
+            extra_reward_votes_lock: Mutex::new(()),
+            extra_reward_votes_reset_generation: AtomicU64::new(0),
         })
     }
 
@@ -286,6 +336,39 @@ impl Storage {
         self.own_verified_votes_lock.lock().map_err(|_| {
             StorageError::Read("own verified votes serialization lock poisoned".into()).into()
         })
+    }
+
+    /// Acquires the process-local serialization guard for extra reward votes.
+    ///
+    /// Production admission writes, queries, and finalization/reset executors
+    /// hold this guard across their complete operation. Handles sharing an
+    /// `Arc<Storage>` therefore cannot insert a stale reward vote between reset
+    /// enumeration and commit. Lock poisoning is returned as a storage error.
+    pub fn lock_extra_reward_votes(&self) -> Result<ExtraRewardVotesGuard<'_>> {
+        let guard = self.extra_reward_votes_lock.lock().map_err(|_| {
+            StorageError::Read("extra reward votes serialization lock poisoned".into())
+        })?;
+        Ok(ExtraRewardVotesGuard {
+            _guard: guard,
+            storage: self,
+            reset_generation: &self.extra_reward_votes_reset_generation,
+        })
+    }
+
+    /// Returns the process-local provenance generation of the latest committed
+    /// extra-reward-vote reset.
+    ///
+    /// Generation zero means this storage handle has not committed a reset.
+    /// The counter is intentionally process-local and is not restored after a
+    /// restart; restarted manager executors must obtain a new token from a new
+    /// committed reset before reporting a reward-reset action.
+    /// Admission writes deliberately do not change the generation, so a vote
+    /// admitted for the next cycle cannot invalidate proof of the preceding
+    /// reset. Callers use this only while validating a token returned by the
+    /// Rust reset executor sharing this `Storage` instance.
+    pub fn extra_reward_votes_reset_generation(&self) -> u64 {
+        self.extra_reward_votes_reset_generation
+            .load(Ordering::Acquire)
     }
 
     pub fn dag(&self) -> &DagRepository<DBWithThreadMode<MultiThreaded>> {
@@ -468,6 +551,23 @@ mod tests {
                 .expect("status lookup should succeed"),
             Some(u64_le(123).to_vec())
         );
+        drop(storage);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn failed_reward_reset_commit_does_not_advance_generation() {
+        let (path, storage) = storage_at("failed_reward_reset_generation");
+        let guard = storage.lock_extra_reward_votes().unwrap();
+        let batch = storage.create_write_batch();
+
+        let result = guard.commit_reset_batch_with(batch, false, |_, _| {
+            Err(anyhow::anyhow!("injected reset commit failure"))
+        });
+
+        assert!(result.is_err());
+        assert_eq!(storage.extra_reward_votes_reset_generation(), 0);
+        drop(guard);
         drop(storage);
         let _ = fs::remove_dir_all(path);
     }

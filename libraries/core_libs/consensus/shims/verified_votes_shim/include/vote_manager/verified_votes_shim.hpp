@@ -201,6 +201,20 @@ class VerifiedVotes {
       rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> stages, bool sync) const;
 
   /**
+   * Prepares the reward-vote reset stage from Rust-owned verified-vote state.
+   *
+   * Inputs:
+   * - `write_intent`: finalization identity for the certified vote bundle.
+   *
+   * Outputs and invariants:
+   * - Returns a stage containing the Rust-selected certified bundle.
+   * - Identity or payload mismatches fail without mutating storage.
+   * - Extra-reward enumeration remains deferred to the atomic storage apply.
+   */
+  rustaxa::PbftFinalizationStorageWriteStage prepareRewardVotesResetStage(
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent) const;
+
+  /**
    * Apply reward-vote reset persistence through the task-specific Rust port.
    */
   rustaxa::PbftFinalizedPeriodApplyResult applyRewardVotesReset(rustaxa::PbftRewardVotesResetRequest request) const;

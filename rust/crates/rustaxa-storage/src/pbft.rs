@@ -47,6 +47,15 @@ pub struct StoredOwnVerifiedVote {
     pub vote_rlp: Vec<u8>,
 }
 
+/// One persisted extra reward PBFT vote with its canonical storage key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredExtraRewardVote {
+    /// Canonical signed-vote hash stored as the RocksDB key.
+    pub vote_hash: H256,
+    /// Persisted weighted PBFT vote RLP stored as the row value.
+    pub vote_rlp: Vec<u8>,
+}
+
 impl<D: DbReader> PbftRepository<D> {
     /// Creates a PBFT repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
@@ -230,6 +239,39 @@ impl<D: DbReader> PbftRepository<D> {
             result.push(value.into_vec());
         }
         Ok(result)
+    }
+
+    /// Returns extra reward votes with their keys in canonical hash order.
+    ///
+    /// Keys must be exactly 32 bytes. Consensus validates weighted PBFT payload
+    /// semantics and decoded hash/key equality before using these records.
+    pub fn extra_reward_vote_records(&self) -> Result<Vec<StoredExtraRewardVote>> {
+        let mut result = Vec::new();
+        for item in self.db.iter(Column::ExtraRewardVotes) {
+            let (key, value) = item?;
+            if key.len() != 32 {
+                return Err(StorageError::Read(format!(
+                    "Invalid extra_reward_votes key size: expected 32, got {}",
+                    key.len()
+                ))
+                .into());
+            }
+            result.push(StoredExtraRewardVote {
+                vote_hash: H256::from_slice(&key),
+                vote_rlp: value.into_vec(),
+            });
+        }
+        result.sort_unstable_by_key(|record| record.vote_hash);
+        Ok(result)
+    }
+
+    /// Returns canonical keys for all extra reward votes in hash order.
+    pub fn extra_reward_vote_hashes(&self) -> Result<Vec<H256>> {
+        Ok(self
+            .extra_reward_vote_records()?
+            .into_iter()
+            .map(|record| record.vote_hash)
+            .collect())
     }
 }
 
@@ -910,6 +952,16 @@ mod tests {
         db.put(Column::LatestRoundOwnVotes, &[0x11; 31], &[0xA1]);
 
         let error = repo.own_verified_vote_records().unwrap_err().to_string();
+        assert!(error.contains("expected 32, got 31"));
+    }
+
+    #[test]
+    fn extra_reward_vote_records_reject_non_hash_key() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+        db.put(Column::ExtraRewardVotes, &[0x22; 31], &[0xB1]);
+
+        let error = repo.extra_reward_vote_records().unwrap_err().to_string();
         assert!(error.contains("expected 32, got 31"));
     }
 

@@ -120,6 +120,7 @@ fn pbft_finalization_apply_result_to_ffi(
         transaction_location_writes: value.transaction_location_writes,
         block_period: value.block_period,
         pbft_block_hash: value.pbft_block_hash.0,
+        reward_votes_reset_generation: value.reward_votes_reset_generation,
         error_code: value.error_code,
     }
 }
@@ -176,13 +177,36 @@ fn vote_progress_write_to_domain(
 }
 
 impl BridgeVerifiedVotes {
+    fn prepare_reward_votes_reset_bundle(
+        &self,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: H256,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let kind = TwoTPlusOneVotedBlockType::CertVotedBlock;
+        let mapping = self
+            .runtime
+            .verified_votes()
+            .get_two_t_plus_one_voted_block(period, round, kind)
+            .ok_or_else(|| anyhow::anyhow!("PBFT_REWARD_VOTES_RESET_CERT_MAPPING_MISSING"))?;
+        anyhow::ensure!(
+            mapping.hash == block_hash && mapping.step == step,
+            "PBFT_REWARD_VOTES_RESET_CERT_IDENTITY_MISMATCH"
+        );
+        let records = self
+            .runtime
+            .two_t_plus_one_weighted_payloads(period, round, kind)?
+            .ok_or_else(|| anyhow::anyhow!("PBFT_REWARD_VOTES_RESET_CERT_MAPPING_MISSING"))?;
+        rustaxa_consensus::build_weighted_pbft_vote_bundle(&records)
+    }
+
     /// Returns the compact reward snapshot captured during storage restoration.
     ///
     /// The snapshot is unavailable on the storage-free factory, which is kept
-    /// only for focused in-memory tests. Production callers receive ordered
-    /// extra-reward hashes and cert-bundle reward metadata. Own-vote rows are
-    /// read through `verified_votes_own_vote_records` so storage remains their
-    /// sole payload and membership owner.
+    /// only for focused in-memory tests. Production callers receive cert-bundle
+    /// reward metadata only. Extra-reward and own-vote membership remain in
+    /// native storage instead of being copied into C++ startup state.
     pub fn verified_votes_startup_snapshot(
         &self,
     ) -> Result<VerifiedVotesStartupSnapshot, anyhow::Error> {
@@ -191,11 +215,6 @@ impl BridgeVerifiedVotes {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STARTUP_SNAPSHOT_UNAVAILABLE"))?;
         Ok(VerifiedVotesStartupSnapshot {
-            extra_reward_vote_hashes: snapshot
-                .extra_reward_vote_hashes
-                .iter()
-                .map(|hash| PbftFinalizationHash { hash: hash.0 })
-                .collect(),
             has_reward_vote_info: snapshot.has_reward_vote_info,
             reward_vote_period: snapshot.reward_vote_period,
             reward_vote_round: snapshot.reward_vote_round,
@@ -883,6 +902,10 @@ impl BridgeVerifiedVotes {
     }
 
     /// Applies PBFT finalization storage stages through attached Rust storage.
+    ///
+    /// Reward-reset stages never trust caller-provided delete keys. The Rust
+    /// storage executor locks and enumerates authoritative extra-reward rows
+    /// immediately before constructing and committing its batch.
     pub fn verified_votes_apply_pbft_finalization_storage_writes(
         &self,
         write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan,
@@ -902,11 +925,55 @@ impl BridgeVerifiedVotes {
         .map(pbft_finalization_apply_result_to_ffi)
     }
 
+    /// Builds the canonical cert-vote bundle for a reward-vote reset stage.
+    ///
+    /// The supplied finalization intent is only an identity assertion. Its
+    /// reward period, round, step, and block hash must match the Rust-owned cert
+    /// `2t+1` mapping exactly. The returned stage contains canonical retained
+    /// weighted payloads and no caller-selected extra-reward delete keys;
+    /// authoritative keys are injected under the storage lock at apply time.
+    pub fn verified_votes_prepare_reward_votes_reset_stage(
+        &self,
+        write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan,
+    ) -> Result<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage, anyhow::Error> {
+        anyhow::ensure!(
+            write_intent.reset_reward_votes,
+            "PBFT_REWARD_VOTES_RESET_NOT_REQUESTED"
+        );
+        let reward_votes_bundle_rlp = self.prepare_reward_votes_reset_bundle(
+            write_intent.reward_vote_period,
+            write_intent.reward_vote_round,
+            write_intent.reward_vote_step,
+            H256::from(write_intent.reward_vote_block_hash),
+        )?;
+        Ok(crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage {
+            stage: 4,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: true,
+            reward_votes_bundle_rlp,
+        })
+    }
+
     /// Applies reward-vote reset persistence through a task-specific Rust port.
+    ///
+    /// Rust derives the canonical bundle from its cert mapping and enumerates
+    /// authoritative extra-reward keys under the shared storage lock at apply
+    /// time; the caller supplies identity and commit durability only.
     pub fn verified_votes_apply_reward_votes_reset(
         &self,
         request: FfiPbftRewardVotesResetRequest,
     ) -> Result<crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult, anyhow::Error> {
+        let reward_votes_bundle_rlp = self.prepare_reward_votes_reset_bundle(
+            request.period,
+            request.round,
+            request.step,
+            H256::from(request.block_hash),
+        )?;
         apply_pbft_reward_votes_reset_storage(
             verified_votes_storage(self)?,
             PbftRewardVotesResetStorageRequest {
@@ -914,12 +981,7 @@ impl BridgeVerifiedVotes {
                 round: request.round,
                 step: request.step,
                 block_hash: H256::from(request.block_hash),
-                reward_votes_bundle_rlp: request.reward_votes_bundle_rlp,
-                extra_reward_vote_hashes: request
-                    .extra_reward_vote_hashes
-                    .into_iter()
-                    .map(|hash| H256::from(hash.hash))
-                    .collect(),
+                reward_votes_bundle_rlp,
             },
             request.sync,
         )
@@ -1504,7 +1566,6 @@ mod tests {
         let snapshot = votes.verified_votes_startup_snapshot().unwrap();
 
         assert_eq!(votes.verified_votes_size(), 0);
-        assert!(snapshot.extra_reward_vote_hashes.is_empty());
         assert!(!snapshot.has_reward_vote_info);
         assert!(votes.storage.is_some());
     }
@@ -1780,6 +1841,39 @@ mod tests {
             two_t_plus_one_threshold: threshold,
             require_proposed_block_sidecar: false,
             slashing_enabled: true,
+        }
+    }
+
+    fn reward_reset_intent(
+        block_hash: [u8; 32],
+    ) -> crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan {
+        crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan {
+            persist_pbft_head: false,
+            persist_period_data: false,
+            reset_reward_votes: true,
+            update_sortition_params: false,
+            apply_dynamic_lambda_update: false,
+            persist_period_lambda: false,
+            persist_executed_pbft_status: false,
+            process_pillar_block: false,
+            pbft_block_hash: block_hash,
+            pbft_head_hash: [0; 32],
+            block_period: 12,
+            null_anchor: false,
+            anchor_hash: [0; 32],
+            reward_vote_period: 12,
+            reward_vote_round: 2,
+            reward_vote_step: 3,
+            reward_vote_block_hash: block_hash,
+            period_lambda: 0,
+            blocks_per_year: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            executed_pbft_status: false,
+            pbft_head_payload: Vec::new(),
+            period_data_rlp: Vec::new(),
+            dag_block_period_writes: Vec::new(),
+            transaction_location_writes: Vec::new(),
         }
     }
 
@@ -2213,16 +2307,39 @@ mod tests {
     #[test]
     fn bridge_applies_reward_votes_reset_storage_request() {
         let storage = temp_bridge_storage("reward_reset");
-        let votes = create_verified_votes_index_from_storage(&storage).unwrap();
+        let mut votes = create_verified_votes_index_from_storage(&storage).unwrap();
+        for secret in [NODE_SECRET, NODE_SECRET_TWO] {
+            let vote = generated_vote([0x35; 32], secret);
+            votes
+                .verified_votes_admit_validated_vote(
+                    &vote.vote_rlp,
+                    validation_facts(),
+                    runtime_flags(),
+                    runtime_context(80),
+                )
+                .unwrap();
+        }
+        storage
+            .0
+            .pbft()
+            .write_extra_reward_vote(H256::from_low_u64_be(701), &[0x01])
+            .unwrap();
+
+        let stage = votes
+            .verified_votes_prepare_reward_votes_reset_stage(&reward_reset_intent([0x35; 32]))
+            .unwrap();
+        assert!(stage.has_reward_votes_reset);
+        assert!(!stage.reward_votes_bundle_rlp.is_empty());
+        assert!(votes
+            .verified_votes_prepare_reward_votes_reset_stage(&reward_reset_intent([0x36; 32]))
+            .is_err());
 
         let result = votes
             .verified_votes_apply_reward_votes_reset(FfiPbftRewardVotesResetRequest {
-                period: 7,
-                round: 3,
-                step: 5,
-                block_hash: hash(700),
-                reward_votes_bundle_rlp: vec![0xc1, 0x01],
-                extra_reward_vote_hashes: vec![PbftFinalizationHash { hash: hash(701) }],
+                period: 12,
+                round: 2,
+                step: 3,
+                block_hash: [0x35; 32],
                 sync: true,
             })
             .expect("reward-vote reset storage request applies");
@@ -2231,8 +2348,15 @@ mod tests {
             result.status,
             PbftFinalizedPeriodApplyStatus::Applied.as_u8()
         );
-        assert_eq!(result.block_period, 7);
-        assert_eq!(result.pbft_block_hash, hash(700));
+        assert_eq!(result.block_period, 12);
+        assert_eq!(result.pbft_block_hash, [0x35; 32]);
+        assert_ne!(result.reward_votes_reset_generation, 0);
+        assert!(storage
+            .0
+            .pbft()
+            .extra_reward_vote_hashes()
+            .unwrap()
+            .is_empty());
         assert!(!result.wrote_pbft_head);
         assert!(!result.wrote_period_data);
         assert_eq!(result.dag_index_writes, 0);
@@ -2282,7 +2406,6 @@ mod tests {
             sortition_params_change_threshold_upper: 0,
             has_reward_votes_reset: false,
             reward_votes_bundle_rlp: Vec::new(),
-            extra_reward_vote_hashes: Vec::new(),
         };
 
         let result = votes

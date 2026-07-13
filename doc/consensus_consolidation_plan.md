@@ -515,6 +515,19 @@ Implementation notes:
   rewrite-validate-fast` passes. `make rewrite-validate-consensus` completed its Rust, guard, build, and most C++ stages;
   the known full-binary sequential fixture issue reappeared in `pbft_manager_test`/`vote_test` as reused `/tmp/taraxa*`
   RocksDB lock failures. The affected own-vote test and PBFT single-/multi-node smoke tests pass when run independently.
+- VoteManager also no longer mirrors persisted extra reward-vote hashes in `extra_reward_votes_`. Rust validates the
+  certified reward-vote mapping and builds the canonical reset bundle during side-effect-free stage preparation; the
+  finalization storage apply then acquires a dedicated shared-storage lock, enumerates the authoritative extra-reward
+  keys, and commits the bundle replacement plus all deletes in the existing atomic finalization batch. Production
+  extra-reward admission/removal uses the same lock. Startup no longer exports extra hashes, C++ no longer materializes
+  cert votes or supplies delete keys, and the locked apply mints an opaque storage reset generation only after a
+  successful/idempotent commit. The finalization executor carries that Rust-authenticated generation to the reward-reset
+  boundary, and the PBFT manager validates it against the shared storage instance instead of rereading a row count after
+  releasing the lock or accepting a C++-derived remaining count. Later-cycle reward admission therefore cannot
+  retroactively invalidate the completed reset. Reward period/round/block-hash compatibility cursors remain for the
+  subsequent vote-runtime consolidation slice. Focused storage, vote-runtime, finalization, bridge-manager, C++ storage,
+  and finalization-boundary tests pass, as does `make rewrite-validate-fast`; the Tier 2 command was also run with the
+  same known sequential `/tmp/taraxa*` RocksDB fixture-lock limitation documented above for the full PBFT/vote binaries.
 
 - `final_chain_shim` now no longer exposes `rustFinalChainForRust()`; callers must route through explicit
   consensus/runtime APIs, which keeps FinalChain session ownership constrained to the shim constructor and execution

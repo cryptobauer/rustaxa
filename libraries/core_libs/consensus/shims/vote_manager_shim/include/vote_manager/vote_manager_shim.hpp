@@ -19,14 +19,14 @@ struct SlashingDoubleVoteEvidence;
  * Reward-vote-owned result after applying live metadata for a PBFT-finalization reset.
  *
  * Inputs are the Rust-planned reset identity after the finalization storage batch has committed. Outputs carry only
- * reward-vote facts: the accepted period, round, block hash, and remaining extra-reward vote count after live cleanup.
- * PBFT manager code passes these facts through the typed reward-reset bridge at the manager boundary.
+ * reward-vote facts: the accepted period, round, block hash, and storage-authenticated reset generation. PBFT manager
+ * code passes these facts through the typed reward-reset bridge at the manager boundary.
  */
 struct RewardVotesFinalizationResetReport {
   PbftPeriod period = 0;
   PbftRound round = 0;
   blk_hash_t block_hash;
-  uint64_t remaining_extra_reward_votes_count = 0;
+  uint64_t reward_votes_reset_generation = 0;
 };
 
 /**
@@ -53,8 +53,7 @@ struct RewardVotesFinalizationResetReport {
  *
  * Error and edge behavior:
  * - Missing certified-vote facts preserve upstream assert-and-return behavior.
- * - Rust appender rejection returns a rejected result and leaves reward metadata
- *   and extra reward vote tracking unchanged.
+ * - Rust appender rejection returns a rejected result and leaves reward metadata unchanged.
  */
 class VoteManager {
  public:
@@ -857,8 +856,8 @@ class VoteManager {
    * Invariants:
    * - The certified-vote bundle is selected from shim-owned live
    *   `VerifiedVotes` state.
-   * - Shim-owned reward metadata and stale extra-reward tracking are mutated only
-   *   after Rust commits and returns `Applied` or `AlreadyApplied`.
+   * - Shim-owned reward cursor metadata is mutated only after Rust commits and
+   *   returns `Applied` or `AlreadyApplied`.
    */
   rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent, Batch& batch);
@@ -871,13 +870,11 @@ class VoteManager {
    *   certified vote period, round, step, and block hash.
    *
    * Outputs:
-   * - A bridge stage containing the certified-vote bundle RLP and stale
-   *   extra-reward vote hashes.
+   * - A bridge stage containing the certified-vote bundle selected by Rust.
    *
    * Invariants:
-   * - The stage is derived from shim-owned live `VerifiedVotes` sidecars.
-   * - Missing or mismatched live state throws before the caller can commit a
-   *   finalized-period persistence batch.
+   * - Rust validates the requested identity against authoritative runtime and
+   *   storage state before returning the stage.
    * - Live reward metadata is unchanged; callers must invoke
    *   `commitRewardVotesResetForFinalization` after Rust commits the stage.
    */
@@ -885,9 +882,9 @@ class VoteManager {
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
 
   /**
-   * Builds the task-specific Rust reward-vote reset storage request used by
-   * direct compatibility callers that are not part of a broader PBFT
-   * finalization storage stage batch.
+   * Builds the compact identity-only Rust reward-vote reset request used by
+   * direct compatibility callers outside a broader finalization batch. Rust
+   * prepares the certified bundle and enumerates extra-reward keys internally.
    */
   rustaxa::PbftRewardVotesResetRequest rewardVotesResetRequestForFinalization(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
@@ -899,18 +896,19 @@ class VoteManager {
    * Inputs:
    * - `write_intent`: same Rust-planned intent used to build and commit the
    *   reward-vote reset stage.
+   * - `reward_votes_reset_generation`: non-zero proof returned by the Rust
+   *   storage apply that committed the reset.
    *
    * Invariants:
    * - Must be called only after Rust reports `Applied` or `AlreadyApplied` for
    *   the corresponding reward-vote reset stage.
-   * - Clears stale extra-reward vote tracking to match the committed storage.
+   * - The manager validates the generation before accepting the executor report.
    *
    * Outputs:
-   * - Reward-vote-owned live metadata facts proving the live metadata now
-   *   matches the accepted finalization plan and stale extra votes were cleared.
+   * - Reward-vote-owned cursor facts proving live metadata matches the accepted finalization plan.
    */
   RewardVotesFinalizationResetReport commitRewardVotesResetForFinalization(
-      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation);
 
  private:
   /**
@@ -949,7 +947,6 @@ class VoteManager {
   blk_hash_t reward_votes_block_hash_{kNullBlockHash};
   PbftPeriod reward_votes_period_{0};
   PbftRound reward_votes_round_{0};
-  std::vector<vote_hash_t> extra_reward_votes_;
   mutable std::shared_mutex reward_votes_info_mutex_;
 
   LOG_OBJECTS_DEFINE

@@ -24,7 +24,6 @@ namespace {
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusApplied = 0;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusAlreadyApplied = 1;
 constexpr uint8_t kPbftFinalizedPeriodApplyStatusRejected = 2;
-constexpr uint8_t kPbftFinalizationStorageStageRewardVotesReset = 4;
 constexpr uint8_t kPbftVoteValidationStatusValid = 1;
 constexpr uint8_t kPbftVoteValidationStatusZeroStake = 2;
 constexpr uint8_t kPbftVoteValidationStatusMissingVrfKey = 3;
@@ -93,15 +92,6 @@ rust::Slice<const uint8_t> toBridgeByteSlice(const rust::Vec<uint8_t>& bytes) {
   return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
 }
 
-rust::Vec<rustaxa::PbftFinalizationHash> toBridgeRewardVoteHashes(const std::vector<vote_hash_t>& hashes) {
-  rust::Vec<rustaxa::PbftFinalizationHash> out;
-  out.reserve(hashes.size());
-  for (const auto& hash : hashes) {
-    out.push_back(rustaxa::PbftFinalizationHash{toBridgeHash(hash)});
-  }
-  return out;
-}
-
 rustaxa::PbftFinalChainFacts collectPbftDposFacts(const std::shared_ptr<final_chain::FinalChain>& final_chain,
                                                   PbftPeriod dpos_period, bool collect_total_vote_count,
                                                   const std::vector<addr_t>& addresses) {
@@ -145,12 +135,12 @@ rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPe
 
 RewardVotesFinalizationResetReport makeRewardVotesResetLiveReport(PbftPeriod period, PbftRound round,
                                                                   const blk_hash_t& block_hash,
-                                                                  uint64_t remaining_extra_reward_votes_count) {
+                                                                  uint64_t reward_votes_reset_generation) {
   RewardVotesFinalizationResetReport report{};
   report.period = period;
   report.round = round;
   report.block_hash = block_hash;
-  report.remaining_extra_reward_votes_count = remaining_extra_reward_votes_count;
+  report.reward_votes_reset_generation = reward_votes_reset_generation;
   return report;
 }
 
@@ -199,29 +189,13 @@ rust::Vec<rustaxa::PbftVoteStorageRecord> makeVoteStorageRecords(const std::vect
   return records;
 }
 
-rustaxa::PbftFinalizationStorageWriteStage makeRewardResetWriteStage(
-    const std::vector<std::shared_ptr<PbftVote>>& votes, const std::vector<vote_hash_t>& extra_reward_votes) {
-  auto records = makeVoteStorageRecords(votes, "reward-vote reset");
-
-  rustaxa::PbftFinalizationStorageWriteStage write_stage{};
-  write_stage.stage = kPbftFinalizationStorageStageRewardVotesReset;
-  write_stage.has_reward_votes_reset = true;
-  write_stage.reward_votes_bundle_rlp = rustaxa::pbft_vote_bundle_payload_from_records(std::move(records));
-  write_stage.extra_reward_vote_hashes = toBridgeRewardVoteHashes(extra_reward_votes);
-  return write_stage;
-}
-
 rustaxa::PbftRewardVotesResetRequest makeRewardResetRequest(PbftPeriod period, PbftRound round, PbftStep step,
-                                                            const blk_hash_t& block_hash,
-                                                            rustaxa::PbftFinalizationStorageWriteStage&& stage,
-                                                            bool sync) {
+                                                            const blk_hash_t& block_hash, bool sync) {
   rustaxa::PbftRewardVotesResetRequest request{};
   request.period = period;
   request.round = round;
   request.step = step;
   request.block_hash = toBridgeHash(block_hash);
-  request.reward_votes_bundle_rlp = std::move(stage.reward_votes_bundle_rlp);
-  request.extra_reward_vote_hashes = std::move(stage.extra_reward_vote_hashes);
   request.sync = sync;
   return request;
 }
@@ -505,10 +479,6 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
   LOG_OBJECTS_CREATE("VOTE_MGR");
 
   const auto startup = verified_votes_.startupSnapshot();
-  extra_reward_votes_.reserve(startup.extra_reward_vote_hashes.size());
-  for (const auto& vote_hash : startup.extra_reward_vote_hashes) {
-    extra_reward_votes_.push_back(fromBridgeVoteHash(vote_hash.hash));
-  }
 
   if (startup.has_reward_vote_info) {
     reward_votes_period_ = startup.reward_vote_period;
@@ -782,7 +752,6 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     if (runtime_result.persist_extra_reward_vote) {
       persistVoteProgressPayloadsToRustStorage(verified_votes_, true, runtime_result.extra_reward_vote, false,
                                                runtime_result.two_t_plus_one_bundle);
-      extra_reward_votes_.emplace_back(vote->getHash());
     }
     LOG(log_er_) << "Cannot set(or not) 2t+1 voted block as 2t+1 threshold is unavailable, vote " << vote->getHash();
     report.accepted = true;
@@ -798,7 +767,6 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     if (runtime_result.persist_extra_reward_vote) {
       persistVoteProgressPayloadsToRustStorage(verified_votes_, true, runtime_result.extra_reward_vote, false,
                                                runtime_result.two_t_plus_one_bundle);
-      extra_reward_votes_.emplace_back(vote->getHash());
     }
     report.accepted = true;
     return report;
@@ -807,9 +775,6 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   persistVoteProgressPayloadsToRustStorage(verified_votes_, runtime_result.persist_extra_reward_vote,
                                            runtime_result.extra_reward_vote, true,
                                            runtime_result.two_t_plus_one_bundle);
-  if (runtime_result.persist_extra_reward_vote) {
-    extra_reward_votes_.emplace_back(vote->getHash());
-  }
   report.accepted = true;
   return report;
 }
@@ -1886,41 +1851,7 @@ bool VoteManager::isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote
 
 rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
-  const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
-  const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
-  const auto step = static_cast<PbftStep>(write_intent.reward_vote_step);
-  const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
-
-  const auto found_two_t_plus_one_voted_block =
-      verified_votes_.getTwoTPlusOneVotedBlock(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);
-  if (!found_two_t_plus_one_voted_block.has_value()) {
-    LOG(log_er_) << "resetRewardVotes missing cert voted block for period " << period << ", round " << round;
-    assert(false);
-    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_CERT_BLOCK");
-  }
-  if (found_two_t_plus_one_voted_block->hash != block_hash) {
-    LOG(log_er_) << "resetRewardVotes incorrect block " << found_two_t_plus_one_voted_block->hash << " expected "
-                 << block_hash;
-    assert(false);
-    throw std::runtime_error("PBFT_FINALIZE_REWARD_VOTES_CERT_BLOCK_MISMATCH");
-  }
-
-  if (found_two_t_plus_one_voted_block->step != step) {
-    LOG(log_er_) << "resetRewardVotes incorrect cert-vote step " << found_two_t_plus_one_voted_block->step
-                 << " expected " << step;
-    assert(false);
-    throw std::runtime_error("PBFT_FINALIZE_REWARD_VOTES_CERT_BLOCK_STEP_MISMATCH");
-  }
-
-  auto votes = verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, TwoTPlusOneVotedBlockType::CertVotedBlock);
-  if (votes.empty()) {
-    LOG(log_er_) << "resetRewardVotes missing cert voted block payloads for period " << period << ", round " << round
-                 << ", step " << step;
-    assert(false);
-    throw std::runtime_error("PBFT_FINALIZE_MISSING_REWARD_VOTES_CERT_BLOCK_PAYLOADS");
-  }
-
-  return makeRewardResetWriteStage(votes, extra_reward_votes_);
+  return verified_votes_.prepareRewardVotesResetStage(write_intent);
 }
 
 rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFinalization(
@@ -1929,12 +1860,11 @@ rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFina
   const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
   const auto step = static_cast<PbftStep>(write_intent.reward_vote_step);
   const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
-  return makeRewardResetRequest(period, round, step, block_hash, rewardVotesResetStageForFinalization(write_intent),
-                                false);
+  return makeRewardResetRequest(period, round, step, block_hash, false);
 }
 
 RewardVotesFinalizationResetReport VoteManager::commitRewardVotesResetForFinalization(
-    const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation) {
   const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
   const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
   const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
@@ -1945,11 +1875,9 @@ RewardVotesFinalizationResetReport VoteManager::commitRewardVotesResetForFinaliz
     reward_votes_period_ = period;
     reward_votes_round_ = round;
   }
-  extra_reward_votes_.clear();
-
   LOG(log_dg_) << "Reward votes info reset to: block_hash: " << block_hash << ", period: " << period
                << ", round: " << round;
-  return makeRewardVotesResetLiveReport(period, round, block_hash, extra_reward_votes_.size());
+  return makeRewardVotesResetLiveReport(period, round, block_hash, reward_votes_reset_generation);
 }
 
 rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(
@@ -1971,7 +1899,7 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
     return result;
   }
 
-  commitRewardVotesResetForFinalization(write_intent);
+  commitRewardVotesResetForFinalization(write_intent, result.reward_votes_reset_generation);
   return result;
 }
 

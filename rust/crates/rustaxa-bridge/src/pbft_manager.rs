@@ -171,11 +171,7 @@ impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
             sortition_params_change_threshold_upper: value.sortition_params_change_threshold_upper,
             has_reward_votes_reset: value.has_reward_votes_reset,
             reward_votes_bundle_rlp: value.reward_votes_bundle_rlp,
-            extra_reward_vote_hashes: value
-                .extra_reward_vote_hashes
-                .into_iter()
-                .map(|hash| ethereum_types::H256::from(hash.hash))
-                .collect(),
+            extra_reward_vote_hashes: Vec::new(),
         }
     }
 }
@@ -482,6 +478,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         proposal_session: None,
         finalization_runtime_session: None,
         finalization_runtime_plan: None,
+        finalization_reward_votes_reset_generation: 0,
     }))
 }
 
@@ -1762,6 +1759,8 @@ fn pbft_finalization_session_missing_step() -> FinalizationRuntimeSessionStep {
 
 const FINALIZATION_STAGE_DYNAMIC_LAMBDA: u8 = 1;
 const FINALIZATION_STAGE_EXECUTED_STATUS: u8 = 2;
+#[cfg(test)]
+const FINALIZATION_STAGE_REWARD_VOTES_RESET: u8 = 4;
 const FINALIZATION_EXECUTOR_MODE_FRESH: u8 = 0;
 const FINALIZATION_EXECUTOR_MODE_RESUME: u8 = 1;
 
@@ -1897,6 +1896,7 @@ fn finalization_executor_state_from_step(
         has_snapshot: false,
         snapshot: runtime.state.snapshot().into(),
         last_storage_status: 0,
+        reward_votes_reset_generation: runtime.finalization_reward_votes_reset_generation,
         error_code: if error_code.is_empty() {
             step.error_code
         } else {
@@ -1906,6 +1906,7 @@ fn finalization_executor_state_from_step(
 }
 
 fn finalization_executor_state_from_drain(
+    runtime: &BridgePbftManagerRuntime,
     drain: FinalizationOwnedActionDrainResult,
 ) -> FfiPbftManagerFinalizationExecutorState {
     FfiPbftManagerFinalizationExecutorState {
@@ -1923,6 +1924,7 @@ fn finalization_executor_state_from_drain(
         has_snapshot: drain.has_snapshot,
         snapshot: drain.snapshot,
         last_storage_status: drain.last_storage_status,
+        reward_votes_reset_generation: runtime.finalization_reward_votes_reset_generation,
         error_code: if drain.error_code.is_empty() {
             drain.next_step.error_code
         } else {
@@ -1934,13 +1936,14 @@ fn finalization_executor_state_from_drain(
 fn drain_finalization_executor_state(
     runtime: &mut BridgePbftManagerRuntime,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_drain_owned_finalization_actions(runtime)
-        .map(finalization_executor_state_from_drain)
+    let drain = pbft_manager_runtime_drain_owned_finalization_actions(runtime)?;
+    Ok(finalization_executor_state_from_drain(runtime, drain))
 }
 
 fn clear_finalization_runtime(runtime: &mut BridgePbftManagerRuntime) {
     runtime.finalization_runtime_session = None;
     runtime.finalization_runtime_plan = None;
+    runtime.finalization_reward_votes_reset_generation = 0;
 }
 
 fn finalization_executor_state_is_terminal(
@@ -1995,7 +1998,7 @@ fn base_finalization_live_report(
         reward_votes_period: 0,
         reward_votes_round: 0,
         reward_votes_block_hash: ethereum_types::H256::zero(),
-        reward_votes_extra_count: 0,
+        reward_votes_reset_provenance_valid: false,
         sortition_changed: false,
         sortition_change_period: 0,
         sortition_change_interval_efficiency: 0,
@@ -2026,6 +2029,7 @@ fn pbft_manager_runtime_begin_finalization_session(
     runtime: &mut BridgePbftManagerRuntime,
     plan: &FfiPbftFinalizationIntentPlan,
 ) {
+    runtime.finalization_reward_votes_reset_generation = 0;
     let domain_plan = PbftFinalizationPlan::from(plan);
     let runtime_plan = plan_domain_pbft_finalization_runtime(&domain_plan);
     runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(&runtime_plan));
@@ -2209,7 +2213,16 @@ pub fn pbft_manager_runtime_start_finalization_executor(
     runtime: &mut BridgePbftManagerRuntime,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let resume_generation = (request.mode == FINALIZATION_EXECUTOR_MODE_RESUME
+        && runtime.finalization_reward_votes_reset_generation != 0
+        && runtime.finalization_reward_votes_reset_generation
+            == runtime.storage.extra_reward_votes_reset_generation())
+    .then_some(runtime.finalization_reward_votes_reset_generation)
+    .unwrap_or(0);
     clear_finalization_runtime(runtime);
+    if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
+        runtime.finalization_reward_votes_reset_generation = resume_generation;
+    }
     let result = pbft_manager_runtime_start_finalization_executor_inner(runtime, request);
     finish_finalization_executor_boundary(runtime, result)
 }
@@ -2256,6 +2269,7 @@ fn pbft_manager_runtime_start_finalization_executor_inner(
         request.sync,
     )?;
     let accepted = apply_result.status.is_success();
+    runtime.finalization_reward_votes_reset_generation = apply_result.reward_votes_reset_generation;
     let next_step = pbft_manager_runtime_finalization_session_report_action(
         runtime,
         FinalizationRuntimeActionReport {
@@ -2622,8 +2636,10 @@ pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
 /// - C++ does not construct a generic PBFT finalization external-effect report
 ///   for the reward-vote reset client.
 /// - Rust derives the PBFT finalization action from the cursor and maps only
-///   reward-vote period/round/block-hash/extra-count facts needed for
-///   live-mutation validation.
+///   reward-vote period/round/block-hash facts needed for live-mutation
+///   validation. The relayed reset generation must match the current generation
+///   minted by the shared Rust storage handle; later admission does not
+///   invalidate that proof.
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
@@ -2631,12 +2647,17 @@ pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
     cursor: u32,
     report: FfiPbftManagerFinalizationRewardVotesResetReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let reset_provenance_valid = report.reward_votes_reset_generation != 0
+        && report.reward_votes_reset_generation
+            == runtime.finalization_reward_votes_reset_generation
+        && report.reward_votes_reset_generation
+            == runtime.storage.extra_reward_votes_reset_generation();
     pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
         let mut live_report = base_finalization_live_report(action, write_set);
         live_report.reward_votes_period = report.period;
         live_report.reward_votes_round = report.round;
         live_report.reward_votes_block_hash = report.block_hash.into();
-        live_report.reward_votes_extra_count = report.remaining_extra_reward_votes_count;
+        live_report.reward_votes_reset_provenance_valid = reset_provenance_valid;
         live_report
     })
 }
@@ -3567,7 +3588,10 @@ mod tests {
     use ethereum_types::H256;
     use rustaxa_consensus::pbft_finalize::{PbftFinalizationResumeStatus, PbftFinalizationStatus};
     use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
-    use rustaxa_consensus::{save_own_verified_vote, PbftVoteStorageRecord};
+    use rustaxa_consensus::{
+        persist_pbft_vote_progress, save_own_verified_vote, PbftVoteProgressPersistenceWrite,
+        PbftVoteStorageRecord,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -4101,7 +4125,7 @@ mod tests {
             reward_votes_period: 10,
             reward_votes_round: 2,
             reward_votes_block_hash: [7; 32].into(),
-            reward_votes_extra_count: 0,
+            reward_votes_reset_provenance_valid: false,
             sortition_changed: true,
             sortition_change_period: 10,
             sortition_change_interval_efficiency: 2_500,
@@ -4153,6 +4177,7 @@ mod tests {
         assert_eq!(step.error_code, "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED");
         assert!(runtime.finalization_runtime_session.is_none());
         assert!(runtime.finalization_runtime_plan.is_none());
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
     }
 
     #[test]
@@ -4454,6 +4479,13 @@ mod tests {
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
+        let reset_generation = {
+            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            guard
+                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .unwrap()
+        };
+        runtime.finalization_reward_votes_reset_generation = reset_generation;
 
         let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
         let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
@@ -4463,7 +4495,7 @@ mod tests {
                 period: 10,
                 round: 2,
                 block_hash: [7; 32],
-                remaining_extra_reward_votes_count: 0,
+                reward_votes_reset_generation: reset_generation,
             },
         )
         .expect("typed reward-vote reset report should advance finalization");
@@ -4485,6 +4517,12 @@ mod tests {
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
+        let reset_generation = {
+            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            guard
+                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .unwrap()
+        };
 
         let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
         let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
@@ -4494,7 +4532,7 @@ mod tests {
                 period: 10,
                 round: 2,
                 block_hash: [8; 32],
-                remaining_extra_reward_votes_count: 0,
+                reward_votes_reset_generation: reset_generation,
             },
         )
         .expect("reward-vote reset mismatch should return failed executor state");
@@ -4508,6 +4546,113 @@ mod tests {
             "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_METADATA_MISMATCH"
         );
         assert_finalization_session_cleared(&mut runtime);
+    }
+
+    #[test]
+    fn manager_runtime_rejects_reset_generation_from_another_session() {
+        let (_temp_dir, mut runtime) = runtime_for_finalization_test(
+            "rustaxa_bridge_pbft_manager_reward_votes_reset_storage_check",
+        );
+        let old_generation = {
+            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            guard
+                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .unwrap()
+        };
+        runtime
+            .storage
+            .pbft()
+            .write_extra_reward_vote(H256::from_low_u64_be(77), &[0x01])
+            .unwrap();
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+        );
+        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+        assert_eq!(
+            runtime.storage.extra_reward_votes_reset_generation(),
+            old_generation
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationRewardVotesResetReport {
+                period: 10,
+                round: 2,
+                block_hash: [7; 32],
+                reward_votes_reset_generation: old_generation,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            state.status,
+            PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
+        );
+        assert_eq!(
+            state.error_code,
+            "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_RESET_PROVENANCE_MISMATCH"
+        );
+    }
+
+    #[test]
+    fn manager_runtime_accepts_reset_proof_after_next_cycle_admission() {
+        let (_temp_dir, mut runtime) = runtime_for_finalization_test(
+            "rustaxa_bridge_pbft_manager_reward_votes_reset_provenance_after_admission",
+        );
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        advance_finalization_cursor_to_action(
+            &mut runtime,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+        );
+
+        let reset_generation = {
+            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            guard
+                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .unwrap()
+        };
+        runtime.finalization_reward_votes_reset_generation = reset_generation;
+        let admission = persist_pbft_vote_progress(
+            &runtime.storage,
+            PbftVoteProgressPersistenceWrite {
+                extra_reward_vote: Some(PbftVoteStorageRecord {
+                    hash: H256::from_low_u64_be(88),
+                    vote_rlp: vec![0x01],
+                }),
+                two_t_plus_one_bundle: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(admission.applied_writes, 1);
+        assert_eq!(
+            runtime.storage.extra_reward_votes_reset_generation(),
+            reset_generation
+        );
+
+        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
+            &mut runtime,
+            step.cursor,
+            FfiPbftManagerFinalizationRewardVotesResetReport {
+                period: 10,
+                round: 2,
+                block_hash: [7; 32],
+                reward_votes_reset_generation: reset_generation,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
+        assert_eq!(
+            runtime.storage.pbft().extra_reward_vote_hashes().unwrap(),
+            vec![H256::from_low_u64_be(88)]
+        );
     }
 
     #[test]
@@ -4891,6 +5036,101 @@ mod tests {
         assert!(!state.has_action);
         assert_eq!(state.drained_actions, 0);
         assert!(state.can_continue);
+    }
+
+    #[test]
+    fn manager_executor_propagates_reset_generation_through_fresh_duplicate_and_resume() {
+        let (_temp_dir, mut runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_executor_reset_generation");
+
+        let start_fresh = |runtime: &mut BridgePbftManagerRuntime| {
+            let plan = pbft_manager_runtime_plan_finalization_intent(runtime, finalization_fact());
+            let ffi_stage = |stage, reward_votes_bundle_rlp: Vec<u8>| {
+                crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage {
+                    stage,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: stage == FINALIZATION_STAGE_REWARD_VOTES_RESET,
+                    reward_votes_bundle_rlp,
+                }
+            };
+            pbft_manager_runtime_start_finalization_executor(
+                runtime,
+                FfiPbftFinalizationExecutorStartRequest {
+                    mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                    plan,
+                    primary_stages: vec![
+                        ffi_stage(0, Vec::new()),
+                        ffi_stage(FINALIZATION_STAGE_REWARD_VOTES_RESET, vec![0xc1, 0x01]),
+                    ],
+                    sync: false,
+                    final_chain_last_block: 9,
+                },
+            )
+            .unwrap()
+        };
+
+        let first = start_fresh(&mut runtime);
+        assert!(first.can_continue);
+        assert_ne!(first.reward_votes_reset_generation, 0);
+        assert_eq!(
+            first.action,
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime.as_u8()
+        );
+        let reward_boundary = pbft_manager_runtime_advance_finalization_sortition_commit(
+            &mut runtime,
+            first.cursor,
+            FfiPbftManagerFinalizationSortitionCommitReport {
+                changed: true,
+                change_period: 10,
+                change_interval_efficiency: 2_500,
+                change_threshold_upper: 1_300,
+                current_threshold_upper: 1_300,
+                params_changes_count: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            reward_boundary.action,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8()
+        );
+        assert_eq!(
+            reward_boundary.reward_votes_reset_generation,
+            first.reward_votes_reset_generation
+        );
+
+        let duplicate = start_fresh(&mut runtime);
+        assert!(duplicate.can_continue);
+        assert!(
+            duplicate.reward_votes_reset_generation > first.reward_votes_reset_generation,
+            "idempotent primary apply must return a fresh authenticated generation"
+        );
+
+        let resume_plan =
+            pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        let resumed = pbft_manager_runtime_start_finalization_executor(
+            &mut runtime,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_RESUME,
+                plan: resume_plan,
+                primary_stages: Vec::new(),
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resumed.reward_votes_reset_generation,
+            duplicate.reward_votes_reset_generation
+        );
+        assert_eq!(
+            resumed.reward_votes_reset_generation,
+            runtime.storage.extra_reward_votes_reset_generation()
+        );
     }
 
     #[test]

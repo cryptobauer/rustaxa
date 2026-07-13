@@ -15,6 +15,7 @@ pub use config::Column;
 pub use config::Config;
 pub use config::StatusField;
 pub use dag::DagRepository;
+pub use db::ExtraRewardVotesGuard;
 pub use db::Storage;
 pub use db::StorageWriteBatch;
 pub use error::StorageError;

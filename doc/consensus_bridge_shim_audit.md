@@ -140,6 +140,14 @@ Current snapshot after DAG manager verify-result API cleanup:
   externally serialized compatibility operations. PBFT lifecycle clearing therefore no longer emits
   `clear_own_vote_sidecars` or invokes a VoteManager cleanup callback. The post-construction `attachRustStorage` /
   `verified_votes_attach_storage` handoff and optional production storage state are deleted.
+- `vote_manager_shim` no longer owns an `extra_reward_votes_` hash vector. Reward-reset stage preparation validates and
+  encodes the certified bundle in `BridgeVerifiedVotes`; apply-time Rust code holds the shared storage extra-reward lock
+  while enumerating keys and committing the bundle replacement and deletions in the primary finalization batch. The
+  startup snapshot, reset stage/request, and manager finalization report no longer carry extra hashes or a C++ remaining
+  count. An opaque generation minted by the locked Rust apply is propagated through the finalization executor and
+  validated by `BridgePbftManagerRuntime`, closing the post-commit admission race without exposing membership facts to
+  C++. The temporary reward period/round/block-hash cursor remains classified under Slice 6 until stale-reward admission
+  and selection consume a live Rust runtime cursor directly.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
   `dag_manager_shim::getDagMutex` now returns a shim-owned mutex to avoid `DagManagerOld` forwarding.
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards to `TransactionManagerOld`; the shim method now

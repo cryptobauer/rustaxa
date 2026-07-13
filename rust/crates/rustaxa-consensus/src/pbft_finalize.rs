@@ -403,7 +403,7 @@ pub enum PbftFinalizationLiveMutationStatus {
     /// Reward-vote live metadata does not match the Rust-planned reset facts.
     RewardVotesMetadataMismatch,
     /// Stale extra reward votes were not cleared after the reset metadata commit.
-    RewardVotesExtraVotesNotCleared,
+    RewardVotesResetProvenanceMismatch,
     /// Sortition emitted change facts do not match the finalized period contract.
     SortitionChangeMismatch,
     /// Sortition post-commit live state does not match the emitted change.
@@ -448,7 +448,7 @@ impl PbftFinalizationLiveMutationStatus {
             Self::PbftChainHeadMismatch => 9,
             Self::PbftChainAnchorMismatch => 10,
             Self::RewardVotesMetadataMismatch => 11,
-            Self::RewardVotesExtraVotesNotCleared => 12,
+            Self::RewardVotesResetProvenanceMismatch => 12,
             Self::SortitionChangeMismatch => 13,
             Self::SortitionLiveStateMismatch => 14,
             Self::ExecutedFlagMismatch => 15,
@@ -497,8 +497,8 @@ pub struct PbftFinalizationLiveMutationReport {
     pub reward_votes_round: u64,
     /// Reward-vote block hash after the Rust-validated live metadata reset.
     pub reward_votes_block_hash: H256,
-    /// Number of stale extra reward-vote sidecars remaining after live reset.
-    pub reward_votes_extra_count: u64,
+    /// Whether Rust storage authenticated the relayed reward-reset generation.
+    pub reward_votes_reset_provenance_valid: bool,
     /// Whether the committed sortition update emitted a persisted parameter change.
     pub sortition_changed: bool,
     /// Sortition change period emitted by the live runtime.
@@ -1033,8 +1033,6 @@ pub struct PbftRewardVotesResetStorageRequest {
     pub block_hash: H256,
     /// Canonical RLP list of weighted cert-vote payloads.
     pub reward_votes_bundle_rlp: Vec<u8>,
-    /// Stale extra reward-vote hashes to delete in the same atomic batch.
-    pub extra_reward_vote_hashes: Vec<H256>,
 }
 
 /// Result status for one PBFT finalization storage append stage.
@@ -1099,6 +1097,12 @@ pub struct PbftFinalizedPeriodApplyResult {
     pub block_period: u64,
     /// PBFT block hash associated with this write intent.
     pub pbft_block_hash: H256,
+    /// Storage-authenticated generation minted after a committed reward reset.
+    ///
+    /// Zero means this apply did not commit a reward-vote reset. C++ may relay
+    /// a non-zero value but the manager validates it against the shared Rust
+    /// storage handle before advancing finalization.
+    pub reward_votes_reset_generation: u64,
     /// Optional diagnostics / rejection text.
     pub error_code: String,
 }
@@ -1147,7 +1151,7 @@ fn append_pbft_finalization_storage_write(
 pub fn apply_pbft_finalization_storage_writes(
     storage: &Storage,
     write_set: &PbftFinalizationStorageWriteIntent,
-    stages: Vec<PbftFinalizationStorageWriteStage>,
+    mut stages: Vec<PbftFinalizationStorageWriteStage>,
     sync: bool,
 ) -> Result<PbftFinalizedPeriodApplyResult> {
     if stages.is_empty() {
@@ -1158,14 +1162,44 @@ pub fn apply_pbft_finalization_storage_writes(
         ));
     }
 
+    let contains_reward_votes_reset = stages.iter().any(|stage| {
+        stage.stage == APPEND_STAGE_REWARD_VOTES_RESET && stage.has_reward_votes_reset
+    });
+    let _extra_reward_guard = if contains_reward_votes_reset {
+        Some(storage.lock_extra_reward_votes()?)
+    } else {
+        None
+    };
+    if _extra_reward_guard.is_some() {
+        let hashes = storage
+            .pbft()
+            .extra_reward_vote_records()?
+            .into_iter()
+            .map(|record| record.vote_hash)
+            .collect::<Vec<_>>();
+        for stage in &mut stages {
+            if stage.has_reward_votes_reset {
+                stage.extra_reward_vote_hashes = hashes.clone();
+            }
+        }
+    }
+
     let mut batch = storage.create_write_batch();
-    let result =
+    let mut result =
         apply_pbft_finalization_storage_writes_to_batch(storage, &mut batch, write_set, stages)?;
 
     if result.status.is_success() {
-        storage
-            .commit_write_batch_with_sync(batch, sync)
-            .context("PBFT_FINALIZE_COMMIT_APPLY_BATCH")?;
+        if contains_reward_votes_reset {
+            result.reward_votes_reset_generation = _extra_reward_guard
+                .as_ref()
+                .expect("reward reset acquires the extra-vote guard")
+                .commit_reset_batch(batch, sync)
+                .context("PBFT_FINALIZE_COMMIT_REWARD_RESET_BATCH")?;
+        } else {
+            storage
+                .commit_write_batch_with_sync(batch, sync)
+                .context("PBFT_FINALIZE_COMMIT_APPLY_BATCH")?;
+        }
     }
 
     Ok(result)
@@ -1175,8 +1209,7 @@ pub fn apply_pbft_finalization_storage_writes(
 ///
 /// Inputs:
 /// - `storage`: native Rust storage handle.
-/// - `request`: certified-vote identity, bundle RLP, and stale extra-reward
-///   vote hashes.
+/// - `request`: certified-vote identity and canonical bundle RLP.
 /// - `sync`: commit sync flag passed to `rustaxa-storage`.
 ///
 /// Behavior:
@@ -1204,7 +1237,7 @@ pub fn apply_pbft_reward_votes_reset_storage(
         stage: APPEND_STAGE_REWARD_VOTES_RESET,
         has_reward_votes_reset: true,
         reward_votes_bundle_rlp: request.reward_votes_bundle_rlp,
-        extra_reward_vote_hashes: request.extra_reward_vote_hashes,
+        extra_reward_vote_hashes: Vec::new(),
         ..PbftFinalizationStorageWriteStage::default()
     };
     apply_pbft_finalization_storage_writes(storage, &write_set, vec![stage], sync)
@@ -1790,6 +1823,7 @@ fn apply_result(
         transaction_location_writes,
         block_period: write_set.block_period,
         pbft_block_hash: write_set.pbft_block_hash,
+        reward_votes_reset_generation: 0,
         error_code: error_code.to_string(),
     }
 }
@@ -1807,6 +1841,7 @@ fn sidecar_apply_result(
         transaction_location_writes: 0,
         block_period: write_set.block_period,
         pbft_block_hash: write_set.pbft_block_hash,
+        reward_votes_reset_generation: 0,
         error_code: error_code.to_string(),
     }
 }
@@ -1833,6 +1868,9 @@ fn merge_apply_results(
             + next.transaction_location_writes,
         block_period: write_set.block_period,
         pbft_block_hash: write_set.pbft_block_hash,
+        reward_votes_reset_generation: combined
+            .reward_votes_reset_generation
+            .max(next.reward_votes_reset_generation),
         error_code: String::new(),
     }
 }
@@ -2590,10 +2628,10 @@ pub fn validate_pbft_finalization_live_mutation_report(
                     "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_METADATA_MISMATCH",
                 );
             }
-            if report.reward_votes_extra_count != 0 {
+            if !report.reward_votes_reset_provenance_valid {
                 return reject(
-                    PbftFinalizationLiveMutationStatus::RewardVotesExtraVotesNotCleared,
-                    "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_EXTRA_NOT_CLEARED",
+                    PbftFinalizationLiveMutationStatus::RewardVotesResetProvenanceMismatch,
+                    "PBFT_FINALIZE_LIVE_MUTATION_REWARD_VOTES_RESET_PROVENANCE_MISMATCH",
                 );
             }
         }
@@ -3532,13 +3570,14 @@ mod tests {
                     step: 5,
                     block_hash: hash(99),
                     reward_votes_bundle_rlp: bundle.clone(),
-                    extra_reward_vote_hashes: vec![extra_hash],
                 },
                 false,
             )
             .expect("typed reward-vote reset should apply");
 
             assert_eq!(result.status, PbftFinalizedPeriodApplyStatus::Applied);
+            assert_eq!(result.reward_votes_reset_generation, 1);
+            assert_eq!(storage.extra_reward_votes_reset_generation(), 1);
             assert_eq!(
                 storage
                     .get_raw(Column::LatestRoundTwoTPlusOneVotes, &[1])
@@ -3551,8 +3590,93 @@ mod tests {
                     .expect("extra reward vote should load"),
                 None
             );
+
+            let repeated = apply_pbft_reward_votes_reset_storage(
+                &storage,
+                PbftRewardVotesResetStorageRequest {
+                    period: 10,
+                    round: 2,
+                    step: 5,
+                    block_hash: hash(99),
+                    reward_votes_bundle_rlp: storage
+                        .get_raw(Column::LatestRoundTwoTPlusOneVotes, &[1])
+                        .unwrap()
+                        .unwrap(),
+                },
+                false,
+            )
+            .expect("repeated reward-vote reset should be idempotent");
+            assert_eq!(
+                repeated.status,
+                PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+            );
+            assert_eq!(repeated.reward_votes_reset_generation, 2);
+            assert_eq!(storage.extra_reward_votes_reset_generation(), 2);
         }
 
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn reward_votes_reset_waits_for_in_flight_admission_write() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        let temp_dir = unique_temp_dir("rustaxa_reward_reset_serializes_admission");
+        let storage = Arc::new(Storage::new(Config::new(temp_dir.clone())).unwrap());
+        let extra_hash = hash(101);
+        let (writer_locked_tx, writer_locked_rx) = mpsc::channel();
+        let (continue_writer_tx, continue_writer_rx) = mpsc::channel();
+        let writer_storage = storage.clone();
+        let writer = std::thread::spawn(move || {
+            let _guard = writer_storage.lock_extra_reward_votes().unwrap();
+            writer_locked_tx.send(()).unwrap();
+            continue_writer_rx.recv().unwrap();
+            writer_storage
+                .pbft()
+                .write_extra_reward_vote(extra_hash, &[0x81])
+                .unwrap();
+        });
+        writer_locked_rx.recv().unwrap();
+
+        let (reset_done_tx, reset_done_rx) = mpsc::channel();
+        let reset_storage = storage.clone();
+        let reset = std::thread::spawn(move || {
+            let result = apply_pbft_reward_votes_reset_storage(
+                &reset_storage,
+                PbftRewardVotesResetStorageRequest {
+                    period: 10,
+                    round: 2,
+                    step: 5,
+                    block_hash: hash(99),
+                    reward_votes_bundle_rlp: vec![0xc1, 0x01],
+                },
+                false,
+            )
+            .unwrap();
+            reset_done_tx.send(result).unwrap();
+        });
+        assert!(
+            reset_done_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err()
+        );
+
+        continue_writer_tx.send(()).unwrap();
+        writer.join().unwrap();
+        let result = reset_done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        reset.join().unwrap();
+
+        assert_eq!(result.status, PbftFinalizedPeriodApplyStatus::Applied);
+        assert_ne!(result.reward_votes_reset_generation, 0);
+        assert!(
+            storage
+                .pbft()
+                .extra_reward_vote_hashes()
+                .unwrap()
+                .is_empty()
+        );
+        drop(storage);
         let _ = fs::remove_dir_all(temp_dir);
     }
 
@@ -3743,7 +3867,7 @@ mod tests {
             reward_votes_period: 10,
             reward_votes_round: 2,
             reward_votes_block_hash: hash(99),
-            reward_votes_extra_count: 0,
+            reward_votes_reset_provenance_valid: true,
             sortition_changed: false,
             sortition_change_period: 0,
             sortition_change_interval_efficiency: 0,
@@ -4741,13 +4865,13 @@ mod tests {
         let reward_votes = validate_pbft_finalization_live_mutation_report(
             &plan,
             PbftFinalizationLiveMutationReport {
-                reward_votes_extra_count: 1,
+                reward_votes_reset_provenance_valid: false,
                 ..live_report(PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime)
             },
         );
         assert_eq!(
             reward_votes.status,
-            PbftFinalizationLiveMutationStatus::RewardVotesExtraVotesNotCleared
+            PbftFinalizationLiveMutationStatus::RewardVotesResetProvenanceMismatch
         );
 
         let sortition = validate_pbft_finalization_live_mutation_report(

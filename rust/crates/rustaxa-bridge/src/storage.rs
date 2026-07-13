@@ -955,6 +955,10 @@ pub fn storage_shim_replace_two_t_plus_one_votes(
 }
 
 /// Appends a typed extra reward vote cleanup to a Rust-owned storage shim batch.
+///
+/// This compatibility batch does not retain the production extra-reward lock
+/// through its later commit; its caller must externally serialize the complete
+/// batch lifetime with reward admission and finalization reset.
 pub fn storage_shim_remove_extra_reward_vote(
     batch: &mut BridgeStorageBatch,
     hash: &[u8; 32],
@@ -969,6 +973,9 @@ pub fn storage_shim_remove_extra_reward_vote(
 ///
 /// The caller supplies the canonical weighted vote RLP bytes. Rust owns the
 /// extra-reward-vote column and hash-key layout.
+/// This compatibility batch does not retain the production extra-reward lock
+/// through its later commit; its caller must externally serialize the complete
+/// batch lifetime with reward admission and finalization reset.
 pub fn storage_shim_save_extra_reward_vote(
     batch: &mut BridgeStorageBatch,
     hash: &[u8; 32],
