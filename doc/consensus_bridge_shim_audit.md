@@ -553,6 +553,12 @@ Current snapshot after DAG manager verify-result API cleanup:
   `pushPbftBlock_()` uses one local helper set for snapshot application, action checks, failure reporting, and typed
   advancement while retaining the explicit external FinalChain, DAG, transaction-manager, PBFT-chain, sortition,
   vote-manager, advance-period, pillar, and anchor-cache client APIs.
+- The remaining post-start coordinator is now one shared Rust-driven action loop for fresh finalization and durable
+  resume. C++ no longer sequences effects from cleanup booleans or a resume-specific action chain; it dispatches the
+  current manager-runtime cursor action, consumes each prepared external payload at most once, and reports through the
+  typed advancement API. Fresh protected-prefix effects remain under the existing DAG/transaction locks, which are
+  released before the same loop executes FinalChain, period-advance, or pillar effects. Rust-owned storage,
+  dynamic-lambda, executed-status, and anchor-cache actions remain internally drained and never become C++ cases.
 - The standalone `plan_pbft_finalization_intent` CXX export is retired. C++ now calls
   `pbft_manager_runtime_plan_finalization_intent` on the long-lived `BridgePbftManagerRuntime`, making the manager
   runtime the required bridge owner for finalization intent planning. The planner is still stateless and fact-driven at

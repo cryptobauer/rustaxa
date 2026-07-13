@@ -630,6 +630,12 @@ Implementation notes:
   `pbft_manager_runtime_drain_owned_finalization_actions`, and
   `pbft_manager_runtime_apply_finalization_storage_writes` plus the older piecemeal finalization boundary APIs are
   deleted.
+- Fresh finalization and durable duplicate-resume now share one Rust-cursor-driven external-action dispatcher in
+  `pbft_manager_shim`. After the runtime starts, C++ no longer consults `finalization_plan.cleanup.*` booleans or a
+  separate resume action chain to decide sequencing: it executes only the current Rust action and reports through the
+  existing typed subsystem API. The fresh sortition/reward/DAG/transaction/PBFT-chain prefix remains under one
+  DAG-and-transaction lock scope; the same loop releases those locks before FinalChain, period advance, and pillar
+  effects. Resume rejects protected-prefix actions, and prepared payloads are single-use contract inputs.
 - The finalization advancement boundary now exposes typed success APIs plus one failure-only API,
   `pbft_manager_runtime_fail_finalization_external_effect(runtime, cursor, status, error_code)`. The duplicate
   `PbftFinalizationExecutorAdvanceReport` DTO, the generic `PbftFinalizationExternalEffectReport` CXX DTO, and the C++

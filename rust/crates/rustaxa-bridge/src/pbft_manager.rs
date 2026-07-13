@@ -4283,6 +4283,23 @@ mod tests {
         assert_eq!(step.status, PbftFinalizationRuntimeStatus::Complete.as_u8());
         assert!(step.complete);
         assert_eq!(actions, vec![0, 14, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+        let final_chain_index = actions
+            .iter()
+            .position(|action| *action == PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8())
+            .expect("fresh transcript should reach FinalChain");
+        let locked_prefix = [
+            PbftFinalizationRuntimeAction::ApplyPrimaryStorage.as_u8(),
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime.as_u8(),
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8(),
+            PbftFinalizationRuntimeAction::SetDagBlockOrder.as_u8(),
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions.as_u8(),
+            PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8(),
+            PbftFinalizationRuntimeAction::ClearAnchorDagCache.as_u8(),
+        ];
+        assert!(actions[final_chain_index + 1..]
+            .iter()
+            .all(|action| !locked_prefix.contains(action)));
     }
 
     #[test]
@@ -4719,6 +4736,7 @@ mod tests {
             state.error_code,
             "PBFT_FINALIZE_LIVE_MUTATION_FINAL_CHAIN_LAST_BLOCK_MISMATCH"
         );
+        assert_finalization_session_cleared(&mut runtime);
     }
 
     #[test]
@@ -4917,6 +4935,16 @@ mod tests {
         }
 
         assert_eq!(actions, vec![9, 10, 11, 12]);
+        assert!(actions.iter().all(|action| ![
+            PbftFinalizationRuntimeAction::ApplyPrimaryStorage.as_u8(),
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime.as_u8(),
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8(),
+            PbftFinalizationRuntimeAction::SetDagBlockOrder.as_u8(),
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions.as_u8(),
+            PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8(),
+            PbftFinalizationRuntimeAction::ClearAnchorDagCache.as_u8(),
+        ]
+        .contains(action)));
         assert!(step.complete);
         assert_eq!(step.status, PbftFinalizationRuntimeStatus::Complete.as_u8());
     }

@@ -3559,20 +3559,12 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                  << ", error " << static_cast<std::string>(boundary.error_code);
     return false;
   };
-  auto require_boundary_action = [&](const char *context, const rustaxa::PbftManagerFinalizationExecutorState &boundary,
-                                     uint8_t expected_action) {
-    apply_boundary_snapshot(boundary);
-    if (!boundary.has_action || boundary.action != expected_action ||
-        boundary.status != kPbftFinalizationRuntimeStatusActive) {
-      return fail_boundary(context, boundary);
-    }
-    return true;
-  };
   auto report_failure_boundary = [&](const rustaxa::PbftManagerFinalizationExecutorState &boundary_state,
                                      const char *error_code) {
     const auto boundary = rustaxa::pbft_manager_runtime_fail_finalization_external_effect(
         *pbft_manager_runtime_.value(), boundary_state.cursor, 255, error_code);
     apply_boundary_snapshot(boundary);
+    return boundary;
   };
   auto report_pillar_post_processing = [&](const PbftManagerFinalizationPillarPostProcessingReport &report,
                                            rustaxa::PbftManagerFinalizationExecutorState &boundary) {
@@ -3727,6 +3719,193 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     report.request_period = pillar_request_period;
     return report;
   };
+
+  std::optional<SortitionParamsChange> prepared_sortition_params_change;
+  bool sortition_commit_prepared = false;
+  bool reward_votes_reset_prepared = false;
+  bool dag_order_payload_available = true;
+  bool transaction_status_payload_available = true;
+  bool pbft_chain_payload_available = true;
+  bool final_chain_payload_available = true;
+  bool advance_period_payload_available = true;
+  bool pillar_payload_available = true;
+
+  enum class FinalizationDispatchResult { kComplete, kReleaseProtectedLocks, kFailed };
+  auto dispatch_finalization_actions = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary,
+                                           bool protected_locks_held, bool resume_mode) -> FinalizationDispatchResult {
+    auto fail_action = [&](const char *context, const char *error_code) {
+      boundary = report_failure_boundary(boundary, error_code);
+      fail_boundary(context, boundary);
+      return FinalizationDispatchResult::kFailed;
+    };
+
+    while (boundary.has_action) {
+      if (boundary.status != kPbftFinalizationRuntimeStatusActive) {
+        fail_boundary("action dispatch", boundary);
+        return FinalizationDispatchResult::kFailed;
+      }
+
+      switch (boundary.action) {
+        case kPbftFinalizationRuntimeActionCommitSortitionRuntime: {
+          if (!protected_locks_held) {
+            return fail_action("sortition runtime commit", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
+          }
+          if (!sortition_commit_prepared) {
+            return fail_action("sortition runtime commit", "PBFT_FINALIZE_SORTITION_PAYLOAD_UNAVAILABLE");
+          }
+          sortition_commit_prepared = false;
+          const auto report = dag_mgr_->sortitionParamsManager().commitPreparedBlockForSortitionFinalization(
+              period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1,
+              prepared_sortition_params_change);
+          prepared_sortition_params_change.reset();
+          if (!report_sortition_commit(report, boundary)) {
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        case kPbftFinalizationRuntimeActionCommitRewardVotesReset: {
+          if (!protected_locks_held) {
+            return fail_action("reward-vote reset", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
+          }
+          if (!reward_votes_reset_prepared) {
+            return fail_action("reward-vote reset", "PBFT_FINALIZE_REWARD_RESET_PAYLOAD_UNAVAILABLE");
+          }
+          reward_votes_reset_prepared = false;
+          const auto report =
+              vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
+          if (!report_reward_votes_reset(report, boundary)) {
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        case kPbftFinalizationRuntimeActionSetDagBlockOrder: {
+          if (!protected_locks_held) {
+            return fail_action("DAG block order", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
+          }
+          if (!dag_order_payload_available) {
+            return fail_action("DAG block order", "PBFT_FINALIZE_DAG_ORDER_PAYLOAD_UNAVAILABLE");
+          }
+          dag_order_payload_available = false;
+          const auto &anchor_hash = period_data.pbft_blk->getPivotDagBlockHash();
+          const auto report =
+              dag_mgr_->setDagBlockOrderForPbftFinalization(anchor_hash, block_pbft_period, dag_blocks_order);
+          if (!report_dag_order(report.finalized_count, boundary)) {
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        case kPbftFinalizationRuntimeActionUpdateFinalizedTransactions: {
+          if (!protected_locks_held) {
+            return fail_action("transaction finalized-status update",
+                               "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
+          }
+          if (!transaction_status_payload_available) {
+            return fail_action("transaction finalized-status update",
+                               "PBFT_FINALIZE_TRANSACTION_STATUS_PAYLOAD_UNAVAILABLE");
+          }
+          transaction_status_payload_available = false;
+          const auto report = trx_mgr_->updateFinalizedTransactionsStatusForPbftFinalization(period_data);
+          try {
+            boundary = rustaxa::pbft_manager_runtime_advance_finalization_transaction_status(
+                *pbft_manager_runtime_.value(), boundary.cursor, report);
+          } catch (const std::exception &e) {
+            LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
+                         << block_pbft_period << ", context transaction finalized-status update: " << e.what();
+            return FinalizationDispatchResult::kFailed;
+          }
+          apply_boundary_snapshot(boundary);
+          if (!boundary.can_continue) {
+            fail_boundary("transaction finalized-status update", boundary);
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        case kPbftFinalizationRuntimeActionUpdatePbftChain: {
+          if (!protected_locks_held) {
+            return fail_action("PBFT-chain update", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
+          }
+          if (!pbft_chain_payload_available) {
+            return fail_action("PBFT-chain update", "PBFT_FINALIZE_PBFT_CHAIN_PAYLOAD_UNAVAILABLE");
+          }
+          pbft_chain_payload_available = false;
+          const auto report =
+              pbft_chain_->updatePbftChainForPbftFinalization(finalization_plan.storage_write_intent);
+          if (!report_pbft_chain_update(report, boundary)) {
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        case kPbftFinalizationRuntimeActionFinalizeFinalChain: {
+          if (protected_locks_held) {
+            return FinalizationDispatchResult::kReleaseProtectedLocks;
+          }
+          if (!final_chain_payload_available) {
+            return fail_action("FinalChain dispatch", "PBFT_FINALIZE_FINAL_CHAIN_PAYLOAD_UNAVAILABLE");
+          }
+          const auto final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
+          if (final_chain_last_block + 1 != block_pbft_period) {
+            return fail_action("FinalChain dispatch", "PBFT_FINALIZE_NON_SEQUENTIAL_FINAL_CHAIN");
+          }
+          final_chain_payload_available = false;
+          const auto report = finalize_(std::move(period_data), std::move(dag_blocks_order),
+                                        finalization_plan.storage_write_intent.blocks_per_year);
+          if (report.last_block < block_pbft_period) {
+            return fail_action("FinalChain dispatch", "PBFT_FINALIZE_FINAL_CHAIN_ACTION_FAILED");
+          }
+          if (!report_final_chain_dispatch(report, boundary)) {
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        case kPbftFinalizationRuntimeActionAdvancePeriod: {
+          if (protected_locks_held) {
+            return FinalizationDispatchResult::kReleaseProtectedLocks;
+          }
+          if (!advance_period_payload_available) {
+            return fail_action("advance period", "PBFT_FINALIZE_ADVANCE_PERIOD_PAYLOAD_UNAVAILABLE");
+          }
+          advance_period_payload_available = false;
+          const auto report = apply_advance_period_for_finalization();
+          if (!report.has_value()) {
+            return fail_action("advance period", "PBFT_FINALIZE_ADVANCE_PERIOD_ACTION_FAILED");
+          }
+          if (!report_advance_period(*report, boundary)) {
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        case kPbftFinalizationRuntimeActionProcessPillarBlock: {
+          if (protected_locks_held) {
+            return FinalizationDispatchResult::kReleaseProtectedLocks;
+          }
+          if (!pillar_payload_available) {
+            return fail_action("pillar post-processing", "PBFT_FINALIZE_PILLAR_PAYLOAD_UNAVAILABLE");
+          }
+          pillar_payload_available = false;
+          const auto report = process_pillar_block_for_finalization();
+          if (!report.has_value()) {
+            return fail_action("pillar post-processing", "PBFT_FINALIZE_PILLAR_ACTION_FAILED");
+          }
+          if (!report_pillar_post_processing(*report, boundary)) {
+            return FinalizationDispatchResult::kFailed;
+          }
+          break;
+        }
+        default:
+          return fail_action(protected_locks_held ? "protected action dispatch" : "action dispatch",
+                             protected_locks_held ? "PBFT_FINALIZE_UNKNOWN_PROTECTED_ACTION"
+                                                  : resume_mode ? "PBFT_FINALIZE_PROTECTED_ACTION_ON_RESUME"
+                                                                : "PBFT_FINALIZE_UNKNOWN_UNPROTECTED_ACTION");
+      }
+    }
+
+    apply_boundary_snapshot(boundary);
+    if (!boundary.complete || boundary.status != kPbftFinalizationRuntimeStatusComplete) {
+      fail_boundary("completion", boundary);
+      return FinalizationDispatchResult::kFailed;
+    }
+    return FinalizationDispatchResult::kComplete;
+  };
   if (block_in_chain) {
     bool resume_executed = false;
     try {
@@ -3750,63 +3929,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                    << resume_boundary.complete << ", action " << static_cast<uint32_t>(resume_boundary.action)
                    << ", error " << static_cast<std::string>(resume_boundary.error_code);
 
-      if (resume_boundary.action == kPbftFinalizationRuntimeActionFinalizeFinalChain) {
-        const auto final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
-        if (final_chain_last_block + 1 != block_pbft_period) {
-          LOG(log_er_) << "Rust PBFT finalization resume refused non-sequential FinalChain replay for block "
-                       << pbft_block_hash << ", period " << block_pbft_period << ", FinalChain last block "
-                       << final_chain_last_block;
-          return false;
-        }
-        if (!require_boundary_action("FinalChain replay", resume_boundary,
-                                     kPbftFinalizationRuntimeActionFinalizeFinalChain)) {
-          return false;
-        }
-        const auto final_chain_dispatch = finalize_(std::move(period_data), std::move(dag_blocks_order),
-                                                    finalization_plan.storage_write_intent.blocks_per_year);
-        if (final_chain_dispatch.last_block < block_pbft_period) {
-          report_failure_boundary(resume_boundary, "PBFT_FINALIZE_RESUME_ACTION_FAILED");
-          return false;
-        }
-        if (!report_final_chain_dispatch(final_chain_dispatch, resume_boundary)) {
-          return false;
-        }
-      }
-
-      if (resume_boundary.action == kPbftFinalizationRuntimeActionAdvancePeriod) {
-        if (!require_boundary_action("advance period", resume_boundary, kPbftFinalizationRuntimeActionAdvancePeriod)) {
-          return false;
-        }
-        const auto advance_period = apply_advance_period_for_finalization();
-        if (!advance_period.has_value()) {
-          report_failure_boundary(resume_boundary, "PBFT_FINALIZE_RESUME_ACTION_FAILED");
-          return false;
-        }
-        if (!report_advance_period(*advance_period, resume_boundary)) {
-          return false;
-        }
-      }
-
-      if (resume_boundary.action == kPbftFinalizationRuntimeActionProcessPillarBlock) {
-        if (!require_boundary_action("pillar post-processing", resume_boundary,
-                                     kPbftFinalizationRuntimeActionProcessPillarBlock)) {
-          return false;
-        }
-        const auto pillar_post_processing = process_pillar_block_for_finalization();
-        if (!pillar_post_processing.has_value()) {
-          report_failure_boundary(resume_boundary, "PBFT_FINALIZE_RESUME_ACTION_FAILED");
-          return false;
-        }
-        if (!report_pillar_post_processing(*pillar_post_processing, resume_boundary)) {
-          return false;
-        }
-      }
-
-      if (!resume_boundary.complete || resume_boundary.status != kPbftFinalizationRuntimeStatusComplete) {
-        LOG(log_er_) << "Rust PBFT finalization resume runtime did not complete for block " << pbft_block_hash
-                     << ", period " << block_pbft_period << ", status " << static_cast<uint32_t>(resume_boundary.status)
-                     << ", action " << static_cast<uint32_t>(resume_boundary.action) << ", error "
-                     << static_cast<std::string>(resume_boundary.error_code);
+      if (dispatch_finalization_actions(resume_boundary, false, true) != FinalizationDispatchResult::kComplete) {
         return false;
       }
       resume_executed = true;
@@ -3833,12 +3956,11 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   first_persistence_stages.push_back(makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary));
 
   // Replace current reward votes
-  bool should_commit_reward_vote_metadata = false;
   if (finalization_plan.storage_write_intent.reset_reward_votes) {
     try {
       first_persistence_stages.push_back(
           vote_mgr_->rewardVotesResetStageForFinalization(finalization_plan.storage_write_intent));
-      should_commit_reward_vote_metadata = true;
+      reward_votes_reset_prepared = true;
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalized-period reward-vote reset facts failed for block " << pbft_block_hash
                    << ", period " << block_pbft_period << ": " << e.what();
@@ -3847,18 +3969,17 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   }
 
   // pass pbft with dag blocks and transactions to adjust difficulty
-  std::optional<SortitionParamsChange> prepared_sortition_params_change;
-  bool should_commit_sortition_runtime = false;
   if (finalization_plan.storage_write_intent.update_sortition_params) {
     prepared_sortition_params_change = dag_mgr_->sortitionParamsManager().prepareBlockForSortitionFinalization(
         period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1);
-    should_commit_sortition_runtime = true;
+    sortition_commit_prepared = true;
     if (prepared_sortition_params_change.has_value()) {
       first_persistence_stages.push_back(makeSortitionFinalizationStorageStage(*prepared_sortition_params_change));
     }
   }
 
   rustaxa::PbftManagerFinalizationExecutorState boundary{};
+  bool dispatch_complete = false;
   {
     // This makes sure that no DAG block or transaction can be added or change state in transaction and dag manager
     // when finalizing pbft block with dag blocks and transactions
@@ -3882,84 +4003,18 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (!boundary.can_continue) {
       return fail_boundary("primary storage", boundary);
     }
-    if (should_commit_sortition_runtime &&
-        !require_boundary_action("sortition runtime commit", boundary,
-                                 kPbftFinalizationRuntimeActionCommitSortitionRuntime)) {
+    const auto protected_dispatch = dispatch_finalization_actions(boundary, true, false);
+    if (protected_dispatch == FinalizationDispatchResult::kFailed) {
       return false;
     }
-    if (should_commit_sortition_runtime) {
-      const auto sortition_commit = dag_mgr_->sortitionParamsManager().commitPreparedBlockForSortitionFinalization(
-          period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1, prepared_sortition_params_change);
-      if (!report_sortition_commit(sortition_commit, boundary)) {
-        return false;
-      }
-    }
-    if (should_commit_reward_vote_metadata &&
-        !require_boundary_action("reward-vote reset", boundary, kPbftFinalizationRuntimeActionCommitRewardVotesReset)) {
-      return false;
-    }
-    if (should_commit_reward_vote_metadata) {
-      const auto reward_votes_reset =
-          vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
-      if (!report_reward_votes_reset(reward_votes_reset, boundary)) {
-        return false;
-      }
-    }
-
-    // Set DAG blocks period
-    auto const &anchor_hash = period_data.pbft_blk->getPivotDagBlockHash();
-    if (finalization_plan.cleanup.set_dag_block_order &&
-        !require_boundary_action("DAG block order", boundary, kPbftFinalizationRuntimeActionSetDagBlockOrder)) {
-      return false;
-    }
-    if (finalization_plan.cleanup.set_dag_block_order) {
-      const auto dag_order_report =
-          dag_mgr_->setDagBlockOrderForPbftFinalization(anchor_hash, block_pbft_period, dag_blocks_order);
-      if (!report_dag_order(dag_order_report.finalized_count, boundary)) {
-        return false;
-      }
-    }
-
-    if (finalization_plan.cleanup.update_finalized_transactions_status &&
-        !require_boundary_action("transaction finalized-status update", boundary,
-                                 kPbftFinalizationRuntimeActionUpdateFinalizedTransactions)) {
-      return false;
-    }
-    if (finalization_plan.cleanup.update_finalized_transactions_status) {
-      const auto finalized_transaction_report =
-          trx_mgr_->updateFinalizedTransactionsStatusForPbftFinalization(period_data);
-      try {
-        boundary = rustaxa::pbft_manager_runtime_advance_finalization_transaction_status(
-            *pbft_manager_runtime_.value(), boundary.cursor, finalized_transaction_report);
-      } catch (const std::exception &e) {
-        LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                     << block_pbft_period << ", context transaction finalized-status update: " << e.what();
-        return false;
-      }
-      apply_boundary_snapshot(boundary);
-      if (!boundary.can_continue) {
-        return fail_boundary("transaction finalized-status update", boundary);
-      }
-    }
-
-    // update PBFT chain size
-    if (finalization_plan.cleanup.update_pbft_chain &&
-        !require_boundary_action("PBFT-chain update", boundary, kPbftFinalizationRuntimeActionUpdatePbftChain)) {
-      return false;
-    }
-    if (finalization_plan.cleanup.update_pbft_chain) {
-      const auto pbft_chain_update =
-          pbft_chain_->updatePbftChainForPbftFinalization(finalization_plan.storage_write_intent);
-      if (!report_pbft_chain_update(pbft_chain_update, boundary)) {
-        return false;
-      }
+    if (protected_dispatch == FinalizationDispatchResult::kComplete) {
+      dispatch_complete = true;
     }
   }
 
   LOG(log_nf_) << "Pushed new PBFT block " << pbft_block_hash << " into chain. Period: " << block_pbft_period
                << ", round: " << block_pbft_round;
 
-  const uint32_t blocks_per_year = finalization_plan.storage_write_intent.blocks_per_year;
   if (finalization_plan.storage_write_intent.apply_dynamic_lambda_update) {
     if (dynamic_lambda_plan.decreased_dynamic_lambda) {
       LOG(log_nf_) << "Decrease dynamic_lambda by " << kGenesisConfig.state.hardforks.cacti_hf.lambda_change << " to "
@@ -3971,53 +4026,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
   }
 
-  if (finalization_plan.cleanup.finalize_final_chain &&
-      !require_boundary_action("FinalChain dispatch", boundary, kPbftFinalizationRuntimeActionFinalizeFinalChain)) {
-    return false;
-  }
-  if (finalization_plan.cleanup.finalize_final_chain) {
-    const auto final_chain_dispatch = finalize_(std::move(period_data), std::move(dag_blocks_order), blocks_per_year);
-    if (!report_final_chain_dispatch(final_chain_dispatch, boundary)) {
-      return false;
-    }
-  }
-
-  // Advance pbft consensus period
-  if (finalization_plan.cleanup.advance_period &&
-      !require_boundary_action("advance period", boundary, kPbftFinalizationRuntimeActionAdvancePeriod)) {
-    return false;
-  }
-  if (finalization_plan.cleanup.advance_period) {
-    const auto advance_period = apply_advance_period_for_finalization();
-    if (!advance_period.has_value()) {
-      report_failure_boundary(boundary, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED");
-      return false;
-    }
-    if (!report_advance_period(*advance_period, boundary)) {
-      return false;
-    }
-  }
-
-  if (finalization_plan.cleanup.process_pillar_block &&
-      !require_boundary_action("pillar post-processing", boundary, kPbftFinalizationRuntimeActionProcessPillarBlock)) {
-    return false;
-  }
-  if (finalization_plan.cleanup.process_pillar_block) {
-    const auto pillar_post_processing = process_pillar_block_for_finalization();
-    if (!pillar_post_processing.has_value()) {
-      report_failure_boundary(boundary, "PBFT_FINALIZE_RUNTIME_ACTION_FAILED");
-      return false;
-    }
-    if (!report_pillar_post_processing(*pillar_post_processing, boundary)) {
-      return false;
-    }
-  }
-
-  if (!boundary.complete || boundary.status != kPbftFinalizationRuntimeStatusComplete) {
-    LOG(log_er_) << "Rust PBFT finalization runtime did not complete for block " << pbft_block_hash << ", period "
-                 << block_pbft_period << ", status " << static_cast<uint32_t>(boundary.status) << ", action "
-                 << static_cast<uint32_t>(boundary.action) << ", error "
-                 << static_cast<std::string>(boundary.error_code);
+  if (!dispatch_complete &&
+      dispatch_finalization_actions(boundary, false, false) != FinalizationDispatchResult::kComplete) {
     return false;
   }
 

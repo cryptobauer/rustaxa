@@ -4355,6 +4355,100 @@ mod tests {
     }
 
     #[test]
+    fn finalization_runtime_omits_optional_actions_without_reordering_required_actions() {
+        let mut plan = plan_pbft_finalization_intent(accepted_fact());
+        plan.cleanup.update_sortition_params = false;
+        plan.cleanup.reset_reward_votes = false;
+        plan.storage_write_intent.apply_dynamic_lambda_update = false;
+        plan.storage_write_intent.persist_executed_pbft_status = false;
+        plan.executed_pbft_block = false;
+        plan.cleanup.process_pillar_block = false;
+
+        let runtime = plan_pbft_finalization_runtime(&plan);
+
+        assert_eq!(
+            runtime.actions,
+            vec![
+                PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+                PbftFinalizationRuntimeAction::SetDagBlockOrder,
+                PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+                PbftFinalizationRuntimeAction::UpdatePbftChain,
+                PbftFinalizationRuntimeAction::ClearAnchorDagCache,
+                PbftFinalizationRuntimeAction::FinalizeFinalChain,
+                PbftFinalizationRuntimeAction::AdvancePeriod,
+            ]
+        );
+    }
+
+    #[test]
+    fn finalization_transcripts_never_schedule_locked_prefix_after_final_chain() {
+        let locked_prefix = [
+            PbftFinalizationRuntimeAction::ApplyPrimaryStorage,
+            PbftFinalizationRuntimeAction::CommitSortitionRuntime,
+            PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
+            PbftFinalizationRuntimeAction::SetDagBlockOrder,
+            PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
+            PbftFinalizationRuntimeAction::UpdatePbftChain,
+            PbftFinalizationRuntimeAction::ClearAnchorDagCache,
+        ];
+
+        for process_pillar in [false, true] {
+            let mut fact = accepted_fact();
+            fact.process_pillar_block_after_advance = process_pillar;
+            let runtime = plan_pbft_finalization_runtime(&plan_pbft_finalization_intent(fact));
+            let final_chain = runtime
+                .actions
+                .iter()
+                .position(|action| *action == PbftFinalizationRuntimeAction::FinalizeFinalChain)
+                .expect("fresh transcript should finalize FinalChain");
+            assert!(
+                runtime.actions[final_chain + 1..]
+                    .iter()
+                    .all(|action| !locked_prefix.contains(action))
+            );
+        }
+
+        let complete = PbftFinalizationResumeFact {
+            block_in_chain: true,
+            block_period: 10,
+            final_chain_last_block: 10,
+            pbft_period_mapping_matches: true,
+            period_data_matches: true,
+            dag_positions_match: true,
+            transaction_positions_match: true,
+            missing_primary_facts: false,
+            conflicting_primary_facts: false,
+            dynamic_lambda_required: true,
+            dynamic_lambda_persisted: true,
+            executed_status_persisted: true,
+            pillar_post_processing_required: false,
+        };
+        let mut resume_facts = vec![complete];
+        let mut needs_dynamic = complete;
+        needs_dynamic.dynamic_lambda_persisted = false;
+        needs_dynamic.final_chain_last_block = 9;
+        needs_dynamic.executed_status_persisted = false;
+        resume_facts.push(needs_dynamic);
+        let mut needs_final_chain = complete;
+        needs_final_chain.final_chain_last_block = 9;
+        needs_final_chain.executed_status_persisted = false;
+        resume_facts.push(needs_final_chain);
+        let mut needs_executed = complete;
+        needs_executed.executed_status_persisted = false;
+        resume_facts.push(needs_executed);
+
+        for fact in resume_facts {
+            let resume = plan_pbft_finalization_resume(fact);
+            assert!(
+                resume
+                    .replay_actions
+                    .iter()
+                    .all(|action| !locked_prefix.contains(action))
+            );
+        }
+    }
+
+    #[test]
     fn finalization_runtime_session_advances_only_after_matching_reports() {
         let plan = plan_pbft_finalization_intent(accepted_fact());
         let runtime = plan_pbft_finalization_runtime(&plan);
