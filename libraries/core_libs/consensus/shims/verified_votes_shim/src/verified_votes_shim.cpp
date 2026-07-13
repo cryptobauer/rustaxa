@@ -201,7 +201,8 @@ PeriodVerifiedVotesMap VerifiedVotes::buildSnapshotState() const {
   return state;
 }
 
-VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr) : rust_verified_votes_(rustaxa::create_verified_votes_index()) {
+VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr)
+    : rust_verified_votes_(rustaxa::create_verified_votes_index()) {
   LOG_OBJECTS_CREATE("VERIFIED_VOTES");
 }
 
@@ -215,15 +216,19 @@ rustaxa::VerifiedVotesStartupSnapshot VerifiedVotes::startupSnapshot() const {
   return rust_verified_votes_->verified_votes_startup_snapshot();
 }
 
+rust::Vec<rustaxa::PbftVoteStorageRecord> VerifiedVotes::ownVoteRecords() const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_own_vote_records();
+}
+
 rustaxa::PbftVotePersistenceResult VerifiedVotes::saveOwnVerifiedVote(rustaxa::PbftVoteStorageRecord record) const {
   std::shared_lock lock(verified_votes_access_);
   return rust_verified_votes_->verified_votes_save_own_verified_vote(std::move(record));
 }
 
-rustaxa::PbftVotePersistenceResult VerifiedVotes::clearOwnVerifiedVotes(
-    rust::Vec<rustaxa::PbftFinalizationHash> hashes) const {
+rustaxa::PbftVotePersistenceResult VerifiedVotes::clearOwnVerifiedVotes() const {
   std::shared_lock lock(verified_votes_access_);
-  return rust_verified_votes_->verified_votes_clear_own_verified_votes(std::move(hashes));
+  return rust_verified_votes_->verified_votes_clear_own_verified_votes();
 }
 
 rustaxa::PbftVotePersistenceResult VerifiedVotes::persistPbftVoteProgress(

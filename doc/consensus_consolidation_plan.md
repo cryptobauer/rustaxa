@@ -497,10 +497,24 @@ Acceptance:
   external FinalChain DPoS reads, temporary `PillarBlock` materialization, PBFT `PeriodData` vote materialization,
   current-block sidecar mirrors, network vote-bundle requests, and event emission.
   `vote_manager_shim` is no longer a legacy-derived runtime: it is a standalone public facade whose authoritative
-  verified-vote restart state is restored inside Rust. Remaining vote-manager work is external FinalChain/key/slashing
-  fact execution and eventual absorption of the public facade into the Rust PBFT runtime, not legacy base ownership.
+  verified-vote restart state is restored inside Rust. Its locally generated own-vote collection is now also
+  storage-authoritative: the facade materializes votes only for the public getter/network boundary instead of maintaining
+  a second C++ object vector. Remaining vote-manager work is external FinalChain/key/slashing fact execution and eventual
+  absorption of the public facade into the Rust PBFT runtime, not legacy base ownership.
 
 Implementation notes:
+
+- VoteManager no longer mirrors locally generated own votes in `own_verified_votes_`. `BridgeVerifiedVotes` enumerates
+  validated canonical own-vote records directly from native Rust storage in hash order; the public C++ getter creates
+  transient `PbftVote` objects only when compatibility/network callers require them. Save and zero-input clear-all are
+  Rust-owned persistence operations serialized across production handles by a shared `Storage` mutex; startup returns
+  only extra-reward hashes plus reward coordinates, and PBFT lifecycle transitions no longer return a
+  `clear_own_vote_sidecars` command or call back into VoteManager after their atomic clear.
+  Focused coverage includes save/read/order/restart/clear and malformed key/payload/hash rejection, plus lifecycle clear,
+  `rust_storage_tests`, the own-vote `vote_test`, and the PBFT/consensus bridge build targets. `make
+  rewrite-validate-fast` passes. `make rewrite-validate-consensus` completed its Rust, guard, build, and most C++ stages;
+  the known full-binary sequential fixture issue reappeared in `pbft_manager_test`/`vote_test` as reused `/tmp/taraxa*`
+  RocksDB lock failures. The affected own-vote test and PBFT single-/multi-node smoke tests pass when run independently.
 
 - `final_chain_shim` now no longer exposes `rustFinalChainForRust()`; callers must route through explicit
   consensus/runtime APIs, which keeps FinalChain session ownership constrained to the shim constructor and execution

@@ -167,6 +167,18 @@ class VerifiedVotes {
   rustaxa::VerifiedVotesStartupSnapshot startupSnapshot() const;
 
   /**
+   * Loads all locally generated weighted PBFT vote records from native Rust storage.
+   *
+   * Outputs:
+   * - Canonical hash/payload records in storage-key order.
+   *
+   * Invariants and edge behavior:
+   * - Rust validates every signed weighted payload and its key/hash match.
+   * - Any malformed row fails the complete lookup; no partial result is returned.
+   */
+  rust::Vec<rustaxa::PbftVoteStorageRecord> ownVoteRecords() const;
+
+  /**
    * Persist one own verified PBFT vote through runtime-owned Rust storage.
    */
   rustaxa::PbftVotePersistenceResult saveOwnVerifiedVote(rustaxa::PbftVoteStorageRecord record) const;
@@ -174,14 +186,12 @@ class VerifiedVotes {
   /**
    * Clear own verified PBFT votes through runtime-owned Rust storage.
    */
-  rustaxa::PbftVotePersistenceResult clearOwnVerifiedVotes(
-      rust::Vec<rustaxa::PbftFinalizationHash> hashes) const;
+  rustaxa::PbftVotePersistenceResult clearOwnVerifiedVotes() const;
 
   /**
    * Persist accepted PBFT vote-progress effects through runtime-owned Rust storage.
    */
-  rustaxa::PbftVotePersistenceResult persistPbftVoteProgress(
-      rustaxa::PbftVoteProgressPersistenceWrite write) const;
+  rustaxa::PbftVotePersistenceResult persistPbftVoteProgress(rustaxa::PbftVoteProgressPersistenceWrite write) const;
 
   /**
    * Apply PBFT finalization storage stages through runtime-owned Rust storage.
@@ -488,8 +498,7 @@ class VerifiedVotes {
   rustaxa::VerifiedVotePayload toBridgeVotePayload(const std::shared_ptr<PbftVote>& vote) const;
   std::shared_ptr<PbftVote> materializeWeightedPayload(const rustaxa::PbftVoteStorageRecord& record) const;
   std::shared_ptr<PbftVote> materializeVoteForSnapshot(const rustaxa::VerifiedVotePayload& vote_data) const;
-  VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote,
-                                                       uint64_t total_weight,
+  VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote, uint64_t total_weight,
                                                        bool allow_later_bucket_growth = false) const;
   VotesWithWeight requireInsertedVotesWithWeightLocked(const rustaxa::VerifiedVotePayload& vote_data,
                                                        uint64_t total_weight,

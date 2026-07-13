@@ -479,13 +479,13 @@ std::shared_ptr<PbftVote> materializeRustGeneratedVote(const rustaxa::PbftGenera
   return vote;
 }
 
-std::shared_ptr<PbftVote> materializeStartupVote(const rustaxa::VerifiedVotesStartupVote& startup_vote) {
-  auto vote = std::make_shared<PbftVote>(fromBridgeBytes(startup_vote.vote_rlp));
-  if (vote->getHash() != fromBridgeVoteHash(startup_vote.vote_hash)) {
-    throw std::runtime_error("VoteManager Rust startup vote hash mismatches materialized vote");
+std::shared_ptr<PbftVote> materializeOwnVoteRecord(const rustaxa::PbftVoteStorageRecord& record) {
+  auto vote = std::make_shared<PbftVote>(fromBridgeBytes(record.vote_rlp));
+  if (vote->getHash() != fromBridgeVoteHash(record.hash)) {
+    throw std::runtime_error("VoteManager Rust own-vote storage key mismatches materialized vote");
   }
   if (!vote->getWeight().has_value() || *vote->getWeight() == 0) {
-    throw std::runtime_error("VoteManager Rust startup vote decoded without non-zero weight");
+    throw std::runtime_error("VoteManager Rust own-vote record decoded without non-zero weight");
   }
   return vote;
 }
@@ -505,14 +505,9 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
   LOG_OBJECTS_CREATE("VOTE_MGR");
 
   const auto startup = verified_votes_.startupSnapshot();
-  for (const auto& startup_vote : startup.votes) {
-    auto vote = materializeStartupVote(startup_vote);
-    if (startup_vote.own_vote) {
-      own_verified_votes_.push_back(vote);
-    }
-    if (startup_vote.extra_reward_vote) {
-      extra_reward_votes_.push_back(vote->getHash());
-    }
+  extra_reward_votes_.reserve(startup.extra_reward_vote_hashes.size());
+  for (const auto& vote_hash : startup.extra_reward_vote_hashes) {
+    extra_reward_votes_.push_back(fromBridgeVoteHash(vote_hash.hash));
   }
 
   if (startup.has_reward_vote_info) {
@@ -522,9 +517,7 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
   }
 }
 
-void VoteManager::setNetwork(std::weak_ptr<Network> network) {
-  network_ = std::move(network);
-}
+void VoteManager::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }
 
 bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   return addVerifiedVoteWithReport(vote).accepted;
@@ -1214,42 +1207,22 @@ void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   }
   auto record = makeVoteStorageRecord(vote);
   requireApplied(verified_votes_.saveOwnVerifiedVote(std::move(record)), "own verified vote");
-  own_verified_votes_.push_back(vote);
 }
 
-std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() { return own_verified_votes_; }
-
-rust::Vec<rustaxa::PbftFinalizationHash> VoteManager::ownVerifiedVoteHashesForRustTransition() const {
-  rust::Vec<rustaxa::PbftFinalizationHash> own_vote_hashes;
-  own_vote_hashes.reserve(own_verified_votes_.size());
-  for (const auto& vote : own_verified_votes_) {
-    if (!vote) {
-      throw std::runtime_error("VoteManager cannot expose a null own verified vote hash");
-    }
-    rustaxa::PbftFinalizationHash hash{};
-    hash.hash = toBridgeHash(vote->getHash());
-    own_vote_hashes.push_back(hash);
+std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() {
+  const auto records = verified_votes_.ownVoteRecords();
+  std::vector<std::shared_ptr<PbftVote>> votes;
+  votes.reserve(records.size());
+  for (const auto& record : records) {
+    votes.push_back(materializeOwnVoteRecord(record));
   }
-  return own_vote_hashes;
+  return votes;
 }
 
 void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
   (void)write_batch;
-  std::vector<vote_hash_t> own_vote_hashes;
-  own_vote_hashes.reserve(own_verified_votes_.size());
-  for (const auto& vote : own_verified_votes_) {
-    if (!vote) {
-      throw std::runtime_error("VoteManager cannot clear a null own verified vote");
-    }
-    own_vote_hashes.emplace_back(vote->getHash());
-  }
-
-  requireApplied(verified_votes_.clearOwnVerifiedVotes(toBridgeRewardVoteHashes(own_vote_hashes)),
-                 "own verified vote cleanup");
-  own_verified_votes_.clear();
+  requireApplied(verified_votes_.clearOwnVerifiedVotes(), "own verified vote cleanup");
 }
-
-void VoteManager::clearOwnVerifiedVotesAfterRustPersistence() { own_verified_votes_.clear(); }
 
 std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
                                                               PbftPeriod period, PbftRound round, PbftStep step,

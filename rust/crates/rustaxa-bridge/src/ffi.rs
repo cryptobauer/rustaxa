@@ -1020,17 +1020,12 @@ pub mod rustaxa_ffi {
         vote: PbftVoteStorageRecord,
     }
 
-    /// One deduplicated startup payload for temporary C++ vote sidecars.
-    struct VerifiedVotesStartupVote {
-        vote_hash: [u8; 32],
-        vote_rlp: Vec<u8>,
-        own_vote: bool,
-        extra_reward_vote: bool,
-    }
-
-    /// Compact compatibility snapshot returned after Rust storage restoration.
+    /// Compact reward compatibility snapshot returned after Rust restoration.
+    ///
+    /// Own-vote payloads are deliberately excluded and remain available from
+    /// the fallible native-storage accessor on `BridgeVerifiedVotes`.
     struct VerifiedVotesStartupSnapshot {
-        votes: Vec<VerifiedVotesStartupVote>,
+        extra_reward_vote_hashes: Vec<PbftFinalizationHash>,
         has_reward_vote_info: bool,
         reward_vote_period: u64,
         reward_vote_round: u64,
@@ -1871,7 +1866,6 @@ pub mod rustaxa_ffi {
         status: u8,
         snapshot: PbftManagerRuntimeSnapshot,
         remove_cert_voted_sidecar: bool,
-        clear_own_vote_sidecars: bool,
         clear_broadcasted_vote_sidecars: bool,
         set_vote_manager_period_round: bool,
         reset_current_round_timer: bool,
@@ -5232,6 +5226,9 @@ pub mod rustaxa_ffi {
         pub fn verified_votes_startup_snapshot(
             self: &BridgeVerifiedVotes,
         ) -> Result<VerifiedVotesStartupSnapshot>;
+        pub fn verified_votes_own_vote_records(
+            self: &BridgeVerifiedVotes,
+        ) -> Result<Vec<PbftVoteStorageRecord>>;
         pub fn verified_votes_size(self: &BridgeVerifiedVotes) -> u64;
         pub fn verified_votes_replay_contains(
             self: &BridgeVerifiedVotes,
@@ -5358,7 +5355,6 @@ pub mod rustaxa_ffi {
         ) -> Result<PbftVotePersistenceResult>;
         pub fn verified_votes_clear_own_verified_votes(
             self: &BridgeVerifiedVotes,
-            hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftVotePersistenceResult>;
         pub fn verified_votes_persist_pbft_vote_progress(
             self: &BridgeVerifiedVotes,

@@ -903,6 +903,10 @@ pub fn storage_shim_save_pbft_head(
 }
 
 /// Appends a typed own verified vote cleanup to a Rust-owned storage shim batch.
+///
+/// This caller-owned compatibility batch does not retain the production
+/// own-vote serialization guard through its later commit. Its caller must
+/// serialize the complete batch lifetime with production own-vote operations.
 pub fn storage_shim_remove_own_verified_vote(
     batch: &mut BridgeStorageBatch,
     hash: &[u8; 32],
@@ -917,6 +921,9 @@ pub fn storage_shim_remove_own_verified_vote(
 ///
 /// The caller supplies the canonical weighted vote RLP bytes. Rust owns the
 /// latest-round own-vote column and hash-key layout.
+/// This caller-owned compatibility batch does not retain the production
+/// own-vote serialization guard through its later commit. Its caller must
+/// serialize the complete batch lifetime with production own-vote operations.
 pub fn storage_shim_save_own_verified_vote(
     batch: &mut BridgeStorageBatch,
     hash: &[u8; 32],

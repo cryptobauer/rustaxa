@@ -234,9 +234,8 @@ class VoteManager {
    *   accepted by this method.
    */
   bool addLocallyGeneratedVote(const std::shared_ptr<PbftVote>& vote);
-  SyncedCertVoteValidationResult validateSyncedCertVoteBundle(
-      PbftPeriod block_period, const blk_hash_t& block_hash,
-      const std::vector<std::shared_ptr<PbftVote>>& cert_votes);
+  SyncedCertVoteValidationResult validateSyncedCertVoteBundle(PbftPeriod block_period, const blk_hash_t& block_hash,
+                                                              const std::vector<std::shared_ptr<PbftVote>>& cert_votes);
   StartupReplayVoteValidationResult validateStartupReplayVotes(
       const std::vector<std::shared_ptr<PbftVote>>& replay_votes) const;
   bool voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const;
@@ -494,71 +493,40 @@ class VoteManager {
    *
    * Outputs:
    * - Writes `PbftVote::rlp(true, true)` into the Rust-backed
-   *   `latest_round_own_votes` column and then records the live sidecar.
+   *   `latest_round_own_votes` column.
    *
    * Invariants and edge behavior:
-   * - Durable Rust storage succeeds before the in-memory own-vote vector is
-   *   mutated.
    * - Storage rejection propagates as an exception to the caller.
    */
   void saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote);
   /**
-   * Returns live own verified PBFT vote sidecars for the current round.
+   * Materializes own verified PBFT vote sidecars for the current round.
    *
    * Outputs:
-   * - The sidecars restored from Rust-backed storage at construction plus any
-   *   successfully persisted local votes generated since startup.
+   * - Fresh sidecars decoded from the canonical weighted vote payloads in
+   *   Rust-backed storage.
+   *
+   * Invariants and edge behavior:
+   * - VoteManager does not retain a duplicate own-vote sidecar collection.
+   * - Invalid or mismatched durable payloads fail the read rather than being
+   *   silently omitted.
    */
   std::vector<std::shared_ptr<PbftVote>> getOwnVerifiedVotes();
   /**
-   * Returns own verified vote hashes for a Rust-planned PBFT manager
-   * transition cleanup.
-   *
-   * Purpose:
-   * - Keeps PBFT manager from materializing or iterating own `PbftVote`
-   *   sidecars when it only needs exact durable cleanup keys for the Rust
-   *   transition storage write.
-   *
-   * Outputs:
-   * - Ordered vote hashes matching the current live own-vote sidecar set.
-   *
-   * Invariants and edge behavior:
-   * - Does not clear live sidecars or mutate durable storage.
-   * - Throws if a null own-vote sidecar is present, preserving the existing
-   *   transition invariant failure.
-   */
-  rust::Vec<rustaxa::PbftFinalizationHash> ownVerifiedVoteHashesForRustTransition() const;
-  /**
-   * Appends own verified vote cleanup to the caller-owned Rust storage batch.
+   * Clears all own verified votes through authoritative Rust storage.
    *
    * Inputs:
-   * - `write_batch`: PBFT manager batch that owns the eventual atomic commit.
+   * - `write_batch`: retained compatibility parameter; Rust mode does not append to it.
    *
    * Outputs:
-   * - Appends exact vote-hash deletes through the Rust storage batch registry
-   *   and clears the live own-vote sidecar only after Rust accepts the appends.
+   * - Clears every durable own vote through the storage-backed Rust runtime.
    *
    * Invariants and edge behavior:
    * - No legacy C++ batch contents are created by this method in Rust mode.
-   * - Unknown Rust batch ids or storage errors propagate as exceptions.
+   * - The compatibility batch parameter remains unused in Rust mode.
+   * - Storage errors propagate as exceptions.
    */
   void clearOwnVerifiedVotes(Batch& write_batch);
-  /**
-   * Clears only the Rust-mode live own-vote sidecar after Rust storage has
-   * already committed the matching `latest_round_own_votes` deletes.
-   *
-   * Inputs:
-   * - None. The durable delete set is supplied to the PBFT manager Rust
-   *   transition apply path before this method is called.
-   *
-   * Outputs:
-   * - Empties the in-memory own-vote vector.
-   *
-   * Invariants and edge behavior:
-   * - This method must only be called after the Rust storage transition apply
-   *   reports success. It intentionally performs no storage writes.
-   */
-  void clearOwnVerifiedVotesAfterRustPersistence();
   std::shared_ptr<PbftVote> generateVoteWithWeight(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
                                                    PbftPeriod period, PbftRound round, PbftStep step,
                                                    const WalletConfig& wallet);
@@ -696,8 +664,7 @@ class VoteManager {
     blk_hash_t current_round_soft_value_hash;
   };
   StateActionVoteFacts stateActionVoteFacts(PbftPeriod period, PbftRound round, bool needs_previous_round_next_null,
-                                            bool needs_previous_round_next_value,
-                                            bool needs_current_round_soft) const;
+                                            bool needs_previous_round_next_value, bool needs_current_round_soft) const;
 
   /**
    * Previous-round next-vote facts for PBFT manager transition logging.
@@ -834,7 +801,7 @@ class VoteManager {
    * - Does not mutate verified-vote state.
    * - The returned string is for logging only and must not be used as a
    *   protocol decision input.
-  */
+   */
   std::string softVoteDebugMessage(PbftPeriod period, PbftRound round) const;
   StepVotes getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const;
   /**
@@ -984,8 +951,6 @@ class VoteManager {
   PbftRound reward_votes_round_{0};
   std::vector<vote_hash_t> extra_reward_votes_;
   mutable std::shared_mutex reward_votes_info_mutex_;
-
-  std::vector<std::shared_ptr<PbftVote>> own_verified_votes_;
 
   LOG_OBJECTS_DEFINE
 };

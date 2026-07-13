@@ -431,10 +431,9 @@ rustaxa::PbftManagerStateActionSessionStep executeStateActionEffectSession(
 
 rustaxa::PbftManagerLifecycleTransitionResult executePbftManagerLifecycleTransition(
     rustaxa::PbftManagerLifecycleTransitionRequest request, rustaxa::BridgePbftManagerRuntime &runtime,
-    const std::shared_ptr<VoteManager> &vote_mgr, std::atomic<PbftRound> &round, PbftStep &step, PbftStates &state,
-    std::chrono::milliseconds &current_round_lambda, std::chrono::milliseconds &next_step_time,
-    uint32_t &rounds_count_dynamic_lambda, uint32_t &dynamic_lambda, bool &executed_pbft_block,
-    std::optional<std::shared_ptr<PbftBlock>> &cert_voted_block_for_round,
+    std::atomic<PbftRound> &round, PbftStep &step, PbftStates &state, std::chrono::milliseconds &current_round_lambda,
+    std::chrono::milliseconds &next_step_time, uint32_t &rounds_count_dynamic_lambda, uint32_t &dynamic_lambda,
+    bool &executed_pbft_block, std::optional<std::shared_ptr<PbftBlock>> &cert_voted_block_for_round,
     std::map<blk_hash_t, std::vector<PbftStep>> &current_round_broadcasted_votes, uint32_t &broadcast_votes_counter,
     uint32_t &rebroadcast_votes_counter, uint32_t &broadcast_reward_votes_counter,
     uint32_t &rebroadcast_reward_votes_counter, bool &already_next_voted_value,
@@ -455,9 +454,6 @@ rustaxa::PbftManagerLifecycleTransitionResult executePbftManagerLifecycleTransit
 
   if (result.remove_cert_voted_sidecar) {
     cert_voted_block_for_round.reset();
-  }
-  if (result.clear_own_vote_sidecars) {
-    vote_mgr->clearOwnVerifiedVotesAfterRustPersistence();
   }
   if (result.clear_broadcasted_vote_sidecars) {
     current_round_broadcasted_votes.clear();
@@ -1081,12 +1077,12 @@ void PbftManager::run() {
       const auto request =
           makePbftManagerLifecycleTransitionRequest(kind, current_period, 0, *vote_mgr_, transition_snapshot);
       executePbftManagerLifecycleTransition(
-          request, *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_, current_round_lambda_,
-          next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
-          cert_voted_block_for_round_, current_round_broadcasted_votes_, broadcast_votes_counter_,
-          rebroadcast_votes_counter_, broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,
-          already_next_voted_value_, already_next_voted_null_block_hash_, printCertStepInfo_,
-          printSecondFinishStepInfo_, current_round_start_datetime_, second_finish_step_start_datetime_);
+          request, *pbft_manager_runtime_.value(), round_, step_, state_, current_round_lambda_, next_step_time_ms_,
+          rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_, cert_voted_block_for_round_,
+          current_round_broadcasted_votes_, broadcast_votes_counter_, rebroadcast_votes_counter_,
+          broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_, already_next_voted_value_,
+          already_next_voted_null_block_hash_, printCertStepInfo_, printSecondFinishStepInfo_,
+          current_round_start_datetime_, second_finish_step_start_datetime_);
       return true;
     };
 
@@ -1704,7 +1700,7 @@ rustaxa::PbftManagerLifecycleTransitionResult PbftManager::applyLifecycleTransit
   auto request =
       makePbftManagerLifecycleTransitionRequest(kind, target_period, target_round, *vote_mgr_, transition_snapshot);
   return executePbftManagerLifecycleTransition(
-      std::move(request), *pbft_manager_runtime_.value(), vote_mgr_, round_, step_, state_, current_round_lambda_,
+      std::move(request), *pbft_manager_runtime_.value(), round_, step_, state_, current_round_lambda_,
       next_step_time_ms_, rounds_count_dynamic_lambda_, dynamic_lambda_, executed_pbft_block_,
       cert_voted_block_for_round_, current_round_broadcasted_votes_, broadcast_votes_counter_,
       rebroadcast_votes_counter_, broadcast_reward_votes_counter_, rebroadcast_reward_votes_counter_,

@@ -132,8 +132,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   to its original private shape. `setNetwork` therefore writes shim-owned state rather than inherited protected state.
 - `BridgeVerifiedVotes` production construction is fallible and storage-backed. Rust restores own votes, extra reward
   votes, and typed latest-round 2t+1 bundles, validates and deduplicates canonical weighted payloads, rebuilds replay,
-  retained-payload, uniqueness, round-marker, and voted-block state, and returns only a compact startup snapshot for
-  temporary C++ own/reward sidecars. The post-construction `attachRustStorage` /
+  retained-payload, uniqueness, round-marker, and voted-block state, and returns only extra-reward hashes plus reward
+  coordinates for the remaining compatibility sidecars. The VoteManager `own_verified_votes_` object vector is deleted;
+  public own-vote reads materialize transient objects from hash-ordered, key/payload-validated native storage records,
+  and zero-input Rust clear-all owns the batch. A mutex on the shared `Storage` serializes production reads, saves, direct
+  clears, and PBFT lifecycle enumeration/commit across handles; caller-owned storage-shim batches remain explicitly
+  externally serialized compatibility operations. PBFT lifecycle clearing therefore no longer emits
+  `clear_own_vote_sidecars` or invokes a VoteManager cleanup callback. The post-construction `attachRustStorage` /
   `verified_votes_attach_storage` handoff and optional production storage state are deleted.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
   `dag_manager_shim::getDagMutex` now returns a shim-owned mutex to avoid `DagManagerOld` forwarding.

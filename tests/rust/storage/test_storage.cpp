@@ -179,22 +179,18 @@ TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
   auto vote_queries = voteQueries(storage);
   ASSERT_EQ(vote_queries->get_own_verified_votes().size(), 1u);
 
-  rust::Vec<PbftFinalizationHash> vote_hashes;
-  vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
-  auto result = verified_votes->verified_votes_clear_own_verified_votes(std::move(vote_hashes));
+  auto result = verified_votes->verified_votes_clear_own_verified_votes();
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }
 
-TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsMissingVotesAsNoOpDeletes) {
+TEST_F(StorageTest, ClearOwnVerifiedVotesTreatsEmptyStorageAsNoOp) {
   auto storage = create_storage(test_dir.string());
 
-  rust::Vec<PbftFinalizationHash> vote_hashes;
-  vote_hashes.push_back(PbftFinalizationHash{h256(0x77)});
-  auto result = verifiedVotes(storage)->verified_votes_clear_own_verified_votes(std::move(vote_hashes));
+  auto result = verifiedVotes(storage)->verified_votes_clear_own_verified_votes();
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
-  EXPECT_EQ(result.applied_writes, 1u);
+  EXPECT_EQ(result.applied_writes, 0u);
   auto vote_queries = voteQueries(storage);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }

@@ -38,6 +38,15 @@ pub struct StoredTwoTPlusOneVotesBundle {
     pub votes_bundle_rlp: Vec<u8>,
 }
 
+/// One persisted locally produced PBFT vote with its canonical storage key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredOwnVerifiedVote {
+    /// Canonical signed-vote hash stored as the RocksDB key.
+    pub vote_hash: H256,
+    /// Persisted weighted PBFT vote RLP stored as the row value.
+    pub vote_rlp: Vec<u8>,
+}
+
 impl<D: DbReader> PbftRepository<D> {
     /// Creates a PBFT repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
@@ -130,11 +139,15 @@ impl<D: DbReader> PbftRepository<D> {
         Ok(result)
     }
 
-    /// Returns canonical hashes used as keys for all locally produced votes.
-    pub fn own_verified_vote_hashes(&self) -> Result<Vec<H256>> {
+    /// Returns locally produced votes with their storage keys in hash order.
+    ///
+    /// Each key must be exactly 32 bytes. Payload semantics are deliberately
+    /// validated by the consensus layer, which owns the PBFT codec and checks
+    /// that the decoded canonical hash matches `vote_hash`.
+    pub fn own_verified_vote_records(&self) -> Result<Vec<StoredOwnVerifiedVote>> {
         let mut result = Vec::new();
         for item in self.db.iter(Column::LatestRoundOwnVotes) {
-            let (key, _) = item?;
+            let (key, value) = item?;
             if key.len() != 32 {
                 return Err(StorageError::Read(format!(
                     "Invalid latest_round_own_votes key size: expected 32, got {}",
@@ -142,10 +155,22 @@ impl<D: DbReader> PbftRepository<D> {
                 ))
                 .into());
             }
-            result.push(H256::from_slice(&key));
+            result.push(StoredOwnVerifiedVote {
+                vote_hash: H256::from_slice(&key),
+                vote_rlp: value.into_vec(),
+            });
         }
-        result.sort_unstable();
+        result.sort_unstable_by_key(|record| record.vote_hash);
         Ok(result)
+    }
+
+    /// Returns canonical hashes used as keys for all locally produced votes.
+    pub fn own_verified_vote_hashes(&self) -> Result<Vec<H256>> {
+        Ok(self
+            .own_verified_vote_records()?
+            .into_iter()
+            .map(|record| record.vote_hash)
+            .collect())
     }
 
     /// Returns flattened votes from all stored 2t+1 vote bundles.
@@ -876,6 +901,16 @@ mod tests {
         let mut res = repo.own_verified_votes_rlp().unwrap();
         res.sort();
         assert_eq!(res, vec![vec![0xA1], vec![0xA2]]);
+    }
+
+    #[test]
+    fn own_verified_vote_records_reject_non_hash_key() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+        db.put(Column::LatestRoundOwnVotes, &[0x11; 31], &[0xA1]);
+
+        let error = repo.own_verified_vote_records().unwrap_err().to_string();
+        assert!(error.contains("expected 32, got 31"));
     }
 
     #[test]

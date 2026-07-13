@@ -169,7 +169,6 @@ pub fn persist_pbft_vote_progress(
 ///
 /// Inputs:
 /// - `storage`: native Rust storage handle.
-/// - `vote_hashes`: exact latest-round own-vote keys to delete.
 ///
 /// Outputs:
 /// - `Applied` with the number of delete intents committed.
@@ -178,11 +177,15 @@ pub fn persist_pbft_vote_progress(
 /// Invariants and edge behavior:
 /// - The operation creates and commits its own Rust storage batch; no C++ batch
 ///   id participates.
+/// - Keys are enumerated directly from the native latest-round own-vote column
+///   before the batch is constructed, so callers cannot accidentally leave
+///   rows behind by supplying an incomplete compatibility-sidecar list.
+/// - A storage-owned mutex serializes enumeration and commit with production
+///   saves and `BridgeVerifiedVotes` queries sharing the `Storage` instance.
 /// - Missing keys are RocksDB delete no-ops, matching legacy semantics.
-pub fn clear_own_verified_votes(
-    storage: &Storage,
-    vote_hashes: Vec<H256>,
-) -> Result<PbftVotePersistenceResult> {
+pub fn clear_own_verified_votes(storage: &Storage) -> Result<PbftVotePersistenceResult> {
+    let _guard = storage.lock_own_verified_votes()?;
+    let vote_hashes = storage.pbft().own_verified_vote_hashes()?;
     let mut batch = storage.create_write_batch();
     let applied_writes = vote_hashes.len() as u64;
 
@@ -216,10 +219,13 @@ pub fn clear_own_verified_votes(
 /// Invariants and edge behavior:
 /// - Existing own-vote rows for the same hash are overwritten, matching legacy
 ///   RocksDB put semantics.
+/// - A storage-owned mutex serializes the full save with lifecycle/direct
+///   clears and `BridgeVerifiedVotes` production queries sharing the storage.
 pub fn save_own_verified_vote(
     storage: &Storage,
     vote: PbftVoteStorageRecord,
 ) -> Result<PbftVotePersistenceResult> {
+    let _guard = storage.lock_own_verified_votes()?;
     let mut batch = storage.create_write_batch();
     if storage
         .pbft()
@@ -358,11 +364,63 @@ mod tests {
             .write_own_verified_vote(own_hash, &[0x72])
             .unwrap();
 
-        let result = clear_own_verified_votes(&storage, vec![own_hash]).unwrap();
+        let result = clear_own_verified_votes(&storage).unwrap();
 
         assert_eq!(result.status, PbftVotePersistenceStatus::Applied);
         assert_eq!(result.applied_writes, 1);
         assert!(storage.pbft().own_verified_votes_rlp().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_waits_for_in_flight_shared_handle_save_and_removes_its_row() {
+        use std::sync::{Arc, mpsc};
+        use std::time::Duration;
+
+        let storage = Arc::new(temp_storage(
+            "rustaxa_consensus_pbft_vote_clear_serializes_save",
+        ));
+        let own_hash = H256::from([0x67; 32]);
+        let (save_locked_tx, save_locked_rx) = mpsc::channel();
+        let (continue_save_tx, continue_save_rx) = mpsc::channel();
+        let save_storage = storage.clone();
+        let save = std::thread::spawn(move || {
+            let _guard = save_storage.lock_own_verified_votes().unwrap();
+            save_locked_tx.send(()).unwrap();
+            continue_save_rx.recv().unwrap();
+            save_storage
+                .pbft()
+                .write_own_verified_vote(own_hash, &[0x74])
+                .unwrap();
+        });
+        save_locked_rx.recv().unwrap();
+
+        let (clear_done_tx, clear_done_rx) = mpsc::channel();
+        let clear_storage = storage.clone();
+        let clear = std::thread::spawn(move || {
+            let result = clear_own_verified_votes(&clear_storage).unwrap();
+            clear_done_tx.send(result).unwrap();
+        });
+        assert!(
+            clear_done_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "clear must block while the shared save operation owns the guard"
+        );
+
+        continue_save_tx.send(()).unwrap();
+        save.join().unwrap();
+        let result = clear_done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        clear.join().unwrap();
+
+        assert_eq!(result.status, PbftVotePersistenceStatus::Applied);
+        assert_eq!(result.applied_writes, 1);
+        assert!(
+            storage
+                .pbft()
+                .own_verified_vote_hashes()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

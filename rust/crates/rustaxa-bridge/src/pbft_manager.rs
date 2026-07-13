@@ -1209,7 +1209,6 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
             status: TRANSITION_STORAGE_STATUS_REJECTED,
             snapshot: runtime.state.snapshot().into(),
             remove_cert_voted_sidecar: false,
-            clear_own_vote_sidecars: false,
             clear_broadcasted_vote_sidecars: false,
             set_vote_manager_period_round: false,
             reset_current_round_timer: false,
@@ -1220,7 +1219,12 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
             error_code: plan.error_code,
         });
     }
-    let own_vote_hashes = if plan.clear_own_votes {
+    let own_votes_guard = if plan.clear_own_votes {
+        Some(runtime.storage.lock_own_verified_votes()?)
+    } else {
+        None
+    };
+    let own_vote_hashes = if own_votes_guard.is_some() {
         runtime.storage.pbft().own_verified_vote_hashes()?
     } else {
         Vec::new()
@@ -1231,12 +1235,12 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
         &own_vote_hashes,
         false,
     )?;
+    drop(own_votes_guard);
     if storage_result.status != PbftManagerTransitionStorageStatus::Applied {
         return Ok(FfiPbftManagerLifecycleTransitionResult {
             status: TRANSITION_STORAGE_STATUS_REJECTED,
             snapshot: runtime.state.snapshot().into(),
             remove_cert_voted_sidecar: false,
-            clear_own_vote_sidecars: false,
             clear_broadcasted_vote_sidecars: false,
             set_vote_manager_period_round: false,
             reset_current_round_timer: false,
@@ -1255,7 +1259,6 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
         status: TRANSITION_STORAGE_STATUS_APPLIED,
         snapshot: runtime.state.snapshot().into(),
         remove_cert_voted_sidecar: plan.remove_cert_voted_block,
-        clear_own_vote_sidecars: plan.clear_own_votes,
         clear_broadcasted_vote_sidecars: plan.clear_broadcasted_votes,
         set_vote_manager_period_round: plan.set_vote_manager_period_round,
         reset_current_round_timer: plan.reset_current_round_start,
@@ -5329,8 +5332,31 @@ mod tests {
         assert_eq!(result.snapshot.step, before.step + 1);
         assert_eq!(result.snapshot.state, 1);
         assert!(!result.remove_cert_voted_sidecar);
-        assert!(!result.clear_own_vote_sidecars);
         assert!(result.error_code.is_empty());
+    }
+
+    #[test]
+    fn bridge_runtime_reset_clears_native_own_votes_without_sidecar_command() {
+        let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_clear_own_votes");
+        runtime
+            .storage
+            .pbft()
+            .write_own_verified_vote(H256::from_low_u64_be(71), &[0xC1])
+            .unwrap();
+
+        let result = pbft_manager_runtime_execute_lifecycle_transition(
+            &mut runtime,
+            lifecycle_transition_request(TRANSITION_RESET),
+        )
+        .unwrap();
+
+        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
+        assert!(runtime
+            .storage
+            .pbft()
+            .own_verified_vote_hashes()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

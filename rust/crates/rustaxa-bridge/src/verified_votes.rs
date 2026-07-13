@@ -13,7 +13,7 @@ use crate::ffi::rustaxa_ffi::{
     TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup, UniqueVoterInsertOutcome,
     VerifiedStepVotesEntry, VerifiedStepVotesLookup,
     VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
-    VerifiedVotesStartupSnapshot, VerifiedVotesStartupVote, VotedValueInsertOutcome,
+    VerifiedVotesStartupSnapshot, VotedValueInsertOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeVerifiedVotes};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
@@ -35,7 +35,8 @@ use rustaxa_consensus::pbft_vote_storage::{
     clear_own_verified_votes, persist_pbft_vote_progress, save_own_verified_vote,
 };
 use rustaxa_consensus::pbft_vote_validation::{
-    validate_canonical_pbft_vote, PbftCanonicalVoteValidation,
+    inspect_canonical_pbft_vote, validate_canonical_pbft_vote, PbftCanonicalVoteInspectionStatus,
+    PbftCanonicalVoteValidation,
     PbftVoteValidationExternalFacts as DomainPbftVoteValidationExternalFacts,
 };
 use rustaxa_consensus::verified_votes::{
@@ -130,6 +131,24 @@ fn vote_storage_record_to_domain(value: PbftVoteStorageRecord) -> DomainPbftVote
     }
 }
 
+fn validate_own_vote_storage_record(
+    record: DomainPbftVoteStorageRecord,
+) -> Result<DomainPbftVoteStorageRecord, anyhow::Error> {
+    let inspection = inspect_canonical_pbft_vote(&record.vote_rlp)?;
+    anyhow::ensure!(
+        inspection.status == PbftCanonicalVoteInspectionStatus::Valid
+            && inspection.signature_valid
+            && inspection.has_embedded_weight
+            && inspection.embedded_weight > 0,
+        "VERIFIED_VOTES_OWN_VOTE_PAYLOAD_INVALID"
+    );
+    anyhow::ensure!(
+        inspection.vote_hash == record.hash,
+        "VERIFIED_VOTES_OWN_VOTE_HASH_MISMATCH"
+    );
+    Ok(record)
+}
+
 fn two_t_plus_one_bundle_to_domain(
     value: PbftTwoTPlusOneVoteBundle,
 ) -> DomainPbftTwoTPlusOneVoteBundle {
@@ -157,11 +176,13 @@ fn vote_progress_write_to_domain(
 }
 
 impl BridgeVerifiedVotes {
-    /// Returns the compact sidecar snapshot captured during storage restoration.
+    /// Returns the compact reward snapshot captured during storage restoration.
     ///
     /// The snapshot is unavailable on the storage-free factory, which is kept
-    /// only for focused in-memory tests. Production callers receive deduplicated
-    /// weighted payloads plus own/reward flags and cert-bundle reward metadata.
+    /// only for focused in-memory tests. Production callers receive ordered
+    /// extra-reward hashes and cert-bundle reward metadata. Own-vote rows are
+    /// read through `verified_votes_own_vote_records` so storage remains their
+    /// sole payload and membership owner.
     pub fn verified_votes_startup_snapshot(
         &self,
     ) -> Result<VerifiedVotesStartupSnapshot, anyhow::Error> {
@@ -170,21 +191,44 @@ impl BridgeVerifiedVotes {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STARTUP_SNAPSHOT_UNAVAILABLE"))?;
         Ok(VerifiedVotesStartupSnapshot {
-            votes: snapshot
-                .votes
+            extra_reward_vote_hashes: snapshot
+                .extra_reward_vote_hashes
                 .iter()
-                .map(|vote| VerifiedVotesStartupVote {
-                    vote_hash: vote.vote_hash.0,
-                    vote_rlp: vote.vote_rlp.clone(),
-                    own_vote: vote.own_vote,
-                    extra_reward_vote: vote.extra_reward_vote,
-                })
+                .map(|hash| PbftFinalizationHash { hash: hash.0 })
                 .collect(),
             has_reward_vote_info: snapshot.has_reward_vote_info,
             reward_vote_period: snapshot.reward_vote_period,
             reward_vote_round: snapshot.reward_vote_round,
             reward_vote_block_hash: snapshot.reward_vote_block_hash.0,
         })
+    }
+
+    /// Loads locally generated weighted vote records from native Rust storage.
+    ///
+    /// Records are returned in canonical hash-key order. Every row is decoded
+    /// as a signed weighted PBFT vote and its decoded canonical hash must equal
+    /// the RocksDB key; malformed payloads, invalid signatures, zero weights,
+    /// non-32-byte keys, and key/payload mismatches fail the entire lookup.
+    pub fn verified_votes_own_vote_records(
+        &self,
+    ) -> Result<Vec<PbftVoteStorageRecord>, anyhow::Error> {
+        let storage = verified_votes_storage(self)?;
+        let _guard = storage.lock_own_verified_votes()?;
+        storage
+            .pbft()
+            .own_verified_vote_records()?
+            .into_iter()
+            .map(|record| {
+                let record = validate_own_vote_storage_record(DomainPbftVoteStorageRecord {
+                    hash: record.vote_hash,
+                    vote_rlp: record.vote_rlp,
+                })?;
+                Ok(PbftVoteStorageRecord {
+                    hash: record.hash.0,
+                    vote_rlp: record.vote_rlp,
+                })
+            })
+            .collect()
     }
 
     /// Returns count of stored verified vote hashes.
@@ -797,30 +841,33 @@ impl BridgeVerifiedVotes {
     }
 
     /// Persists one own verified vote through this runtime's attached Rust storage.
+    ///
+    /// The weighted signed payload must decode with a non-zero embedded weight,
+    /// and its canonical vote hash must equal the supplied storage key. Invalid
+    /// records fail before a native Rust batch is created or committed.
+    /// A storage-owned mutex serializes the complete save with lifecycle/direct
+    /// clears and `BridgeVerifiedVotes` production queries sharing the storage.
     pub fn verified_votes_save_own_verified_vote(
         &self,
         record: PbftVoteStorageRecord,
     ) -> Result<crate::ffi::rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
         save_own_verified_vote(
             verified_votes_storage(self)?,
-            vote_storage_record_to_domain(record),
+            validate_own_vote_storage_record(vote_storage_record_to_domain(record))?,
         )
         .map(pbft_vote_persistence_to_ffi)
     }
 
-    /// Clears own verified votes through this runtime's attached Rust storage.
+    /// Clears all own verified votes through attached native Rust storage.
+    ///
+    /// The zero-input operation enumerates authoritative storage keys itself;
+    /// no caller-provided sidecar list can leave a row behind.
+    /// A storage-owned mutex serializes enumeration and commit with local saves
+    /// and `BridgeVerifiedVotes` production queries sharing the storage.
     pub fn verified_votes_clear_own_verified_votes(
         &self,
-        hashes: Vec<PbftFinalizationHash>,
     ) -> Result<crate::ffi::rustaxa_ffi::PbftVotePersistenceResult, anyhow::Error> {
-        clear_own_verified_votes(
-            verified_votes_storage(self)?,
-            hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-        )
-        .map(pbft_vote_persistence_to_ffi)
+        clear_own_verified_votes(verified_votes_storage(self)?).map(pbft_vote_persistence_to_ffi)
     }
 
     /// Persists accepted PBFT vote-progress effects through attached Rust storage.
@@ -1422,7 +1469,9 @@ mod tests {
     };
     use rustaxa_consensus::pbft_vote_runtime::PbftVoteRuntimeReplayOutcome;
     use rustaxa_consensus::pbft_vote_validation::PbftVoteValidationStatus;
-    use rustaxa_consensus::{generate_pbft_vote, PbftVoteGenerationInput};
+    use rustaxa_consensus::{
+        build_weighted_pbft_vote_payload, generate_pbft_vote, PbftVoteGenerationInput,
+    };
     use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::vrf;
     use std::path::PathBuf;
@@ -1455,7 +1504,7 @@ mod tests {
         let snapshot = votes.verified_votes_startup_snapshot().unwrap();
 
         assert_eq!(votes.verified_votes_size(), 0);
-        assert!(snapshot.votes.is_empty());
+        assert!(snapshot.extra_reward_vote_hashes.is_empty());
         assert!(!snapshot.has_reward_vote_info);
         assert!(votes.storage.is_some());
     }
@@ -1464,6 +1513,185 @@ mod tests {
     fn storage_free_factory_has_no_startup_snapshot() {
         let votes = create_verified_votes_index();
         assert!(votes.verified_votes_startup_snapshot().is_err());
+        assert!(votes.verified_votes_own_vote_records().is_err());
+    }
+
+    #[test]
+    fn own_vote_records_save_read_order_restart_and_clear_all() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = PathBuf::from(format!(
+            "/tmp/rustaxa_bridge_own_vote_restart_{}_{}",
+            std::process::id(),
+            nonce
+        ));
+        let storage = BridgeStorage(Arc::new(Storage::new(Config::new(path.clone())).unwrap()));
+        let votes = create_verified_votes_index_from_storage(&storage).unwrap();
+        let first =
+            build_weighted_pbft_vote_payload(&generated_vote([0x31; 32], NODE_SECRET).vote_rlp, 7)
+                .unwrap();
+        let second = build_weighted_pbft_vote_payload(
+            &generated_vote([0x32; 32], NODE_SECRET_TWO).vote_rlp,
+            9,
+        )
+        .unwrap();
+
+        for record in [&second, &first] {
+            let result = votes
+                .verified_votes_save_own_verified_vote(PbftVoteStorageRecord {
+                    hash: record.hash.0,
+                    vote_rlp: record.vote_rlp.clone(),
+                })
+                .unwrap();
+            assert_eq!(result.status, 0);
+        }
+
+        let expected_hashes = {
+            let mut hashes = vec![first.hash, second.hash];
+            hashes.sort_unstable();
+            hashes
+        };
+        let records = votes.verified_votes_own_vote_records().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| H256::from(record.hash))
+                .collect::<Vec<_>>(),
+            expected_hashes
+        );
+
+        drop(votes);
+        drop(storage);
+        let reopened = BridgeStorage(Arc::new(Storage::new(Config::new(path.clone())).unwrap()));
+        let votes = create_verified_votes_index_from_storage(&reopened).unwrap();
+        assert_eq!(votes.verified_votes_own_vote_records().unwrap().len(), 2);
+
+        let result = votes.verified_votes_clear_own_verified_votes().unwrap();
+        assert_eq!(result.status, 0);
+        assert_eq!(result.applied_writes, 2);
+        assert!(votes.verified_votes_own_vote_records().unwrap().is_empty());
+
+        drop(votes);
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn own_vote_records_reject_malformed_payload_and_hash_mismatch() {
+        let storage = temp_bridge_storage("own_vote_validation");
+        let votes = create_verified_votes_index_from_storage(&storage).unwrap();
+
+        assert!(votes
+            .verified_votes_save_own_verified_vote(PbftVoteStorageRecord {
+                hash: H256::from_low_u64_be(1).0,
+                vote_rlp: vec![0x01],
+            })
+            .is_err());
+        assert!(storage
+            .0
+            .pbft()
+            .own_verified_vote_hashes()
+            .unwrap()
+            .is_empty());
+
+        let weighted =
+            build_weighted_pbft_vote_payload(&generated_vote([0x33; 32], NODE_SECRET).vote_rlp, 5)
+                .unwrap();
+        let wrong_hash = H256::from_low_u64_be(2);
+        assert_ne!(wrong_hash, weighted.hash);
+        assert!(votes
+            .verified_votes_save_own_verified_vote(PbftVoteStorageRecord {
+                hash: wrong_hash.0,
+                vote_rlp: weighted.vote_rlp.clone(),
+            })
+            .is_err());
+        assert!(storage
+            .0
+            .pbft()
+            .own_verified_vote_hashes()
+            .unwrap()
+            .is_empty());
+
+        storage
+            .0
+            .pbft()
+            .write_own_verified_vote(H256::from_low_u64_be(1), &[0x01])
+            .unwrap();
+        assert!(votes.verified_votes_own_vote_records().is_err());
+
+        votes.verified_votes_clear_own_verified_votes().unwrap();
+        storage
+            .0
+            .pbft()
+            .write_own_verified_vote(wrong_hash, &weighted.vote_rlp)
+            .unwrap();
+        let error = match votes.verified_votes_own_vote_records() {
+            Ok(_) => panic!("mismatched own-vote key must be rejected"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("VERIFIED_VOTES_OWN_VOTE_HASH_MISMATCH"));
+    }
+
+    #[test]
+    fn lifecycle_reset_clears_votes_saved_and_queried_through_another_handle() {
+        let storage = temp_bridge_storage("own_vote_cross_handle_lifecycle");
+        let votes = create_verified_votes_index_from_storage(&storage).unwrap();
+        let weighted =
+            build_weighted_pbft_vote_payload(&generated_vote([0x34; 32], NODE_SECRET).vote_rlp, 5)
+                .unwrap();
+        votes
+            .verified_votes_save_own_verified_vote(PbftVoteStorageRecord {
+                hash: weighted.hash.0,
+                vote_rlp: weighted.vote_rlp,
+            })
+            .unwrap();
+        assert_eq!(votes.verified_votes_own_vote_records().unwrap().len(), 1);
+
+        let mut runtime = crate::pbft_manager::create_pbft_manager_runtime_from_storage(
+            &storage,
+            crate::ffi::rustaxa_ffi::PbftManagerStartupFact {
+                current_period: 10,
+                cacti_active_at_chain_size: false,
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 1_500,
+                cacti_lambda_default_ms: 500,
+                cacti_block: 1,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 1_000,
+                polling_interval_ms: 100,
+            },
+        )
+        .unwrap();
+        let rejected = crate::pbft_manager::pbft_manager_runtime_execute_lifecycle_transition(
+            &mut runtime,
+            crate::ffi::rustaxa_ffi::PbftManagerLifecycleTransitionRequest {
+                kind: 255,
+                target_period: 10,
+                target_round: 4,
+                has_network_next_voting_step: false,
+                network_next_voting_step: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(rejected.status, 1);
+        assert_eq!(votes.verified_votes_own_vote_records().unwrap().len(), 1);
+
+        let applied = crate::pbft_manager::pbft_manager_runtime_execute_lifecycle_transition(
+            &mut runtime,
+            crate::ffi::rustaxa_ffi::PbftManagerLifecycleTransitionRequest {
+                kind: 0,
+                target_period: 10,
+                target_round: 4,
+                has_network_next_voting_step: false,
+                network_next_voting_step: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(applied.status, 0);
+        assert!(votes.verified_votes_own_vote_records().unwrap().is_empty());
     }
 
     fn temp_bridge_storage(name: &str) -> BridgeStorage {

@@ -13,6 +13,7 @@ use rocksdb::{
     DBPinnableSlice, DBWithThreadMode, MultiThreaded, Options, WriteBatch, WriteOptions,
 };
 use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::Column;
 use crate::Config;
@@ -222,6 +223,7 @@ pub struct Storage {
     transaction: TransactionRepository<DBWithThreadMode<MultiThreaded>>,
     metadata: MetadataRepository<DBWithThreadMode<MultiThreaded>>,
     final_chain: FinalChainRepository<DBWithThreadMode<MultiThreaded>>,
+    own_verified_votes_lock: Mutex<()>,
 }
 
 impl Storage {
@@ -269,6 +271,20 @@ impl Storage {
             pbft,
             transaction,
             final_chain,
+            own_verified_votes_lock: Mutex::new(()),
+        })
+    }
+
+    /// Acquires the process-local serialization guard for own PBFT vote rows.
+    ///
+    /// Production queries, saves, and lifecycle/direct clears must hold this
+    /// guard for their complete storage operation. Handles sharing an
+    /// `Arc<Storage>` therefore cannot interleave enumeration with a save or
+    /// clear commit. Poisoning is reported as a storage error instead of
+    /// silently permitting an unserialized operation.
+    pub fn lock_own_verified_votes(&self) -> Result<MutexGuard<'_, ()>> {
+        self.own_verified_votes_lock.lock().map_err(|_| {
+            StorageError::Read("own verified votes serialization lock poisoned".into()).into()
         })
     }
 
