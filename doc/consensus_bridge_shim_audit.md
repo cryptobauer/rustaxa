@@ -458,15 +458,24 @@ Current snapshot after DAG manager verify-result API cleanup:
   `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy/reference behavior when
   `RUSTAXA_ENABLE_FINAL_CHAIN` enables the overlay.
 - `pbft_manager_shim` is the active Rust-mode route for PBFT manager reset, finish-polling, loopback-finish, period
-  advance, and finalization storage intent execution. Reset/finish transitions call
-  `pbft_manager_runtime_apply_transition_storage_write`, so Rust commits the manager cursor/status rows,
-  cert-voted-block removal, and own-verified-vote cleanup in one native storage batch before the runtime snapshot and
-  C++ mirrors advance. Executed-block reset is a separate Rust-owned status write that preserves the legacy
+  advance, and finalization storage intent execution. Reset/finish transitions call the manager-owned lifecycle
+  transition executor, so Rust derives the live cursor, loads own-vote keys natively, and commits manager cursor/status
+  rows, cert-voted-block removal, and own-verified-vote cleanup in one native storage batch before returning the runtime
+  snapshot and narrow C++ sidecar commands. Executed-block reset is a separate Rust-owned status write that preserves the legacy
   post-finalization wait ordering, and finalization/dynamic-lambda storage writes are owned by the Rust finalization
   storage path behind `pbft_manager_runtime_apply_finalization_storage_writes`. The public batch blocks in
   `libraries/core_libs/consensus/src/pbft/pbft_manager.cpp` are legacy/reference behavior when
   `RUSTAXA_ENABLE_PBFT_MANAGER` enables the overlay; remaining PBFT manager cleanup belongs to Slice 6 service
   consolidation and Slice 8 CXX session-handle shrinkage rather than new storage-shim APIs.
+- The standalone lifecycle transition CXX planning/storage surface is retired:
+  `PbftManagerTransitionFact`, `PbftManagerTransitionPlan`, `PbftManagerTransitionRuntimeApplyResult`,
+  `plan_pbft_manager_transition`, and `pbft_manager_runtime_apply_transition_storage_write` are deleted. Filter,
+  certify, finish, finish-polling, loop-back, delay, reset, and advance-period reset enter through
+  `pbft_manager_runtime_execute_lifecycle_transition`; native planner/storage types remain internal and unit-tested.
+- Advance-period planning now reads the immediately preceding committed reset from the manager runtime and emits the
+  remaining external action order. Missing, stale, mismatched, and empty-chain requests are rejected; the duplicated
+  `ApplyResetConsensusTransition` action and embedded transition plan are removed. FinalChain wait,
+  VoteManager/timer/wallet/proposed-block compatibility effects remain explicit.
 - `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
   restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
   broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is

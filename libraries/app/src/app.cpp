@@ -171,6 +171,11 @@ void App::init(const cli::Config &cli_conf) {
   pbft_manager_startup_fact.genesis_lambda_ms = conf_.genesis.pbft.lambda_ms;
   pbft_manager_startup_fact.cacti_lambda_max_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_max;
   pbft_manager_startup_fact.cacti_lambda_default_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_default;
+  pbft_manager_startup_fact.cacti_block = conf_.genesis.state.hardforks.cacti_hf.block_num;
+  pbft_manager_startup_fact.max_exponential_lambda_ms = 60000;
+  pbft_manager_startup_fact.max_steps = 13;
+  pbft_manager_startup_fact.deadline_ms = 4 * static_cast<uint64_t>(conf_.genesis.pbft.lambda_ms);
+  pbft_manager_startup_fact.polling_interval_ms = 100;
   auto pbft_manager_runtime =
       rustaxa::create_pbft_manager_runtime_from_storage(db_->rustStorage(), pbft_manager_startup_fact);
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, std::move(pbft_manager_runtime), pbft_chain_, vote_mgr_,

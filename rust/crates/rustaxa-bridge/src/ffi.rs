@@ -1465,6 +1465,11 @@ pub mod rustaxa_ffi {
         genesis_lambda_ms: u64,
         cacti_lambda_max_ms: u64,
         cacti_lambda_default_ms: u64,
+        cacti_block: u64,
+        max_exponential_lambda_ms: u64,
+        max_steps: u64,
+        deadline_ms: u64,
+        polling_interval_ms: u64,
     }
 
     /// Rust-owned storage facts for replaying one finalized period during PBFT
@@ -1843,58 +1848,37 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// C++-originated facts for one Rust-owned PBFT manager transition.
-    struct PbftManagerTransitionFact {
-        kind: u8,
-        period: u64,
-        round: u64,
-        step: u64,
-        target_round: u64,
-        current_round_lambda_ms: u64,
-        target_round_lambda_ms: u64,
-        default_lambda_ms: u64,
-        max_exponential_lambda_ms: u64,
-        max_steps: u64,
-        network_next_voting_step: u64,
-        deadline_ms: u64,
-        polling_interval_ms: u64,
-        next_step_time_ms: u64,
-        cacti_hardfork: bool,
-        has_cert_voted_block: bool,
-        executed_pbft_block: bool,
-    }
-
-    /// Side-effect-free PBFT manager transition plan for C++ execution.
-    struct PbftManagerTransitionPlan {
-        status: u8,
-        kind: u8,
-        new_state: u8,
-        new_round: u64,
-        new_step: u64,
-        current_round_lambda_ms: u64,
-        next_step_time_ms: u64,
-        persist_round: bool,
-        persist_step: bool,
-        reset_next_voted_statuses: bool,
-        remove_cert_voted_block: bool,
-        clear_own_votes: bool,
-        clear_broadcasted_votes: bool,
-        reset_broadcast_counters: bool,
-        reset_executed_block_status: bool,
-        set_vote_manager_period_round: bool,
-        reset_current_round_start: bool,
-        reset_second_finish_start: bool,
-        print_cert_step_info: bool,
-        print_second_finish_step_info: bool,
-        error_code: String,
-    }
-
     /// Result from applying PBFT manager transition storage through the
     /// long-lived Rust runtime handle.
-    struct PbftManagerTransitionRuntimeApplyResult {
+    struct PbftManagerRuntimeStorageApplyResult {
         status: u8,
         applied_writes: u64,
         snapshot: PbftManagerRuntimeSnapshot,
+        error_code: String,
+    }
+
+    /// External/configuration inputs for one runtime-owned lifecycle transition.
+    struct PbftManagerLifecycleTransitionRequest {
+        kind: u8,
+        target_period: u64,
+        target_round: u64,
+        has_network_next_voting_step: bool,
+        network_next_voting_step: u64,
+    }
+
+    /// Committed runtime snapshot plus temporary C++ sidecar commands.
+    struct PbftManagerLifecycleTransitionResult {
+        status: u8,
+        snapshot: PbftManagerRuntimeSnapshot,
+        remove_cert_voted_sidecar: bool,
+        clear_own_vote_sidecars: bool,
+        clear_broadcasted_vote_sidecars: bool,
+        set_vote_manager_period_round: bool,
+        reset_current_round_timer: bool,
+        reset_second_finish_timer: bool,
+        print_cert_step_info: bool,
+        print_second_finish_step_info: bool,
+        reset_executed_block_follow_up: bool,
         error_code: String,
     }
 
@@ -4719,9 +4703,9 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_startup_replay_ranges(
             fact: PbftManagerStartupReplayRangeFact,
         ) -> PbftManagerStartupReplayRangePlan;
-        pub fn plan_pbft_manager_advance_period(
+        pub fn pbft_manager_runtime_plan_advance_period_after_reset(
+            runtime: &BridgePbftManagerRuntime,
             pbft_chain_size: u64,
-            transition_plan: &PbftManagerTransitionPlan,
         ) -> PbftManagerAdvancePeriodPlan;
         pub fn validate_pbft_manager_advance_period_action_report(
             plan: &PbftManagerAdvancePeriodPlan,
@@ -4769,14 +4753,13 @@ pub mod rustaxa_ffi {
         pub fn pbft_manager_runtime_own_pillar_block_vote(
             runtime: &BridgePbftManagerRuntime,
         ) -> Result<Vec<u8>>;
-        pub fn pbft_manager_runtime_apply_transition_storage_write(
+        pub fn pbft_manager_runtime_execute_lifecycle_transition(
             runtime: &mut BridgePbftManagerRuntime,
-            plan: PbftManagerTransitionPlan,
-            own_vote_hashes: Vec<PbftFinalizationHash>,
-        ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
+            request: PbftManagerLifecycleTransitionRequest,
+        ) -> Result<PbftManagerLifecycleTransitionResult>;
         pub fn pbft_manager_runtime_apply_executed_block_reset(
             runtime: &mut BridgePbftManagerRuntime,
-        ) -> Result<PbftManagerTransitionRuntimeApplyResult>;
+        ) -> Result<PbftManagerRuntimeStorageApplyResult>;
         pub fn pbft_manager_runtime_apply_next_voted_status(
             runtime: &mut BridgePbftManagerRuntime,
             status: u8,
@@ -4904,9 +4887,6 @@ pub mod rustaxa_ffi {
         pub fn plan_pbft_manager_leader_candidates(
             candidates: Vec<PbftManagerLeaderCandidateInputFact>,
         ) -> PbftManagerLeaderCandidatePlan;
-        pub fn plan_pbft_manager_transition(
-            fact: PbftManagerTransitionFact,
-        ) -> PbftManagerTransitionPlan;
         pub fn pbft_manager_runtime_session_next(
             runtime: &mut BridgePbftManagerRuntime,
         ) -> PbftManagerRuntimeSessionStep;

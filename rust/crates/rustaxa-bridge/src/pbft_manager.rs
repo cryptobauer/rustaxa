@@ -42,6 +42,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
     PbftManagerLeaderCandidatePlan as FfiPbftManagerLeaderCandidatePlan,
     PbftManagerLeaderValidBlockCommand as FfiPbftManagerLeaderValidBlockCommand,
+    PbftManagerLifecycleTransitionRequest as FfiPbftManagerLifecycleTransitionRequest,
+    PbftManagerLifecycleTransitionResult as FfiPbftManagerLifecycleTransitionResult,
     PbftManagerProposalDagBlockFact as FfiPbftManagerProposalDagBlockFact,
     PbftManagerProposalDagOrderReport as FfiPbftManagerProposalDagOrderReport,
     PbftManagerProposalInitialFact as FfiPbftManagerProposalInitialFact,
@@ -50,6 +52,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerRuntimeActionReport as FfiPbftManagerRuntimeActionReport,
     PbftManagerRuntimeSessionStep as FfiPbftManagerRuntimeSessionStep,
     PbftManagerRuntimeSnapshot as FfiPbftManagerRuntimeSnapshot,
+    PbftManagerRuntimeStorageApplyResult as FfiPbftManagerRuntimeStorageApplyResult,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
     PbftManagerSleepPlan as FfiPbftManagerSleepPlan,
     PbftManagerStartupFact as FfiPbftManagerStartupFact,
@@ -59,9 +62,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerStateActionEffectReport as FfiPbftManagerStateActionEffectReport,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
     PbftManagerStateActionSessionStep as FfiPbftManagerStateActionSessionStep,
-    PbftManagerTransitionFact as FfiPbftManagerTransitionFact,
-    PbftManagerTransitionPlan as FfiPbftManagerTransitionPlan,
-    PbftManagerTransitionRuntimeApplyResult as FfiPbftManagerTransitionRuntimeApplyResult,
     PbftSyncQueueDrainReport as FfiPbftSyncQueueDrainReport,
     PbftSyncQueueDrainReportResult as FfiPbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStep as FfiPbftSyncQueueDrainStep,
@@ -109,7 +109,6 @@ use rustaxa_consensus::pbft_manager::{
     next_pbft_manager_proposal_session as next_domain_pbft_manager_proposal_session,
     next_pbft_manager_runtime_action,
     next_pbft_manager_state_action_effect_session as next_domain_pbft_manager_state_action_effect_session,
-    plan_pbft_manager_advance_period_from_transition as plan_domain_pbft_manager_advance_period_from_transition,
     plan_pbft_manager_block_validation as plan_domain_pbft_manager_block_validation,
     plan_pbft_manager_broadcast as plan_domain_pbft_manager_broadcast,
     plan_pbft_manager_candidate_admission as plan_domain_pbft_manager_candidate_admission,
@@ -118,7 +117,6 @@ use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_leader_candidates as plan_domain_pbft_manager_leader_candidates,
     plan_pbft_manager_runtime_sleep_until_next_step as plan_domain_pbft_manager_runtime_sleep_until_next_step,
     plan_pbft_manager_startup_replay_ranges as plan_domain_pbft_manager_startup_replay_ranges,
-    plan_pbft_manager_transition as plan_domain_pbft_manager_transition,
     report_pbft_manager_broadcast as report_domain_pbft_manager_broadcast,
     report_pbft_manager_proposal_dag_order as report_domain_pbft_manager_proposal_dag_order,
     report_pbft_manager_runtime_action,
@@ -135,19 +133,18 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerEligibleWalletPeriodWaitPlan, PbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan, PbftManagerLeaderBlockValidationStatus,
     PbftManagerLeaderCandidateInputFact, PbftManagerLeaderCandidatePlan,
-    PbftManagerLeaderValidBlockCommand, PbftManagerProposalAction, PbftManagerProposalDagBlockFact,
-    PbftManagerProposalDagOrderReport, PbftManagerProposalInitialFact,
-    PbftManagerProposalSessionStep, PbftManagerProposalStatus, PbftManagerProposalWalletFact,
-    PbftManagerRuntimeAction, PbftManagerRuntimeActionReport, PbftManagerRuntimeActionResultCode,
-    PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot, PbftManagerRuntimeStateCode,
-    PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact, PbftManagerSleepPlan,
-    PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
+    PbftManagerLeaderValidBlockCommand, PbftManagerLifecycleTransitionRequest,
+    PbftManagerProposalAction, PbftManagerProposalDagBlockFact, PbftManagerProposalDagOrderReport,
+    PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalStatus,
+    PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
+    PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
+    PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact,
+    PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
     PbftManagerStateActionEffect, PbftManagerStateActionEffectReport,
     PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
     PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
-    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionFact,
-    PbftManagerTransitionKind, PbftManagerTransitionPlan, PbftManagerTransitionStatus,
-    PbftManagerTransitionStorageStatus,
+    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionKind,
+    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
 };
 use rustaxa_consensus::pbft_sync::{
     create_pbft_sync_queue_drain_session as create_domain_pbft_sync_queue_drain_session,
@@ -427,15 +424,6 @@ fn to_startup_u32(value: u64, field: &str) -> anyhow::Result<u32> {
     u32::try_from(value).map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_{field}_OVERFLOW"))
 }
 
-fn transition_status_from_u8(value: u8) -> PbftManagerTransitionStatus {
-    match value {
-        0 => PbftManagerTransitionStatus::Ready,
-        1 => PbftManagerTransitionStatus::InvalidKind,
-        2 => PbftManagerTransitionStatus::InvalidFact,
-        _ => PbftManagerTransitionStatus::InvalidFact,
-    }
-}
-
 fn broadcast_status_from_u8(value: u8) -> PbftManagerBroadcastStatus {
     match value {
         0 => PbftManagerBroadcastStatus::Ready,
@@ -443,34 +431,6 @@ fn broadcast_status_from_u8(value: u8) -> PbftManagerBroadcastStatus {
         2 => PbftManagerBroadcastStatus::ExecutorFailed,
         3 => PbftManagerBroadcastStatus::InvalidReport,
         _ => PbftManagerBroadcastStatus::InvalidReport,
-    }
-}
-
-fn domain_transition_plan_from_ffi(
-    value: &FfiPbftManagerTransitionPlan,
-) -> PbftManagerTransitionPlan {
-    PbftManagerTransitionPlan {
-        status: transition_status_from_u8(value.status),
-        kind: PbftManagerTransitionKind::from_u8(value.kind),
-        new_state: PbftManagerRuntimeStateCode::from_u8(value.new_state),
-        new_round: value.new_round,
-        new_step: value.new_step,
-        current_round_lambda_ms: value.current_round_lambda_ms,
-        next_step_time_ms: value.next_step_time_ms,
-        persist_round: value.persist_round,
-        persist_step: value.persist_step,
-        reset_next_voted_statuses: value.reset_next_voted_statuses,
-        remove_cert_voted_block: value.remove_cert_voted_block,
-        clear_own_votes: value.clear_own_votes,
-        clear_broadcasted_votes: value.clear_broadcasted_votes,
-        reset_broadcast_counters: value.reset_broadcast_counters,
-        reset_executed_block_status: value.reset_executed_block_status,
-        set_vote_manager_period_round: value.set_vote_manager_period_round,
-        reset_current_round_start: value.reset_current_round_start,
-        reset_second_finish_start: value.reset_second_finish_start,
-        print_cert_step_info: value.print_cert_step_info,
-        print_second_finish_step_info: value.print_second_finish_step_info,
-        error_code: value.error_code.clone(),
     }
 }
 
@@ -503,6 +463,11 @@ pub fn create_pbft_manager_runtime_from_storage(
                 fact.cacti_lambda_default_ms,
                 "CACTI_LAMBDA_DEFAULT",
             )?,
+            cacti_block: fact.cacti_block,
+            max_exponential_lambda_ms: fact.max_exponential_lambda_ms,
+            max_steps: fact.max_steps,
+            deadline_ms: fact.deadline_ms,
+            polling_interval_ms: fact.polling_interval_ms,
         },
     )?;
 
@@ -943,24 +908,24 @@ pub fn plan_pbft_manager_startup_replay_ranges(
 
 /// Plans the ordered PBFT manager period-advance effects.
 ///
-/// The caller supplies the accepted Rust transition plan that will reset the
-/// PBFT cursor to round one. The returned effect list owns the surrounding
-/// advance-period order while C++ remains the temporary executor.
-pub fn plan_pbft_manager_advance_period(
+/// The runtime derives the ordered tail from its last committed reset. The
+/// returned effect list owns the surrounding advance-period order while C++
+/// remains the temporary executor.
+pub fn pbft_manager_runtime_plan_advance_period_after_reset(
+    runtime: &BridgePbftManagerRuntime,
     pbft_chain_size: u64,
-    transition_plan: &FfiPbftManagerTransitionPlan,
 ) -> FfiPbftManagerAdvancePeriodPlan {
-    plan_domain_pbft_manager_advance_period_from_transition(
-        pbft_chain_size,
-        domain_transition_plan_from_ffi(transition_plan),
-    )
-    .into()
+    runtime
+        .state
+        .plan_advance_period_after_reset(pbft_chain_size)
+        .into()
 }
 
 /// Validates one C++ executor report for a Rust-planned PBFT manager period-advance action.
 ///
 /// Inputs:
-/// - `plan`: Rust-owned action script returned by `plan_pbft_manager_advance_period`.
+/// - `plan`: Rust-owned action script returned by
+///   `pbft_manager_runtime_plan_advance_period_after_reset`.
 /// - `report`: zero-based executor report for one action.
 ///
 /// Outputs:
@@ -1215,8 +1180,8 @@ fn transition_runtime_apply_result(
     applied_writes: u64,
     snapshot: PbftManagerRuntimeSnapshot,
     error_code: String,
-) -> FfiPbftManagerTransitionRuntimeApplyResult {
-    FfiPbftManagerTransitionRuntimeApplyResult {
+) -> FfiPbftManagerRuntimeStorageApplyResult {
+    FfiPbftManagerRuntimeStorageApplyResult {
         status,
         applied_writes,
         snapshot: snapshot.into(),
@@ -1224,55 +1189,82 @@ fn transition_runtime_apply_result(
     }
 }
 
-/// Applies transition persistence through a long-lived PBFT manager runtime.
-///
-/// Inputs:
-/// - `runtime`: Rust-owned scalar PBFT manager cursor.
-/// - `plan`: accepted transition plan.
-/// - `own_vote_hashes`: latest own-vote keys to delete when requested by the
-///   plan.
-///
-/// Outputs:
-/// - `status = 0` after storage commit and Rust cursor update.
-/// - `status = 1` with an unchanged snapshot on rejection.
-///
-/// Invariants and edge behavior:
-/// - The runtime-owned Rust storage handle performs the durable commit.
-/// - The Rust runtime cursor advances only after that storage batch commits.
-/// - C++ live mirrors must be updated from the returned snapshot only after an
-///   applied status.
-pub fn pbft_manager_runtime_apply_transition_storage_write(
+/// Plans, persists, and commits one lifecycle transition as a Rust-owned operation.
+pub fn pbft_manager_runtime_execute_lifecycle_transition(
     runtime: &mut BridgePbftManagerRuntime,
-    plan: FfiPbftManagerTransitionPlan,
-    own_vote_hashes: Vec<FfiPbftFinalizationHash>,
-) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
-    let domain_plan = domain_transition_plan_from_ffi(&plan);
-    let own_vote_hashes: Vec<_> = own_vote_hashes
-        .into_iter()
-        .map(|hash| ethereum_types::H256::from(hash.hash))
-        .collect();
+    request: FfiPbftManagerLifecycleTransitionRequest,
+) -> anyhow::Result<FfiPbftManagerLifecycleTransitionResult> {
+    let kind = PbftManagerTransitionKind::from_u8(request.kind);
+    let plan = runtime
+        .state
+        .plan_lifecycle_transition(PbftManagerLifecycleTransitionRequest {
+            kind,
+            target_period: request.target_period,
+            target_round: request.target_round,
+            has_network_next_voting_step: request.has_network_next_voting_step,
+            network_next_voting_step: request.network_next_voting_step,
+        });
+    if plan.status != PbftManagerTransitionStatus::Ready {
+        return Ok(FfiPbftManagerLifecycleTransitionResult {
+            status: TRANSITION_STORAGE_STATUS_REJECTED,
+            snapshot: runtime.state.snapshot().into(),
+            remove_cert_voted_sidecar: false,
+            clear_own_vote_sidecars: false,
+            clear_broadcasted_vote_sidecars: false,
+            set_vote_manager_period_round: false,
+            reset_current_round_timer: false,
+            reset_second_finish_timer: false,
+            print_cert_step_info: false,
+            print_second_finish_step_info: false,
+            reset_executed_block_follow_up: false,
+            error_code: plan.error_code,
+        });
+    }
+    let own_vote_hashes = if plan.clear_own_votes {
+        runtime.storage.pbft().own_verified_vote_hashes()?
+    } else {
+        Vec::new()
+    };
     let storage_result = apply_pbft_manager_transition_storage(
         runtime.storage.as_ref(),
-        &domain_plan,
+        &plan,
         &own_vote_hashes,
         false,
     )?;
     if storage_result.status != PbftManagerTransitionStorageStatus::Applied {
-        return Ok(transition_runtime_apply_result(
-            TRANSITION_STORAGE_STATUS_REJECTED,
-            0,
-            runtime.state.snapshot(),
-            storage_result.error_code,
-        ));
+        return Ok(FfiPbftManagerLifecycleTransitionResult {
+            status: TRANSITION_STORAGE_STATUS_REJECTED,
+            snapshot: runtime.state.snapshot().into(),
+            remove_cert_voted_sidecar: false,
+            clear_own_vote_sidecars: false,
+            clear_broadcasted_vote_sidecars: false,
+            set_vote_manager_period_round: false,
+            reset_current_round_timer: false,
+            reset_second_finish_timer: false,
+            print_cert_step_info: false,
+            print_second_finish_step_info: false,
+            reset_executed_block_follow_up: false,
+            error_code: storage_result.error_code,
+        });
     }
-
-    runtime.state.apply_committed_transition(&domain_plan);
-    Ok(transition_runtime_apply_result(
-        TRANSITION_STORAGE_STATUS_APPLIED,
-        storage_result.applied_writes,
-        runtime.state.snapshot(),
-        String::new(),
-    ))
+    runtime.state.apply_committed_transition(&plan);
+    runtime
+        .state
+        .record_committed_reset(request.target_period, &plan);
+    Ok(FfiPbftManagerLifecycleTransitionResult {
+        status: TRANSITION_STORAGE_STATUS_APPLIED,
+        snapshot: runtime.state.snapshot().into(),
+        remove_cert_voted_sidecar: plan.remove_cert_voted_block,
+        clear_own_vote_sidecars: plan.clear_own_votes,
+        clear_broadcasted_vote_sidecars: plan.clear_broadcasted_votes,
+        set_vote_manager_period_round: plan.set_vote_manager_period_round,
+        reset_current_round_timer: plan.reset_current_round_start,
+        reset_second_finish_timer: plan.reset_second_finish_start,
+        print_cert_step_info: plan.print_cert_step_info,
+        print_second_finish_step_info: plan.print_second_finish_step_info,
+        reset_executed_block_follow_up: plan.reset_executed_block_status,
+        error_code: String::new(),
+    })
 }
 
 /// Applies the delayed executed-block manager-status reset through Rust storage.
@@ -1293,7 +1285,7 @@ pub fn pbft_manager_runtime_apply_transition_storage_write(
 /// - The returned snapshot is the authoritative source for C++ live mirrors.
 pub fn pbft_manager_runtime_apply_executed_block_reset(
     runtime: &mut BridgePbftManagerRuntime,
-) -> anyhow::Result<FfiPbftManagerTransitionRuntimeApplyResult> {
+) -> anyhow::Result<FfiPbftManagerRuntimeStorageApplyResult> {
     if apply_executed_block_reset_storage(runtime.storage.as_ref()).is_err() {
         return Ok(transition_runtime_apply_result(
             TRANSITION_STORAGE_STATUS_REJECTED,
@@ -1751,13 +1743,6 @@ pub fn plan_pbft_manager_leader_candidates(
         .map(PbftManagerLeaderCandidateInputFact::from)
         .collect();
     plan_domain_pbft_manager_leader_candidates(candidates).into()
-}
-
-/// Plans one deterministic PBFT manager transition from compact C++ facts.
-pub fn plan_pbft_manager_transition(
-    fact: FfiPbftManagerTransitionFact,
-) -> FfiPbftManagerTransitionPlan {
-    plan_domain_pbft_manager_transition(fact.into()).into()
 }
 
 fn pbft_finalization_session_missing_step() -> FinalizationRuntimeSessionStep {
@@ -3262,30 +3247,6 @@ impl From<FfiPbftManagerLeaderCandidateInputFact> for PbftManagerLeaderCandidate
     }
 }
 
-impl From<FfiPbftManagerTransitionFact> for PbftManagerTransitionFact {
-    fn from(value: FfiPbftManagerTransitionFact) -> Self {
-        Self {
-            kind: PbftManagerTransitionKind::from_u8(value.kind),
-            period: value.period,
-            round: value.round,
-            step: value.step,
-            target_round: value.target_round,
-            current_round_lambda_ms: value.current_round_lambda_ms,
-            target_round_lambda_ms: value.target_round_lambda_ms,
-            default_lambda_ms: value.default_lambda_ms,
-            max_exponential_lambda_ms: value.max_exponential_lambda_ms,
-            max_steps: value.max_steps,
-            network_next_voting_step: value.network_next_voting_step,
-            deadline_ms: value.deadline_ms,
-            polling_interval_ms: value.polling_interval_ms,
-            next_step_time_ms: value.next_step_time_ms,
-            cacti_hardfork: value.cacti_hardfork,
-            has_cert_voted_block: value.has_cert_voted_block,
-            executed_pbft_block: value.executed_pbft_block,
-        }
-    }
-}
-
 impl From<PbftManagerRuntimeSessionStep> for FfiPbftManagerRuntimeSessionStep {
     fn from(value: PbftManagerRuntimeSessionStep) -> Self {
         let status = value.status.as_u8();
@@ -3503,34 +3464,6 @@ impl From<PbftManagerLeaderCandidatePlan> for FfiPbftManagerLeaderCandidatePlan 
     }
 }
 
-impl From<PbftManagerTransitionPlan> for FfiPbftManagerTransitionPlan {
-    fn from(value: PbftManagerTransitionPlan) -> Self {
-        Self {
-            status: value.status.as_u8(),
-            kind: value.kind.as_u8(),
-            new_state: value.new_state.as_u8(),
-            new_round: value.new_round,
-            new_step: value.new_step,
-            current_round_lambda_ms: value.current_round_lambda_ms,
-            next_step_time_ms: value.next_step_time_ms,
-            persist_round: value.persist_round,
-            persist_step: value.persist_step,
-            reset_next_voted_statuses: value.reset_next_voted_statuses,
-            remove_cert_voted_block: value.remove_cert_voted_block,
-            clear_own_votes: value.clear_own_votes,
-            clear_broadcasted_votes: value.clear_broadcasted_votes,
-            reset_broadcast_counters: value.reset_broadcast_counters,
-            reset_executed_block_status: value.reset_executed_block_status,
-            set_vote_manager_period_round: value.set_vote_manager_period_round,
-            reset_current_round_start: value.reset_current_round_start,
-            reset_second_finish_start: value.reset_second_finish_start,
-            print_cert_step_info: value.print_cert_step_info,
-            print_second_finish_step_info: value.print_second_finish_step_info,
-            error_code: value.error_code,
-        }
-    }
-}
-
 impl From<FfiPbftManagerStartupReplayRangeFact> for PbftManagerStartupReplayRangeFact {
     fn from(value: FfiPbftManagerStartupReplayRangeFact) -> Self {
         Self {
@@ -3579,29 +3512,6 @@ fn domain_advance_period_plan_from_ffi(
         accepted: value.accepted,
         finalized_chain_size: value.finalized_chain_size,
         new_period: value.new_period,
-        transition_plan: PbftManagerTransitionPlan {
-            status: PbftManagerTransitionStatus::InvalidFact,
-            kind: PbftManagerTransitionKind::Unknown,
-            new_state: PbftManagerRuntimeStateCode::ValueProposal,
-            new_round: 0,
-            new_step: 0,
-            current_round_lambda_ms: 0,
-            next_step_time_ms: 0,
-            persist_round: false,
-            persist_step: false,
-            reset_next_voted_statuses: false,
-            remove_cert_voted_block: false,
-            clear_own_votes: false,
-            clear_broadcasted_votes: false,
-            reset_broadcast_counters: false,
-            reset_executed_block_status: false,
-            set_vote_manager_period_round: false,
-            reset_current_round_start: false,
-            reset_second_finish_start: false,
-            print_cert_step_info: false,
-            print_second_finish_step_info: false,
-            error_code: String::new(),
-        },
         actions: value
             .actions
             .iter()
@@ -3660,7 +3570,6 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const STATE_VALUE_PROPOSAL: u8 = 0;
-    const STATE_FILTER: u8 = 1;
     const STATE_CERTIFY: u8 = 2;
     const STATE_FINISH: u8 = 3;
     const ACTION_PROCESS_SYNCED: u8 = 0;
@@ -3714,15 +3623,10 @@ mod tests {
     const BROADCAST_ACTION_ROUND_VOTES: u8 = 2;
     const BROADCAST_STATUS_READY: u8 = 0;
     const STARTUP_STATUS_READY: u8 = 0;
-    const TRANSITION_STATUS_READY: u8 = 0;
-    const TRANSITION_STATUS_INVALID_FACT: u8 = 2;
     const TRANSITION_RESET: u8 = 0;
     const TRANSITION_FILTER: u8 = 1;
-    const TRANSITION_LOOP_BACK_FINISH: u8 = 5;
     const TRANSITION_STORAGE_STATUS_APPLIED: u8 = 0;
     const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
-    const ADVANCE_ACTION_RESET_CONSENSUS: u8 = 0;
-    const ADVANCE_ACTION_EXECUTED_BLOCK_RESET: u8 = 1;
     const ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND: u8 = 2;
     const ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER: u8 = 3;
     const ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS: u8 = 4;
@@ -4072,25 +3976,13 @@ mod tests {
         }
     }
 
-    fn transition_fact(kind: u8) -> FfiPbftManagerTransitionFact {
-        FfiPbftManagerTransitionFact {
+    fn lifecycle_transition_request(kind: u8) -> FfiPbftManagerLifecycleTransitionRequest {
+        FfiPbftManagerLifecycleTransitionRequest {
             kind,
-            period: 10,
-            round: 2,
-            step: 3,
+            target_period: 10,
             target_round: 4,
-            current_round_lambda_ms: 100,
-            target_round_lambda_ms: 400,
-            default_lambda_ms: 100,
-            max_exponential_lambda_ms: 60_000,
-            max_steps: 13,
+            has_network_next_voting_step: false,
             network_next_voting_step: 0,
-            deadline_ms: 1_000,
-            polling_interval_ms: 100,
-            next_step_time_ms: 900,
-            cacti_hardfork: true,
-            has_cert_voted_block: true,
-            executed_pbft_block: true,
         }
     }
 
@@ -4101,6 +3993,11 @@ mod tests {
             genesis_lambda_ms: 100,
             cacti_lambda_max_ms: 1_500,
             cacti_lambda_default_ms: 500,
+            cacti_block: 1,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            deadline_ms: 1_000,
+            polling_interval_ms: 100,
         }
     }
 
@@ -5337,11 +5234,9 @@ mod tests {
     #[test]
     fn bridge_plans_sleep_wait_and_deadline_reached() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_runtime_sleep");
-        let transition = plan_pbft_manager_transition(transition_fact(TRANSITION_FILTER));
-        let applied = pbft_manager_runtime_apply_transition_storage_write(
+        let applied = pbft_manager_runtime_execute_lifecycle_transition(
             &mut runtime,
-            transition,
-            Vec::new(),
+            lifecycle_transition_request(TRANSITION_FILTER),
         )
         .expect("runtime transition should apply");
         assert_eq!(applied.status, TRANSITION_STORAGE_STATUS_APPLIED);
@@ -5419,45 +5314,73 @@ mod tests {
     }
 
     #[test]
-    fn bridge_plans_transition_fields_and_reset_effects() {
-        let filter = plan_pbft_manager_transition(transition_fact(TRANSITION_FILTER));
-        assert_eq!(filter.status, TRANSITION_STATUS_READY);
-        assert_eq!(filter.kind, TRANSITION_FILTER);
-        assert_eq!(filter.new_state, STATE_FILTER);
-        assert_eq!(filter.new_round, 2);
-        assert_eq!(filter.new_step, 4);
-        assert_eq!(filter.current_round_lambda_ms, 100);
-        assert_eq!(filter.next_step_time_ms, 200);
-        assert!(filter.persist_step);
-        assert!(!filter.persist_round);
+    fn bridge_runtime_executes_lifecycle_transition_from_owned_cursor() {
+        let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_transition");
+        let before = runtime.state.snapshot();
+        let result = pbft_manager_runtime_execute_lifecycle_transition(
+            &mut runtime,
+            lifecycle_transition_request(PbftManagerTransitionKind::ToFilter.as_u8()),
+        )
+        .unwrap();
 
-        let reset = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
-        assert_eq!(reset.status, TRANSITION_STATUS_READY);
-        assert_eq!(reset.new_state, STATE_VALUE_PROPOSAL);
-        assert_eq!(reset.new_round, 4);
-        assert_eq!(reset.new_step, 1);
-        assert_eq!(reset.current_round_lambda_ms, 400);
-        assert!(reset.persist_round);
-        assert!(reset.persist_step);
-        assert!(reset.reset_next_voted_statuses);
-        assert!(reset.remove_cert_voted_block);
-        assert!(reset.clear_own_votes);
-        assert!(reset.reset_executed_block_status);
-        assert!(reset.set_vote_manager_period_round);
+        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
+        assert_eq!(result.snapshot.period, before.period);
+        assert_eq!(result.snapshot.round, before.round);
+        assert_eq!(result.snapshot.step, before.step + 1);
+        assert_eq!(result.snapshot.state, 1);
+        assert!(!result.remove_cert_voted_sidecar);
+        assert!(!result.clear_own_vote_sidecars);
+        assert!(result.error_code.is_empty());
     }
 
     #[test]
-    fn bridge_plans_loopback_lambda_backoff() {
-        let mut fact = transition_fact(TRANSITION_LOOP_BACK_FINISH);
-        fact.step = 12;
-        fact.next_step_time_ms = 900;
-        let plan = plan_pbft_manager_transition(fact);
-        assert_eq!(plan.status, TRANSITION_STATUS_READY);
-        assert_eq!(plan.new_state, STATE_FINISH);
-        assert_eq!(plan.new_step, 13);
-        assert_eq!(plan.current_round_lambda_ms, 200);
-        assert_eq!(plan.next_step_time_ms, 1_000);
-        assert!(plan.reset_next_voted_statuses);
+    fn bridge_runtime_advance_requires_matching_committed_reset() {
+        let mut runtime = runtime_for_startup("rustaxa_bridge_runtime_advance_provenance");
+        let before = runtime.state.snapshot();
+        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
+        assert_eq!(runtime.state.snapshot(), before);
+
+        let mut request = lifecycle_transition_request(TRANSITION_RESET);
+        request.target_period = 10;
+        request.target_round = 1;
+        let reset =
+            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, request).unwrap();
+        assert_eq!(reset.status, TRANSITION_STORAGE_STATUS_APPLIED);
+        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
+
+        let mut advance_request = lifecycle_transition_request(TRANSITION_RESET);
+        advance_request.target_period = 11;
+        advance_request.target_round = 1;
+        let advance_reset =
+            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, advance_request)
+                .unwrap();
+        assert_eq!(advance_reset.status, TRANSITION_STORAGE_STATUS_APPLIED);
+        let committed = runtime.state.snapshot();
+
+        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 0).accepted);
+        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
+        assert_eq!(runtime.state.snapshot(), committed);
+        assert!(pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 10).accepted);
+        let applied = pbft_manager_runtime_apply_period_advance(&mut runtime, 11);
+        assert_eq!(applied.status, 0);
+        assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 10).accepted);
+    }
+
+    #[test]
+    fn bridge_runtime_rejects_unneeded_network_step_presence_without_mutation() {
+        let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_network_presence");
+        let before = runtime.state.snapshot();
+        let mut request = lifecycle_transition_request(TRANSITION_FILTER);
+        request.has_network_next_voting_step = true;
+        request.network_next_voting_step = 7;
+        let result =
+            pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, request).unwrap();
+        assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
+        assert_eq!(runtime.state.snapshot(), before);
+        assert_eq!(
+            result.error_code,
+            "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
+        );
     }
 
     #[test]
@@ -5588,11 +5511,9 @@ mod tests {
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
             let before = pbft_manager_runtime_snapshot(&runtime);
-            let plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
-            let result = pbft_manager_runtime_apply_transition_storage_write(
+            let result = pbft_manager_runtime_execute_lifecycle_transition(
                 &mut runtime,
-                plan,
-                vec![FfiPbftFinalizationHash { hash: own_hash }],
+                lifecycle_transition_request(TRANSITION_RESET),
             )
             .expect("runtime apply should not throw");
 
@@ -6286,21 +6207,22 @@ mod tests {
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
 
-            let mut transition_fact = transition_fact(TRANSITION_RESET);
-            transition_fact.target_round = 1;
-            transition_fact.target_round_lambda_ms = 100;
-            let transition = plan_pbft_manager_transition(transition_fact);
-            assert_eq!(transition.status, TRANSITION_STATUS_READY);
+            let mut request = lifecycle_transition_request(TRANSITION_RESET);
+            request.target_period = 13;
+            request.target_round = 1;
+            let transition =
+                pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, request)
+                    .expect("reset transition should apply");
+            assert_eq!(transition.status, TRANSITION_STORAGE_STATUS_APPLIED);
+            assert_eq!(transition.snapshot.current_round_lambda_ms, 1_500);
 
-            let advance = plan_pbft_manager_advance_period(12, &transition);
+            let advance = pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 12);
             assert!(advance.accepted);
             assert_eq!(advance.finalized_chain_size, 12);
             assert_eq!(advance.new_period, 13);
             assert_eq!(
                 advance.actions,
                 vec![
-                    ADVANCE_ACTION_RESET_CONSENSUS,
-                    ADVANCE_ACTION_EXECUTED_BLOCK_RESET,
                     ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
                     ADVANCE_ACTION_RESET_CURRENT_ROUND_TIMER,
                     ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS,
@@ -6315,7 +6237,7 @@ mod tests {
                 &advance,
                 FfiPbftManagerAdvancePeriodActionReport {
                     action_index: 0,
-                    action: ADVANCE_ACTION_RESET_CONSENSUS,
+                    action: ADVANCE_ACTION_SET_VOTE_MANAGER_PERIOD_ROUND,
                     succeeded: true,
                 },
             );
@@ -6382,11 +6304,11 @@ mod tests {
             let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");
             let before = pbft_manager_runtime_snapshot(&runtime);
-            let mut plan = plan_pbft_manager_transition(transition_fact(TRANSITION_RESET));
-            plan.status = TRANSITION_STATUS_INVALID_FACT;
-            let result =
-                pbft_manager_runtime_apply_transition_storage_write(&mut runtime, plan, Vec::new())
-                    .expect("runtime apply should return deterministic rejection");
+            let result = pbft_manager_runtime_execute_lifecycle_transition(
+                &mut runtime,
+                lifecycle_transition_request(255),
+            )
+            .expect("runtime apply should return deterministic rejection");
 
             assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
             assert_eq!(result.snapshot.round, before.round);

@@ -286,9 +286,9 @@ Implementation notes:
   active Rust-mode gaps or legacy/reference code behind an authoritative overlay.
 - PBFT manager reset, finish-polling, loopback-finish, and finalization public batch blocks are closed for the current
   Rust-mode route. The active `pbft_manager_shim` overlay overrides those methods and routes transition persistence
-  through `pbft_manager_runtime_apply_transition_storage_write`, which commits manager cursor/status updates,
+  through the manager-owned lifecycle transition executor, which commits manager cursor/status updates,
   cert-voted-block removal, and own-verified-vote cleanup in one native Rust storage batch before updating runtime and
-  C++ mirrors. Executed-block reset and finalization storage writes are also Rust-owned runtime/finalization calls with
+  returning narrow C++ sidecar commands. Executed-block reset and finalization storage writes are also Rust-owned runtime/finalization calls with
   explicit external boundaries for finalization execution and sidecar materialization. The public batch blocks in
   `libraries/core_libs/consensus/src/pbft/pbft_manager.cpp` remain legacy/reference behavior behind
   `RUSTAXA_ENABLE_PBFT_MANAGER`.
@@ -991,6 +991,19 @@ Implementation notes:
   - `scripts/rewrite_bridge_inventory_guard.sh`
   - `scripts/rewrite_storage_boundary_guard.sh`
   - `git diff --check`
+- PBFT lifecycle transitions are now one-shot operations on `BridgePbftManagerRuntime`. Rust retains the startup
+  Cacti/lambda/timing policy, derives the current period/round/step and transition timing, cert-voted metadata, and executed flag from its runtime; loads own-vote
+  hashes directly from native storage; plans and commits transition persistence; and mutates runtime only after commit.
+  C++ receives only the authoritative snapshot and temporary sidecar/timer/print/VoteManager commands plus the
+  externally ordered executed-block reset follow-up.
+- Filter, certify, finish, finish-polling, loop-back, both delays, explicit reset, and advance-period reset all use the
+  lifecycle executor. Advance-period planning now proves that it follows the immediately preceding committed reset and
+  returns only the remaining external follow-ups; missing, stale, mismatched, and empty-chain requests are rejected, and
+  the duplicated `ApplyResetConsensusTransition` action is removed.
+- The CXX `PbftManagerTransitionFact`, `PbftManagerTransitionPlan`, and
+  `PbftManagerTransitionRuntimeApplyResult` DTOs plus `plan_pbft_manager_transition` and
+  `pbft_manager_runtime_apply_transition_storage_write` exports are deleted. Native transition planner/storage types and
+  tests remain Rust implementation machinery.
   - `.githooks/pre-commit`
 - Additional validation for PBFT finalization owned-action drain:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`

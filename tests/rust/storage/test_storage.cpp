@@ -71,6 +71,11 @@ PbftManagerStartupFact makePbftManagerStartupFact() {
   fact.genesis_lambda_ms = 100;
   fact.cacti_lambda_max_ms = 1500;
   fact.cacti_lambda_default_ms = 500;
+  fact.cacti_block = 100;
+  fact.max_exponential_lambda_ms = 60000;
+  fact.max_steps = 13;
+  fact.deadline_ms = 1000;
+  fact.polling_interval_ms = 100;
   return fact;
 }
 
@@ -203,36 +208,25 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   storage_shim_save_pbft_mgr_field(*seed_batch, 1, 1);
   storage_shim_save_pbft_mgr_status(*seed_batch, 2, true);
   storage_shim_save_pbft_mgr_status(*seed_batch, 3, true);
-  storage_shim_save_cert_voted_block_in_round(*seed_batch, 2, bytes({0xC0}));
   storage_shim_save_own_verified_vote(*seed_batch, own_vote_hash, bytes({0x74}));
   storage_shim_commit_batch(std::move(seed_batch), false);
 
-  PbftManagerTransitionPlan plan{};
-  plan.status = 0;
-  plan.new_round = 7;
-  plan.new_step = 4;
-  plan.persist_round = true;
-  plan.persist_step = true;
-  plan.reset_next_voted_statuses = true;
-  plan.remove_cert_voted_block = true;
-  plan.clear_own_votes = true;
-
-  rust::Vec<PbftFinalizationHash> own_vote_hashes;
-  own_vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
   auto runtime = create_pbft_manager_runtime_from_storage(*storage, makePbftManagerStartupFact());
-  auto result = pbft_manager_runtime_apply_transition_storage_write(*runtime, plan, std::move(own_vote_hashes));
+  PbftManagerLifecycleTransitionRequest request{};
+  request.kind = 0;
+  request.target_period = 1;
+  request.target_round = 7;
+  auto result = pbft_manager_runtime_execute_lifecycle_transition(*runtime, request);
 
   auto pbft_queries = pbftQueries(storage);
   EXPECT_EQ(result.status, kPbftManagerTransitionStorageApplied);
-  EXPECT_EQ(result.applied_writes, 6u);
   EXPECT_TRUE(result.error_code.empty());
   EXPECT_EQ(result.snapshot.round, 7u);
-  EXPECT_EQ(result.snapshot.step, 4u);
+  EXPECT_EQ(result.snapshot.step, 1u);
   EXPECT_EQ(pbft_queries->get_pbft_mgr_field(0), 7u);
-  EXPECT_EQ(pbft_queries->get_pbft_mgr_field(1), 4u);
+  EXPECT_EQ(pbft_queries->get_pbft_mgr_field(1), 1u);
   EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(2));
   EXPECT_FALSE(pbft_queries->get_pbft_mgr_status(3));
-  EXPECT_TRUE(pbft_queries->get_cert_voted_block_in_round().empty());
   auto vote_queries = voteQueries(storage);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());
 }

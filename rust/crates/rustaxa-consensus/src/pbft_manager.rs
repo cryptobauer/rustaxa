@@ -3154,6 +3154,16 @@ pub struct PbftManagerTransitionFact {
     pub executed_pbft_block: bool,
 }
 
+/// External/configuration inputs for a runtime-derived lifecycle transition.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftManagerLifecycleTransitionRequest {
+    pub kind: PbftManagerTransitionKind,
+    pub target_period: u64,
+    pub target_round: u64,
+    pub has_network_next_voting_step: bool,
+    pub network_next_voting_step: u64,
+}
+
 /// Side-effect-free plan for one PBFT manager cursor/status transition.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct PbftManagerTransitionPlan {
@@ -3338,6 +3348,11 @@ pub struct PbftManagerStorageStartupFact {
     pub cacti_lambda_max_ms: u32,
     /// Cacti non-round-one lambda.
     pub cacti_lambda_default_ms: u32,
+    pub cacti_block: u64,
+    pub max_exponential_lambda_ms: u64,
+    pub max_steps: u64,
+    pub deadline_ms: u64,
+    pub polling_interval_ms: u64,
 }
 
 /// Runtime cursor and live scalar facts restored for the PBFT manager shim.
@@ -3652,6 +3667,27 @@ pub fn plan_pbft_manager_eligible_wallet_period_wait(
 pub struct PbftManagerRuntime {
     snapshot: PbftManagerRuntimeSnapshot,
     cached_anchor_dag_order_hashes: BTreeSet<H256>,
+    policy: PbftManagerLifecyclePolicy,
+    last_committed_reset: Option<PbftManagerCommittedReset>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
+struct PbftManagerLifecyclePolicy {
+    cacti_block: u64,
+    genesis_lambda_ms: u64,
+    cacti_lambda_default_ms: u64,
+    max_exponential_lambda_ms: u64,
+    max_steps: u64,
+    deadline_ms: u64,
+    polling_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+struct PbftManagerCommittedReset {
+    target_period: u64,
+    reset_executed_block_follow_up: bool,
+    set_vote_manager_period_round: bool,
+    reset_current_round_timer: bool,
 }
 
 /// Storage-backed facts for replaying one finalized period during PBFT manager startup.
@@ -3734,8 +3770,6 @@ pub struct PbftManagerStartupReplayRangePlan {
 /// Ordered effects for `PbftManager::advancePeriod`.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftManagerAdvancePeriodAction {
-    /// Apply the embedded reset-consensus transition plan.
-    ApplyResetConsensusTransition,
     /// Apply the delayed executed-block reset after waiting for finalization.
     ApplyExecutedBlockReset,
     /// Update VoteManager period/round after the reset transition.
@@ -3758,7 +3792,6 @@ impl PbftManagerAdvancePeriodAction {
     /// Stable bridge code for C++.
     pub const fn as_u8(self) -> u8 {
         match self {
-            Self::ApplyResetConsensusTransition => 0,
             Self::ApplyExecutedBlockReset => 1,
             Self::SetVoteManagerPeriodRound => 2,
             Self::ResetCurrentRoundTimer => 3,
@@ -3773,7 +3806,6 @@ impl PbftManagerAdvancePeriodAction {
     /// Decodes a stable bridge code from C++.
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
-            0 => Some(Self::ApplyResetConsensusTransition),
             1 => Some(Self::ApplyExecutedBlockReset),
             2 => Some(Self::SetVoteManagerPeriodRound),
             3 => Some(Self::ResetCurrentRoundTimer),
@@ -3805,8 +3837,6 @@ pub struct PbftManagerAdvancePeriodPlan {
     pub finalized_chain_size: u64,
     /// PBFT period after advancement.
     pub new_period: u64,
-    /// Embedded reset transition that must be persisted before live cleanup.
-    pub transition_plan: PbftManagerTransitionPlan,
     /// Ordered effect script for the C++ executor.
     pub actions: Vec<PbftManagerAdvancePeriodAction>,
     /// Stable error code, empty on success.
@@ -3872,12 +3902,60 @@ impl PbftManagerRuntime {
         Self {
             snapshot,
             cached_anchor_dag_order_hashes: BTreeSet::new(),
+            policy: PbftManagerLifecyclePolicy::default(),
+            last_committed_reset: None,
         }
     }
 
     /// Returns the current Rust-owned scalar snapshot.
     pub fn snapshot(&self) -> PbftManagerRuntimeSnapshot {
         self.snapshot.clone()
+    }
+
+    /// Plans a lifecycle transition from authoritative runtime cursor fields.
+    pub fn plan_lifecycle_transition(
+        &self,
+        request: PbftManagerLifecycleTransitionRequest,
+    ) -> PbftManagerTransitionPlan {
+        let next_step = match request.kind {
+            PbftManagerTransitionKind::ResetConsensus => 1,
+            PbftManagerTransitionKind::DelayCertifyPoll
+            | PbftManagerTransitionKind::DelayFinishPoll => self.snapshot.step,
+            _ => self.snapshot.step.saturating_add(1),
+        };
+        let needs_network_step = next_step >= self.policy.max_steps && next_step % 2 == 1;
+        if needs_network_step != request.has_network_next_voting_step {
+            return reject_transition_plan(
+                PbftManagerTransitionStatus::InvalidFact,
+                request.kind,
+                "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH",
+            );
+        }
+        let cacti_hardfork = request.target_period >= self.policy.cacti_block;
+        let target_round_lambda_ms = if request.target_round == 1 {
+            u64::from(self.snapshot.dynamic_lambda_ms)
+        } else {
+            self.policy.cacti_lambda_default_ms
+        };
+        plan_pbft_manager_transition(PbftManagerTransitionFact {
+            kind: request.kind,
+            period: request.target_period,
+            round: self.snapshot.round,
+            step: self.snapshot.step,
+            target_round: request.target_round,
+            current_round_lambda_ms: self.snapshot.current_round_lambda_ms,
+            target_round_lambda_ms,
+            default_lambda_ms: self.policy.genesis_lambda_ms,
+            max_exponential_lambda_ms: self.policy.max_exponential_lambda_ms,
+            max_steps: self.policy.max_steps,
+            network_next_voting_step: request.network_next_voting_step,
+            deadline_ms: self.policy.deadline_ms,
+            polling_interval_ms: self.policy.polling_interval_ms,
+            next_step_time_ms: self.snapshot.next_step_time_ms,
+            cacti_hardfork,
+            has_cert_voted_block: self.snapshot.has_cert_voted_block,
+            executed_pbft_block: self.snapshot.executed_pbft_block,
+        })
     }
 
     /// Returns whether Rust currently tracks materialized DAG-order sidecar data for an anchor.
@@ -4006,6 +4084,43 @@ impl PbftManagerRuntime {
             self.snapshot.cert_voted_block_round = 0;
             self.snapshot.cert_voted_block_hash = H256::zero();
         }
+    }
+
+    /// Records provenance and follow-up flags for a just-committed reset transition.
+    pub fn record_committed_reset(&mut self, target_period: u64, plan: &PbftManagerTransitionPlan) {
+        self.last_committed_reset = (plan.status == PbftManagerTransitionStatus::Ready
+            && plan.kind == PbftManagerTransitionKind::ResetConsensus
+            && target_period > self.snapshot.period)
+            .then_some(PbftManagerCommittedReset {
+                target_period,
+                reset_executed_block_follow_up: plan.reset_executed_block_status,
+                set_vote_manager_period_round: plan.set_vote_manager_period_round,
+                reset_current_round_timer: plan.reset_current_round_start,
+            });
+    }
+
+    /// Plans post-reset period advancement only from immediately committed reset provenance.
+    pub fn plan_advance_period_after_reset(
+        &self,
+        finalized_chain_size: u64,
+    ) -> PbftManagerAdvancePeriodPlan {
+        let Some(reset) = self.last_committed_reset else {
+            return rejected_advance_period_plan("PBFT_MANAGER_ADVANCE_PERIOD_RESET_NOT_COMMITTED");
+        };
+        if finalized_chain_size == 0 {
+            return rejected_advance_period_plan("PBFT_MANAGER_ADVANCE_PERIOD_EMPTY_CHAIN");
+        }
+        if reset.target_period != finalized_chain_size.saturating_add(1) {
+            return rejected_advance_period_plan(
+                "PBFT_MANAGER_ADVANCE_PERIOD_RESET_PERIOD_MISMATCH",
+            );
+        }
+        plan_pbft_manager_advance_period_after_reset(
+            finalized_chain_size,
+            reset.reset_executed_block_follow_up,
+            reset.set_vote_manager_period_round,
+            reset.reset_current_round_timer,
+        )
     }
 
     /// Records the delayed executed-block status reset after persistence.
@@ -4229,8 +4344,8 @@ impl PbftManagerRuntime {
     /// Records a completed Rust-planned period advance.
     ///
     /// Inputs:
-    /// - `new_period`: PBFT period produced by
-    ///   `plan_pbft_manager_advance_period`.
+    /// - `new_period`: PBFT period produced by the runtime-owned
+    ///   `plan_advance_period_after_reset` operation.
     ///
     /// Outputs:
     /// - Updates the Rust-owned runtime period after the C++ executor has
@@ -4250,9 +4365,22 @@ impl PbftManagerRuntime {
             rejected.error_code = "PBFT_MANAGER_ADVANCE_PERIOD_NON_INCREASING_PERIOD".to_string();
             return rejected;
         }
+        let Some(reset) = self.last_committed_reset else {
+            let mut rejected = self.snapshot.clone();
+            rejected.status = PbftManagerStartupRestoreStatus::InvalidFact;
+            rejected.error_code = "PBFT_MANAGER_ADVANCE_PERIOD_RESET_NOT_COMMITTED".to_string();
+            return rejected;
+        };
+        if reset.target_period != new_period {
+            let mut rejected = self.snapshot.clone();
+            rejected.status = PbftManagerStartupRestoreStatus::InvalidFact;
+            rejected.error_code = "PBFT_MANAGER_ADVANCE_PERIOD_RESET_PERIOD_MISMATCH".to_string();
+            return rejected;
+        }
         self.snapshot.status = PbftManagerStartupRestoreStatus::Ready;
         self.snapshot.period = new_period;
         self.snapshot.error_code.clear();
+        self.last_committed_reset = None;
         self.snapshot.clone()
     }
 }
@@ -4443,7 +4571,17 @@ pub fn create_pbft_manager_runtime_from_storage(
         snapshot.persist_normalized_step = false;
     }
 
-    Ok(PbftManagerRuntime::new(snapshot))
+    let mut runtime = PbftManagerRuntime::new(snapshot);
+    runtime.policy = PbftManagerLifecyclePolicy {
+        cacti_block: fact.cacti_block,
+        genesis_lambda_ms: u64::from(fact.genesis_lambda_ms),
+        cacti_lambda_default_ms: u64::from(fact.cacti_lambda_default_ms),
+        max_exponential_lambda_ms: fact.max_exponential_lambda_ms,
+        max_steps: fact.max_steps,
+        deadline_ms: fact.deadline_ms,
+        polling_interval_ms: fact.polling_interval_ms,
+    };
+    Ok(runtime)
 }
 
 /// Persists one PBFT manager cursor field through Rust-owned storage.
@@ -4626,50 +4764,29 @@ pub fn plan_pbft_manager_startup_replay_ranges(
 /// sidecars, and logging. Rust owns the action order and period arithmetic so
 /// callers cannot advance period cleanup in a different order from the runtime
 /// contract.
-pub fn plan_pbft_manager_advance_period(
-    fact: PbftManagerAdvancePeriodFact,
-) -> PbftManagerAdvancePeriodPlan {
-    let transition_plan = plan_pbft_manager_transition(fact.transition_fact);
-    plan_pbft_manager_advance_period_from_transition(fact.pbft_chain_size, transition_plan)
-}
-
-/// Plans period advancement around an already Rust-created reset transition.
-pub fn plan_pbft_manager_advance_period_from_transition(
+pub fn plan_pbft_manager_advance_period_after_reset(
     pbft_chain_size: u64,
-    transition_plan: PbftManagerTransitionPlan,
+    reset_executed_block_follow_up: bool,
+    set_vote_manager_period_round: bool,
+    reset_current_round_timer: bool,
 ) -> PbftManagerAdvancePeriodPlan {
     if pbft_chain_size == 0 {
         return PbftManagerAdvancePeriodPlan {
             accepted: false,
             finalized_chain_size: 0,
             new_period: 0,
-            transition_plan,
             actions: Vec::new(),
             error_code: "PBFT_MANAGER_ADVANCE_PERIOD_EMPTY_CHAIN".to_string(),
         };
     }
-    if transition_plan.status != PbftManagerTransitionStatus::Ready
-        || transition_plan.kind != PbftManagerTransitionKind::ResetConsensus
-        || transition_plan.new_round != 1
-    {
-        return PbftManagerAdvancePeriodPlan {
-            accepted: false,
-            finalized_chain_size: 0,
-            new_period: 0,
-            transition_plan,
-            actions: Vec::new(),
-            error_code: "PBFT_MANAGER_ADVANCE_PERIOD_INVALID_RESET_TRANSITION".to_string(),
-        };
-    }
-
-    let mut actions = vec![PbftManagerAdvancePeriodAction::ApplyResetConsensusTransition];
-    if transition_plan.reset_executed_block_status {
+    let mut actions = Vec::new();
+    if reset_executed_block_follow_up {
         actions.push(PbftManagerAdvancePeriodAction::ApplyExecutedBlockReset);
     }
-    if transition_plan.set_vote_manager_period_round {
+    if set_vote_manager_period_round {
         actions.push(PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound);
     }
-    if transition_plan.reset_current_round_start {
+    if reset_current_round_timer {
         actions.push(PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer);
     }
     actions.push(PbftManagerAdvancePeriodAction::ResetRewardVoteCounters);
@@ -4682,9 +4799,18 @@ pub fn plan_pbft_manager_advance_period_from_transition(
         accepted: true,
         finalized_chain_size: pbft_chain_size,
         new_period: pbft_chain_size.saturating_add(1),
-        transition_plan,
         actions,
         error_code: String::new(),
+    }
+}
+
+fn rejected_advance_period_plan(error_code: &str) -> PbftManagerAdvancePeriodPlan {
+    PbftManagerAdvancePeriodPlan {
+        accepted: false,
+        finalized_chain_size: 0,
+        new_period: 0,
+        actions: Vec::new(),
+        error_code: error_code.to_string(),
     }
 }
 
@@ -6380,6 +6506,11 @@ mod tests {
             genesis_lambda_ms: 1_000,
             cacti_lambda_max_ms: 1_500,
             cacti_lambda_default_ms: 500,
+            cacti_block: 1,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            deadline_ms: 1_000,
+            polling_interval_ms: 100,
         }
     }
 
@@ -7602,24 +7733,14 @@ mod tests {
 
     #[test]
     fn advance_period_planner_orders_executor_effects_and_runtime_period_commit() {
-        let mut transition = transition_fact(PbftManagerTransitionKind::ResetConsensus);
-        transition.target_round = 1;
-        let plan = plan_pbft_manager_advance_period(PbftManagerAdvancePeriodFact {
-            pbft_chain_size: 12,
-            transition_fact: transition,
-        });
+        let plan = plan_pbft_manager_advance_period_after_reset(12, true, true, true);
 
         assert!(plan.accepted);
         assert_eq!(plan.finalized_chain_size, 12);
         assert_eq!(plan.new_period, 13);
         assert_eq!(
-            plan.transition_plan.status,
-            PbftManagerTransitionStatus::Ready
-        );
-        assert_eq!(
             plan.actions,
             vec![
-                PbftManagerAdvancePeriodAction::ApplyResetConsensusTransition,
                 PbftManagerAdvancePeriodAction::ApplyExecutedBlockReset,
                 PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound,
                 PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer,
@@ -7632,9 +7753,28 @@ mod tests {
         );
 
         let mut runtime = PbftManagerRuntime::new(restore_pbft_manager_runtime(startup_fact(1, 1)));
+        let mut reset_fact = transition_fact(PbftManagerTransitionKind::ResetConsensus);
+        reset_fact.target_round = 1;
+        let reset_plan = plan_pbft_manager_transition(reset_fact);
+        runtime.record_committed_reset(plan.new_period, &reset_plan);
+
+        let wrong_period = runtime.apply_committed_period_advance(plan.new_period + 1);
+        assert_eq!(
+            wrong_period.status,
+            PbftManagerStartupRestoreStatus::InvalidFact
+        );
+        assert_eq!(runtime.snapshot().period, 10);
+        assert!(runtime.plan_advance_period_after_reset(12).accepted);
+
         let snapshot = runtime.apply_committed_period_advance(plan.new_period);
         assert_eq!(snapshot.status, PbftManagerStartupRestoreStatus::Ready);
         assert_eq!(snapshot.period, 13);
+        let consumed = runtime.plan_advance_period_after_reset(12);
+        assert!(!consumed.accepted);
+        assert_eq!(
+            consumed.error_code,
+            "PBFT_MANAGER_ADVANCE_PERIOD_RESET_NOT_COMMITTED"
+        );
 
         let rejected = runtime.apply_committed_period_advance(13);
         assert_eq!(
@@ -7650,12 +7790,7 @@ mod tests {
 
     #[test]
     fn advance_period_action_reports_validate_against_rust_script() {
-        let mut transition = transition_fact(PbftManagerTransitionKind::ResetConsensus);
-        transition.target_round = 1;
-        let plan = plan_pbft_manager_advance_period(PbftManagerAdvancePeriodFact {
-            pbft_chain_size: 12,
-            transition_fact: transition,
-        });
+        let plan = plan_pbft_manager_advance_period_after_reset(12, true, true, true);
 
         for (action_index, action) in plan.actions.iter().enumerate() {
             let result = validate_pbft_manager_advance_period_action_report(
@@ -7678,7 +7813,7 @@ mod tests {
             &plan,
             PbftManagerAdvancePeriodActionReport {
                 action_index: 1,
-                action: PbftManagerAdvancePeriodAction::SetVoteManagerPeriodRound.as_u8(),
+                action: PbftManagerAdvancePeriodAction::ResetCurrentRoundTimer.as_u8(),
                 succeeded: true,
             },
         );
@@ -7695,7 +7830,7 @@ mod tests {
             &plan,
             PbftManagerAdvancePeriodActionReport {
                 action_index: 0,
-                action: PbftManagerAdvancePeriodAction::ApplyResetConsensusTransition.as_u8(),
+                action: PbftManagerAdvancePeriodAction::ApplyExecutedBlockReset.as_u8(),
                 succeeded: false,
             },
         );

@@ -398,7 +398,10 @@ class PbftManager {
    */
   bool applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size);
   bool applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size,
-                                      const rustaxa::PbftManagerTransitionPlan &transition_plan);
+                                      const rustaxa::PbftManagerLifecycleTransitionResult &transition_result);
+  rustaxa::PbftManagerLifecycleTransitionResult applyLifecycleTransition_(uint8_t kind, PbftPeriod target_period,
+                                                                          PbftRound target_round = 0,
+                                                                          bool apply_current_round_timer = true);
 
   /**
    * @brief Check if there is 2t+1 cert votes for some valid block, if yes - push it into the chain

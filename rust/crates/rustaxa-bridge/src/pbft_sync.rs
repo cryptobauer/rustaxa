@@ -357,6 +357,11 @@ mod tests {
             genesis_lambda_ms: 100,
             cacti_lambda_max_ms: 1_500,
             cacti_lambda_default_ms: 500,
+            cacti_block: 1,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            deadline_ms: 1_000,
+            polling_interval_ms: 100,
         }
     }
 

@@ -130,6 +130,24 @@ impl<D: DbReader> PbftRepository<D> {
         Ok(result)
     }
 
+    /// Returns canonical hashes used as keys for all locally produced votes.
+    pub fn own_verified_vote_hashes(&self) -> Result<Vec<H256>> {
+        let mut result = Vec::new();
+        for item in self.db.iter(Column::LatestRoundOwnVotes) {
+            let (key, _) = item?;
+            if key.len() != 32 {
+                return Err(StorageError::Read(format!(
+                    "Invalid latest_round_own_votes key size: expected 32, got {}",
+                    key.len()
+                ))
+                .into());
+            }
+            result.push(H256::from_slice(&key));
+        }
+        result.sort_unstable();
+        Ok(result)
+    }
+
     /// Returns flattened votes from all stored 2t+1 vote bundles.
     /// C++ mapping: `DbStorage::getAllTwoTPlusOneVotes()`.
     pub fn all_two_t_plus_one_votes_rlp(&self) -> Result<Vec<Vec<u8>>> {
