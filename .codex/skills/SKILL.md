@@ -25,13 +25,21 @@ Delegate when the user explicitly requests agents, repository instructions requi
 materially improve a non-trivial design or implementation slice. Do not spawn agents merely because the skill triggered.
 Handle process reviews, status answers, and simple planning locally unless delegation adds concrete value.
 
+- Use `task-distributor` once for a broad multi-slice goal that needs dependency-aware decomposition.
+- Use `code-mapper` when ownership, call paths, state flow, or remaining compatibility boundaries are unclear.
 - Ask `api-designer` to review Rust/C++ bridge shape, compatibility, and future API direction.
 - Ask `architect-reviewer` to review boundaries, shim strategy, fallback risk, and maintainability.
 - Use `rust-engineer` for Rust domain, bridge, storage, codec, and test implementation.
 - Use `cpp-pro` for C++ shim, CMake, bridge wiring, and C++ test implementation.
+- Use `reviewer` for an independent correctness, regression, and test-coverage review after a non-trivial slice and
+  before committing it.
+- Use `blockchain-engineer` only for explicitly scoped EVM, contract-call, signing, gas, slashing-transaction, or
+  on-chain transaction-lifecycle work.
 
-Assign concrete, non-overlapping tasks and name the expected artifact or decision. Keep the critical path local: inspect
-enough code yourself to integrate the work, resolve conflicts, review every change, and verify behavior.
+Assign concrete, non-overlapping tasks and name the expected artifact or decision. Do not delegate the same discovery or
+implementation scope to multiple agents unless they are intentionally providing independent reviews. Keep the critical
+path local: inspect enough code yourself to integrate the work, resolve conflicts, review every change, and verify
+behavior.
 
 ## Slice Selection
 
