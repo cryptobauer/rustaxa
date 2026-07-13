@@ -37,6 +37,7 @@ pub use final_chain::final_chain_log_bloom_chunk_id;
 pub use final_chain::zero_final_chain_log_bloom_chunk;
 pub use metadata::MetadataRepository;
 pub use pbft::PbftRepository;
+pub use pbft::StoredTwoTPlusOneVotesBundle;
 pub use period::PeriodRepository;
 pub use pillar::PillarRepository;
 pub use transaction::TransactionRepository;

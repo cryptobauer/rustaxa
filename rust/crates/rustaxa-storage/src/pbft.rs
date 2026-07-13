@@ -29,6 +29,15 @@ pub struct PbftRepository<D: DbReader> {
     db: Arc<D>,
 }
 
+/// One latest-round `2t+1` storage slot with its voted-block category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTwoTPlusOneVotesBundle {
+    /// Stable legacy category key (`0..=3`).
+    pub kind: u8,
+    /// Canonical RLP list of weighted PBFT vote payloads.
+    pub votes_bundle_rlp: Vec<u8>,
+}
+
 impl<D: DbReader> PbftRepository<D> {
     /// Creates a PBFT repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
@@ -140,6 +149,30 @@ impl<D: DbReader> PbftRepository<D> {
             let votes = rlp::Rlp::new(votes_bundle_rlp);
             for vote in votes.iter() {
                 result.push(vote.as_raw().to_vec());
+            }
+        }
+        Ok(result)
+    }
+
+    /// Returns non-empty latest-round `2t+1` slots without discarding category.
+    ///
+    /// Results follow stable category order. Keeping the key attached lets
+    /// consensus restoration validate each bundle's vote type and reconstruct
+    /// the authoritative voted-block mapping rather than merely flattening
+    /// votes into compatibility sidecars.
+    pub fn two_t_plus_one_votes_bundles(&self) -> Result<Vec<StoredTwoTPlusOneVotesBundle>> {
+        let mut result = Vec::new();
+        for vote_type in TwoTPlusOneVotedBlockType::ALL {
+            let kind = vote_type as u8;
+            let Some(value) = self.db.get(Column::LatestRoundTwoTPlusOneVotes, &[kind])? else {
+                continue;
+            };
+            let votes_bundle_rlp = value.as_ref().to_vec();
+            if !votes_bundle_rlp.is_empty() {
+                result.push(StoredTwoTPlusOneVotesBundle {
+                    kind,
+                    votes_bundle_rlp,
+                });
             }
         }
         Ok(result)

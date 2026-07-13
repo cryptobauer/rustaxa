@@ -479,14 +479,47 @@ std::shared_ptr<PbftVote> materializeRustGeneratedVote(const rustaxa::PbftGenera
   return vote;
 }
 
+std::shared_ptr<PbftVote> materializeStartupVote(const rustaxa::VerifiedVotesStartupVote& startup_vote) {
+  auto vote = std::make_shared<PbftVote>(fromBridgeBytes(startup_vote.vote_rlp));
+  if (vote->getHash() != fromBridgeVoteHash(startup_vote.vote_hash)) {
+    throw std::runtime_error("VoteManager Rust startup vote hash mismatches materialized vote");
+  }
+  if (!vote->getWeight().has_value() || *vote->getWeight() == 0) {
+    throw std::runtime_error("VoteManager Rust startup vote decoded without non-zero weight");
+  }
+  return vote;
+}
+
 }  // namespace
 
 VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db,
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<KeyManager> key_manager, std::shared_ptr<SlashingManager> slashing_manager)
-    : VoteManagerOld(config, std::move(db), std::move(pbft_chain), std::move(final_chain), std::move(key_manager),
-                     std::move(slashing_manager)) {
-  verified_votes_.attachRustStorage(db_->rustStorage());
+    : kPbftConfig(config.genesis.pbft),
+      pbft_chain_(std::move(pbft_chain)),
+      final_chain_(std::move(final_chain)),
+      key_manager_(std::move(key_manager)),
+      slashing_manager_(std::move(slashing_manager)),
+      verified_votes_(dev::toAddress(config.getFirstWallet().node_secret), db->rustStorage()) {
+  const auto node_addr = dev::toAddress(config.getFirstWallet().node_secret);
+  LOG_OBJECTS_CREATE("VOTE_MGR");
+
+  const auto startup = verified_votes_.startupSnapshot();
+  for (const auto& startup_vote : startup.votes) {
+    auto vote = materializeStartupVote(startup_vote);
+    if (startup_vote.own_vote) {
+      own_verified_votes_.push_back(vote);
+    }
+    if (startup_vote.extra_reward_vote) {
+      extra_reward_votes_.push_back(vote->getHash());
+    }
+  }
+
+  if (startup.has_reward_vote_info) {
+    reward_votes_period_ = startup.reward_vote_period;
+    reward_votes_round_ = startup.reward_vote_round;
+    reward_votes_block_hash_ = fromBridgeHash(startup.reward_vote_block_hash);
+  }
 }
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) {

@@ -277,11 +277,7 @@ class VoteManager {
    */
   uint64_t getPbftSortitionThreshold(uint64_t total_dpos_votes_count, PbftVoteTypes vote_type) const;
 
- protected:
-  // TODO(rustaxa): temporary overlay hook. Rust-mode VoteManager shim inherits
-  // VoteManagerOld so it can override reward-vote reset persistence while
-  // preserving the legacy state machine. Move this state behind Rust/shim-owned
-  // APIs and restore private access once VoteManager ownership is migrated.
+ private:
   const PbftConfig& kPbftConfig;
 
   std::shared_ptr<DbStorage> db_;

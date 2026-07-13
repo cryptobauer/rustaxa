@@ -54,9 +54,7 @@ class StorageTest : public ::testing::Test {
   }
 
   static rust::Box<BridgeVerifiedVotes> verifiedVotes(const rust::Box<BridgeStorage>& storage) {
-    auto votes = create_verified_votes_index();
-    votes->verified_votes_attach_storage(*storage);
-    return votes;
+    return create_verified_votes_index_from_storage(*storage);
   }
 
   std::filesystem::path test_dir;
@@ -168,6 +166,7 @@ TEST_F(StorageTest, PersistPbftVoteProgressRejectsMalformedTwoTPlusOneBundle) {
 
 TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
   auto storage = create_storage(test_dir.string());
+  auto verified_votes = verifiedVotes(storage);
   auto own_vote_hash = h256(0x66);
   auto seed_batch = create_storage_shim_batch(*storage);
   storage_shim_save_own_verified_vote(*seed_batch, own_vote_hash, bytes({0x72}));
@@ -177,7 +176,7 @@ TEST_F(StorageTest, ClearOwnVerifiedVotesCommitsRustOwnedBatch) {
 
   rust::Vec<PbftFinalizationHash> vote_hashes;
   vote_hashes.push_back(PbftFinalizationHash{own_vote_hash});
-  auto result = verifiedVotes(storage)->verified_votes_clear_own_verified_votes(std::move(vote_hashes));
+  auto result = verified_votes->verified_votes_clear_own_verified_votes(std::move(vote_hashes));
   EXPECT_EQ(result.status, kPbftVotePersistenceApplied);
   EXPECT_EQ(result.applied_writes, 1u);
   EXPECT_TRUE(vote_queries->get_own_verified_votes().empty());

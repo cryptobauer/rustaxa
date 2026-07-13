@@ -150,36 +150,41 @@ class VerifiedVotes {
   explicit VerifiedVotes([[maybe_unused]] addr_t node_addr);
 
   /**
-   * Attach the Rust storage handle used by production VoteManager persistence.
+   * Constructs a storage-backed verified-votes runtime for production.
    *
-   * The `VerifiedVotes` facade is constructed by the legacy `VoteManagerOld`
-   * base before the Rust-mode `VoteManager` constructor can access `DbStorage`.
-   * This method completes the Rust-owned runtime wiring once the owner has the
-   * storage handle available. After attachment, vote progress, own-vote, and
-   * reward-reset persistence should use this typed facade instead of generic
-   * `BridgeStorage`.
+   * The Rust factory restores authoritative verified-vote state and retains
+   * storage before the standalone VoteManager materializes compatibility
+   * sidecars. Factory or restore failures propagate from construction.
    */
-  void attachRustStorage(rustaxa::BridgeStorage& storage);
+  VerifiedVotes([[maybe_unused]] addr_t node_addr, rustaxa::BridgeStorage& storage);
 
   /**
-   * Persist one own verified PBFT vote through attached Rust storage.
+   * Returns the Rust-restored startup payloads and reward metadata.
+   *
+   * This snapshot is side-effect free: VoteManager may materialize own-vote
+   * and reward-vote C++ sidecars without re-admitting durable votes.
+   */
+  rustaxa::VerifiedVotesStartupSnapshot startupSnapshot() const;
+
+  /**
+   * Persist one own verified PBFT vote through runtime-owned Rust storage.
    */
   rustaxa::PbftVotePersistenceResult saveOwnVerifiedVote(rustaxa::PbftVoteStorageRecord record) const;
 
   /**
-   * Clear own verified PBFT votes through attached Rust storage.
+   * Clear own verified PBFT votes through runtime-owned Rust storage.
    */
   rustaxa::PbftVotePersistenceResult clearOwnVerifiedVotes(
       rust::Vec<rustaxa::PbftFinalizationHash> hashes) const;
 
   /**
-   * Persist accepted PBFT vote-progress effects through attached Rust storage.
+   * Persist accepted PBFT vote-progress effects through runtime-owned Rust storage.
    */
   rustaxa::PbftVotePersistenceResult persistPbftVoteProgress(
       rustaxa::PbftVoteProgressPersistenceWrite write) const;
 
   /**
-   * Apply PBFT finalization storage stages through attached Rust storage.
+   * Apply PBFT finalization storage stages through runtime-owned Rust storage.
    */
   rustaxa::PbftFinalizedPeriodApplyResult applyPbftFinalizationStorageWrites(
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent,

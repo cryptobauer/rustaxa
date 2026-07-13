@@ -205,9 +205,14 @@ VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr) : rust_verified_
   LOG_OBJECTS_CREATE("VERIFIED_VOTES");
 }
 
-void VerifiedVotes::attachRustStorage(rustaxa::BridgeStorage& storage) {
-  std::scoped_lock lock(verified_votes_access_);
-  rust_verified_votes_->verified_votes_attach_storage(storage);
+VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr, rustaxa::BridgeStorage& storage)
+    : rust_verified_votes_(rustaxa::create_verified_votes_index_from_storage(storage)) {
+  LOG_OBJECTS_CREATE("VERIFIED_VOTES");
+}
+
+rustaxa::VerifiedVotesStartupSnapshot VerifiedVotes::startupSnapshot() const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_startup_snapshot();
 }
 
 rustaxa::PbftVotePersistenceResult VerifiedVotes::saveOwnVerifiedVote(rustaxa::PbftVoteStorageRecord record) const {

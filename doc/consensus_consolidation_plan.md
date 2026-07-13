@@ -389,8 +389,16 @@ Implementation notes:
 - `pbft_manager_shim` keeps a temporary sidecar deque for live `PeriodData` and peer objects only. Queue admission/order/
   pop/cleanup metadata is owned by `pbft_manager_runtime_`; cert-vote payloads are now supplied in the pop plan and no
   longer carried in the sidecar.
-- `vote_manager_shim::setNetwork` no longer forwards through `VoteManagerOld`; it writes the inherited protected network
-  pointer directly. This removes one completed setter forwarding without changing the public C++ API.
+- `vote_manager_shim` is now a standalone full overlay: it no longer inherits from or constructs `VoteManagerOld`, owns
+  its compatibility state directly, and restores the upstream header's temporary protected hook to its original private
+  shape. The shim already implemented the complete public surface, so this removes legacy constructor execution and
+  implicit inherited fallback without changing the public C++ API.
+- Verified-vote startup is now authoritative in Rust. The storage-backed `BridgeVerifiedVotes` constructor reads own
+  votes, extra reward votes, and typed latest-round 2t+1 bundles through `rustaxa-storage`, validates canonical weighted
+  payloads and bundle coordinates, deduplicates overlapping families by vote hash, and rebuilds Rust replay, retained
+  payload, uniqueness, round-marker, and voted-block state. C++ receives only a compact snapshot to materialize the
+  still-public own/reward vote sidecars. The post-construction storage attachment API and the legacy constructor's three
+  C++ `DbStorage` scans are deleted.
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards through `TransactionManagerOld`; it is now a
   shim-owned method that routes to a lock stored on `TransactionManager` itself through the existing friend access helper.
 - `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
@@ -488,6 +496,9 @@ Acceptance:
   now routes live vote state and PBFT-facing pillar finalization through `BridgePillarChainRuntime`, but still owns
   external FinalChain DPoS reads, temporary `PillarBlock` materialization, PBFT `PeriodData` vote materialization,
   current-block sidecar mirrors, network vote-bundle requests, and event emission.
+  `vote_manager_shim` is no longer a legacy-derived runtime: it is a standalone public facade whose authoritative
+  verified-vote restart state is restored inside Rust. Remaining vote-manager work is external FinalChain/key/slashing
+  fact execution and eventual absorption of the public facade into the Rust PBFT runtime, not legacy base ownership.
 
 Implementation notes:
 

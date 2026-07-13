@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "vote_manager/verified_votes.hpp"
+#include "vote_manager/vote_manager.hpp"
 
 namespace taraxa::core_tests {
 
@@ -13,6 +14,15 @@ TEST(VerifiedVotesShimTest, rustModeVerifiedVotesDoesNotInheritLegacyImplementat
   SUCCEED();
 #else
   GTEST_SKIP() << "VerifiedVotes shim is disabled";
+#endif
+}
+
+TEST(VerifiedVotesShimTest, rustModeVoteManagerDoesNotInheritLegacyImplementation) {
+#ifdef RUSTAXA_ENABLE
+  static_assert(!std::is_base_of_v<VoteManagerOld, VoteManager>);
+  SUCCEED();
+#else
+  GTEST_SKIP() << "VoteManager shim is disabled";
 #endif
 }
 

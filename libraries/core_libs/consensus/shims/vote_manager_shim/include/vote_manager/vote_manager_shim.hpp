@@ -33,15 +33,15 @@ struct RewardVotesFinalizationResetReport {
  * Rust-mode VoteManager overlay.
  *
  * Purpose:
- * - Delegates legacy-compatible vote-manager behavior to `VoteManagerOld`
- *   through inheritance while routing PBFT vote persistence through
- *   Rust-owned storage bridge operations in shim-owned code.
+ * - Owns the Rust-mode compatibility state directly while routing PBFT vote
+ *   persistence through Rust-owned storage bridge operations.
  *
  * Inputs:
- * - Constructor arguments are inherited from `VoteManagerOld`.
+ * - Constructor arguments preserve the upstream public API.
  *
  * Outputs and invariants:
- * - Inherited methods use the same base state as the overridden reset path.
+ * - All live compatibility state is shim-owned; no production behavior
+ *   inherits from or delegates to `VoteManagerOld`.
  * - Own verified votes, extra reward votes, and latest-round 2t+1 bundles use
  *   `rustaxa-storage` for durable writes in Rust mode.
  * - PBFT replay protection and `2t+1` threshold cache ownership live in the
@@ -56,7 +56,7 @@ struct RewardVotesFinalizationResetReport {
  * - Rust appender rejection returns a rejected result and leaves reward metadata
  *   and extra reward vote tracking unchanged.
  */
-class VoteManager : public VoteManagerOld {
+class VoteManager {
  public:
   /**
    * Network-facing executor report for Rust PBFT vote admission.
@@ -174,7 +174,7 @@ class VoteManager : public VoteManagerOld {
    * Constructs the Rust-mode VoteManager overlay.
    *
    * Inputs mirror the legacy `VoteManager` constructor. The overlay initializes
-   * the inherited legacy state machine; PBFT vote validation/admission state is
+   * shim-owned compatibility state; PBFT vote validation/admission state is
    * owned by the Rust-backed `VerifiedVotes` facade.
    *
    * Invariants:
@@ -184,6 +184,11 @@ class VoteManager : public VoteManagerOld {
   VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db, std::shared_ptr<PbftChain> pbft_chain,
               std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
               std::shared_ptr<SlashingManager> slashing_manager);
+  ~VoteManager() = default;
+  VoteManager(const VoteManager&) = delete;
+  VoteManager(VoteManager&&) = delete;
+  VoteManager& operator=(const VoteManager&) = delete;
+  VoteManager& operator=(VoteManager&&) = delete;
 
   void setNetwork(std::weak_ptr<Network> network);
   /**
@@ -324,7 +329,7 @@ class VoteManager : public VoteManagerOld {
    *   batch.
    *
    * Outputs:
-   * - Appends reward-vote reset persistence through Rust and updates inherited
+   * - Appends reward-vote reset persistence through Rust and updates shim-owned
    *   live reward state on success.
    *
    * Edge behavior:
@@ -635,7 +640,7 @@ class VoteManager : public VoteManagerOld {
    *
    * Invariants and edge behavior:
    * - Rust owns cache lookup and update policy; C++ does not read or mutate the
-   *   inherited legacy threshold cache in Rust mode.
+   *   removed legacy threshold cache in Rust mode.
    * - Only current PBFT-chain-size thresholds are cached, matching legacy
    *   VoteManager behavior.
    */
@@ -883,9 +888,9 @@ class VoteManager : public VoteManagerOld {
    * - Rust-owned apply status for the reward-vote reset stage.
    *
    * Invariants:
-   * - The certified-vote bundle is selected from inherited live
+   * - The certified-vote bundle is selected from shim-owned live
    *   `VerifiedVotes` state.
-   * - Inherited reward metadata and stale extra-reward tracking are mutated only
+   * - Shim-owned reward metadata and stale extra-reward tracking are mutated only
    *   after Rust commits and returns `Applied` or `AlreadyApplied`.
    */
   rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
@@ -903,7 +908,7 @@ class VoteManager : public VoteManagerOld {
    *   extra-reward vote hashes.
    *
    * Invariants:
-   * - The stage is derived from inherited live `VerifiedVotes` sidecars.
+   * - The stage is derived from shim-owned live `VerifiedVotes` sidecars.
    * - Missing or mismatched live state throws before the caller can commit a
    *   finalized-period persistence batch.
    * - Live reward metadata is unchanged; callers must invoke
@@ -962,6 +967,27 @@ class VoteManager : public VoteManagerOld {
    */
   bool submitRustPlannedSlashingProof(const SlashingDoubleVoteEvidence& evidence);
   bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
+
+  const PbftConfig& kPbftConfig;
+  std::shared_ptr<PbftChain> pbft_chain_;
+  std::shared_ptr<final_chain::FinalChain> final_chain_;
+  std::shared_ptr<KeyManager> key_manager_;
+  std::weak_ptr<Network> network_;
+  std::shared_ptr<SlashingManager> slashing_manager_;
+
+  std::atomic<PbftPeriod> current_pbft_period_{0};
+  std::atomic<PbftRound> current_pbft_round_{0};
+  VerifiedVotes verified_votes_;
+
+  blk_hash_t reward_votes_block_hash_{kNullBlockHash};
+  PbftPeriod reward_votes_period_{0};
+  PbftRound reward_votes_round_{0};
+  std::vector<vote_hash_t> extra_reward_votes_;
+  mutable std::shared_mutex reward_votes_info_mutex_;
+
+  std::vector<std::shared_ptr<PbftVote>> own_verified_votes_;
+
+  LOG_OBJECTS_DEFINE
 };
 
 }  // namespace taraxa

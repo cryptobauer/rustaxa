@@ -13,7 +13,7 @@ use crate::ffi::rustaxa_ffi::{
     TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup, UniqueVoterInsertOutcome,
     VerifiedStepVotesEntry, VerifiedStepVotesLookup,
     VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
-    VotedValueInsertOutcome,
+    VerifiedVotesStartupSnapshot, VerifiedVotesStartupVote, VotedValueInsertOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeVerifiedVotes};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
@@ -69,7 +69,26 @@ pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes> {
     Box::new(BridgeVerifiedVotes {
         runtime: PbftVoteAdmissionRuntime::new(),
         storage: None,
+        startup_snapshot: None,
     })
+}
+
+/// Creates a production verified-votes runtime restored from Rust storage.
+///
+/// Storage is cloned into the returned handle only after all persisted vote
+/// families have been decoded and validated. Any malformed vote, inconsistent
+/// typed `2t+1` bundle, or uniqueness conflict fails construction without
+/// exposing a partially restored runtime.
+pub fn create_verified_votes_index_from_storage(
+    storage: &BridgeStorage,
+) -> Result<Box<BridgeVerifiedVotes>, anyhow::Error> {
+    let (runtime, startup_snapshot) =
+        PbftVoteAdmissionRuntime::restore_from_storage(storage.0.as_ref())?;
+    Ok(Box::new(BridgeVerifiedVotes {
+        runtime,
+        storage: Some(storage.0.clone()),
+        startup_snapshot: Some(startup_snapshot),
+    }))
 }
 
 fn verified_votes_storage(runtime: &BridgeVerifiedVotes) -> Result<&Storage, anyhow::Error> {
@@ -138,13 +157,34 @@ fn vote_progress_write_to_domain(
 }
 
 impl BridgeVerifiedVotes {
-    /// Attaches a cloned Rust storage handle to an existing verified-votes runtime.
+    /// Returns the compact sidecar snapshot captured during storage restoration.
     ///
-    /// This supports the C++ shim layout where `VerifiedVotes` is constructed
-    /// by `VoteManagerOld` before the Rust-mode `VoteManager` constructor body
-    /// can access `DbStorage`.
-    pub fn verified_votes_attach_storage(&mut self, storage: &BridgeStorage) {
-        self.storage = Some(storage.0.clone());
+    /// The snapshot is unavailable on the storage-free factory, which is kept
+    /// only for focused in-memory tests. Production callers receive deduplicated
+    /// weighted payloads plus own/reward flags and cert-bundle reward metadata.
+    pub fn verified_votes_startup_snapshot(
+        &self,
+    ) -> Result<VerifiedVotesStartupSnapshot, anyhow::Error> {
+        let snapshot = self
+            .startup_snapshot
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STARTUP_SNAPSHOT_UNAVAILABLE"))?;
+        Ok(VerifiedVotesStartupSnapshot {
+            votes: snapshot
+                .votes
+                .iter()
+                .map(|vote| VerifiedVotesStartupVote {
+                    vote_hash: vote.vote_hash.0,
+                    vote_rlp: vote.vote_rlp.clone(),
+                    own_vote: vote.own_vote,
+                    extra_reward_vote: vote.extra_reward_vote,
+                })
+                .collect(),
+            has_reward_vote_info: snapshot.has_reward_vote_info,
+            reward_vote_period: snapshot.reward_vote_period,
+            reward_vote_round: snapshot.reward_vote_round,
+            reward_vote_block_hash: snapshot.reward_vote_block_hash.0,
+        })
     }
 
     /// Returns count of stored verified vote hashes.
@@ -1408,6 +1448,24 @@ mod tests {
         H160::from_low_u64_be(id).into()
     }
 
+    #[test]
+    fn storage_backed_factory_restores_empty_runtime_and_snapshot() {
+        let storage = temp_bridge_storage("empty_startup");
+        let votes = create_verified_votes_index_from_storage(&storage).unwrap();
+        let snapshot = votes.verified_votes_startup_snapshot().unwrap();
+
+        assert_eq!(votes.verified_votes_size(), 0);
+        assert!(snapshot.votes.is_empty());
+        assert!(!snapshot.has_reward_vote_info);
+        assert!(votes.storage.is_some());
+    }
+
+    #[test]
+    fn storage_free_factory_has_no_startup_snapshot() {
+        let votes = create_verified_votes_index();
+        assert!(votes.verified_votes_startup_snapshot().is_err());
+    }
+
     fn temp_bridge_storage(name: &str) -> BridgeStorage {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1927,8 +1985,7 @@ mod tests {
     #[test]
     fn bridge_applies_reward_votes_reset_storage_request() {
         let storage = temp_bridge_storage("reward_reset");
-        let mut votes = create_verified_votes_index();
-        votes.verified_votes_attach_storage(&storage);
+        let votes = create_verified_votes_index_from_storage(&storage).unwrap();
 
         let result = votes
             .verified_votes_apply_reward_votes_reset(FfiPbftRewardVotesResetRequest {
@@ -1958,8 +2015,7 @@ mod tests {
     #[test]
     fn bridge_maps_finalization_storage_apply_rejection_status() {
         let storage = temp_bridge_storage("rejected_storage_write");
-        let mut votes = create_verified_votes_index();
-        votes.verified_votes_attach_storage(&storage);
+        let votes = create_verified_votes_index_from_storage(&storage).unwrap();
         let write_intent = crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan {
             persist_pbft_head: false,
             persist_period_data: false,

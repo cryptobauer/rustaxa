@@ -245,7 +245,8 @@ pub use pbft_vote_progress::{
 };
 pub use pbft_vote_runtime::{
     PbftRewardVotePayloadSelection, PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome,
-    PbftVoteRuntimeBundle, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
+    PbftVoteRuntimeBundle, PbftVoteRuntimePayload, PbftVoteRuntimeRestoreSnapshot,
+    PbftVoteRuntimeRestoredVote, PbftVoteRuntimeSlashingPayloads,
 };
 pub use pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,

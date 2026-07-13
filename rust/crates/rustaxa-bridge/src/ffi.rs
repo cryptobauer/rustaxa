@@ -232,14 +232,14 @@ pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 
 /// Rust-owned verified-votes runtime used by the C++ VoteManager shim.
 ///
-/// Production instances attach a cloned Rust storage handle so VoteManager
-/// persistence for own votes, vote-progress bundles, and reward-vote reset
-/// finalization stages does not retain or pass the generic `BridgeStorage`
-/// facade after construction. Storage-free instances remain for compatibility
-/// tests that exercise only in-memory vote admission behavior.
+/// Production instances are constructed by a fallible storage-backed factory
+/// that restores the authoritative runtime before cloning the storage handle.
+/// Storage-free instances remain only for tests exercising in-memory vote
+/// admission behavior; they cannot expose a startup snapshot or persist writes.
 pub struct BridgeVerifiedVotes {
     pub runtime: PbftVoteAdmissionRuntime,
     pub storage: Option<Arc<Storage>>,
+    pub startup_snapshot: Option<rustaxa_consensus::PbftVoteRuntimeRestoreSnapshot>,
 }
 
 /// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
@@ -1017,6 +1017,23 @@ pub mod rustaxa_ffi {
     struct PbftVotePayloadLookup {
         found: bool,
         vote: PbftVoteStorageRecord,
+    }
+
+    /// One deduplicated startup payload for temporary C++ vote sidecars.
+    struct VerifiedVotesStartupVote {
+        vote_hash: [u8; 32],
+        vote_rlp: Vec<u8>,
+        own_vote: bool,
+        extra_reward_vote: bool,
+    }
+
+    /// Compact compatibility snapshot returned after Rust storage restoration.
+    struct VerifiedVotesStartupSnapshot {
+        votes: Vec<VerifiedVotesStartupVote>,
+        has_reward_vote_info: bool,
+        reward_vote_period: u64,
+        reward_vote_round: u64,
+        reward_vote_block_hash: [u8; 32],
     }
 
     /// Per-family optimized PBFT vote-bundle egress plan.
@@ -5195,10 +5212,12 @@ pub mod rustaxa_ffi {
         type BridgeVerifiedVotes;
 
         pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes>;
-        pub fn verified_votes_attach_storage(
-            self: &mut BridgeVerifiedVotes,
+        pub fn create_verified_votes_index_from_storage(
             storage: &BridgeStorage,
-        );
+        ) -> Result<Box<BridgeVerifiedVotes>>;
+        pub fn verified_votes_startup_snapshot(
+            self: &BridgeVerifiedVotes,
+        ) -> Result<VerifiedVotesStartupSnapshot>;
         pub fn verified_votes_size(self: &BridgeVerifiedVotes) -> u64;
         pub fn verified_votes_replay_contains(
             self: &BridgeVerifiedVotes,

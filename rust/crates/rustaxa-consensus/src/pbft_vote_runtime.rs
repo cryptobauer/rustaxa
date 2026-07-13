@@ -9,8 +9,10 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
+use rlp::Rlp;
+use rustaxa_storage::Storage;
 
 use crate::pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
@@ -28,7 +30,10 @@ use crate::pbft_vote_payload::{
     build_weighted_pbft_vote_payload,
 };
 use crate::pbft_vote_progress::PbftVoteProgressContext;
-use crate::pbft_vote_validation::{PbftCanonicalVoteValidation, PbftVoteReplayCache};
+use crate::pbft_vote_validation::{
+    PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
+    PbftVoteReplayCache, inspect_canonical_pbft_vote,
+};
 use crate::verified_votes::{
     AddVerifiedVoteOutcome, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes, VotesWithWeight,
 };
@@ -44,6 +49,107 @@ pub struct PbftVoteRuntimePayload {
     pub slashing: PbftVotePayloadRecord,
     /// Weighted PBFT vote payload for storage.
     pub weighted: PbftVotePayloadRecord,
+}
+
+/// One deduplicated weighted vote restored for temporary C++ startup sidecars.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteRuntimeRestoredVote {
+    /// Canonical signed-vote hash used by all Rust vote indexes.
+    pub vote_hash: H256,
+    /// Persisted four-field weighted vote RLP.
+    pub vote_rlp: Vec<u8>,
+    /// Whether the vote appeared in the locally generated own-vote family.
+    pub own_vote: bool,
+    /// Whether the vote appeared in the extra reward-vote family.
+    pub extra_reward_vote: bool,
+}
+
+/// Compact startup report produced while restoring verified-vote state.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteRuntimeRestoreSnapshot {
+    /// Deduplicated payloads in deterministic vote-hash order.
+    pub votes: Vec<PbftVoteRuntimeRestoredVote>,
+    /// Whether a cert `2t+1` bundle supplied reward-vote coordinates.
+    pub has_reward_vote_info: bool,
+    /// Reward-vote PBFT period when present.
+    pub reward_vote_period: u64,
+    /// Reward-vote PBFT round when present.
+    pub reward_vote_round: u64,
+    /// Reward-voted PBFT block hash when present.
+    pub reward_vote_block_hash: H256,
+}
+
+#[derive(Debug, Clone)]
+struct RestoreVoteSource {
+    vote_rlp: Vec<u8>,
+    own_vote: bool,
+    extra_reward_vote: bool,
+}
+
+fn inspect_restored_weighted_vote(vote_rlp: &[u8]) -> Result<PbftCanonicalVoteInspection> {
+    let inspection = inspect_canonical_pbft_vote(vote_rlp)?;
+    ensure!(
+        inspection.status == PbftCanonicalVoteInspectionStatus::Valid && inspection.signature_valid,
+        "stored verified vote is malformed or has an invalid signature"
+    );
+    ensure!(
+        inspection.has_embedded_weight && inspection.embedded_weight > 0,
+        "stored verified vote must contain a non-zero embedded weight"
+    );
+    Ok(inspection)
+}
+
+fn validate_restored_bundle_kind(
+    kind: TwoTPlusOneVotedBlockType,
+    vote: &PbftCanonicalVoteInspection,
+) -> Result<()> {
+    let valid = match kind {
+        TwoTPlusOneVotedBlockType::SoftVotedBlock => {
+            vote.vote_type == crate::verified_votes::PbftVoteType::Soft
+        }
+        TwoTPlusOneVotedBlockType::CertVotedBlock => {
+            vote.vote_type == crate::verified_votes::PbftVoteType::Cert
+        }
+        TwoTPlusOneVotedBlockType::NextVotedBlock => {
+            vote.vote_type == crate::verified_votes::PbftVoteType::Next
+                && !vote.block_hash.is_zero()
+        }
+        TwoTPlusOneVotedBlockType::NextVotedNullBlock => {
+            vote.vote_type == crate::verified_votes::PbftVoteType::Next && vote.block_hash.is_zero()
+        }
+    };
+    ensure!(
+        valid,
+        "stored 2t+1 vote does not match bundle category {kind:?}"
+    );
+    Ok(())
+}
+
+fn merge_restore_source(
+    sources: &mut BTreeMap<H256, RestoreVoteSource>,
+    vote_hash: H256,
+    vote_rlp: Vec<u8>,
+    own_vote: bool,
+    extra_reward_vote: bool,
+) -> Result<()> {
+    if let Some(existing) = sources.get_mut(&vote_hash) {
+        ensure!(
+            existing.vote_rlp == vote_rlp,
+            "stored verified vote hash has inconsistent weighted payloads"
+        );
+        existing.own_vote |= own_vote;
+        existing.extra_reward_vote |= extra_reward_vote;
+    } else {
+        sources.insert(
+            vote_hash,
+            RestoreVoteSource {
+                vote_rlp,
+                own_vote,
+                extra_reward_vote,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Runtime-built 2t+1 vote bundle ready for storage persistence.
@@ -178,6 +284,158 @@ impl PbftVoteAdmissionRuntime {
             threshold_runtime: PbftTwoTPlusOneThresholdRuntime::new(),
             payloads: BTreeMap::new(),
         }
+    }
+
+    /// Restores the authoritative vote runtime directly from native Rust storage.
+    ///
+    /// The restore reads own votes, extra reward votes, and each typed latest-round
+    /// `2t+1` slot. Weighted payloads are decoded and signature-checked, overlaps
+    /// are deduplicated by canonical vote hash, and contradictory bytes for one
+    /// hash are rejected. Typed bundles must contain votes with identical
+    /// coordinates and a vote type/block-nullness matching their storage key.
+    ///
+    /// The returned snapshot contains only the payload/ownership facts still
+    /// needed to rebuild temporary C++ sidecars. Runtime metadata, payload
+    /// retention, uniqueness indexes, and `2t+1` mappings are all reconstructed
+    /// here before the runtime is returned.
+    pub fn restore_from_storage(
+        storage: &Storage,
+    ) -> Result<(Self, PbftVoteRuntimeRestoreSnapshot)> {
+        let own_votes = storage
+            .pbft()
+            .own_verified_votes_rlp()
+            .context("VERIFIED_VOTES_RESTORE_OWN_READ")?;
+        let reward_votes = storage
+            .pbft()
+            .reward_votes_rlp()
+            .context("VERIFIED_VOTES_RESTORE_REWARD_READ")?;
+        let bundles = storage
+            .pbft()
+            .two_t_plus_one_votes_bundles()
+            .context("VERIFIED_VOTES_RESTORE_TWO_T_PLUS_ONE_READ")?;
+
+        let mut sources = BTreeMap::<H256, RestoreVoteSource>::new();
+        let mut bundle_mappings = Vec::new();
+        let mut reward_info = None;
+
+        for bundle in bundles {
+            let kind = TwoTPlusOneVotedBlockType::try_from(bundle.kind)?;
+            let rlp = Rlp::new(&bundle.votes_bundle_rlp);
+            ensure!(
+                rlp.is_list() && rlp.item_count()? > 0,
+                "stored 2t+1 vote bundle {kind:?} must be a non-empty RLP list"
+            );
+            let mut coordinates = None;
+            for vote in rlp.iter() {
+                let vote_rlp = vote.as_raw().to_vec();
+                let inspection = inspect_restored_weighted_vote(&vote_rlp)?;
+                validate_restored_bundle_kind(kind, &inspection)?;
+                let current = (
+                    inspection.period,
+                    inspection.round,
+                    inspection.step,
+                    inspection.block_hash,
+                );
+                if let Some(expected) = coordinates {
+                    ensure!(
+                        expected == current,
+                        "stored 2t+1 vote bundle {kind:?} contains inconsistent vote coordinates"
+                    );
+                } else {
+                    coordinates = Some(current);
+                }
+                merge_restore_source(&mut sources, inspection.vote_hash, vote_rlp, false, false)?;
+            }
+            let (period, round, step, block_hash) = coordinates.expect("non-empty bundle checked");
+            if kind == TwoTPlusOneVotedBlockType::CertVotedBlock {
+                let current = (period, round, block_hash);
+                ensure!(
+                    reward_info.is_none() || reward_info == Some(current),
+                    "stored cert 2t+1 bundles contain inconsistent reward-vote metadata"
+                );
+                reward_info = Some(current);
+            }
+            bundle_mappings.push((kind, period, round, step, block_hash));
+        }
+
+        for vote_rlp in own_votes {
+            let inspection = inspect_restored_weighted_vote(&vote_rlp)?;
+            merge_restore_source(&mut sources, inspection.vote_hash, vote_rlp, true, false)?;
+        }
+        for vote_rlp in reward_votes {
+            let inspection = inspect_restored_weighted_vote(&vote_rlp)?;
+            merge_restore_source(&mut sources, inspection.vote_hash, vote_rlp, false, true)?;
+        }
+
+        let mut runtime = Self::new();
+        for (vote_hash, source) in &sources {
+            let inspection = inspect_restored_weighted_vote(&source.vote_rlp)?;
+            ensure!(
+                inspection.vote_hash == *vote_hash,
+                "restored vote hash changed during decode"
+            );
+            let vote = VerifiedVote::new(
+                inspection.vote_hash,
+                inspection.block_hash,
+                inspection.recovered_voter,
+                inspection.period,
+                inspection.round,
+                inspection.step,
+                inspection.vote_type,
+                inspection.embedded_weight,
+            )?;
+            let outcome = runtime.verified_votes.add_verified_vote(vote, None)?;
+            ensure!(
+                outcome.inserted,
+                "stored verified vote conflicts with restored uniqueness index"
+            );
+            let slashing = build_slashing_pbft_vote_payload(&source.vote_rlp)?;
+            runtime.payloads.insert(
+                *vote_hash,
+                PbftVoteRuntimePayload {
+                    slashing,
+                    weighted: PbftVotePayloadRecord {
+                        hash: *vote_hash,
+                        vote_rlp: source.vote_rlp.clone(),
+                    },
+                },
+            );
+            runtime.replay_insert(*vote_hash);
+        }
+
+        for (kind, period, round, step, block_hash) in bundle_mappings {
+            let outcome = runtime
+                .verified_votes
+                .insert_two_t_plus_one_voted_block(period, round, kind, block_hash, step);
+            ensure!(
+                outcome.round_found && outcome.inserted,
+                "stored 2t+1 mapping could not be restored for {kind:?}"
+            );
+        }
+
+        let votes = sources
+            .into_iter()
+            .map(|(vote_hash, source)| PbftVoteRuntimeRestoredVote {
+                vote_hash,
+                vote_rlp: source.vote_rlp,
+                own_vote: source.own_vote,
+                extra_reward_vote: source.extra_reward_vote,
+            })
+            .collect();
+        let (has_reward_vote_info, reward_vote_period, reward_vote_round, reward_vote_block_hash) =
+            reward_info
+                .map(|(period, round, block_hash)| (true, period, round, block_hash))
+                .unwrap_or((false, 0, 0, H256::zero()));
+        Ok((
+            runtime,
+            PbftVoteRuntimeRestoreSnapshot {
+                votes,
+                has_reward_vote_info,
+                reward_vote_period,
+                reward_vote_round,
+                reward_vote_block_hash,
+            },
+        ))
     }
 
     /// Returns immutable access to the Rust verified-vote index.
@@ -629,7 +887,9 @@ mod tests {
     use crate::verified_votes::{PbftVoteType, VerifiedVote};
     use ethereum_types::H160;
     use k256::ecdsa::SigningKey;
+    use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::vrf;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tiny_keccak::{Hasher, Keccak};
 
     const NODE_SECRET: [u8; 32] = [0x35; 32];
@@ -933,5 +1193,65 @@ mod tests {
         let slashing = outcome.slashing_payloads.unwrap();
         assert_eq!(slashing.conflicting.hash, first_validation.vote_hash);
         assert_eq!(slashing.incoming.hash, second_validation.vote_hash);
+    }
+
+    #[test]
+    fn runtime_restores_and_deduplicates_persisted_vote_families() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rustaxa_verified_votes_restore_{nonce}"));
+        let storage = Storage::new(Config::new(path.clone())).unwrap();
+        let canonical = vote_rlp([8; 32], 3);
+        let weighted = build_weighted_pbft_vote_payload(&canonical, 7).unwrap();
+        let bundle = build_weighted_pbft_vote_bundle(std::slice::from_ref(&weighted)).unwrap();
+        storage
+            .pbft()
+            .replace_two_t_plus_one_votes(1, &bundle)
+            .unwrap();
+        storage
+            .pbft()
+            .write_own_verified_vote(weighted.hash, &weighted.vote_rlp)
+            .unwrap();
+        storage
+            .pbft()
+            .write_extra_reward_vote(weighted.hash, &weighted.vote_rlp)
+            .unwrap();
+
+        let (runtime, snapshot) = PbftVoteAdmissionRuntime::restore_from_storage(&storage).unwrap();
+
+        assert_eq!(runtime.verified_votes().size(), 1);
+        assert_eq!(runtime.weighted_payloads(), vec![weighted.clone()]);
+        assert!(runtime.replay_contains(weighted.hash));
+        assert_eq!(snapshot.votes.len(), 1);
+        assert!(snapshot.votes[0].own_vote);
+        assert!(snapshot.votes[0].extra_reward_vote);
+        assert!(snapshot.has_reward_vote_info);
+        assert_eq!(snapshot.reward_vote_period, 12);
+        assert_eq!(snapshot.reward_vote_round, 2);
+        assert_eq!(snapshot.reward_vote_block_hash, H256::from([8; 32]));
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn runtime_rejects_malformed_persisted_vote() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rustaxa_verified_votes_bad_restore_{nonce}"));
+        let storage = Storage::new(Config::new(path.clone())).unwrap();
+        storage
+            .pbft()
+            .write_own_verified_vote(H256::from_low_u64_be(1), &[0x01])
+            .unwrap();
+
+        assert!(PbftVoteAdmissionRuntime::restore_from_storage(&storage).is_err());
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
     }
 }

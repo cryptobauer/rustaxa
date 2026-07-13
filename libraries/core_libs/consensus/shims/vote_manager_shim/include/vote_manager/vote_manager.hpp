@@ -2,11 +2,11 @@
 
 // Rust build overlay for VoteManager:
 // - legacy header is imported as VoteManagerOld
-// - shim header provides a Rust-mode VoteManager overlay that inherits from VoteManagerOld
+// - shim header provides a standalone Rust-mode VoteManager overlay
 //
-// The override surface is shim-owned so Rust-mode reward-vote reset persistence
-// can call the PBFT finalization storage appender while unimplemented behavior
-// continues through the inherited VoteManagerOld state machine.
+// The complete public surface and live compatibility state are shim-owned.
+// VoteManagerOld remains renamed only so the upstream implementation can be
+// compiled as a pure-C++ reference artifact without defining VoteManager.
 
 #pragma push_macro("VoteManager")
 #undef VoteManager
