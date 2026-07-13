@@ -219,6 +219,7 @@ pub struct BridgePbftManagerRuntime {
     pub storage: Arc<Storage>,
     pub period_data_queue: PeriodDataQueue,
     pub pbft_sync_queue_drain_session: rustaxa_consensus::pbft_sync::PbftSyncQueueDrainSession,
+    pub pbft_sync_admission_session: Option<rustaxa_consensus::pbft_sync::PbftSyncAdmissionSession>,
     pub state_action_effect_session:
         Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
     pub runtime_session: Option<rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession>,
@@ -1206,33 +1207,6 @@ pub mod rustaxa_ffi {
         attach_reward_votes: bool,
     }
 
-    /// C++-originated fact bundle for staged PBFT sync runtime planning.
-    struct PbftSyncProcessPeriodDataRuntimeFact {
-        block_period: u64,
-        block_prev_hash: [u8; 32],
-        chain_last_hash: [u8; 32],
-        chain_last_period: u64,
-        block_in_chain: bool,
-        final_chain_hash_status: u8,
-        reward_votes_status: u8,
-        cert_votes_status: u8,
-        transactions_status: u8,
-        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        missing_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        finalized_transaction_hashes: Vec<PbftSyncTransactionHash>,
-        contains_finalized_transactions: bool,
-        pillar_data_status: u8,
-        extra_data_required: bool,
-        extra_data_present: bool,
-        extra_data_pillar_block_hash_present: bool,
-        pillar_votes_required: bool,
-        pillar_votes_present: bool,
-        pillar_votes_status: u8,
-        previous_cert_votes_present: bool,
-        previous_cert_first_vote_has_weight: bool,
-    }
-
     /// Staged PBFT sync runtime action for C++ `processPeriodData` execution.
     struct PbftSyncProcessPeriodDataRuntimePlan {
         runtime_action: u8,
@@ -1247,6 +1221,51 @@ pub mod rustaxa_ffi {
         transaction_query_plan: PbftSyncTransactionQueryPlan,
         warnings: Vec<PbftSyncTransactionWarning>,
         contains_finalized_transaction_warning: bool,
+    }
+
+    /// Immutable synced-candidate facts captured once at admission start.
+    struct PbftSyncAdmissionInitialFact {
+        block_period: u64,
+        block_prev_hash: [u8; 32],
+        chain_last_hash: [u8; 32],
+        chain_last_period: u64,
+        block_in_chain: bool,
+        dag_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        period_data_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        extra_data_required: bool,
+        extra_data_present: bool,
+        extra_data_pillar_block_hash_present: bool,
+        pillar_votes_required: bool,
+        pillar_votes_present: bool,
+        previous_cert_votes_present: bool,
+        previous_cert_first_vote_has_weight: bool,
+    }
+
+    /// Current check or terminal decision from the manager-owned admission cursor.
+    struct PbftSyncAdmissionSessionStep {
+        status: u8,
+        cursor: u32,
+        has_check: bool,
+        next_check: u8,
+        plan: PbftSyncProcessPeriodDataRuntimePlan,
+        complete: bool,
+        can_continue: bool,
+        error_code: String,
+    }
+
+    /// Cursor-checked report for final-chain, reward, cert, or pillar validation.
+    struct PbftSyncAdmissionStatusReport {
+        cursor: u32,
+        check: u8,
+        status: u8,
+    }
+
+    /// Cursor-checked TransactionManager result for synced-period admission.
+    struct PbftSyncAdmissionTransactionReport {
+        cursor: u32,
+        missing_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        finalized_transaction_hashes: Vec<PbftSyncTransactionHash>,
+        contains_finalized_transactions: bool,
     }
 
     /// Rust-owned outer drain step for C++ `pushSyncedPbftBlocksIntoChain`.
@@ -4614,9 +4633,24 @@ pub mod rustaxa_ffi {
             reward_votes_present: bool,
             reward_votes_period: u64,
         ) -> Result<PbftSyncEgressPayload>;
-        pub fn plan_pbft_sync_process_period_data_runtime(
-            fact: PbftSyncProcessPeriodDataRuntimeFact,
-        ) -> PbftSyncProcessPeriodDataRuntimePlan;
+        pub fn pbft_manager_runtime_begin_pbft_sync_admission(
+            runtime: &mut BridgePbftManagerRuntime,
+            fact: PbftSyncAdmissionInitialFact,
+        );
+        pub fn pbft_manager_runtime_pbft_sync_admission_next(
+            runtime: &mut BridgePbftManagerRuntime,
+        ) -> PbftSyncAdmissionSessionStep;
+        pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
+            runtime: &mut BridgePbftManagerRuntime,
+            report: PbftSyncAdmissionStatusReport,
+        ) -> PbftSyncAdmissionSessionStep;
+        pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
+            runtime: &mut BridgePbftManagerRuntime,
+            report: PbftSyncAdmissionTransactionReport,
+        ) -> PbftSyncAdmissionSessionStep;
+        pub fn abort_pbft_manager_runtime_pbft_sync_admission(
+            runtime: &mut BridgePbftManagerRuntime,
+        ) -> PbftSyncAdmissionSessionStep;
         pub fn validate_pbft_sync_cert_vote_bundle(
             fact: PbftSyncCertVoteBundleFact,
         ) -> PbftSyncCertVoteBundleValidation;

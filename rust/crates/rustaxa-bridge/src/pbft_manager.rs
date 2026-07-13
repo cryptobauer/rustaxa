@@ -511,6 +511,7 @@ pub fn create_pbft_manager_runtime_from_storage(
         storage: storage.0.clone(),
         period_data_queue: PeriodDataQueue::new(),
         pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
+        pbft_sync_admission_session: None,
         state_action_effect_session: None,
         runtime_session: None,
         proposal_session: None,

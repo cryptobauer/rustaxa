@@ -1214,6 +1214,31 @@ Implementation notes:
   typed APIs.
 - No new transport/network/VDF failures were introduced by the current slice state, but `pbft_manager_shim` and
   remaining pillar-chain external DPoS/materialization/event paths are still present and remain Slice 6 work.
+- PBFT sync period admission is now a cursor owned by the long-lived `BridgePbftManagerRuntime`. `processPeriodData()`
+  captures immutable queue/chain facts once, then executes only the FinalChain, reward-vote, cert-vote, transaction, and
+  pillar checks requested by Rust and reports typed results with the current cursor. Rust owns check ordering,
+  accumulated validation state, transaction-warning classification, replacement intent, and the terminal
+  accept/drop/wait/clear-and-report decision. C++ retains live-object materialization and the explicit external
+  FinalChain, VoteManager, TransactionManager, PillarChainManager, and network effects.
+- The standalone `plan_pbft_sync_process_period_data_runtime` CXX export and its 25-field
+  `PbftSyncProcessPeriodDataRuntimeFact` DTO are deleted. Bridge-shaped C++ tests for repeatedly rebuilding that fact are
+  also deleted; native and manager-runtime session tests now cover the complete transcript, optional pillar path,
+  cursor/report mismatch, peer failure, and abort behavior.
+- FinalChain-behind handling remains a same-candidate retry: Rust returns an active wait step, C++ waits at the external
+  FinalChain boundary, and the next cursor rechecks the already-popped candidate. Terminal and contract-error steps clear
+  the retained runtime cursor automatically, while C++ aborts the cursor before propagating any external-executor
+  exception.
+- Validation for the manager-owned PBFT sync-admission cursor:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pbft_sync -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pbft_sync -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pbft_manager_test --parallel 12`
+  - `/build/bin/rust_consensus_tests --gtest_filter='RustPbftSyncTest.*' --gtest_print_time=1`
+  - `/build/bin/pbft_manager_test --gtest_filter='PbftManagerTest.pbft_manager_run_multi_nodes' --gtest_print_time=1`
+  - `scripts/rewrite_bridge_inventory_guard.sh`
+  - `scripts/rewrite_storage_boundary_guard.sh`
+  - `git diff --check`
 - Additional validation for the pillar-chain runtime PBFT-finalization consolidation:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
@@ -1613,8 +1638,8 @@ Implementation status:
   `plan_pbft_sync_runtime`, `abort_pbft_manager_proposal_session`,
   `load_pbft_finalization_last_period_lambda_storage`, `plan_pbft_dynamic_lambda`,
   `pbft_manager_runtime_load_finalization_last_period_lambda`, and the bridge-only `PbftSyncRuntimePlan` DTO are deleted
-  from the bridge surface. Live C++ uses `plan_pbft_sync_process_period_data_runtime`,
-  `plan_pbft_manager_block_validation`, proposal runtime sessions, and
+  from the bridge surface. Live C++ uses manager-owned PBFT sync admission and proposal runtime sessions,
+  `plan_pbft_manager_block_validation`, and
   `pbft_manager_runtime_plan_finalization_dynamic_lambda`; native `rustaxa-consensus` tests cover the deleted lower-level
   planners and lambda lookup.
 - FinalChain execution-session construction no longer takes a `BridgeFinalChain` parameter. The Rust bridge function
@@ -1654,9 +1679,10 @@ Implementation status:
   coverage for ordered effects remains intact.
 - Direct PBFT sync admission and transaction-query planners are no longer CXX exports:
   `plan_pbft_sync_period_admission`, `plan_pbft_sync_transaction_query`, and their bridge-only fact/plan DTOs are
-  deleted from the bridge surface. Live C++ uses the staged `plan_pbft_sync_process_period_data_runtime` API, whose
-  runtime plan still carries transaction-query output when the process-period executor needs it; native
-  `rustaxa-consensus` tests cover the lower-level admission and transaction-query planners.
+  deleted from the bridge surface. The later Slice 6 consolidation also deleted
+  `plan_pbft_sync_process_period_data_runtime` and its repeated-input fact DTO: live C++ now drives the manager-owned
+  sync-admission cursor, whose step carries transaction-query output only when the transaction executor needs it.
+  Native `rustaxa-consensus` tests cover the lower-level admission and transaction-query planners.
   Follow-up cleanup also deleted the stale `PbftSyncPeriodAdmissionFact` CXX DTO that no live C++ caller used after the
   direct admission planner was removed.
   Custom agents used: `rust-engineer` identified these two direct planners as bridge-test-only exports after the live

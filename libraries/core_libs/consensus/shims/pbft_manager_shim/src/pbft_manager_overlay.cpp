@@ -34,20 +34,15 @@ namespace {
 constexpr uint8_t kPbftSyncFinalChainValid = 0;
 constexpr uint8_t kPbftSyncFinalChainMissing = 1;
 constexpr uint8_t kPbftSyncFinalChainInvalid = 2;
-constexpr uint8_t kPbftSyncFinalChainNotChecked = 3;
 constexpr uint8_t kPbftSyncFactValid = 0;
 constexpr uint8_t kPbftSyncFactInvalid = 1;
-constexpr uint8_t kPbftSyncFactNotRequired = 2;
-constexpr uint8_t kPbftSyncFactNotChecked = 3;
+constexpr uint8_t kPbftSyncRuntimeCheckFinalChainHash = 1;
+constexpr uint8_t kPbftSyncRuntimeCheckRewardVotes = 2;
+constexpr uint8_t kPbftSyncRuntimeCheckCertVotes = 3;
+constexpr uint8_t kPbftSyncRuntimeCheckTransactions = 4;
+constexpr uint8_t kPbftSyncRuntimeCheckPillarVotes = 6;
 constexpr uint8_t kLegacyTransactionSourceRegular = 0;
 
-constexpr uint8_t kPbftSyncStatusBlockAlreadyInChain = 1;
-constexpr uint8_t kPbftSyncStatusStalePeriod = 2;
-constexpr uint8_t kPbftSyncStatusPreviousHashMismatch = 3;
-constexpr uint8_t kPbftSyncStatusCertVotesInvalid = 7;
-constexpr uint8_t kPbftSyncStatusPillarDataInvalid = 10;
-constexpr uint8_t kPbftSyncStatusPillarVotesInvalid = 11;
-constexpr uint8_t kPbftSyncRuntimeActionContractError = 5;
 constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
 constexpr uint8_t kPbftFinalizationStorageStageSortition = 3;
@@ -188,9 +183,6 @@ constexpr uint8_t kPbftManagerBlockValidationActionAccept = 1;
 constexpr uint8_t kPbftManagerBlockValidationActionReject = 2;
 constexpr uint8_t kPbftManagerBlockValidationActionWaitForFinalization = 3;
 constexpr uint8_t kPbftManagerBlockValidationActionContractError = 255;
-constexpr uint8_t kPbftManagerBlockValidationStatusFinalChainHashInvalid = 4;
-constexpr uint8_t kPbftManagerBlockValidationStatusRewardVotesInvalid = 5;
-constexpr uint8_t kPbftManagerBlockValidationStatusExtraDataInvalid = 6;
 constexpr uint8_t kPbftManagerBlockValidationCheckPbftChain = 0;
 constexpr uint8_t kPbftManagerBlockValidationCheckFinalChainHash = 1;
 constexpr uint8_t kPbftManagerBlockValidationCheckRewardVotes = 2;
@@ -759,43 +751,6 @@ SharedTransactions materializeTransactionsFromQueuedRlps(const std::vector<bytes
     transactions.emplace_back(std::move(transaction));
   }
   return transactions;
-}
-
-rustaxa::PbftSyncProcessPeriodDataRuntimeFact makePbftSyncProcessPeriodDataRuntimeFact(
-    PbftPeriod block_period, const blk_hash_t &block_prev_hash, const std::vector<trx_hash_t> &dag_transaction_hashes,
-    const std::vector<trx_hash_t> &period_data_transaction_hashes, const blk_hash_t &last_pbft_block_hash,
-    PbftPeriod last_pbft_block_period, bool block_in_chain, uint8_t final_chain_hash_status,
-    uint8_t reward_votes_status, uint8_t cert_votes_status, uint8_t transactions_status,
-    const std::unordered_set<trx_hash_t> &missing_transaction_hashes, bool contains_finalized_transactions,
-    const std::vector<trx_hash_t> &finalized_transaction_hashes, uint8_t pillar_data_status, bool pillar_votes_required,
-    uint8_t pillar_votes_status, bool previous_cert_votes_present, bool previous_cert_first_vote_has_weight,
-    bool extra_data_required, bool extra_data_present, bool extra_data_pillar_block_hash_present,
-    bool pillar_votes_present) {
-  rustaxa::PbftSyncProcessPeriodDataRuntimeFact fact;
-  fact.block_period = block_period;
-  fact.block_prev_hash = toBridgeHash(block_prev_hash);
-  fact.chain_last_hash = toBridgeHash(last_pbft_block_hash);
-  fact.chain_last_period = last_pbft_block_period;
-  fact.block_in_chain = block_in_chain;
-  fact.final_chain_hash_status = final_chain_hash_status;
-  fact.reward_votes_status = reward_votes_status;
-  fact.cert_votes_status = cert_votes_status;
-  fact.transactions_status = transactions_status;
-  fact.dag_transaction_hashes = toBridgeTransactionHashes(dag_transaction_hashes);
-  fact.period_data_transaction_hashes = toBridgeTransactionHashes(period_data_transaction_hashes);
-  fact.missing_transaction_hashes = toBridgeTransactionHashes(missing_transaction_hashes);
-  fact.finalized_transaction_hashes = toBridgeTransactionHashes(finalized_transaction_hashes);
-  fact.contains_finalized_transactions = contains_finalized_transactions;
-  fact.pillar_data_status = pillar_data_status;
-  fact.extra_data_required = extra_data_required;
-  fact.extra_data_present = extra_data_present;
-  fact.extra_data_pillar_block_hash_present = extra_data_pillar_block_hash_present;
-  fact.pillar_votes_required = pillar_votes_required;
-  fact.pillar_votes_present = pillar_votes_present;
-  fact.pillar_votes_status = pillar_votes_status;
-  fact.previous_cert_votes_present = previous_cert_votes_present;
-  fact.previous_cert_first_vote_has_weight = previous_cert_first_vote_has_weight;
-  return fact;
 }
 
 rustaxa::PbftFinalizationIntentFact makePbftFinalizationIntentFact(
@@ -3771,8 +3726,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("reward-vote reset", "PBFT_FINALIZE_REWARD_RESET_PAYLOAD_UNAVAILABLE");
           }
           reward_votes_reset_prepared = false;
-          const auto report =
-              vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
+          const auto report = vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent);
           if (!report_reward_votes_reset(report, boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
@@ -3796,8 +3750,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
         }
         case kPbftFinalizationRuntimeActionUpdateFinalizedTransactions: {
           if (!protected_locks_held) {
-            return fail_action("transaction finalized-status update",
-                               "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
+            return fail_action("transaction finalized-status update", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
           }
           if (!transaction_status_payload_available) {
             return fail_action("transaction finalized-status update",
@@ -3828,8 +3781,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("PBFT-chain update", "PBFT_FINALIZE_PBFT_CHAIN_PAYLOAD_UNAVAILABLE");
           }
           pbft_chain_payload_available = false;
-          const auto report =
-              pbft_chain_->updatePbftChainForPbftFinalization(finalization_plan.storage_write_intent);
+          const auto report = pbft_chain_->updatePbftChainForPbftFinalization(finalization_plan.storage_write_intent);
           if (!report_pbft_chain_update(report, boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
@@ -3894,8 +3846,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
         default:
           return fail_action(protected_locks_held ? "protected action dispatch" : "action dispatch",
                              protected_locks_held ? "PBFT_FINALIZE_UNKNOWN_PROTECTED_ACTION"
-                                                  : resume_mode ? "PBFT_FINALIZE_PROTECTED_ACTION_ON_RESUME"
-                                                                : "PBFT_FINALIZE_UNKNOWN_UNPROTECTED_ACTION");
+                             : resume_mode        ? "PBFT_FINALIZE_PROTECTED_ACTION_ON_RESUME"
+                                                  : "PBFT_FINALIZE_UNKNOWN_UNPROTECTED_ACTION");
       }
     }
 
@@ -4107,7 +4059,6 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto pbft_block_hash = popped_period_data.block_hash;
   const auto block_period = popped_period_data.period;
   const auto block_prev_hash = popped_period_data.prev_block_hash;
-  const auto anchor_hash = popped_period_data.pivot_hash;
   const auto final_chain_hash = popped_period_data.final_chain_hash;
   auto reward_vote_hashes = std::move(popped_period_data.reward_vote_hashes);
   auto pillar_vote_rlps = std::move(popped_period_data.pillar_vote_rlps);
@@ -4127,300 +4078,155 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   const auto last_pbft_block_hash = pbft_chain_->getLastPbftBlockHash();
   const auto last_pbft_block_period = pbft_chain_->getPbftChainSize();
   const auto block_in_chain = pbft_chain_->findPbftBlockInChain(pbft_block_hash);
-  auto make_runtime_plan = [&](bool candidate_block_in_chain, uint8_t final_chain_status, uint8_t reward_votes_status,
-                               uint8_t cert_votes_status, uint8_t transactions_status,
-                               const std::unordered_set<trx_hash_t> &non_finalized_transactions,
-                               bool contains_finalized_transactions,
-                               const std::vector<trx_hash_t> &finalized_transaction_hashes, uint8_t pillar_data_status,
-                               bool pillar_votes_required, uint8_t pillar_votes_status) {
-    return rustaxa::plan_pbft_sync_process_period_data_runtime(makePbftSyncProcessPeriodDataRuntimeFact(
-        block_period, block_prev_hash, dag_transaction_hashes, period_data_transaction_hashes, last_pbft_block_hash,
-        last_pbft_block_period, candidate_block_in_chain, final_chain_status, reward_votes_status, cert_votes_status,
-        transactions_status, non_finalized_transactions, contains_finalized_transactions, finalized_transaction_hashes,
-        pillar_data_status, pillar_votes_required, pillar_votes_status, previous_cert_votes_present,
-        previous_cert_first_vote_has_weight, extra_data_required, extra_data_present,
-        extra_data_pillar_block_hash_present, pillar_votes_present));
-  };
-
-  auto runtime_plan = make_runtime_plan(block_in_chain, kPbftSyncFinalChainNotChecked, kPbftSyncFactNotChecked,
-                                        kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, {},
-                                        kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
-  auto admission_plan = runtime_plan;
-  auto throw_on_runtime_contract_error = [&]() {
-    if (admission_plan.runtime_action == kPbftSyncRuntimeActionContractError) {
-      throw std::runtime_error("Rust PBFT sync runtime planner received invalid bridge facts");
-    }
-  };
-  throw_on_runtime_contract_error();
-  if (admission_plan.status == kPbftSyncStatusBlockAlreadyInChain) {
-    LOG(log_dg_) << "PBFT block " << pbft_block_hash << " already present in chain.";
-    return std::nullopt;
-  }
-
   auto net = network_.lock();
   assert(net);  // Should never happen
-  auto apply_rust_admission_side_effects = [&]() {
-    if (admission_plan.clear_sync_queue) {
+  auto apply_rust_admission_side_effects = [&](const rustaxa::PbftSyncAdmissionSessionStep &step) {
+    if (step.plan.wait_for_finalization) {
+      final_chain_->waitForFinalized();
+    }
+    if (step.plan.clear_sync_queue) {
       clearPeriodDataQueueSidecars();
     }
-    if (admission_plan.report_malicious_peer) {
+    if (step.plan.report_malicious_peer) {
       net->handleMaliciousSyncPeer(node_id);
     }
   };
-  auto finish_non_accepting_rust_admission =
-      [&]() -> std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> {
-    if (admission_plan.accept_period_data) {
-      throw std::runtime_error("Rust PBFT sync runtime accepted period data on a C++ rejection path");
-    }
-    if (admission_plan.wait_for_finalization) {
-      final_chain_->waitForFinalized();
-    }
-    apply_rust_admission_side_effects();
-    return std::nullopt;
-  };
 
-  if (admission_plan.status == kPbftSyncStatusStalePeriod) {
-    return finish_non_accepting_rust_admission();
-  }
-  if (admission_plan.status == kPbftSyncStatusPreviousHashMismatch) {
-    LOG(log_er_) << "Invalid PBFT block " << pbft_block_hash << "; prevHash: " << block_prev_hash << " from peer "
-                 << node_id.abridged() << " received, stop syncing.";
-    return finish_non_accepting_rust_admission();
-  }
-
-  auto validate_final_chain_hash_from_queue_metadata = [&]() {
+  auto validate_final_chain_hash_from_queue_metadata = [&]() -> uint8_t {
     const auto facts = final_chain_->collectPbftFinalChainFacts(
         makePbftFinalChainFactRequest(block_period, final_chain_hash, true, true, false, false));
     if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
       LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
-      return PbftStateRootValidation::Missing;
+      return kPbftSyncFinalChainMissing;
     }
     if (facts.final_chain_hash.status == kPbftSyncFinalChainInvalid) {
       LOG(log_er_) << "Block " << block_period << " hash " << pbft_block_hash << " state root " << final_chain_hash
                    << " isn't matching actual " << fromBridgeHash(facts.final_chain_hash.expected_hash);
-      return PbftStateRootValidation::Invalid;
+      return kPbftSyncFinalChainInvalid;
     }
-
-    return PbftStateRootValidation::Valid;
+    return kPbftSyncFinalChainValid;
   };
 
-  const auto rust_pillar_data_plan =
-      make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid, {},
-                        false, {}, kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotRequired);
-  const auto rust_pillar_data_valid = rust_pillar_data_plan.status != kPbftSyncStatusPillarDataInvalid;
+  rustaxa::PbftSyncAdmissionInitialFact initial_fact{};
+  initial_fact.block_period = block_period;
+  initial_fact.block_prev_hash = toBridgeHash(block_prev_hash);
+  initial_fact.chain_last_hash = toBridgeHash(last_pbft_block_hash);
+  initial_fact.chain_last_period = last_pbft_block_period;
+  initial_fact.block_in_chain = block_in_chain;
+  initial_fact.dag_transaction_hashes = toBridgeTransactionHashes(dag_transaction_hashes);
+  initial_fact.period_data_transaction_hashes = toBridgeTransactionHashes(period_data_transaction_hashes);
+  initial_fact.extra_data_required = extra_data_required;
+  initial_fact.extra_data_present = extra_data_present;
+  initial_fact.extra_data_pillar_block_hash_present = extra_data_pillar_block_hash_present;
+  initial_fact.pillar_votes_required = pillar_votes_required;
+  initial_fact.pillar_votes_present = pillar_votes_present;
+  initial_fact.previous_cert_votes_present = previous_cert_votes_present;
+  initial_fact.previous_cert_first_vote_has_weight = previous_cert_first_vote_has_weight;
+  rustaxa::pbft_manager_runtime_begin_pbft_sync_admission(*pbft_manager_runtime_.value(), std::move(initial_fact));
 
   std::optional<std::vector<std::shared_ptr<PbftVote>>> reward_votes;
-  auto block_validation_fact = rustaxa::PbftManagerBlockValidationFact{};
-  block_validation_fact.block_hash = toBridgeHash(pbft_block_hash);
-  block_validation_fact.period = block_period;
-  block_validation_fact.pivot_hash = toBridgeHash(anchor_hash);
-  block_validation_fact.pivot_is_null = anchor_hash == kNullBlockHash;
-  block_validation_fact.dag_order_cached = rustaxa::pbft_manager_runtime_has_cached_anchor_dag_order(
-      *pbft_manager_runtime_.value(), toBridgeHash(anchor_hash));
-  block_validation_fact.dag_order_required = false;
-  block_validation_fact.pillar_block_required = false;
-  block_validation_fact.dag_weight_check_required = false;
-  block_validation_fact.pbft_chain_status = kPbftManagerBlockValidationFactValid;
-  block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactNotChecked;
-  block_validation_fact.reward_votes_status = kPbftManagerBlockValidationFactNotChecked;
-  block_validation_fact.extra_data_status =
-      rust_pillar_data_valid ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid;
-  block_validation_fact.pillar_block_status = kPbftManagerBlockValidationFactNotRequired;
-  block_validation_fact.dag_order_status = kPbftManagerBlockValidationFactNotRequired;
-  block_validation_fact.dag_weight_status = kPbftManagerBlockValidationFactNotRequired;
-
-  bool retry_logged = false;
-  auto validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
-  while (true) {
-    if (validation_plan.action == kPbftManagerBlockValidationActionAccept) {
-      break;
-    }
-    if (validation_plan.action == kPbftManagerBlockValidationActionWaitForFinalization) {
-      // If syncing and pbft manager is faster than execution a delay might be needed to allow EVM to catch up
-      final_chain_->waitForFinalized();
-      if (!retry_logged) {
-        LOG(log_wr_) << "PBFT block " << pbft_block_hash
-                     << " validation delayed, state root missing, execution is behind";
-        retry_logged = true;
+  auto session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_next(*pbft_manager_runtime_.value());
+  try {
+    while (session_step.has_check) {
+      if (session_step.next_check == kPbftSyncRuntimeCheckFinalChainHash) {
+        if (session_step.plan.wait_for_finalization) {
+          final_chain_->waitForFinalized();
+        }
+        rustaxa::PbftSyncAdmissionStatusReport report{};
+        report.cursor = session_step.cursor;
+        report.check = session_step.next_check;
+        report.status = validate_final_chain_hash_from_queue_metadata();
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(*pbft_manager_runtime_.value(),
+                                                                                       std::move(report));
+        continue;
       }
-      block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactNotChecked;
-      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
-      continue;
-    }
-    if (validation_plan.action == kPbftManagerBlockValidationActionReject) {
-      if (validation_plan.status == kPbftManagerBlockValidationStatusFinalChainHashInvalid) {
-        runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainInvalid, kPbftSyncFactNotChecked,
-                                         kPbftSyncFactNotChecked, kPbftSyncFactNotChecked, {}, false, {},
-                                         kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
-        admission_plan = runtime_plan;
-        throw_on_runtime_contract_error();
-        LOG(log_er_) << "Failed verifying block " << pbft_block_hash << " with invalid state root: " << final_chain_hash
-                     << ". Disconnect malicious peer " << node_id.abridged();
-        return finish_non_accepting_rust_admission();
+      if (session_step.next_check == kPbftSyncRuntimeCheckRewardVotes) {
+        reward_votes =
+            vote_mgr_->collectRewardVotesForBlock(block_period, pbft_block_hash, block_prev_hash, reward_vote_hashes);
+        rustaxa::PbftSyncAdmissionStatusReport report{};
+        report.cursor = session_step.cursor;
+        report.check = session_step.next_check;
+        report.status = reward_votes.has_value() ? kPbftSyncFactValid : kPbftSyncFactInvalid;
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(*pbft_manager_runtime_.value(),
+                                                                                       std::move(report));
+        continue;
       }
-      if (validation_plan.status == kPbftManagerBlockValidationStatusRewardVotesInvalid) {
-        runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactInvalid, kPbftSyncFactNotChecked,
-                                         kPbftSyncFactNotChecked, {}, false, {}, kPbftSyncFactNotChecked, false,
-                                         kPbftSyncFactNotChecked);
-        admission_plan = runtime_plan;
-        throw_on_runtime_contract_error();
-        LOG(log_er_) << "Failed verifying reward votes for block " << pbft_block_hash << ". Disconnect malicious peer "
-                     << node_id.abridged();
-        return finish_non_accepting_rust_admission();
+      if (session_step.next_check == kPbftSyncRuntimeCheckCertVotes) {
+        if (session_step.plan.replace_previous_block_cert_votes ||
+            (block_period > 1 && (period_data.previous_block_cert_votes.empty() ||
+                                  !period_data.previous_block_cert_votes.front()->getWeight()))) {
+          assert(reward_votes.has_value());
+          period_data.previous_block_cert_votes = *reward_votes;
+        }
+        if (block_period > 1 && period_data.previous_block_cert_votes.empty()) {
+          constexpr PbftRound kMaxRecoveredCertVoteRound = 100;
+          for (PbftRound round = 1; round <= kMaxRecoveredCertVoteRound; ++round) {
+            auto recovered_votes = vote_mgr_->getTwoTPlusOneVotedBlockVotes(block_period - 1, round,
+                                                                            TwoTPlusOneVotedBlockType::CertVotedBlock);
+            if (!recovered_votes.empty() && recovered_votes.front()->getBlockHash() == block_prev_hash) {
+              period_data.previous_block_cert_votes = std::move(recovered_votes);
+              break;
+            }
+          }
+        }
+        const auto cert_votes_valid = validatePbftBlockCertVotes(block_period, pbft_block_hash, cert_votes);
+        rustaxa::PbftSyncAdmissionStatusReport report{};
+        report.cursor = session_step.cursor;
+        report.check = session_step.next_check;
+        report.status = cert_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid;
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(*pbft_manager_runtime_.value(),
+                                                                                       std::move(report));
+        continue;
       }
-      if (validation_plan.status == kPbftManagerBlockValidationStatusExtraDataInvalid) {
-        runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid,
-                                         kPbftSyncFactValid, {}, false, {}, kPbftSyncFactInvalid, pillar_votes_required,
-                                         kPbftSyncFactNotChecked);
-        admission_plan = runtime_plan;
-        throw_on_runtime_contract_error();
-        LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has invalid pillar data";
-        return finish_non_accepting_rust_admission();
+      if (session_step.next_check == kPbftSyncRuntimeCheckTransactions) {
+        auto missing_transactions = trx_mgr_->excludeFinalizedTransactions(
+            fromBridgeTransactionHashes(session_step.plan.transaction_query_plan.finalized_lookup_hashes));
+        const auto finalized_outcome =
+            trx_mgr_->verifyTransactionsNotFinalizedDetailed(std::move(period_data_transaction_identities));
+        rustaxa::PbftSyncAdmissionTransactionReport report{};
+        report.cursor = session_step.cursor;
+        report.missing_transaction_hashes = toBridgeTransactionHashes(missing_transactions);
+        report.contains_finalized_transactions = finalized_outcome.is_finalized;
+        if (finalized_outcome.is_finalized) {
+          report.finalized_transaction_hashes.push_back(rustaxa::PbftSyncTransactionHash{finalized_outcome.hash});
+        }
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_transactions(
+            *pbft_manager_runtime_.value(), std::move(report));
+        continue;
       }
-
-      throw std::runtime_error("Rust PBFT block validation planner returned unsupported sync rejection: " +
-                               std::string(validation_plan.error_code));
-    }
-    if (validation_plan.action == kPbftManagerBlockValidationActionContractError) {
-      throw std::runtime_error("Rust PBFT block validation planner rejected sync bridge facts: " +
-                               std::string(validation_plan.error_code));
-    }
-    if (validation_plan.action != kPbftManagerBlockValidationActionRunCheck) {
-      throw std::runtime_error("Rust PBFT block validation planner returned unknown sync action");
-    }
-
-    if (validation_plan.next_check == kPbftManagerBlockValidationCheckFinalChainHash) {
-      const auto validation_result = validate_final_chain_hash_from_queue_metadata();
-      if (validation_result == PbftStateRootValidation::Valid) {
-        block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactValid;
-      } else if (validation_result == PbftStateRootValidation::Missing) {
-        block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactMissing;
-      } else {
-        block_validation_fact.final_chain_hash_status = kPbftManagerBlockValidationFactInvalid;
+      if (session_step.next_check == kPbftSyncRuntimeCheckPillarVotes) {
+        pillar_chain::ValidatePbftBlockPillarVotesWithRustResult validation;
+        if (!pillar_chain_mgr_) {
+          validation.status = pillar_chain::ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarChainManager;
+        } else {
+          validation = pillar_chain_mgr_->validatePbftBlockPillarVotesWithRust(block_period, pillar_vote_rlps);
+        }
+        rustaxa::PbftSyncAdmissionStatusReport report{};
+        report.cursor = session_step.cursor;
+        report.check = session_step.next_check;
+        report.status = validation.valid() ? kPbftSyncFactValid : kPbftSyncFactInvalid;
+        session_step = rustaxa::pbft_manager_runtime_pbft_sync_admission_report_status(*pbft_manager_runtime_.value(),
+                                                                                       std::move(report));
+        continue;
       }
-      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
-      continue;
+      rustaxa::abort_pbft_manager_runtime_pbft_sync_admission(*pbft_manager_runtime_.value());
+      throw std::runtime_error("Rust PBFT sync admission requested unsupported external check");
     }
-
-    if (validation_plan.next_check == kPbftManagerBlockValidationCheckRewardVotes) {
-      reward_votes =
-          vote_mgr_->collectRewardVotesForBlock(block_period, pbft_block_hash, block_prev_hash, reward_vote_hashes);
-      block_validation_fact.reward_votes_status =
-          reward_votes.has_value() ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid;
-      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
-      continue;
-    }
-
-    if (validation_plan.next_check == kPbftManagerBlockValidationCheckExtraData) {
-      block_validation_fact.extra_data_status =
-          rust_pillar_data_valid ? kPbftManagerBlockValidationFactValid : kPbftManagerBlockValidationFactInvalid;
-      validation_plan = rustaxa::plan_pbft_manager_block_validation(block_validation_fact);
-      continue;
-    }
-
-    throw std::runtime_error("Rust PBFT block validation planner requested unsupported sync check");
+  } catch (...) {
+    rustaxa::abort_pbft_manager_runtime_pbft_sync_admission(*pbft_manager_runtime_.value());
+    throw;
   }
 
-  assert(reward_votes.has_value());
-  runtime_plan = make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactNotChecked,
-                                   kPbftSyncFactNotChecked, {}, false, {}, kPbftSyncFactNotChecked, false,
-                                   kPbftSyncFactNotChecked);
-  admission_plan = runtime_plan;
-  throw_on_runtime_contract_error();
-
-  // Special case when previous block was already in chain so we hit condition
-  // pbft_chain_->findPbftBlockInChain(pbft_block_hash) and it's cert votes were not verified here, they are part of
-  // vote_manager so we need to replace them as they are not verified period_data structure
-  if (admission_plan.replace_previous_block_cert_votes ||
-      (block_period > 1 && (period_data.previous_block_cert_votes.empty() ||
-                            !period_data.previous_block_cert_votes.front()->getWeight()))) {
-    period_data.previous_block_cert_votes = std::move(*reward_votes);
+  if (!session_step.can_continue) {
+    throw std::runtime_error("Rust PBFT sync admission contract failed: " +
+                             static_cast<std::string>(session_step.error_code));
   }
-  if (block_period > 1 && period_data.previous_block_cert_votes.empty()) {
-    constexpr PbftRound kMaxRecoveredCertVoteRound = 100;
-    for (PbftRound round = 1; round <= kMaxRecoveredCertVoteRound; ++round) {
-      auto recovered_votes =
-          vote_mgr_->getTwoTPlusOneVotedBlockVotes(block_period - 1, round, TwoTPlusOneVotedBlockType::CertVotedBlock);
-      if (!recovered_votes.empty() && recovered_votes.front()->getBlockHash() == block_prev_hash) {
-        period_data.previous_block_cert_votes = std::move(recovered_votes);
-        break;
-      }
-    }
+  apply_rust_admission_side_effects(session_step);
+  if (!session_step.plan.accept_period_data) {
+    return std::nullopt;
   }
 
-  // Validate cert votes
-  const auto cert_votes_valid = validatePbftBlockCertVotes(block_period, pbft_block_hash, cert_votes);
-  runtime_plan = make_runtime_plan(
-      false, kPbftSyncFinalChainValid, kPbftSyncFactValid, cert_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid,
-      kPbftSyncFactNotChecked, {}, false, {}, kPbftSyncFactNotChecked, false, kPbftSyncFactNotChecked);
-  admission_plan = runtime_plan;
-  throw_on_runtime_contract_error();
-  if (admission_plan.status == kPbftSyncStatusCertVotesInvalid) {
-    LOG(log_er_) << "Synced PBFT block " << pbft_block_hash
-                 << " doesn't have enough valid cert votes. Clear synced PBFT blocks!";
-    return finish_non_accepting_rust_admission();
-  }
-
-  // Execute the Rust-planned finalized-transaction lookup against the live transaction manager. The classification of
-  // non-fatal transaction warnings is returned by the Rust admission plan after this executor reports compact facts.
-  auto non_finalized_transactions = trx_mgr_->excludeFinalizedTransactions(
-      fromBridgeTransactionHashes(runtime_plan.transaction_query_plan.finalized_lookup_hashes));
-  const auto finalized_transactions_outcome =
-      trx_mgr_->verifyTransactionsNotFinalizedDetailed(std::move(period_data_transaction_identities));
-  std::vector<trx_hash_t> finalized_transaction_hashes;
-  if (finalized_transactions_outcome.is_finalized) {
-    finalized_transaction_hashes.emplace_back(fromBridgeTransactionHash(finalized_transactions_outcome.hash));
-  }
-  const auto contains_finalized_transactions = finalized_transactions_outcome.is_finalized;
-
-  runtime_plan =
-      make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
-                        non_finalized_transactions, contains_finalized_transactions, finalized_transaction_hashes,
-                        kPbftSyncFactNotChecked, pillar_votes_required, kPbftSyncFactNotChecked);
-  admission_plan = runtime_plan;
-  throw_on_runtime_contract_error();
-  if (admission_plan.status == kPbftSyncStatusPillarDataInvalid) {
-    LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has invalid pillar data";
-    return finish_non_accepting_rust_admission();
-  }
-
-  // Validate pillar votes
-  bool pillar_votes_valid = true;
-  if (pillar_votes_required) {
-    pillar_chain::ValidatePbftBlockPillarVotesWithRustResult rust_validation_result;
-    if (!pillar_chain_mgr_) {
-      rust_validation_result.status =
-          pillar_chain::ValidatePbftBlockPillarVotesWithRustStatus::kMissingPillarChainManager;
-    } else {
-      rust_validation_result = pillar_chain_mgr_->validatePbftBlockPillarVotesWithRust(block_period, pillar_vote_rlps);
-    }
-    if (!rust_validation_result.valid()) {
-      LOG(log_er_) << "Rust sync pillar-vote validation failed, pbft block period " << block_period << ", status "
-                   << pillar_chain::validatePbftBlockPillarVotesWithRustStatusString(rust_validation_result.status)
-                   << ", plan status " << static_cast<uint32_t>(rust_validation_result.plan_status)
-                   << ", first bad vote " << rust_validation_result.first_bad_vote_hash;
-    }
-    pillar_votes_valid = rust_validation_result.valid();
-  }
-  runtime_plan =
-      make_runtime_plan(false, kPbftSyncFinalChainValid, kPbftSyncFactValid, kPbftSyncFactValid, kPbftSyncFactValid,
-                        non_finalized_transactions, contains_finalized_transactions, finalized_transaction_hashes,
-                        kPbftSyncFactValid, pillar_votes_required,
-                        pillar_votes_required ? (pillar_votes_valid ? kPbftSyncFactValid : kPbftSyncFactInvalid)
-                                              : kPbftSyncFactNotRequired);
-  admission_plan = runtime_plan;
-  throw_on_runtime_contract_error();
-  if (admission_plan.status == kPbftSyncStatusPillarVotesInvalid) {
-    LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << ", period " << block_period
-                 << " doesn't have enough valid pillar votes. Clear synced PBFT blocks!";
-    return finish_non_accepting_rust_admission();
-  }
-
-  if (!admission_plan.accept_period_data) {
-    return finish_non_accepting_rust_admission();
-  }
-
-  for (const auto &warning : admission_plan.warnings) {
+  for (const auto &warning : session_step.plan.warnings) {
     if (warning.kind == kPbftSyncTransactionWarningMissingTransaction) {
       LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has missing transaction "
                    << fromBridgeTransactionHash(warning.hash);
@@ -4433,7 +4239,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
     }
     throw std::runtime_error("Rust PBFT sync runtime returned unknown transaction warning");
   }
-  if (admission_plan.contains_finalized_transaction_warning) {
+  if (session_step.plan.contains_finalized_transaction_warning) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash << " has finalized transactions";
   }
 
@@ -4442,7 +4248,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   } catch (const std::exception &e) {
     LOG(log_er_) << "Synced PBFT block " << pbft_block_hash
                  << " has invalid queued transaction payload metadata: " << e.what();
-    apply_rust_admission_side_effects();
+    rustaxa::abort_pbft_manager_runtime_pbft_sync_admission(*pbft_manager_runtime_.value());
     return std::nullopt;
   }
 

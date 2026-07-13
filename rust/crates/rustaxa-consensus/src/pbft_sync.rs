@@ -600,6 +600,19 @@ impl PbftSyncProcessRuntimeNextCheck {
             Self::ValidatePillarVotes => 6,
         }
     }
+
+    /// Decodes a stable bridge check code.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::None,
+            1 => Self::ValidateFinalChainHash,
+            2 => Self::CheckRewardVotes,
+            3 => Self::ValidateCertVotes,
+            4 => Self::CheckTransactions,
+            6 => Self::ValidatePillarVotes,
+            _ => Self::None,
+        }
+    }
 }
 
 /// Complete side-effect-free fact bundle for staged PBFT sync runtime planning.
@@ -1738,6 +1751,264 @@ pub fn plan_pbft_sync_process_period_data_runtime(
     accepted
 }
 
+/// Stable state of one Rust-owned synced-period admission cursor.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftSyncAdmissionSessionStatus {
+    /// The cursor is waiting for the named external check.
+    Active,
+    /// The candidate may be materialized and accepted.
+    Accepted,
+    /// The candidate was dropped without peer punishment.
+    Dropped,
+    /// The candidate was rejected and the peer/queue effects must run.
+    FailedPeer,
+    /// A report did not match the expected cursor/check contract.
+    ContractError,
+}
+
+impl PbftSyncAdmissionSessionStatus {
+    /// Stable bridge code.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Active => 0,
+            Self::Accepted => 1,
+            Self::Dropped => 2,
+            Self::FailedPeer => 3,
+            Self::ContractError => 4,
+        }
+    }
+}
+
+/// Immutable facts captured when one synced period-data candidate is popped.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncAdmissionInitialFact {
+    pub block_period: u64,
+    pub block_prev_hash: H256,
+    pub chain_last_hash: H256,
+    pub chain_last_period: u64,
+    pub block_in_chain: bool,
+    pub dag_transaction_hashes: Vec<H256>,
+    pub period_data_transaction_hashes: Vec<H256>,
+    pub extra_data_required: bool,
+    pub extra_data_present: bool,
+    pub extra_data_pillar_block_hash_present: bool,
+    pub pillar_votes_required: bool,
+    pub pillar_votes_present: bool,
+    pub previous_cert_votes_present: bool,
+    pub previous_cert_first_vote_has_weight: bool,
+}
+
+/// Cursor-checked report for the transaction-manager admission check.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncAdmissionTransactionReport {
+    pub missing_transaction_hashes: Vec<H256>,
+    pub finalized_transaction_hashes: Vec<H256>,
+    pub contains_finalized_transactions: bool,
+}
+
+/// One cursor step with the complete terminal admission plan when finished.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncAdmissionSessionStep {
+    pub status: PbftSyncAdmissionSessionStatus,
+    pub cursor: u32,
+    pub has_check: bool,
+    pub next_check: PbftSyncProcessRuntimeNextCheck,
+    pub plan: PbftSyncProcessPeriodDataRuntimePlan,
+    pub complete: bool,
+    pub can_continue: bool,
+    pub error_code: String,
+}
+
+/// Stateful wrapper around the synced-period decision table.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftSyncAdmissionSession {
+    fact: PbftSyncProcessPeriodDataRuntimeFact,
+    cursor: u32,
+    contract_error: Option<String>,
+}
+
+/// Creates an admission cursor with every external validation fact unchecked.
+pub fn create_pbft_sync_admission_session(
+    initial: PbftSyncAdmissionInitialFact,
+) -> PbftSyncAdmissionSession {
+    PbftSyncAdmissionSession {
+        fact: PbftSyncProcessPeriodDataRuntimeFact {
+            block_period: initial.block_period,
+            block_prev_hash: initial.block_prev_hash,
+            chain_last_hash: initial.chain_last_hash,
+            chain_last_period: initial.chain_last_period,
+            block_in_chain: initial.block_in_chain,
+            final_chain_hash_status: PbftSyncRuntimeFinalChainHashStatus::NotChecked,
+            reward_votes_status: PbftSyncFactStatus::NotChecked,
+            cert_votes_status: PbftSyncFactStatus::NotChecked,
+            transactions_status: PbftSyncFactStatus::NotChecked,
+            dag_transaction_hashes: initial.dag_transaction_hashes,
+            period_data_transaction_hashes: initial.period_data_transaction_hashes,
+            missing_transaction_hashes: Vec::new(),
+            finalized_transaction_hashes: Vec::new(),
+            contains_finalized_transactions: false,
+            pillar_data_status: PbftSyncFactStatus::NotChecked,
+            extra_data_required: initial.extra_data_required,
+            extra_data_present: initial.extra_data_present,
+            extra_data_pillar_block_hash_present: initial.extra_data_pillar_block_hash_present,
+            pillar_votes_required: initial.pillar_votes_required,
+            pillar_votes_present: initial.pillar_votes_present,
+            pillar_votes_status: if initial.pillar_votes_required {
+                PbftSyncFactStatus::NotChecked
+            } else {
+                PbftSyncFactStatus::NotRequired
+            },
+            previous_cert_votes_present: initial.previous_cert_votes_present,
+            previous_cert_first_vote_has_weight: initial.previous_cert_first_vote_has_weight,
+        },
+        cursor: 0,
+        contract_error: None,
+    }
+}
+
+fn sync_admission_step(session: &PbftSyncAdmissionSession) -> PbftSyncAdmissionSessionStep {
+    if let Some(error_code) = &session.contract_error {
+        let transaction_query = plan_pbft_sync_transaction_query(PbftSyncTransactionQueryFact {
+            dag_transaction_hashes: session.fact.dag_transaction_hashes.clone(),
+            period_data_transaction_hashes: session.fact.period_data_transaction_hashes.clone(),
+        });
+        return PbftSyncAdmissionSessionStep {
+            status: PbftSyncAdmissionSessionStatus::ContractError,
+            cursor: session.cursor,
+            has_check: false,
+            next_check: PbftSyncProcessRuntimeNextCheck::None,
+            plan: runtime_contract_error(transaction_query),
+            complete: true,
+            can_continue: false,
+            error_code: error_code.clone(),
+        };
+    }
+    let plan = plan_pbft_sync_process_period_data_runtime(session.fact.clone());
+    let (status, complete, can_continue) = match plan.runtime_action {
+        PbftSyncProcessRuntimeAction::RunCheck => {
+            (PbftSyncAdmissionSessionStatus::Active, false, true)
+        }
+        PbftSyncProcessRuntimeAction::Accept => {
+            (PbftSyncAdmissionSessionStatus::Accepted, true, true)
+        }
+        PbftSyncProcessRuntimeAction::Drop => (PbftSyncAdmissionSessionStatus::Dropped, true, true),
+        PbftSyncProcessRuntimeAction::WaitForFinalization => {
+            (PbftSyncAdmissionSessionStatus::Active, false, true)
+        }
+        PbftSyncProcessRuntimeAction::ClearAndReportPeer => {
+            (PbftSyncAdmissionSessionStatus::FailedPeer, true, true)
+        }
+        PbftSyncProcessRuntimeAction::ContractError => {
+            (PbftSyncAdmissionSessionStatus::ContractError, true, false)
+        }
+    };
+    PbftSyncAdmissionSessionStep {
+        status,
+        cursor: session.cursor,
+        has_check: matches!(
+            plan.runtime_action,
+            PbftSyncProcessRuntimeAction::RunCheck
+                | PbftSyncProcessRuntimeAction::WaitForFinalization
+        ),
+        next_check: if plan.runtime_action == PbftSyncProcessRuntimeAction::WaitForFinalization {
+            PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
+        } else {
+            plan.next_check
+        },
+        complete,
+        can_continue,
+        error_code: if plan.runtime_action == PbftSyncProcessRuntimeAction::ContractError {
+            "PBFT_SYNC_ADMISSION_INVALID_BRIDGE_FACTS".to_string()
+        } else {
+            String::new()
+        },
+        plan,
+    }
+}
+
+/// Returns the current admission check or terminal decision without advancing.
+pub fn next_pbft_sync_admission_session(
+    session: &PbftSyncAdmissionSession,
+) -> PbftSyncAdmissionSessionStep {
+    sync_admission_step(session)
+}
+
+fn validate_sync_admission_report(
+    session: &mut PbftSyncAdmissionSession,
+    cursor: u32,
+    check: PbftSyncProcessRuntimeNextCheck,
+) -> bool {
+    let step = sync_admission_step(session);
+    if !step.has_check || step.cursor != cursor || step.next_check != check {
+        session.contract_error = Some("PBFT_SYNC_ADMISSION_REPORT_MISMATCH".to_string());
+        return false;
+    }
+    true
+}
+
+/// Reports one non-transaction external validation status.
+pub fn report_pbft_sync_admission_status(
+    session: &mut PbftSyncAdmissionSession,
+    cursor: u32,
+    check: PbftSyncProcessRuntimeNextCheck,
+    final_chain_status: PbftSyncRuntimeFinalChainHashStatus,
+    fact_status: PbftSyncFactStatus,
+) -> PbftSyncAdmissionSessionStep {
+    if !validate_sync_admission_report(session, cursor, check) {
+        return sync_admission_step(session);
+    }
+    match check {
+        PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash => {
+            session.fact.final_chain_hash_status = final_chain_status;
+        }
+        PbftSyncProcessRuntimeNextCheck::CheckRewardVotes => {
+            session.fact.reward_votes_status = fact_status;
+        }
+        PbftSyncProcessRuntimeNextCheck::ValidateCertVotes => {
+            session.fact.cert_votes_status = fact_status;
+        }
+        PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes => {
+            session.fact.pillar_votes_status = fact_status;
+        }
+        _ => {
+            session.contract_error =
+                Some("PBFT_SYNC_ADMISSION_STATUS_REPORT_WRONG_CHECK".to_string());
+            return sync_admission_step(session);
+        }
+    }
+    session.cursor = session.cursor.saturating_add(1);
+    sync_admission_step(session)
+}
+
+/// Reports transaction-manager lookup results for the requested candidate.
+pub fn report_pbft_sync_admission_transactions(
+    session: &mut PbftSyncAdmissionSession,
+    cursor: u32,
+    report: PbftSyncAdmissionTransactionReport,
+) -> PbftSyncAdmissionSessionStep {
+    if !validate_sync_admission_report(
+        session,
+        cursor,
+        PbftSyncProcessRuntimeNextCheck::CheckTransactions,
+    ) {
+        return sync_admission_step(session);
+    }
+    session.fact.transactions_status = PbftSyncFactStatus::Valid;
+    session.fact.missing_transaction_hashes = report.missing_transaction_hashes;
+    session.fact.finalized_transaction_hashes = report.finalized_transaction_hashes;
+    session.fact.contains_finalized_transactions = report.contains_finalized_transactions;
+    session.cursor = session.cursor.saturating_add(1);
+    sync_admission_step(session)
+}
+
+/// Aborts an admission cursor after an external executor exception.
+pub fn abort_pbft_sync_admission_session(
+    session: &mut PbftSyncAdmissionSession,
+) -> PbftSyncAdmissionSessionStep {
+    session.contract_error = Some("PBFT_SYNC_ADMISSION_SESSION_ABORTED".to_string());
+    sync_admission_step(session)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1745,6 +2016,138 @@ mod tests {
 
     fn hash(value: u64) -> H256 {
         H256::from_low_u64_be(value)
+    }
+
+    fn admission_initial(pillar_votes_required: bool) -> PbftSyncAdmissionInitialFact {
+        PbftSyncAdmissionInitialFact {
+            block_period: 10,
+            block_prev_hash: hash(9),
+            chain_last_hash: hash(9),
+            chain_last_period: 9,
+            block_in_chain: false,
+            dag_transaction_hashes: vec![hash(1)],
+            period_data_transaction_hashes: vec![hash(1)],
+            extra_data_required: pillar_votes_required,
+            extra_data_present: pillar_votes_required,
+            extra_data_pillar_block_hash_present: pillar_votes_required,
+            pillar_votes_required,
+            pillar_votes_present: pillar_votes_required,
+            previous_cert_votes_present: true,
+            previous_cert_first_vote_has_weight: false,
+        }
+    }
+
+    #[test]
+    fn admission_session_owns_full_accepted_check_order() {
+        let mut session = create_pbft_sync_admission_session(admission_initial(true));
+        let expected = [
+            PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash,
+            PbftSyncProcessRuntimeNextCheck::CheckRewardVotes,
+            PbftSyncProcessRuntimeNextCheck::ValidateCertVotes,
+            PbftSyncProcessRuntimeNextCheck::CheckTransactions,
+            PbftSyncProcessRuntimeNextCheck::ValidatePillarVotes,
+        ];
+
+        for check in expected {
+            let step = next_pbft_sync_admission_session(&session);
+            assert_eq!(step.status, PbftSyncAdmissionSessionStatus::Active);
+            assert_eq!(step.next_check, check);
+            if check == PbftSyncProcessRuntimeNextCheck::CheckTransactions {
+                report_pbft_sync_admission_transactions(
+                    &mut session,
+                    step.cursor,
+                    PbftSyncAdmissionTransactionReport {
+                        missing_transaction_hashes: Vec::new(),
+                        finalized_transaction_hashes: Vec::new(),
+                        contains_finalized_transactions: false,
+                    },
+                );
+            } else {
+                report_pbft_sync_admission_status(
+                    &mut session,
+                    step.cursor,
+                    check,
+                    PbftSyncRuntimeFinalChainHashStatus::Valid,
+                    PbftSyncFactStatus::Valid,
+                );
+            }
+        }
+
+        let accepted = next_pbft_sync_admission_session(&session);
+        assert_eq!(accepted.status, PbftSyncAdmissionSessionStatus::Accepted);
+        assert!(accepted.complete);
+        assert!(accepted.plan.accept_period_data);
+        assert!(accepted.plan.replace_previous_block_cert_votes);
+    }
+
+    #[test]
+    fn admission_session_omits_optional_pillar_check_and_rejects_wrong_report() {
+        let mut session = create_pbft_sync_admission_session(admission_initial(false));
+        let first = next_pbft_sync_admission_session(&session);
+        let failed = report_pbft_sync_admission_status(
+            &mut session,
+            first.cursor,
+            PbftSyncProcessRuntimeNextCheck::ValidateCertVotes,
+            PbftSyncRuntimeFinalChainHashStatus::Valid,
+            PbftSyncFactStatus::Valid,
+        );
+        assert_eq!(failed.status, PbftSyncAdmissionSessionStatus::ContractError);
+        assert!(!failed.can_continue);
+        assert_eq!(failed.error_code, "PBFT_SYNC_ADMISSION_REPORT_MISMATCH");
+    }
+
+    #[test]
+    fn admission_session_terminalizes_peer_failure_and_abort() {
+        let mut session = create_pbft_sync_admission_session(admission_initial(false));
+        let first = next_pbft_sync_admission_session(&session);
+        let rejected = report_pbft_sync_admission_status(
+            &mut session,
+            first.cursor,
+            first.next_check,
+            PbftSyncRuntimeFinalChainHashStatus::Invalid,
+            PbftSyncFactStatus::Invalid,
+        );
+        assert_eq!(rejected.status, PbftSyncAdmissionSessionStatus::FailedPeer);
+        assert!(rejected.plan.clear_sync_queue);
+        assert!(rejected.plan.report_malicious_peer);
+
+        let mut aborted = create_pbft_sync_admission_session(admission_initial(false));
+        let step = abort_pbft_sync_admission_session(&mut aborted);
+        assert_eq!(step.status, PbftSyncAdmissionSessionStatus::ContractError);
+        assert_eq!(step.error_code, "PBFT_SYNC_ADMISSION_SESSION_ABORTED");
+    }
+
+    #[test]
+    fn admission_session_waits_then_rechecks_final_chain_for_same_candidate() {
+        let mut session = create_pbft_sync_admission_session(admission_initial(false));
+        let first = next_pbft_sync_admission_session(&session);
+        let retry = report_pbft_sync_admission_status(
+            &mut session,
+            first.cursor,
+            first.next_check,
+            PbftSyncRuntimeFinalChainHashStatus::Missing,
+            PbftSyncFactStatus::NotChecked,
+        );
+        assert_eq!(retry.status, PbftSyncAdmissionSessionStatus::Active);
+        assert!(!retry.complete);
+        assert!(retry.has_check);
+        assert!(retry.plan.wait_for_finalization);
+        assert_eq!(
+            retry.next_check,
+            PbftSyncProcessRuntimeNextCheck::ValidateFinalChainHash
+        );
+
+        let reward = report_pbft_sync_admission_status(
+            &mut session,
+            retry.cursor,
+            retry.next_check,
+            PbftSyncRuntimeFinalChainHashStatus::Valid,
+            PbftSyncFactStatus::Valid,
+        );
+        assert_eq!(
+            reward.next_check,
+            PbftSyncProcessRuntimeNextCheck::CheckRewardVotes
+        );
     }
 
     fn temp_storage(name: &str) -> Storage {

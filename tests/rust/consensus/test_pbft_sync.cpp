@@ -21,35 +21,9 @@ std::array<uint8_t, 32> h256(uint8_t last_byte) {
   return hash;
 }
 
-PbftSyncTransactionHash tx(uint8_t last_byte) { return PbftSyncTransactionHash{h256(last_byte)}; }
-
 rust::Box<BridgePbftStorageQueries> pbftQueries(const rust::Box<BridgeStorage>& storage) {
   return create_pbft_storage_queries(*storage);
 }
-
-std::vector<std::array<uint8_t, 32>> hashes(const rust::Vec<PbftSyncTransactionHash>& input) {
-  std::vector<std::array<uint8_t, 32>> out;
-  out.reserve(input.size());
-  for (const auto& hash : input) {
-    out.push_back(hash.hash);
-  }
-  return out;
-}
-
-constexpr uint8_t kPbftSyncFactValid = 0;
-constexpr uint8_t kPbftSyncFactNotChecked = 3;
-constexpr uint8_t kPbftSyncFinalChainHashValid = 0;
-constexpr uint8_t kPbftSyncFinalChainHashMissing = 1;
-constexpr uint8_t kPbftSyncRuntimeActionRunCheck = 0;
-constexpr uint8_t kPbftSyncRuntimeActionAccept = 1;
-constexpr uint8_t kPbftSyncRuntimeActionWaitForFinalization = 3;
-constexpr uint8_t kPbftSyncNextCheckNone = 0;
-constexpr uint8_t kPbftSyncNextCheckValidateFinalChainHash = 1;
-constexpr uint8_t kPbftSyncNextCheckCheckRewardVotes = 2;
-constexpr uint8_t kPbftSyncNextCheckValidateCertVotes = 3;
-constexpr uint8_t kPbftSyncNextCheckCheckTransactions = 4;
-constexpr uint8_t kPbftSyncNextCheckValidatePillarVotes = 6;
-constexpr uint8_t kPbftSyncTransactionWarningMissing = 1;
 constexpr uint8_t kPbftFinalizationAnchorNull = 0;
 constexpr uint8_t kPbftFinalizationAnchorAnchored = 1;
 constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
@@ -162,32 +136,6 @@ PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(BridgePbftM
   request.sync = false;
   request.final_chain_last_block = final_chain_last_block;
   return pbft_manager_runtime_start_finalization_executor(runtime, request);
-}
-
-PbftSyncProcessPeriodDataRuntimeFact makeRuntimeFact() {
-  PbftSyncProcessPeriodDataRuntimeFact fact;
-  fact.block_period = 101;
-  fact.block_prev_hash = h256(1);
-  fact.chain_last_hash = h256(1);
-  fact.chain_last_period = 100;
-  fact.block_in_chain = false;
-  fact.final_chain_hash_status = kPbftSyncFactNotChecked;
-  fact.reward_votes_status = kPbftSyncFactNotChecked;
-  fact.cert_votes_status = kPbftSyncFactNotChecked;
-  fact.transactions_status = kPbftSyncFactNotChecked;
-  fact.dag_transaction_hashes = {tx(1), tx(2), tx(1)};
-  fact.period_data_transaction_hashes = {tx(2)};
-  fact.contains_finalized_transactions = false;
-  fact.pillar_data_status = kPbftSyncFactNotChecked;
-  fact.extra_data_required = true;
-  fact.extra_data_present = true;
-  fact.extra_data_pillar_block_hash_present = true;
-  fact.pillar_votes_required = true;
-  fact.pillar_votes_present = true;
-  fact.pillar_votes_status = kPbftSyncFactNotChecked;
-  fact.previous_cert_votes_present = true;
-  fact.previous_cert_first_vote_has_weight = false;
-  return fact;
 }
 
 PbftFinalizationIntentFact makeFinalizationFact() {
@@ -391,97 +339,6 @@ void expectNoFinalizationStorageWrites(const PbftFinalizationStorageWritePlan& s
 }
 
 }  // namespace
-
-TEST(RustPbftSyncTest, ProcessPeriodRuntimeRequestsChecksInOrder) {
-  auto fact = makeRuntimeFact();
-  auto plan = plan_pbft_sync_process_period_data_runtime(std::move(fact));
-
-  EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  EXPECT_EQ(plan.next_check, kPbftSyncNextCheckValidateFinalChainHash);
-  EXPECT_TRUE(plan.replace_previous_block_cert_votes);
-
-  fact = makeRuntimeFact();
-  fact.final_chain_hash_status = kPbftSyncFinalChainHashValid;
-  plan = plan_pbft_sync_process_period_data_runtime(std::move(fact));
-  EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  EXPECT_EQ(plan.next_check, kPbftSyncNextCheckCheckRewardVotes);
-
-  fact = makeRuntimeFact();
-  fact.final_chain_hash_status = kPbftSyncFinalChainHashValid;
-  fact.reward_votes_status = kPbftSyncFactValid;
-  fact.cert_votes_status = kPbftSyncFactValid;
-  plan = plan_pbft_sync_process_period_data_runtime(std::move(fact));
-  EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  EXPECT_EQ(plan.next_check, kPbftSyncNextCheckCheckTransactions);
-  EXPECT_EQ(hashes(plan.transaction_query_plan.finalized_lookup_hashes), (std::vector{h256(1)}));
-}
-
-TEST(RustPbftSyncTest, ProcessPeriodRuntimeRecordsAcceptTranscript) {
-  auto fact = makeRuntimeFact();
-  std::vector<uint8_t> checks;
-
-  auto plan = plan_pbft_sync_process_period_data_runtime(fact);
-  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  checks.push_back(plan.next_check);
-
-  fact.final_chain_hash_status = kPbftSyncFinalChainHashValid;
-  plan = plan_pbft_sync_process_period_data_runtime(fact);
-  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  checks.push_back(plan.next_check);
-
-  fact.reward_votes_status = kPbftSyncFactValid;
-  plan = plan_pbft_sync_process_period_data_runtime(fact);
-  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  checks.push_back(plan.next_check);
-
-  fact.cert_votes_status = kPbftSyncFactValid;
-  plan = plan_pbft_sync_process_period_data_runtime(fact);
-  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  checks.push_back(plan.next_check);
-  EXPECT_EQ(hashes(plan.transaction_query_plan.finalized_lookup_hashes), (std::vector{h256(1)}));
-
-  fact.transactions_status = kPbftSyncFactValid;
-  plan = plan_pbft_sync_process_period_data_runtime(fact);
-  ASSERT_EQ(plan.runtime_action, kPbftSyncRuntimeActionRunCheck);
-  checks.push_back(plan.next_check);
-
-  fact.pillar_votes_status = kPbftSyncFactValid;
-  plan = plan_pbft_sync_process_period_data_runtime(fact);
-
-  EXPECT_EQ(checks, (std::vector<uint8_t>{kPbftSyncNextCheckValidateFinalChainHash, kPbftSyncNextCheckCheckRewardVotes,
-                                          kPbftSyncNextCheckValidateCertVotes, kPbftSyncNextCheckCheckTransactions,
-                                          kPbftSyncNextCheckValidatePillarVotes}));
-  EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionAccept);
-  EXPECT_EQ(plan.next_check, kPbftSyncNextCheckNone);
-  EXPECT_TRUE(plan.accept_period_data);
-}
-
-TEST(RustPbftSyncTest, ProcessPeriodRuntimeWaitsAndAccepts) {
-  auto fact = makeRuntimeFact();
-  fact.final_chain_hash_status = kPbftSyncFinalChainHashMissing;
-  auto plan = plan_pbft_sync_process_period_data_runtime(std::move(fact));
-  EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionWaitForFinalization);
-  EXPECT_TRUE(plan.wait_for_finalization);
-  EXPECT_TRUE(plan.retry_same_candidate);
-
-  fact = makeRuntimeFact();
-  fact.final_chain_hash_status = kPbftSyncFinalChainHashValid;
-  fact.reward_votes_status = kPbftSyncFactValid;
-  fact.cert_votes_status = kPbftSyncFactValid;
-  fact.transactions_status = kPbftSyncFactValid;
-  fact.missing_transaction_hashes = {tx(1)};
-  fact.contains_finalized_transactions = true;
-  fact.pillar_data_status = kPbftSyncFactValid;
-  fact.pillar_votes_status = kPbftSyncFactValid;
-  plan = plan_pbft_sync_process_period_data_runtime(std::move(fact));
-
-  EXPECT_EQ(plan.runtime_action, kPbftSyncRuntimeActionAccept);
-  EXPECT_EQ(plan.next_check, kPbftSyncNextCheckNone);
-  EXPECT_TRUE(plan.accept_period_data);
-  ASSERT_EQ(plan.warnings.size(), 1);
-  EXPECT_EQ(plan.warnings[0].kind, kPbftSyncTransactionWarningMissing);
-  EXPECT_TRUE(plan.contains_finalized_transaction_warning);
-}
 
 TEST(RustPbftSyncTest, ManagerRuntimeOrdersOneValueProposalTick) {
   auto runtime = managerRuntimeForTick(makePbftManagerRuntimeTick(kPbftManagerRuntimeStateValueProposal));
@@ -920,10 +777,9 @@ TEST(RustPbftSyncTest, FinalizationExecutorRejectsStaleCursor) {
 TEST(RustPbftSyncTest, FinalizationResumeBoundaryOwnsManagerTailDrain) {
   const auto plan = finalizationIntentPlan(makeFinalizationFact());
   auto runtime = managerRuntimeForFinalizationSession();
-  startFreshFinalizationExecutor(
-      *runtime, plan,
-      storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary),
-                     dynamicLambdaFinalizationStorageStage(plan)}));
+  startFreshFinalizationExecutor(*runtime, plan,
+                                 storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary),
+                                                dynamicLambdaFinalizationStorageStage(plan)}));
 
   const auto boundary = startResumeFinalizationExecutor(*runtime, plan, plan.storage_write_intent.block_period - 1);
 

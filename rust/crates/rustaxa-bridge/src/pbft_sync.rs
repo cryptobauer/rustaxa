@@ -6,11 +6,14 @@
 //! intent flags for the PBFT manager overlay to apply.
 
 use crate::ffi::rustaxa_ffi::{
+    PbftSyncAdmissionInitialFact as FfiPbftSyncAdmissionInitialFact,
+    PbftSyncAdmissionSessionStep as FfiPbftSyncAdmissionSessionStep,
+    PbftSyncAdmissionStatusReport as FfiPbftSyncAdmissionStatusReport,
+    PbftSyncAdmissionTransactionReport as FfiPbftSyncAdmissionTransactionReport,
     PbftSyncCertVoteBundleFact as FfiPbftSyncCertVoteBundleFact,
     PbftSyncCertVoteBundleValidation as FfiPbftSyncCertVoteBundleValidation,
     PbftSyncCertVoteFact as FfiPbftSyncCertVoteFact,
     PbftSyncEgressPayload as FfiPbftSyncEgressPayload,
-    PbftSyncProcessPeriodDataRuntimeFact as FfiPbftSyncProcessPeriodDataRuntimeFact,
     PbftSyncProcessPeriodDataRuntimePlan as FfiPbftSyncProcessPeriodDataRuntimePlan,
     PbftSyncTransactionHash as FfiPbftSyncTransactionHash,
     PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
@@ -19,14 +22,116 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::BridgePbftManagerRuntime;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_sync::{
+    abort_pbft_sync_admission_session as abort_domain_pbft_sync_admission_session,
+    create_pbft_sync_admission_session as create_domain_pbft_sync_admission_session,
     load_pbft_sync_egress_payload as load_domain_pbft_sync_egress_payload,
-    plan_pbft_sync_process_period_data_runtime as plan_domain_pbft_sync_process_period_data_runtime,
+    next_pbft_sync_admission_session as next_domain_pbft_sync_admission_session,
+    report_pbft_sync_admission_status as report_domain_pbft_sync_admission_status,
+    report_pbft_sync_admission_transactions as report_domain_pbft_sync_admission_transactions,
     validate_pbft_sync_cert_vote_bundle as validate_domain_pbft_sync_cert_vote_bundle,
+    PbftSyncAdmissionInitialFact, PbftSyncAdmissionSessionStep, PbftSyncAdmissionTransactionReport,
     PbftSyncCertVoteBundleFact, PbftSyncCertVoteBundleValidation, PbftSyncCertVoteFact,
-    PbftSyncFactStatus, PbftSyncProcessPeriodDataRuntimeFact, PbftSyncProcessPeriodDataRuntimePlan,
+    PbftSyncFactStatus, PbftSyncProcessPeriodDataRuntimePlan, PbftSyncProcessRuntimeNextCheck,
     PbftSyncRewardVoteAttachmentFact, PbftSyncRuntimeFinalChainHashStatus,
     PbftSyncTransactionQueryPlan, PbftSyncTransactionWarning,
 };
+
+/// Starts a manager-owned synced-period admission cursor.
+pub fn pbft_manager_runtime_begin_pbft_sync_admission(
+    runtime: &mut BridgePbftManagerRuntime,
+    fact: FfiPbftSyncAdmissionInitialFact,
+) {
+    runtime.pbft_sync_admission_session =
+        Some(create_domain_pbft_sync_admission_session(fact.into()));
+}
+
+/// Returns the current admission check without advancing the cursor.
+pub fn pbft_manager_runtime_pbft_sync_admission_next(
+    runtime: &mut BridgePbftManagerRuntime,
+) -> FfiPbftSyncAdmissionSessionStep {
+    let step = runtime
+        .pbft_sync_admission_session
+        .as_ref()
+        .map(next_domain_pbft_sync_admission_session)
+        .map(Into::into)
+        .unwrap_or_else(sync_admission_not_started_step);
+    clear_terminal_sync_admission(runtime, &step);
+    step
+}
+
+/// Reports a final-chain, reward, cert, or pillar validation result.
+pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
+    runtime: &mut BridgePbftManagerRuntime,
+    report: FfiPbftSyncAdmissionStatusReport,
+) -> FfiPbftSyncAdmissionSessionStep {
+    let Some(session) = runtime.pbft_sync_admission_session.as_mut() else {
+        return sync_admission_not_started_step();
+    };
+    let check = PbftSyncProcessRuntimeNextCheck::from_u8(report.check);
+    let step = report_domain_pbft_sync_admission_status(
+        session,
+        report.cursor,
+        check,
+        PbftSyncRuntimeFinalChainHashStatus::from_u8(report.status),
+        PbftSyncFactStatus::from_u8(report.status),
+    )
+    .into();
+    clear_terminal_sync_admission(runtime, &step);
+    step
+}
+
+/// Reports the requested transaction-manager lookup result.
+pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
+    runtime: &mut BridgePbftManagerRuntime,
+    report: FfiPbftSyncAdmissionTransactionReport,
+) -> FfiPbftSyncAdmissionSessionStep {
+    let Some(session) = runtime.pbft_sync_admission_session.as_mut() else {
+        return sync_admission_not_started_step();
+    };
+    let step = report_domain_pbft_sync_admission_transactions(
+        session,
+        report.cursor,
+        PbftSyncAdmissionTransactionReport {
+            missing_transaction_hashes: report
+                .missing_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            finalized_transaction_hashes: report
+                .finalized_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            contains_finalized_transactions: report.contains_finalized_transactions,
+        },
+    )
+    .into();
+    clear_terminal_sync_admission(runtime, &step);
+    step
+}
+
+fn clear_terminal_sync_admission(
+    runtime: &mut BridgePbftManagerRuntime,
+    step: &FfiPbftSyncAdmissionSessionStep,
+) {
+    if step.complete || !step.can_continue {
+        runtime.pbft_sync_admission_session = None;
+    }
+}
+
+/// Aborts and clears the current synced-period admission cursor.
+pub fn abort_pbft_manager_runtime_pbft_sync_admission(
+    runtime: &mut BridgePbftManagerRuntime,
+) -> FfiPbftSyncAdmissionSessionStep {
+    let step = runtime
+        .pbft_sync_admission_session
+        .as_mut()
+        .map(abort_domain_pbft_sync_admission_session)
+        .map(Into::into)
+        .unwrap_or_else(sync_admission_not_started_step);
+    runtime.pbft_sync_admission_session = None;
+    step
+}
 
 /// Loads the storage-backed payload for one PBFT sync egress packet.
 ///
@@ -56,13 +161,6 @@ pub fn load_pbft_sync_egress_payload(
         period_data_rlp: payload.period_data_rlp,
         attach_reward_votes: payload.attach_reward_votes,
     })
-}
-
-/// Plans the next staged PBFT sync runtime action for C++ `processPeriodData`.
-pub fn plan_pbft_sync_process_period_data_runtime(
-    fact: FfiPbftSyncProcessPeriodDataRuntimeFact,
-) -> FfiPbftSyncProcessPeriodDataRuntimePlan {
-    plan_domain_pbft_sync_process_period_data_runtime(fact.into()).into()
 }
 
 /// Validates one synced PBFT cert-vote bundle from compact C++ facts.
@@ -104,54 +202,6 @@ impl From<FfiPbftSyncCertVoteBundleFact> for PbftSyncCertVoteBundleFact {
     }
 }
 
-impl From<FfiPbftSyncProcessPeriodDataRuntimeFact> for PbftSyncProcessPeriodDataRuntimeFact {
-    fn from(value: FfiPbftSyncProcessPeriodDataRuntimeFact) -> Self {
-        Self {
-            block_period: value.block_period,
-            block_prev_hash: H256::from(value.block_prev_hash),
-            chain_last_hash: H256::from(value.chain_last_hash),
-            chain_last_period: value.chain_last_period,
-            block_in_chain: value.block_in_chain,
-            final_chain_hash_status: PbftSyncRuntimeFinalChainHashStatus::from_u8(
-                value.final_chain_hash_status,
-            ),
-            reward_votes_status: PbftSyncFactStatus::from_u8(value.reward_votes_status),
-            cert_votes_status: PbftSyncFactStatus::from_u8(value.cert_votes_status),
-            transactions_status: PbftSyncFactStatus::from_u8(value.transactions_status),
-            dag_transaction_hashes: value
-                .dag_transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            period_data_transaction_hashes: value
-                .period_data_transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            missing_transaction_hashes: value
-                .missing_transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            finalized_transaction_hashes: value
-                .finalized_transaction_hashes
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
-            contains_finalized_transactions: value.contains_finalized_transactions,
-            pillar_data_status: PbftSyncFactStatus::from_u8(value.pillar_data_status),
-            extra_data_required: value.extra_data_required,
-            extra_data_present: value.extra_data_present,
-            extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
-            pillar_votes_required: value.pillar_votes_required,
-            pillar_votes_present: value.pillar_votes_present,
-            pillar_votes_status: PbftSyncFactStatus::from_u8(value.pillar_votes_status),
-            previous_cert_votes_present: value.previous_cert_votes_present,
-            previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
-        }
-    }
-}
-
 impl From<PbftSyncTransactionQueryPlan> for FfiPbftSyncTransactionQueryPlan {
     fn from(plan: PbftSyncTransactionQueryPlan) -> Self {
         Self {
@@ -187,6 +237,78 @@ impl From<PbftSyncProcessPeriodDataRuntimePlan> for FfiPbftSyncProcessPeriodData
     }
 }
 
+impl From<FfiPbftSyncAdmissionInitialFact> for PbftSyncAdmissionInitialFact {
+    fn from(value: FfiPbftSyncAdmissionInitialFact) -> Self {
+        Self {
+            block_period: value.block_period,
+            block_prev_hash: H256::from(value.block_prev_hash),
+            chain_last_hash: H256::from(value.chain_last_hash),
+            chain_last_period: value.chain_last_period,
+            block_in_chain: value.block_in_chain,
+            dag_transaction_hashes: value
+                .dag_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            period_data_transaction_hashes: value
+                .period_data_transaction_hashes
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+            extra_data_required: value.extra_data_required,
+            extra_data_present: value.extra_data_present,
+            extra_data_pillar_block_hash_present: value.extra_data_pillar_block_hash_present,
+            pillar_votes_required: value.pillar_votes_required,
+            pillar_votes_present: value.pillar_votes_present,
+            previous_cert_votes_present: value.previous_cert_votes_present,
+            previous_cert_first_vote_has_weight: value.previous_cert_first_vote_has_weight,
+        }
+    }
+}
+
+impl From<PbftSyncAdmissionSessionStep> for FfiPbftSyncAdmissionSessionStep {
+    fn from(value: PbftSyncAdmissionSessionStep) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            cursor: value.cursor,
+            has_check: value.has_check,
+            next_check: value.next_check.as_u8(),
+            plan: value.plan.into(),
+            complete: value.complete,
+            can_continue: value.can_continue,
+            error_code: value.error_code,
+        }
+    }
+}
+
+fn sync_admission_not_started_step() -> FfiPbftSyncAdmissionSessionStep {
+    FfiPbftSyncAdmissionSessionStep {
+        status: 4,
+        cursor: 0,
+        has_check: false,
+        next_check: 0,
+        plan: FfiPbftSyncProcessPeriodDataRuntimePlan {
+            runtime_action: 5,
+            status: 11,
+            next_check: 0,
+            clear_sync_queue: false,
+            report_malicious_peer: false,
+            wait_for_finalization: false,
+            accept_period_data: false,
+            retry_same_candidate: false,
+            replace_previous_block_cert_votes: false,
+            transaction_query_plan: FfiPbftSyncTransactionQueryPlan {
+                finalized_lookup_hashes: Vec::new(),
+            },
+            warnings: Vec::new(),
+            contains_finalized_transaction_warning: false,
+        },
+        complete: true,
+        can_continue: false,
+        error_code: "PBFT_SYNC_ADMISSION_SESSION_NOT_STARTED".to_string(),
+    }
+}
+
 impl From<PbftSyncCertVoteBundleValidation> for FfiPbftSyncCertVoteBundleValidation {
     fn from(value: PbftSyncCertVoteBundleValidation) -> Self {
         Self {
@@ -214,7 +336,6 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftManagerStartupFact as FfiPbftManagerStartupFact;
     use crate::pbft_manager::create_pbft_manager_runtime_from_storage;
     use crate::storage::create_storage;
-    use rustaxa_consensus::pbft_sync::PbftSyncTransactionWarningKind;
     use std::fs;
     use std::path::PathBuf;
 
@@ -232,42 +353,151 @@ mod tests {
     fn startup_fact() -> FfiPbftManagerStartupFact {
         FfiPbftManagerStartupFact {
             current_period: 10,
-            cacti_active_at_chain_size: true,
+            cacti_active_at_chain_size: false,
             genesis_lambda_ms: 100,
             cacti_lambda_max_ms: 1_500,
             cacti_lambda_default_ms: 500,
         }
     }
 
-    fn runtime_fact() -> FfiPbftSyncProcessPeriodDataRuntimeFact {
-        FfiPbftSyncProcessPeriodDataRuntimeFact {
-            block_period: 101,
-            block_prev_hash: [1; 32],
-            chain_last_hash: [1; 32],
-            chain_last_period: 100,
+    fn admission_initial_fact() -> FfiPbftSyncAdmissionInitialFact {
+        FfiPbftSyncAdmissionInitialFact {
+            block_period: 10,
+            block_prev_hash: [9; 32],
+            chain_last_hash: [9; 32],
+            chain_last_period: 9,
             block_in_chain: false,
-            final_chain_hash_status: PbftSyncRuntimeFinalChainHashStatus::NotChecked.as_u8(),
-            reward_votes_status: PbftSyncFactStatus::NotChecked.as_u8(),
-            cert_votes_status: PbftSyncFactStatus::NotChecked.as_u8(),
-            transactions_status: PbftSyncFactStatus::NotChecked.as_u8(),
-            dag_transaction_hashes: vec![
-                FfiPbftSyncTransactionHash { hash: [4; 32] },
-                FfiPbftSyncTransactionHash { hash: [5; 32] },
-            ],
-            period_data_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [5; 32] }],
-            missing_transaction_hashes: vec![],
-            finalized_transaction_hashes: vec![],
-            contains_finalized_transactions: false,
-            pillar_data_status: PbftSyncFactStatus::NotChecked.as_u8(),
-            extra_data_required: true,
-            extra_data_present: true,
-            extra_data_pillar_block_hash_present: true,
-            pillar_votes_required: true,
-            pillar_votes_present: true,
-            pillar_votes_status: PbftSyncFactStatus::NotChecked.as_u8(),
+            dag_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [1; 32] }],
+            period_data_transaction_hashes: vec![],
+            extra_data_required: false,
+            extra_data_present: false,
+            extra_data_pillar_block_hash_present: false,
+            pillar_votes_required: false,
+            pillar_votes_present: false,
             previous_cert_votes_present: true,
             previous_cert_first_vote_has_weight: false,
         }
+    }
+
+    #[test]
+    fn bridge_manager_runtime_owns_sync_admission_cursor() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_sync_admission_cursor");
+        let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+        let mut runtime =
+            create_pbft_manager_runtime_from_storage(&storage, startup_fact()).unwrap();
+
+        pbft_manager_runtime_begin_pbft_sync_admission(&mut runtime, admission_initial_fact());
+        let first = pbft_manager_runtime_pbft_sync_admission_next(&mut runtime);
+        assert!(first.has_check);
+        assert_eq!(first.cursor, 0);
+        assert_eq!(first.next_check, 1);
+
+        let second = pbft_manager_runtime_pbft_sync_admission_report_status(
+            &mut runtime,
+            FfiPbftSyncAdmissionStatusReport {
+                cursor: first.cursor,
+                check: first.next_check,
+                status: 0,
+            },
+        );
+        assert_eq!(second.cursor, 1);
+        assert_eq!(second.next_check, 2);
+
+        let third = pbft_manager_runtime_pbft_sync_admission_report_status(
+            &mut runtime,
+            FfiPbftSyncAdmissionStatusReport {
+                cursor: second.cursor,
+                check: second.next_check,
+                status: 0,
+            },
+        );
+        assert_eq!(third.next_check, 3);
+        let transactions = pbft_manager_runtime_pbft_sync_admission_report_status(
+            &mut runtime,
+            FfiPbftSyncAdmissionStatusReport {
+                cursor: third.cursor,
+                check: third.next_check,
+                status: 0,
+            },
+        );
+        assert_eq!(transactions.next_check, 4);
+        assert_eq!(
+            transactions
+                .plan
+                .transaction_query_plan
+                .finalized_lookup_hashes
+                .len(),
+            1
+        );
+        let accepted = pbft_manager_runtime_pbft_sync_admission_report_transactions(
+            &mut runtime,
+            FfiPbftSyncAdmissionTransactionReport {
+                cursor: transactions.cursor,
+                missing_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [1; 32] }],
+                finalized_transaction_hashes: vec![FfiPbftSyncTransactionHash { hash: [2; 32] }],
+                contains_finalized_transactions: true,
+            },
+        );
+        assert!(accepted.complete);
+        assert!(accepted.plan.accept_period_data);
+        assert_eq!(accepted.plan.warnings.len(), 2);
+        assert!(runtime.pbft_sync_admission_session.is_none());
+        let missing = pbft_manager_runtime_pbft_sync_admission_next(&mut runtime);
+        assert_eq!(
+            missing.error_code,
+            "PBFT_SYNC_ADMISSION_SESSION_NOT_STARTED"
+        );
+
+        drop(runtime);
+        drop(storage);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_sync_admission_waits_then_rechecks_same_candidate() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_sync_admission_wait");
+        let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+        let mut runtime =
+            create_pbft_manager_runtime_from_storage(&storage, startup_fact()).unwrap();
+        pbft_manager_runtime_begin_pbft_sync_admission(&mut runtime, admission_initial_fact());
+        let first = pbft_manager_runtime_pbft_sync_admission_next(&mut runtime);
+        let retry = pbft_manager_runtime_pbft_sync_admission_report_status(
+            &mut runtime,
+            FfiPbftSyncAdmissionStatusReport {
+                cursor: first.cursor,
+                check: first.next_check,
+                status: 1,
+            },
+        );
+        assert!(retry.has_check);
+        assert!(!retry.complete);
+        assert!(retry.plan.wait_for_finalization);
+        assert_eq!(retry.next_check, 1);
+        let reward = pbft_manager_runtime_pbft_sync_admission_report_status(
+            &mut runtime,
+            FfiPbftSyncAdmissionStatusReport {
+                cursor: retry.cursor,
+                check: retry.next_check,
+                status: 0,
+            },
+        );
+        assert_eq!(reward.next_check, 2);
+
+        let mismatch = pbft_manager_runtime_pbft_sync_admission_report_status(
+            &mut runtime,
+            FfiPbftSyncAdmissionStatusReport {
+                cursor: reward.cursor + 1,
+                check: reward.next_check,
+                status: 0,
+            },
+        );
+        assert!(mismatch.complete);
+        assert!(!mismatch.can_continue);
+        assert!(runtime.pbft_sync_admission_session.is_none());
+
+        drop(runtime);
+        drop(storage);
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     fn cert_vote(weight: u64) -> FfiPbftSyncCertVoteFact {
@@ -312,56 +542,6 @@ mod tests {
         assert!(!result.valid);
         assert_eq!(result.status, 10);
         assert_eq!(result.total_weight, 2);
-    }
-
-    #[test]
-    fn bridge_process_period_runtime_requests_staged_checks() {
-        let plan = plan_pbft_sync_process_period_data_runtime(runtime_fact());
-
-        assert_eq!(plan.runtime_action, 0);
-        assert_eq!(plan.next_check, 1);
-        assert!(!plan.accept_period_data);
-        assert!(plan.replace_previous_block_cert_votes);
-    }
-
-    #[test]
-    fn bridge_process_period_runtime_accepts_after_all_checks() {
-        let mut fact = runtime_fact();
-        fact.final_chain_hash_status = PbftSyncRuntimeFinalChainHashStatus::Valid.as_u8();
-        fact.reward_votes_status = PbftSyncFactStatus::Valid.as_u8();
-        fact.cert_votes_status = PbftSyncFactStatus::Valid.as_u8();
-        fact.transactions_status = PbftSyncFactStatus::Valid.as_u8();
-        fact.missing_transaction_hashes = vec![FfiPbftSyncTransactionHash { hash: [4; 32] }];
-        fact.finalized_transaction_hashes = vec![FfiPbftSyncTransactionHash { hash: [6; 32] }];
-        fact.contains_finalized_transactions = true;
-        fact.pillar_data_status = PbftSyncFactStatus::Valid.as_u8();
-        fact.pillar_votes_status = PbftSyncFactStatus::Valid.as_u8();
-
-        let plan = plan_pbft_sync_process_period_data_runtime(fact);
-
-        assert_eq!(plan.runtime_action, 1);
-        assert_eq!(plan.next_check, 0);
-        assert!(plan.accept_period_data);
-        assert_eq!(plan.warnings.len(), 2);
-        assert_eq!(
-            plan.warnings[0].kind,
-            PbftSyncTransactionWarningKind::MissingTransaction.as_u8()
-        );
-        assert_eq!(plan.warnings[0].hash, [4; 32]);
-        assert_eq!(
-            plan.warnings[1].kind,
-            PbftSyncTransactionWarningKind::FinalizedTransaction.as_u8()
-        );
-        assert_eq!(plan.warnings[1].hash, [6; 32]);
-        assert!(plan.contains_finalized_transaction_warning);
-        assert_eq!(
-            plan.transaction_query_plan
-                .finalized_lookup_hashes
-                .into_iter()
-                .map(|hash| hash.hash)
-                .collect::<Vec<_>>(),
-            vec![[4; 32]]
-        );
     }
 
     #[test]
