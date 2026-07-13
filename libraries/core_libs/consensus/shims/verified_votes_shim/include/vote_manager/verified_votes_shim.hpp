@@ -152,19 +152,11 @@ class VerifiedVotes {
   /**
    * Constructs a storage-backed verified-votes runtime for production.
    *
-   * The Rust factory restores authoritative verified-vote state and retains
-   * storage before the standalone VoteManager materializes compatibility
-   * sidecars. Factory or restore failures propagate from construction.
+   * The Rust factory restores authoritative verified-vote and reward-cursor
+   * state and retains storage for native queries. Factory or restore failures
+   * propagate from construction.
    */
   VerifiedVotes([[maybe_unused]] addr_t node_addr, rustaxa::BridgeStorage& storage);
-
-  /**
-   * Returns the Rust-restored startup payloads and reward metadata.
-   *
-   * This snapshot is side-effect free: VoteManager may materialize own-vote
-   * and reward-vote C++ sidecars without re-admitting durable votes.
-   */
-  rustaxa::VerifiedVotesStartupSnapshot startupSnapshot() const;
 
   /**
    * Loads all locally generated weighted PBFT vote records from native Rust storage.
@@ -362,7 +354,7 @@ class VerifiedVotes {
    * Selects PBFT reward votes through the Rust verified-vote runtime.
    *
    * Inputs:
-   * - Reward-vote metadata plus hashes referenced by a PBFT block.
+   * - PBFT block period plus hashes referenced by that block.
    * - `materialize_votes`: when true, decode selected weighted records into
    *   temporary `PbftVote` sidecars.
    *
@@ -372,11 +364,28 @@ class VerifiedVotes {
    * Edge behavior:
    * - Missing retained payloads for selected votes are bridge invariant errors.
    */
-  RewardVotePayloadSelection selectRewardVotePayloads(PbftPeriod block_period, PbftPeriod reward_period,
-                                                      PbftRound preferred_reward_round,
-                                                      const blk_hash_t& reward_block_hash,
+  RewardVotePayloadSelection selectRewardVotePayloads(PbftPeriod block_period,
                                                       const std::vector<vote_hash_t>& requested_vote_hashes,
                                                       bool materialize_votes) const;
+
+  /** Returns the authoritative Rust-owned reward cursor, if one is installed. */
+  rustaxa::RewardVoteCursorSnapshot rewardVoteCursor() const;
+
+  /** Returns the current reward cursor period, or zero when no cursor exists. */
+  PbftPeriod rewardVotePeriod() const;
+
+  /**
+   * Materializes the current reward cursor's canonical weighted vote records.
+   * Missing or inconsistent payloads fail the complete lookup.
+   */
+  std::vector<std::shared_ptr<PbftVote>> currentRewardVotes() const;
+
+  /**
+   * Commits a storage-authenticated reward cursor after durable reset apply.
+   * The generation must be the proof returned by that apply operation.
+   */
+  rustaxa::RewardVoteCursorCommitResult commitRewardVoteCursor(
+      const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reset_generation);
 
   /**
    * Removes votes for periods older than `pbft_period`.

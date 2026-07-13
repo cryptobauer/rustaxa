@@ -528,6 +528,29 @@ Implementation notes:
   subsequent vote-runtime consolidation slice. Focused storage, vote-runtime, finalization, bridge-manager, C++ storage,
   and finalization-boundary tests pass, as does `make rewrite-validate-fast`; the Tier 2 command was also run with the
   same known sequential `/tmp/taraxa*` RocksDB fixture-lock limitation documented above for the full PBFT/vote binaries.
+- The remaining reward-vote cursor is now owned by `PbftVoteAdmissionRuntime` as
+  `RewardVoteCursor { period, round, step, block_hash }`. The atomic reward reset writes a dedicated
+  `finalized_reward_vote_cursor` row containing both those coordinates and the canonical certified bundle; Rust restores
+  from that immutable finalized record rather than the mutable latest-cert slot. A restart regression advances the
+  generic cert slot to the next unfinalized period and proves that the finalized cursor, payloads, and reward selection
+  remain unchanged. Existing databases bootstrap the row once only when the canonical legacy cert bundle matches the
+  validated persisted PBFT head, finalized period index, and canonical period-data block; missing or newer ambiguous
+  legacy state fails closed. Rust derives stale-reward eligibility internally (including the saturating `round + 100`
+  bound) and uses the cursor for reward selection, current payloads, and the public period query. The now-empty startup
+  snapshot/export, caller-supplied
+  `valid_stale_reward_vote` flag, C++ period/round/block-hash fields, and reward cursor mutex are deleted. After the
+  durable reward reset commits, a typed Rust cursor commit validates the authenticated reset generation, runtime mapping,
+  retained payloads, and byte-equal dedicated durable bundle before an idempotent/monotonic live update; C++ relays only
+  Rust-derived cursor facts into PBFT manager advancement. Restart reconstructs the cursor from the finalized record,
+  while public/network
+  compatibility methods materialize canonical votes only at their existing boundaries.
+  Focused validation covers the 18 vote-runtime cursor/restart cases, 42 finalization cases, 22 storage PBFT cases,
+  bridge verified-vote and manager suites, `rust_storage_tests`, the C++ reward fallback, and finalization-boundary tests.
+  `make rewrite-validate-fast` passes. `make rewrite-validate-consensus` completed with its known full-binary sequential
+  fixture limitation: later tests in the PBFT manager and pillar binaries encounter reused `/tmp/taraxa*` RocksDB locks,
+  while the focused reward, storage, and finalization tests pass independently.
+  Custom-agent review and implementation used `rust-engineer`, `cpp-pro`, and `architect-reviewer`; the final architecture
+  review approved the dedicated durable record, fail-closed legacy bootstrap, and live generation boundary.
 
 - `final_chain_shim` now no longer exposes `rustFinalChainForRust()`; callers must route through explicit
   consensus/runtime APIs, which keeps FinalChain session ownership constrained to the shim constructor and execution

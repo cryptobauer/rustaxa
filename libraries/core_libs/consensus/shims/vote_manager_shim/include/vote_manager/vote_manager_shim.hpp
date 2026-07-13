@@ -455,33 +455,30 @@ class VoteManager {
   };
   ProposalRewardVotes proposalRewardVotesForPeriod(PbftPeriod propose_period);
   /**
-   * Returns reward votes selected from the shim's live verified-vote sidecar.
+   * Returns reward votes selected by the Rust-owned reward cursor.
    *
    * Inputs:
-   * - None; selection uses live reward metadata restored from Rust-backed PBFT
-   *   vote storage during construction and updated after finalization reset.
+   * - None; selection reads the current Rust cursor and canonical retained payloads.
    *
    * Outputs:
-   * - Certified 2t+1 vote sidecars for the current reward block, or an empty
-   *   vector if the sidecar facts are inconsistent.
+   * - Transient certified-vote sidecars materialized from canonical Rust records.
    *
    * Invariants and edge behavior:
-   * - Does not read or write durable storage.
-   * - Asserts on impossible block-hash mismatches to preserve legacy behavior.
+   * - Does not retain duplicate cursor or vote ownership in C++.
+   * - Asserts on impossible cursor/payload mismatches to preserve legacy behavior.
    */
   std::vector<std::shared_ptr<PbftVote>> getRewardVotes();
   /**
-   * Returns the PBFT period associated with the current reward-vote sidecar.
+   * Returns the period of the authoritative Rust-owned reward cursor.
    *
    * Inputs:
    * - None.
    *
    * Outputs:
-   * - The period loaded from Rust-backed vote persistence or installed after a
-   *   successful Rust finalization reward-vote reset.
+   * - The current cursor period, or zero when no cursor is installed.
    *
    * Invariants:
-   * - The metadata is protected by `reward_votes_info_mutex_`.
+   * - No C++ reward cursor field or lock is consulted.
    */
   PbftPeriod getRewardVotesPbftBlockPeriod();
   /**
@@ -854,9 +851,9 @@ class VoteManager {
    * - Rust-owned apply status for the reward-vote reset stage.
    *
    * Invariants:
-   * - The certified-vote bundle is selected from shim-owned live
-   *   `VerifiedVotes` state.
-   * - Shim-owned reward cursor metadata is mutated only after Rust commits and
+   * - The certified-vote bundle and finalized reward cursor are selected and
+   *   durably committed by the Rust-owned verified-vote runtime.
+   * - Live Rust cursor state is published only after the atomic reset commit
    *   returns `Applied` or `AlreadyApplied`.
    */
   rustaxa::PbftFinalizedPeriodApplyResult resetRewardVotesForFinalization(
@@ -931,8 +928,6 @@ class VoteManager {
    *   a Rust-owned port.
    */
   bool submitRustPlannedSlashingProof(const SlashingDoubleVoteEvidence& evidence);
-  bool isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const;
-
   const PbftConfig& kPbftConfig;
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
@@ -943,11 +938,6 @@ class VoteManager {
   std::atomic<PbftPeriod> current_pbft_period_{0};
   std::atomic<PbftRound> current_pbft_round_{0};
   VerifiedVotes verified_votes_;
-
-  blk_hash_t reward_votes_block_hash_{kNullBlockHash};
-  PbftPeriod reward_votes_period_{0};
-  PbftRound reward_votes_round_{0};
-  mutable std::shared_mutex reward_votes_info_mutex_;
 
   LOG_OBJECTS_DEFINE
 };

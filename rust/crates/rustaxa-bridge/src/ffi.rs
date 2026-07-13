@@ -246,7 +246,6 @@ pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 pub struct BridgeVerifiedVotes {
     pub runtime: PbftVoteAdmissionRuntime,
     pub storage: Option<Arc<Storage>>,
-    pub startup_snapshot: Option<rustaxa_consensus::PbftVoteRuntimeRestoreSnapshot>,
 }
 
 /// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
@@ -1026,15 +1025,22 @@ pub mod rustaxa_ffi {
         vote: PbftVoteStorageRecord,
     }
 
-    /// Compact reward compatibility snapshot returned after Rust restoration.
-    ///
-    /// Own-vote payloads are deliberately excluded and remain available from
-    /// the fallible native-storage accessor on `BridgeVerifiedVotes`.
-    struct VerifiedVotesStartupSnapshot {
-        has_reward_vote_info: bool,
-        reward_vote_period: u64,
-        reward_vote_round: u64,
-        reward_vote_block_hash: [u8; 32],
+    struct RewardVoteCursorSnapshot {
+        found: bool,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: [u8; 32],
+    }
+
+    struct RewardVoteCursorCommitResult {
+        status: u8,
+        period: u64,
+        round: u64,
+        step: u64,
+        block_hash: [u8; 32],
+        reset_generation: u64,
+        error_code: String,
     }
 
     /// Per-family optimized PBFT vote-bundle egress plan.
@@ -2126,7 +2132,6 @@ pub mod rustaxa_ffi {
     struct PbftVoteEventFactFlags {
         vote_already_known: bool,
         carries_proposed_block: bool,
-        valid_stale_reward_vote: bool,
     }
 
     /// Compact PBFT vote facts used by Rust-planned ingress gates.
@@ -5227,9 +5232,6 @@ pub mod rustaxa_ffi {
         pub fn create_verified_votes_index_from_storage(
             storage: &BridgeStorage,
         ) -> Result<Box<BridgeVerifiedVotes>>;
-        pub fn verified_votes_startup_snapshot(
-            self: &BridgeVerifiedVotes,
-        ) -> Result<VerifiedVotesStartupSnapshot>;
         pub fn verified_votes_own_vote_records(
             self: &BridgeVerifiedVotes,
         ) -> Result<Vec<PbftVoteStorageRecord>>;
@@ -5342,11 +5344,20 @@ pub mod rustaxa_ffi {
         pub fn verified_votes_select_reward_vote_payloads(
             self: &BridgeVerifiedVotes,
             block_period: u64,
-            reward_period: u64,
-            preferred_reward_round: u64,
-            reward_block_hash: &[u8; 32],
             requested_vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftRewardVotePayloadSelection>;
+        pub fn verified_votes_reward_vote_cursor(
+            self: &BridgeVerifiedVotes,
+        ) -> RewardVoteCursorSnapshot;
+        pub fn verified_votes_reward_vote_period(self: &BridgeVerifiedVotes) -> u64;
+        pub fn verified_votes_current_reward_vote_payloads(
+            self: &BridgeVerifiedVotes,
+        ) -> Result<Vec<PbftVoteStorageRecord>>;
+        pub fn verified_votes_commit_reward_vote_cursor(
+            self: &mut BridgeVerifiedVotes,
+            write_intent: &PbftFinalizationStorageWritePlan,
+            reset_generation: u64,
+        ) -> Result<RewardVoteCursorCommitResult>;
         pub fn verified_votes_snapshot_two_t_plus_one(
             self: &BridgeVerifiedVotes,
         ) -> Vec<TwoTPlusOneSnapshotEntry>;

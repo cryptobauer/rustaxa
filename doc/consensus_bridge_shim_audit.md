@@ -146,8 +146,16 @@ Current snapshot after DAG manager verify-result API cleanup:
   startup snapshot, reset stage/request, and manager finalization report no longer carry extra hashes or a C++ remaining
   count. An opaque generation minted by the locked Rust apply is propagated through the finalization executor and
   validated by `BridgePbftManagerRuntime`, closing the post-commit admission race without exposing membership facts to
-  C++. The temporary reward period/round/block-hash cursor remains classified under Slice 6 until stale-reward admission
-  and selection consume a live Rust runtime cursor directly.
+  C++.
+- That temporary reward cursor is now retired from C++. `PbftVoteAdmissionRuntime` owns and restores the complete
+  period/round/step/block-hash cursor, classifies stale reward votes without a CXX eligibility flag, and supplies
+  cursor-owned selection/current-payload/period APIs. The empty `VerifiedVotesStartupSnapshot` path, three VoteManager
+  cursor fields, and `reward_votes_info_mutex_` are deleted. The atomic reset persists a dedicated finalized cursor plus
+  canonical bundle, so a newer unfinalized latest-cert write cannot change restart reward authority. Post-reset
+  publication uses a typed Rust cursor commit bound to the storage reset generation and byte-equal finalized bundle;
+  public/tarcap/proposal callers receive only the scalar or canonical payload materialization they require. Legacy stores
+  create the dedicated row only after the cert bundle is proven canonical and consistent with the persisted PBFT head,
+  finalized period mapping, and canonical period-data block; ambiguous upgrade state is rejected rather than guessed.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
   `dag_manager_shim::getDagMutex` now returns a shim-owned mutex to avoid `DagManagerOld` forwarding.
 - `transaction_manager_shim::getTransactionsMutex` no longer forwards to `TransactionManagerOld`; the shim method now

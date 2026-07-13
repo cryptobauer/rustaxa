@@ -117,13 +117,19 @@ fn validate_votes_bundle_rlp(bytes: &[u8]) -> bool {
 /// - `2t+1` bundle replacement is delete-plus-put atomic.
 /// - Vote bytes are preserved as canonical storage bytes and not decoded into
 ///   C++ vote objects.
-/// - Extra reward-vote writes hold the shared storage serialization guard
-///   through commit, preventing interleaving with finalization reset.
+/// - Extra reward-vote writes and cert-bundle replacements hold the shared
+///   reward-storage guard through commit, preventing interleaving with
+///   finalization reset or one-time legacy cursor bootstrap.
 pub fn persist_pbft_vote_progress(
     storage: &Storage,
     write: PbftVoteProgressPersistenceWrite,
 ) -> Result<PbftVotePersistenceResult> {
-    let _extra_reward_guard = if write.extra_reward_vote.is_some() {
+    let _extra_reward_guard = if write.extra_reward_vote.is_some()
+        || write
+            .two_t_plus_one_bundle
+            .as_ref()
+            .is_some_and(|bundle| bundle.kind == 1)
+    {
         Some(storage.lock_extra_reward_votes()?)
     } else {
         None

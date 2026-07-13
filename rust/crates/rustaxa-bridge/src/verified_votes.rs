@@ -8,12 +8,14 @@ use crate::ffi::rustaxa_ffi::{
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
     PbftVoteAdmissionRuntimeResult, PbftVoteEventFactFlags, PbftVotePayloadLookup,
     PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
-    PbftVoteStorageRecord, PbftVoteValidationExternalFacts, RoundMarkerSnapshot,
+    PbftVoteStorageRecord, PbftVoteValidationExternalFacts,
+    RewardVoteCursorCommitResult as FfiRewardVoteCursorCommitResult,
+    RewardVoteCursorSnapshot as FfiRewardVoteCursorSnapshot, RoundMarkerSnapshot,
     ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome, TwoTPlusOneSnapshotEntry,
     TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup, UniqueVoterInsertOutcome,
     VerifiedStepVotesEntry, VerifiedStepVotesLookup,
     VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
-    VerifiedVotesStartupSnapshot, VotedValueInsertOutcome,
+    VotedValueInsertOutcome,
 };
 use crate::ffi::{BridgeStorage, BridgeVerifiedVotes};
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
@@ -51,6 +53,7 @@ use rustaxa_consensus::{
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
     PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
     PbftVoteRuntimeAdmissionOutcome, PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
+    RewardVoteCursor, RewardVoteCursorCommitStatus,
 };
 use rustaxa_storage::Storage;
 
@@ -70,7 +73,6 @@ pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes> {
     Box::new(BridgeVerifiedVotes {
         runtime: PbftVoteAdmissionRuntime::new(),
         storage: None,
-        startup_snapshot: None,
     })
 }
 
@@ -83,12 +85,10 @@ pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes> {
 pub fn create_verified_votes_index_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgeVerifiedVotes>, anyhow::Error> {
-    let (runtime, startup_snapshot) =
-        PbftVoteAdmissionRuntime::restore_from_storage(storage.0.as_ref())?;
+    let runtime = PbftVoteAdmissionRuntime::restore_from_storage(storage.0.as_ref())?;
     Ok(Box::new(BridgeVerifiedVotes {
         runtime,
         storage: Some(storage.0.clone()),
-        startup_snapshot: Some(startup_snapshot),
     }))
 }
 
@@ -199,27 +199,6 @@ impl BridgeVerifiedVotes {
             .two_t_plus_one_weighted_payloads(period, round, kind)?
             .ok_or_else(|| anyhow::anyhow!("PBFT_REWARD_VOTES_RESET_CERT_MAPPING_MISSING"))?;
         rustaxa_consensus::build_weighted_pbft_vote_bundle(&records)
-    }
-
-    /// Returns the compact reward snapshot captured during storage restoration.
-    ///
-    /// The snapshot is unavailable on the storage-free factory, which is kept
-    /// only for focused in-memory tests. Production callers receive cert-bundle
-    /// reward metadata only. Extra-reward and own-vote membership remain in
-    /// native storage instead of being copied into C++ startup state.
-    pub fn verified_votes_startup_snapshot(
-        &self,
-    ) -> Result<VerifiedVotesStartupSnapshot, anyhow::Error> {
-        let snapshot = self
-            .startup_snapshot
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STARTUP_SNAPSHOT_UNAVAILABLE"))?;
-        Ok(VerifiedVotesStartupSnapshot {
-            has_reward_vote_info: snapshot.has_reward_vote_info,
-            reward_vote_period: snapshot.reward_vote_period,
-            reward_vote_round: snapshot.reward_vote_round,
-            reward_vote_block_hash: snapshot.reward_vote_block_hash.0,
-        })
     }
 
     /// Loads locally generated weighted vote records from native Rust storage.
@@ -793,16 +772,10 @@ impl BridgeVerifiedVotes {
     pub fn verified_votes_select_reward_vote_payloads(
         &self,
         block_period: u64,
-        reward_period: u64,
-        preferred_reward_round: u64,
-        reward_block_hash: &[u8; 32],
         requested_vote_hashes: Vec<PbftFinalizationHash>,
     ) -> Result<FfiPbftRewardVotePayloadSelection, anyhow::Error> {
         let selection = self.runtime.select_reward_vote_payloads(
             block_period,
-            reward_period,
-            preferred_reward_round,
-            H256::from(*reward_block_hash),
             requested_vote_hashes
                 .into_iter()
                 .map(|hash| H256::from(hash.hash))
@@ -826,6 +799,87 @@ impl BridgeVerifiedVotes {
                 .map(Into::into)
                 .collect(),
             missing_vote_hash: selection.missing_vote_hash.unwrap_or_default().into(),
+        })
+    }
+
+    /// Returns the Rust-owned finalized reward-vote cursor snapshot.
+    ///
+    /// The snapshot is absent before the first durable reward reset. Callers
+    /// receive only scalar compatibility facts and cannot mutate cursor state.
+    pub fn verified_votes_reward_vote_cursor(&self) -> FfiRewardVoteCursorSnapshot {
+        self.runtime
+            .reward_vote_cursor()
+            .map(|cursor| FfiRewardVoteCursorSnapshot {
+                found: true,
+                period: cursor.period,
+                round: cursor.round,
+                step: cursor.step,
+                block_hash: cursor.block_hash.into(),
+            })
+            .unwrap_or(FfiRewardVoteCursorSnapshot {
+                found: false,
+                period: 0,
+                round: 0,
+                step: 0,
+                block_hash: [0; 32],
+            })
+    }
+
+    /// Returns the finalized reward-vote period, or zero when no cursor exists.
+    pub fn verified_votes_reward_vote_period(&self) -> u64 {
+        self.runtime.reward_vote_period()
+    }
+
+    /// Returns canonical weighted payloads for the exact finalized reward cursor.
+    ///
+    /// Missing retained payloads for an installed cursor are reported as an
+    /// invariant error; an absent cursor returns an empty list.
+    pub fn verified_votes_current_reward_vote_payloads(
+        &self,
+    ) -> Result<Vec<PbftVoteStorageRecord>, anyhow::Error> {
+        Ok(self
+            .runtime
+            .current_reward_vote_payloads()?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// Publishes an already-durable reward cursor into the live Rust runtime.
+    ///
+    /// The reset generation must identify the active storage-committed reset.
+    /// Rust revalidates the cursor mapping, retained payloads, and durable
+    /// finalized cursor before applying a monotonic or idempotent update.
+    pub fn verified_votes_commit_reward_vote_cursor(
+        &mut self,
+        write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan,
+        reset_generation: u64,
+    ) -> Result<FfiRewardVoteCursorCommitResult, anyhow::Error> {
+        let cursor = RewardVoteCursor {
+            period: write_intent.reward_vote_period,
+            round: write_intent.reward_vote_round,
+            step: write_intent.reward_vote_step,
+            block_hash: H256::from(write_intent.reward_vote_block_hash),
+        };
+        let storage = self
+            .storage
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STORAGE_UNAVAILABLE"))?;
+        let result = self
+            .runtime
+            .commit_reward_vote_cursor(&storage, cursor, reset_generation)?;
+        Ok(FfiRewardVoteCursorCommitResult {
+            status: match result.status {
+                RewardVoteCursorCommitStatus::Applied => 0,
+                RewardVoteCursorCommitStatus::AlreadyCurrent => 1,
+                RewardVoteCursorCommitStatus::Rejected => 2,
+            },
+            period: result.cursor.period,
+            round: result.cursor.round,
+            step: result.cursor.step,
+            block_hash: result.cursor.block_hash.into(),
+            reset_generation: result.reset_generation,
+            error_code: result.error_code.to_owned(),
         })
     }
 
@@ -1118,7 +1172,7 @@ fn flags_to_domain(value: PbftVoteEventFactFlags) -> DomainPbftVoteEventFactFlag
     DomainPbftVoteEventFactFlags {
         vote_already_known: value.vote_already_known,
         carries_proposed_block: value.carries_proposed_block,
-        valid_stale_reward_vote: value.valid_stale_reward_vote,
+        valid_stale_reward_vote: false,
     }
 }
 
@@ -1560,20 +1614,19 @@ mod tests {
     }
 
     #[test]
-    fn storage_backed_factory_restores_empty_runtime_and_snapshot() {
+    fn storage_backed_factory_restores_empty_runtime_and_cursor() {
         let storage = temp_bridge_storage("empty_startup");
         let votes = create_verified_votes_index_from_storage(&storage).unwrap();
-        let snapshot = votes.verified_votes_startup_snapshot().unwrap();
 
         assert_eq!(votes.verified_votes_size(), 0);
-        assert!(!snapshot.has_reward_vote_info);
+        assert!(!votes.verified_votes_reward_vote_cursor().found);
         assert!(votes.storage.is_some());
     }
 
     #[test]
-    fn storage_free_factory_has_no_startup_snapshot() {
+    fn storage_free_factory_has_no_storage_access() {
         let votes = create_verified_votes_index();
-        assert!(votes.verified_votes_startup_snapshot().is_err());
+        assert!(!votes.verified_votes_reward_vote_cursor().found);
         assert!(votes.verified_votes_own_vote_records().is_err());
     }
 
@@ -1828,7 +1881,6 @@ mod tests {
         PbftVoteEventFactFlags {
             vote_already_known: false,
             carries_proposed_block: true,
-            valid_stale_reward_vote: false,
         }
     }
 
@@ -2134,7 +2186,8 @@ mod tests {
 
     #[test]
     fn bridge_selects_reward_vote_payloads_in_requested_order() {
-        let mut votes = create_verified_votes_index();
+        let storage = temp_bridge_storage("reward_selection_cursor");
+        let mut votes = create_verified_votes_index_from_storage(&storage).unwrap();
         let first = generated_vote([0x33; 32], NODE_SECRET);
         let second = generated_vote([0x33; 32], NODE_SECRET_TWO);
         let first_hash: [u8; 32] = first.vote_hash.into();
@@ -2157,12 +2210,45 @@ mod tests {
             )
             .expect("second generated vote is admitted");
 
+        let applied = votes
+            .verified_votes_apply_reward_votes_reset(FfiPbftRewardVotesResetRequest {
+                period: 12,
+                round: 2,
+                step: 3,
+                block_hash: [0x33; 32],
+                sync: false,
+            })
+            .unwrap();
+        let committed = votes
+            .verified_votes_commit_reward_vote_cursor(
+                &reward_reset_intent([0x33; 32]),
+                applied.reward_votes_reset_generation,
+            )
+            .unwrap();
+        assert_eq!(committed.status, 0);
+        assert_eq!(votes.verified_votes_reward_vote_period(), 12);
+        let cursor = votes.verified_votes_reward_vote_cursor();
+        assert!(cursor.found);
+        assert_eq!(cursor.round, 2);
+        assert_eq!(cursor.step, 3);
+        assert_eq!(
+            votes
+                .verified_votes_current_reward_vote_payloads()
+                .unwrap()
+                .len(),
+            2
+        );
+        let repeated = votes
+            .verified_votes_commit_reward_vote_cursor(
+                &reward_reset_intent([0x33; 32]),
+                applied.reward_votes_reset_generation,
+            )
+            .unwrap();
+        assert_eq!(repeated.status, 1);
+
         let selection = votes
             .verified_votes_select_reward_vote_payloads(
                 13,
-                12,
-                2,
-                &[0x33; 32],
                 vec![
                     PbftFinalizationHash { hash: second_hash },
                     PbftFinalizationHash { hash: first_hash },

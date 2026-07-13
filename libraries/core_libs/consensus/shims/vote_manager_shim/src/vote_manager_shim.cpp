@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstdlib>
 #include <limits>
-#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -288,11 +287,10 @@ void persistVoteProgressPayloadsToRustStorage(const VerifiedVotes& verified_vote
   requireApplied(verified_votes.persistPbftVoteProgress(std::move(write)), "vote progress");
 }
 
-rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags(bool valid_stale_reward_vote) {
+rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags() {
   rustaxa::PbftVoteEventFactFlags flags{};
   flags.vote_already_known = false;
   flags.carries_proposed_block = true;
-  flags.valid_stale_reward_vote = valid_stale_reward_vote;
   return flags;
 }
 
@@ -477,14 +475,6 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
       verified_votes_(dev::toAddress(config.getFirstWallet().node_secret), db->rustStorage()) {
   const auto node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("VOTE_MGR");
-
-  const auto startup = verified_votes_.startupSnapshot();
-
-  if (startup.has_reward_vote_info) {
-    reward_votes_period_ = startup.reward_vote_period;
-    reward_votes_round_ = startup.reward_vote_round;
-    reward_votes_block_hash_ = fromBridgeHash(startup.reward_vote_block_hash);
-  }
 }
 
 void VoteManager::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }
@@ -603,16 +593,6 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   }
 
   const auto hash = vote->getHash();
-  bool is_valid_potential_reward_vote = false;
-  if (vote->getPeriod() < current_pbft_period_) {
-    is_valid_potential_reward_vote = isValidRewardVoteForRust(vote);
-    if (!is_valid_potential_reward_vote) {
-      LOG(log_tr_) << "Old vote " << vote->getHash().abridged() << " vote period" << vote->getPeriod()
-                   << " current period " << current_pbft_period_;
-      return report;
-    }
-  }
-
   if (vote->getPeriod() == 0) {
     LOG(log_er_) << "Unable to add vote " << hash << " into the verified queue. Invalid zero vote period";
     return report;
@@ -687,9 +667,8 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     }
   }
 
-  const auto runtime_result =
-      verified_votes_.admitValidatedVote(toBridgeByteSlice(canonical_vote_rlp), external_facts,
-                                         makeVoteEventFactFlags(is_valid_potential_reward_vote), progress_context);
+  const auto runtime_result = verified_votes_.admitValidatedVote(toBridgeByteSlice(canonical_vote_rlp), external_facts,
+                                                                 makeVoteEventFactFlags(), progress_context);
   requireRuntimeVoteTransitionIntentsMatch(runtime_result, vote);
   report.mark_vote_known = runtime_result.mark_vote_known;
   report.mark_vote_known_hash = fromBridgeVoteHash(runtime_result.mark_vote_known_hash);
@@ -1032,24 +1011,16 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
 VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
     PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
     const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes) {
-  blk_hash_t reward_votes_block_hash;
-  PbftPeriod reward_votes_period;
-  PbftRound reward_votes_round;
-  {
-    std::shared_lock reward_votes_info_lock(reward_votes_info_mutex_);
-    reward_votes_block_hash = reward_votes_block_hash_;
-    reward_votes_period = reward_votes_period_;
-    reward_votes_round = reward_votes_round_;
-  }
+  const auto cursor = verified_votes_.rewardVoteCursor();
 
   VerifiedVotes::RewardVotePayloadSelection selection{};
   try {
-    selection = verified_votes_.selectRewardVotePayloads(block_period, reward_votes_period, reward_votes_round,
-                                                         reward_votes_block_hash, reward_vote_hashes, copy_votes);
+    selection = verified_votes_.selectRewardVotePayloads(block_period, reward_vote_hashes, copy_votes);
   } catch (const std::exception& e) {
     LOG(log_er_) << "Rust reward-vote payload selection failed for block " << block_hash << ", period: " << block_period
-                 << ", reward_votes_period: " << reward_votes_period << ", reward_votes_round_: " << reward_votes_round
-                 << ", reward_votes_block_hash: " << reward_votes_block_hash << ", error: " << e.what();
+                 << ", reward cursor found: " << cursor.found << ", reward cursor period: " << cursor.period
+                 << ", reward cursor round: " << cursor.round
+                 << ", reward cursor block hash: " << fromBridgeHash(cursor.block_hash) << ", error: " << e.what();
     assert(false);
     RewardVoteValidationResult result;
     result.error_code = e.what();
@@ -1069,9 +1040,10 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
 
   if (!plan.accepted) {
     LOG(log_er_) << "No (or not enough) reward votes found for block " << block_hash << ", period: " << block_period
-                 << ", prev. block hash: " << prev_block_hash << ", reward_votes_period: " << reward_votes_period
-                 << ", reward_votes_round_: " << reward_votes_round << ", selected_round: " << plan.selected_round
-                 << ", reward_votes_block_hash: " << reward_votes_block_hash
+                 << ", prev. block hash: " << prev_block_hash << ", reward cursor found: " << cursor.found
+                 << ", reward cursor period: " << cursor.period << ", reward cursor round: " << cursor.round
+                 << ", selected_round: " << plan.selected_round
+                 << ", reward cursor block hash: " << fromBridgeHash(cursor.block_hash)
                  << ", status: " << static_cast<uint32_t>(plan.status)
                  << ", error: " << static_cast<std::string>(plan.error_code);
     return result;
@@ -1104,27 +1076,13 @@ std::optional<std::vector<std::shared_ptr<PbftVote>>> VoteManager::collectReward
 }
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getRewardVotes() {
-  blk_hash_t reward_votes_block_hash;
-  PbftRound reward_votes_period;
-  PbftRound reward_votes_round;
-  {
-    std::shared_lock reward_votes_info_lock(reward_votes_info_mutex_);
-    reward_votes_block_hash = reward_votes_block_hash_;
-    reward_votes_period = reward_votes_period_;
-    reward_votes_round = reward_votes_round_;
-  }
-
-  auto reward_votes =
-      getTwoTPlusOneVotedBlockVotes(reward_votes_period, reward_votes_round, TwoTPlusOneVotedBlockType::CertVotedBlock);
-
-  if (!reward_votes.empty() && reward_votes[0]->getBlockHash() != reward_votes_block_hash) {
-    LOG(log_er_) << "Proposal reward votes block hash mismatch. reward_votes_block_hash " << reward_votes_block_hash
-                 << ", reward_votes[0]->getBlockHash() " << reward_votes[0]->getBlockHash();
+  try {
+    return verified_votes_.currentRewardVotes();
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Rust current reward-vote payload lookup failed: " << e.what();
     assert(false);
     return {};
   }
-
-  return reward_votes;
 }
 
 VoteManager::ProposalRewardVotes VoteManager::proposalRewardVotesForPeriod(PbftPeriod propose_period) {
@@ -1161,10 +1119,7 @@ VoteManager::ProposalRewardVotes VoteManager::proposalRewardVotesForPeriod(PbftP
   return result;
 }
 
-PbftPeriod VoteManager::getRewardVotesPbftBlockPeriod() {
-  std::shared_lock lock(reward_votes_info_mutex_);
-  return reward_votes_period_;
-}
+PbftPeriod VoteManager::getRewardVotesPbftBlockPeriod() { return verified_votes_.rewardVotePeriod(); }
 
 void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   if (!vote) {
@@ -1820,35 +1775,6 @@ PbftStep VoteManager::getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRo
   return round_votes->network_t_plus_one_step;
 }
 
-bool VoteManager::isValidRewardVoteForRust(const std::shared_ptr<PbftVote>& vote) const {
-  std::shared_lock lock(reward_votes_info_mutex_);
-  if (vote->getType() != PbftVoteTypes::cert_vote) {
-    LOG(log_tr_) << "Invalid reward vote: type " << static_cast<uint64_t>(vote->getType())
-                 << " is different from cert type";
-    return false;
-  }
-
-  if (vote->getBlockHash() != reward_votes_block_hash_) {
-    LOG(log_tr_) << "Invalid reward vote: block hash " << vote->getBlockHash()
-                 << " is different from reward_votes_block_hash " << reward_votes_block_hash_;
-    return false;
-  }
-
-  if (vote->getPeriod() != reward_votes_period_) {
-    LOG(log_tr_) << "Invalid reward vote: period " << vote->getPeriod()
-                 << " is different from reward_votes_block_period " << reward_votes_period_;
-    return false;
-  }
-
-  if (vote->getRound() > reward_votes_round_ + 100) {
-    LOG(log_wr_) << "Invalid reward vote: round " << vote->getRound() << " exceeded max round "
-                 << reward_votes_round_ + 100;
-    return false;
-  }
-
-  return true;
-}
-
 rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
   return verified_votes_.prepareRewardVotesResetStage(write_intent);
@@ -1865,19 +1791,14 @@ rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFina
 
 RewardVotesFinalizationResetReport VoteManager::commitRewardVotesResetForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation) {
-  const auto period = static_cast<PbftPeriod>(write_intent.reward_vote_period);
-  const auto round = static_cast<PbftRound>(write_intent.reward_vote_round);
-  const auto block_hash = blk_hash_t(write_intent.reward_vote_block_hash.data(), blk_hash_t::ConstructFromPointer);
-
-  {
-    std::scoped_lock lock(reward_votes_info_mutex_);
-    reward_votes_block_hash_ = block_hash;
-    reward_votes_period_ = period;
-    reward_votes_round_ = round;
+  const auto result = verified_votes_.commitRewardVoteCursor(write_intent, reward_votes_reset_generation);
+  if (result.status > 1) {
+    throw std::runtime_error("Rust reward-vote cursor commit rejected: " + static_cast<std::string>(result.error_code));
   }
-  LOG(log_dg_) << "Reward votes info reset to: block_hash: " << block_hash << ", period: " << period
-               << ", round: " << round;
-  return makeRewardVotesResetLiveReport(period, round, block_hash, reward_votes_reset_generation);
+  const auto block_hash = fromBridgeHash(result.block_hash);
+  LOG(log_dg_) << "Reward votes info reset to: block_hash: " << block_hash << ", period: " << result.period
+               << ", round: " << result.round;
+  return makeRewardVotesResetLiveReport(result.period, result.round, block_hash, result.reset_generation);
 }
 
 rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinalization(
@@ -1899,7 +1820,11 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
     return result;
   }
 
-  commitRewardVotesResetForFinalization(write_intent, result.reward_votes_reset_generation);
+  try {
+    commitRewardVotesResetForFinalization(write_intent, result.reward_votes_reset_generation);
+  } catch (const std::exception& e) {
+    return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash, e.what());
+  }
   return result;
 }
 

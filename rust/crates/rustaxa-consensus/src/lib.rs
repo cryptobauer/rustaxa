@@ -158,7 +158,8 @@ pub use network_api::{
     NetworkStatusSyncPlan,
 };
 pub use pbft_chain::{
-    PbftBlockStorageLookup, PbftChain, PbftChainStorageRestore, load_pbft_block_from_storage,
+    PbftBlockStorageLookup, PbftChain, PbftChainPersistedHeadIdentity, PbftChainStorageRestore,
+    load_pbft_block_from_storage, load_persisted_pbft_chain_head_identity,
     pbft_block_exists_in_storage, restore_pbft_chain_from_storage,
 };
 pub use pbft_finalize::{
@@ -245,8 +246,8 @@ pub use pbft_vote_progress::{
 };
 pub use pbft_vote_runtime::{
     PbftRewardVotePayloadSelection, PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome,
-    PbftVoteRuntimeBundle, PbftVoteRuntimePayload, PbftVoteRuntimeRestoreSnapshot,
-    PbftVoteRuntimeSlashingPayloads,
+    PbftVoteRuntimeBundle, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
+    RewardVoteCursor, RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus,
 };
 pub use pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,

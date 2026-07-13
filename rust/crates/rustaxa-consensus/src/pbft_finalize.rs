@@ -30,7 +30,7 @@
 use anyhow::{Context, Result};
 use ethereum_types::H256;
 use rlp::{Rlp, RlpStream};
-use rustaxa_storage::{Column, Storage, StorageWriteBatch};
+use rustaxa_storage::{Column, Storage, StorageWriteBatch, StoredFinalizedRewardVoteCursor};
 use std::collections::HashSet;
 
 use crate::sortition::SortitionParamsChange;
@@ -1771,6 +1771,14 @@ fn append_pbft_finalization_reward_votes_reset_storage_write_impl(
         .get_raw(Column::LatestRoundTwoTPlusOneVotes, &cert_voted_key)?
         .as_deref()
         == Some(stage.reward_votes_bundle_rlp.as_slice());
+    already_applied &= storage.pbft().finalized_reward_vote_cursor()?
+        == Some(StoredFinalizedRewardVoteCursor {
+            period: write_set.reward_vote_period,
+            round: write_set.reward_vote_round,
+            step: write_set.reward_vote_step,
+            block_hash: write_set.reward_vote_block_hash,
+            votes_bundle_rlp: stage.reward_votes_bundle_rlp.clone(),
+        });
     for vote_hash in &stage.extra_reward_vote_hashes {
         already_applied &= storage
             .get_raw(Column::ExtraRewardVotes, vote_hash.as_bytes())?
@@ -1788,6 +1796,19 @@ fn append_pbft_finalization_reward_votes_reset_storage_write_impl(
             &stage.reward_votes_bundle_rlp,
         )
         .context("PBFT_FINALIZE_BATCH_REPLACE_REWARD_VOTES_BUNDLE")?;
+    storage
+        .pbft()
+        .write_finalized_reward_vote_cursor_in_batch(
+            batch,
+            StoredFinalizedRewardVoteCursor {
+                period: write_set.reward_vote_period,
+                round: write_set.reward_vote_round,
+                step: write_set.reward_vote_step,
+                block_hash: write_set.reward_vote_block_hash,
+                votes_bundle_rlp: stage.reward_votes_bundle_rlp.clone(),
+            },
+        )
+        .context("PBFT_FINALIZE_BATCH_WRITE_REWARD_VOTE_CURSOR")?;
     for vote_hash in &stage.extra_reward_vote_hashes {
         storage
             .batch_delete_raw(batch, Column::ExtraRewardVotes, vote_hash.as_bytes())
@@ -3582,13 +3603,23 @@ mod tests {
                 storage
                     .get_raw(Column::LatestRoundTwoTPlusOneVotes, &[1])
                     .expect("cert vote bundle should load"),
-                Some(bundle)
+                Some(bundle.clone())
             );
             assert_eq!(
                 storage
                     .get_raw(Column::ExtraRewardVotes, extra_hash.as_bytes())
                     .expect("extra reward vote should load"),
                 None
+            );
+            assert_eq!(
+                storage.pbft().finalized_reward_vote_cursor().unwrap(),
+                Some(StoredFinalizedRewardVoteCursor {
+                    period: 10,
+                    round: 2,
+                    step: 5,
+                    block_hash: hash(99),
+                    votes_bundle_rlp: bundle.clone(),
+                })
             );
 
             let repeated = apply_pbft_reward_votes_reset_storage(

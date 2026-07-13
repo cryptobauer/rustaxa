@@ -3560,10 +3560,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("reward-vote reset", "PBFT_FINALIZE_REWARD_RESET_PAYLOAD_UNAVAILABLE");
           }
           reward_votes_reset_prepared = false;
-          const auto report = vote_mgr_->commitRewardVotesResetForFinalization(finalization_plan.storage_write_intent,
-                                                                               boundary.reward_votes_reset_generation);
-          if (!report_reward_votes_reset(report, boundary)) {
-            return FinalizationDispatchResult::kFailed;
+          try {
+            const auto report = vote_mgr_->commitRewardVotesResetForFinalization(
+                finalization_plan.storage_write_intent, boundary.reward_votes_reset_generation);
+            if (!report_reward_votes_reset(report, boundary)) {
+              return FinalizationDispatchResult::kFailed;
+            }
+          } catch (const std::exception &e) {
+            LOG(log_er_) << "Rust reward-vote cursor commit failed for block " << pbft_block_hash << ", period "
+                         << block_pbft_period << ": " << e.what();
+            return fail_action("reward-vote cursor commit", "PBFT_FINALIZE_REWARD_CURSOR_COMMIT_FAILED");
           }
           break;
         }

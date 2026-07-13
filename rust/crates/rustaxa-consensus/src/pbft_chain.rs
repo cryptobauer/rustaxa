@@ -50,6 +50,35 @@ pub struct PbftChainStorageRestore {
     pub initialized_default: bool,
 }
 
+/// Persisted PBFT-head identity used by fail-closed storage migrations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PbftChainPersistedHeadIdentity {
+    /// Number of finalized PBFT blocks represented by the persisted head.
+    pub size: u64,
+    /// Hash of the latest finalized PBFT block.
+    pub last_pbft_block_hash: H256,
+}
+
+/// Loads only the persisted PBFT-head identity without initializing storage.
+///
+/// This read-only helper parses the existing zero-key legacy JSON row and
+/// returns `None` when it is absent. It deliberately does not recover anchors
+/// or create the default head, making it suitable for fail-closed migrations
+/// that need finalized size/hash authority without startup side effects.
+pub fn load_persisted_pbft_chain_head_identity(
+    storage: &Storage,
+) -> Result<Option<PbftChainPersistedHeadIdentity>> {
+    let Some(bytes) = storage.pbft().head(H256::zero())? else {
+        return Ok(None);
+    };
+    let head = parse_legacy_head_json(&bytes).context("PBFT_CHAIN_PARSE_HEAD_IDENTITY")?;
+    validate_head(head).context("PBFT_CHAIN_VALIDATE_HEAD_IDENTITY")?;
+    Ok(Some(PbftChainPersistedHeadIdentity {
+        size: head.size,
+        last_pbft_block_hash: head.last_pbft_block_hash,
+    }))
+}
+
 /// Result of loading a PBFT block payload by hash from Rust storage.
 ///
 /// `found = false` represents the legacy optional return when the hash has no

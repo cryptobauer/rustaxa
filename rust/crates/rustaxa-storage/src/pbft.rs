@@ -56,6 +56,21 @@ pub struct StoredExtraRewardVote {
     pub vote_rlp: Vec<u8>,
 }
 
+/// Durable identity of the cert-vote bundle selected by finalization rewards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFinalizedRewardVoteCursor {
+    /// Finalized PBFT period whose cert votes are reward-eligible.
+    pub period: u64,
+    /// Certified round selected for that period.
+    pub round: u64,
+    /// Certified step selected for that round.
+    pub step: u64,
+    /// Certified PBFT block hash.
+    pub block_hash: H256,
+    /// Canonical weighted cert-vote bundle selected for reward processing.
+    pub votes_bundle_rlp: Vec<u8>,
+}
+
 impl<D: DbReader> PbftRepository<D> {
     /// Creates a PBFT repository over the shared database handle.
     pub fn new(db: Arc<D>) -> Self {
@@ -273,9 +288,77 @@ impl<D: DbReader> PbftRepository<D> {
             .map(|record| record.vote_hash)
             .collect())
     }
+
+    /// Loads the finalized reward-vote cursor from its dedicated durable row.
+    ///
+    /// Returns `None` before the first reward reset. The fixed-width encoding
+    /// begins with three little-endian `u64` values and a 32-byte hash, followed
+    /// by the non-empty canonical cert-vote bundle. Malformed rows fail instead
+    /// of falling back to the mutable latest cert bundle.
+    pub fn finalized_reward_vote_cursor(&self) -> Result<Option<StoredFinalizedRewardVoteCursor>> {
+        let Some(value) = self
+            .db
+            .get(Column::FinalizedRewardVoteCursor, &SINGLE_VALUE_KEY)?
+        else {
+            return Ok(None);
+        };
+        let value = value.as_ref();
+        if value.is_empty() {
+            return Ok(None);
+        }
+        if value.len() <= 56 {
+            return Err(StorageError::Read(format!(
+                "Invalid finalized_reward_vote_cursor value size: expected more than 56, got {}",
+                value.len()
+            ))
+            .into());
+        }
+        let decode_u64 = |offset: usize| {
+            let mut bytes = [0_u8; 8];
+            bytes.copy_from_slice(&value[offset..offset + 8]);
+            u64::from_le_bytes(bytes)
+        };
+        Ok(Some(StoredFinalizedRewardVoteCursor {
+            period: decode_u64(0),
+            round: decode_u64(8),
+            step: decode_u64(16),
+            block_hash: H256::from_slice(&value[24..56]),
+            votes_bundle_rlp: value[56..].to_vec(),
+        }))
+    }
 }
 
 impl<D: DbReader + DbWriter> PbftRepository<D> {
+    /// Appends the finalized reward-vote cursor to a caller-owned batch.
+    ///
+    /// The cursor is encoded canonically as fixed-width scalar fields and must
+    /// be committed atomically with the reward-reset cert bundle and stale
+    /// extra-vote deletions. Repeated writes replace the single durable row.
+    pub fn write_finalized_reward_vote_cursor_in_batch(
+        &self,
+        batch: &mut D::Batch,
+        cursor: StoredFinalizedRewardVoteCursor,
+    ) -> Result<()> {
+        if cursor.votes_bundle_rlp.is_empty() {
+            return Err(StorageError::Read(
+                "finalized reward vote cursor bundle must not be empty".into(),
+            )
+            .into());
+        }
+        let mut value = Vec::with_capacity(56 + cursor.votes_bundle_rlp.len());
+        value.extend_from_slice(&cursor.period.to_le_bytes());
+        value.extend_from_slice(&cursor.round.to_le_bytes());
+        value.extend_from_slice(&cursor.step.to_le_bytes());
+        value.extend_from_slice(cursor.block_hash.as_bytes());
+        value.extend_from_slice(&cursor.votes_bundle_rlp);
+        self.db.batch_put(
+            batch,
+            Column::FinalizedRewardVoteCursor,
+            &SINGLE_VALUE_KEY,
+            &value,
+        )
+    }
+
     /// Persists a PBFT manager numeric field value.
     /// C++ mapping: `DbStorage::savePbftMgrField(PbftMgrField, uint32_t)`.
     pub fn write_manager_field(&self, field: u8, value: u32) -> Result<()> {
@@ -963,6 +1046,26 @@ mod tests {
 
         let error = repo.extra_reward_vote_records().unwrap_err().to_string();
         assert!(error.contains("expected 32, got 31"));
+    }
+
+    #[test]
+    fn finalized_reward_vote_cursor_round_trips_through_batch() {
+        let db = Arc::new(MockPbftStore::new());
+        let repo = PbftRepository::new(db.clone());
+        let cursor = StoredFinalizedRewardVoteCursor {
+            period: 12,
+            round: 2,
+            step: 3,
+            block_hash: H256::from([0x44; 32]),
+            votes_bundle_rlp: vec![0xc1, 0x01],
+        };
+        let mut batch = DbWriter::create_batch(db.as_ref());
+        repo.write_finalized_reward_vote_cursor_in_batch(&mut batch, cursor.clone())
+            .unwrap();
+        assert!(repo.finalized_reward_vote_cursor().unwrap().is_none());
+
+        DbWriter::commit_batch(db.as_ref(), batch).unwrap();
+        assert_eq!(repo.finalized_reward_vote_cursor().unwrap(), Some(cursor));
     }
 
     #[test]

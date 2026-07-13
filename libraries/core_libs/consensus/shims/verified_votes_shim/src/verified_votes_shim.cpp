@@ -211,11 +211,6 @@ VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr, rustaxa::BridgeS
   LOG_OBJECTS_CREATE("VERIFIED_VOTES");
 }
 
-rustaxa::VerifiedVotesStartupSnapshot VerifiedVotes::startupSnapshot() const {
-  std::shared_lock lock(verified_votes_access_);
-  return rust_verified_votes_->verified_votes_startup_snapshot();
-}
-
 rust::Vec<rustaxa::PbftVoteStorageRecord> VerifiedVotes::ownVoteRecords() const {
   std::shared_lock lock(verified_votes_access_);
   return rust_verified_votes_->verified_votes_own_vote_records();
@@ -388,13 +383,10 @@ rustaxa::PbftOptimizedVoteBundleBuildResult VerifiedVotes::buildOptimizedVotesBu
 }
 
 VerifiedVotes::RewardVotePayloadSelection VerifiedVotes::selectRewardVotePayloads(
-    PbftPeriod block_period, PbftPeriod reward_period, PbftRound preferred_reward_round,
-    const blk_hash_t& reward_block_hash, const std::vector<vote_hash_t>& requested_vote_hashes,
-    bool materialize_votes) const {
+    PbftPeriod block_period, const std::vector<vote_hash_t>& requested_vote_hashes, bool materialize_votes) const {
   std::shared_lock lock(verified_votes_access_);
   auto selection = rust_verified_votes_->verified_votes_select_reward_vote_payloads(
-      block_period, reward_period, preferred_reward_round, toBridgeHash(reward_block_hash),
-      toBridgeVoteHashes(requested_vote_hashes));
+      block_period, toBridgeVoteHashes(requested_vote_hashes));
 
   RewardVotePayloadSelection out{};
   out.report = std::move(selection);
@@ -414,6 +406,39 @@ VerifiedVotes::RewardVotePayloadSelection VerifiedVotes::selectRewardVotePayload
     out.votes.push_back(std::move(vote));
   }
   return out;
+}
+
+rustaxa::RewardVoteCursorSnapshot VerifiedVotes::rewardVoteCursor() const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_reward_vote_cursor();
+}
+
+PbftPeriod VerifiedVotes::rewardVotePeriod() const {
+  std::shared_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_reward_vote_period();
+}
+
+std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::currentRewardVotes() const {
+  std::shared_lock lock(verified_votes_access_);
+  const auto cursor = rust_verified_votes_->verified_votes_reward_vote_cursor();
+  const auto records = rust_verified_votes_->verified_votes_current_reward_vote_payloads();
+  std::vector<std::shared_ptr<PbftVote>> votes;
+  votes.reserve(records.size());
+  for (const auto& record : records) {
+    auto vote = materializeWeightedPayload(record);
+    if (!cursor.found || vote->getPeriod() != cursor.period || vote->getRound() != cursor.round ||
+        vote->getStep() != cursor.step || vote->getBlockHash() != fromBridgeHash(cursor.block_hash)) {
+      throw verifiedVotesError("Rust current reward-vote payload mismatches authoritative cursor");
+    }
+    votes.push_back(std::move(vote));
+  }
+  return votes;
+}
+
+rustaxa::RewardVoteCursorCommitResult VerifiedVotes::commitRewardVoteCursor(
+    const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reset_generation) {
+  std::unique_lock lock(verified_votes_access_);
+  return rust_verified_votes_->verified_votes_commit_reward_vote_cursor(write_intent, reset_generation);
 }
 
 void VerifiedVotes::cleanupVotesByPeriod(PbftPeriod pbft_period) {
