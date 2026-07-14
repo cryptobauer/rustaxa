@@ -21,7 +21,7 @@ class Network;
  * Rust-mode DAG graph facade.
  *
  * This class preserves the public C++ `Dag` API while routing graph storage, reachability-sensitive ordering, leaves,
- * and Graphviz output to Rust. It is a standalone facade and must not inherit from or delegate to `DagOld`.
+ * and Graphviz output to Rust. It is a standalone facade with no legacy implementation dependency.
  *
  * Invariants:
  * - the constructor creates a Rust graph containing the nonzero DAG genesis vertex
@@ -121,7 +121,7 @@ class Dag {
  * Rust-mode pivot tree facade.
  *
  * PivotTree shares the Rust DAG graph machinery with Dag but exposes the ghost-path query used by DAG/PBFT
- * orchestration. It keeps the C++ inheritance relationship with `Dag` but not with `PivotTreeOld`.
+ * orchestration. It keeps the C++ inheritance relationship with `Dag` while using the same Rust graph holder.
  */
 class PivotTree : public Dag {
  public:

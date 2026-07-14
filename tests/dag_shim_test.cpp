@@ -13,10 +13,8 @@ struct HasVertexType : std::false_type {};
 template <typename T>
 struct HasVertexType<T, std::void_t<typename T::vertex_t>> : std::true_type {};
 
-TEST(DagShimTest, rustModeDagDoesNotInheritLegacyImplementation) {
+TEST(DagShimTest, rustModeDagKeepsGraphTypesHashOnly) {
 #ifdef RUSTAXA_ENABLE
-  static_assert(!std::is_base_of_v<DagOld, Dag>);
-  static_assert(!std::is_base_of_v<PivotTreeOld, PivotTree>);
   static_assert(!HasVertexType<Dag>::value);
   static_assert(!HasVertexType<PivotTree>::value);
   SUCCEED();

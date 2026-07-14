@@ -431,6 +431,22 @@ Implementation notes:
   symbol; original header and source diffs versus `upstream-main` are empty. Mapping, API, architecture, Rust/C++
   implementation, and independent review used the code-mapper, api-designer, architect-reviewer, rust-engineer, cpp-pro,
   and reviewer agents. No blockchain/EVM agent was needed because contract execution was outside this slice.
+- The standalone DAG graph facade is fully detached from `DagOld`/`PivotTreeOld`. Feature-on builds exclude the
+  untouched original `dag.cpp`, the overlay wrapper directly includes the self-contained hash-only facade, and the
+  compile rename plus Old-identity assertions are deleted. `BridgeDagGraph` remains authoritative for vertex presence,
+  insertion, ghost-path and ordering decisions, leaf selection, clear/reset behavior, and Graphviz output. C++ retains
+  only the stable `Dag`/`PivotTree` compatibility API and bridge holder until public callers move behind
+  `BridgeDagManagerRuntime` or a narrower external API. Rust-disabled pure-C++ builds continue to select the untouched
+  original Boost graph implementation.
+  Validation passed 87 focused Rust consensus DAG tests, 33 Rust bridge DAG tests, all three standalone facade tests,
+  three CXX graph tests, all 13 `dag_test` cases, all 13 `dag_block_test` cases, the focused single-node PBFT manager
+  consumer, the `taraxad` build, both boundary guards, `make rewrite-validate-fast`,
+  `make rewrite-validate-consensus`, and `make rewrite-validate-smoke`. Feature-on build metadata and the core archive
+  contain neither the original source object nor any `DagOld`/`PivotTreeOld` symbol; original header and source diffs
+  versus `upstream-main` are empty. An all-Rust-off configuration selected and compiled the untouched original source
+  without the shim or rename. Mapping, API, architecture, C++ implementation, and independent review used the
+  code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation
+  agent was needed because runtime, bridge, storage, and contract behavior did not change.
 - `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and
@@ -753,10 +769,10 @@ Implementation notes:
 - Follow-up DAG manager cleanup removed the `DagManagerOld::VerifyBlockReturnType` alias and then removed
   `DagManagerOld` inheritance/construction from the shim API. Remaining DAG manager compatibility debt is C++ graph
   materialization and the broader public facade itself, not legacy DAG manager base identity.
-- Follow-up DAG facade cleanup removed the unused `DagOld` Boost graph alias re-exports, direct Boost includes, and
-  protected Boost-vertex helper stubs from `dag_shim`. The Rust-mode DAG facade is now hash-only; the overlay still
-  imports the legacy header as `DagOld` before defining the standalone Rust facade, but `dag_shim.hpp` no longer exposes
-  legacy graph types.
+- Follow-up DAG facade cleanup first removed the unused Boost graph alias re-exports, direct Boost includes, and
+  protected Boost-vertex helper stubs from `dag_shim`, then detached the facade from the legacy implementation entirely.
+  The Rust-mode DAG facade is self-contained and hash-only; feature-on builds neither import the legacy header nor
+  compile the original source under `DagOld`/`PivotTreeOld` names.
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
