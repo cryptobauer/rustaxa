@@ -25,6 +25,13 @@ Delegate when the user explicitly requests agents, repository instructions requi
 materially improve a non-trivial design or implementation slice. Do not spawn agents merely because the skill triggered.
 Handle process reviews, status answers, and simple planning locally unless delegation adds concrete value.
 
+Custom-agent use is a profile-binding requirement, not a role-play prompt. Invoke the named profile from
+`.codex/agents/<name>.toml` through the runtime's custom-agent selector and verify the resolved profile from the tool result
+or agent metadata. Do not use an arbitrary task label (for example, a slice-specific Rust or C++ task name) as a substitute
+for `rust-engineer`, `cpp-pro`, or another configured profile. If the active delegation interface cannot select or confirm
+the profile, tell the task owner before delegated implementation or review proceeds; do not claim that the custom agent or
+its configured model was used. The profile TOML files are the source of truth for model assignments and permissions.
+
 - Use `task-distributor` once for a broad multi-slice goal that needs dependency-aware decomposition.
 - Use `code-mapper` when ownership, call paths, state flow, or remaining compatibility boundaries are unclear.
 - Ask `api-designer` to review Rust/C++ bridge shape, compatibility, and future API direction.
@@ -138,6 +145,8 @@ instructions justify it, and distinguish pre-existing findings from regressions.
 ## Closeout
 
 - Integrate and review all agent changes.
+- Record only custom-agent profiles whose resolution was confirmed by the delegation interface or agent metadata. Keep
+  intended roles, generic task agents, and local primary-agent work distinct in the closeout report.
 - Confirm no accidental original C++ edits exist outside allowed shim or guarded patterns.
 - For every touched upstream-owned C++ path, run `git diff upstream-main -- <path>` and require an empty diff or document
   the explicitly approved temporary exception.

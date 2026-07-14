@@ -39,6 +39,13 @@ custom agents when their review or implementation scope is material:
 Delegate concrete, non-overlapping work. The primary implementer still owns integration, local code inspection,
 conflict resolution, validation, deletion of obsolete scaffolding, and the final closeout report.
 
+The named roles above refer to the configured profiles in `.codex/agents/*.toml`, whose TOML files are the source of truth
+for model selection and permissions. A generic subagent with a similar task label does not satisfy this requirement.
+Before using delegated output, the primary implementer must confirm that the delegation runtime resolved the requested
+profile. If the runtime cannot select or report the profile, stop the required delegated work and report that tooling
+limitation rather than claiming custom-agent coverage. Slice closeout notes must list only profiles that were actually
+confirmed; intended roles and generic delegation must be identified separately.
+
 ## Current Cleanup Pressure Points
 
 - `rust/crates/rustaxa-bridge/src/lib.rs` exports are mostly boundary-facing Rust modules plus narrow internal runtime helpers.

@@ -93,6 +93,18 @@ relevant Rust and C++ tests. Run full `check-static` when broad C++ changes just
 cleanup, or after existing cppcheck findings have been baselined/fixed. If `cppcheck` is installed after `/build` was
 configured, rerun CMake or `make configure` before invoking `check-static` so the `cpp-check` target is generated.
 
+## Custom Agent Delegation
+
+- Treat `.codex/agents/*.toml` as the source of truth for custom-agent names, models, reasoning effort, permissions, and
+  role instructions. Do not duplicate model assignments in plans or task prompts.
+- When repository instructions or a skill requires a named custom agent, delegation must bind the corresponding custom
+  profile. An arbitrary spawned task name or a prompt asking a generic agent to act like that role is not equivalent.
+- Verify profile resolution from the delegation interface or returned agent metadata before relying on the agent's work.
+  If the active interface cannot select or confirm the configured profile, do not silently substitute a generic agent:
+  report the limitation to the task owner and keep required delegated work unclaimed.
+- Closeout reports may list a custom agent under "used" only when its configured profile was confirmed. Otherwise label
+  the work accurately as generic delegation or local primary-agent work.
+
 ## Storage Rewrite Validation
 
 Before closing rewrite work, choose the narrowest validation tier in `doc/rewrite_validation_strategy.md` that covers the
