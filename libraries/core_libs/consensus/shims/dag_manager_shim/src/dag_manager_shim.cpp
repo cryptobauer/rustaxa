@@ -298,8 +298,8 @@ std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t
       return DagManager::VerifyBlockReturnType::MissingTip;
     default:
       // Reject-code skew is an integration error, not an invalid-block outcome.
-      // Do not fall back to DagManagerOld here because that would hide Rust
-      // production routing drift.
+      // Do not fall back to the legacy manager here because that would hide
+      // Rust production routing drift.
       throw std::runtime_error("DagManager: unknown Rust verify precheck reject code");
   }
 }
@@ -980,7 +980,7 @@ rustaxa::DagProposerSessionStep DagManager::reportProposerVdfProof(uint64_t sess
                                                                    rustaxa::DagProposerVdfProofReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
   return rustaxa::dag_manager_runtime_proposer_session_report_vdf_proof(*rust_graphs_->runtime, session_id,
-                                                                        std::move(report));
+                                                                       std::move(report));
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerStaleProof(uint64_t session_id,
@@ -1001,7 +1001,7 @@ rustaxa::DagProposerSessionStep DagManager::reportProposerAddBlock(uint64_t sess
                                                                    rustaxa::DagProposerAddBlockReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
   return rustaxa::dag_manager_runtime_proposer_session_report_add_block(*rust_graphs_->runtime, session_id,
-                                                                       std::move(report));
+                                                                        std::move(report));
 }
 
 std::optional<PbftPeriod> DagManager::getProposalPeriodForDagLevel(level_t level) const {

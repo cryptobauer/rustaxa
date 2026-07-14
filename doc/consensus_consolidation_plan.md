@@ -567,9 +567,17 @@ Implementation notes:
 - `dag_manager_shim` now owns the public `VerifyBlockReturnType` enum locally instead of aliasing
   `DagManagerOld::VerifyBlockReturnType`. The public `DagManager::VerifyBlockReturnType` spelling and numeric values are
   preserved for tarcap/tests while reducing one remaining legacy type dependency.
-- `dag_manager_shim` no longer inherits from or constructs `DagManagerOld`. The shim owns `std::enable_shared_from_this`
-  identity directly, `getShared()` returns the shim-owned pointer, and `dag_test` asserts that Rust mode does not inherit
-  the legacy DAG manager implementation.
+- `dag_manager_shim` is fully detached from the dead `DagManagerOld` compile scaffold. The overlay directly includes
+  the standalone facade, feature-on builds exclude the original manager source instead of compiling it under a renamed
+  symbol, and the Old-only inheritance assertion is deleted. The facade keeps the stable public API and owns
+  `std::enable_shared_from_this` identity directly; pure-C++ builds select the untouched original header and source.
+  Mapping, API design, and architecture review used `code-mapper`, `api-designer`, and `architect-reviewer`; no Rust
+  implementation agent was needed because runtime and bridge behavior did not change.
+  Validation passed the 11 native Rust consensus and 23 Rust bridge DAG-manager tests, all 12 `dag_test` cases, all 13
+  `dag_block_test` cases, four focused Rust CXX DAG tests, the PBFT single-node test, `make rewrite-validate-fast`,
+  `make rewrite-validate-consensus`, and `make rewrite-validate-smoke`. Feature-on compile metadata and the core archive
+  contain neither the original source object nor `DagManagerOld`; a fresh all-Rust-off configuration selects and
+  compiles the untouched original `dag_manager.cpp`, and the original header/source are clean versus `upstream-main`.
 - `slashing_manager_shim` now exposes one Rust-admission `SlashingDoubleVoteEvidence` API containing the two canonical
   vote payloads and a single shared PBFT slot. The live `PbftVote` overload is kept as a compatibility adapter that
   validates same-slot evidence before constructing the payload. This removes the loose two-record-plus-slot-scalar
@@ -800,8 +808,9 @@ Implementation notes:
   state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
   callers now perform the lock sequencing directly.
 - Follow-up DAG manager cleanup removed the `DagManagerOld::VerifyBlockReturnType` alias and then removed
-  `DagManagerOld` inheritance/construction from the shim API. Remaining DAG manager compatibility debt is C++ graph
-  materialization and the broader public facade itself, not legacy DAG manager base identity.
+  `DagManagerOld` inheritance/construction from the shim API. The later detachment slice also removed the legacy-header
+  import, renamed-source compile, and Old-only test. Remaining DAG manager compatibility debt is C++ graph
+  materialization and the broader public facade itself, not legacy DAG manager base or compile identity.
 - Follow-up DAG facade cleanup first removed the unused Boost graph alias re-exports, direct Boost includes, and
   protected Boost-vertex helper stubs from `dag_shim`, then detached the facade from the legacy implementation entirely.
   The Rust-mode DAG facade is self-contained and hash-only; feature-on builds neither import the legacy header nor

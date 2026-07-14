@@ -78,7 +78,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | Shim directory | Current role | Current consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `dag_block_proposer_shim` | Standalone C++ executor facade over Rust manager-owned proposal sessions; feature-on builds do not compile the original proposer or an Old scaffold | App/DAG manager proposer lifecycle | C++ public compatibility facade | Delete after worker/network lifecycle, VDF execution, signing, and add-block effects move behind Rust application/external ports. |
-| `dag_manager_shim` | Rust DAG manager runtime behind C++ `DagManager` API | App/consensus code, DAG tests | C++ public compatibility facade | `DagManagerOld` inheritance/construction is removed. Remove the remaining C++ graph materialization when DAG manager callers can use Rust runtime or a thinner public facade. |
+| `dag_manager_shim` | Standalone Rust DAG manager runtime facade behind the C++ `DagManager` API; feature-on builds import and compile no legacy manager scaffold | App/consensus code, DAG tests | C++ public compatibility facade | Remove the remaining C++ graph materialization when DAG manager callers can use Rust runtime or a thinner public facade. |
 | `dag_shim` | Standalone Rust-backed C++ DAG facade with hash-only public graph compatibility; feature-on builds do not compile the original Boost graph or any Old scaffold | DAG manager and DAG tests | C++ public compatibility facade | Delete after public DAG graph callers can use the Rust runtime or a narrower external facade directly. |
 | `final_chain_shim` | Rust FinalChain runtime behind C++ FinalChain API | App, PBFT manager, transaction manager, RPC/EVM execution | External boundary | Keep EVM execution adapter; remove consensus fact/materialization methods after Rust consensus consumes FinalChain ports directly. |
 | `gas_pricer_shim` | Standalone Rust-backed gas price oracle facade | Transaction/RPC gas price paths | C++ public compatibility facade | The facade no longer imports or compiles `GasPricerOld`; keep its feature flag and public adapter until gas price API is native Rust and external RPC sees only a narrow query method. |
@@ -119,9 +119,10 @@ rg -n '^\s*type Bridge[A-Za-z0-9_]+;' rust/crates/rustaxa-bridge/src/ffi.rs
 
 Current snapshot after DAG manager verify-result API cleanup:
 
-- Direct `*Old::method(...)` forwarding in consensus shims has no current matches. `dag_manager_shim` no longer inherits
-  from or constructs `DagManagerOld`; it owns its public `VerifyBlockReturnType` enum and shared-pointer identity
-  locally. `dag_shim` is a self-contained hash-only facade and Rust-enabled builds exclude the original Boost graph
+- Direct `*Old::method(...)` forwarding in consensus shims has no current matches. `dag_manager_shim` is fully detached
+  from `DagManagerOld`: the overlay directly includes its standalone facade, and feature-on builds exclude the original
+  manager source instead of compiling renamed symbols. It owns its public `VerifyBlockReturnType` enum and
+  shared-pointer identity locally. `dag_shim` is a self-contained hash-only facade and Rust-enabled builds exclude the original Boost graph
   source entirely; there are no `DagOld`/`PivotTreeOld` definitions or imported legacy graph aliases in feature-on code.
   Pure-C++ builds continue to select the untouched original header and source.
 - `dag_block_proposer_shim` is likewise detached from its dead legacy compile scaffold. Rust-enabled builds exclude the

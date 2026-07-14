@@ -1,10 +1,10 @@
 #pragma once
 
 #include "common/thread_pool.hpp"
-#include "dag/dag.hpp"
+#include "dag.hpp"
 #include "dag/dag_block.hpp"
-#include "dag/sortition_params_manager.hpp"
 #include "pbft/pbft_chain.hpp"
+#include "sortition_params_manager.hpp"
 #include "storage/storage.hpp"
 #include "transaction/transaction_manager.hpp"
 

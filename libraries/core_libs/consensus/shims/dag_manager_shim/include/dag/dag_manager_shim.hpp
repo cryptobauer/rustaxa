@@ -1,10 +1,25 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
+#include <shared_mutex>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
+#include "common/thread_pool.hpp"
+#include "dag/dag.hpp"
+#include "dag/dag_block.hpp"
+#include "dag/sortition_params_manager.hpp"
+#include "pbft/pbft_chain.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "storage/storage.hpp"
+#include "transaction/transaction_manager.hpp"
 
 namespace taraxa {
 
@@ -24,7 +39,7 @@ struct DagFinalizationOrderReport {
  *
  * This class preserves the public DagManager API while routing migrated behavior
  * through Rust-backed implementations. It owns shared-pointer identity directly
- * and does not inherit from or delegate to `DagManagerOld` in Rust mode.
+ * and does not import or delegate to the legacy DAG manager in Rust mode.
  */
 class DagManager : public std::enable_shared_from_this<DagManager> {
   struct RustDagManagerGraphs;
@@ -35,7 +50,7 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
    *
    * The numeric values intentionally match the legacy public enum so tarcap and
    * tests can keep the stable `DagManager::VerifyBlockReturnType` API while
-   * Rust mode no longer aliases the result type through `DagManagerOld`.
+   * Rust mode owns the result type directly instead of importing the legacy manager declaration.
    */
   enum class VerifyBlockReturnType : uint32_t {
     Verified = 0,

@@ -632,7 +632,9 @@ Completed closeout slices:
 2. TransactionManager public and event shell collapse: Rust owns runtime/query authority, canonical payload inspection,
    finalized-status mutation, public admission command reports, and event/log intent selection.
 3. DAG manager mirror/materialization collapse: Rust graph/runtime state, Rust storage, typed transaction ports, and
-   Rust finalization/add/sync plans own DAG consensus decisions.
+   Rust finalization/add/sync plans own DAG consensus decisions. The Rust-mode public facade is detached from the dead
+   legacy compile scaffold: it imports no original manager header or `DagManagerOld`, and feature-on builds exclude the
+   original `dag_manager.cpp`; pure-C++ builds retain the untouched original implementation.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, block construction planning, signing boundary progression, and add-block
    terminal classification; C++ executes VDF, signing, and add-block effects.
