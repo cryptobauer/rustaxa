@@ -3,7 +3,6 @@
 #include <libdevcore/CommonData.h>
 
 #include <optional>
-#include <type_traits>
 #include <vector>
 
 #include "common/constants.hpp"
@@ -191,15 +190,6 @@ struct FinalChainTest : WithDataDir {
     return hash256(m);
   }
 };
-
-TEST(FinalChainShimTest, rustModeFinalChainDoesNotInheritLegacyImplementation) {
-#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
-  static_assert(!std::is_base_of_v<FinalChainOld, final_chain::FinalChain>);
-  SUCCEED();
-#else
-  GTEST_SKIP() << "FinalChain shim is disabled";
-#endif
-}
 
 TEST_F(FinalChainTest, rustModePruneDoesNotRunLegacyBatchPath) {
 #ifdef RUSTAXA_ENABLE_FINAL_CHAIN

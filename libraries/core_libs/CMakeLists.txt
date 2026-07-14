@@ -24,6 +24,15 @@ if(RUSTAXA_ENABLE)
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
 endif()
+if(RUSTAXA_ENABLE_FINAL_CHAIN)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE")
+    endif()
+
+    # The Rust-mode FinalChain overlay is fully standalone. Keep the untouched
+    # legacy implementation only in pure C++ reference builds.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/final_chain/final_chain\\.cpp$")
+endif()
 if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)
     # The Rust-mode VoteManager overlay is fully standalone. Keep the untouched
     # legacy implementation only when the overlay is not enabled.
@@ -216,17 +225,9 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
         message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE_STORAGE")
     endif()
 
-    # In Rust final-chain mode, inject a header overlay that remaps legacy FinalChain
-    # to FinalChainOld and exposes a standalone FinalChain shim facade.
+    # In Rust final-chain mode, inject the standalone FinalChain shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
-
-    # Compile the legacy implementation as FinalChainOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/final_chain/final_chain.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "FinalChain=FinalChainOld"
-    )
 endif()
 
 if(RUSTAXA_ENABLE_REWARDS_STATS)

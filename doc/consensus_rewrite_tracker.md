@@ -155,6 +155,11 @@ Future consensus cleanup should be deletion-oriented: remove adapters, broad CXX
 helpers once their public, network, EVM, test, or app-host consumers move. New unclassified production consensus fallback
 to legacy C++ is a rewrite blocker.
 
+FinalChain facade closeout: the Rust-mode `final_chain::FinalChain` overlay is self-contained and no longer imports,
+compiles, or exposes `FinalChainOld`. Rust production builds exclude the untouched legacy `final_chain.cpp`; pure-C++
+reference builds retain it. The remaining C++ `ExternalEvmStateApiClient` and `StateAPI` work is the classified external
+EVM/state executor boundary, not legacy FinalChain delegation.
+
 ## PBFT Manager Breakthrough Boundary
 
 The intended PBFT manager end state is a Rust-owned protocol runtime behind the existing C++ compatibility surface. The

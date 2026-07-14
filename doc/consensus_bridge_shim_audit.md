@@ -503,9 +503,9 @@ Current snapshot after DAG manager verify-result API cleanup:
   pending-publication recovery, and storage audit. It constructs `BridgeFinalChain` and `BridgeConsensusExecutionApi`;
   C++ supplies only the external `StateAPI`/EVM adapter, while Rust commits FinalChain headers, receipts, transaction
   indexes, bloom indexes, execution counters, rewards-stat updates, pending-publication markers, recovery cleanup, and
-  genesis/header storage through native Rust storage. The public batch blocks in
-  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy/reference behavior when
-  `RUSTAXA_ENABLE_FINAL_CHAIN` enables the overlay.
+  genesis/header storage through native Rust storage. The standalone overlay no longer imports `FinalChainOld`, and
+  Rust-mode builds exclude the original `final_chain.cpp`; that untouched implementation remains pure-C++ reference
+  behavior only.
 - `pbft_manager_shim` is the active Rust-mode route for PBFT manager reset, finish-polling, loopback-finish, period
   advance, and finalization storage intent execution. Reset/finish transitions call the manager-owned lifecycle
   transition executor, so Rust derives the live cursor, loads own-vote keys natively, and commits manager cursor/status

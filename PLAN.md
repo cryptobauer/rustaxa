@@ -358,7 +358,8 @@ The FinalChain shim uses a header overlay pattern and can be enabled with:
 
 - `RUSTAXA_ENABLE_FINAL_CHAIN`
 
-When enabled, legacy implementation compiles as `FinalChainOld`, and external call sites continue using `final_chain::FinalChain`.
+When enabled, the standalone overlay supplies `final_chain::FinalChain` and the untouched legacy implementation is
+excluded from Rust production builds. Pure-C++ reference builds continue compiling the original header and source.
 
 ### Current Implementation Status
 
@@ -494,7 +495,7 @@ When enabled, legacy implementation compiles as `FinalChainOld`, and external ca
     and `getUndelegationV2(address,address,uint64)`. These precompile reads
     use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
     configured delegation-delay snapshot.
-- Unimplemented public shim methods never fall back to `FinalChainOld`. `getAccountStorage`, `getCode`, `call`,
+- Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or
   throw explicit Rust-shim gaps. Bridge root/epoch reads return zero when the configured bridge contract has no committed
@@ -650,7 +651,7 @@ keep it as a clearly classified adapter/executor boundary or move the behavior i
 
 Rules:
 
-- Do not delegate Rust shim behavior back to legacy `FinalChainOld` or other old implementation methods.
+- Do not delegate Rust shim behavior back to legacy FinalChain or other old implementation methods.
 - Temporary Rust-mode gaps must be explicit shim-local defaults, no-ops, or tracked unimplemented paths.
 - Temporary guarded touches to upstream-owned C++ files should be removed once a complete shim can own Rust-mode routing.
   The PBFT manager pillar-vote sync hook has moved into the full `pbft_manager_shim` overlay; original

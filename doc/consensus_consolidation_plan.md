@@ -265,9 +265,10 @@ Implementation notes:
 
 - C++ review confirmed `create_storage_shim_batch` and `BridgeStorageBatch` are confined to `storage_shim` internals, and
   `rustBatchId` no longer has code callsites.
-- Slice 4 storage-shim direct-mutator cleanup is complete for the audited compatibility paths. Remaining public
-  `DbStorage::createWriteBatch()` / `commitWriteBatch()` blocks in original consensus modules must be classified by
-  their active Rust-mode overlay before adding new storage-shim APIs.
+- Slice 4 storage-shim direct-mutator cleanup and the original consensus-module batch classification are complete for
+  the audited paths. Remaining public `DbStorage::createWriteBatch()` / `commitWriteBatch()` blocks are either excluded
+  by an authoritative Rust-mode overlay or retained in an explicitly classified pure-C++ reference path; they must not
+  justify new storage-shim APIs.
 - The batch-only conversion is implemented for DAG block save/remove, status fields, PBFT manager fields/status, PBFT
   heads, own verified votes, 2t+1 vote bundles, extra reward votes, proposal-period DAG-level mappings, and cert-voted
   block writes/removal. These methods now use a private `DbStorage::commitImmediateRustBatch` helper, typed
@@ -282,8 +283,8 @@ Implementation notes:
   still owns the aggregate row-by-row delete and native batch commit. The obsolete broad
   `BridgeStorage::clear_block_rewards_stats` CXX export has been deleted.
 - The tracked direct `BridgeStorage` mutator cleanup for storage-shim single-write and aggregate-clear compatibility
-  paths is complete. Remaining Slice 4 work should classify original consensus-module public batch blocks as either
-  active Rust-mode gaps or legacy/reference code behind an authoritative overlay.
+  paths is complete. The original consensus-module public batch blocks are classified below as excluded
+  legacy/reference code behind authoritative Rust-mode overlays.
 - PBFT manager reset, finish-polling, loopback-finish, and finalization public batch blocks are closed for the current
   Rust-mode route. The active `pbft_manager_shim` overlay overrides those methods and routes transition persistence
   through the manager-owned lifecycle transition executor, which commits manager cursor/status updates,
@@ -307,8 +308,9 @@ Implementation notes:
   standalone facade over `BridgeFinalChain` and `BridgeConsensusExecutionApi`; native finalization, external-EVM pending
   publication markers, recovery, storage publication, execution counters, rewards-stat attachment, transaction indexes,
   receipts, log blooms, and genesis header creation are committed through native Rust storage. The public batch blocks in
-  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` remain legacy/reference behavior behind
-  `RUSTAXA_ENABLE_FINAL_CHAIN`; Rust mode keeps the external `StateAPI`/EVM adapter but does not route FinalChain
+  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` remain untouched pure-C++ reference behavior and the
+  source is excluded when `RUSTAXA_ENABLE_FINAL_CHAIN` selects the standalone overlay. Rust mode keeps the external
+  `StateAPI`/EVM adapter but does not route FinalChain
   storage publication through C++ `DbStorage` batches.
 - Custom agents used for the current storage-boundary audit:
   - `rust-engineer`: confirmed `rustaxa-consensus` is free of `BridgeStorage` and identified direct storage-shim mutators
@@ -605,6 +607,18 @@ Implementation notes:
 - `final_chain_shim` now no longer exposes `rustFinalChainForRust()`; callers must route through explicit
   consensus/runtime APIs, which keeps FinalChain session ownership constrained to the shim constructor and execution
   boundary.
+- `final_chain_shim` is fully detached from `FinalChainOld`. Its overlay header now includes only the self-contained
+  standalone facade, and Rust FinalChain builds exclude the untouched legacy `final_chain.cpp` instead of compiling it
+  under renamed symbols. The public C++ API and the classified `ExternalEvmStateApiClient`/`StateAPI` executor boundary
+  are unchanged; pure-C++ reference builds continue using the original header and source. Validation passed 25 focused
+  Rust FinalChain bridge tests, all 17 `final_chain_test` cases, all 50 `rpc_test` cases,
+  `make rewrite-validate-final-chain`, `make rewrite-validate-consensus`, startup smoke, archive/build-metadata audits,
+  whitespace validation, and the upstream-owned-file diff check. The pure-C++ tree configured successfully, selected
+  and compiled the original `final_chain.cpp` without renamed symbols, then the broader `final_chain_test` target was
+  blocked by the pre-existing unrelated pillar-vote packet-handler API mismatch. Slice selection, mapping, API and
+  architecture review, C++ implementation, and independent closeout review used the task-distributor, code-mapper,
+  api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation agent was needed because the
+  Rust bridge and runtime behavior did not change.
 - `dag_manager_shim` now moved `getShared()` and `getDagMutex()` off inherited `DagManagerOld` access and onto shim-owned
   state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
   callers now perform the lock sequencing directly.
@@ -1981,9 +1995,10 @@ Implementation status:
   confirmed the original upstream sortition header/source remain unchanged.
 - FinalChain Rust-mode startup, native finalization, external-EVM publication, crash recovery, and storage audit are
   closed under the current overlay. The remaining public `DbStorage` batch blocks in
-  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy-only when `RUSTAXA_ENABLE_FINAL_CHAIN` is
-  enabled; Rust-mode publication enters `BridgeFinalChain`/`BridgeConsensusExecutionApi` and commits FinalChain storage
-  rows through native Rust storage. `StateAPI` remains the external EVM/state database boundary.
+  `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are pure-C++ reference-only and the source is not
+  compiled when `RUSTAXA_ENABLE_FINAL_CHAIN` is enabled; Rust-mode publication enters
+  `BridgeFinalChain`/`BridgeConsensusExecutionApi` and commits FinalChain storage rows through native Rust storage.
+  `StateAPI` remains the external EVM/state database boundary.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
 - PBFT finalization report-surface cleanup removed the bridge-only `PbftFinalizationLiveMutationReport` CXX DTO and the

@@ -1,17 +1,29 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <future>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "common/event.hpp"
+#include "common/types.hpp"
+#include "common/vrf_wrapper.hpp"
+#include "config/config.hpp"
+#include "final_chain/data.hpp"
 #include "final_chain/state_api.hpp"
 #include "rewards/rewards_stats.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "storage/storage.hpp"
 
 namespace taraxa::final_chain {
 
 // Rust-mode final-chain shim facade.
-// This class is a standalone surface in Rust-enabled builds and must not inherit
-// or delegate behavior to FinalChainOld.
+// This class is a standalone surface in Rust-enabled builds.
 class FinalChain {
  protected:
   util::event::EventEmitter<std::shared_ptr<FinalizationResult>> const block_finalized_emitter_{};
@@ -101,7 +113,7 @@ class FinalChain {
   rustaxa::DagDposAuthorizationFacts dagDposAuthorizationFacts(EthBlockNumber blk_num, addr_t const& addr) const;
   rustaxa::PbftFinalChainFacts collectPbftFinalChainFacts(rustaxa::PbftFinalChainFactRequest request) const;
   rustaxa::DagProposerFinalChainFacts dagProposerFinalChainFacts(std::optional<EthBlockNumber> proposal_period,
-                                                                const addr_t& proposer) const;
+                                                                 const addr_t& proposer) const;
 
   uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
   uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;
