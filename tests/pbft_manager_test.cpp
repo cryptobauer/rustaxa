@@ -1,12 +1,11 @@
-#include <gtest/gtest.h>
+#include "pbft/pbft_manager.hpp"
 
-#include <type_traits>
+#include <gtest/gtest.h>
 
 #include "common/init.hpp"
 #include "dag/dag_manager.hpp"
 #include "logger/logger.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
-#include "pbft/pbft_manager.hpp"
 #include "test_util/node_dag_creation_fixture.hpp"
 
 namespace taraxa::core_tests {
@@ -197,15 +196,6 @@ struct PbftManagerTest : NodesTest {
     }
   }
 };
-
-TEST(PbftManagerOverlayTest, rustModePbftManagerDoesNotInheritLegacyImplementation) {
-#if defined(RUSTAXA_ENABLE_PILLAR_VOTES) || defined(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
-  static_assert(!std::is_base_of_v<PbftManagerOld, PbftManager>);
-  SUCCEED();
-#else
-  GTEST_SKIP() << "PbftManager shim overlay is disabled";
-#endif
-}
 
 TEST_F(PbftManagerTest, check_get_eligible_vote_count) {
   auto node_cfgs = make_node_cfgs(5, 1, 5);

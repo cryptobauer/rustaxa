@@ -11,7 +11,6 @@
 #include "config/config.hpp"
 #include "dag/dag_block.hpp"
 #include "logger/logger.hpp"
-#include "network/network.hpp"
 
 namespace rustaxa {
 struct DagProposerSignedBlockIntent;
@@ -25,6 +24,7 @@ namespace taraxa {
 class TransactionManager;
 class KeyManager;
 class DagManager;
+class Network;
 struct FullNodeConfig;
 
 namespace final_chain {

@@ -1,21 +1,34 @@
 #pragma once
 
+#include <libp2p/Common.h>
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "common/types.hpp"
 #include "config/config.hpp"
 #include "final_chain/final_chain.hpp"
 #include "logger/logger.hpp"
 #include "network/network.hpp"
+#include "pbft/pbft_block_extra_data.hpp"
 #include "pbft/period_data.hpp"
 #include "pbft/proposed_blocks.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
-#include "vote/pillar_vote.hpp"
+#include "vote/vrf_sortition.hpp"
 
 namespace taraxa {
 
@@ -27,9 +40,46 @@ namespace pillar_chain {
 class PillarChainManager;
 }
 
+namespace util {
+class ThreadPool;
+}
+
+class DagManager;
+class DbStorage;
 class FullNode;
+class PbftChain;
+class PbftBlock;
+class PbftVote;
 class PeriodData;
+class TransactionManager;
 class VoteManager;
+enum PbftMgrStatus : uint8_t;
+
+/**
+ * PBFT protocol phases exposed by the legacy-compatible manager API.
+ *
+ * Values are the stable PBFT step ordinals consumed by vote and manager compatibility callers. The sequence begins at
+ * one and remains contiguous through finish polling; unknown numeric values are rejected by the Rust runtime adapters
+ * rather than represented by this enum.
+ */
+enum PbftStates { value_proposal_state = 1, filter_state, certify_state, finish_state, finish_polling_state };
+
+/**
+ * Result of validating a proposed PBFT block's FinalChain state root.
+ *
+ * `Valid` permits block admission, `Missing` requests or waits for unavailable FinalChain state, and `Invalid` rejects
+ * a mismatched root. The stable ordinals are translated to typed Rust validation facts at the manager boundary.
+ */
+enum class PbftStateRootValidation { Valid = 0, Missing, Invalid };
+
+static_assert(value_proposal_state == 1);
+static_assert(filter_state == 2);
+static_assert(certify_state == 3);
+static_assert(finish_state == 4);
+static_assert(finish_polling_state == 5);
+static_assert(static_cast<uint8_t>(PbftStateRootValidation::Valid) == 0);
+static_assert(static_cast<uint8_t>(PbftStateRootValidation::Missing) == 1);
+static_assert(static_cast<uint8_t>(PbftStateRootValidation::Invalid) == 2);
 
 /**
  * FinalChain dispatch facts returned to PBFT finalization after a finalized PBFT block is sent to FinalChain.

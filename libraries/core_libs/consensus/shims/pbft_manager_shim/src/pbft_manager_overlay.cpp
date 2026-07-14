@@ -12,14 +12,17 @@
 #include <unordered_set>
 #include <vector>
 
+#include "common/thread_pool.hpp"
 #include "config/version.hpp"
 #include "dag/dag.hpp"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
+#include "network/network.hpp"
 #include "pbft/pbft_manager.hpp"
 #include "pbft/period_data.hpp"
 #include "pillar_chain/pillar_chain_manager.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
 #include "vote_manager/vote_manager.hpp"
 

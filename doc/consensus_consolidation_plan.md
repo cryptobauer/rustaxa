@@ -450,9 +450,9 @@ Implementation notes:
 - The standalone DAG block proposer facade is fully detached from `DagBlockProposerOld`. Feature-on builds exclude the
   untouched original `dag_block_proposer.cpp`, the overlay wrapper directly includes the self-contained executor
   facade, and the compile rename is deleted. The facade now explicitly includes its configuration, thread-pool, and
-  standard-library dependencies. It intentionally retains `network/network.hpp` until the PBFT manager legacy-header
-  import is detached: removing it exposed that the temporary PBFT rename macro can otherwise declare `Network` with a
-  `PbftManagerOld` constructor parameter. This is include-order compatibility debt, not proposer authority. Rust still
+  standard-library dependencies. After the PBFT manager legacy-header import was detached, the facade also replaced its
+  broad `network/network.hpp` include with a `Network` forward declaration, closing the former rename-macro include-order
+  debt. Rust still
   owns proposal sessions, retry state, eligibility and tip policy, transaction-pack commands, VDF control decisions,
   timestamps, and signed-RLP planning; C++ retains the classified worker/network, VDF execution, node-secret signature,
   compatibility-materialization, logging, and add-block executor shell. Pure-C++ builds continue to select the
@@ -466,6 +466,25 @@ Implementation notes:
   API, architecture, C++ implementation, and independent review used the code-mapper, api-designer,
   architect-reviewer, cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation agent was needed because
   runtime, bridge, storage, and contract behavior did not change.
+- The standalone PBFT manager facade is fully detached from `PbftManagerOld`. Proposed-block or pillar-vote builds
+  exclude the untouched original `pbft_manager.cpp`, the overlay wrapper directly includes the shim-owned facade, and
+  the compile rename is deleted. The facade owns the stable PBFT state and state-root-validation enums with their
+  original values. It retains the historical public network and FinalChain include chain because a broad `core_libs`
+  build proved that upstream network consumers still rely on those transitive definitions; the dangerous legacy-header
+  rename/import is gone. The empty header-only shim translation unit and Old-identity assertion are deleted. This is
+  scaffold removal only: `BridgePbftManagerRuntime`, live executor behavior, storage, transport, and public API behavior
+  are unchanged. Module-disabled and pure-C++ builds retain the untouched original manager.
+  Validation passed 86 focused native Rust PBFT manager tests, 62 focused Rust bridge PBFT manager tests, the focused
+  single-node PBFT manager consumer, two isolated VoteManager consumers, all 13 DAG-block consumers, the PBFT CXX
+  runtime suite through Tier 2, feature-on target builds through `taraxad`, both rewrite boundary guards, Tier 1, and
+  the startup smoke gate. Feature-on build metadata and the core archive contain neither the original manager object nor
+  a `PbftManagerOld` symbol; an all-Rust-off configuration selected and object-compiled the untouched original source,
+  and original-file diffs versus `upstream-main` are empty. Proposed-only and pillar-only configurations also select
+  only the overlay under the established feature predicate; their standalone object builds continue to expose the
+  pre-existing requirement for companion consensus-module APIs, without restoring a legacy fallback. Mapping, API,
+  architecture, C++ implementation, and independent review used the code-mapper, api-designer, architect-reviewer,
+  cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation agent was needed because runtime, bridge,
+  storage, and contract behavior did not change.
 - `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and
@@ -818,6 +837,13 @@ Implementation notes:
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
+- `pbft_manager_shim` is fully detached from the dead `PbftManagerOld` compile scaffold. The wrapper directly includes
+  the standalone facade, the stable public PBFT phase and FinalChain-validation enums are shim-owned with preserved
+  ordinals, and feature-on builds exclude the untouched original source rather than compiling renamed symbols. The
+  dangerous rename macro is gone, eliminating the former type-substitution include-order hazard. The facade retains its
+  broad network/FinalChain includes for public transitive compatibility after a full build proved upstream network vote
+  code still consumes that include chain. The empty header-only shim translation unit and Old-identity test are deleted.
+  Module-disabled and pure-C++ builds retain the original manager.
 - `pillar_chain_manager_shim` now constructs `BridgePillarChainRuntime`, which owns live pillar-vote aggregation state
   and the native pillar storage handle used by PBFT-facing finalization. The previous live manager field
   `BridgePillarVotes` is gone; the standalone `BridgePillarVotes` CXX handle is also retired after the remaining C++

@@ -757,7 +757,9 @@ The completed PBFT manager closeout folded the dedicated slice tracker into this
    `BridgeStorage`, storage-shim batches, `rustBatchId`, `db_->rustStorage()`, direct `getDB()`, or generic `DbStorage`
    consensus reads/writes.
 10. Overlay shrink and upstream-sync cleanup: `PbftManagerOld` production forwarding and stale overlay TODOs were
-    removed or replaced with explicit public API, lifecycle, network, EVM, and executor-boundary classifications.
+    removed or replaced with explicit public API, lifecycle, network, EVM, and executor-boundary classifications. The
+    remaining dead legacy compile scaffold is also gone: feature-on builds import and compile only the standalone shim
+    facade and implementation, while module-disabled and pure-C++ builds retain the untouched original manager.
 11. Runtime mirror and protocol sidecar closeout: remaining direct scalar-mirror reads were removed from Rust-mode
     production helpers or classified as compatibility caches, satisfying the PBFT manager closeout definition.
 
