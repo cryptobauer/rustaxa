@@ -1,11 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
-#include <string>
 #include <vector>
 
 #include "common/types.hpp"
@@ -15,20 +16,21 @@ namespace taraxa {
 
 class DbStorage;
 class PbftBlock;
-class Vote;
 
 /**
  * Rust-mode proposed PBFT block cache facade.
  *
- * This class preserves the public C++ `ProposedBlocks` API while routing deterministic period/hash membership, cleanup,
- * and validation-flag state to Rust. It is a standalone facade and must not inherit from or delegate to
- * `ProposedBlocksOld`.
+ * This class preserves the `ProposedBlocks` API required by current call sites while routing deterministic period/hash
+ * membership, cleanup, and validation-flag state to Rust. The unused legacy-only `checkOldBlocksPresence` diagnostic is
+ * intentionally not exposed. This is a standalone facade and must not inherit from or delegate to the legacy C++
+ * implementation.
  *
  * Invariants:
  * - Rust owns the canonical `(period, block hash) -> validation flag` index
- * - C++ owns live `PbftBlock` objects until the PBFT block model is ported
- * - Rust storage owns proposed-block save, startup restore, and stale-proposal cleanup when a storage handle is
- * available
+ * - Rust retains canonical block RLP and metadata; C++ materializes temporary `PbftBlock` objects only for
+ * compatibility return values
+ * - every instance is constructed with Rust storage, which owns proposed-block save, startup restore, and
+ *   stale-proposal cleanup
  */
 class ProposedBlocks {
  public:
@@ -45,9 +47,11 @@ class ProposedBlocks {
   };
 
   /**
-   * Creates an empty Rust-backed proposed-block index.
+   * Creates an empty storage-backed Rust proposed-block index.
    *
-   * `db` may be null for temporary/local leader selection caches that do not request persistence.
+   * `db` must be non-null and expose a Rust storage handle. Construction throws `std::runtime_error` when that
+   * precondition is not met. The Rust index retains the storage ownership needed by later persistence, restore, and
+   * cleanup operations; this facade does not retain a redundant C++ `DbStorage` owner.
    */
   explicit ProposedBlocks(std::shared_ptr<DbStorage> db);
   ~ProposedBlocks();
@@ -96,12 +100,11 @@ class ProposedBlocks {
    *   live C++ `PbftBlock` objects during PBFT startup.
    *
    * Inputs/outputs:
-   * - Requires the constructor to have received a Rust storage handle owner.
+   * - Uses the Rust storage handle retained by the index at construction.
    * - Returns the number of persisted proposals newly inserted into the Rust index.
    *
    * Edge behavior:
-   * - Throws `std::runtime_error` on missing DB, storage failures, corrupt PBFT block RLP,
-   *   or storage key/hash mismatch.
+   * - Throws `std::runtime_error` on storage failures, corrupt PBFT block RLP, or storage key/hash mismatch.
    */
   size_t restoreFromStorage();
 
@@ -131,9 +134,7 @@ class ProposedBlocks {
    *
    * Inputs/outputs:
    * - `period` is the first retained PBFT period.
-   * - When the Rust runtime owns a storage handle, Rust deletes stale storage keys in one batch before
-   *   mutating the Rust index.
-   * - When `db_` is null, only the in-memory Rust index is cleaned.
+   * - Rust deletes stale storage keys in one batch before mutating the Rust index.
    *
    * Edge behavior:
    * - Throws `std::runtime_error` on Rust storage or bridge failures.
@@ -152,7 +153,6 @@ class ProposedBlocks {
   static std::shared_ptr<PbftBlock> makeBlock(const rust::Vec<uint8_t>& block_rlp);
 
   mutable std::shared_mutex proposed_blocks_mutex_;
-  std::shared_ptr<DbStorage> storage_owner_;
   ::rust::Box<rustaxa::BridgeProposedBlocks> rust_blocks_;
 };
 

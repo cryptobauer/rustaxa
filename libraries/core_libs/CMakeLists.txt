@@ -73,6 +73,11 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     # and pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/verified_votes\\.cpp$")
 endif()
+if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
+    # The Rust-mode ProposedBlocks overlay is a standalone facade. Keep the
+    # untouched legacy implementation only in module-disabled and pure C++ builds.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/proposed_blocks\\.cpp$")
+endif()
 
 file(GLOB_RECURSE NETWORK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/network/*.hpp)
 file(GLOB_RECURSE NETWORK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/network/*.cpp)
@@ -264,17 +269,9 @@ if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
         message(FATAL_ERROR "RUSTAXA_ENABLE_PROPOSED_BLOCKS requires RUSTAXA_ENABLE")
     endif()
 
-    # In Rust proposed-blocks mode, inject a header overlay that remaps legacy
-    # ProposedBlocks to ProposedBlocksOld and exposes a standalone shim facade.
+    # In Rust proposed-blocks mode, inject the standalone Rust-backed facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/proposed_blocks_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/proposed_blocks_shim/src/proposed_blocks_shim.cpp)
-
-    # Compile the legacy implementation as ProposedBlocksOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pbft/proposed_blocks.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "ProposedBlocks=ProposedBlocksOld"
-    )
 endif()
 
 if(RUSTAXA_ENABLE_VERIFIED_VOTES)

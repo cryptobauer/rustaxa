@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <type_traits>
 #include <vector>
 
 #include "pbft/pbft_block.hpp"
@@ -18,15 +17,6 @@ std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed) {
 }
 
 }  // namespace
-
-TEST(ProposedBlocksShimTest, rustModeProposedBlocksDoesNotInheritLegacyImplementation) {
-#ifdef RUSTAXA_ENABLE_PROPOSED_BLOCKS
-  static_assert(!std::is_base_of_v<ProposedBlocksOld, ProposedBlocks>);
-  SUCCEED();
-#else
-  GTEST_SKIP() << "ProposedBlocks shim is disabled";
-#endif
-}
 
 struct ProposedBlocksShimDataTest : WithDataDir {};
 
@@ -118,6 +108,31 @@ TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndexAndDb) {
   ASSERT_EQ(persisted.size(), 1);
   EXPECT_EQ(persisted[0]->getPeriod(), period_two_block->getPeriod());
   EXPECT_EQ(persisted[0]->rlp(true), period_two_block->rlp(true));
+}
+
+TEST_F(ProposedBlocksShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
+  const auto block = makeBlock(1, 303);
+
+  {
+    auto db = std::make_shared<DbStorage>(data_dir);
+    ProposedBlocks proposed_blocks(db);
+    db.reset();
+
+    EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(block, true));
+  }
+
+  {
+    auto db = std::make_shared<DbStorage>(data_dir);
+    ASSERT_EQ(db->getProposedPbftBlocks().size(), 1);
+    ProposedBlocks proposed_blocks(db);
+    db.reset();
+
+    EXPECT_EQ(proposed_blocks.restoreFromStorage(), 1);
+    proposed_blocks.cleanupProposedPbftBlocksByPeriod(2);
+  }
+
+  auto db = std::make_shared<DbStorage>(data_dir);
+  EXPECT_TRUE(db->getProposedPbftBlocks().empty());
 }
 
 TEST_F(ProposedBlocksShimDataTest, missingMarkValidThrows) {

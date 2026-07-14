@@ -15,10 +15,11 @@ use std::sync::Arc;
 
 /// Creates a Rust proposed-block index bound to a shared Rust storage handle.
 ///
-/// The runtime clones the storage owner from `BridgeStorage` during
-/// construction, so C++ can preserve `DbStorage` lifetime ownership without
-/// retaining or passing a generic bridge storage pointer for each proposed-block
-/// persistence operation.
+/// The runtime clones the shared `Arc<Storage>` from `BridgeStorage` during
+/// construction. The returned bridge therefore keeps the storage backend alive
+/// independently and C++ does not need to retain either the originating
+/// `BridgeStorage` facade or a `DbStorage` owner for subsequent proposed-block
+/// persistence operations.
 pub fn create_proposed_blocks_index_from_storage(
     storage: &BridgeStorage,
 ) -> Box<BridgeProposedBlocks> {
@@ -135,9 +136,9 @@ impl BridgeProposedBlocks {
 
     /// Restores Rust-owned proposed-block metadata from persisted PBFT block RLPs.
     ///
-    /// Inputs:
-    /// - `storage`: shared Rust storage handle used to iterate the proposed-PBFT
-    ///   column without materializing C++ `PbftBlock` objects.
+    /// The bridge uses its internally owned shared Rust storage handle to
+    /// iterate the proposed-PBFT column without materializing C++ `PbftBlock`
+    /// objects.
     ///
     /// Output:
     /// - number of persisted entries that were newly inserted into this index.
@@ -191,9 +192,9 @@ impl BridgeProposedBlocks {
 
     /// Cleans stale proposed PBFT blocks from Rust storage and memory.
     ///
-    /// Inputs:
-    /// - `storage`: shared Rust storage handle used for proposed-block deletes.
-    /// - `period`: first period to keep; all lower periods are removed.
+    /// The bridge uses its internally owned shared Rust storage handle for
+    /// proposed-block deletes. `period` is the first period to keep; all lower
+    /// periods are removed.
     ///
     /// Output:
     /// - deterministic period/hash groups that were deleted and removed.

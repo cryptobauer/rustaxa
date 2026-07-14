@@ -898,8 +898,9 @@ The current Rust consensus footprint is broad but still incomplete:
 7. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 8. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` head updates, persisted-head preview, and next-block validation route through Rust under
-   `RUSTAXA_ENABLE_PBFT_CHAIN`; proposed-block membership, validity flags, RLP snapshots, and cleanup planning route
-   through Rust under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`; period-data queue admission, effective size, pop vote-source
+   `RUSTAXA_ENABLE_PBFT_CHAIN`; proposed-block membership, validity flags, RLP snapshots, persistence, restore, and
+   cleanup route through the standalone Rust-backed facade under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`, and feature-on builds
+   no longer import or compile `ProposedBlocksOld`; period-data queue admission, effective size, pop vote-source
    decisions, and cleanup planning now live inside the PBFT manager Rust runtime. The standalone period-data queue CXX
    handle, shim overlay, and module flag have been retired; C++ keeps only temporary live sidecars for `PeriodData`,
    vote, and peer objects.

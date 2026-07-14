@@ -1,3 +1,4 @@
+#include <mutex>
 #include <stdexcept>
 #include <utility>
 
@@ -37,8 +38,7 @@ namespace {
 
 }  // namespace
 
-ProposedBlocks::ProposedBlocks(std::shared_ptr<DbStorage> db)
-    : storage_owner_(std::move(db)), rust_blocks_(makeRustProposedBlocks(storage_owner_)) {}
+ProposedBlocks::ProposedBlocks(std::shared_ptr<DbStorage> db) : rust_blocks_(makeRustProposedBlocks(db)) {}
 
 ProposedBlocks::~ProposedBlocks() = default;
 
@@ -87,10 +87,6 @@ void ProposedBlocks::markBlockAsValid(PbftPeriod period, const blk_hash_t& block
 }
 
 size_t ProposedBlocks::restoreFromStorage() {
-  if (!storage_owner_) {
-    throw std::runtime_error("Cannot restore proposed PBFT blocks without Rust storage");
-  }
-
   std::unique_lock lock(proposed_blocks_mutex_);
   try {
     return rust_blocks_->proposed_blocks_restore_from_storage();
