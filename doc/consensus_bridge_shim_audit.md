@@ -35,7 +35,6 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/sortition.rs` | `BridgeSortitionParamsManager`, `create_sortition_params_manager*` | `sortition_params_manager_shim`, query/RPC paths through storage | C++ public compatibility facade | Delete after sortition parameter persistence and query reads are native Rust consensus/storage APIs. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | Transaction RLP inspection and bridge DTO helpers | Transaction manager, period-data queue, tests | External boundary | Keep only wire/codec compatibility helpers needed at C++ network/RPC boundaries. Move internal transaction facts to `rustaxa-types`/native consensus. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | `BridgeTransactionManagerRuntime` | `transaction_manager_shim`, RPC submission paths, tests | C++ public compatibility facade | Standalone sidecar and admission-execution handles are retired; live sidecar and DAG-save execution state are private runtime state. Delete the remaining runtime bridge after the transaction manager public C++ facade is retired or all admission/packing paths are native Rust. Keep external EVM/final-chain callbacks as a minimal API. |
-| `rust/crates/rustaxa-bridge/src/transaction_queue.rs` | `BridgeTransactionQueue`, `create_transaction_queue`, live queue facade methods | `transaction_queue_shim` | C++ public compatibility facade | Delete after queue ownership moves fully to Rust transaction manager and C++ queue facade is no longer constructed. Queue-only planning/hash-view CXX helpers with no shim callers are deleted. |
 | `rust/crates/rustaxa-bridge/src/gas_pricer.rs` | `BridgeGasPricer`, `create_gas_pricer*`, bid/update methods | `gas_pricer_shim`, transaction/RPC gas estimation | C++ public compatibility facade | Delete after gas pricing history and query are Rust-owned behind the transaction/final-chain runtime API. The CXX-only storage init method has been removed; storage restoration is construction-time only. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | `BridgeSlashingProofPlanner`, `create_slashing_proof_planner` | `slashing_manager_shim` | C++ public compatibility facade | Delete after slashing proof planning is invoked by Rust consensus runtime instead of C++ manager facade. Direct mark-only CXX export is deleted; C++ reports executor outcomes through the submission-report API and receives only the submitted/not-submitted boolean it uses. The live Rust-admission path now passes one normalized double-vote evidence payload with a shared PBFT slot instead of two records plus loose slot scalars. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF bridge helpers | VDF C++ integration/tests | External boundary | Keep the live VDF/prove/verify, atomic-backed cancellation token, and legacy sortition APIs until VDF is explicitly folded into native Rust or a dedicated external VDF API. No-caller scalar/helper exports are deleted when they are covered by native `rustaxa-vdf` tests. |
@@ -70,7 +69,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgePillarChainStorage` | `pillar_chain.rs` | `storage_shim` | C++ public compatibility facade | Pillar chain storage is native Rust-owned; the compatibility handle exposes only storage-shim operations with active C++ callers. |
 | `BridgePillarChainRuntime` | `pillar_chain.rs`, `pillar_votes.rs` | `pillar_chain_manager_shim` | Internal Rust route | Pillar vote aggregation, synced bundle apply, and PBFT-facing pillar finalization are fully owned by a Rust runtime. Remove after the C++ PillarChainManager facade is retired or replaced by narrower external ports. |
 | `BridgeSortitionParamsManager` | `sortition.rs` | `sortition_params_manager_shim` | C++ public compatibility facade | Sortition params persistence/query is native Rust storage/query behavior. |
-| `BridgeTransactionQueue` | `transaction_queue.rs` | `transaction_queue_shim` | C++ public compatibility facade | Transaction queue is private Rust transaction-manager state. |
 | `BridgeTransactionManagerRuntime` | `transaction_manager.rs` | `transaction_manager_shim`, app/bootstrap | C++ public compatibility facade | Transaction admission/packing runs behind native Rust runtime and minimal external submission API. |
 | `BridgeGasPricer` | `gas_pricer.rs` | `gas_pricer_shim` | C++ public compatibility facade | Gas pricing is native Rust query/runtime behavior. The exported CXX surface is limited to construction, bid, pool-aware bid, and finalized-block update. |
 | `BridgeSlashingProofPlanner` | `slashing.rs` | `slashing_manager_shim` | C++ public compatibility facade | Slashing planning runs inside Rust consensus runtime. |
@@ -95,7 +93,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `sortition_params_manager_shim` | Sortition parameter storage facade | DAG/sortition, query paths | C++ public compatibility facade | Delete after sortition parameters are exposed through Rust storage/query APIs only. |
 | `storage_shim` | `DbStorage` Rust-mode overlay and Rust storage owner | App, consensus shims, storage tests | C++ public compatibility facade | Delete broad storage facade after all C++ consensus callers stop using `DbStorage`; keep only external app/admin bootstrap if needed. |
 | `transaction_manager_shim` | Transaction manager runtime/sidecar facade | App, RPC submission, PBFT packing | C++ public compatibility facade | Delete after transaction admission/packing/public submission API is native Rust with EVM boundary adapters. |
-| `transaction_queue_shim` | Transaction queue facade | Transaction manager and tests | C++ public compatibility facade | Delete after queue is private Rust transaction-manager state. |
 | `verified_votes_shim` | Verified votes compatibility facade | Vote manager shim | C++ public compatibility facade | Delete after vote manager uses Rust vote state directly. |
 | `vote_manager_shim` | Vote manager Rust runtime facade | PBFT manager, DAG/proposed blocks, network vote paths | Internal Rust route | Collapse into Rust PBFT/vote runtime. Keep only external network adapters until network/tarcap API is complete. |
 
@@ -171,7 +168,7 @@ Current snapshot after DAG manager verify-result API cleanup:
   The standalone `VoteManager` overlay also no longer imports or compiles `VoteManagerOld` when its exact feature
   predicate is enabled. Verified-votes mode now selects this overlay as one complete ownership bundle and requires the
   Rust storage, FinalChain, ProposedBlocks, and SlashingManager facades; the existing SlashingManager dependency further
-  requires GasPricer and TransactionQueue. Unsupported partial flag combinations fail during configuration instead of
+  requires GasPricer, while TransactionManager owns the queue internally. Unsupported partial flag combinations fail during configuration instead of
   compiling legacy adapters. Pure-C++ and Rust configurations without verified votes retain the untouched upstream
   implementation.
 - Verified-votes closeout validation passed: 14 focused Rust tests, two storage-backed shim tests, four isolated
@@ -266,11 +263,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   enters through `BridgeFinalChainExecutionSession` and `BridgeConsensusExecutionApi`; bridge tests that still verify
   malformed direct publication plans now call the native Rust `FinalChain::publish_external_evm_publication` helper
   without exporting that wrapper to C++.
-- `BridgeTransactionQueue` CXX exports are narrowed to the methods used by `transaction_queue_shim`. The no-caller
-  queue-only planning/hash-view exports `transaction_queue_erase_plan`, `transaction_queue_ordered_hashes`,
-  `transaction_queue_ordered_hashes_plan`, `transaction_queue_all_hash_groups`, and
-  `transaction_queue_block_finalized_plan` have been deleted from the CXX surface. Native `rustaxa-consensus`
-  transaction queue tests keep the internal planner coverage.
+- `BridgeTransactionQueue`, `create_transaction_queue`, the standalone queue CXX methods, bridge module,
+  `transaction_queue_shim`, and its feature flag are deleted. `BridgeTransactionManagerRuntime` now exclusively owns
+  the native Rust queue in production. Rust-enabled `core_libs` excludes the untouched legacy queue source; direct C++
+  queue tests remain pure-C++ reference coverage rather than being retargeted to legacy behavior in Rust mode.
 - `BridgeTransactionManagerRuntime` no-caller compatibility exports have been trimmed after the transaction-manager shim
   moved to runtime-owned command APIs. Deleted exports include old runtime sidecar lookup/finish/evict helpers, queue
   erase/get/order/known helpers, and sidecar size/remove helpers that had no C++ shim callers.

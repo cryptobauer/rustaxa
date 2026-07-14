@@ -30,8 +30,8 @@ use crate::ffi::rustaxa_ffi::{
     TransactionPackSessionEstimateInput, TransactionPackSessionStep,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
-    TransactionQueueInsertOutcome, TransactionQueueProposableAccountFact,
-    TransactionQueuePurgePlan, TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
+    TransactionQueueProposableAccountFact, TransactionQueueStoredTransaction,
+    TransactionQueueTransactionGroup,
 };
 use crate::ffi::{
     BridgeStorage, BridgeTransactionManagerRuntime, TransactionManagerRuntimePackSession,
@@ -75,8 +75,20 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 struct TransactionManagerRuntimeQueueCleanupPlan {
-    non_proposable_expired: TransactionQueuePurgePlan,
-    finalized_account_purged: TransactionQueuePurgePlan,
+    non_proposable_expired: TransactionManagerRuntimeQueuePurgePlan,
+    finalized_account_purged: TransactionManagerRuntimeQueuePurgePlan,
+}
+
+struct TransactionManagerRuntimeQueueInsertOutcome {
+    status: u8,
+    inserted_hash_found: bool,
+    inserted_hash: [u8; 32],
+    demoted_hashes: Vec<TransactionQueueHash>,
+    overflow_removed_hashes: Vec<TransactionQueueHash>,
+}
+
+struct TransactionManagerRuntimeQueuePurgePlan {
+    removed_hashes: Vec<TransactionQueueHash>,
 }
 
 #[derive(Debug)]
@@ -623,9 +635,8 @@ fn runtime_hashes_to_bridge(hashes: Vec<H256>) -> Vec<TransactionQueueHash> {
 
 fn runtime_queue_purge_plan_from_consensus(
     outcome: TransactionQueuePurgeOutcome,
-) -> TransactionQueuePurgePlan {
-    TransactionQueuePurgePlan {
-        removed_count: outcome.removed_hashes.len(),
+) -> TransactionManagerRuntimeQueuePurgePlan {
+    TransactionManagerRuntimeQueuePurgePlan {
         removed_hashes: runtime_hashes_to_bridge(outcome.removed_hashes),
     }
 }
@@ -1975,10 +1986,10 @@ impl BridgeTransactionManagerRuntime {
     }
 
     /// Inserts transaction metadata and canonical bytes into the Rust-owned queue.
-    pub fn transaction_manager_runtime_queue_insert(
+    fn transaction_manager_runtime_queue_insert(
         &mut self,
         input: TransactionQueueInsertInput,
-    ) -> Result<TransactionQueueInsertOutcome> {
+    ) -> Result<TransactionManagerRuntimeQueueInsertOutcome> {
         let proposable = input.proposable;
         let outcome = self
             .queue
@@ -1988,7 +1999,7 @@ impl BridgeTransactionManagerRuntime {
         {
             self.last_drop_observed = Some(Instant::now());
         }
-        Ok(TransactionQueueInsertOutcome {
+        Ok(TransactionManagerRuntimeQueueInsertOutcome {
             status: queue_status_to_ffi(outcome.status),
             inserted_hash_found: outcome.inserted_hash.is_some(),
             inserted_hash: outcome.inserted_hash.unwrap_or_default().0,
@@ -2067,7 +2078,7 @@ impl BridgeTransactionManagerRuntime {
             input.proposable = plan.queue_proposable;
             self.transaction_manager_runtime_queue_insert(input)?
         } else {
-            TransactionQueueInsertOutcome {
+            TransactionManagerRuntimeQueueInsertOutcome {
                 status: queue_status_to_ffi(plan.status),
                 inserted_hash_found: false,
                 inserted_hash: [0; 32],
@@ -3623,6 +3634,72 @@ mod tests {
     }
 
     #[test]
+    fn bridge_transaction_manager_runtime_tracks_multi_account_overflow_drop_window() {
+        let mut runtime = create_transaction_manager_runtime_for_test(
+            0,
+            TransactionQueueConfig { max_size: 100 },
+        );
+        assert!(!runtime.transaction_manager_runtime_queue_transactions_dropped());
+
+        for hash in 1_u8..=101 {
+            let outcome = runtime
+                .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
+                    hash, [hash; 20], 0, true,
+                ))
+                .expect("multi-account queue insert should succeed");
+            if hash <= 100 {
+                assert!(outcome.overflow_removed_hashes.is_empty());
+            } else {
+                assert_eq!(outcome.overflow_removed_hashes.len(), 1);
+            }
+        }
+
+        assert_eq!(runtime.transaction_manager_runtime_queue_size(), 100);
+        assert!(runtime.transaction_manager_runtime_queue_transactions_dropped());
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_replacement_retains_demoted_payload() {
+        let mut runtime = create_transaction_manager_runtime_for_test(
+            0,
+            TransactionQueueConfig { max_size: 100 },
+        );
+        let original = runtime_queue_input(1, true);
+        let original_hash = original.hash;
+        let original_rlp = original.tx_rlp.clone();
+        runtime
+            .transaction_manager_runtime_queue_insert(original)
+            .expect("original queue insert should succeed");
+
+        let mut replacement = runtime_queue_input(2, true);
+        replacement.gas_price = u256_bytes(3);
+        replacement.tx_rlp = vec![0xdd, 0xee];
+        let replacement_hash = replacement.hash;
+        let replacement_rlp = replacement.tx_rlp.clone();
+        let outcome = runtime
+            .transaction_manager_runtime_queue_insert(replacement)
+            .expect("higher-priced replacement should succeed");
+
+        assert_eq!(outcome.demoted_hashes.len(), 1);
+        assert_eq!(outcome.demoted_hashes[0].hash, original_hash);
+        assert_eq!(runtime.transaction_manager_runtime_queue_size(), 1);
+        assert!(runtime.transaction_manager_runtime_queue_contains(&original_hash));
+        assert!(runtime.transaction_manager_runtime_queue_contains(&replacement_hash));
+        assert_eq!(
+            runtime
+                .queue
+                .transaction(H256::from(original_hash))
+                .expect("demoted transaction payload should remain known")
+                .rlp,
+            original_rlp
+        );
+        assert_eq!(
+            runtime.queue.ordered_transactions(10)[0].rlp,
+            replacement_rlp
+        );
+    }
+
+    #[test]
     fn bridge_transaction_manager_runtime_queue_block_finalized_returns_expired_hashes() {
         let mut runtime =
             create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 16 });
@@ -3706,9 +3783,9 @@ mod tests {
             )
             .expect("cleanup with account nonce facts should succeed");
 
-        assert_eq!(cleanup.non_proposable_expired.removed_count, 0);
+        assert!(cleanup.non_proposable_expired.removed_hashes.is_empty());
         assert!(
-            cleanup.finalized_account_purged.removed_count <= 2,
+            cleanup.finalized_account_purged.removed_hashes.len() <= 2,
             "purge should only affect proposable sender entries"
         );
         assert!(runtime.transaction_manager_runtime_queue_contains(&[3; 32]));

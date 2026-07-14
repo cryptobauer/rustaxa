@@ -19,7 +19,6 @@
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
-#include "transaction/transaction_queue.hpp"
 
 namespace taraxa {
 

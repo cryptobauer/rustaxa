@@ -911,13 +911,13 @@ The current Rust consensus footprint is broad but still incomplete:
    `identifyLeaderBlock`,
    `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into
    hash/object resolution plus vote/sign/gossip/storage effect execution.
-10. Port transaction queue behavior before transaction manager orchestration. The Rust-mode `TransactionQueue` overlay
-   now routes deterministic queue metadata, per-account nonce ordering, same-nonce replacement, non-proposer expiry
-   planning, pool limits, gas-price threshold accounting, queued transaction RLP payload retention, known-transaction
-   cache expiry, overflow/drop observation state, and finalized-account purge planning through Rust while C++
-   materializes `Transaction` objects on demand. Finalized-account purge fact sourcing now reads accounts from the Rust
-   FinalChain runtime in both TransactionManager runtime cleanup and standalone `TransactionQueue::purge()`. The
-   Rust-mode `TransactionManager` packing shim now routes proposal candidate
+10. Port transaction queue behavior before transaction manager orchestration. The standalone Rust-mode
+   `TransactionQueue` compatibility overlay and CXX handle are retired. `BridgeTransactionManagerRuntime` is the sole
+   production owner of the native Rust queue, including deterministic metadata, per-account nonce ordering,
+   same-nonce replacement, non-proposer expiry, limits, gas-price thresholds, canonical payload retention,
+   known-transaction cache expiry, overflow/drop observation, and finalized-account purge planning. Rust-enabled
+   production builds exclude the untouched legacy C++ queue source; direct legacy queue tests remain pure-C++ reference
+   coverage. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
    invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
    Rust runtime pack session. C++ drives packing through a narrow Rust step protocol that either asks for a required EVM
@@ -1186,9 +1186,9 @@ Use targeted validation before broad integration runs:
 - DAG changes should run relevant DAG tests such as `dag_test` and `dag_block_test`.
 - DAG proposer-routing changes should run Rust validation plus `rust_consensus_tests`, `dag_block_test`, and proposer-path
   PBFT or full-node coverage when thread/network orchestration changes.
-- Transaction queue and transaction-packing changes should run Rust validation plus `transaction_queue_shim_test`,
-  `transaction_manager_shim_test`, queue/packing-focused `transaction_test` cases, and `gas_pricer_test` when gas-price
-  threshold behavior is touched.
+- Transaction queue and transaction-packing changes should run native Rust queue and bridge runtime validation plus
+  `transaction_manager_shim_test`, Rust-mode transaction/gas-pricer consumers, and queue-focused `transaction_test` and
+  `gas_pricer_test` cases in a pure-C++ reference build when legacy parity is relevant.
 - Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
   `sortition_params_manager_shim_test` overlay check when `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled.
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,

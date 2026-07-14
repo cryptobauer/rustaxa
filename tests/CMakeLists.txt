@@ -86,12 +86,6 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     add_test(verified_votes_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/verified_votes_shim_test)
 endif()
 
-if(RUSTAXA_ENABLE_TRANSACTION_QUEUE)
-    add_executable(transaction_queue_shim_test transaction_queue_shim_test.cpp)
-    target_link_libraries(transaction_queue_shim_test test_util)
-    add_test(transaction_queue_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/transaction_queue_shim_test)
-endif()
-
 if(RUSTAXA_ENABLE_GAS_PRICER)
     add_executable(gas_pricer_shim_test gas_pricer_shim_test.cpp)
     target_link_libraries(gas_pricer_shim_test test_util)

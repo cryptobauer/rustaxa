@@ -18,7 +18,6 @@ use crate::sortition::*;
 use crate::storage::*;
 use crate::transaction::*;
 use crate::transaction_manager::*;
-use crate::transaction_queue::*;
 use crate::vdf::*;
 use crate::verified_votes::*;
 use ethereum_types::H256;
@@ -266,16 +265,6 @@ pub struct BridgePillarChainRuntime {
 /// and pass explicit facts for unit-level planner tests.
 pub struct BridgeSortitionParamsManager {
     pub manager: SortitionParamsManager,
-}
-
-/// Bridge-owned transaction queue handle.
-///
-/// `queue` owns deterministic queue metadata, queued payload bytes, and the local known-transaction cache.
-/// `last_drop_observed` tracks the Rust-mode equivalent of the legacy overflow/drop wall-clock window used by C++
-/// callers to tell peers that this node recently rejected or evicted transactions.
-pub struct BridgeTransactionQueue {
-    pub queue: TransactionQueue,
-    pub last_drop_observed: Option<Instant>,
 }
 
 /// Bridge-owned TransactionManager runtime handle for Rust-enabled manager paths.
@@ -586,21 +575,6 @@ pub mod rustaxa_ffi {
     /// Proposable queued transactions returned per sender.
     struct TransactionQueueTransactionGroup {
         transactions: Vec<TransactionQueueStoredTransaction>,
-    }
-
-    /// Rust queue insert decision and C++ mirror-update plan.
-    struct TransactionQueueInsertOutcome {
-        status: u8,
-        inserted_hash_found: bool,
-        inserted_hash: [u8; 32],
-        demoted_hashes: Vec<TransactionQueueHash>,
-        overflow_removed_hashes: Vec<TransactionQueueHash>,
-    }
-
-    /// Purge-style outcome with removed hashes and count.
-    struct TransactionQueuePurgePlan {
-        removed_hashes: Vec<TransactionQueueHash>,
-        removed_count: usize,
     }
 
     /// C++-supplied nonce fact for one proposable account.
@@ -4991,57 +4965,6 @@ pub mod rustaxa_ffi {
             current_period: u64,
             sync: bool,
         ) -> Result<RewardsStatsApplyResult>;
-        // Consensus transaction queue
-
-        type BridgeTransactionQueue;
-
-        pub fn create_transaction_queue(
-            config: TransactionQueueConfig,
-        ) -> Box<BridgeTransactionQueue>;
-        pub fn transaction_queue_insert(
-            self: &mut BridgeTransactionQueue,
-            input: TransactionQueueInsertInput,
-        ) -> Result<TransactionQueueInsertOutcome>;
-        pub fn transaction_queue_erase(self: &mut BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
-        pub fn transaction_queue_contains(self: &BridgeTransactionQueue, hash: &[u8; 32]) -> bool;
-        pub fn transaction_queue_mark_transaction_known(
-            self: &mut BridgeTransactionQueue,
-            hash: &[u8; 32],
-        ) -> bool;
-        pub fn transaction_queue_is_transaction_known(
-            self: &BridgeTransactionQueue,
-            hash: &[u8; 32],
-        ) -> bool;
-        pub fn transaction_queue_transactions_dropped(self: &BridgeTransactionQueue) -> bool;
-        pub fn transaction_queue_get_transaction(
-            self: &BridgeTransactionQueue,
-            hash: &[u8; 32],
-        ) -> TransactionQueueStoredTransaction;
-        pub fn transaction_queue_size(self: &BridgeTransactionQueue) -> usize;
-        pub fn transaction_queue_ordered_transactions(
-            self: &BridgeTransactionQueue,
-            count: u64,
-        ) -> Vec<TransactionQueueStoredTransaction>;
-        pub fn transaction_queue_all_transaction_groups(
-            self: &BridgeTransactionQueue,
-        ) -> Vec<TransactionQueueTransactionGroup>;
-        pub fn transaction_queue_block_finalized(
-            self: &mut BridgeTransactionQueue,
-            block_number: u64,
-        ) -> Vec<TransactionQueueHash>;
-        pub fn transaction_queue_purge_with_account_nonce_facts(
-            self: &mut BridgeTransactionQueue,
-            account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
-        ) -> Result<TransactionQueuePurgePlan>;
-        pub fn transaction_queue_proposable_accounts(
-            self: &BridgeTransactionQueue,
-        ) -> Vec<TransactionQueueProposableAccountFact>;
-        pub fn transaction_queue_non_proposable_over_limit(self: &BridgeTransactionQueue) -> bool;
-        pub fn transaction_queue_min_gas_price_for_block_inclusion(
-            self: &BridgeTransactionQueue,
-            limit: u64,
-        ) -> [u8; 32];
-
         // Consensus gas pricer
 
         type BridgeGasPricer;

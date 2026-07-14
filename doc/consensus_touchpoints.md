@@ -777,7 +777,6 @@ shimmed toward Rust, or can reasonably continue moving into Rust as part of the 
    - `libraries/core_libs/consensus/include/transaction/`
    - `libraries/core_libs/consensus/src/transaction/`
    - `libraries/core_libs/consensus/shims/transaction_manager_shim/`
-   - `libraries/core_libs/consensus/shims/transaction_queue_shim/`
    - `libraries/core_libs/consensus/shims/gas_pricer_shim/`
    - `rust/crates/rustaxa-consensus/src/transaction_manager.rs`
    - `rust/crates/rustaxa-consensus/src/transaction_queue.rs`

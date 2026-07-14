@@ -351,7 +351,7 @@ Candidate order:
 1. `period_data_queue_shim`
 2. `verified_votes_shim`
 3. `pillar_votes_shim` (retired in this slice)
-4. `transaction_queue_shim`
+4. `transaction_queue_shim` (retired in this slice)
 5. `gas_pricer_shim`
 6. `rewards_stats_shim`
 7. `sortition_params_manager_shim`
@@ -403,7 +403,8 @@ Implementation notes:
   private to Rust unit tests. Because the standalone VoteManager overlay implements the complete public surface, its
   feature configuration now excludes the legacy `vote_manager.cpp` source and no longer imports `VoteManagerOld`.
   Verified-votes mode is one complete ownership bundle requiring the Rust storage, FinalChain, ProposedBlocks, and
-  SlashingManager facades; existing SlashingManager dependencies also require GasPricer and TransactionQueue. Unsupported
+  SlashingManager facades; the existing SlashingManager dependency also requires GasPricer, while its TransactionManager
+  dependency owns the queue internally. Unsupported
   partial flag combinations fail during configuration rather than gaining legacy adapters. Pure-C++ and Rust
   configurations without verified votes retain the untouched upstream implementation.
   Validation passed with the 14 focused Rust verified-votes tests, the two storage-backed verified-votes shim tests,
@@ -426,6 +427,20 @@ Implementation notes:
   `make rewrite-validate-consensus`. Two additional PBFT DAG-creation cases encountered the known `/tmp/taraxa0`
   RocksDB fixture self-lock after the proposal case completed; they did not report a transaction-manager assertion or
   behavior failure.
+- `transaction_queue_shim` is retired. The standalone `BridgeTransactionQueue` handle, its bridge module and CXX
+  methods, the overlay directory/test, and `RUSTAXA_ENABLE_TRANSACTION_QUEUE` wiring are deleted. Rust-enabled
+  `core_libs` also excludes the untouched legacy `transaction_queue.cpp`, so removing the overlay cannot silently
+  restore C++ queue behavior. `BridgeTransactionManagerRuntime` is the sole production owner of the native
+  `rustaxa-consensus::TransactionQueue`; queue-shaped FFI records remain only where the manager runtime exchanges facts
+  with its C++ executor shell. Direct legacy queue tests remain enabled only in pure-C++ reference builds, while native
+  Rust and manager-runtime tests cover ordering, replacement/demotion, limits, drop observation, expiry, purge, gas
+  thresholds, payload views, and known-cache behavior.
+  Validation passed with 14 native Rust queue tests, 28 bridge TransactionManager runtime tests, all 36
+  `transaction_manager_shim_test` cases, 13 Rust-mode `transaction_test` cases, two Rust-mode `gas_pricer_test` cases,
+  the gas-pricer shim test, `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and
+  `make rewrite-validate-smoke`. Build metadata and archive audits found no legacy queue source or symbols in Rust mode.
+  The all-Rust-off build compiled the untouched `transaction_queue.cpp`, but an unrelated pre-existing missing
+  PillarChainManager API in `get_pillar_votes_bundle_packet_handler.cpp` blocked linking the pure-C++ transaction tests.
 - `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
   network pointer at this seam.
 - `dag_manager_shim` now owns the public `VerifyBlockReturnType` enum locally instead of aliasing
@@ -455,6 +470,11 @@ Implementation notes:
     runtime, with sidecar lockstep and PBFT sync drain behavior as the primary risks.
   - `reviewer`: reviewed the final period-data queue consolidation for stale references, sidecar risks, and validation
     coverage before closeout.
+  - `api-designer` and `architect-reviewer`: approved retiring the standalone transaction-queue facade while preserving
+    native queue ownership inside TransactionManager and pure-C++-only legacy reference coverage.
+  - `rust-engineer` and `cpp-pro`: removed the bridge/shim and build/test wiring halves and added replacement runtime
+    coverage; the independent reviewer found no remaining issues after a dead private field and stale dependency wording
+    were corrected.
 - Validation run:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge`
@@ -1558,9 +1578,8 @@ Implementation status:
 - The no-caller scalar threshold helper `pbft_vote_sortition_threshold_for_bridge` is also deleted from the CXX surface.
   Native `rustaxa-consensus` keeps `pbft_vote_sortition_threshold` for validation, threshold planning, and vote
   generation; live C++ proposer screening still uses `pbft_proposer_sortition_plan`.
-- `BridgeTransactionQueue` CXX exports have been narrowed to the live `transaction_queue_shim` facade methods. No-caller
-  queue-only planning/hash-view exports and bridge wrapper methods are deleted; native `rustaxa-consensus` transaction
-  queue tests keep planner coverage.
+- `BridgeTransactionQueue` and its standalone CXX exports are deleted with `transaction_queue_shim`. Production queue
+  state is private to `BridgeTransactionManagerRuntime`; native `rustaxa-consensus` queue tests retain domain coverage.
 - `BridgeTransactionManagerRuntime` CXX exports have been narrowed further: old no-caller sidecar lookup/finish/evict
   helpers, queue erase/get/order/known helpers, and sidecar size/remove helpers are deleted now that live
   `transaction_manager_shim` routing uses runtime-owned command and lookup APIs.

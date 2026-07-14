@@ -14,7 +14,9 @@
 #include "pbft/pbft_manager.hpp"
 #include "test_util/samples.hpp"
 #include "transaction/transaction_manager.hpp"
+#ifndef RUSTAXA_ENABLE
 #include "transaction/transaction_queue.hpp"
+#endif
 
 namespace taraxa::core_tests {
 
@@ -324,6 +326,7 @@ TEST_F(TransactionTest, transaction_concurrency) {
   }
 }
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(TransactionTest, priority_queue) {
   // Check ordering by same sender and different nonce
   {
@@ -461,6 +464,7 @@ TEST_F(TransactionTest, priority_queue_max_size) {
     }
   }
 }
+#endif
 
 SharedTransactions generateRandomOrderTransactions(uint32_t size) {
   SharedTransactions trxs;
@@ -478,6 +482,7 @@ SharedTransactions generateRandomOrderTransactions(uint32_t size) {
   return trxs;
 }
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(TransactionTest, priority_queue_ordering) {
   // Test generates 1000 transactions from 10 random accounts with random nonces between 1 and 10 and random gas proces
   // and verified that transactions are properly sorted in transaction queue and that all the duplicate transactions
@@ -536,6 +541,7 @@ TEST_F(TransactionTest, priority_queue_ordering) {
     }
   }
 }
+#endif
 
 TEST_F(TransactionTest, finalization_ordering) {
   // Test generates 1000 transactions from 10 random accounts with random nonces between 1 and 10 and random gas proces
@@ -544,7 +550,9 @@ TEST_F(TransactionTest, finalization_ordering) {
   const uint32_t number_of_runs = 30;
   for (uint32_t i = 0; i < number_of_runs; i++) {
     const uint32_t max_queue_size = 1000;
+#ifndef RUSTAXA_ENABLE
     TransactionQueue priority_queue(nullptr, max_queue_size);
+#endif
     auto trxs = generateRandomOrderTransactions(max_queue_size);
 
     EXPECT_EQ(trxs.size(), max_queue_size);
@@ -564,6 +572,7 @@ TEST_F(TransactionTest, finalization_ordering) {
   }
 }
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(TransactionTest, priority_queue_ordering_eth_test) {
   SharedTransactions trxs;
   std::vector<dev::KeyPair> kpv;
@@ -624,6 +633,7 @@ TEST_F(TransactionTest, priority_queue_ordering_eth_test) {
     }
   }
 }
+#endif
 
 TEST_F(TransactionTest, typed_deserialization) {
   auto trx_rlp =

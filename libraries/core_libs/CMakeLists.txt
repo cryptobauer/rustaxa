@@ -18,9 +18,11 @@ file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
-    # The Rust-mode TransactionManager overlay is fully standalone. Keep the
-    # untouched legacy implementation only in pure C++ reference builds.
+    # The Rust-mode TransactionManager and its native queue runtime are fully
+    # standalone. Keep the untouched legacy implementations only in pure C++
+    # reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_manager\\.cpp$")
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
 endif()
 if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)
     # The Rust-mode VoteManager overlay is fully standalone. Keep the untouched
@@ -172,10 +174,6 @@ if(RUSTAXA_ENABLE_GAS_PRICER)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_GAS_PRICER requires RUSTAXA_ENABLE")
     endif()
-    if(NOT RUSTAXA_ENABLE_TRANSACTION_QUEUE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_GAS_PRICER requires RUSTAXA_ENABLE_TRANSACTION_QUEUE")
-    endif()
-
     # In Rust GasPricer mode, inject a header overlay that remaps legacy
     # GasPricer to GasPricerOld and exposes a standalone GasPricer shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/gas_pricer_shim/include)
@@ -307,24 +305,6 @@ if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
         ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pbft/proposed_blocks.cpp
         PROPERTIES
         COMPILE_DEFINITIONS "ProposedBlocks=ProposedBlocksOld"
-    )
-endif()
-
-if(RUSTAXA_ENABLE_TRANSACTION_QUEUE)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_TRANSACTION_QUEUE requires RUSTAXA_ENABLE")
-    endif()
-
-    # In Rust transaction-queue mode, inject a header overlay that remaps legacy
-    # TransactionQueue to TransactionQueueOld and exposes a standalone TransactionQueue shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_queue_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_queue_shim/src/transaction_queue_shim.cpp)
-
-    # Compile the legacy implementation as TransactionQueueOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/transaction/transaction_queue.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "TransactionQueue=TransactionQueueOld"
     )
 endif()
 

@@ -31,6 +31,7 @@ TEST_F(GasPricerTest, basic_test) {
   EXPECT_EQ(gp.bid(), 3);
 }
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(GasPricerTest, basic_test_with_trx_pool) {
   TransactionQueue priority_queue(nullptr);
   auto trx = std::make_shared<Transaction>(1, 0, 2 /*gas_price*/, 100000, bytes(), secret);
@@ -46,6 +47,7 @@ TEST_F(GasPricerTest, basic_test_with_trx_pool) {
   EXPECT_EQ(priority_queue.getMinGasPriceForBlockInclusion(290000), 3);
   EXPECT_EQ(priority_queue.getMinGasPriceForBlockInclusion(310000), 1);
 }
+#endif
 
 TEST_F(GasPricerTest, random_test) {
   std::srand(std::time(nullptr));

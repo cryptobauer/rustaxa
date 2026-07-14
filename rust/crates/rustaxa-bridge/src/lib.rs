@@ -21,6 +21,5 @@ mod sortition;
 mod storage;
 mod transaction;
 mod transaction_manager;
-mod transaction_queue;
 mod vdf;
 mod verified_votes;

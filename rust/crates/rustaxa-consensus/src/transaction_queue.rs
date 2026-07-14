@@ -750,6 +750,24 @@ mod tests {
     }
 
     #[test]
+    fn caps_multi_account_queue_at_max_size() {
+        let mut queue = TransactionQueue::new(100);
+
+        for hash in 1_u8..=101 {
+            let outcome = queue
+                .insert(entry(hash, 0, u64::from(hash) + 1, hash), true)
+                .unwrap();
+            if hash <= 100 {
+                assert!(outcome.overflow_removed_hashes.is_empty());
+            } else {
+                assert_eq!(outcome.overflow_removed_hashes.len(), 1);
+            }
+        }
+
+        assert_eq!(queue.size(), 100);
+    }
+
+    #[test]
     fn erase_plan_reports_removed_entry_metadata() {
         let mut queue = TransactionQueue::new(100);
         queue.insert(entry(1, 1, 1, 1), true).unwrap();
