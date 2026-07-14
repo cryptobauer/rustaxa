@@ -358,6 +358,7 @@ Candidate order:
 6. `rewards_stats_shim`
 7. `sortition_params_manager_shim`
 8. `slashing_manager_shim`
+9. `key_manager_shim`
 
 Acceptance:
 
@@ -485,6 +486,19 @@ Implementation notes:
   architecture, C++ implementation, and independent review used the code-mapper, api-designer, architect-reviewer,
   cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation agent was needed because runtime, bridge,
   storage, and contract behavior did not change.
+- The standalone KeyManager facade is fully detached from `KeyManagerOld`. Master Rust builds exclude the untouched
+  original `key_manager.cpp`, the overlay wrapper directly includes the self-contained facade, and the compile rename
+  plus dead base construction are deleted. The facade preserves its public constructor and `getVrfKey` API, address-keyed
+  cache, Rust FinalChain lookup order (`block`, prior block when available, then next block), and missing/future-block
+  `nullptr` behavior. The retained `FinalChain` pointer is the classified external key-fact adapter; it is not legacy
+  delegation. Pure-C++ builds continue to select and object-compile the untouched original implementation. Validation
+  passed feature-on builds through `taraxad`, the focused single-node PBFT manager consumer, both focused vote
+  consumers, all 13 DAG-block and all 12 DAG consumers, the focused pillar-block construction consumer, Tier 1, Tier 2,
+  and the startup smoke gate. Feature-on build metadata and the core archive contain neither the original manager object
+  nor a `KeyManagerOld` symbol, and original-file diffs versus `upstream-main` are empty. Mapping, API, architecture,
+  C++ implementation, and independent review used the task-distributor, code-mapper, api-designer,
+  architect-reviewer, cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation agent was needed because
+  key lookup behavior, Rust bridge behavior, storage, and contract execution did not change.
 - `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and

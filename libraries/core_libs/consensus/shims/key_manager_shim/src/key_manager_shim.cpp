@@ -1,19 +1,18 @@
-#include "key_manager/key_manager.hpp"
-
 #include <mutex>
+#include <utility>
+
+#include "key_manager/key_manager.hpp"
 
 namespace taraxa {
 
 namespace {
 static const vrf_wrapper::vrf_pk_t kEmptyVrfKey;
 
-vrf_wrapper::vrf_pk_t fromRustVrfKey(const vrf_wrapper::vrf_pk_t& key) {
-  return key;
-}
-}
+vrf_wrapper::vrf_pk_t fromRustVrfKey(const vrf_wrapper::vrf_pk_t& key) { return key; }
+}  // namespace
 
 KeyManager::KeyManager(std::shared_ptr<final_chain::FinalChain> final_chain)
-    : KeyManagerOld(final_chain), shim_final_chain_(std::move(final_chain)) {}
+    : shim_final_chain_(std::move(final_chain)) {}
 
 std::shared_ptr<vrf_wrapper::vrf_pk_t> KeyManager::getVrfKey(EthBlockNumber blk_n, const addr_t& addr) {
   {

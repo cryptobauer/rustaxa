@@ -20,10 +20,9 @@ namespace taraxa {
  * Invariants:
  * - Returned keys are cached by validator address, matching the legacy
  *   KeyManager behavior.
- * - Missing or future-block facts return `nullptr`; production Rust mode does
- *   not fall back to `KeyManagerOld` for key lookup.
+ * - Missing or future-block facts return `nullptr`.
  */
-class KeyManager : public KeyManagerOld {
+class KeyManager {
  public:
   explicit KeyManager(std::shared_ptr<final_chain::FinalChain> final_chain);
   KeyManager(const KeyManager&) = delete;

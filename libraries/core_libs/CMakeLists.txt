@@ -18,13 +18,14 @@ file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
-    # The Rust-mode DAG graph, DAG manager, DAG block proposer,
-    # TransactionManager, its native queue runtime, and SortitionParamsManager overlays are fully
-    # standalone. Keep the untouched legacy implementations only in pure C++
-    # reference builds.
+    # The Rust-mode DAG graph, DAG manager, DAG block proposer, KeyManager,
+    # TransactionManager, its native queue runtime, and SortitionParamsManager
+    # overlays are fully standalone. Keep the untouched legacy implementations
+    # only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag_block_proposer\\.cpp$")
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/key_manager/key_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/sortition_params_manager\\.cpp$")
@@ -205,17 +206,9 @@ if(RUSTAXA_ENABLE)
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/src/dag_shim.cpp)
 
-    # In Rust mode, inject a header overlay that remaps legacy KeyManager
-    # to KeyManagerOld and exposes a forwarding KeyManager shim facade.
+    # In Rust mode, inject the standalone Rust-backed KeyManager facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/src/key_manager_shim.cpp)
-
-    # Compile the legacy implementation as KeyManagerOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/key_manager/key_manager.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "KeyManager=KeyManagerOld"
-    )
 
 endif()
 
