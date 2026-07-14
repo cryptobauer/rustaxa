@@ -1,5 +1,18 @@
 add_subdirectory(network/rpc)
 
+set(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED OFF)
+if(RUSTAXA_ENABLE_VERIFIED_VOTES AND
+   (NOT RUSTAXA_ENABLE_STORAGE OR NOT RUSTAXA_ENABLE_FINAL_CHAIN OR
+    NOT RUSTAXA_ENABLE_PROPOSED_BLOCKS OR NOT RUSTAXA_ENABLE_SLASHING_MANAGER))
+    message(FATAL_ERROR
+            "RUSTAXA_ENABLE_VERIFIED_VOTES requires RUSTAXA_ENABLE_STORAGE, "
+            "RUSTAXA_ENABLE_FINAL_CHAIN, RUSTAXA_ENABLE_PROPOSED_BLOCKS, and "
+            "RUSTAXA_ENABLE_SLASHING_MANAGER")
+endif()
+if(RUSTAXA_ENABLE_VERIFIED_VOTES)
+    set(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED ON)
+endif()
+
 file(GLOB_RECURSE CONSENSUS_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.hpp)
 file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
@@ -8,6 +21,11 @@ if(RUSTAXA_ENABLE)
     # The Rust-mode TransactionManager overlay is fully standalone. Keep the
     # untouched legacy implementation only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_manager\\.cpp$")
+endif()
+if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)
+    # The Rust-mode VoteManager overlay is fully standalone. Keep the untouched
+    # legacy implementation only when the overlay is not enabled.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/vote_manager\\.cpp$")
 endif()
 
 file(GLOB_RECURSE NETWORK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/network/*.hpp)
@@ -314,7 +332,6 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_VERIFIED_VOTES requires RUSTAXA_ENABLE")
     endif()
-
     # In Rust verified-votes mode, inject a header overlay that remaps legacy
     # VerifiedVotes to VerifiedVotesOld and exposes a standalone shim facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/verified_votes_shim/include)
@@ -328,24 +345,16 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     )
 endif()
 
-if((RUSTAXA_ENABLE_PILLAR_VOTES OR RUSTAXA_ENABLE_PROPOSED_BLOCKS) AND RUSTAXA_ENABLE_VERIFIED_VOTES AND RUSTAXA_ENABLE_STORAGE)
+if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "VoteManager shim requires RUSTAXA_ENABLE")
     endif()
 
-    # In Rust pillar-votes/proposed-blocks mode, inject a header overlay that
-    # remaps legacy VoteManager to VoteManagerOld and exposes a Rust-compatible
-    # shim facade.
+    # In storage-backed Rust verified-votes mode, inject the standalone
+    # Rust-compatible VoteManager shim facade for every consumer.
     target_include_directories(core_libs BEFORE PUBLIC
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/vote_manager_shim/src/vote_manager_shim.cpp)
-
-    # Compile the legacy implementation as VoteManagerOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/vote_manager/vote_manager.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "VoteManager=VoteManagerOld"
-    )
 endif()
 
 if(RUSTAXA_ENABLE_PILLAR_VOTES)

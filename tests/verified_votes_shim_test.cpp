@@ -3,6 +3,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "storage/storage.hpp"
+#include "test_util/test_util.hpp"
 #include "vote_manager/verified_votes.hpp"
 #include "vote_manager/vote_manager.hpp"
 
@@ -17,17 +19,15 @@ TEST(VerifiedVotesShimTest, rustModeVerifiedVotesDoesNotInheritLegacyImplementat
 #endif
 }
 
-TEST(VerifiedVotesShimTest, rustModeVoteManagerDoesNotInheritLegacyImplementation) {
-#ifdef RUSTAXA_ENABLE
-  static_assert(!std::is_base_of_v<VoteManagerOld, VoteManager>);
-  SUCCEED();
-#else
-  GTEST_SKIP() << "VoteManager shim is disabled";
-#endif
-}
+struct VerifiedVotesShimDataTest : WithDataDir {};
 
-TEST(VerifiedVotesShimTest, emptyIndexApiContract) {
+TEST_F(VerifiedVotesShimDataTest, emptyStorageBackedIndexApiContract) {
+#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
+  auto db = std::make_shared<DbStorage>(data_dir);
+  VerifiedVotes verified_votes(addr_t{}, db->rustStorage());
+#else
   VerifiedVotes verified_votes(addr_t{});
+#endif
 
   EXPECT_EQ(verified_votes.size(), 0);
   EXPECT_TRUE(verified_votes.votes().empty());

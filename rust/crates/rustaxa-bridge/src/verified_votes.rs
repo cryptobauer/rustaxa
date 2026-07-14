@@ -68,8 +68,8 @@ const PBFT_OPTIMIZED_BUNDLE_MISSING_PAYLOAD: u8 = 7;
 const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_DECODE_ERROR: u8 = 8;
 const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_METADATA_MISMATCH: u8 = 9;
 
-/// Creates an empty Rust verified-votes index for the C++ vote-manager shim.
-pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes> {
+#[cfg(test)]
+fn create_empty_verified_votes_for_test() -> Box<BridgeVerifiedVotes> {
     Box::new(BridgeVerifiedVotes {
         runtime: PbftVoteAdmissionRuntime::new(),
         storage: None,
@@ -1624,8 +1624,8 @@ mod tests {
     }
 
     #[test]
-    fn storage_free_factory_has_no_storage_access() {
-        let votes = create_verified_votes_index();
+    fn test_helper_has_no_storage_access() {
+        let votes = create_empty_verified_votes_for_test();
         assert!(!votes.verified_votes_reward_vote_cursor().found);
         assert!(votes.verified_votes_own_vote_records().is_err());
     }
@@ -1964,7 +1964,7 @@ mod tests {
 
     #[test]
     fn bridge_facade_owns_replay_and_threshold_cache() {
-        let mut votes = create_verified_votes_index();
+        let mut votes = create_empty_verified_votes_for_test();
         let vote_hash = hash(99);
 
         assert!(!votes.verified_votes_replay_contains(&vote_hash));
@@ -1983,7 +1983,7 @@ mod tests {
 
     #[test]
     fn bridge_add_verified_vote_reports_threshold_and_step_snapshot() {
-        let mut votes = create_verified_votes_index();
+        let mut votes = create_empty_verified_votes_for_test();
 
         let first = votes
             .verified_votes_add_verified_vote(payload(1, 44, 1, 5, 3), 5, true)
@@ -2011,7 +2011,7 @@ mod tests {
 
     #[test]
     fn bridge_admission_exposes_retained_weighted_payloads() {
-        let mut votes = create_verified_votes_index();
+        let mut votes = create_empty_verified_votes_for_test();
         let first = generated_vote([0x22; 32], NODE_SECRET);
         let second = generated_vote([0x22; 32], NODE_SECRET_TWO);
         let first_hash: [u8; 32] = first.vote_hash.into();
@@ -2060,7 +2060,7 @@ mod tests {
 
     #[test]
     fn bridge_builds_optimized_bundle_from_retained_payloads() {
-        let mut votes = create_verified_votes_index();
+        let mut votes = create_empty_verified_votes_for_test();
         let first = generated_vote([0x24; 32], NODE_SECRET);
         let second = generated_vote([0x24; 32], NODE_SECRET_TWO);
         let first_hash: [u8; 32] = first.vote_hash.into();
@@ -2128,7 +2128,7 @@ mod tests {
 
     #[test]
     fn bridge_plans_next_vote_bundle_egress_and_rejects_order_drift() {
-        let mut votes = create_verified_votes_index();
+        let mut votes = create_empty_verified_votes_for_test();
         let first = generated_vote_for_type([0x25; 32], NODE_SECRET, PbftVoteType::Next, 4);
         let second = generated_vote_for_type([0x25; 32], NODE_SECRET_TWO, PbftVoteType::Next, 4);
 

@@ -201,11 +201,6 @@ PeriodVerifiedVotesMap VerifiedVotes::buildSnapshotState() const {
   return state;
 }
 
-VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr)
-    : rust_verified_votes_(rustaxa::create_verified_votes_index()) {
-  LOG_OBJECTS_CREATE("VERIFIED_VOTES");
-}
-
 VerifiedVotes::VerifiedVotes([[maybe_unused]] addr_t node_addr, rustaxa::BridgeStorage& storage)
     : rust_verified_votes_(rustaxa::create_verified_votes_index_from_storage(storage)) {
   LOG_OBJECTS_CREATE("VERIFIED_VOTES");

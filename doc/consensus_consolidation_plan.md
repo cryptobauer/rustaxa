@@ -398,7 +398,22 @@ Implementation notes:
   payloads and bundle coordinates, deduplicates overlapping families by vote hash, and rebuilds Rust replay, retained
   payload, uniqueness, round-marker, and voted-block state. C++ receives only a compact snapshot to materialize the
   still-public own/reward vote sidecars. The post-construction storage attachment API and the legacy constructor's three
-  C++ `DbStorage` scans are deleted.
+  C++ `DbStorage` scans are deleted. The storage-free Rust-mode C++ constructor and its empty-index CXX factory are also
+  deleted, so every C++-reachable Rust verified-vote runtime is restored from authoritative storage. The empty helper is
+  private to Rust unit tests. Because the standalone VoteManager overlay implements the complete public surface, its
+  feature configuration now excludes the legacy `vote_manager.cpp` source and no longer imports `VoteManagerOld`.
+  Verified-votes mode is one complete ownership bundle requiring the Rust storage, FinalChain, ProposedBlocks, and
+  SlashingManager facades; existing SlashingManager dependencies also require GasPricer and TransactionQueue. Unsupported
+  partial flag combinations fail during configuration rather than gaining legacy adapters. Pure-C++ and Rust
+  configurations without verified votes retain the untouched upstream implementation.
+  Validation passed with the 14 focused Rust verified-votes tests, the two storage-backed verified-votes shim tests,
+  four isolated VoteManager consumer tests, both focused PBFT manager consumer tests, all nine Rust storage bridge
+  tests, both rewrite boundary guards, `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and
+  `make rewrite-validate-smoke`. Configuration coverage also proved that an incomplete verified-votes feature set fails
+  at configure time, the complete ownership bundle compiles with pillar support disabled, and a separate all-Rust-off
+  build compiles the untouched upstream `vote_manager.cpp`. Archive/build-metadata audits found no `VoteManagerOld`
+  symbol and no Rust-mode compile of the legacy VoteManager source; the original VoteManager header/source remain clean
+  versus `upstream-main`.
 - `transaction_manager_shim` is now a standalone full overlay: Rust-enabled builds no longer inherit, construct, or
   compile `TransactionManagerOld`. The facade preserves `enable_shared_from_this<TransactionManager>`, the complete
   public API, event identity, locks, FinalChain/EVM executor, thread pool, and logging shell, while the Rust runtime

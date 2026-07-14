@@ -150,26 +150,6 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   const auto vote_block_hash = vote->getBlockHash();
 
   {
-    // Old vote, ignore unless it is a reward vote
-    bool is_valid_potential_reward_vote = false;
-#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
-    if (vote->getPeriod() < current_pbft_period_) {
-      if (is_valid_potential_reward_vote = isValidRewardVote(vote); !is_valid_potential_reward_vote) {
-        LOG(log_tr_) << "Old vote " << vote->getHash().abridged() << " vote period" << vote->getPeriod()
-                     << " current period " << current_pbft_period_;
-        return false;
-      }
-    }
-
-    const auto insert_outcome = verified_votes_.insertVerifiedVoteAtomic(vote);
-    if (insert_outcome.conflicting_vote) {
-      LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
-      slashing_manager_->submitDoubleVotingProof(vote, *insert_outcome.conflicting_vote);
-      return false;
-    }
-
-    const auto votes_with_weight = insert_outcome.votes_with_weight;
-#else
     if (auto existing_vote = verified_votes_.insertUniqueVoter(vote); existing_vote) {
       LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";
       // Create double voting proof
@@ -177,6 +157,8 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
       return false;
     }
 
+    // Old vote, ignore unless it is a reward vote
+    bool is_valid_potential_reward_vote = false;
     if (vote->getPeriod() < current_pbft_period_) {
       if (is_valid_potential_reward_vote = isValidRewardVote(vote); !is_valid_potential_reward_vote) {
         LOG(log_tr_) << "Old vote " << vote->getHash().abridged() << " vote period" << vote->getPeriod()
@@ -186,7 +168,6 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
     }
 
     const auto votes_with_weight = verified_votes_.insertVotedValue(vote);
-#endif
     if (!votes_with_weight) {
       return false;
     }
@@ -206,41 +187,14 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
       return true;
     }
 
-    const auto total_weight = votes_with_weight->weight;
-
-#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
-    const auto threshold_decision = verified_votes_.decideThresholdEffects(vote, total_weight, *two_t_plus_one);
-
-    if (threshold_decision.set_network_t_plus_one_step) {
-      LOG(log_nf_) << "Set t+1 next voted block " << vote->getHash() << " for period " << vote->getPeriod()
-                   << ", round " << vote->getRound() << ", step " << vote->getStep();
-    }
-
-    if (!threshold_decision.inserted_two_t_plus_one_voted_block_type) {
-      return true;
-    }
-
-    if (vote->getType() != PbftVoteTypes::cert_vote && vote->getPeriod() == current_pbft_period_ &&
-        vote->getRound() == current_pbft_round_) {
-      std::vector<std::shared_ptr<PbftVote>> votes;
-      votes.reserve(votes_with_weight->votes.size());
-      for (const auto& tmp_vote : votes_with_weight->votes) {
-        votes.push_back(tmp_vote.second);
-      }
-
-      db_->replaceTwoTPlusOneVotes(*threshold_decision.inserted_two_t_plus_one_voted_block_type, votes);
-    }
-    return true;
-#endif
-
     auto round_votes = verified_votes_.getRoundVotes(vote->getPeriod(), vote->getRound());
     if (!round_votes) {
       return true;
     }
 
+    const auto total_weight = votes_with_weight->weight;
     // Calculate t+1
     const auto t_plus_one = ((*two_t_plus_one - 1) / 2) + 1;
-
     // Set network_t_plus_one_step - used for triggering exponential backoff
     if (vote->getType() == PbftVoteTypes::next_vote && total_weight >= t_plus_one &&
         vote->getStep() > round_votes->network_t_plus_one_step) {
@@ -274,16 +228,8 @@ bool VoteManager::addVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
         return;
       }
 
-      // Insert new 2t+1 voted block. In Rust mode this is first-writer-wins.
-#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
-      const auto inserted_two_t_plus_one =
-          verified_votes_.insertTwoTPlusOneVotedBlock(two_plus_one_voted_block_type, vote);
-      if (!inserted_two_t_plus_one) {
-        return;
-      }
-#else
+      // Insert new 2t+1 voted block
       verified_votes_.insertTwoTPlusOneVotedBlock(two_plus_one_voted_block_type, vote);
-#endif
 
       // Save only current pbft period & round 2t+1 votes bundles into db
       // Cert votes are saved once the pbft block is pushed in the chain
@@ -404,19 +350,6 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getProposalVotes(PbftPeriod 
 }
 
 std::optional<PbftRound> VoteManager::determineNewRound(PbftPeriod current_pbft_period, PbftRound current_pbft_round) {
-#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
-  const auto decision = verified_votes_.determineRoundAdvance(current_pbft_period, current_pbft_round);
-  if (!decision) {
-    return {};
-  }
-
-  LOG(log_nf_) << "New round " << decision->new_round << " determined for period " << current_pbft_period
-               << ". Found 2t+1 votes for block " << decision->voted_block.hash << " in round "
-               << decision->supporting_round << ", step " << decision->voted_block.step;
-
-  return decision->new_round;
-#endif
-
   const auto& period_map = verified_votes_.getPeriodVotes(current_pbft_period);
   if (!period_map) {
     return {};

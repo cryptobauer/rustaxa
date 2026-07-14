@@ -1,18 +1,29 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "common/util.hpp"
+#include "common/vrf_wrapper.hpp"
+#include "final_chain/final_chain.hpp"
+#include "key_manager/key_manager.hpp"
+#include "pbft/pbft_chain.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "vote/pbft_vote.hpp"
+#include "vote_manager/verified_votes.hpp"
 
 namespace taraxa {
 
+class Network;
 class PbftBlock;
 class ProposedBlocks;
+class SlashingManager;
 struct SlashingDoubleVoteEvidence;
 
 /**
@@ -41,7 +52,7 @@ struct RewardVotesFinalizationResetReport {
  *
  * Outputs and invariants:
  * - All live compatibility state is shim-owned; no production behavior
- *   inherits from or delegates to `VoteManagerOld`.
+ *   inherits from or delegates to the legacy implementation.
  * - Own verified votes, extra reward votes, and latest-round 2t+1 bundles use
  *   `rustaxa-storage` for durable writes in Rust mode.
  * - PBFT replay protection and `2t+1` threshold cache ownership live in the

@@ -135,21 +135,6 @@ class VerifiedVotes {
   };
 
   /**
-   * Constructs an empty verified-votes index.
-   *
-   * Inputs:
-   * - `node_addr`: retained for existing call-site compatibility with legacy
-   *   `VoteManager` construction but currently not consumed by Rust-owned state.
-   *
-   * Outputs:
-   * - Initializes an empty, thread-safe vote index.
-   *
-   * Edge behavior:
-   * - No storage is read or written during construction.
-   */
-  explicit VerifiedVotes([[maybe_unused]] addr_t node_addr);
-
-  /**
    * Constructs a storage-backed verified-votes runtime for production.
    *
    * The Rust factory restores authoritative verified-vote and reward-cursor

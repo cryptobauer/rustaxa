@@ -5227,7 +5227,6 @@ pub mod rustaxa_ffi {
 
         type BridgeVerifiedVotes;
 
-        pub fn create_verified_votes_index() -> Box<BridgeVerifiedVotes>;
         pub fn create_verified_votes_index_from_storage(
             storage: &BridgeStorage,
         ) -> Result<Box<BridgeVerifiedVotes>>;
