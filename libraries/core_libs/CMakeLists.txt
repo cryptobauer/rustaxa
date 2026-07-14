@@ -78,6 +78,22 @@ if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
     # untouched legacy implementation only in module-disabled and pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/proposed_blocks\\.cpp$")
 endif()
+if(RUSTAXA_ENABLE_PBFT_CHAIN)
+    if(NOT RUSTAXA_ENABLE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_PBFT_CHAIN requires RUSTAXA_ENABLE")
+    endif()
+    if(NOT RUSTAXA_ENABLE_STORAGE)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_PBFT_CHAIN requires RUSTAXA_ENABLE_STORAGE")
+    endif()
+
+    # The Rust-mode PbftChain overlay is a standalone facade. Keep the
+    # untouched legacy implementation only in module-disabled and pure C++ builds.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/pbft_chain\\.cpp$")
+endif()
+if((RUSTAXA_ENABLE_PROPOSED_BLOCKS OR RUSTAXA_ENABLE_PILLAR_VOTES) AND NOT RUSTAXA_ENABLE_PBFT_CHAIN)
+    message(FATAL_ERROR
+            "RUSTAXA_ENABLE_PROPOSED_BLOCKS and RUSTAXA_ENABLE_PILLAR_VOTES each require RUSTAXA_ENABLE_PBFT_CHAIN")
+endif()
 
 file(GLOB_RECURSE NETWORK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/network/*.hpp)
 file(GLOB_RECURSE NETWORK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/network/*.cpp)
@@ -247,21 +263,9 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
 endif()
 
 if(RUSTAXA_ENABLE_PBFT_CHAIN)
-    if(NOT RUSTAXA_ENABLE_STORAGE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_PBFT_CHAIN requires RUSTAXA_ENABLE_STORAGE")
-    endif()
-
-    # In Rust PBFT-chain mode, inject a header overlay that remaps legacy
-    # PbftChain to PbftChainOld and exposes a standalone Rust-backed facade.
+    # In Rust PBFT-chain mode, inject the standalone Rust-backed facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp)
-
-    # Compile the legacy implementation as PbftChainOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pbft/pbft_chain.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "PbftChain=PbftChainOld"
-    )
 endif()
 
 if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)

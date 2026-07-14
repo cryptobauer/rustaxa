@@ -17,15 +17,12 @@ namespace taraxa {
  */
 
 class DbStorage;
-class Vote;
-class DagBlock;
-struct Transaction;
 
 /**
  * Rust-mode PBFT chain facade.
  *
  * This class preserves the public C++ `PbftChain` API while routing deterministic head state transitions and validation
- * checks to Rust. It is a standalone facade and must not inherit from or delegate to `PbftChainOld`.
+ * checks to Rust. It is a standalone facade and does not inherit from or delegate to the legacy C++ implementation.
  *
  * Invariants:
  * - Rust restores persisted PBFT head JSON and recovers the hidden last non-null DAG anchor from native storage
@@ -38,6 +35,9 @@ class PbftChain {
  public:
   /**
    * Creates a Rust-backed PBFT chain and restores head state through `rustaxa-storage`.
+   *
+   * `db` must be non-null and expose a Rust storage handle. The Rust runtime clones that storage owner during
+   * construction, so later block lookups do not depend on the C++ `DbStorage` lifetime.
    *
    * If no persisted head exists, Rust initializes the legacy zero-head record through the native storage module.
    */
@@ -77,7 +77,7 @@ class PbftChain {
   /**
    * Materializes a PBFT block by hash from Rust storage.
    *
-   * Throws `std::runtime_error` if the hash is not present, rather than falling back to legacy `PbftChainOld`.
+   * Throws `std::runtime_error` if the hash is not present; no legacy storage lookup is attempted.
    */
   PbftBlock getPbftBlockInChain(blk_hash_t const& pbft_block_hash);
 
@@ -124,7 +124,6 @@ class PbftChain {
 
  private:
   mutable std::shared_mutex chain_head_access_;
-  std::shared_ptr<DbStorage> db_ = nullptr;
   std::optional<::rust::Box<rustaxa::BridgePbftChain>> rust_chain_;
 
   LOG_OBJECTS_DEFINE

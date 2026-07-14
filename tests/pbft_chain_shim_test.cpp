@@ -1,18 +1,49 @@
 #include <gtest/gtest.h>
 
-#include <type_traits>
+#include <memory>
+#include <vector>
 
 #include "pbft/pbft_chain.hpp"
+#include "pbft/period_data.hpp"
+#include "storage/storage.hpp"
+#include "test_util/test_util.hpp"
 
 namespace taraxa::core_tests {
+namespace {
 
-TEST(PbftChainShimTest, rustModePbftChainDoesNotInheritLegacyImplementation) {
-#ifdef RUSTAXA_ENABLE_PBFT_CHAIN
-  static_assert(!std::is_base_of_v<PbftChainOld, PbftChain>);
-  SUCCEED();
-#else
-  GTEST_SKIP() << "PbftChain shim is disabled";
-#endif
+std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed) {
+  std::vector<vote_hash_t> reward_votes_hashes;
+  return std::make_shared<PbftBlock>(kNullBlockHash, blk_hash_t(seed), kNullBlockHash, kNullBlockHash, period, addr_t{},
+                                     dev::KeyPair::create().secret(), reward_votes_hashes);
+}
+
+}  // namespace
+
+struct PbftChainShimDataTest : WithDataDir {};
+
+TEST_F(PbftChainShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
+  const auto block = makeBlock(1, 303);
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto batch = db->createWriteBatch();
+  db->savePeriodData(PeriodData(block, {}), batch);
+  db->commitWriteBatch(batch);
+
+  PbftChain chain(addr_t{}, db);
+  db.reset();
+
+  EXPECT_TRUE(chain.findPbftBlockInChain(block->getBlockHash()));
+  EXPECT_EQ(chain.getPbftBlockInChain(block->getBlockHash()).rlp(true), block->rlp(true));
+
+  chain.updatePbftChain(block->getBlockHash(), block->getPivotDagBlockHash());
+  EXPECT_EQ(chain.getPbftChainSize(), 1);
+  EXPECT_EQ(chain.getPbftChainSizeExcludingEmptyPbftBlocks(), 1);
+  EXPECT_EQ(chain.getLastPbftBlockHash(), block->getBlockHash());
+  EXPECT_EQ(chain.getLastNonNullPbftBlockAnchor(), block->getPivotDagBlockHash());
+  EXPECT_NE(chain.getJsonStr().find(block->getBlockHash().toString()), std::string::npos);
+
+  const auto projected = chain.getJsonStrForBlock(blk_hash_t(404), true);
+  EXPECT_NE(projected.find(blk_hash_t(404).toString()), std::string::npos);
+  EXPECT_EQ(chain.getPbftChainSize(), 1);
 }
 
 }  // namespace taraxa::core_tests

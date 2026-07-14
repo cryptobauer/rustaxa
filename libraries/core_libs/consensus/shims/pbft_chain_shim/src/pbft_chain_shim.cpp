@@ -1,8 +1,8 @@
 #include <libdevcore/CommonJS.h>
 
 #include <array>
+#include <mutex>
 #include <stdexcept>
-#include <utility>
 
 #include "pbft/pbft_chain.hpp"
 #include "storage/storage.hpp"
@@ -32,10 +32,10 @@ std::string head_json_string(rustaxa::PbftChainHeadPayload const& head) { return
 
 }  // namespace
 
-PbftChain::PbftChain([[maybe_unused]] addr_t node_addr, std::shared_ptr<DbStorage> db) : db_(std::move(db)) {
+PbftChain::PbftChain([[maybe_unused]] addr_t node_addr, std::shared_ptr<DbStorage> db) {
   LOG_OBJECTS_CREATE("PBFT_CHAIN");
 
-  rust_chain_ = rustaxa::create_pbft_chain_from_storage(db_->rustStorage());
+  rust_chain_ = rustaxa::create_pbft_chain_from_storage(db->rustStorage());
   if (rust_chain_.value()->pbft_chain_initialized_default()) {
     LOG(log_nf_) << "Initialize PBFT chain head " << getJsonStr();
     return;

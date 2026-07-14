@@ -410,6 +410,27 @@ Implementation notes:
   compiled the untouched original source without the shim or rename. Mapping, API, architecture, Rust ownership, C++
   implementation, and independent review used the code-mapper, api-designer, architect-reviewer, rust-engineer,
   cpp-pro, and reviewer agents. No blockchain/EVM agent was needed because contract execution was outside this slice.
+- The standalone PBFT-chain facade is fully detached from `PbftChainOld`. Feature-on builds exclude the untouched
+  original `pbft_chain.cpp`, the overlay wrapper directly includes the Rust-backed facade, and the compile rename plus
+  Old-only inheritance assertion are deleted. `BridgePbftChain` remains authoritative for startup restore/default
+  initialization, in-memory head state, block existence and canonical RLP lookup, head projection/update, validation,
+  and typed finalization-update facts. It clones its own shared Rust storage owner, allowing the facade to delete its
+  redundant C++ `DbStorage` lifetime sidecar; focused Rust and C++ tests explicitly destroy the originating storage
+  facade before runtime-owned lookups. C++ retains only the public facade, shared lock, legacy JsonCpp formatting, typed
+  manager finalization adapter, and temporary `PbftBlock` materialization until PBFT-chain state and callers fold into
+  `BridgePbftManagerRuntime`. PBFT-chain mode now explicitly requires master Rust mode and storage, while PBFT-manager
+  overlays activated by proposed-block or pillar-vote mode explicitly require the PBFT-chain facade. Module-disabled and
+  pure-C++ builds continue to select the untouched original implementation.
+  Validation passed with nine focused native Rust consensus tests, five Rust bridge tests, four CXX PBFT-chain tests,
+  the standalone facade storage-lifetime test, both PBFT-chain integration tests, the focused single-node PBFT manager
+  consumer, all nine Rust storage bridge tests, the `taraxad` build, both boundary guards,
+  `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and `make rewrite-validate-smoke`. Configuration
+  coverage proves PBFT-chain mode rejects missing master/storage dependencies, proposed-block and pillar-vote modes each
+  reject a missing PBFT-chain facade, and an all-Rust-off build selects and compiles the untouched original source.
+  Feature-on build metadata and the core archive contain neither the original source object nor any `PbftChainOld`
+  symbol; original header and source diffs versus `upstream-main` are empty. Mapping, API, architecture, Rust/C++
+  implementation, and independent review used the code-mapper, api-designer, architect-reviewer, rust-engineer, cpp-pro,
+  and reviewer agents. No blockchain/EVM agent was needed because contract execution was outside this slice.
 - `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and

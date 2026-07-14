@@ -1,3 +1,8 @@
+//! PBFT-chain bridge adapters backed by the Rust consensus and storage implementations.
+//!
+//! A storage-backed [`BridgePbftChain`] owns a cloned `Arc` to the native Rust storage. Its block-existence and canonical
+//! RLP lookups therefore remain valid after the originating C++ `DbStorage` bridge handle is destroyed.
+
 use crate::ffi::rustaxa_ffi::{
     PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
     PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport,
@@ -36,7 +41,9 @@ pub fn create_pbft_chain(
 ///
 /// The bridge is only a DTO adapter: storage recovery, legacy head parsing,
 /// default-head initialization, and last-anchor recovery are owned by
-/// `rustaxa-consensus`.
+/// `rustaxa-consensus`. The returned [`BridgePbftChain`] clones and owns the
+/// storage `Arc`, so its runtime lookups do not depend on the lifetime of the
+/// supplied bridge handle or the originating C++ `DbStorage` object.
 pub fn create_pbft_chain_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePbftChain>, anyhow::Error> {
@@ -333,6 +340,8 @@ mod tests {
         storage.0.period().write_pbft_period(block_hash, 1).unwrap();
 
         let chain = create_pbft_chain_from_storage(&storage).unwrap();
+        drop(storage);
+
         let exists = chain.pbft_chain_block_exists(&block_hash.into()).unwrap();
         let loaded = chain.pbft_chain_block_rlp(&block_hash.into()).unwrap();
         let missing = chain.pbft_chain_block_rlp(&hash(999).into()).unwrap();
