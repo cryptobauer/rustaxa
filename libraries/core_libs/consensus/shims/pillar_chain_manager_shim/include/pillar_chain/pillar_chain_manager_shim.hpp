@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <shared_mutex>
+#include <unordered_set>
 #include <vector>
 
 #include "common/event.hpp"
@@ -65,7 +66,7 @@ struct PillarVoteRelevancePlan {
 };
 
 /**
- * Evaluates one pillar vote against current pillar-block context.
+ * Evaluates one pillar vote against Rust-owned current pillar-block context.
  *
  * This helper keeps all Rust bridge calls in a dedicated shim-owned file while
  * preserving the public `PillarChainManager` API in upstream code.
@@ -73,10 +74,11 @@ struct PillarVoteRelevancePlan {
  * Edge behavior:
  * - Bridge exceptions and invalid Rust input are mapped to `kUnknown` and
  *   `is_relevant == false`.
+ * - C++ supplies only static hardfork configuration; the runtime supplies the
+ *   current anchor and duplicate membership used by the decision.
  */
 PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
                                                 const std::shared_ptr<PillarVote>& vote,
-                                                const std::shared_ptr<PillarBlock>& current_pillar_block,
                                                 const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
 
 /**
@@ -106,6 +108,8 @@ enum class PillarVoteValidationPlanStatus : uint8_t {
   kNotEligible = 7,
   kFuturePeriod = 8,
   kInspectionFailure = 9,
+  kStaleAnchor = 10,
+  kMissingPreparation = 11,
   kUnknown = 255,
 };
 
@@ -148,7 +152,6 @@ struct PillarVoteValidationPlan {
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const std::shared_ptr<final_chain::FinalChain>& final_chain,
-                                                    const std::shared_ptr<PillarBlock>& current_pillar_block,
                                                     const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
 
 /**
@@ -162,6 +165,8 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
  * Invariants:
  * - `can_insert` is true only after Rust RLP/signature inspection succeeds and
  *   FinalChain returns a non-zero DPoS vote count for `recovered_voter`.
+ * - Rust retains the one-time preparation and its anchor generation; the C++
+ *   plan carries only the recovered identity and external DPoS result.
  * - Callers must not fall back to C++ voter recovery when `can_insert` is false
  *   in Rust-enabled mode.
  */
@@ -213,7 +218,7 @@ const char* pillarVoteValidationPlanStatusString(PillarVoteValidationPlanStatus 
  * - Mirrors stable Rust planner status codes at the pillar-chain shim boundary.
  *
  * Invariants:
- * - Values `0..8` intentionally match Rust bridge status codes.
+ * - Values `0..9` intentionally match Rust bridge status codes.
  * - `kUnknown` is reserved for shim/bridge failures before Rust returns a
  *   deterministic status.
  */
@@ -227,6 +232,7 @@ enum class ValidateSyncPillarVotesBundlePlanStatus : uint8_t {
   kVoterConflict = 6,
   kThresholdNotReached = 7,
   kWeightOverflow = 8,
+  kStaleAnchor = 9,
   kUnknown = 255,
 };
 
@@ -240,14 +246,18 @@ enum class ValidateSyncPillarVotesBundlePlanStatus : uint8_t {
  * Edge behavior:
  * - `valid` is true only when Rust returned `kBundleValid` and all selected
  *   votes were inserted or already present.
+ * - `prepare_status` preserves current-anchor preparation failures before the
+ *   external FinalChain fact lookup; apply is generation-bound in Rust.
  */
 struct ValidateSyncPillarVotesBundleDeterministicallyResult {
   ValidateSyncPillarVotesBundlePlanStatus plan_status{ValidateSyncPillarVotesBundlePlanStatus::kUnknown};
+  uint8_t prepare_status{255};
   vote_hash_t first_bad_vote_hash{};
   uint64_t block_weight{0};
   uint64_t selected_weight{0};
   bool insert_failed{false};
   vote_hash_t insert_failed_vote_hash{};
+  bool missing_threshold{false};
   bool valid{false};
 };
 
@@ -276,6 +286,7 @@ enum class ValidatePbftBlockPillarVotesWithRustStatus : uint8_t {
   kPlanRejected,
   kAcceptedVoteMissing,
   kInsertFailed,
+  kStaleAnchor,
 };
 
 /**
@@ -460,7 +471,8 @@ class PillarChainManager {
    * - `pillar_votes` are temporary C++ executor payloads for PeriodData only.
    *
    * Invariants:
-   * - PillarChainManager owns the current-block and threshold checks.
+   * - Rust owns current-anchor and threshold decisions before returning
+   *   executor payloads.
    * - PBFT manager must not inspect `pillar_votes` for protocol decisions.
    */
   struct FinalizePillarBlockPreflightResult {
@@ -476,31 +488,8 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> getCurrentPillarBlock() const;
 
   /**
-   * Current pillar-block anchor facts for PBFT block construction.
-   *
-   * Purpose:
-   * - Lets PBFT manager validate and embed the current pillar-block anchor
-   *   without consuming a live `PillarBlock` sidecar for protocol decisions.
-   *
-   * Outputs:
-   * - `found == true` when a current pillar block exists.
-   * - `period` and `hash` describe the current pillar block.
-   *
-   * Invariants:
-   * - Does not mutate pillar-chain state.
-   * - PBFT manager remains responsible for checking whether a pillar anchor is
-   *   required for the candidate PBFT period.
-   */
-  struct CurrentPillarBlockAnchor {
-    bool found = false;
-    PbftPeriod period = 0;
-    blk_hash_t hash;
-  };
-  CurrentPillarBlockAnchor currentPillarBlockAnchor() const;
-
-  /**
    * Validates a PBFT block's pillar-anchor extra-data against the current
-   * PillarChainManager anchor.
+   * Rust runtime anchor.
    *
    * Purpose:
    * - Keeps PBFT manager from owning pillar sidecar comparison rules while it
@@ -520,7 +509,7 @@ class PillarChainManager {
    *   hash mismatch.
    *
    * Invariants and edge behavior:
-   * - Does not mutate pillar state or materialize additional pillar sidecars.
+   * - Does not mutate pillar state or read the C++ current-block sidecar.
    * - Missing PBFT extra-data pillar hash is reported as invalid, not missing
    *   current anchor.
    */
@@ -658,11 +647,11 @@ class PillarChainManager {
   bool isValidPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block) const;
 
   /**
-   * Calculates the pillar consensus threshold for a DPoS period.
+   * Calculates the pillar consensus threshold for a DPoS period in Rust.
    *
    * Returns:
-   * - `total_eligible_vote_count / 2 + 1`, or empty when FinalChain cannot
-   *   provide the period state.
+   * - Rust's strict-majority result, or empty when FinalChain cannot provide
+   *   the external period vote-count fact.
    */
   std::optional<uint64_t> getPillarConsensusThreshold(PbftPeriod period) const;
 
@@ -694,6 +683,14 @@ class PillarChainManager {
   std::shared_ptr<PillarBlock> current_pillar_block_;
   std::vector<state_api::ValidatorVoteCount> current_pillar_block_vote_counts_;
 
+  /**
+   * Bounded receipts for successful external validation calls awaiting add.
+   *
+   * A receipt forces `addVerifiedPillarVote` back through checked preparation
+   * against the then-current Rust anchor. Calls without a receipt are the
+   * compatibility route for locally generated or restart-restored votes.
+   */
+  mutable std::unordered_set<vote_hash_t> externally_validated_vote_receipts_;
   mutable std::shared_mutex mutex_;
 
   LOG_OBJECTS_DEFINE

@@ -13,6 +13,153 @@ use ethereum_types::{H160, H256};
 use rustaxa_storage::Storage;
 use std::collections::BTreeMap;
 
+/// Immutable current pillar anchor used by deterministic manager decisions.
+///
+/// The anchor deliberately contains only the canonical block identity. Vote
+/// counts remain persistence/materialization compatibility data and cannot
+/// influence the current-anchor rules.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarCurrentAnchor {
+    /// PBFT period summarized by the current pillar block.
+    pub period: u64,
+    /// Canonical hash of the current pillar block.
+    pub hash: H256,
+}
+
+/// One operation requested from the current pillar anchor planner.
+///
+/// Variants prevent unrelated booleans from being combined into an invalid
+/// request. Every operation is side-effect free and consumes the same optional
+/// current anchor snapshot.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PillarCurrentAnchorDecisionRequest {
+    /// Validates an optional candidate hash against the current anchor.
+    ValidateCandidate { candidate_hash: Option<H256> },
+    /// Selects the anchor only when it belongs to `pbft_period - 1`.
+    SelectPreviousPeriod { pbft_period: u64 },
+    /// Selects the anchor when restart post-processing is due.
+    RestartPostProcessing {
+        pbft_period: u64,
+        pillar_blocks_interval: u64,
+    },
+}
+
+/// Stable result status for a current pillar anchor decision.
+///
+/// Numeric values are part of the CXX bridge contract and must remain stable.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PillarCurrentAnchorDecisionStatus {
+    Selected,
+    MissingCurrentAnchor,
+    MissingCandidate,
+    CandidateHashMismatch,
+    PbftPeriodUnderflow,
+    CurrentPeriodMismatch,
+    InvalidInterval,
+    IntervalOverflow,
+    RestartNotDue,
+}
+
+impl PillarCurrentAnchorDecisionStatus {
+    /// Returns the stable CXX status code.
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Selected => 0,
+            Self::MissingCurrentAnchor => 1,
+            Self::MissingCandidate => 2,
+            Self::CandidateHashMismatch => 3,
+            Self::PbftPeriodUnderflow => 4,
+            Self::CurrentPeriodMismatch => 5,
+            Self::InvalidInterval => 6,
+            Self::IntervalOverflow => 7,
+            Self::RestartNotDue => 8,
+        }
+    }
+}
+
+/// Deterministic current pillar anchor selection result.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PillarCurrentAnchorDecisionPlan {
+    /// First terminal status reached by the selected operation.
+    pub status: PillarCurrentAnchorDecisionStatus,
+    /// Whether the current anchor was selected for the requested operation.
+    pub selected: bool,
+}
+
+/// Computes the strict-majority pillar consensus threshold.
+///
+/// The formula is `total_vote_count / 2 + 1`. Division occurs before addition,
+/// so every `u64` input, including `u64::MAX`, is representable without
+/// saturation or wrapping.
+pub fn plan_pillar_consensus_threshold(total_vote_count: u64) -> u64 {
+    total_vote_count / 2 + 1
+}
+
+/// Plans one deterministic operation against the current pillar anchor.
+///
+/// Missing current state always takes precedence. Candidate validation then
+/// distinguishes a missing candidate from a mismatch. Previous-period
+/// selection uses checked subtraction, while restart selection rejects a zero
+/// interval and uses checked addition before comparing the due period.
+pub fn plan_pillar_current_anchor_decision(
+    current_anchor: Option<PillarCurrentAnchor>,
+    request: PillarCurrentAnchorDecisionRequest,
+) -> PillarCurrentAnchorDecisionPlan {
+    let Some(current_anchor) = current_anchor else {
+        return current_anchor_plan(PillarCurrentAnchorDecisionStatus::MissingCurrentAnchor);
+    };
+
+    let status = match request {
+        PillarCurrentAnchorDecisionRequest::ValidateCandidate { candidate_hash } => {
+            let Some(candidate_hash) = candidate_hash else {
+                return current_anchor_plan(PillarCurrentAnchorDecisionStatus::MissingCandidate);
+            };
+            if candidate_hash == current_anchor.hash {
+                PillarCurrentAnchorDecisionStatus::Selected
+            } else {
+                PillarCurrentAnchorDecisionStatus::CandidateHashMismatch
+            }
+        }
+        PillarCurrentAnchorDecisionRequest::SelectPreviousPeriod { pbft_period } => {
+            let Some(expected_period) = pbft_period.checked_sub(1) else {
+                return current_anchor_plan(PillarCurrentAnchorDecisionStatus::PbftPeriodUnderflow);
+            };
+            if current_anchor.period == expected_period {
+                PillarCurrentAnchorDecisionStatus::Selected
+            } else {
+                PillarCurrentAnchorDecisionStatus::CurrentPeriodMismatch
+            }
+        }
+        PillarCurrentAnchorDecisionRequest::RestartPostProcessing {
+            pbft_period,
+            pillar_blocks_interval,
+        } => {
+            if pillar_blocks_interval == 0 {
+                return current_anchor_plan(PillarCurrentAnchorDecisionStatus::InvalidInterval);
+            }
+            let Some(due_period) = current_anchor.period.checked_add(pillar_blocks_interval) else {
+                return current_anchor_plan(PillarCurrentAnchorDecisionStatus::IntervalOverflow);
+            };
+            if pbft_period == due_period {
+                PillarCurrentAnchorDecisionStatus::Selected
+            } else {
+                PillarCurrentAnchorDecisionStatus::RestartNotDue
+            }
+        }
+    };
+
+    current_anchor_plan(status)
+}
+
+fn current_anchor_plan(
+    status: PillarCurrentAnchorDecisionStatus,
+) -> PillarCurrentAnchorDecisionPlan {
+    PillarCurrentAnchorDecisionPlan {
+        status,
+        selected: status == PillarCurrentAnchorDecisionStatus::Selected,
+    }
+}
+
 /// Validator vote-count snapshot fact supplied by the C++ manager shim.
 ///
 /// Inputs:
@@ -242,6 +389,11 @@ pub struct PillarBlockFinalizationPlan {
     pub status: PillarBlockFinalizationStatus,
     pub return_votes: bool,
     pub should_request_votes: bool,
+    /// Vote period selected for the missing-votes network effect.
+    ///
+    /// `None` suppresses the effect, including when `current_period + 1`
+    /// overflows.
+    pub request_votes_period: Option<u64>,
     pub should_persist: bool,
     pub should_emit: bool,
     pub current_period: u64,
@@ -336,6 +488,7 @@ pub fn plan_pillar_block_finalization(
             status: PillarBlockFinalizationStatus::MissingCurrentBlock,
             return_votes: false,
             should_request_votes: false,
+            request_votes_period: None,
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
@@ -350,6 +503,7 @@ pub fn plan_pillar_block_finalization(
             status: PillarBlockFinalizationStatus::CurrentBlockHashMismatch,
             return_votes: false,
             should_request_votes: false,
+            request_votes_period: None,
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
@@ -360,10 +514,12 @@ pub fn plan_pillar_block_finalization(
     }
 
     if !fact.threshold_met || fact.selected_vote_count == 0 {
+        let request_votes_period = fact.current_period.checked_add(1);
         return PillarBlockFinalizationPlan {
             status: PillarBlockFinalizationStatus::MissingVotes,
             return_votes: false,
-            should_request_votes: true,
+            should_request_votes: request_votes_period.is_some(),
+            request_votes_period,
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
@@ -380,6 +536,7 @@ pub fn plan_pillar_block_finalization(
             status: PillarBlockFinalizationStatus::AlreadyFinalized,
             return_votes: true,
             should_request_votes: false,
+            request_votes_period: None,
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
@@ -393,6 +550,7 @@ pub fn plan_pillar_block_finalization(
         status: PillarBlockFinalizationStatus::Ready,
         return_votes: true,
         should_request_votes: false,
+        request_votes_period: None,
         should_persist: true,
         should_emit: true,
         current_period: fact.current_period,
@@ -1050,5 +1208,150 @@ mod tests {
         assert!(already_finalized.return_votes);
         assert!(!already_finalized.should_persist);
         assert!(!already_finalized.should_emit);
+    }
+
+    #[test]
+    fn current_anchor_candidate_validation_has_stable_precedence_and_codes() {
+        let anchor = PillarCurrentAnchor {
+            period: 40,
+            hash: hash(10),
+        };
+        let missing = plan_pillar_current_anchor_decision(
+            None,
+            PillarCurrentAnchorDecisionRequest::ValidateCandidate {
+                candidate_hash: None,
+            },
+        );
+        assert_eq!(missing.status.as_u8(), 1);
+        assert!(!missing.selected);
+
+        let no_candidate = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::ValidateCandidate {
+                candidate_hash: None,
+            },
+        );
+        assert_eq!(no_candidate.status.as_u8(), 2);
+
+        let mismatch = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::ValidateCandidate {
+                candidate_hash: Some(hash(11)),
+            },
+        );
+        assert_eq!(mismatch.status.as_u8(), 3);
+
+        let matched = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::ValidateCandidate {
+                candidate_hash: Some(hash(10)),
+            },
+        );
+        assert_eq!(matched.status.as_u8(), 0);
+        assert!(matched.selected);
+    }
+
+    #[test]
+    fn current_anchor_previous_period_selection_checks_underflow_and_period() {
+        let anchor = PillarCurrentAnchor {
+            period: 40,
+            hash: hash(10),
+        };
+        let underflow = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::SelectPreviousPeriod { pbft_period: 0 },
+        );
+        assert_eq!(underflow.status.as_u8(), 4);
+
+        let mismatch = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::SelectPreviousPeriod { pbft_period: 40 },
+        );
+        assert_eq!(mismatch.status.as_u8(), 5);
+
+        let selected = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::SelectPreviousPeriod { pbft_period: 41 },
+        );
+        assert_eq!(selected.status.as_u8(), 0);
+        assert!(selected.selected);
+    }
+
+    #[test]
+    fn current_anchor_restart_selection_checks_interval_due_and_overflow() {
+        let anchor = PillarCurrentAnchor {
+            period: 40,
+            hash: hash(10),
+        };
+        let zero = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::RestartPostProcessing {
+                pbft_period: 50,
+                pillar_blocks_interval: 0,
+            },
+        );
+        assert_eq!(zero.status.as_u8(), 6);
+
+        let not_due = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::RestartPostProcessing {
+                pbft_period: 49,
+                pillar_blocks_interval: 10,
+            },
+        );
+        assert_eq!(not_due.status.as_u8(), 8);
+
+        let due = plan_pillar_current_anchor_decision(
+            Some(anchor),
+            PillarCurrentAnchorDecisionRequest::RestartPostProcessing {
+                pbft_period: 50,
+                pillar_blocks_interval: 10,
+            },
+        );
+        assert_eq!(due.status.as_u8(), 0);
+        assert!(due.selected);
+
+        let overflow = plan_pillar_current_anchor_decision(
+            Some(PillarCurrentAnchor {
+                period: u64::MAX,
+                hash: hash(10),
+            }),
+            PillarCurrentAnchorDecisionRequest::RestartPostProcessing {
+                pbft_period: u64::MAX,
+                pillar_blocks_interval: 1,
+            },
+        );
+        assert_eq!(overflow.status.as_u8(), 7);
+    }
+
+    #[test]
+    fn pillar_consensus_threshold_handles_full_u64_domain() {
+        assert_eq!(plan_pillar_consensus_threshold(0), 1);
+        assert_eq!(plan_pillar_consensus_threshold(4), 3);
+        assert_eq!(plan_pillar_consensus_threshold(5), 3);
+        assert_eq!(
+            plan_pillar_consensus_threshold(u64::MAX),
+            (u64::MAX / 2) + 1
+        );
+    }
+
+    #[test]
+    fn pillar_finalization_suppresses_overflowing_vote_request_period() {
+        let requested = hash(12);
+        let plan = plan_pillar_block_finalization(PillarBlockFinalizationFact {
+            requested_pillar_block_hash: requested,
+            has_current_pillar_block: true,
+            current_period: u64::MAX,
+            current_hash: requested,
+            threshold_met: false,
+            block_weight: 0,
+            selected_weight: 0,
+            selected_vote_count: 0,
+            has_last_finalized_pillar_block: false,
+            last_finalized_hash: H256::zero(),
+        });
+        assert_eq!(plan.status, PillarBlockFinalizationStatus::MissingVotes);
+        assert!(!plan.should_request_votes);
+        assert_eq!(plan.request_votes_period, None);
     }
 }

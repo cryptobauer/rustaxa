@@ -758,9 +758,10 @@ Acceptance:
   manager-runtime-owned through one finalization-specific API. Manager-owned finalization actions are now drained by
   `BridgePbftManagerRuntime` in normal finalization and duplicate-resume paths. Slice 6 remains incomplete because
   `pbft_manager_shim` still coordinates external finalization effects and lifecycle paths. `pillar_chain_manager_shim`
-  now routes live vote state and PBFT-facing pillar finalization through `BridgePillarChainRuntime`, but still owns
-  external FinalChain DPoS reads, temporary `PillarBlock` materialization, PBFT `PeriodData` vote materialization,
-  current-block sidecar mirrors, network vote-bundle requests, and event emission.
+  now routes current-anchor decisions, threshold arithmetic, live vote state, and PBFT-facing pillar finalization through
+  `BridgePillarChainRuntime`, but still owns external FinalChain DPoS reads, temporary `PillarBlock` materialization,
+  PBFT `PeriodData` vote materialization, current-block compatibility mirrors, network vote-bundle requests, and event
+  emission.
   `vote_manager_shim` is no longer a legacy-derived runtime: it is a standalone public facade whose authoritative
   verified-vote restart state is restored inside Rust. Its locally generated own-vote collection is now also
   storage-authoritative: the facade materializes votes only for the public getter/network boundary instead of maintaining
@@ -867,6 +868,37 @@ Implementation notes:
   decodes the latest block to derive its following period-data lookup, and propagates malformed or overflowing latest
   blocks as startup errors. C++ retains only temporary pillar object materialization. The storage-only handle remains for
   the separate `DbStorage` compatibility shim and is no longer part of pillar-manager bootstrap.
+- `BridgePillarChainRuntime` now owns a lock-protected canonical current-anchor snapshot and process-local generation.
+  Its fallible factory decodes and canonically validates persisted `CurrentPillarBlockDataDb`; current-data apply decodes
+  before locking, persists while holding the snapshot write lock, and publishes only after success. Startup bootstrap
+  returns the exact canonical bytes held by that snapshot. Rust's operation-tagged current-anchor planner now owns PBFT
+  candidate hash validation, proposal/local-vote previous-period selection, and restart post-processing with checked
+  underflow/overflow statuses. The unused C++ `CurrentPillarBlockAnchor/currentPillarBlockAnchor` surface is deleted.
+- Every pillar-manager current-anchor consumer now uses the runtime snapshot rather than C++ sidecar facts. Vote
+  relevance and single admission derive the anchor internally. Checked external single-vote prepare retains a one-time
+  token keyed by canonical vote hash. The shim retains a bounded receipt for every successful external validation, so
+  its corresponding add always runs checked preparation again against the then-current anchor, and the receipt is
+  consumed only after successful checked admission so retries cannot fall through; only receipt-free local/restart
+  calls use trusted preparation. Trusted prepare cannot replace an existing checked token, and apply
+  consumes the token, verifies its generation, and reruns relevance/identity checks under the anchor read lock. Both
+  the Rust preparation registry and shim receipt map are capped at 4,096 entries; eviction/missing-token apply fails
+  closed, and the checked re-prepare route cannot be converted into trusted admission.
+  Synced bundles use generation-bound runtime prepare/apply, and PBFT-facing finalization derives the current
+  period/hash/canonical block RLP and checked vote-request period from Rust state. Read guards cover the corresponding
+  vote mutation or finalization persistence/cleanup, so a concurrent current-block publish cannot invalidate accepted
+  work. C++ finalization takes its compatibility mutex before entering Rust and holds it through durable Rust effects and
+  compatibility publication; callbacks run after unlock. The C++ current-block object remains only for startup/public
+  compatibility, block-creation vote-count materialization, logging, and post-decision legacy event payload matching.
+- Pillar strict-majority threshold calculation is Rust-owned through
+  `BridgePillarChainRuntime::pillar_chain_runtime_consensus_threshold`. C++ supplies only the typed external FinalChain
+  total-vote fact. The standalone `inspect_pillar_vote_bundle_rlps` CXX API and DTO are deleted; runtime bundle prepare
+  performs canonical inspection while binding recovered voters to the current anchor generation before C++ obtains
+  external DPoS weights. Validation passed 903 focused `rustaxa-consensus`/`rustaxa-bridge` tests, all three focused CXX
+  pillar runtime tests, all nine Rust storage bridge tests, isolated pillar creation, sync, admission, and recovered-
+  identity uniqueness consumers, the PBFT single-node consumer, feature-on builds through `taraxad`, Tier 1, Tier 2,
+  and the startup smoke gate. Mapping, API/architecture design, Rust/C++ implementation, and independent closeout review
+  used the code-mapper, api-designer, architect-reviewer, rust-engineer, cpp-pro, and reviewer agents. No blockchain/EVM
+  agent was needed because FinalChain/EVM execution and contract behavior remain unchanged external boundaries.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` now routes synced bundle RLPs through
   Rust-owned batch inspection and `BridgePillarChainRuntime` weighted apply APIs. C++ only performs the external
   FinalChain DPoS weight lookup in one batched read, then passes canonical RLP bytes and weights back to Rust for
@@ -883,10 +915,11 @@ Implementation notes:
 - The no-caller plain-fact pillar-vote bundle CXX planner is deleted:
   `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and
   `plan_pillar_vote_bundle` are no longer bridge exports. Live pillar-chain sync keeps the canonical RLP boundary:
-  `inspect_pillar_vote_bundle_rlps` returns recovered voters for the one external FinalChain DPoS weight read, then
-  `BridgePillarChainRuntime::pillar_chain_runtime_apply_weighted_rlp_bundle` owns weighted validation, threshold initialization,
-  selected-vote insertion, and duplicate/idempotent apply classification. Native `rustaxa-consensus` pillar-vote tests
-  keep coverage for the plain domain planner.
+  `BridgePillarChainRuntime::pillar_chain_runtime_prepare_weighted_rlp_bundle` returns recovered voters and a current
+  anchor generation for the one external FinalChain DPoS weight read, then generation-bound
+  `pillar_chain_runtime_apply_weighted_rlp_bundle` owns weighted validation, threshold initialization, selected-vote
+  insertion, and duplicate/idempotent apply classification. Native `rustaxa-consensus` pillar-vote tests keep coverage
+  for the plain domain planner.
 - The old weighted synced-pillar-vote planner bridge is deleted:
   `plan_pillar_vote_bundle_from_weighted_rlps`, `PillarVoteBundleWeightedPlan`, and
   `PillarVoteBundleAcceptedVoter` are no longer CXX exports. `pillar_chain_manager_shim` no longer maps accepted hashes

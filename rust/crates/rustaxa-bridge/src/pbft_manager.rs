@@ -6361,6 +6361,7 @@ mod tests {
                 .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
             create_pillar_chain_runtime(&storage)
+                .expect("pillar runtime should initialize")
                 .pillar_chain_runtime_apply_own_vote(vec![0xC0])
                 .expect("own pillar vote should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())

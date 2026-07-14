@@ -13,11 +13,16 @@ use crate::ffi::rustaxa_ffi::{
     PillarBlockLinkageFact as FfiPillarBlockLinkageFact,
     PillarBlockLinkagePlan as FfiPillarBlockLinkagePlan,
     PillarChainStartupBootstrap as FfiPillarChainStartupBootstrap,
+    PillarCurrentAnchorDecisionRequest as FfiPillarCurrentAnchorDecisionRequest,
+    PillarCurrentAnchorDecisionResult as FfiPillarCurrentAnchorDecisionResult,
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
-use crate::ffi::{BridgePillarChainRuntime, BridgePillarChainStorage, BridgeStorage};
-use anyhow::Result;
+use crate::ffi::{
+    BridgePillarChainRuntime, BridgePillarChainStorage, BridgeStorage, PillarCurrentAnchorSnapshot,
+    SingleVotePreparationRegistry,
+};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use ethereum_types::{H160, H256};
 use rustaxa_consensus::{
     load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
@@ -26,6 +31,8 @@ use rustaxa_consensus::{
     load_pillar_period_data_storage as consensus_load_pillar_period_data_storage,
     plan_pillar_block_creation as consensus_plan_pillar_block_creation,
     plan_pillar_block_linkage as consensus_plan_pillar_block_linkage,
+    plan_pillar_consensus_threshold as consensus_plan_pillar_consensus_threshold,
+    plan_pillar_current_anchor_decision as consensus_plan_pillar_current_anchor_decision,
     plan_pillar_vote_count_changes as consensus_plan_vote_count_changes,
     save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
     save_own_pillar_block_vote_storage,
@@ -33,10 +40,13 @@ use rustaxa_consensus::{
     PillarBlockCreationPlan as ConsensusPillarBlockCreationPlan,
     PillarBlockLinkageFact as ConsensusPillarBlockLinkageFact,
     PillarBlockLinkagePlan as ConsensusPillarBlockLinkagePlan,
+    PillarCurrentAnchor as ConsensusPillarCurrentAnchor,
+    PillarCurrentAnchorDecisionRequest as ConsensusPillarCurrentAnchorDecisionRequest,
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
-use rustaxa_types::pillar::PillarBlock;
+use rustaxa_types::pillar::{CurrentPillarBlockDataDb, PillarBlock};
+use std::sync::RwLock;
 
 /// Creates a typed pillar-chain storage handle from the generic CXX storage
 /// facade.
@@ -56,11 +66,24 @@ pub fn create_pillar_chain_storage(storage: &BridgeStorage) -> Box<BridgePillarC
 /// The runtime owns both the pillar-vote aggregation state and the typed
 /// storage handle needed by finalization, so live pillar-manager routes do not
 /// pass one bridge handle into another to execute internal consensus behavior.
-pub fn create_pillar_chain_runtime(storage: &BridgeStorage) -> Box<BridgePillarChainRuntime> {
-    Box::new(BridgePillarChainRuntime {
+/// Missing and restored-present snapshots both start at generation zero; zero
+/// is a valid process-local baseline, and each successful apply increments it.
+/// Malformed persisted current data makes construction fail before a runtime is
+/// published.
+pub fn create_pillar_chain_runtime(
+    storage: &BridgeStorage,
+) -> Result<Box<BridgePillarChainRuntime>> {
+    let current_data_rlp = consensus_load_current_pillar_block_data_storage(storage.0.as_ref())?;
+    let current_anchor = decode_current_anchor_snapshot(current_data_rlp, 0)
+        .context("restore current pillar anchor snapshot")?;
+    Ok(Box::new(BridgePillarChainRuntime {
         storage: storage.0.clone(),
         votes: rustaxa_consensus::PillarVotes::new(),
-    })
+        current_anchor: RwLock::new(current_anchor),
+        single_vote_preparations: std::sync::Mutex::new(SingleVotePreparationRegistry {
+            entries: std::collections::BTreeMap::new(),
+        }),
+    }))
 }
 
 impl BridgePillarChainStorage {
@@ -127,7 +150,41 @@ impl BridgePillarChainRuntime {
     ///   caller remains responsible for installing temporary C++ sidecars until
     ///   the pillar manager facade is retired.
     pub fn pillar_chain_runtime_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)
+        ensure!(
+            !data_rlp.is_empty(),
+            "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
+        );
+        let decoded = CurrentPillarBlockDataDb::decode_rlp(&data_rlp)
+            .context("decode current pillar block data before apply")?;
+        ensure!(
+            decoded.encode_rlp() == data_rlp,
+            "current pillar block data must use canonical RLP"
+        );
+        let current_block_rlp = decoded.pillar_block.encode_rlp();
+        let anchor = ConsensusPillarCurrentAnchor {
+            period: decoded.pillar_block.period,
+            hash: decoded.pillar_block.hash(),
+        };
+        let mut snapshot = self
+            .current_anchor
+            .write()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let generation = snapshot
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("current pillar anchor generation overflow"))?;
+
+        // Keep the lock across persistence and publication so no consumer can
+        // observe bytes that are not yet durable. A failed write leaves the
+        // prior in-memory snapshot unchanged.
+        save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)?;
+        *snapshot = PillarCurrentAnchorSnapshot {
+            anchor: Some(anchor),
+            current_data_rlp: data_rlp,
+            current_block_rlp,
+            generation,
+        };
+        Ok(())
     }
 
     /// Persists this node's own pillar-block vote through the runtime-owned
@@ -171,8 +228,12 @@ impl BridgePillarChainRuntime {
         &self,
     ) -> Result<FfiPillarChainStartupBootstrap> {
         let own_vote_rlp = consensus_load_own_pillar_block_vote_storage(self.storage.as_ref())?;
-        let current_block_data_rlp =
-            consensus_load_current_pillar_block_data_storage(self.storage.as_ref())?;
+        let current_block_data_rlp = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
+            .current_data_rlp
+            .clone();
         let latest_block_rlp = consensus_load_latest_pillar_block_storage(self.storage.as_ref())?;
         let latest_pillar_votes_period_data_rlp = if latest_block_rlp.is_empty() {
             Vec::new()
@@ -192,6 +253,84 @@ impl BridgePillarChainRuntime {
             latest_pillar_votes_period_data_rlp,
         })
     }
+
+    /// Plans one operation against the runtime-owned current anchor snapshot.
+    ///
+    /// The operation tag selects candidate validation, previous-period anchor
+    /// selection, or restart-due selection. Unknown tags return an error. The
+    /// result includes the exact anchor generation used for the decision.
+    pub fn pillar_chain_runtime_plan_current_anchor_decision(
+        &self,
+        request: FfiPillarCurrentAnchorDecisionRequest,
+    ) -> Result<FfiPillarCurrentAnchorDecisionResult> {
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let consensus_request = match request.operation {
+            0 => ConsensusPillarCurrentAnchorDecisionRequest::ValidateCandidate {
+                candidate_hash: request
+                    .has_candidate_hash
+                    .then_some(H256::from(request.candidate_hash)),
+            },
+            1 => ConsensusPillarCurrentAnchorDecisionRequest::SelectPreviousPeriod {
+                pbft_period: request.pbft_period,
+            },
+            2 => ConsensusPillarCurrentAnchorDecisionRequest::RestartPostProcessing {
+                pbft_period: request.pbft_period,
+                pillar_blocks_interval: request.pillar_blocks_interval,
+            },
+            operation => bail!("unknown current pillar anchor operation: {operation}"),
+        };
+        let plan =
+            consensus_plan_pillar_current_anchor_decision(snapshot.anchor, consensus_request);
+        let (has_current_anchor, current_period, current_hash) = snapshot
+            .anchor
+            .map(|anchor| (true, anchor.period, anchor.hash.into()))
+            .unwrap_or((false, 0, [0; 32]));
+        Ok(FfiPillarCurrentAnchorDecisionResult {
+            status: plan.status.as_u8(),
+            selected: plan.selected,
+            has_current_anchor,
+            current_period,
+            current_hash,
+            anchor_generation: snapshot.generation,
+        })
+    }
+
+    /// Computes the strict-majority threshold from an external total-vote fact.
+    pub fn pillar_chain_runtime_consensus_threshold(&self, total_vote_count: u64) -> u64 {
+        consensus_plan_pillar_consensus_threshold(total_vote_count)
+    }
+}
+
+fn decode_current_anchor_snapshot(
+    current_data_rlp: Vec<u8>,
+    generation: u64,
+) -> Result<PillarCurrentAnchorSnapshot> {
+    if current_data_rlp.is_empty() {
+        return Ok(PillarCurrentAnchorSnapshot {
+            anchor: None,
+            current_data_rlp,
+            current_block_rlp: Vec::new(),
+            generation,
+        });
+    }
+    let decoded = CurrentPillarBlockDataDb::decode_rlp(&current_data_rlp)?;
+    ensure!(
+        decoded.encode_rlp() == current_data_rlp,
+        "current pillar block data must use canonical RLP"
+    );
+    let current_block_rlp = decoded.pillar_block.encode_rlp();
+    Ok(PillarCurrentAnchorSnapshot {
+        anchor: Some(ConsensusPillarCurrentAnchor {
+            period: decoded.pillar_block.period,
+            hash: decoded.pillar_block.hash(),
+        }),
+        current_data_rlp,
+        current_block_rlp,
+        generation,
+    })
 }
 
 /// Computes ordered validator vote-count changes for a pillar block.
@@ -386,6 +525,21 @@ mod tests {
             address: addr(address),
             vote_count,
         }
+    }
+
+    fn canonical_current_data(period: u64) -> Vec<u8> {
+        CurrentPillarBlockDataDb {
+            pillar_block: PillarBlock {
+                period,
+                state_root: H256::from_low_u64_be(1),
+                previous_pillar_block_hash: H256::from_low_u64_be(2),
+                bridge_root: H256::from_low_u64_be(3),
+                epoch: 4,
+                validator_vote_count_changes: Vec::new(),
+            },
+            vote_counts: Vec::new(),
+        }
+        .encode_rlp()
     }
 
     #[test]
@@ -585,10 +739,12 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let pillar_storage = create_pillar_chain_storage(&storage);
-            let pillar_runtime = create_pillar_chain_runtime(&storage);
+            let pillar_runtime =
+                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+            let current_data = canonical_current_data(41);
 
             pillar_runtime
-                .pillar_chain_runtime_apply_current_block_data(vec![0xC2, 0x01])
+                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
                 .expect("runtime current pillar data should persist");
             pillar_runtime
                 .pillar_chain_runtime_apply_own_vote(vec![0xC2, 0x02])
@@ -598,7 +754,7 @@ mod tests {
                 pillar_storage
                     .pillar_chain_storage_load_current_block_data()
                     .expect("current pillar data should load"),
-                vec![0xC2, 0x01],
+                current_data,
             );
             assert_eq!(
                 pillar_storage
@@ -623,14 +779,16 @@ mod tests {
             validator_vote_count_changes: Vec::new(),
         }
         .encode_rlp();
+        let current_data = canonical_current_data(41);
 
         {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_chain_runtime(&storage);
+            let runtime =
+                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
             runtime
-                .pillar_chain_runtime_apply_current_block_data(vec![0xC3, 0x01])
+                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
                 .expect("current pillar data should persist");
             runtime
                 .pillar_chain_runtime_apply_own_vote(vec![0xC3, 0x02])
@@ -648,13 +806,14 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should reopen");
-            let runtime = create_pillar_chain_runtime(&storage);
+            let runtime =
+                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
             let bootstrap = runtime
                 .pillar_chain_runtime_load_startup_bootstrap()
                 .expect("runtime should load restart bootstrap");
 
             assert_eq!(bootstrap.own_vote_rlp, vec![0xC3, 0x02]);
-            assert_eq!(bootstrap.current_block_data_rlp, vec![0xC3, 0x01]);
+            assert_eq!(bootstrap.current_block_data_rlp, current_data);
             assert_eq!(bootstrap.latest_block_rlp, latest_block);
             assert_eq!(
                 bootstrap.latest_pillar_votes_period_data_rlp,
@@ -672,7 +831,8 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_chain_runtime(&storage);
+            let runtime =
+                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
             let bootstrap = runtime
                 .pillar_chain_runtime_load_startup_bootstrap()
                 .expect("empty bootstrap should load");
@@ -687,6 +847,163 @@ mod tests {
     }
 
     #[test]
+    fn runtime_restores_anchor_and_preserves_decisions_across_restart() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_anchor_restart");
+        let current_data = canonical_current_data(41);
+        let before;
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
+                .unwrap();
+            before = runtime
+                .pillar_chain_runtime_plan_current_anchor_decision(
+                    FfiPillarCurrentAnchorDecisionRequest {
+                        operation: 1,
+                        has_candidate_hash: false,
+                        candidate_hash: [0; 32],
+                        pbft_period: 42,
+                        pillar_blocks_interval: 0,
+                    },
+                )
+                .unwrap();
+            assert!(before.selected);
+            assert_eq!(before.anchor_generation, 1);
+        }
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let after = runtime
+                .pillar_chain_runtime_plan_current_anchor_decision(
+                    FfiPillarCurrentAnchorDecisionRequest {
+                        operation: 1,
+                        has_candidate_hash: false,
+                        candidate_hash: [0; 32],
+                        pbft_period: 42,
+                        pillar_blocks_interval: 0,
+                    },
+                )
+                .unwrap();
+            assert_eq!(after.status, before.status);
+            assert_eq!(after.selected, before.selected);
+            assert_eq!(after.current_period, before.current_period);
+            assert_eq!(after.current_hash, before.current_hash);
+            assert_eq!(after.anchor_generation, 0);
+            assert_eq!(
+                runtime
+                    .pillar_chain_runtime_load_startup_bootstrap()
+                    .unwrap()
+                    .current_block_data_rlp,
+                current_data
+            );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn malformed_persisted_current_data_rejects_runtime_factory() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_malformed_current_restore");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            save_current_pillar_block_data_storage(storage.0.as_ref(), &[0xC1, 0x01]).unwrap();
+            let error = match create_pillar_chain_runtime(&storage) {
+                Ok(_) => panic!("malformed current data must reject construction"),
+                Err(error) => error,
+            };
+            assert!(error
+                .to_string()
+                .contains("restore current pillar anchor snapshot"));
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn malformed_current_apply_leaves_storage_and_snapshot_unchanged() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_malformed_current_apply");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let current_data = canonical_current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
+                .unwrap();
+            let before = runtime
+                .pillar_chain_runtime_plan_current_anchor_decision(
+                    FfiPillarCurrentAnchorDecisionRequest {
+                        operation: 1,
+                        has_candidate_hash: false,
+                        candidate_hash: [0; 32],
+                        pbft_period: 42,
+                        pillar_blocks_interval: 0,
+                    },
+                )
+                .unwrap();
+
+            assert!(runtime
+                .pillar_chain_runtime_apply_current_block_data(vec![0xC1, 0x01])
+                .is_err());
+            let after = runtime
+                .pillar_chain_runtime_plan_current_anchor_decision(
+                    FfiPillarCurrentAnchorDecisionRequest {
+                        operation: 1,
+                        has_candidate_hash: false,
+                        candidate_hash: [0; 32],
+                        pbft_period: 42,
+                        pillar_blocks_interval: 0,
+                    },
+                )
+                .unwrap();
+            assert_eq!(after.anchor_generation, before.anchor_generation);
+            assert_eq!(after.current_hash, before.current_hash);
+            assert_eq!(
+                consensus_load_current_pillar_block_data_storage(storage.0.as_ref()).unwrap(),
+                current_data
+            );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn current_anchor_bridge_rejects_unknown_tag_and_maps_threshold() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_anchor_tags");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let missing = runtime
+                .pillar_chain_runtime_plan_current_anchor_decision(
+                    FfiPillarCurrentAnchorDecisionRequest {
+                        operation: 0,
+                        has_candidate_hash: false,
+                        candidate_hash: [0; 32],
+                        pbft_period: 0,
+                        pillar_blocks_interval: 0,
+                    },
+                )
+                .unwrap();
+            assert_eq!(missing.status, 1);
+            assert!(!missing.has_current_anchor);
+            assert!(runtime
+                .pillar_chain_runtime_plan_current_anchor_decision(
+                    FfiPillarCurrentAnchorDecisionRequest {
+                        operation: 99,
+                        has_candidate_hash: false,
+                        candidate_hash: [0; 32],
+                        pbft_period: 0,
+                        pillar_blocks_interval: 0,
+                    },
+                )
+                .is_err());
+            assert_eq!(runtime.pillar_chain_runtime_consensus_threshold(0), 1);
+            assert_eq!(
+                runtime.pillar_chain_runtime_consensus_threshold(u64::MAX),
+                (u64::MAX / 2) + 1
+            );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn bridge_runtime_startup_bootstrap_rejects_malformed_latest_block() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_malformed_bootstrap");
         {
@@ -695,7 +1012,8 @@ mod tests {
                     .expect("storage should initialize");
             save_finalized_pillar_block_storage(storage.0.as_ref(), 42, &[0xC1, 0x01])
                 .expect("malformed latest bytes should persist opaquely");
-            let runtime = create_pillar_chain_runtime(&storage);
+            let runtime =
+                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
 
             let error = match runtime.pillar_chain_runtime_load_startup_bootstrap() {
                 Ok(_) => panic!("malformed latest block should reject startup"),
@@ -756,7 +1074,8 @@ mod tests {
                 .expect_err("empty own vote should reject")
                 .to_string()
                 .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD"));
-            let pillar_runtime = create_pillar_chain_runtime(&storage);
+            let pillar_runtime =
+                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
             assert!(pillar_runtime
                 .pillar_chain_runtime_apply_current_block_data(Vec::new())
                 .expect_err("empty runtime current data should reject")

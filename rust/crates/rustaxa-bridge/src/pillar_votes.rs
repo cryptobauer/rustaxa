@@ -14,15 +14,16 @@
 use crate::ffi::rustaxa_ffi::PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact;
 use crate::ffi::rustaxa_ffi::{
     PillarBlockFinalizationRequest, PillarBlockFinalizationResult, PillarVoteBundleApplyPlan,
-    PillarVoteBundleHash, PillarVoteBundleInspectionPlan, PillarVoteInspection,
-    PillarVoteNetworkBundleChunk, PillarVoteNetworkBundleLookup, PillarVoteRecord,
+    PillarVoteBundleHash, PillarVoteInspection, PillarVoteNetworkBundleChunk,
+    PillarVoteNetworkBundleLookup, PillarVoteRecord,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
     PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionApplyInput,
     PillarVoteSingleAdmissionApplyPlan, PillarVoteSingleAdmissionContext,
-    PillarVoteSingleAdmissionPreparePlan, PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
+    PillarVoteSingleAdmissionPreparePlan, PillarVoteWeightedBundleApplyInput,
+    PillarVoteWeightedBundlePreparePlan, PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
 };
-use crate::ffi::BridgePillarChainRuntime;
-use anyhow::{ensure, Result};
+use crate::ffi::{BridgePillarChainRuntime, SingleVotePreparation};
+use anyhow::{anyhow, ensure, Result};
 use ethereum_types::H256;
 use rlp::Rlp;
 use rustaxa_consensus::{
@@ -40,21 +41,33 @@ use rustaxa_storage::Storage;
 use rustaxa_types::{
     decode_optimized_pillar_votes_bundle_rlp, encode_optimized_pillar_votes_bundle_rlp, PillarVote,
 };
+#[cfg(test)]
+use rustaxa_types::{CurrentPillarBlockDataDb, PillarBlock};
 use std::collections::HashMap;
 
 const PILLAR_VOTE_BUNDLE_STATUS_VALID: u8 = 0;
 const PILLAR_VOTE_BUNDLE_STATUS_EMPTY: u8 = 1;
 const PILLAR_VOTE_BUNDLE_STATUS_PREVALIDATION_FAILED: u8 = 4;
 const PILLAR_VOTE_BUNDLE_STATUS_ZERO_WEIGHT: u8 = 5;
+const PILLAR_VOTE_BUNDLE_STATUS_STALE_ANCHOR: u8 = 9;
 const PILLAR_VOTE_STATUS_VALID: u8 = 0;
 const PILLAR_VOTE_STATUS_NOT_UNIQUE: u8 = 5;
 const PILLAR_VOTE_STATUS_SIGNATURE_INVALID: u8 = 6;
 const PILLAR_VOTE_STATUS_NOT_ELIGIBLE: u8 = 7;
 const PILLAR_VOTE_STATUS_INSPECTION_FAILURE: u8 = 9;
+const PILLAR_VOTE_STATUS_STALE_ANCHOR: u8 = 10;
+const PILLAR_VOTE_STATUS_MISSING_PREPARATION: u8 = 11;
+/// Maximum unresolved single-vote preparations retained for one anchor generation.
+///
+/// Once full, insertion deterministically evicts the lowest canonical vote
+/// hash. Core apply of an evicted token returns missing-preparation status; the
+/// caller boundary must preserve external-vs-trusted provenance when deciding
+/// whether a new preparation is permitted.
+const MAX_SINGLE_VOTE_PREPARATIONS: usize = 4_096;
 const PILLAR_VOTE_STATUS_UNKNOWN: u8 = 255;
 
 #[cfg(test)]
-struct PillarVotesTestFixture(PillarVotes);
+struct PillarVotesTestFixture(PillarVotes, HashMap<H256, SingleVotePreparation>);
 
 struct WeightedRlpBundlePlanWork {
     plan: WeightedRlpBundlePlan,
@@ -69,10 +82,21 @@ struct WeightedRlpBundlePlan {
     first_bad_vote_hash: [u8; 32],
 }
 
+/// Internal batch-inspection result used by generation-bound bundle prepare.
+///
+/// This is intentionally not a standalone CXX API: callers must prepare
+/// through `BridgePillarChainRuntime` so inspection is bound to an anchor
+/// generation.
+struct PillarVoteBundleInspectionPlan {
+    status: u8,
+    inspections: Vec<PillarVoteInspection>,
+    first_bad_vote_hash: [u8; 32],
+}
+
 /// Creates an empty Rust pillar-vote registry for bridge-module tests.
 #[cfg(test)]
 fn create_pillar_votes_index() -> Box<PillarVotesTestFixture> {
-    Box::new(PillarVotesTestFixture(PillarVotes::new()))
+    Box::new(PillarVotesTestFixture(PillarVotes::new(), HashMap::new()))
 }
 
 #[cfg(test)]
@@ -194,14 +218,96 @@ impl BridgePillarChainRuntime {
         vote_rlp: Vec<u8>,
         context: PillarVoteSingleAdmissionContext,
     ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
-        prepare_single_vote_admission(&self.votes, vote_rlp, context)
+        let retained_vote_rlp = vote_rlp.clone();
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let plan = prepare_single_vote_admission(
+            &self.votes,
+            snapshot.anchor,
+            snapshot.generation,
+            vote_rlp,
+            Some(&context),
+        )?;
+        if plan.can_query_dpos {
+            self.retain_single_vote_preparation(
+                H256::from(plan.vote_hash),
+                SingleVotePreparation {
+                    vote_rlp: retained_vote_rlp,
+                    anchor_generation: snapshot.generation,
+                    period: plan.period,
+                    block_hash: H256::from(plan.block_hash),
+                    voter: ethereum_types::H160::from(plan.voter),
+                    needs_threshold: plan.needs_threshold,
+                    current_anchor: snapshot.anchor,
+                    first_pillar_block_period: context.first_pillar_block_period,
+                    pillar_blocks_interval: context.pillar_blocks_interval,
+                    trusted_local_or_restore: false,
+                },
+            )?;
+        }
+        Ok(plan)
+    }
+
+    /// Prepares a locally generated or restart-restored vote for trusted apply.
+    ///
+    /// This route still validates canonical bytes and signature, and binds the
+    /// one-time preparation to the current anchor generation. It intentionally
+    /// skips network relevance and identity uniqueness because those votes were
+    /// created locally or already accepted before persistence. External network
+    /// admission must use `pillar_chain_runtime_prepare_single_vote_admission`.
+    pub fn pillar_chain_runtime_prepare_trusted_single_vote_admission(
+        &self,
+        vote_rlp: Vec<u8>,
+    ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
+        let retained_vote_rlp = vote_rlp.clone();
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        if let Ok(inspection) = inspect_pillar_vote_from_rlp(&vote_rlp) {
+            let registry = self
+                .single_vote_preparations
+                .lock()
+                .map_err(|_| anyhow!("single pillar vote preparation lock poisoned"))?;
+            if let Some(existing) = registry.entries.get(&inspection.vote_hash) {
+                return Ok(preparation_plan(existing));
+            }
+        }
+        let plan = prepare_single_vote_admission(
+            &self.votes,
+            snapshot.anchor,
+            snapshot.generation,
+            vote_rlp,
+            None,
+        )?;
+        if plan.can_query_dpos {
+            self.retain_single_vote_preparation(
+                H256::from(plan.vote_hash),
+                SingleVotePreparation {
+                    vote_rlp: retained_vote_rlp,
+                    anchor_generation: snapshot.generation,
+                    period: plan.period,
+                    block_hash: H256::from(plan.block_hash),
+                    voter: ethereum_types::H160::from(plan.voter),
+                    needs_threshold: plan.needs_threshold,
+                    current_anchor: snapshot.anchor,
+                    first_pillar_block_period: 0,
+                    pillar_blocks_interval: 0,
+                    trusted_local_or_restore: true,
+                },
+            )?;
+        }
+        Ok(plan)
     }
 
     /// Evaluates one canonical pillar vote against runtime-owned vote state.
     ///
     /// Inputs:
     /// - `vote_rlp` is the canonical C++ vote payload.
-    /// - `context` carries current pillar-block timing and hash facts.
+    /// - `context` carries immutable pillar scheduling configuration; current
+    ///   anchor facts come from the runtime snapshot.
     ///
     /// Outputs:
     /// - Returns the same stable relevance status DTO used by the network facade.
@@ -216,31 +322,139 @@ impl BridgePillarChainRuntime {
         vote_rlp: Vec<u8>,
         context: PillarVoteRuntimeRelevanceContext,
     ) -> Result<FfiPillarVoteRelevancePlan> {
-        runtime_plan_vote_relevance(&self.votes, vote_rlp, context)
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        runtime_plan_vote_relevance(&self.votes, snapshot.anchor, vote_rlp, context)
     }
 
     /// Applies one prepared pillar vote to the runtime-owned pillar-vote index.
+    ///
+    /// The canonical vote hash consumes exactly one retained preparation. A
+    /// checked external preparation reruns relevance and identity validation
+    /// under the same anchor read lock used for mutation. Trusted local/restart
+    /// preparations skip only those two already-established checks.
     pub fn pillar_chain_runtime_apply_prepared_single_vote_admission(
         &mut self,
         input: PillarVoteSingleAdmissionApplyInput,
     ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
-        apply_prepared_single_vote_admission(&mut self.votes, input)
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let vote_hash = H256::from(input.vote_hash);
+        let preparation = self
+            .single_vote_preparations
+            .lock()
+            .map_err(|_| anyhow!("single pillar vote preparation lock poisoned"))?
+            .entries
+            .remove(&vote_hash);
+        let Some(preparation) = preparation else {
+            return Ok(single_admission_apply_plan(
+                PILLAR_VOTE_STATUS_MISSING_PREPARATION,
+            ));
+        };
+        if snapshot.generation != preparation.anchor_generation {
+            return Ok(single_admission_apply_plan(PILLAR_VOTE_STATUS_STALE_ANCHOR));
+        }
+        if !preparation.trusted_local_or_restore {
+            let context = PillarVoteSingleAdmissionContext {
+                first_pillar_block_period: preparation.first_pillar_block_period,
+                pillar_blocks_interval: preparation.pillar_blocks_interval,
+            };
+            let revalidated = prepare_single_vote_admission(
+                &self.votes,
+                snapshot.anchor,
+                snapshot.generation,
+                preparation.vote_rlp.clone(),
+                Some(&context),
+            )?;
+            if !revalidated.can_query_dpos || H256::from(revalidated.vote_hash) != vote_hash {
+                return Ok(single_admission_apply_plan(revalidated.status));
+            }
+        }
+        // Keep the read guard through mutation so a current-block writer cannot
+        // publish a new generation between validation and insertion.
+        apply_prepared_single_vote_admission(&mut self.votes, preparation.vote_rlp, input)
     }
 
-    /// Applies one weighted RLP bundle to the runtime-owned pillar-vote index.
+    fn retain_single_vote_preparation(
+        &self,
+        vote_hash: H256,
+        preparation: SingleVotePreparation,
+    ) -> Result<()> {
+        let mut registry = self
+            .single_vote_preparations
+            .lock()
+            .map_err(|_| anyhow!("single pillar vote preparation lock poisoned"))?;
+        registry
+            .entries
+            .retain(|_, retained| retained.anchor_generation == preparation.anchor_generation);
+        if !registry.entries.contains_key(&vote_hash)
+            && registry.entries.len() >= MAX_SINGLE_VOTE_PREPARATIONS
+        {
+            registry.entries.pop_first();
+        }
+        registry.entries.insert(vote_hash, preparation);
+        Ok(())
+    }
+
+    /// Prepares one synced vote bundle before external DPoS weight lookup.
+    ///
+    /// Rust inspects all canonical vote bytes and binds the returned expected
+    /// hash to the current anchor generation. C++ supplies only external DPoS
+    /// weights after this method reports `can_query_dpos`.
+    pub fn pillar_chain_runtime_prepare_weighted_rlp_bundle(
+        &self,
+        vote_rlps: Vec<PillarVoteRlpPayload>,
+        required_votes_period: u64,
+    ) -> Result<PillarVoteWeightedBundlePreparePlan> {
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        prepare_weighted_rlp_bundle(
+            snapshot.anchor,
+            snapshot.generation,
+            vote_rlps,
+            required_votes_period,
+        )
+    }
+
+    /// Applies one generation-bound weighted RLP bundle to the vote index.
+    ///
+    /// The current anchor generation, required period, and expected hash are
+    /// revalidated before any period initialization or vote insertion.
     pub fn pillar_chain_runtime_apply_weighted_rlp_bundle(
         &mut self,
-        votes: Vec<PillarVoteWeightedRlpPayload>,
-        expected_period: u64,
-        expected_block_hash: &[u8; 32],
-        threshold: u64,
+        input: PillarVoteWeightedBundleApplyInput,
     ) -> Result<PillarVoteBundleApplyPlan> {
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let Some(anchor) = snapshot.anchor else {
+            return Ok(bundle_apply_rejection(
+                PILLAR_VOTE_BUNDLE_STATUS_STALE_ANCHOR,
+            ));
+        };
+        if snapshot.generation != input.anchor_generation
+            || anchor.period.checked_add(1) != Some(input.required_votes_period)
+        {
+            return Ok(bundle_apply_rejection(
+                PILLAR_VOTE_BUNDLE_STATUS_STALE_ANCHOR,
+            ));
+        }
+        let expected_block_hash: [u8; 32] = anchor.hash.into();
+        // Keep the read guard through every mutation for the same generation
+        // binding guaranteed by single-vote admission.
         apply_weighted_rlp_bundle(
             &mut self.votes,
-            votes,
-            expected_period,
-            expected_block_hash,
-            threshold,
+            input.votes,
+            input.required_votes_period,
+            &expected_block_hash,
+            input.threshold,
         )
     }
 
@@ -340,10 +554,8 @@ impl BridgePillarChainRuntime {
     /// Finalizes one pillar block for the PBFT finalization boundary.
     ///
     /// Inputs:
-    /// - `storage` is the typed pillar-chain storage handle that owns durable
-    ///   finalized pillar-block persistence.
-    /// - `request` carries only current/last pillar sidecar facts and the
-    ///   current block's canonical RLP from the temporary C++ materializer.
+    /// - `request` carries the requested hash and compact last-finalized fact.
+    ///   Current identity and canonical block RLP come from the runtime snapshot.
     ///
     /// Outputs:
     /// - Returns the deterministic pillar-finalization status plus selected
@@ -363,13 +575,28 @@ impl BridgePillarChainRuntime {
         request: PillarBlockFinalizationRequest,
     ) -> Result<PillarBlockFinalizationResult> {
         let requested_hash = H256::from(request.requested_pillar_block_hash);
-        let current_hash = H256::from(request.current_hash);
-        let lookup = if request.has_current_pillar_block && current_hash == requested_hash {
-            self.votes.get_verified_votes(
-                request.current_period.saturating_add(1),
-                requested_hash,
-                true,
-            )
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let current_anchor = snapshot.anchor;
+        let current_block_rlp = snapshot.current_block_rlp.clone();
+        let current_period = current_anchor
+            .map(|anchor| anchor.period)
+            .unwrap_or_default();
+        let current_hash = current_anchor.map(|anchor| anchor.hash).unwrap_or_default();
+        let lookup = if current_anchor.is_some() && current_hash == requested_hash {
+            if let Some(vote_period) = current_period.checked_add(1) {
+                self.votes
+                    .get_verified_votes(vote_period, requested_hash, true)
+            } else {
+                rustaxa_consensus::PillarVotesLookup {
+                    threshold_met: false,
+                    block_weight: 0,
+                    selected_weight: 0,
+                    votes: Vec::new(),
+                }
+            }
         } else {
             rustaxa_consensus::PillarVotesLookup {
                 threshold_met: false,
@@ -382,8 +609,8 @@ impl BridgePillarChainRuntime {
         let selected_vote_count = lookup.votes.len() as u64;
         let plan = plan_pillar_block_finalization(PillarBlockFinalizationFact {
             requested_pillar_block_hash: requested_hash,
-            has_current_pillar_block: request.has_current_pillar_block,
-            current_period: request.current_period,
+            has_current_pillar_block: current_anchor.is_some(),
+            current_period,
             current_hash,
             threshold_met: lookup.threshold_met,
             block_weight: lookup.block_weight,
@@ -399,13 +626,15 @@ impl BridgePillarChainRuntime {
             save_finalized_pillar_block_storage(
                 self.storage.as_ref(),
                 plan.current_period,
-                &request.current_block_rlp,
+                &current_block_rlp,
             )?;
             persisted = true;
             self.votes
                 .erase_votes(plan.current_period.saturating_add(1));
             cleaned_votes = true;
         }
+        // The snapshot read guard is deliberately retained through planning,
+        // durable finalization, and vote cleanup.
 
         let votes = if plan.return_votes {
             lookup
@@ -422,10 +651,13 @@ impl BridgePillarChainRuntime {
             status: plan.status.as_u8(),
             success,
             should_request_votes: plan.should_request_votes,
+            has_request_votes_period: plan.request_votes_period.is_some(),
+            request_votes_period: plan.request_votes_period.unwrap_or_default(),
             persisted,
             cleaned_votes,
             should_emit: plan.should_emit,
             current_period: plan.current_period,
+            current_hash: current_hash.into(),
             block_weight: plan.block_weight,
             selected_weight: plan.selected_weight,
             selected_vote_count: plan.selected_vote_count,
@@ -524,10 +756,8 @@ impl PillarVotesTestFixture {
     ///
     /// Inputs:
     /// - `vote_rlp` is the canonical legacy PillarVote bytes.
-    /// - `context` supplies local current-pillar facts and toggles for callers
-    ///   that need relevance and identity uniqueness before the external DPoS
-    ///   lookup. Local generated/reloaded votes can disable those checks and
-    ///   still reuse Rust inspection.
+    /// - `context` supplies immutable scheduling configuration. Relevance and
+    ///   identity uniqueness are always checked before external DPoS lookup.
     ///
     /// Outputs:
     /// - On status `0`, the recovered `(period, block_hash, vote_hash, voter)`
@@ -541,82 +771,55 @@ impl PillarVotesTestFixture {
     /// - Exact duplicates are detected before relevance checks when relevance
     ///   is requested, preserving the legacy logging order.
     pub fn pillar_votes_prepare_single_vote_admission(
-        &self,
+        &mut self,
         vote_rlp: Vec<u8>,
         context: PillarVoteSingleAdmissionContext,
     ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
-        let decoded_vote = match PillarVote::decode_rlp(&vote_rlp) {
-            Ok(vote) => vote,
-            Err(_) => return Ok(single_admission_plan(PILLAR_VOTE_STATUS_INSPECTION_FAILURE)),
-        };
-        let inspection = match inspect_pillar_vote_from_rlp(&vote_rlp) {
-            Ok(inspection) => inspection,
-            Err(_) => return Ok(single_admission_plan(PILLAR_VOTE_STATUS_INSPECTION_FAILURE)),
-        };
-        let mut plan = single_admission_plan(PILLAR_VOTE_STATUS_VALID);
-        plan.period = inspection.period;
-        plan.block_hash = inspection.block_hash.into();
-        plan.vote_hash = inspection.vote_hash.into();
-        plan.voter = inspection.voter.into();
-
-        ensure!(
-            decoded_vote.period == inspection.period,
-            "pillar vote decoded period does not match recovered inspection"
-        );
-        ensure!(
-            decoded_vote.block_hash == inspection.block_hash,
-            "pillar vote decoded block hash does not match recovered inspection"
-        );
-        ensure!(
-            decoded_vote.hash(true) == inspection.vote_hash,
-            "pillar vote decoded hash does not match recovered inspection"
-        );
-
-        if !inspection.signature_valid {
-            plan.status = PILLAR_VOTE_STATUS_SIGNATURE_INVALID;
-            return Ok(plan);
-        }
-
-        if context.check_relevance {
-            let duplicate_probe = VerifiedPillarVote::from_parts(
-                decoded_vote.clone(),
-                inspection.vote_hash,
-                inspection.voter,
-                1,
-            )?;
-            let relevance =
-                rustaxa_consensus::plan_pillar_vote_relevance(ConsensusPillarVoteRelevanceFact {
-                    vote_period: inspection.period,
-                    vote_block_hash: inspection.block_hash,
-                    current_pillar_block_period: context
-                        .has_current_pillar_block
-                        .then_some(context.current_pillar_block_period),
-                    current_pillar_block_hash: context
-                        .has_current_pillar_block
-                        .then_some(H256::from(context.current_pillar_block_hash)),
+        let retained = vote_rlp.clone();
+        let plan = prepare_single_vote_admission(&self.0, None, 0, vote_rlp, Some(&context))?;
+        if plan.can_query_dpos {
+            self.1.insert(
+                H256::from(plan.vote_hash),
+                SingleVotePreparation {
+                    vote_rlp: retained,
+                    anchor_generation: 0,
+                    period: plan.period,
+                    block_hash: H256::from(plan.block_hash),
+                    voter: ethereum_types::H160::from(plan.voter),
+                    needs_threshold: plan.needs_threshold,
+                    current_anchor: None,
                     first_pillar_block_period: context.first_pillar_block_period,
                     pillar_blocks_interval: context.pillar_blocks_interval,
-                    vote_already_known: self.0.vote_exists(&duplicate_probe),
-                })?;
-            if !relevance.is_relevant {
-                plan.status = relevance.status_code();
-                return Ok(plan);
-            }
+                    trusted_local_or_restore: false,
+                },
+            );
         }
+        Ok(plan)
+    }
 
-        if context.check_identity_uniqueness
-            && !self.0.is_unique_vote_identity(ConsensusPillarVoteIdentity {
-                period: inspection.period,
-                vote_hash: inspection.vote_hash,
-                voter: inspection.voter,
-            })
-        {
-            plan.status = PILLAR_VOTE_STATUS_NOT_UNIQUE;
-            return Ok(plan);
+    fn pillar_votes_prepare_trusted_single_vote_admission(
+        &mut self,
+        vote_rlp: Vec<u8>,
+    ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
+        let retained = vote_rlp.clone();
+        let plan = prepare_single_vote_admission(&self.0, None, 0, vote_rlp, None)?;
+        if plan.can_query_dpos {
+            self.1.insert(
+                H256::from(plan.vote_hash),
+                SingleVotePreparation {
+                    vote_rlp: retained,
+                    anchor_generation: 0,
+                    period: plan.period,
+                    block_hash: H256::from(plan.block_hash),
+                    voter: ethereum_types::H160::from(plan.voter),
+                    needs_threshold: plan.needs_threshold,
+                    current_anchor: None,
+                    first_pillar_block_period: 0,
+                    pillar_blocks_interval: 0,
+                    trusted_local_or_restore: true,
+                },
+            );
         }
-
-        plan.needs_threshold = !self.0.period_data_initialized(inspection.period);
-        plan.can_query_dpos = true;
         Ok(plan)
     }
 
@@ -642,41 +845,12 @@ impl PillarVotesTestFixture {
         &mut self,
         input: PillarVoteSingleAdmissionApplyInput,
     ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
-        if input.validator_vote_count == 0 {
-            return Ok(single_admission_apply_plan(PILLAR_VOTE_STATUS_NOT_ELIGIBLE));
-        }
-
-        let (vote, period) =
-            match signed_rlp_to_verified_vote(input.vote_rlp, input.validator_vote_count) {
-                Ok(Some(vote)) => vote,
-                Ok(None) => {
-                    return Ok(single_admission_apply_plan(
-                        PILLAR_VOTE_STATUS_SIGNATURE_INVALID,
-                    ));
-                }
-                Err(_) => {
-                    return Ok(single_admission_apply_plan(
-                        PILLAR_VOTE_STATUS_INSPECTION_FAILURE,
-                    ));
-                }
-            };
-
-        if !self.0.period_data_initialized(period) {
-            if !input.has_threshold {
-                return Ok(single_admission_apply_plan(PILLAR_VOTE_STATUS_UNKNOWN));
-            }
-            self.0.initialize_period_data(period, input.threshold);
-        }
-
-        let outcome = self.0.add_verified_vote(vote)?;
-        Ok(PillarVoteSingleAdmissionApplyPlan {
-            status: PILLAR_VOTE_STATUS_VALID,
-            accepted: outcome.accepted,
-            duplicate: outcome.duplicate,
-            conflict_found: outcome.conflicting_vote_hash.is_some(),
-            conflicting_vote_hash: outcome.conflicting_vote_hash.unwrap_or_default().into(),
-            block_weight: outcome.block_weight,
-        })
+        let Some(preparation) = self.1.remove(&H256::from(input.vote_hash)) else {
+            return Ok(single_admission_apply_plan(
+                PILLAR_VOTE_STATUS_MISSING_PREPARATION,
+            ));
+        };
+        apply_prepared_single_vote_admission(&mut self.0, preparation.vote_rlp, input)
     }
 }
 
@@ -703,7 +877,7 @@ pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection> {
 /// - The returned `inspections` order matches the input order.
 /// - This function does not read FinalChain state and does not mutate the
 ///   pillar-vote index.
-pub fn inspect_pillar_vote_bundle_rlps(
+fn inspect_pillar_vote_bundle_rlps(
     votes: Vec<PillarVoteRlpPayload>,
 ) -> Result<PillarVoteBundleInspectionPlan> {
     if votes.is_empty() {
@@ -878,6 +1052,7 @@ fn unknown_relevance_plan() -> FfiPillarVoteRelevancePlan {
 
 fn runtime_plan_vote_relevance(
     pillar_votes: &PillarVotes,
+    current_anchor: Option<rustaxa_consensus::PillarCurrentAnchor>,
     vote_rlp: Vec<u8>,
     context: PillarVoteRuntimeRelevanceContext,
 ) -> Result<FfiPillarVoteRelevancePlan> {
@@ -895,12 +1070,8 @@ fn runtime_plan_vote_relevance(
         rustaxa_consensus::plan_pillar_vote_relevance(ConsensusPillarVoteRelevanceFact {
             vote_period: vote.period,
             vote_block_hash: vote.block_hash,
-            current_pillar_block_period: context
-                .has_current_pillar_block
-                .then_some(context.current_pillar_block_period),
-            current_pillar_block_hash: context
-                .has_current_pillar_block
-                .then_some(H256::from(context.current_pillar_block_hash)),
+            current_pillar_block_period: current_anchor.map(|anchor| anchor.period),
+            current_pillar_block_hash: current_anchor.map(|anchor| anchor.hash),
             first_pillar_block_period: context.first_pillar_block_period,
             pillar_blocks_interval: context.pillar_blocks_interval,
             vote_already_known,
@@ -917,13 +1088,41 @@ fn single_admission_plan(status: u8) -> PillarVoteSingleAdmissionPreparePlan {
         block_hash: [0; 32],
         vote_hash: [0; 32],
         voter: [0; 20],
+        anchor_generation: 0,
+        has_current_anchor: false,
+        current_period: 0,
+        current_hash: [0; 32],
+    }
+}
+
+fn preparation_plan(preparation: &SingleVotePreparation) -> PillarVoteSingleAdmissionPreparePlan {
+    let inspection = inspect_pillar_vote_from_rlp(&preparation.vote_rlp)
+        .expect("retained single-vote preparation was inspected before insertion");
+    let (has_current_anchor, current_period, current_hash) = preparation
+        .current_anchor
+        .map(|anchor| (true, anchor.period, anchor.hash.into()))
+        .unwrap_or((false, 0, [0; 32]));
+    PillarVoteSingleAdmissionPreparePlan {
+        status: PILLAR_VOTE_STATUS_VALID,
+        can_query_dpos: true,
+        needs_threshold: preparation.needs_threshold,
+        period: preparation.period,
+        block_hash: preparation.block_hash.into(),
+        vote_hash: inspection.vote_hash.into(),
+        voter: preparation.voter.into(),
+        anchor_generation: preparation.anchor_generation,
+        has_current_anchor,
+        current_period,
+        current_hash,
     }
 }
 
 fn prepare_single_vote_admission(
     pillar_votes: &PillarVotes,
+    current_anchor: Option<rustaxa_consensus::PillarCurrentAnchor>,
+    anchor_generation: u64,
     vote_rlp: Vec<u8>,
-    context: PillarVoteSingleAdmissionContext,
+    checked_context: Option<&PillarVoteSingleAdmissionContext>,
 ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
     let decoded_vote = match PillarVote::decode_rlp(&vote_rlp) {
         Ok(vote) => vote,
@@ -938,6 +1137,12 @@ fn prepare_single_vote_admission(
     plan.block_hash = inspection.block_hash.into();
     plan.vote_hash = inspection.vote_hash.into();
     plan.voter = inspection.voter.into();
+    plan.anchor_generation = anchor_generation;
+    if let Some(anchor) = current_anchor {
+        plan.has_current_anchor = true;
+        plan.current_period = anchor.period;
+        plan.current_hash = anchor.hash.into();
+    }
 
     ensure!(
         decoded_vote.period == inspection.period,
@@ -957,7 +1162,7 @@ fn prepare_single_vote_admission(
         return Ok(plan);
     }
 
-    if context.check_relevance {
+    if let Some(context) = checked_context {
         let duplicate_probe = VerifiedPillarVote::from_parts(
             decoded_vote.clone(),
             inspection.vote_hash,
@@ -968,12 +1173,8 @@ fn prepare_single_vote_admission(
             rustaxa_consensus::plan_pillar_vote_relevance(ConsensusPillarVoteRelevanceFact {
                 vote_period: inspection.period,
                 vote_block_hash: inspection.block_hash,
-                current_pillar_block_period: context
-                    .has_current_pillar_block
-                    .then_some(context.current_pillar_block_period),
-                current_pillar_block_hash: context
-                    .has_current_pillar_block
-                    .then_some(H256::from(context.current_pillar_block_hash)),
+                current_pillar_block_period: current_anchor.map(|anchor| anchor.period),
+                current_pillar_block_hash: current_anchor.map(|anchor| anchor.hash),
                 first_pillar_block_period: context.first_pillar_block_period,
                 pillar_blocks_interval: context.pillar_blocks_interval,
                 vote_already_known: pillar_votes.vote_exists(&duplicate_probe),
@@ -984,7 +1185,7 @@ fn prepare_single_vote_admission(
         }
     }
 
-    if context.check_identity_uniqueness
+    if checked_context.is_some()
         && !pillar_votes.is_unique_vote_identity(ConsensusPillarVoteIdentity {
             period: inspection.period,
             vote_hash: inspection.vote_hash,
@@ -997,6 +1198,48 @@ fn prepare_single_vote_admission(
 
     plan.needs_threshold = !pillar_votes.period_data_initialized(inspection.period);
     plan.can_query_dpos = true;
+    Ok(plan)
+}
+
+fn prepare_weighted_rlp_bundle(
+    current_anchor: Option<rustaxa_consensus::PillarCurrentAnchor>,
+    anchor_generation: u64,
+    vote_rlps: Vec<PillarVoteRlpPayload>,
+    required_votes_period: u64,
+) -> Result<PillarVoteWeightedBundlePreparePlan> {
+    let mut plan = PillarVoteWeightedBundlePreparePlan {
+        status: PILLAR_VOTE_BUNDLE_STATUS_VALID,
+        can_query_dpos: false,
+        inspections: Vec::new(),
+        first_bad_vote_hash: [0; 32],
+        required_votes_period,
+        expected_block_hash: [0; 32],
+        anchor_generation,
+        has_current_anchor: false,
+        current_period: 0,
+        current_hash: [0; 32],
+    };
+    if vote_rlps.is_empty() {
+        plan.status = PILLAR_VOTE_BUNDLE_STATUS_EMPTY;
+        return Ok(plan);
+    }
+    let Some(anchor) = current_anchor else {
+        plan.status = 2;
+        return Ok(plan);
+    };
+    plan.has_current_anchor = true;
+    plan.current_period = anchor.period;
+    plan.current_hash = anchor.hash.into();
+    plan.expected_block_hash = anchor.hash.into();
+    if anchor.period.checked_add(1) != Some(required_votes_period) {
+        plan.status = 3;
+        return Ok(plan);
+    }
+    let inspection = inspect_pillar_vote_bundle_rlps(vote_rlps)?;
+    plan.status = inspection.status;
+    plan.first_bad_vote_hash = inspection.first_bad_vote_hash;
+    plan.inspections = inspection.inspections;
+    plan.can_query_dpos = plan.status == PILLAR_VOTE_BUNDLE_STATUS_VALID;
     Ok(plan)
 }
 
@@ -1013,26 +1256,26 @@ fn single_admission_apply_plan(status: u8) -> PillarVoteSingleAdmissionApplyPlan
 
 fn apply_prepared_single_vote_admission(
     pillar_votes: &mut PillarVotes,
+    vote_rlp: Vec<u8>,
     input: PillarVoteSingleAdmissionApplyInput,
 ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
     if input.validator_vote_count == 0 {
         return Ok(single_admission_apply_plan(PILLAR_VOTE_STATUS_NOT_ELIGIBLE));
     }
 
-    let (vote, period) =
-        match signed_rlp_to_verified_vote(input.vote_rlp, input.validator_vote_count) {
-            Ok(Some(vote)) => vote,
-            Ok(None) => {
-                return Ok(single_admission_apply_plan(
-                    PILLAR_VOTE_STATUS_SIGNATURE_INVALID,
-                ));
-            }
-            Err(_) => {
-                return Ok(single_admission_apply_plan(
-                    PILLAR_VOTE_STATUS_INSPECTION_FAILURE,
-                ));
-            }
-        };
+    let (vote, period) = match signed_rlp_to_verified_vote(vote_rlp, input.validator_vote_count) {
+        Ok(Some(vote)) => vote,
+        Ok(None) => {
+            return Ok(single_admission_apply_plan(
+                PILLAR_VOTE_STATUS_SIGNATURE_INVALID,
+            ));
+        }
+        Err(_) => {
+            return Ok(single_admission_apply_plan(
+                PILLAR_VOTE_STATUS_INSPECTION_FAILURE,
+            ));
+        }
+    };
 
     if !pillar_votes.period_data_initialized(period) {
         if !input.has_threshold {
@@ -1050,6 +1293,18 @@ fn apply_prepared_single_vote_admission(
         conflicting_vote_hash: outcome.conflicting_vote_hash.unwrap_or_default().into(),
         block_weight: outcome.block_weight,
     })
+}
+
+fn bundle_apply_rejection(status: u8) -> PillarVoteBundleApplyPlan {
+    PillarVoteBundleApplyPlan {
+        status,
+        block_weight: 0,
+        selected_weight: 0,
+        first_bad_vote_hash: [0; 32],
+        insert_failed: false,
+        insert_failed_vote_hash: [0; 32],
+        applied_votes: 0,
+    }
 }
 
 fn apply_weighted_rlp_bundle(
@@ -1330,9 +1585,17 @@ mod tests {
         period: u64,
         block: u64,
     ) -> (PillarVote, [u8; 20]) {
+        signed_vote_with_key_and_hash(signing_key, period, H256::from_low_u64_be(block))
+    }
+
+    fn signed_vote_with_key_and_hash(
+        signing_key: &SigningKey,
+        period: u64,
+        block_hash: H256,
+    ) -> (PillarVote, [u8; 20]) {
         let mut vote = PillarVote {
             period,
-            block_hash: H256::from_low_u64_be(block),
+            block_hash,
             signature: [0u8; 65],
         };
         let unsigned_hash = vote.hash(false);
@@ -1353,6 +1616,23 @@ mod tests {
         };
 
         (vote, voter)
+    }
+
+    fn current_data(period: u64) -> (PillarBlock, Vec<u8>) {
+        let block = PillarBlock {
+            period,
+            state_root: H256::from_low_u64_be(1),
+            previous_pillar_block_hash: H256::from_low_u64_be(2),
+            bridge_root: H256::from_low_u64_be(3),
+            epoch: 4,
+            validator_vote_count_changes: Vec::new(),
+        };
+        let bytes = CurrentPillarBlockDataDb {
+            pillar_block: block.clone(),
+            vote_counts: Vec::new(),
+        }
+        .encode_rlp();
+        (block, bytes)
     }
 
     fn period_data_with_pillar_votes(votes: &[PillarVote]) -> Vec<u8> {
@@ -1408,15 +1688,10 @@ mod tests {
         assert!(pillar_vote_inspect(&[1, 2, 3]).is_err());
     }
 
-    fn single_admission_context(block_hash: H256) -> PillarVoteSingleAdmissionContext {
+    fn single_admission_context(_block_hash: H256) -> PillarVoteSingleAdmissionContext {
         PillarVoteSingleAdmissionContext {
-            has_current_pillar_block: true,
-            current_pillar_block_period: 41,
-            current_pillar_block_hash: block_hash.into(),
-            first_pillar_block_period: 40,
+            first_pillar_block_period: 41,
             pillar_blocks_interval: 10,
-            check_relevance: true,
-            check_identity_uniqueness: true,
         }
     }
 
@@ -1442,7 +1717,7 @@ mod tests {
         let applied = votes
             .pillar_votes_apply_prepared_single_vote_admission(
                 PillarVoteSingleAdmissionApplyInput {
-                    vote_rlp: vote.encode_rlp(),
+                    vote_hash: vote.hash(true).into(),
                     validator_vote_count: 6,
                     has_threshold: true,
                     threshold: 5,
@@ -1472,15 +1747,24 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let mut runtime = create_pillar_chain_runtime(&storage);
+            let mut runtime =
+                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
             let pillar_storage = create_pillar_chain_storage(&storage);
-            let (vote, _) = signed_vote(0x24, 42, 77);
-            let block_rlp = vec![0xC1, 0x03];
+            let (block, current_data_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_data_rlp)
+                .expect("current block should apply");
+            let signing_key = SigningKey::from_slice(&[0x24; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
+            let block_rlp = block.encode_rlp();
+            runtime
+                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .expect("trusted vote should prepare");
 
             let applied = runtime
                 .pillar_chain_runtime_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
-                        vote_rlp: vote.encode_rlp(),
+                        vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
                         has_threshold: true,
                         threshold: 5,
@@ -1493,10 +1777,6 @@ mod tests {
             let finalized = runtime
                 .pillar_chain_runtime_finalize_block_for_pbft(PillarBlockFinalizationRequest {
                     requested_pillar_block_hash: vote.block_hash.into(),
-                    has_current_pillar_block: true,
-                    current_period: 41,
-                    current_hash: vote.block_hash.into(),
-                    current_block_rlp: block_rlp.clone(),
                     has_last_finalized_pillar_block: false,
                     last_finalized_hash: [0; 32],
                 })
@@ -1524,6 +1804,385 @@ mod tests {
     }
 
     #[test]
+    fn runtime_single_admission_rejects_stale_anchor_generation() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_stale_single");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (vote, _) = signed_vote(0x25, 42, 77);
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_single_vote_admission(
+                    vote.encode_rlp(),
+                    PillarVoteSingleAdmissionContext {
+                        first_pillar_block_period: 41,
+                        pillar_blocks_interval: 10,
+                    },
+                )
+                .unwrap();
+            assert_eq!(prepared.anchor_generation, 0);
+
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_data(41).1)
+                .unwrap();
+            let rejected = runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .unwrap();
+            assert_eq!(rejected.status, PILLAR_VOTE_STATUS_STALE_ANCHOR);
+            assert!(!rejected.accepted);
+            assert!(!runtime.votes.period_data_initialized(vote.period));
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn trusted_prepare_reuses_checked_token_and_cannot_refresh_stale_anchor() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_checked_token_reuse");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .unwrap();
+            let key = SigningKey::from_slice(&[0x27; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
+            let checked = runtime
+                .pillar_chain_runtime_prepare_single_vote_admission(
+                    vote.encode_rlp(),
+                    PillarVoteSingleAdmissionContext {
+                        first_pillar_block_period: 41,
+                        pillar_blocks_interval: 10,
+                    },
+                )
+                .unwrap();
+            assert_eq!(checked.anchor_generation, 1);
+
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_data(51).1)
+                .unwrap();
+            let reused = runtime
+                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .unwrap();
+            assert_eq!(reused.anchor_generation, checked.anchor_generation);
+            assert_eq!(reused.current_period, checked.current_period);
+            assert_eq!(reused.current_hash, checked.current_hash);
+
+            let rejected = runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .unwrap();
+            assert_eq!(rejected.status, PILLAR_VOTE_STATUS_STALE_ANCHOR);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn checked_reprepare_after_anchor_change_revalidates_and_stays_untrusted() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_checked_reprepare");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (old_block, old_current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(old_current_rlp)
+                .unwrap();
+            let key = SigningKey::from_slice(&[0x2A; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&key, 42, old_block.hash());
+            let checked = runtime
+                .pillar_chain_runtime_prepare_single_vote_admission(
+                    vote.encode_rlp(),
+                    PillarVoteSingleAdmissionContext {
+                        first_pillar_block_period: 41,
+                        pillar_blocks_interval: 10,
+                    },
+                )
+                .unwrap();
+            assert!(checked.can_query_dpos);
+            assert_eq!(checked.anchor_generation, 1);
+
+            let replacement_block = PillarBlock {
+                period: 41,
+                state_root: H256::from_low_u64_be(999),
+                previous_pillar_block_hash: H256::from_low_u64_be(2),
+                bridge_root: H256::from_low_u64_be(3),
+                epoch: 4,
+                validator_vote_count_changes: Vec::new(),
+            };
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(
+                    CurrentPillarBlockDataDb {
+                        pillar_block: replacement_block,
+                        vote_counts: Vec::new(),
+                    }
+                    .encode_rlp(),
+                )
+                .unwrap();
+
+            let rechecked = runtime
+                .pillar_chain_runtime_prepare_single_vote_admission(
+                    vote.encode_rlp(),
+                    PillarVoteSingleAdmissionContext {
+                        first_pillar_block_period: 41,
+                        pillar_blocks_interval: 10,
+                    },
+                )
+                .unwrap();
+            assert_eq!(rechecked.status, 4);
+            assert!(!rechecked.can_query_dpos);
+            let registry = runtime.single_vote_preparations.lock().unwrap();
+            let retained = registry.entries.get(&vote.hash(true)).unwrap();
+            assert_eq!(retained.anchor_generation, checked.anchor_generation);
+            assert!(!retained.trusted_local_or_restore);
+            drop(registry);
+
+            let rejected = runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .unwrap();
+            assert_eq!(rejected.status, PILLAR_VOTE_STATUS_STALE_ANCHOR);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn checked_apply_revalidates_identity_after_prepare_race() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_identity_race");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .unwrap();
+            let key = SigningKey::from_slice(&[0x28; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_single_vote_admission(
+                    vote.encode_rlp(),
+                    PillarVoteSingleAdmissionContext {
+                        first_pillar_block_period: 41,
+                        pillar_blocks_interval: 10,
+                    },
+                )
+                .unwrap();
+            assert!(prepared.can_query_dpos);
+
+            let (conflict, _) = signed_vote_with_key(&key, 42, 999);
+            let (conflict, _) = signed_rlp_to_verified_vote(conflict.encode_rlp(), 4)
+                .unwrap()
+                .unwrap();
+            runtime.votes.initialize_period_data(42, 5);
+            assert!(runtime.votes.add_verified_vote(conflict).unwrap().accepted);
+
+            let rejected = runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: false,
+                        threshold: 0,
+                    },
+                )
+                .unwrap();
+            assert_eq!(rejected.status, PILLAR_VOTE_STATUS_NOT_UNIQUE);
+            assert!(!rejected.accepted);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn checked_apply_revalidates_relevance_after_duplicate_race() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_relevance_race");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .unwrap();
+            let key = SigningKey::from_slice(&[0x29; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_single_vote_admission(
+                    vote.encode_rlp(),
+                    PillarVoteSingleAdmissionContext {
+                        first_pillar_block_period: 41,
+                        pillar_blocks_interval: 10,
+                    },
+                )
+                .unwrap();
+            assert!(prepared.can_query_dpos);
+
+            let (inserted, _) = signed_rlp_to_verified_vote(vote.encode_rlp(), 4)
+                .unwrap()
+                .unwrap();
+            runtime.votes.initialize_period_data(42, 5);
+            assert!(runtime.votes.add_verified_vote(inserted).unwrap().accepted);
+
+            let rejected = runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: false,
+                        threshold: 0,
+                    },
+                )
+                .unwrap();
+            assert_eq!(rejected.status, 1);
+            assert!(!rejected.accepted);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn single_vote_preparation_registry_is_bounded_and_apply_fails_closed() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_preparation_bound");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            for value in 0..=MAX_SINGLE_VOTE_PREPARATIONS {
+                let vote_hash = H256::from_low_u64_be(value as u64);
+                runtime
+                    .retain_single_vote_preparation(
+                        vote_hash,
+                        SingleVotePreparation {
+                            vote_rlp: vec![0x80],
+                            anchor_generation: 0,
+                            period: 1,
+                            block_hash: H256::zero(),
+                            voter: ethereum_types::H160::zero(),
+                            needs_threshold: false,
+                            current_anchor: None,
+                            first_pillar_block_period: 0,
+                            pillar_blocks_interval: 1,
+                            trusted_local_or_restore: true,
+                        },
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                runtime
+                    .single_vote_preparations
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .len(),
+                MAX_SINGLE_VOTE_PREPARATIONS
+            );
+            let missing = runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: H256::zero().into(),
+                        validator_vote_count: 1,
+                        has_threshold: true,
+                        threshold: 1,
+                    },
+                )
+                .unwrap();
+            assert_eq!(missing.status, PILLAR_VOTE_STATUS_MISSING_PREPARATION);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn runtime_weighted_bundle_prepare_and_apply_are_generation_bound() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_stale_bundle");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .unwrap();
+            let key = SigningKey::from_slice(&[0x26; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_weighted_rlp_bundle(
+                    vec![PillarVoteRlpPayload {
+                        vote_rlp: vote.encode_rlp(),
+                    }],
+                    42,
+                )
+                .unwrap();
+            assert_eq!(prepared.status, 0);
+            assert!(prepared.can_query_dpos);
+            assert_eq!(prepared.inspections.len(), 1);
+            assert_eq!(
+                prepared.expected_block_hash,
+                Into::<[u8; 32]>::into(block.hash())
+            );
+            assert_eq!(prepared.anchor_generation, 1);
+
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_data(51).1)
+                .unwrap();
+            let rejected = runtime
+                .pillar_chain_runtime_apply_weighted_rlp_bundle(
+                    PillarVoteWeightedBundleApplyInput {
+                        votes: vec![PillarVoteWeightedRlpPayload {
+                            vote_rlp: vote.encode_rlp(),
+                            weight: 6,
+                        }],
+                        required_votes_period: 42,
+                        threshold: 5,
+                        anchor_generation: prepared.anchor_generation,
+                    },
+                )
+                .unwrap();
+            assert_eq!(rejected.status, PILLAR_VOTE_BUNDLE_STATUS_STALE_ANCHOR);
+            assert_eq!(rejected.applied_votes, 0);
+            assert!(!runtime.votes.period_data_initialized(42));
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn runtime_finalization_derives_anchor_and_suppresses_period_overflow() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_finalize_overflow");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(u64::MAX);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .unwrap();
+            let result = runtime
+                .pillar_chain_runtime_finalize_block_for_pbft(PillarBlockFinalizationRequest {
+                    requested_pillar_block_hash: block.hash().into(),
+                    has_last_finalized_pillar_block: false,
+                    last_finalized_hash: [0; 32],
+                })
+                .unwrap();
+            assert_eq!(result.status, 3);
+            assert_eq!(result.current_period, u64::MAX);
+            assert_eq!(result.current_hash, Into::<[u8; 32]>::into(block.hash()));
+            assert!(!result.should_request_votes);
+            assert!(!result.has_request_votes_period);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
     fn single_vote_admission_apply_reports_same_voter_conflict() {
         let mut votes = create_pillar_votes_index();
         let signing_key = SigningKey::from_slice(&[0x31; 32]).unwrap();
@@ -1532,25 +2191,14 @@ mod tests {
 
         for vote in [&first, &conflict] {
             let prepared = votes
-                .pillar_votes_prepare_single_vote_admission(
-                    vote.encode_rlp(),
-                    PillarVoteSingleAdmissionContext {
-                        has_current_pillar_block: false,
-                        current_pillar_block_period: 0,
-                        current_pillar_block_hash: [0; 32],
-                        first_pillar_block_period: 50,
-                        pillar_blocks_interval: 10,
-                        check_relevance: false,
-                        check_identity_uniqueness: false,
-                    },
-                )
+                .pillar_votes_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .unwrap();
             assert!(prepared.can_query_dpos);
             assert_eq!(prepared.voter, voter);
             let applied = votes
                 .pillar_votes_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
-                        vote_rlp: vote.encode_rlp(),
+                        vote_hash: vote.hash(true).into(),
                         validator_vote_count: 4,
                         has_threshold: prepared.needs_threshold,
                         threshold: 5,
@@ -1573,19 +2221,11 @@ mod tests {
         let (mut vote, _) = signed_vote(0x41, 61, 98);
         vote.signature = [0u8; 65];
 
-        let applied = votes
-            .pillar_votes_apply_prepared_single_vote_admission(
-                PillarVoteSingleAdmissionApplyInput {
-                    vote_rlp: vote.encode_rlp(),
-                    validator_vote_count: 4,
-                    has_threshold: true,
-                    threshold: 5,
-                },
-            )
+        let prepared = votes
+            .pillar_votes_prepare_trusted_single_vote_admission(vote.encode_rlp())
             .unwrap();
-
-        assert_eq!(applied.status, PILLAR_VOTE_STATUS_SIGNATURE_INVALID);
-        assert!(!applied.accepted);
+        assert_eq!(prepared.status, PILLAR_VOTE_STATUS_SIGNATURE_INVALID);
+        assert!(!prepared.can_query_dpos);
     }
 
     #[test]
@@ -1854,11 +2494,18 @@ mod tests {
     fn network_bundle_chunks_use_runtime_votes_without_materializing_cpp_votes() {
         let dir = unique_temp_dir("pillar_network_runtime_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let mut runtime = create_pillar_chain_runtime(&storage);
+        let mut runtime =
+            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
         let period = 92;
-        let block = H256::from_low_u64_be(9200);
-        let (first, _) = signed_vote(0x61, period, 9200);
-        let (second, _) = signed_vote(0x62, period, 9200);
+        let (current_block, current_data_rlp) = current_data(period - 1);
+        runtime
+            .pillar_chain_runtime_apply_current_block_data(current_data_rlp)
+            .expect("current block should apply");
+        let block = current_block.hash();
+        let first_key = SigningKey::from_slice(&[0x61; 32]).unwrap();
+        let second_key = SigningKey::from_slice(&[0x62; 32]).unwrap();
+        let (first, _) = signed_vote_with_key_and_hash(&first_key, period, block);
+        let (second, _) = signed_vote_with_key_and_hash(&second_key, period, block);
         let votes = vec![
             PillarVoteWeightedRlpPayload {
                 vote_rlp: first.encode_rlp(),
@@ -1871,12 +2518,12 @@ mod tests {
         ];
 
         runtime
-            .pillar_chain_runtime_apply_weighted_rlp_bundle(
+            .pillar_chain_runtime_apply_weighted_rlp_bundle(PillarVoteWeightedBundleApplyInput {
                 votes,
-                period,
-                block.as_fixed_bytes(),
-                1,
-            )
+                required_votes_period: period,
+                threshold: 1,
+                anchor_generation: 1,
+            })
             .unwrap();
         let lookup = runtime
             .pillar_chain_runtime_build_verified_vote_network_bundles(
@@ -1913,7 +2560,8 @@ mod tests {
     fn network_bundle_chunks_fall_back_to_matching_stored_period_data() {
         let dir = unique_temp_dir("pillar_network_storage_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_chain_runtime(&storage);
+        let runtime =
+            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
         let period = 93;
         let block = H256::from_low_u64_be(9300);
         let (first, _) = signed_vote(0x63, period, 9300);
@@ -1960,7 +2608,8 @@ mod tests {
     fn verified_vote_payload_lookup_falls_back_to_matching_stored_period_data() {
         let dir = unique_temp_dir("pillar_payload_lookup_storage_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_chain_runtime(&storage);
+        let runtime =
+            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
         let period = 94;
         let block = H256::from_low_u64_be(9400);
         let (vote, _) = signed_vote(0x65, period, 9400);
@@ -2003,7 +2652,8 @@ mod tests {
     fn verified_vote_payload_lookup_keeps_live_below_threshold_state() {
         let dir = unique_temp_dir("pillar_payload_lookup_live_below_threshold");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let mut runtime = create_pillar_chain_runtime(&storage);
+        let mut runtime =
+            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
         let period = 95;
         let block = H256::from_low_u64_be(9500);
         let (live_vote, _) = signed_vote(0x66, period, 9500);
@@ -2138,7 +2788,8 @@ mod tests {
     fn runtime_relevance_derives_known_vote_from_owned_index() {
         let storage_dir = unique_temp_dir("pillar_runtime_relevance");
         let storage = create_storage(storage_dir.to_str().unwrap()).expect("storage should open");
-        let mut runtime = create_pillar_chain_runtime(&storage);
+        let mut runtime =
+            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
         let vote = vote(31, 888, 1, 0xD4, 6);
         runtime.votes.initialize_period_data(31, 1);
         runtime
@@ -2150,9 +2801,6 @@ mod tests {
             .pillar_chain_runtime_plan_vote_relevance(
                 vote.vote_rlp,
                 PillarVoteRuntimeRelevanceContext {
-                    has_current_pillar_block: true,
-                    current_pillar_block_period: 20,
-                    current_pillar_block_hash: H256::from_low_u64_be(333).into(),
                     first_pillar_block_period: 10,
                     pillar_blocks_interval: 10,
                 },
