@@ -130,38 +130,6 @@ impl BridgeSortitionParamsManager {
         Ok(self.manager.params_for_period_from_storage(period)?.into())
     }
 
-    /// Records a finalized period and returns any emitted threshold change.
-    ///
-    /// `unique_transactions` is the count of finalized unique transactions and
-    /// `total_dag_transaction_refs` is the total transaction references across
-    /// finalized DAG blocks for the PBFT period. When `has_pivot` is false, the
-    /// period is ignored just like the C++ null-pivot path.
-    pub fn record_finalized_period(
-        &mut self,
-        period: u64,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-        non_empty_pbft_chain_size: u64,
-    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
-        let dag_efficiency = self.efficiency_from_counts(
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-        )?;
-
-        let Some(change) = self.manager.record_finalized_period(
-            period,
-            dag_efficiency,
-            non_empty_pbft_chain_size,
-        )?
-        else {
-            return Ok(empty_change_result());
-        };
-
-        Ok(change.into())
-    }
-
     /// Records a finalized period and persists any emitted threshold change
     /// through the Rust storage handle owned by the manager.
     ///
@@ -308,24 +276,6 @@ impl BridgeSortitionParamsManager {
         period: u64,
     ) -> Result<rustaxa_ffi::SortitionRuntimeParams> {
         self.params_for_period_from_storage(period)
-    }
-
-    /// CXX-exported method recording a finalized period sample.
-    pub fn sortition_record_finalized_period(
-        &mut self,
-        period: u64,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-        non_empty_pbft_chain_size: u64,
-    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
-        self.record_finalized_period(
-            period,
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-            non_empty_pbft_chain_size,
-        )
     }
 
     /// CXX-exported method recording and persisting a finalized-period sortition update.

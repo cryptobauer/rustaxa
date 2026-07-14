@@ -5529,14 +5529,6 @@ pub mod rustaxa_ffi {
             self: &BridgeSortitionParamsManager,
             period: u64,
         ) -> Result<SortitionRuntimeParams>;
-        pub fn sortition_record_finalized_period(
-            self: &mut BridgeSortitionParamsManager,
-            period: u64,
-            has_pivot: bool,
-            unique_transactions: u64,
-            total_dag_transaction_refs: u64,
-            non_empty_pbft_chain_size: u64,
-        ) -> Result<SortitionParamsChangeResult>;
         pub fn sortition_record_finalized_period_and_persist(
             self: &mut BridgeSortitionParamsManager,
             period: u64,

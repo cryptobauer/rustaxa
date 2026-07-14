@@ -43,10 +43,19 @@ rust::Box<BridgeSortitionParamsManager> create_manager(std::string_view name) {
 TEST(RustSortitionTest, ManagerEmitsThresholdChangeForInterval) {
   auto manager = create_manager("rustaxa_consensus_sortition_threshold_change");
 
-  auto first = manager->sortition_record_finalized_period(1, true, 25, 100, 1);
+  auto first_preview = manager->sortition_preview_finalized_period(1, true, 25, 100, 1);
+  EXPECT_FALSE(first_preview.changed);
+  SortitionParamsChangePayload no_change;
+  auto first = manager->sortition_commit_finalized_period(1, true, 25, 100, 1, false, no_change);
   EXPECT_FALSE(first.changed);
 
-  auto second = manager->sortition_record_finalized_period(2, true, 25, 100, 2);
+  auto second_preview = manager->sortition_preview_finalized_period(2, true, 25, 100, 2);
+  ASSERT_TRUE(second_preview.changed);
+  SortitionParamsChangePayload expected_change;
+  expected_change.period = second_preview.period;
+  expected_change.interval_efficiency = second_preview.interval_efficiency;
+  expected_change.threshold_upper = second_preview.threshold_upper;
+  auto second = manager->sortition_commit_finalized_period(2, true, 25, 100, 2, true, expected_change);
   ASSERT_TRUE(second.changed);
   EXPECT_EQ(second.period, 2);
   EXPECT_EQ(second.interval_efficiency, 25 * 100);

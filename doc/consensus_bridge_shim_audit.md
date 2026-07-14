@@ -493,6 +493,16 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The direct `sortition_params_for_period(found, change)` CXX export is deleted. Live C++ lookups use the storage-backed
   `sortition_params_for_period_from_storage(period)` route, so callers no longer inject synthetic sortition-change
   payloads through a bridge-shaped helper. Native `rustaxa-consensus` tests keep direct `params_for_period` coverage.
+- `SortitionParamsManager::applyBlockForSortitionRuntime` and the no-caller
+  `sortition_record_finalized_period` CXX wrapper are deleted. They exposed an unstaged live-state mutation alongside the
+  authoritative preview/primary-batch/commit finalization route and the storage-owning public compatibility route.
+  Native `rustaxa-consensus::sortition::SortitionParamsManager::record_finalized_period` remains the internal domain
+  transition used to validate and apply a prepared commit; the redundant bridge-level method is also gone. The legacy
+  `Batch&` on `pbftBlockPushed` remains source-compatible for pure C++ and public facade tests; Rust ignores it because
+  that compatibility call commits through the runtime-owned native storage handle.
+- Sortition closeout validation passed: nine focused Rust bridge tests, three CXX sortition bridge tests, three shim
+  tests, 13 public sortition tests, Tier 1/Tier 2 rewrite gates, and the startup smoke gate. The removed symbols have no
+  remaining repository references, and original upstream sortition sources remain unchanged.
 - `final_chain_shim` is the active Rust-mode route for FinalChain startup, native finalization, external-EVM publication,
   pending-publication recovery, and storage audit. It constructs `BridgeFinalChain` and `BridgeConsensusExecutionApi`;
   C++ supplies only the external `StateAPI`/EVM adapter, while Rust commits FinalChain headers, receipts, transaction

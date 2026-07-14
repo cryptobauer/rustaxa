@@ -1951,6 +1951,15 @@ Implementation status:
 - The direct `sortition_params_for_period(found, change)` CXX export is deleted. C++ sortition callers now use only
   `sortition_params_for_period_from_storage(period)` for historical lookups, while direct change-payload lookup coverage
   remains in native Rust sortition tests.
+- The no-caller unstaged sortition mutation route is deleted. `SortitionParamsManager::applyBlockForSortitionRuntime`
+  and the CXX-only `sortition_record_finalized_period` wrapper no longer provide a second way to publish live threshold
+  state without persistence. PBFT finalization continues through preview, primary Rust-owned batch persistence, and
+  post-commit runtime commit; the public `pbftBlockPushed(..., Batch&, ...)` signature remains an intentional cross-mode
+  compatibility API whose Rust implementation persists atomically through its native storage handle.
+  Validation passed with all nine focused Rust bridge sortition tests, all three CXX sortition bridge tests, all three
+  sortition shim tests, all 13 public sortition tests, `make rewrite-validate-fast`,
+  `make rewrite-validate-consensus`, and `make rewrite-validate-smoke`; source audits found no removed API references and
+  confirmed the original upstream sortition header/source remain unchanged.
 - FinalChain Rust-mode startup, native finalization, external-EVM publication, crash recovery, and storage audit are
   closed under the current overlay. The remaining public `DbStorage` batch blocks in
   `libraries/core_libs/consensus/src/final_chain/final_chain.cpp` are legacy-only when `RUSTAXA_ENABLE_FINAL_CHAIN` is

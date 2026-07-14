@@ -54,7 +54,8 @@ struct SortitionFinalizationCommitReport {
  */
 class SortitionParamsManager {
  public:
-  SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config, std::shared_ptr<DbStorage> db);
+  SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
+                         std::shared_ptr<DbStorage> db);
 
   /**
    * Returns current sortition parameters, or parameters adjusted with the last
@@ -97,18 +98,6 @@ class SortitionParamsManager {
   void pbftBlockPushed(const PeriodData& block, Batch& batch, PbftPeriod non_empty_pbft_chain_size);
 
   /**
-   * Rust-only entry for PBFT finalization updates.
-   *
-   * Updates live Rust sortition state for the finalized PBFT block and returns a change payload when a threshold
-   * interval boundary is crossed.
-   *
-   * This method does not persist anything into C++ storage; PBFT finalization routes the returned change through the
-   * Rust staged finalization storage appender while preserving the caller's batch commit boundary.
-   */
-  std::optional<SortitionParamsChange> applyBlockForSortitionRuntime(const PeriodData& block,
-                                                                     PbftPeriod non_empty_pbft_chain_size);
-
-  /**
    * Preview a PBFT-finalization sortition update without mutating live Rust state.
    *
    * Inputs:
@@ -122,8 +111,8 @@ class SortitionParamsManager {
    * - Does not publish threshold/counter changes to live callers.
    * - Throws on malformed efficiency facts before storage stages are built.
    */
-  std::optional<SortitionParamsChange> prepareBlockForSortitionFinalization(
-      const PeriodData& block, PbftPeriod non_empty_pbft_chain_size);
+  std::optional<SortitionParamsChange> prepareBlockForSortitionFinalization(const PeriodData& block,
+                                                                            PbftPeriod non_empty_pbft_chain_size);
 
   /**
    * Commit a previously previewed PBFT-finalization sortition update.

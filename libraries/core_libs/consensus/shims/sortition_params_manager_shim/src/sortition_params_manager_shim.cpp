@@ -99,10 +99,9 @@ SortitionFinalizationCommitReport makeSortitionFinalizationCommitReport(
 
 SortitionParamsManager::SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
                                                std::shared_ptr<DbStorage> db)
-    : kConfig(config),
-      sortition_config_(config.genesis.sortition) {
-  rust_sortition_params_manager_ = rustaxa::create_sortition_params_manager_from_storage(
-      to_rust_config(sortition_config_), db->rustStorage());
+    : kConfig(config), sortition_config_(config.genesis.sortition) {
+  rust_sortition_params_manager_ =
+      rustaxa::create_sortition_params_manager_from_storage(to_rust_config(sortition_config_), db->rustStorage());
   params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
   apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
 }
@@ -112,7 +111,8 @@ SortitionParams SortitionParamsManager::getSortitionParams(std::optional<PbftPer
     return from_rust_params(rust_sortition_params_manager_.value()->sortition_current_params());
   }
 
-  return from_rust_params(rust_sortition_params_manager_.value()->sortition_params_for_period_from_storage(*for_period));
+  return from_rust_params(
+      rust_sortition_params_manager_.value()->sortition_params_for_period_from_storage(*for_period));
 }
 
 rustaxa::SortitionRuntimeParams SortitionParamsManager::rustSortitionParamsForRust(PbftPeriod for_period) const {
@@ -139,22 +139,6 @@ void SortitionParamsManager::pbftBlockPushed(const PeriodData& block, Batch& bat
       non_empty_pbft_chain_size);
   params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
   apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
-}
-
-std::optional<SortitionParamsChange> SortitionParamsManager::applyBlockForSortitionRuntime(
-    const PeriodData& block, PbftPeriod non_empty_pbft_chain_size) {
-  const auto counts = period_efficiency_counts(block);
-  const auto period = block.pbft_blk->getPeriod();
-  auto outcome = rust_sortition_params_manager_.value()->sortition_record_finalized_period(
-      period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
-      non_empty_pbft_chain_size);
-  std::optional<SortitionParamsChange> params_change;
-  if (outcome.changed) {
-    params_change = from_rust_change(outcome);
-  }
-  params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
-  apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
-  return params_change;
 }
 
 std::optional<SortitionParamsChange> SortitionParamsManager::prepareBlockForSortitionFinalization(
