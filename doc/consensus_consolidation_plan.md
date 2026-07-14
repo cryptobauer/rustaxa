@@ -443,6 +443,21 @@ Implementation notes:
   `make rewrite-validate-smoke`. Build metadata and archive audits found no legacy queue source or symbols in Rust mode.
   The all-Rust-off build compiled the untouched `transaction_queue.cpp`, but an unrelated pre-existing missing
   PillarChainManager API in `get_pillar_votes_bundle_packet_handler.cpp` blocked linking the pure-C++ transaction tests.
+- `rewards_stats_shim` is a standalone FinalChain-owned overlay and no longer needs a separate feature boundary or
+  legacy `StatsOld` scaffold. `RUSTAXA_ENABLE_REWARDS_STATS` is retired because RewardsStats has no independent caller
+  and Rust FinalChain unconditionally uses its publication API. FinalChain-enabled builds exclude the untouched legacy
+  `rewards_stats.cpp` and compile only the Rust-backed facade; FinalChain-disabled and pure-C++ reference builds retain
+  the original header/source. The live facade remains until the external `StateAPI::distribute_rewards` boundary no
+  longer requires C++ `BlockStats` materialization and FinalChain publication sequencing.
+  Validation passed 12 focused Rust consensus rewards tests, seven Rust bridge rewards tests, two C++/Rust rewards
+  bridge parity tests, all nine storage bridge tests, all seven `rewards_stats_test` cases, all 17 `final_chain_test`
+  cases, all 50 RPC cases, `make rewrite-validate-final-chain`, `make rewrite-validate-consensus`, and startup smoke.
+  A refreshed Rust cache contains no retired option, legacy source, rename definition, or `StatsOld` archive symbol.
+  Fresh FinalChain-off and all-Rust-off configurations select and compile the untouched original source without a
+  rename; their broader test targets are blocked by pre-existing partial/pure-C++ network packet-handler API mismatches.
+  Slice mapping, API design, architecture review, C++ implementation, and independent closeout review used the
+  code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation agent was needed
+  because no Rust runtime or bridge behavior changed.
 - `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
   network pointer at this seam.
 - `dag_manager_shim` now owns the public `VerifyBlockReturnType` enum locally instead of aliasing

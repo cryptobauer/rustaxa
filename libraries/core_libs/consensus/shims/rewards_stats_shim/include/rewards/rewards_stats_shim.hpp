@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -41,7 +42,7 @@ struct FinalChainPublicationRewardsStats {
  *   storage batch and are not committed by this class
  *
  * Invariants and edge behavior:
- * - no production path forwards to `StatsOld`
+ * - no production path forwards to the legacy C++ implementation
  * - gas-used vectors must be empty or contain at least one entry per finalized
  *   transaction; extra entries are ignored for system-transaction compatibility
  * - `clear` updates storage, the Rust runtime, and the mirror cache only after

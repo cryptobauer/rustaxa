@@ -360,6 +360,10 @@ The FinalChain shim uses a header overlay pattern and can be enabled with:
 
 When enabled, the standalone overlay supplies `final_chain::FinalChain` and the untouched legacy implementation is
 excluded from Rust production builds. Pure-C++ reference builds continue compiling the original header and source.
+The FinalChain feature also owns the standalone Rust-backed `rewards::Stats` overlay. RewardsStats has no independent
+build mode because FinalChain publication unconditionally uses its shim-only preview/commit API; the former
+`RUSTAXA_ENABLE_REWARDS_STATS` flag and dead `StatsOld` compile scaffold are retired. FinalChain-disabled and pure-C++
+reference builds retain the untouched legacy RewardsStats header and source.
 
 ### Current Implementation Status
 

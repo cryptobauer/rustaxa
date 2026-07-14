@@ -88,7 +88,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `pillar_chain_manager_shim` | Pillar chain manager compatibility; live vote aggregation, synced bundle apply, and PBFT-facing pillar finalization now route through `BridgePillarChainRuntime` around the external FinalChain DPoS read | App/consensus pillar paths | C++ public compatibility facade | Delete after pillar chain runtime/storage and DPoS-weight access ports are native Rust-owned. |
 | `pillar_votes_shim` | Pillar vote index/admission facade | Retired after this slice | Obsolete scaffold | Removed. `pillar_chain_manager_shim` uses `BridgePillarChainRuntime` for live vote state; no C++ shim behavior remains. |
 | `proposed_blocks_shim` | Proposed block tracking facade | DAG manager, vote manager, PBFT paths | C++ public compatibility facade | Delete after proposed-block tracking is folded into Rust PBFT/DAG runtime. |
-| `rewards_stats_shim` | Rewards statistics facade | Finalization/rewards tests | C++ public compatibility facade | Delete after Rust finalization owns rewards stats writes/reads directly. The FinalChain publication edge is narrowed so callers receive only reward distribution stats and a storage-update DTO; the Rust process plan remains inside the shim until publication commit succeeds. |
+| `rewards_stats_shim` | Standalone FinalChain-owned rewards statistics facade | FinalChain publication and rewards tests | C++ public compatibility facade | The facade no longer imports or compiles `StatsOld`, and its former module flag is retired because FinalChain unconditionally uses the shim-only publication API. Delete after Rust finalization owns rewards stats writes/reads directly and the external StateAPI edge no longer needs C++ `BlockStats`; until then the narrowed publication edge exposes only reward distribution stats and a storage-update DTO while the Rust process plan remains inside the shim until publication commit succeeds. |
 | `slashing_manager_shim` | Slashing proof planner facade; Rust vote admission passes one `SlashingDoubleVoteEvidence` payload while the live `PbftVote` overload is only a compatibility adapter | Slashing manager users | C++ public compatibility facade | Delete after slashing planning and transaction submission run inside Rust consensus/runtime ports. |
 | `sortition_params_manager_shim` | Sortition parameter storage facade | DAG/sortition, query paths | C++ public compatibility facade | Delete after sortition parameters are exposed through Rust storage/query APIs only. |
 | `storage_shim` | `DbStorage` Rust-mode overlay and Rust storage owner | App, consensus shims, storage tests | C++ public compatibility facade | Delete broad storage facade after all C++ consensus callers stop using `DbStorage`; keep only external app/admin bootstrap if needed. |
@@ -267,6 +267,12 @@ Current snapshot after DAG manager verify-result API cleanup:
   `transaction_queue_shim`, and its feature flag are deleted. `BridgeTransactionManagerRuntime` now exclusively owns
   the native Rust queue in production. Rust-enabled `core_libs` excludes the untouched legacy queue source; direct C++
   queue tests remain pure-C++ reference coverage rather than being retargeted to legacy behavior in Rust mode.
+- `rewards_stats_shim` is detached from `StatsOld` and is selected as part of the FinalChain ownership bundle.
+  `RUSTAXA_ENABLE_REWARDS_STATS` is deleted because it described no independently valid configuration: FinalChain
+  unconditionally calls the shim-only publication API. Rust FinalChain builds exclude the untouched legacy
+  `rewards_stats.cpp`; FinalChain-disabled and pure-C++ builds compile that original source without a rename. The live
+  shim remains the classified C++ `BlockStats`/StateAPI publication adapter and does not delegate reward authority to
+  the legacy implementation.
 - `BridgeTransactionManagerRuntime` no-caller compatibility exports have been trimmed after the transaction-manager shim
   moved to runtime-owned command APIs. Deleted exports include old runtime sidecar lookup/finish/evict helpers, queue
   erase/get/order/known helpers, and sidecar size/remove helpers that had no C++ shim callers.
