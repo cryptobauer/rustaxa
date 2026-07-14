@@ -85,7 +85,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `key_manager_shim` | Key manager compatibility | App/bootstrap/key manager users | External boundary | Keep until key ownership is redesigned; not a consensus-internal deletion target. |
 | `pbft_chain_shim` | Standalone Rust-backed PBFT chain facade | PBFT manager, RPC/public readers, and tests | C++ public compatibility facade | Feature-on builds no longer import or compile `PbftChainOld`; C++ retains locking, legacy JsonCpp formatting, and temporary `PbftBlock` materialization. Delete after PBFT chain state becomes private to Rust PBFT manager/runtime and public callers use narrower APIs. |
 | `pbft_manager_shim` | PBFT manager Rust runtime facade | App bootstrap and consensus loop | Internal Rust route | Collapse into native Rust PBFT runtime and remove C++ orchestration once network/EVM/storage external APIs are thin. |
-| `pillar_chain_manager_shim` | Pillar chain manager compatibility; live vote aggregation, synced bundle apply, and PBFT-facing pillar finalization now route through `BridgePillarChainRuntime` around the external FinalChain DPoS read | App/consensus pillar paths | C++ public compatibility facade | Delete after pillar chain runtime/storage and DPoS-weight access ports are native Rust-owned. |
+| `pillar_chain_manager_shim` | Standalone pillar manager compatibility facade; live vote aggregation, synced bundle apply, and PBFT-facing pillar finalization route through `BridgePillarChainRuntime` around external FinalChain facts | App/consensus pillar paths | C++ public compatibility facade | Pillar-votes builds import and compile neither `PillarChainManagerOld` nor the unused legacy `PillarVotes` implementation. Delete after signing/materialization, network/events, and FinalChain fact ports move behind native Rust application boundaries. |
 | `pillar_votes_shim` | Pillar vote index/admission facade | Retired after this slice | Obsolete scaffold | Removed. `pillar_chain_manager_shim` uses `BridgePillarChainRuntime` for live vote state; no C++ shim behavior remains. |
 | `proposed_blocks_shim` | Standalone Rust-backed proposed-block facade | DAG manager, vote manager, PBFT paths | C++ public compatibility facade | The facade no longer imports or compiles `ProposedBlocksOld`; Rust owns metadata, canonical RLP, persistence, restore, and cleanup through an internally retained storage handle. Delete after proposed-block tracking is folded into Rust PBFT/DAG runtime and no C++ caller requires `PbftBlock` materialization. |
 | `rewards_stats_shim` | Standalone FinalChain-owned rewards statistics facade | FinalChain publication and rewards tests | C++ public compatibility facade | The facade no longer imports or compiles `StatsOld`, and its former module flag is retired because FinalChain unconditionally uses the shim-only publication API. Delete after Rust finalization owns rewards stats writes/reads directly and the external StateAPI edge no longer needs C++ `BlockStats`; until then the narrowed publication edge exposes only reward distribution stats and a storage-update DTO while the Rust process plan remains inside the shim until publication commit succeeds. |
@@ -439,6 +439,15 @@ Current snapshot after DAG manager verify-result API cleanup:
   latest finalized pillar block, decodes the latest block in Rust, derives the following period-data lookup, and returns
   one recovery snapshot for temporary C++ materialization. The storage-only handle remains solely for `storage_shim`
   compatibility callers.
+- `pillar_chain_manager_shim` is now a standalone feature-on facade. The overlay wrapper directly includes the
+  shim-owned header, `RUSTAXA_ENABLE_PILLAR_VOTES` excludes both untouched legacy implementation sources, and the
+  `PillarChainManager=PillarChainManagerOld` compile rename is deleted. Module-disabled and pure-C++ configurations
+  continue to select the original manager and `PillarVotes` sources. This removes dead compatibility objects only;
+  `BridgePillarChainStorage` remains live for the separate storage facade, and the manager's FinalChain, network,
+  signing/materialization, and event boundaries are unchanged. Feature-on compile metadata/archive inspection, focused
+  Rust/CXX pillar tests, the focused PBFT consumer, Tier 1, Tier 2, smoke, and pure/module-disabled object compilation
+  cover the route change. The full pillar-suite process still exposes its pre-existing same-process `/tmp/taraxa0`
+  RocksDB lock after the first node-owning case; 10 of 13 cases complete before that harness failure.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` no longer performs shim-local per-vote
   inspection and weight accumulation. It calls the Rust batch RLP inspection API, performs the one remaining external
   FinalChain DPoS weight read as a batch, then calls `BridgePillarChainRuntime` for weighted bundle apply into

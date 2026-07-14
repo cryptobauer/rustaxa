@@ -81,6 +81,17 @@ if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
     # untouched legacy implementation only in module-disabled and pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/proposed_blocks\\.cpp$")
 endif()
+if(RUSTAXA_ENABLE_PILLAR_VOTES)
+    if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
+        message(FATAL_ERROR "RUSTAXA_ENABLE_PILLAR_VOTES requires RUSTAXA_ENABLE_FINAL_CHAIN")
+    endif()
+
+    # The Rust-mode PillarChainManager facade and pillar-vote runtime are
+    # standalone. Keep the untouched legacy implementations only in
+    # module-disabled and pure C++ reference builds.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_chain_manager\\.cpp$")
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pillar_chain/pillar_votes\\.cpp$")
+endif()
 if(RUSTAXA_ENABLE_PBFT_CHAIN)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_PBFT_CHAIN requires RUSTAXA_ENABLE")
@@ -292,20 +303,12 @@ if(RUSTAXA_ENABLE_PILLAR_VOTES)
         message(FATAL_ERROR "RUSTAXA_ENABLE_PILLAR_VOTES requires RUSTAXA_ENABLE")
     endif()
 
-    # In Rust pillar-votes mode, inject a header overlay that remaps legacy
-    # PillarChainManager to PillarChainManagerOld and exposes a standalone
-    # PillarChainManager shim facade.
+    # In Rust pillar-votes mode, inject the standalone PillarChainManager
+    # facade.
     target_include_directories(core_libs BEFORE PUBLIC
                              ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/include)
     target_sources(core_libs PRIVATE
                   ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/pillar_chain_manager_shim/src/pillar_chain_manager_shim.cpp)
-
-    # Compile the legacy implementation as PillarChainManagerOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/pillar_chain/pillar_chain_manager.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "PillarChainManager=PillarChainManagerOld"
-    )
 endif()
 
 if(RUSTAXA_ENABLE_PILLAR_VOTES OR RUSTAXA_ENABLE_PROPOSED_BLOCKS)

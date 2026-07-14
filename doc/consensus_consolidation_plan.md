@@ -470,6 +470,20 @@ Implementation notes:
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and
   `pillar_votes_shim_test.cpp` was removed.
+- The standalone pillar-chain manager facade is fully detached from `PillarChainManagerOld`. Pillar-votes builds
+  exclude the untouched original manager and the now-unreferenced legacy `PillarVotes` implementation, the wrapper
+  directly includes the shim-owned facade, and the compile rename is removed. Module-disabled and pure-C++ builds keep
+  both original sources. This is scaffold removal only: `BridgePillarChainRuntime` behavior, the separate
+  `BridgePillarChainStorage` compatibility surface, FinalChain fact reads, network transport, signing/materialization,
+  events, and finalization effects are unchanged. Validation passed 46 focused native consensus pillar tests, 44
+  focused bridge pillar tests, all eight focused CXX pillar bridge tests, the focused single-node PBFT consumer,
+  feature-on target builds through `taraxad`, both boundary guards, Tier 1, Tier 2, and the startup smoke gate.
+  Feature-on build metadata and the core archive contain neither original pillar implementation nor old-manager/
+  legacy-vote-index symbols; module-disabled and pure-C++ configurations select and object-compile both untouched
+  sources, and original-file diffs versus `upstream-main` are empty. The monolithic `pillar_chain_test` invocation
+  passed 10 of 13 cases but its later node-owning cases encountered the known same-process `/tmp/taraxa0` RocksDB lock;
+  this source-selection-only slice does not change manager runtime behavior, and the independently run single-node PBFT
+  consumer passed.
 - The standalone `BridgePeriodDataQueue` CXX handle, `create_period_data_queue` constructor, `period_data_queue_shim`
   overlay, `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` CMake/Makefile flag, and bridge/shim tests for the retired facade were
   deleted.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -12,6 +13,7 @@
 #include "logger/logger.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "vote/pillar_vote.hpp"
 
 namespace rustaxa {
 struct BridgePillarChainRuntime;
@@ -72,10 +74,10 @@ struct PillarVoteRelevancePlan {
  * - Bridge exceptions and invalid Rust input are mapped to `kUnknown` and
  *   `is_relevant == false`.
  */
-PillarVoteRelevancePlan planPillarVoteRelevance(
-    const FicusHardforkConfig& ficus_hf_config, const std::shared_ptr<PillarVote>& vote,
-    const std::shared_ptr<PillarBlock>& current_pillar_block,
-    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
+PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
+                                                const std::shared_ptr<PillarVote>& vote,
+                                                const std::shared_ptr<PillarBlock>& current_pillar_block,
+                                                const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
 
 /**
  * Stable logging helper for explicit reason reporting.
@@ -312,11 +314,12 @@ const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPi
  * - Preserves the public C++ `PillarChainManager` API while keeping all
  *   Rust-enabled routing in shim-owned files.
  * - Owns the pillar-vote Rust identity/relevance/validation insertion paths so
- *   upstream-owned `pillar_chain_manager.cpp` remains pure legacy C++.
+ *   the upstream-owned implementation remains untouched for module-disabled
+ *   and pure C++ reference builds.
  *
  * Invariants:
- * - This class is the Rust-mode production surface; it must not silently
- *   delegate deterministic vote validation or insertion to `PillarChainManagerOld`.
+ * - Rust pillar-vote builds compile this standalone production surface without
+ *   importing or linking the legacy PillarChainManager implementation.
  * - Existing C++ storage, networking, and block lifecycle calls remain stable
  *   while deterministic vote identity logic is moved behind Rust bridge helpers.
  */
@@ -647,7 +650,7 @@ class PillarChainManager {
    *   fallback storage payload is malformed/mismatched.
    */
   std::vector<PillarVoteNetworkBundleChunk> buildVerifiedPillarVoteNetworkBundles(
-      PbftPeriod period, const blk_hash_t& pillar_block_hash, size_t max_votes_per_bundle) const;
+      PbftPeriod period, const blk_hash_t& pillar_block_hash, std::size_t max_votes_per_bundle) const;
 
   /**
    * Checks whether a proposed pillar block properly links to the finalized pillar chain.

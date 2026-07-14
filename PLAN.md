@@ -851,8 +851,10 @@ The current Rust consensus footprint is broad but still incomplete:
   `(period, vote_hash, voter)` identity for uniqueness, uses the recovered voter for DPoS eligibility, and avoids C++
   signature or voter recovery in Rust mode. `PillarChainManager::addVerifiedPillarVote` now also runs through Rust
   inspection, uses the Rust-recovered voter with Rust-backed FinalChain DPoS vote-count facts, and inserts with
-  `addVerifiedVoteWithRecoveredVoter` to avoid re-querying C++-side voter identity. Pillar signing and the full
-  `PillarChainManager` overlay remain later slices.
+  `addVerifiedVoteWithRecoveredVoter` to avoid re-querying C++-side voter identity. The full Rust-mode
+  `PillarChainManager` overlay is now standalone: pillar-votes mode excludes the untouched legacy manager and
+  `PillarVotes` implementations instead of importing or compiling `PillarChainManagerOld`. Pillar signing and the
+  remaining external manager effects remain later slices.
 - `rustaxa-storage` contains storage repositories that consensus should use through narrow ports.
 
 ### Consensus Sequencing
