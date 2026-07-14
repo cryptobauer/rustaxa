@@ -814,6 +814,9 @@ The current Rust consensus footprint is broad but still incomplete:
   known-vote marking at the network boundary. The crate also contains a Rust-backed
   `GasPricer` oracle for finalized-block history, minimum-price
   flooring, and percentile bid selection.
+  The standalone Rust-mode `GasPricer` facade no longer imports or compiles `GasPricerOld`; module-disabled and pure-C++
+  configurations retain the untouched original implementation. The facade and its feature flag remain live for
+  transaction-pool, RPC/GraphQL, finalized-block update, and SlashingManager gas-bid boundaries.
   The Rust-enabled `SlashingManager` overlay now routes deterministic double-voting proof planning, duplicate-proof
   cache decisions, unweighted vote evidence payload normalization, submitter selection, and slashing contract calldata
   construction through Rust; the PBFT vote admission route now passes Rust-normalized unweighted payload records, while

@@ -27,7 +27,7 @@ class TransactionManager;
  * - `bid` in pool mode queries `TransactionManager` for minimum inclusion gas and
  *   lets Rust compute a final pool-aware bid.
  * - `update` forwards extracted gas prices from a finalized block into Rust.
- * - No fallback to legacy `GasPricerOld` logic is performed in Rust mode.
+ * - No fallback to the legacy C++ pricing logic is performed in Rust mode.
  */
 class GasPricer {
  public:

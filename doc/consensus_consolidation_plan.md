@@ -478,6 +478,20 @@ Implementation notes:
   legacy C++ implementation instead of preserving Rust ownership. A future removal must first replace the C++ public
   facade with a native transaction/final-chain runtime API or a narrower external query API. The first gas-pricer cleanup
   was therefore recorded as a Slice 8 CXX surface shrink instead of a Slice 5 shim retirement.
+- The live facade is now fully detached from `GasPricerOld`: Rust gas-pricer builds exclude the untouched legacy
+  `gas_pricer.cpp`, the overlay header includes only the self-contained Rust-backed facade, and the scaffold-only
+  non-inheritance test is retired in favor of existing Rust bridge/domain and public C++ behavior coverage. The
+  `RUSTAXA_ENABLE_GAS_PRICER` flag remains valid and necessary because gas pricing has supported independent
+  transaction/RPC consumers and SlashingManager depends on it; configurations without that flag retain the original
+  implementation.
+  Validation passed ten focused Rust consensus gas-pricer tests, four Rust bridge gas-pricer tests, both public
+  `gas_pricer_test` cases, the SlashingManager shim build/test, `make rewrite-validate-fast`,
+  `make rewrite-validate-consensus`, and `make rewrite-validate-smoke`. Rust build metadata/archive audits contain no
+  legacy gas-pricer source or `GasPricerOld` symbol; a module-disabled build compiled the untouched original source
+  without a rename, and invalid module configurations without master Rust mode or Rust storage fail during configure.
+  The original upstream GasPricer header/source remain unchanged. Slice mapping, API design, architecture review, C++
+  implementation, and independent closeout review used the code-mapper, api-designer, architect-reviewer, cpp-pro, and
+  reviewer agents. No Rust implementation agent was needed because the Rust runtime and bridge API did not change.
 - Custom agents used:
   - `rust-engineer`: confirmed Slice 5 bridge handles are still required by C++ public facade surfaces and recommended
     gas-pricer narrowing instead of handle deletion.
