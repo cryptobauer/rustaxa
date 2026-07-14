@@ -18,11 +18,12 @@ file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
-    # The Rust-mode TransactionManager and its native queue runtime are fully
-    # standalone. Keep the untouched legacy implementations only in pure C++
-    # reference builds.
+    # The Rust-mode TransactionManager, its native queue runtime, and the
+    # SortitionParamsManager overlay are fully standalone. Keep the untouched
+    # legacy implementations only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/sortition_params_manager\\.cpp$")
 endif()
 if(RUSTAXA_ENABLE_GAS_PRICER)
     if(NOT RUSTAXA_ENABLE)
@@ -135,6 +136,11 @@ if(RUSTAXA_ENABLE)
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_manager_shim/src/transaction_manager_shim.cpp)
 
+    # In Rust mode, inject the standalone Rust-backed
+    # SortitionParamsManager facade.
+    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/include)
+    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/src/sortition_params_manager_shim.cpp)
+
     # In Rust mode, inject a header overlay that remaps legacy Dag/PivotTree
     # to DagOld/PivotTreeOld and exposes standalone Rust-backed facades.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/include)
@@ -230,25 +236,6 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/rewards_stats_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/rewards_stats_shim/src/rewards_stats_shim.cpp)
-endif()
-
-if(RUSTAXA_ENABLE_SORTITION_PARAMS)
-    if(NOT RUSTAXA_ENABLE)
-        message(FATAL_ERROR "RUSTAXA_ENABLE_SORTITION_PARAMS requires RUSTAXA_ENABLE")
-    endif()
-
-    # In Rust sortition-params mode, inject a header overlay that remaps legacy
-    # SortitionParamsManager to SortitionParamsManagerOld and exposes a
-    # standalone SortitionParamsManager shim facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/src/sortition_params_manager_shim.cpp)
-
-    # Compile the legacy implementation as SortitionParamsManagerOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/sortition_params_manager.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "SortitionParamsManager=SortitionParamsManagerOld"
-    )
 endif()
 
 if(RUSTAXA_ENABLE_PBFT_CHAIN)

@@ -1,7 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <type_traits>
-
 #include "dag/dag_block.hpp"
 #include "dag/sortition_params_manager.hpp"
 #include "pbft/pbft_block.hpp"
@@ -41,16 +39,20 @@ PeriodData makeSortitionPeriod(PbftPeriod period) {
 
 }  // namespace
 
-TEST(SortitionParamsManagerShimTest, rustModeManagerDoesNotInheritLegacyImplementation) {
-#ifdef RUSTAXA_ENABLE_SORTITION_PARAMS
-  static_assert(!std::is_base_of_v<SortitionParamsManagerOld, SortitionParamsManager>);
-  SUCCEED();
-#else
-  GTEST_SKIP() << "SortitionParamsManager shim is disabled";
-#endif
-}
-
 struct SortitionParamsManagerShimDataTest : WithDataDir {};
+
+TEST(SortitionParamsManagerShimTest, compatibilityChangeUsesCanonicalLegacyRlp) {
+  VrfParams vrf;
+  vrf.threshold_upper = 10000;
+  const SortitionParamsChange change{42, 5000, vrf};
+  const bytes expected{0xc7, 0x82, 0x27, 0x10, 0x2a, 0x82, 0x13, 0x88};
+
+  EXPECT_EQ(change.rlp(), expected);
+  const auto decoded = SortitionParamsChange::from_rlp(dev::RLP(expected));
+  EXPECT_EQ(decoded.period, change.period);
+  EXPECT_EQ(decoded.vrf_params.threshold_upper, change.vrf_params.threshold_upper);
+  EXPECT_EQ(decoded.interval_efficiency, change.interval_efficiency);
+}
 
 TEST_F(SortitionParamsManagerShimDataTest, startupPersistsDefaultChangeThroughRustStorage) {
   auto db = std::make_shared<DbStorage>(data_dir);

@@ -302,8 +302,8 @@ Implementation notes:
   `sortition_params_manager_shim` overlay constructs `BridgeSortitionParamsManager` from Rust storage, persists the
   missing period-zero default change in Rust during startup, ignores the legacy `Batch&` argument in `pbftBlockPushed`,
   and persists emitted finalized-period changes through the Rust runtime before live state is updated. The public batch
-  block in `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` remains legacy/reference behavior behind
-  `RUSTAXA_ENABLE_SORTITION_PARAMS`.
+  compatibility carrier and its canonical RLP codec are shim-owned. The untouched original source is excluded in master
+  `RUSTAXA_ENABLE` mode and remains available only to pure-C++ reference builds.
 - FinalChain block publication is closed for the current Rust-mode route. The active `final_chain_shim` overlay is a
   standalone facade over `BridgeFinalChain` and `BridgeConsensusExecutionApi`; native finalization, external-EVM pending
   publication markers, recovery, storage publication, execution counters, rewards-stat attachment, transaction indexes,
@@ -492,6 +492,18 @@ Implementation notes:
   The original upstream GasPricer header/source remain unchanged. Slice mapping, API design, architecture review, C++
   implementation, and independent closeout review used the code-mapper, api-designer, architect-reviewer, cpp-pro, and
   reviewer agents. No Rust implementation agent was needed because the Rust runtime and bridge API did not change.
+- The standalone sortition facade is now fully detached from the legacy implementation. Master Rust mode excludes the
+  untouched original source, the overlay owns the exact shared `SortitionParamsChange` carrier and canonical RLP codec,
+  and the redundant module flag, compile rename, header import, and scaffold-only inheritance test are retired. The live
+  facade, bridge handle, PBFT preview/commit route, historical query surface, and ignored `Batch&` compatibility signature
+  remain because they still serve DAG, PBFT finalization, storage, and public C++ callers. Focused Rust sortition tests,
+  the Rust consensus bridge sortition and PBFT-finalization tests, the C++ shim/public sortition suites, Rust storage
+  bridge tests, Tier 1, Tier 2, and startup smoke validation passed. Rust-enabled build metadata and archives contain
+  only the shim source/codec symbols and no legacy manager symbols; pure-C++ configuration selects the untouched original
+  source, although its target build remains blocked by the pre-existing pillar packet-handler API mismatch. The
+  code-mapper, api-designer, architect-reviewer, cpp-pro, and independent reviewer agents covered mapping, design,
+  implementation, and closeout. No Rust implementation or blockchain/EVM agent was needed because this slice changed
+  only C++ overlay/build ownership and preserved the Rust runtime and bridge API.
 - Custom agents used:
   - `rust-engineer`: confirmed Slice 5 bridge handles are still required by C++ public facade surfaces and recommended
     gas-pricer narrowing instead of handle deletion.
@@ -2006,10 +2018,11 @@ Implementation status:
   `RUSTAXA_ENABLE_PROPOSED_BLOCKS` is enabled; Rust-mode cleanup enters
   `BridgeProposedBlocks::proposed_blocks_cleanup_with_storage`, which commits the delete batch in native Rust storage
   before removing stale periods from the Rust index.
-- Sortition Rust-mode startup and finalized-period persistence are closed under the current overlay. The remaining public
-  `DbStorage` batch block in `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy-only when
-  `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled; Rust-mode construction and updates enter
-  `BridgeSortitionParamsManager` with an attached native Rust storage handle.
+- Sortition Rust-mode startup and finalized-period persistence are closed under the current overlay. Master
+  `RUSTAXA_ENABLE` mode selects the standalone facade and excludes the untouched original implementation; the redundant
+  sortition-specific feature flag and `SortitionParamsManagerOld` scaffold are retired. The shared
+  `SortitionParamsChange` compatibility carrier and canonical RLP codec now live in shim-owned files. Rust-mode
+  construction and updates enter `BridgeSortitionParamsManager` with an attached native Rust storage handle.
 - The direct `sortition_params_for_period(found, change)` CXX export is deleted. C++ sortition callers now use only
   `sortition_params_for_period_from_storage(period)` for historical lookups, while direct change-payload lookup coverage
   remains in native Rust sortition tests.

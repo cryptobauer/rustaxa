@@ -1198,7 +1198,7 @@ Use targeted validation before broad integration runs:
   `transaction_manager_shim_test`, Rust-mode transaction/gas-pricer consumers, and queue-focused `transaction_test` and
   `gas_pricer_test` cases in a pure-C++ reference build when legacy parity is relevant.
 - Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
-  `sortition_params_manager_shim_test` overlay check when `RUSTAXA_ENABLE_SORTITION_PARAMS` is enabled.
+  `sortition_params_manager_shim_test` overlay check in master `RUSTAXA_ENABLE` mode.
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
   and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
   `vote_test` coverage.

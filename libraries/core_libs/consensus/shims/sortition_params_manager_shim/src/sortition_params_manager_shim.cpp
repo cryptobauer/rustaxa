@@ -6,6 +6,30 @@
 #include "dag/sortition_params_manager.hpp"
 
 namespace taraxa {
+
+SortitionParamsChange::SortitionParamsChange(PbftPeriod period, uint16_t efficiency, const VrfParams& vrf)
+    : period(period), vrf_params(vrf), interval_efficiency(efficiency) {}
+
+bytes SortitionParamsChange::rlp() const {
+  dev::RLPStream s;
+  s.appendList(3);
+  s << vrf_params.threshold_upper;
+  s << period;
+  s << interval_efficiency;
+
+  return s.invalidate();
+}
+
+SortitionParamsChange SortitionParamsChange::from_rlp(const dev::RLP& rlp) {
+  SortitionParamsChange p;
+
+  p.vrf_params.threshold_upper = rlp[0].toInt<uint16_t>();
+  p.period = rlp[1].toInt<PbftPeriod>();
+  p.interval_efficiency = rlp[2].toInt<uint16_t>();
+
+  return p;
+}
+
 namespace {
 
 struct PeriodEfficiencyCounts {

@@ -90,7 +90,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `proposed_blocks_shim` | Proposed block tracking facade | DAG manager, vote manager, PBFT paths | C++ public compatibility facade | Delete after proposed-block tracking is folded into Rust PBFT/DAG runtime. |
 | `rewards_stats_shim` | Standalone FinalChain-owned rewards statistics facade | FinalChain publication and rewards tests | C++ public compatibility facade | The facade no longer imports or compiles `StatsOld`, and its former module flag is retired because FinalChain unconditionally uses the shim-only publication API. Delete after Rust finalization owns rewards stats writes/reads directly and the external StateAPI edge no longer needs C++ `BlockStats`; until then the narrowed publication edge exposes only reward distribution stats and a storage-update DTO while the Rust process plan remains inside the shim until publication commit succeeds. |
 | `slashing_manager_shim` | Slashing proof planner facade; Rust vote admission passes one `SlashingDoubleVoteEvidence` payload while the live `PbftVote` overload is only a compatibility adapter | Slashing manager users | C++ public compatibility facade | Delete after slashing planning and transaction submission run inside Rust consensus/runtime ports. |
-| `sortition_params_manager_shim` | Sortition parameter storage facade | DAG/sortition, query paths | C++ public compatibility facade | Delete after sortition parameters are exposed through Rust storage/query APIs only. |
+| `sortition_params_manager_shim` | Standalone Rust-backed sortition facade with shim-owned compatibility carrier/codec | DAG/sortition, PBFT finalization, storage/query paths | C++ public compatibility facade | `SortitionParamsManagerOld` and the redundant module flag are retired; master Rust mode selects this facade directly. Delete after sortition parameters are exposed through Rust storage/query APIs only. |
 | `storage_shim` | `DbStorage` Rust-mode overlay and Rust storage owner | App, consensus shims, storage tests | C++ public compatibility facade | Delete broad storage facade after all C++ consensus callers stop using `DbStorage`; keep only external app/admin bootstrap if needed. |
 | `transaction_manager_shim` | Transaction manager runtime/sidecar facade | App, RPC submission, PBFT packing | C++ public compatibility facade | Delete after transaction admission/packing/public submission API is native Rust with EVM boundary adapters. |
 | `verified_votes_shim` | Verified votes compatibility facade | Vote manager shim | C++ public compatibility facade | Delete after vote manager uses Rust vote state directly. |
@@ -489,9 +489,9 @@ Current snapshot after DAG manager verify-result API cleanup:
 - `sortition_params_manager_shim` is the active Rust-mode route for sortition startup and finalized-period persistence.
   It constructs `BridgeSortitionParamsManager` with `DbStorage::rustStorage()`, so the Rust runtime loads persisted
   changes, persists the missing period-zero default change, reads period-specific parameters, and persists emitted
-  finalized-period changes through native Rust storage. The public batch block in
-  `libraries/core_libs/consensus/src/dag/sortition_params_manager.cpp` is legacy/reference behavior when
-  `RUSTAXA_ENABLE_SORTITION_PARAMS` enables the overlay.
+  finalized-period changes through native Rust storage. Master `RUSTAXA_ENABLE` mode selects the standalone overlay and
+  excludes the untouched original source; the compatibility carrier and its canonical RLP codec are shim-owned, and the
+  redundant module flag plus `SortitionParamsManagerOld` scaffold are retired.
 - The direct `sortition_params_for_period(found, change)` CXX export is deleted. Live C++ lookups use the storage-backed
   `sortition_params_for_period_from_storage(period)` route, so callers no longer inject synthetic sortition-change
   payloads through a bridge-shaped helper. Native `rustaxa-consensus` tests keep direct `params_for_period` coverage.

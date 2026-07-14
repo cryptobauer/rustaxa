@@ -2,9 +2,13 @@
 
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <memory>
 #include <optional>
 
+#include <libdevcore/RLP.h>
+
+#include "common/types.hpp"
 #include "config/config.hpp"
 #include "pbft/period_data.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -12,6 +16,28 @@
 #include "vdf/config.hpp"
 
 namespace taraxa {
+
+using EfficienciesMap = std::map<uint16_t, int32_t>;
+
+/**
+ * A persisted change to the DAG sortition threshold.
+ *
+ * The period identifies when the new VRF parameters become active,
+ * interval_efficiency records the fixed-point efficiency that caused the
+ * change, and vrf_params carries the resulting threshold. RLP encoding uses
+ * the stable legacy field order: threshold, period, efficiency. Decoding
+ * expects all three fields and propagates malformed-RLP failures.
+ */
+struct SortitionParamsChange {
+  PbftPeriod period = 0;
+  VrfParams vrf_params;
+  uint16_t interval_efficiency = 0;
+
+  SortitionParamsChange() = default;
+  SortitionParamsChange(PbftPeriod period, uint16_t efficiency, const VrfParams& vrf);
+  static SortitionParamsChange from_rlp(const dev::RLP& rlp);
+  bytes rlp() const;
+};
 
 /**
  * Sortition-owned result after committing a PBFT-finalization threshold update.
@@ -44,13 +70,13 @@ struct SortitionFinalizationCommitReport {
  * is reduced to a pivot flag, finalized unique transaction count, and total DAG
  * transaction references before crossing the bridge. SortitionParamsChange
  * values are stored through Rust storage APIs. Unsupported protected helper
- * calls throw locally instead of falling back to SortitionParamsManagerOld.
+ * calls throw locally instead of invoking a legacy implementation.
  *
  * Invariants and edge behavior:
  * - Empty storage is initialized with the genesis VRF threshold at period 0.
  * - The Rust runtime owns interval counters and threshold-policy state.
  * - getParamsChanges returns the Rust-backed cache after each state transition.
- * - This class must not inherit from or delegate to SortitionParamsManagerOld.
+ * - This class is standalone and has no legacy implementation dependency.
  */
 class SortitionParamsManager {
  public:
