@@ -5463,10 +5463,6 @@ pub mod rustaxa_ffi {
         pub fn pillar_chain_storage_load_latest_block(
             self: &BridgePillarChainStorage,
         ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_storage_load_period_data(
-            self: &BridgePillarChainStorage,
-            period: u64,
-        ) -> Result<Vec<u8>>;
         pub fn pillar_chain_storage_load_block(
             self: &BridgePillarChainStorage,
             period: u64,

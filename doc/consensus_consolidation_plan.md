@@ -1863,8 +1863,21 @@ Implementation status:
   record/persist APIs instead.
 - `BridgePillarChainStorage::pillar_chain_storage_block_data_rlp` is deleted from the CXX bridge surface. Rust-mode
   Taraxa RPC pillar block-data reads use `BridgeConsensusQueryApi::consensus_query_pillar_block_data_by_period`, while
-  pillar/storage shims retain only the narrower current/latest block, own-vote, finalized-block, and period-data storage
-  methods they call.
+  pillar/storage shims retain only the narrower current/latest block, own-vote, and finalized-block storage methods they
+  call.
+- `BridgePillarChainStorage::pillar_chain_storage_load_period_data` is deleted from the CXX bridge surface after the
+  current export/caller inventory found no C++ consumer. Native period-data recovery remains inside
+  `BridgePillarChainRuntime::pillar_chain_runtime_load_startup_bootstrap`; the storage compatibility handle now exposes
+  only methods used by `storage_shim`.
+  Validation for this pillar storage export shrink:
+  - `rtk cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `rtk cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain -- --nocapture`
+  - `rtk cmake --build /build --target pillar_chain_test rust_consensus_tests --parallel 12`
+  - `rtk /build/bin/pillar_chain_test --gtest_filter='PillarChainTest.pillar_chain_db' --gtest_print_time=1`
+  - focused pillar planning, vote-bundle, vote-inspection, and network API tests in `rust_consensus_tests`
+  - `rtk scripts/rewrite_bridge_inventory_guard.sh`
+  - `rtk scripts/rewrite_storage_boundary_guard.sh`
+  - `rtk make rewrite-validate-fast`
 - The standalone `plan_pillar_vote_relevance` CXX export is deleted. The live network/tarcap client uses
   `BridgeConsensusNetworkApi::consensus_network_plan_pillar_vote_relevance`, and the live pillar-chain manager client
   uses `BridgePillarChainRuntime::pillar_chain_runtime_plan_vote_relevance`. The removed direct bridge export only

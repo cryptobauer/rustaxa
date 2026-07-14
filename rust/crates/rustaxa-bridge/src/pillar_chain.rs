@@ -103,12 +103,6 @@ impl BridgePillarChainStorage {
         consensus_load_latest_pillar_block_storage(self.storage.as_ref())
     }
 
-    /// Loads raw period data bytes used by temporary C++ pillar-vote
-    /// materialization.
-    pub fn pillar_chain_storage_load_period_data(&self, period: u64) -> Result<Vec<u8>> {
-        consensus_load_pillar_period_data_storage(self.storage.as_ref(), period)
-    }
-
     /// Loads a finalized pillar block by period, returning empty bytes when no
     /// block is stored for that period.
     pub fn pillar_chain_storage_load_block(&self, period: u64) -> Result<Vec<u8>> {
@@ -737,10 +731,6 @@ mod tests {
             assert!(pillar_storage
                 .pillar_chain_storage_load_block(42)
                 .expect("pillar block should read")
-                .is_empty());
-            assert!(pillar_storage
-                .pillar_chain_storage_load_period_data(42)
-                .expect("period data should read")
                 .is_empty());
         }
 
