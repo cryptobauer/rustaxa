@@ -67,6 +67,12 @@ if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)
     # legacy implementation only when the overlay is not enabled.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/vote_manager\\.cpp$")
 endif()
+if(RUSTAXA_ENABLE_VERIFIED_VOTES)
+    # The Rust-mode VerifiedVotes overlay owns its compatibility carriers and
+    # facade. Keep the untouched legacy implementation only in module-disabled
+    # and pure C++ reference builds.
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/verified_votes\\.cpp$")
+endif()
 
 file(GLOB_RECURSE NETWORK_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/network/*.hpp)
 file(GLOB_RECURSE NETWORK_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/network/*.cpp)
@@ -275,17 +281,10 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_VERIFIED_VOTES requires RUSTAXA_ENABLE")
     endif()
-    # In Rust verified-votes mode, inject a header overlay that remaps legacy
-    # VerifiedVotes to VerifiedVotesOld and exposes a standalone shim facade.
+    # In Rust verified-votes mode, inject the standalone shim facade and its
+    # shim-owned compatibility carriers for every consumer.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/verified_votes_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/verified_votes_shim/src/verified_votes_shim.cpp)
-
-    # Compile the legacy implementation as VerifiedVotesOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/vote_manager/verified_votes.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "VerifiedVotes=VerifiedVotesOld"
-    )
 endif()
 
 if(RUSTAXA_VOTE_MANAGER_SHIM_ENABLED)

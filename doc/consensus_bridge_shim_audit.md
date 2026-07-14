@@ -93,7 +93,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `sortition_params_manager_shim` | Standalone Rust-backed sortition facade with shim-owned compatibility carrier/codec | DAG/sortition, PBFT finalization, storage/query paths | C++ public compatibility facade | `SortitionParamsManagerOld` and the redundant module flag are retired; master Rust mode selects this facade directly. Delete after sortition parameters are exposed through Rust storage/query APIs only. |
 | `storage_shim` | `DbStorage` Rust-mode overlay and Rust storage owner | App, consensus shims, storage tests | C++ public compatibility facade | Delete broad storage facade after all C++ consensus callers stop using `DbStorage`; keep only external app/admin bootstrap if needed. |
 | `transaction_manager_shim` | Transaction manager runtime/sidecar facade | App, RPC submission, PBFT packing | C++ public compatibility facade | Delete after transaction admission/packing/public submission API is native Rust with EVM boundary adapters. |
-| `verified_votes_shim` | Verified votes compatibility facade | Vote manager shim | C++ public compatibility facade | Delete after vote manager uses Rust vote state directly. |
+| `verified_votes_shim` | Standalone verified-votes compatibility facade with shim-owned materialized carrier types | Vote manager shim, storage/PBFT/network compatibility readers | C++ public compatibility facade | The facade no longer imports or compiles `VerifiedVotesOld`; feature-on builds exclude the untouched original source. Delete after vote manager uses Rust vote state directly and no C++ caller requires materialized vote carriers. |
 | `vote_manager_shim` | Vote manager Rust runtime facade | PBFT manager, DAG/proposed blocks, network vote paths | Internal Rust route | Collapse into Rust PBFT/vote runtime. Keep only external network adapters until network/tarcap API is complete. |
 
 ## Required Closeout Checks
@@ -171,6 +171,12 @@ Current snapshot after DAG manager verify-result API cleanup:
   requires GasPricer, while TransactionManager owns the queue internally. Unsupported partial flag combinations fail during configuration instead of
   compiling legacy adapters. Pure-C++ and Rust configurations without verified votes retain the untouched upstream
   implementation.
+- `verified_votes_shim` is now detached from its final dead legacy scaffold. Its overlay directly includes the standalone
+  Rust-backed facade and a shim-owned compatibility-type header preserving the exact public carrier layout and enum
+  values. Verified-votes-enabled build metadata excludes the original source, the archive contains no
+  `VerifiedVotesOld` symbol, and the scaffold-only non-inheritance test is replaced by carrier-contract plus
+  storage-backed facade behavior coverage. Module-disabled and pure-C++ configurations still select the untouched
+  original header/source.
 - Verified-votes closeout validation passed: 14 focused Rust tests, two storage-backed shim tests, four isolated
   VoteManager tests, two focused PBFT manager tests, nine Rust storage bridge tests, both boundary guards, Tier 1/Tier 2
   rewrite validation, and the startup smoke gate. The configuration matrix rejects an incomplete ownership bundle,

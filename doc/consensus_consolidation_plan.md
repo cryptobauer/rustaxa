@@ -376,6 +376,22 @@ Implementation notes:
   materializes vote state exclusively from Rust-retained weighted payloads for conflict resolution, snapshot rebuilds, and
   threshold-weighted vote aggregation. `live_votes_` storage was deleted from production flow, and missing payloads now
   fail fast rather than degrade into compatibility paths.
+- The standalone verified-votes facade is fully detached from the dead legacy compile scaffold. Verified-votes-enabled
+  builds exclude the untouched original `verified_votes.cpp`, the overlay wrapper directly includes the Rust-backed
+  facade, and the former compile rename and assertion-only non-inheritance test are deleted. The exact public carrier
+  names, field order, defaults, container types, and threshold-marker values now live in a documented shim-owned
+  compatibility header; they remain non-authoritative materialized views for C++ VoteManager, storage, PBFT, and network
+  consumers. The feature flag, `BridgeVerifiedVotes`, storage-backed construction, facade APIs, and pure-C++ original
+  implementation remain unchanged. Focused validation passed 20 Rust consensus tests, 14 Rust bridge tests, both
+  verified-votes shim tests, four isolated VoteManager consumer tests, two isolated PBFT manager consumer tests, all nine
+  Rust storage bridge tests, the `taraxad` build, Tier 1, Tier 2 consensus, and startup smoke. Feature-on build metadata
+  and the core archive contain neither the original source object nor any `VerifiedVotesOld` symbol; original header and
+  source diffs versus `upstream-main` are empty. An all-Rust-off configuration selected and compiled the untouched
+  original verified-votes source without the shim or rename before the broader target reached the pre-existing missing
+  `PillarChainManager::buildVerifiedPillarVoteNetworkBundles` pure-C++ network API error. Mapping, API, architecture,
+  C++ implementation, and independent review use the code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer
+  agents. No Rust or blockchain/EVM implementation agent was needed because runtime, bridge, storage, and contract
+  behavior did not change.
 - `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and

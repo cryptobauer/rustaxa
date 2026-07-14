@@ -9,10 +9,9 @@
 #include "common/types.hpp"
 #include "logger/logger.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "vote_manager/verified_votes_compat_types.hpp"
 
 namespace taraxa {
-
-class PbftVote;
 
 /**
  * Rust-mode verified-votes facade.
@@ -20,7 +19,7 @@ class PbftVote;
  * This class preserves the public C++ `VerifiedVotes` API used by `VoteManager`
  * while replacing the legacy concrete type with a shim-local implementation in
  * Rust-enabled builds. The shim is standalone and must not inherit from or
- * delegate/fallback to `VerifiedVotesOld`.
+ * delegate or fall back to the legacy C++ implementation.
  *
  * Ownership and invariants:
  * - C++ owns live `PbftVote` objects and map containers referenced by vote

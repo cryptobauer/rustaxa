@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <type_traits>
 #include <utility>
 
@@ -10,13 +11,45 @@
 
 namespace taraxa::core_tests {
 
-TEST(VerifiedVotesShimTest, rustModeVerifiedVotesDoesNotInheritLegacyImplementation) {
-#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
-  static_assert(!std::is_base_of_v<VerifiedVotesOld, VerifiedVotes>);
-  SUCCEED();
-#else
-  GTEST_SKIP() << "VerifiedVotes shim is disabled";
-#endif
+TEST(VerifiedVotesShimTest, compatibilityCarrierValuesAndDefaultsRemainStable) {
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::SoftVotedBlock) == 0);
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::CertVotedBlock) == 1);
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedBlock) == 2);
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedNullBlock) == 3);
+  static_assert(std::is_same_v<TwoTVotedBlockMap, std::unordered_map<TwoTPlusOneVotedBlockType, VotedBlock>>);
+  static_assert(std::is_same_v<decltype(VotedBlock::hash), blk_hash_t>);
+  static_assert(std::is_same_v<decltype(VotedBlock::step), PbftStep>);
+  static_assert(std::is_same_v<decltype(VotesWithWeight::weight), uint64_t>);
+  static_assert(
+      std::is_same_v<decltype(VotesWithWeight::votes), std::unordered_map<vote_hash_t, std::shared_ptr<PbftVote>>>);
+  static_assert(
+      std::is_same_v<UniqueVotersMap,
+                     std::unordered_map<addr_t, std::pair<std::shared_ptr<PbftVote>, std::shared_ptr<PbftVote>>>>);
+  static_assert(std::is_same_v<decltype(StepVotes::votes), std::unordered_map<blk_hash_t, VotesWithWeight>>);
+  static_assert(std::is_same_v<decltype(StepVotes::unique_voters), UniqueVotersMap>);
+  static_assert(std::is_same_v<StepVotesMap, std::map<PbftStep, StepVotes>>);
+  static_assert(std::is_same_v<decltype(RoundVerifiedVotes::two_t_plus_one_voted_blocks_), TwoTVotedBlockMap>);
+  static_assert(std::is_same_v<decltype(RoundVerifiedVotes::step_votes), StepVotesMap>);
+  static_assert(std::is_same_v<decltype(RoundVerifiedVotes::network_t_plus_one_step), PbftStep>);
+  static_assert(std::is_same_v<RoundVerifiedVotesMap, std::map<PbftRound, RoundVerifiedVotes>>);
+  static_assert(std::is_same_v<PeriodVerifiedVotesMap, std::map<PbftPeriod, RoundVerifiedVotesMap>>);
+
+  const VotedBlock voted_block{blk_hash_t{}, PbftStep{}};
+  EXPECT_EQ(voted_block.hash, blk_hash_t{});
+  EXPECT_EQ(voted_block.step, PbftStep{});
+
+  const VotesWithWeight votes_with_weight{0, {}};
+  EXPECT_EQ(votes_with_weight.weight, 0);
+  EXPECT_TRUE(votes_with_weight.votes.empty());
+
+  const StepVotes step_votes{std::unordered_map<blk_hash_t, VotesWithWeight>{}, UniqueVotersMap{}};
+  EXPECT_TRUE(step_votes.votes.empty());
+  EXPECT_TRUE(step_votes.unique_voters.empty());
+
+  const RoundVerifiedVotes round_votes{TwoTVotedBlockMap{}, StepVotesMap{}, PbftStep{}};
+  EXPECT_TRUE(round_votes.two_t_plus_one_voted_blocks_.empty());
+  EXPECT_TRUE(round_votes.step_votes.empty());
+  EXPECT_EQ(round_votes.network_t_plus_one_step, PbftStep{});
 }
 
 struct VerifiedVotesShimDataTest : WithDataDir {};

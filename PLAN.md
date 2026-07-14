@@ -796,9 +796,9 @@ The current Rust consensus footprint is broad but still incomplete:
   the `VerifiedVotes` overlay now materialize temporary `PbftVote` sidecars from Rust-retained weighted payload bytes
   instead of skipping missing live sidecars. Reward-vote validation and materialization now enter the same runtime:
   Rust builds preferred-round and reverse-period candidates from Rust-owned verified-vote metadata and returns selected
-  retained weighted records in PBFT-block requested order. Metadata-only compatibility/test helper inserts may still fall back to
-  `live_votes_` until those helpers are removed, but production-admitted votes treat missing retained payloads as
-  invariant errors. The crate also contains a side-effect-free PBFT vote-progress protocol planner
+  retained weighted records in PBFT-block requested order. All compatibility materialization uses Rust-retained payloads;
+  missing retained payloads for Rust-owned selected votes are invariant errors. The crate also contains a side-effect-free
+  PBFT vote-progress protocol planner
   plus a Rust-owned PBFT vote pipeline session that stages
   verified-vote insertion reports into typed
   known/admit/slashing/gossip/progress intents, a side-effect-free PBFT vote ingress planner for deterministic
