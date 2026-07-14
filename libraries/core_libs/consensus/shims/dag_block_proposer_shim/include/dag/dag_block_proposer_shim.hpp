@@ -1,13 +1,21 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
+#include "common/thread_pool.hpp"
+#include "config/config.hpp"
 #include "dag/dag_block.hpp"
 #include "logger/logger.hpp"
 #include "network/network.hpp"
-#include "rustaxa-bridge/ffi.rs.h"
+
+namespace rustaxa {
+struct DagProposerSignedBlockIntent;
+}
 
 namespace taraxa {
 
@@ -27,15 +35,15 @@ class FinalChain;
  * Rust-mode DAG block proposer facade.
  *
  * The class preserves the public `DagBlockProposer` API while moving deterministic proposal facts toward Rust. C++
- * still owns worker-thread orchestration, live transaction selection, live tip metadata materialization, and final
- * `DagBlock` construction. Rust owns canonical proposal VRF/VDF message byte construction, proposer VDF proof
- * generation, proposer tip-pruning/block-construction planning, VDF wait/stale-proof decisions, post-boundary
- * retry-state resets, and DPoS/VDF authorization facts through the Rust-backed FinalChain shim.
+ * still owns worker/network orchestration, live network-throttle and VDF execution, node-secret signature execution,
+ * and compatibility frontier/hash/payload materialization. Rust owns canonical proposal VRF/VDF message bytes,
+ * proposer tip-pruning and signed-block RLP planning, VDF wait/stale-proof decisions, post-boundary retry-state resets,
+ * and DPoS/VDF authorization facts through the Rust-backed FinalChain shim.
  *
  * Edge behavior:
  * - proposal returns `false` when the transaction pool, DPoS facts, VRF key, or vote denominator are unavailable
  * - VDF proving keeps the legacy async cancellation behavior through Rust cancellation tokens
- * - no method delegates production routing to `DagBlockProposerOld`
+ * - feature-on production routing has no dependency on the legacy C++ proposer implementation
  */
 class DagBlockProposer {
  public:
@@ -50,7 +58,7 @@ class DagBlockProposer {
     NodeDagProposerData(const WalletConfig& wallet, const uint16_t max_tries, const uint16_t shard)
         : wallet(wallet),
           max_num_tries(max_tries + (wallet.node_addr[0] % (10 * max_tries))),
-          trx_shard(std::stoull(wallet.node_addr.toString().substr(0, 6).c_str(), NULL, 16) % shard) {}
+          trx_shard(std::stoull(wallet.node_addr.toString().substr(0, 6).c_str(), nullptr, 16) % shard) {}
 
     const WalletConfig wallet;
     const uint16_t max_num_tries;

@@ -385,12 +385,13 @@ reference builds retain the untouched legacy RewardsStats header and source.
   - DagManager verification now receives DPoS authorization facts whose VDF sortition denominator is selected in Rust
     from genesis DPoS config plus the configured Magnolia boundary, instead of passing per-block hardfork or
     validator-max policy through the C++ shim.
-  - DagBlockProposer now has a full Rust-mode overlay shim. Rust owns proposer eligibility status decisions, legacy VRF
+  - DagBlockProposer now has a standalone Rust-mode overlay facade with no feature-on legacy proposer source or
+    `DagBlockProposerOld` scaffold. Rust owns proposer eligibility status decisions, legacy VRF
     input bytes, deterministic tip-selection policy, transaction-pack command flow, VDF input/message bytes,
     wait/cancel/stale-proof decisions, retry-cursor updates, proposal timestamps, block construction planning, and final
-    signed-RLP construction after temporary C++ signing. C++ still owns thread/network orchestration, live network
-    throttle checks, async VDF compute execution, temporary key-manager signing, add-block effect execution, logging, and
-    network egress.
+    signed-RLP construction after temporary C++ node-secret signing. C++ still owns thread/network orchestration, live
+    network throttle checks, async VDF compute execution, node-secret signature execution, add-block effect execution,
+    logging, and network egress.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks and the Rust-supported
     `registerValidator(address,bytes,bytes,uint16,string,string)`, `delegate(address)`,
     `undelegate(address,uint256)`, `undelegateV2(address,uint256)`, `confirmUndelegateV2(address,uint64)`,
@@ -892,7 +893,8 @@ The current Rust consensus footprint is broad but still incomplete:
    `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and routes embedded VRF proof
    verification, DAG VDF payload decode, difficulty calculation, legacy-modulus Wesolowski proof check, status-coded
    VDF/DPoS fact envelope, legacy VRF/VDF message construction, verify-side VDF denominator policy, and reject ordering
-   through Rust. The Rust-mode `DagBlockProposer` overlay now routes proposer eligibility status decisions, legacy VRF
+   through Rust. The standalone Rust-mode `DagBlockProposer` overlay, which no longer imports or compiles the legacy
+   proposer implementation, routes proposer eligibility status decisions, legacy VRF
    input construction, deterministic tip selection, proposer-session control flow, VDF input/message planning, block
    construction planning, final signed-RLP construction, and signed-RLP manager submission through Rust while preserving
    the C++ executor shell for lifecycle, network, VDF compute, and signing.

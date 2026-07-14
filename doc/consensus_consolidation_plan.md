@@ -447,6 +447,25 @@ Implementation notes:
   without the shim or rename. Mapping, API, architecture, C++ implementation, and independent review used the
   code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation
   agent was needed because runtime, bridge, storage, and contract behavior did not change.
+- The standalone DAG block proposer facade is fully detached from `DagBlockProposerOld`. Feature-on builds exclude the
+  untouched original `dag_block_proposer.cpp`, the overlay wrapper directly includes the self-contained executor
+  facade, and the compile rename is deleted. The facade now explicitly includes its configuration, thread-pool, and
+  standard-library dependencies. It intentionally retains `network/network.hpp` until the PBFT manager legacy-header
+  import is detached: removing it exposed that the temporary PBFT rename macro can otherwise declare `Network` with a
+  `PbftManagerOld` constructor parameter. This is include-order compatibility debt, not proposer authority. Rust still
+  owns proposal sessions, retry state, eligibility and tip policy, transaction-pack commands, VDF control decisions,
+  timestamps, and signed-RLP planning; C++ retains the classified worker/network, VDF execution, node-secret signature,
+  compatibility-materialization, logging, and add-block executor shell. Pure-C++ builds continue to select the
+  untouched original proposer.
+  Validation passed 17 focused native Rust proposer tests, three focused Rust bridge proposer tests, all 13
+  `dag_block_test` cases, all 13 `dag_test` cases, the focused single-node PBFT manager consumer, the `taraxad` build,
+  both boundary guards, `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and
+  `make rewrite-validate-smoke`. Feature-on build metadata and the core archive contain neither the original source
+  object nor any `DagBlockProposerOld` symbol; original header and source diffs versus `upstream-main` are empty. An
+  all-Rust-off configuration selected and compiled the untouched original source without the shim or rename. Mapping,
+  API, architecture, C++ implementation, and independent review used the code-mapper, api-designer,
+  architect-reviewer, cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation agent was needed because
+  runtime, bridge, storage, and contract behavior did not change.
 - `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
   `pillar_votes_shim`, `pillar_votes.cpp` is no longer compiled as `PillarVotesOld`, and

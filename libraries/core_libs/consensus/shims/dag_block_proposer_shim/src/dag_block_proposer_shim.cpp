@@ -15,6 +15,7 @@
 #include "key_manager/key_manager.hpp"
 #include "libdevcore/Common.h"
 #include "libdevcrypto/Common.h"
+#include "network/network.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction.hpp"
 #include "transaction/transaction_manager.hpp"
@@ -100,8 +101,8 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
       trx_mgr_(std::move(trx_mgr)),
       final_chain_(std::move(final_chain)),
       nodes_dag_proposers_data_(),
-      kDagProposeGasLimit(std::min(config.propose_dag_gas_limit,
-                                   config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first)),
+      kDagProposeGasLimit(
+          std::min(config.propose_dag_gas_limit, config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first)),
       kPbftGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).second),
       kDagGasLimit(config.genesis.getGasLimits(final_chain_->lastBlockNumber()).first) {
   (void)key_manager;
@@ -194,10 +195,10 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     LOG(log_wr_) << "Trying to propose old block " << step.proposal_level;
   }
 
-  auto transaction_payloads = getShardedTrxs(
-      step.transaction_request.proposal_period, step.transaction_request.weight_limit,
-      step.transaction_request.total_transaction_shards, step.transaction_request.node_transaction_shard,
-      step.transaction_request.shard_period_interval);
+  auto transaction_payloads =
+      getShardedTrxs(step.transaction_request.proposal_period, step.transaction_request.weight_limit,
+                     step.transaction_request.total_transaction_shards, step.transaction_request.node_transaction_shard,
+                     step.transaction_request.shard_period_interval);
   rustaxa::DagProposerTransactionPackReport transaction_report;
   transaction_report.network_throttled = transaction_payloads.network_throttled;
   transaction_report.transaction_hashes.reserve(transaction_payloads.transaction_hashes.size());

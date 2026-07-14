@@ -18,10 +18,12 @@ file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
-    # The Rust-mode DAG graph, TransactionManager, its native queue runtime,
-    # and SortitionParamsManager overlays are fully standalone. Keep the
-    # untouched legacy implementations only in pure C++ reference builds.
+    # The Rust-mode DAG graph, DAG block proposer, TransactionManager, its
+    # native queue runtime, and SortitionParamsManager overlays are fully
+    # standalone. Keep the untouched legacy implementations only in pure C++
+    # reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag\\.cpp$")
+    list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag_block_proposer\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/transaction/transaction_queue\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/sortition_params_manager\\.cpp$")
@@ -170,8 +172,7 @@ if(RUSTAXA_ENABLE)
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_manager_shim/src/dag_manager_shim.cpp)
 
-    # In Rust mode, inject a header overlay that remaps legacy DagBlockProposer
-    # to DagBlockProposerOld and exposes a standalone proposer shim facade.
+    # In Rust mode, inject the standalone Rust-backed DagBlockProposer facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_block_proposer_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_block_proposer_shim/src/dag_block_proposer_shim.cpp)
 
@@ -193,13 +194,6 @@ if(RUSTAXA_ENABLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/dag_manager.cpp
         PROPERTIES
         COMPILE_DEFINITIONS "DagManager=DagManagerOld"
-    )
-
-    # Compile legacy DagBlockProposer implementation as DagBlockProposerOld.
-    set_source_files_properties(
-        ${CMAKE_CURRENT_SOURCE_DIR}/consensus/src/dag/dag_block_proposer.cpp
-        PROPERTIES
-        COMPILE_DEFINITIONS "DagBlockProposer=DagBlockProposerOld"
     )
 
     # In Rust mode, inject a header overlay that remaps legacy KeyManager
