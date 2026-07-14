@@ -158,9 +158,14 @@ Current snapshot after DAG manager verify-result API cleanup:
   finalized period mapping, and canonical period-data block; ambiguous upgrade state is rejected rather than guessed.
 - `dag_manager_shim::getShared` now routes through the shim’s own C++ `shared_from_this()` ownership path, and
   `dag_manager_shim::getDagMutex` now returns a shim-owned mutex to avoid `DagManagerOld` forwarding.
-- `transaction_manager_shim::getTransactionsMutex` no longer forwards to `TransactionManagerOld`; the shim method now
-  returns a shim-owned lock via `TransactionManagerRustShimAccess`, removing the direct inherited-state dependency for
-  lock ownership.
+- `transaction_manager_shim` no longer inherits from, constructs, or compiles `TransactionManagerOld` in Rust mode. The
+  standalone facade preserves the public API and shared-pointer identity while owning only its locks and classified
+  FinalChain/EVM, thread-pool, event, logging, and materialization shell. `BridgeTransactionManagerRuntime` is the sole
+  owner of queue, sidecar, gas-cache, transaction-count, and persistence state. Its storage-backed constructor now reads
+  `TrxCount` through native Rust storage and fails construction on storage errors instead of accepting a C++ bootstrap
+  count. The original transaction-manager header/source are clean versus `upstream-main`. Focused Rust/C++ tests, the
+  bridge inventory and storage-boundary guards, and the Tier 1/Tier 2 rewrite validation gates pass; the archive contains
+  no `TransactionManagerOld` symbol in the Rust-enabled build.
 - `consensus_network_queue_*` no longer remains in bridge, FFI, latest tarcap network code, Rust consensus network API,
   or network API tests. Keep the closeout check above as a regression guard with empty output expected.
 - Remaining live network effect execution is PBFT vote gossip through `consensus_network_gossip_pbft_vote` and

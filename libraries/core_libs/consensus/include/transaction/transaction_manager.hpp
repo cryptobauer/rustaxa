@@ -9,11 +9,7 @@
 #include "logger/logger.hpp"
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
-#ifdef RUSTAXA_ENABLE_TRANSACTION_QUEUE
-#include "transaction/transaction_queue.hpp"
-#else
 #include "transaction_queue.hpp"
-#endif
 
 namespace taraxa {
 
@@ -29,9 +25,6 @@ enum class TransactionStatus { Inserted = 0, InsertedNonProposable, Known, Overf
 struct FullNodeConfig;
 class DagBlock;
 class DagManager;
-#ifdef RUSTAXA_ENABLE
-class TransactionManagerRustShimAccess;
-#endif
 
 /**
  * @brief TransactionManager class verifies and inserts incoming transactions in memory pool and handles saving
@@ -266,9 +259,6 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   std::pair<bool, std::string> verifyTransaction(const std::shared_ptr<Transaction> &trx) const;
 
  private:
-#ifdef RUSTAXA_ENABLE
-  friend class TransactionManagerRustShimAccess;
-#endif
   addr_t getFullNodeAddress() const;
 
  private:

@@ -5082,9 +5082,8 @@ pub mod rustaxa_ffi {
         type BridgeTransactionManagerRuntime;
         pub fn create_transaction_manager_runtime_from_storage(
             storage: &BridgeStorage,
-            initial_transaction_count: u64,
             config: TransactionQueueConfig,
-        ) -> Box<BridgeTransactionManagerRuntime>;
+        ) -> Result<Box<BridgeTransactionManagerRuntime>>;
         pub fn transaction_manager_runtime_pack_prepare_sharded(
             self: &mut BridgeTransactionManagerRuntime,
             weight_limit: u64,

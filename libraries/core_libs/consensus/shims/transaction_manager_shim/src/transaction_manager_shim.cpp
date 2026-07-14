@@ -6,11 +6,13 @@
 #include <optional>
 #include <shared_mutex>
 #include <stdexcept>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "common/encoding_rlp.hpp"
+#include "config/config.hpp"
 #include "dag/dag_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/system_transaction.hpp"
@@ -271,23 +273,31 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 
 }  // namespace
 
+TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_ptr<DbStorage> db,
+                                       std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
+    : kConf(conf),
+      final_chain_(std::move(final_chain)),
+      runtime_(rustaxa::create_transaction_manager_runtime_from_storage(
+          db->rustStorage(), rustaxa::TransactionQueueConfig{conf.transactions_pool_size})),
+      estimation_thread_pool_(std::thread::hardware_concurrency() / 2) {
+  LOG_OBJECTS_CREATE("TRXMGR");
+}
+
 class TransactionManagerRustShimAccess {
  public:
-  static std::shared_mutex& transactionsMutex(TransactionManagerOld& manager) {
-    return static_cast<TransactionManager&>(manager).transactions_mutex_;
-  }
-  static std::shared_mutex& transactionsMutex(const TransactionManagerOld& manager) {
-    return const_cast<TransactionManager&>(static_cast<const TransactionManager&>(manager)).transactions_mutex_;
+  static std::shared_mutex& transactionsMutex(TransactionManager& manager) { return manager.transactions_mutex_; }
+  static std::shared_mutex& transactionsMutex(const TransactionManager& manager) {
+    return const_cast<TransactionManager&>(manager).transactions_mutex_;
   }
 
-  static uint64_t rustFinalChainLastBlockNumber(const TransactionManagerOld& manager) {
+  static uint64_t rustFinalChainLastBlockNumber(const TransactionManager& manager) {
     if (!manager.final_chain_) {
       throw std::runtime_error("TransactionManager requires FinalChain for Rust FinalChain height facts");
     }
     return manager.final_chain_->lastBlockNumber();
   }
 
-  static std::pair<bool, std::string> verifyTransaction(const TransactionManagerOld& manager,
+  static std::pair<bool, std::string> verifyTransaction(const TransactionManager& manager,
                                                         const rustaxa::LegacyTransactionInspection& envelope) {
     if (!manager.final_chain_) {
       return {true, ""};
@@ -306,14 +316,14 @@ class TransactionManagerRustShimAccess {
     return verifyTransactionResultFromRustStatus(outcome.status, fact.chain_id, fact.expected_chain_id);
   }
 
-  static std::pair<bool, std::string> verifyTransaction(const TransactionManagerOld& manager,
+  static std::pair<bool, std::string> verifyTransaction(const TransactionManager& manager,
                                                         const std::shared_ptr<Transaction>& trx) {
     const auto envelope = inspectRegularTransaction(trx, "RUST_TX_MANAGER_VERIFY_ENVELOPE_FAILED");
     return verifyTransaction(manager, envelope);
   }
 
   static rustaxa::TransactionManagerVerifyTransactionFact buildVerifyTransactionFact(
-      const TransactionManagerOld& manager, const rustaxa::LegacyTransactionInspection& envelope) {
+      const TransactionManager& manager, const rustaxa::LegacyTransactionInspection& envelope) {
     const auto block_num = rustFinalChainLastBlockNumber(manager);
     rustaxa::TransactionManagerVerifyTransactionFact fact;
     fact.tx_hash = envelope.hash;
@@ -578,25 +588,24 @@ class TransactionManagerRustShimAccess {
   }
 
   /**
-   * Runs Rust-backed deterministic transaction packing against the legacy manager's live C++ state.
+   * Runs Rust-backed deterministic transaction packing against the standalone facade's executor state.
    *
-   * The friend accessor exists only because the migration facade must reuse existing private pool, lock, cache, and
-   * FinalChain members without copying the whole transaction lifecycle into shim-owned C++ code. Rust owns the
-   * candidate scan, accepted ordering, invalid-estimate demotion, and stop decisions; C++ owns transaction
-   * materialization, estimation, and logging.
+   * The friend accessor centralizes access to the facade's private Rust runtime,
+   * lock, and FinalChain executor. Rust owns candidate scan, accepted ordering,
+   * invalid-estimate demotion, and stop decisions; C++ owns transaction
+   * materialization, EVM estimation execution, and logging.
    */
   static TransactionManager::PackedProposalTransactions packTransactionPayloads(
-      TransactionManagerOld& manager, PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards = 1,
+      TransactionManager& manager, PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards = 1,
       uint16_t node_trx_shard = 0, uint64_t shard_period_interval = 1) {
-    auto& rust_manager = static_cast<TransactionManager&>(manager);
-    std::lock_guard pack_lock(rust_manager.pack_mutex_);
+    std::lock_guard pack_lock(manager.pack_mutex_);
     bool session_active = false;
     try {
       rustaxa::TransactionPackPreparedPlan prepare_plan = [&]() {
         std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
         try {
-          return rust_manager.runtime_->transaction_manager_runtime_pack_prepare_sharded(
-              weight_limit, kMinTxGas, proposal_period, rust_manager.kEstimateGasLimit,
+          return manager.runtime_->transaction_manager_runtime_pack_prepare_sharded(
+              weight_limit, kMinTxGas, proposal_period, manager.kEstimateGasLimit,
               rustFinalChainLastBlockNumber(manager), total_shards, node_trx_shard, shard_period_interval);
         } catch (const std::exception& e) {
           throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_PREPARE_FAILED: ") + e.what());
@@ -613,7 +622,7 @@ class TransactionManagerRustShimAccess {
               "Rust transaction manager runtime requested estimation for a missing pack candidate");
         }
 
-        const auto estimate = executePackCandidateGasEstimation(rust_manager, candidate, proposal_period);
+        const auto estimate = executePackCandidateGasEstimation(manager, candidate, proposal_period);
         if (estimate.gas_used < kMinTxGas) {
           LOG(manager.log_er_) << "Transaction " << fromBridgeHash(candidate.hash)
                                << " has invalid estimation: " << estimate.gas_used;
@@ -641,7 +650,7 @@ class TransactionManagerRustShimAccess {
         return [&]() {
           std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
           try {
-            return rust_manager.runtime_->transaction_manager_runtime_pack_finalize_with_estimates(estimate_inputs);
+            return manager.runtime_->transaction_manager_runtime_pack_finalize_with_estimates(estimate_inputs);
           } catch (const std::exception& e) {
             throw std::runtime_error(std::string("RUST_TX_MANAGER_PACK_FINALIZE_FAILED: ") + e.what());
           }
@@ -663,7 +672,7 @@ class TransactionManagerRustShimAccess {
       if (session_active) {
         try {
           std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-          rust_manager.runtime_->transaction_manager_runtime_pack_abort();
+          manager.runtime_->transaction_manager_runtime_pack_abort();
         } catch (...) {
         }
       }
@@ -689,7 +698,7 @@ class TransactionManagerRustShimAccess {
     return selected_transactions;
   }
 
-  static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManagerOld& manager,
+  static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManager& manager,
                                                                        PbftPeriod proposal_period,
                                                                        uint64_t weight_limit, uint16_t total_shards = 1,
                                                                        uint16_t node_trx_shard = 0,
@@ -881,8 +890,9 @@ class TransactionManagerRustShimAccess {
       view_plan = [&]() {
         try {
           if (proposal_period.has_value() && manager.final_chain_) {
-            return manager.runtime_->transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
-                proposal_period.value(), std::move(requests), buildAccountNonceFacts(manager), 0);
+            return manager.runtime_
+                ->transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
+                    proposal_period.value(), std::move(requests), buildAccountNonceFacts(manager), 0);
           }
           return manager.runtime_->transaction_manager_runtime_lookup_transaction_views(std::move(requests), 0);
         } catch (const std::exception& e) {
@@ -1091,10 +1101,9 @@ class TransactionManagerRustShimAccess {
     return outcome;
   }
 
-  static std::vector<SharedTransactions> getAllPoolTrxs(const TransactionManagerOld& manager) {
+  static std::vector<SharedTransactions> getAllPoolTrxs(const TransactionManager& manager) {
     std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-    const auto groups = static_cast<const TransactionManager&>(manager)
-                            .runtime_->transaction_manager_runtime_queue_all_transaction_groups();
+    const auto groups = manager.runtime_->transaction_manager_runtime_queue_all_transaction_groups();
     std::vector<SharedTransactions> transactions;
     transactions.reserve(groups.size());
     for (const auto& group : groups) {
@@ -1114,18 +1123,17 @@ class TransactionManagerRustShimAccess {
   }
 
   static std::pair<std::vector<std::shared_ptr<Transaction>>, std::vector<trx_hash_t>> getPoolTransactions(
-      const TransactionManagerOld& manager, const std::vector<trx_hash_t>& trx_to_query) {
+      const TransactionManager& manager, const std::vector<trx_hash_t>& trx_to_query) {
     std::pair<std::vector<std::shared_ptr<Transaction>>, std::vector<trx_hash_t>> result;
     if (trx_to_query.empty()) {
       return result;
     }
 
-    const auto& rust_manager = static_cast<const TransactionManager&>(manager);
     auto requests = buildTransactionViewRequests(trx_to_query);
     const auto views = [&]() {
       std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
       try {
-        return rust_manager.runtime_->transaction_manager_runtime_queue_lookup_transaction_views(std::move(requests));
+        return manager.runtime_->transaction_manager_runtime_queue_lookup_transaction_views(std::move(requests));
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_TX_MANAGER_QUEUE_POOL_LOOKUP_FAILED: ") + e.what());
       }
@@ -1159,12 +1167,11 @@ class TransactionManagerRustShimAccess {
     return manager.runtime_->transaction_manager_runtime_transaction_count();
   }
 
-  static void blockFinalized(TransactionManagerOld& manager, EthBlockNumber block_number) {
+  static void blockFinalized(TransactionManager& manager, EthBlockNumber block_number) {
     std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-    auto& shim_manager = static_cast<TransactionManager&>(manager);
     [&]() {
       try {
-        shim_manager.runtime_->transaction_manager_runtime_queue_block_finalized(block_number);
+        manager.runtime_->transaction_manager_runtime_queue_block_finalized(block_number);
       } catch (const std::exception& e) {
         throw DbException(std::string("RUST_TX_MANAGER_BLOCK_FINALIZED_FAILED: ") + e.what());
       }
@@ -1180,38 +1187,35 @@ class TransactionManagerRustShimAccess {
     }
   }
 
-  static size_t getTransactionPoolSize(const TransactionManagerOld& manager) {
+  static size_t getTransactionPoolSize(const TransactionManager& manager) {
     std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-    return static_cast<const TransactionManager&>(manager).runtime_->transaction_manager_runtime_queue_size();
+    return manager.runtime_->transaction_manager_runtime_queue_size();
   }
 
-  static bool isTransactionPoolFull(const TransactionManagerOld& manager, size_t percentage) {
+  static bool isTransactionPoolFull(const TransactionManager& manager, size_t percentage) {
     std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-    return static_cast<const TransactionManager&>(manager).runtime_->transaction_manager_runtime_queue_size() >=
+    return manager.runtime_->transaction_manager_runtime_queue_size() >=
            (manager.kConf.transactions_pool_size * percentage / 100);
   }
 
-  static bool nonProposableTransactionsOverTheLimit(const TransactionManagerOld& manager) {
+  static bool nonProposableTransactionsOverTheLimit(const TransactionManager& manager) {
     std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-    return static_cast<const TransactionManager&>(manager)
-        .runtime_->transaction_manager_runtime_queue_non_proposable_over_limit();
+    return manager.runtime_->transaction_manager_runtime_queue_non_proposable_over_limit();
   }
 
   static size_t getNonfinalizedTrxSize(const TransactionManager& manager) {
     return manager.runtime_->transaction_manager_runtime_non_finalized_size();
   }
 
-  static bool transactionsDropped(const TransactionManagerOld& manager) {
+  static bool transactionsDropped(const TransactionManager& manager) {
     std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-    return static_cast<const TransactionManager&>(manager)
-        .runtime_->transaction_manager_runtime_queue_transactions_dropped();
+    return manager.runtime_->transaction_manager_runtime_queue_transactions_dropped();
   }
 
-  static val_t getMinGasPriceForBlockInclusion(const TransactionManagerOld& manager) {
+  static val_t getMinGasPriceForBlockInclusion(const TransactionManager& manager) {
     std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
-    return fromBridgeU256(static_cast<const TransactionManager&>(manager)
-                              .runtime_->transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
-                                  manager.kConf.propose_dag_gas_limit));
+    return fromBridgeU256(manager.runtime_->transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
+        manager.kConf.propose_dag_gas_limit));
   }
 
   /**
@@ -1433,7 +1437,7 @@ void TransactionManager::removeNonFinalizedTransactions(std::unordered_set<trx_h
 }
 
 std::shared_mutex& TransactionManager::getTransactionsMutex() {
-  // Keep lock ownership inside the shim boundary to avoid exposing legacy C++ queue mutex internals.
+  // Keep lock ownership inside the shim boundary while Rust owns queue state.
   return TransactionManagerRustShimAccess::transactionsMutex(*this);
 }
 

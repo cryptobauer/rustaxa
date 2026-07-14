@@ -69,7 +69,7 @@ use rustaxa_consensus::transaction_storage::{
     STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
     STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
 };
-use rustaxa_storage::Storage;
+use rustaxa_storage::{StatusField, Storage};
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -1327,7 +1327,7 @@ pub fn transaction_manager_recover_nonfinalized_with_runtime(
 /// and finalized-account queue purge can source account facts directly from
 /// Rust FinalChain through runtime APIs.
 #[cfg(test)]
-pub fn create_transaction_manager_runtime(
+fn create_transaction_manager_runtime_for_test(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
 ) -> Box<BridgeTransactionManagerRuntime> {
@@ -1339,17 +1339,26 @@ pub fn create_transaction_manager_runtime(
 /// The runtime clones the underlying `Arc<rustaxa_storage::Storage>` from the
 /// generic constructor facade and becomes the storage authority for migrated
 /// transaction-manager persistence, recovery, lookup, and finalized-status
-/// routes. C++ should keep only this runtime handle after construction.
+/// routes. Its initial live transaction count is restored directly from the
+/// durable `StatusField::TrxCount` value; a missing field has the storage
+/// layer's canonical zero value. Storage read failures abort construction so
+/// C++ cannot start with a divergent count mirror. C++ should keep only this
+/// runtime handle after construction.
 pub fn create_transaction_manager_runtime_from_storage(
     storage: &BridgeStorage,
-    initial_transaction_count: u64,
     config: TransactionQueueConfig,
-) -> Box<BridgeTransactionManagerRuntime> {
-    create_transaction_manager_runtime_inner(
+) -> Result<Box<BridgeTransactionManagerRuntime>> {
+    let initial_transaction_count = storage
+        .0
+        .metadata()
+        .status_field(StatusField::TrxCount as u8)
+        .context("TM_RUNTIME_TRANSACTION_COUNT_READ")?;
+
+    Ok(create_transaction_manager_runtime_inner(
         initial_transaction_count,
         config,
         Some(storage.0.clone()),
-    )
+    ))
 }
 
 fn create_transaction_manager_runtime_inner(
@@ -2340,7 +2349,6 @@ mod tests {
     use crate::storage::{create_metadata_storage_queries, create_transaction_storage_queries};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
-    use rustaxa_storage::StatusField;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2358,6 +2366,47 @@ mod tests {
 
     fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
         create_metadata_storage_queries(storage)
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_from_storage_defaults_missing_count_to_zero() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_default_count");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+
+        let runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            TransactionQueueConfig { max_size: 16 },
+        )
+        .expect("runtime should restore the storage default");
+
+        assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 0);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_from_storage_restores_persisted_count() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_runtime_persisted_count");
+        let storage = crate::storage::create_storage(
+            temp_dir.to_str().expect("temp path should be valid UTF-8"),
+        )
+        .expect("storage should initialize");
+        storage
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 73)
+            .expect("transaction count should persist");
+
+        let runtime = create_transaction_manager_runtime_from_storage(
+            &storage,
+            TransactionQueueConfig { max_size: 16 },
+        )
+        .expect("runtime should restore the persisted count");
+
+        assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 73);
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     fn address_from_signing_key(signing_key: &SigningKey) -> H160 {
@@ -2646,9 +2695,9 @@ mod tests {
 
         let mut runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            11,
             TransactionQueueConfig { max_size: 32 },
-        );
+        )
+        .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, [9u8; 20], 7, true,
@@ -2748,9 +2797,9 @@ mod tests {
         .expect("storage should initialize");
         let mut runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            3,
             TransactionQueueConfig { max_size: 16 },
-        );
+        )
+        .expect("runtime should restore from storage");
 
         for (hash, trx_rlp) in [
             ([1u8; 32], vec![0x11]),
@@ -2876,9 +2925,9 @@ mod tests {
 
         let runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            11,
             TransactionQueueConfig { max_size: 32 },
-        );
+        )
+        .expect("runtime should restore from storage");
         let plan = runtime
             .transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
                 1,
@@ -3087,9 +3136,9 @@ mod tests {
         .expect("storage should initialize");
         let mut runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            3,
             TransactionQueueConfig { max_size: 16 },
-        );
+        )
+        .expect("runtime should restore from storage");
 
         storage
             .0
@@ -3146,11 +3195,16 @@ mod tests {
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
         )
         .expect("storage should initialize");
+        storage
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 7)
+            .expect("status field seed should persist");
         let mut runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            7,
             TransactionQueueConfig { max_size: 16 },
-        );
+        )
+        .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
             .expect("queue seed should succeed");
@@ -3193,9 +3247,9 @@ mod tests {
 
         let mut runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            7,
             TransactionQueueConfig { max_size: 16 },
-        );
+        )
+        .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_insert_non_finalized(
                 TransactionManagerSidecarInsertInput {
@@ -3268,12 +3322,17 @@ mod tests {
             },
         )
         .expect("final chain should initialize");
+        storage
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 7)
+            .expect("status field seed should persist");
 
         let mut runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            7,
             TransactionQueueConfig { max_size: 16 },
-        );
+        )
+        .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, sender, 1, true,
@@ -3537,12 +3596,17 @@ mod tests {
             .transaction()
             .write_location(H256::from([2u8; 32]), 11, 0, false)
             .expect("stale finalized location should persist");
+        storage
+            .0
+            .metadata()
+            .write_status_field(StatusField::TrxCount as u8, 4)
+            .expect("status field seed should persist");
 
         let mut runtime = create_transaction_manager_runtime_from_storage(
             &storage,
-            4,
             TransactionQueueConfig { max_size: 16 },
-        );
+        )
+        .expect("runtime should restore from storage");
 
         transaction_manager_recover_nonfinalized_with_runtime(&mut runtime)
             .expect("runtime recovery should execute");
@@ -3561,7 +3625,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_queue_block_finalized_returns_expired_hashes() {
         let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 16 });
+            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 16 });
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, false))
             .expect("non-proposable insert should succeed");
@@ -3613,7 +3677,7 @@ mod tests {
     ) {
         let sender = [7; 20];
         let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 32 });
+            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 32 });
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, sender, 0, true,
@@ -3653,7 +3717,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_finalize_single_candidate() {
         let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
         let signing_key = SigningKey::from_slice(&[0x47u8; 32]).unwrap();
         let sender = address_from_signing_key(&signing_key);
         let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
@@ -3699,7 +3763,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_with_declared_gas_selected() {
         let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
         let signing_key = SigningKey::from_slice(&[0x48u8; 32]).unwrap();
         let sender = address_from_signing_key(&signing_key);
         let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
@@ -3760,7 +3824,7 @@ mod tests {
             .expect("test fixture should find a sender in a different shard");
 
         let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
         let first_rlp = signed_legacy_transaction_rlp(&first_key, 1, 2999);
         let first_envelope = LegacyTransactionEnvelope::decode(&first_rlp).unwrap();
         let second_rlp = signed_legacy_transaction_rlp(&second_key, 1, 2999);
@@ -3839,7 +3903,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_consumes_declared_and_cached_gas() {
         let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 8 });
+            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
         let signing_key = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
         let sender = address_from_signing_key(&signing_key);
         let first_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
@@ -3888,8 +3952,10 @@ mod tests {
         assert_eq!(plan.selected_transactions[1].gas_used, 21_000);
         assert!(!runtime.transaction_manager_runtime_pack_abort());
 
-        let mut cached_runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 100 });
+        let mut cached_runtime = create_transaction_manager_runtime_for_test(
+            0,
+            TransactionQueueConfig { max_size: 100 },
+        );
         cached_runtime
             .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
                 hash: second_envelope.hash.0,
@@ -3928,8 +3994,10 @@ mod tests {
 
     #[test]
     fn bridge_transaction_manager_runtime_plans_and_caches_gas_estimation() {
-        let mut runtime =
-            create_transaction_manager_runtime(0, TransactionQueueConfig { max_size: 100 });
+        let mut runtime = create_transaction_manager_runtime_for_test(
+            0,
+            TransactionQueueConfig { max_size: 100 },
+        );
 
         let small = runtime
             .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {

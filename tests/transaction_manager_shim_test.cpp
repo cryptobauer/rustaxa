@@ -45,9 +45,9 @@ std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> verifyFact
 
 }  // namespace
 
-TEST(TransactionManagerShimTest, rustModeTransactionManagerIsDistinctFromLegacyType) {
+TEST(TransactionManagerShimTest, rustModeTransactionManagerOwnsSharedIdentity) {
 #ifdef RUSTAXA_ENABLE
-  static_assert(!std::is_same_v<TransactionManagerOld, TransactionManager>);
+  static_assert(std::is_base_of_v<std::enable_shared_from_this<TransactionManager>, TransactionManager>);
   SUCCEED();
 #else
   GTEST_SKIP() << "TransactionManager shim is disabled";
@@ -57,14 +57,26 @@ TEST(TransactionManagerShimTest, rustModeTransactionManagerIsDistinctFromLegacyT
 #ifdef RUSTAXA_ENABLE
 struct TransactionManagerShimFixture : NodesTest {};
 
-TEST_F(TransactionManagerShimFixture, transactionMutexAccessorUsesShimOwnedLock) {
+TEST_F(TransactionManagerShimFixture, transactionMutexAccessorReturnsStableShimOwnedLock) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto cfg = node_cfgs.front();
   auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
   TransactionManager trx_mgr(cfg, db, final_chain, addr_t());
 
-  EXPECT_NE(&trx_mgr.getTransactionsMutex(),
-            &static_cast<TransactionManagerOld&>(trx_mgr).getTransactionsMutex());
+  auto* first = &trx_mgr.getTransactionsMutex();
+  auto* second = &trx_mgr.getTransactionsMutex();
+  EXPECT_EQ(first, second);
+  std::unique_lock lock(*first);
+  EXPECT_TRUE(lock.owns_lock());
+}
+
+TEST_F(TransactionManagerShimFixture, sharedIdentityBelongsToStandaloneFacade) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto cfg = node_cfgs.front();
+  auto final_chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  auto trx_mgr = std::make_shared<TransactionManager>(cfg, db, final_chain, addr_t{});
+
+  EXPECT_EQ(trx_mgr->shared_from_this(), trx_mgr);
 }
 
 TEST_F(TransactionManagerShimFixture, rustPlannerPreservesPackTrxsSelectionAndEstimations) {

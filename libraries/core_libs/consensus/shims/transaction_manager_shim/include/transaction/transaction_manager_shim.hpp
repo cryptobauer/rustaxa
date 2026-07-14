@@ -1,15 +1,32 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "common/constants.hpp"
+#include "common/event.hpp"
+#include "common/thread_pool.hpp"
+#include "common/util.hpp"
+#include "final_chain/final_chain.hpp"
+#include "logger/logger.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "storage/storage.hpp"
+#include "transaction/transaction.hpp"
+#include "transaction/transaction_queue.hpp"
 
 namespace taraxa {
+
+enum class TransactionStatus { Inserted = 0, InsertedNonProposable, Known, Overflow };
+
+struct FullNodeConfig;
+class DagBlock;
 
 /**
  * Rust-mode TransactionManager facade.
@@ -17,16 +34,15 @@ namespace taraxa {
  * This facade preserves the public `TransactionManager` API while moving deterministic
  * proposal selection planning and DAG-accepted transaction persistence to Rust-backed
  * planner/storage code.
- * C++ continues to own live `Transaction` objects, gas estimation, and stateful
- * transaction lifecycle cache handling.
+ * C++ continues to own live `Transaction` materialization, EVM gas-estimation
+ * execution, event dispatch, and logging.
  *
- * The facade currently inherits the legacy storage/lifecycle implementation so existing
- * runtime wiring stays intact. `packTrxs` and `saveTransactionsFromDagBlock` are redeclared
- * because proposal packing and DAG transaction persistence are the migrated surfaces for
- * this slice; remaining inherited APIs are tracked TransactionManager migration work, not a
- * permanent Rust fallback boundary.
+ * The facade is independent of the legacy implementation. Rust owns queue,
+ * sidecar, transaction-count, gas-cache policy, and persistence state; C++ owns
+ * only public object materialization plus event, logging, thread-pool, and
+ * FinalChain/EVM executor boundaries.
  */
-class TransactionManager : public TransactionManagerOld {
+class TransactionManager : public std::enable_shared_from_this<TransactionManager> {
  public:
   /**
    * Rust-selected proposal transaction payloads.
@@ -44,18 +60,14 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Rust-mode pending-transaction event surface.
    *
-   * The legacy owner type keeps `emit` private to `TransactionManagerOld`, so the shim owns
-   * the public event instance used by Rust-mode subscribers and emits it only from
-   * shim-owned insertion paths selected by Rust admission planning.
+   * The shim owns the public event instance used by Rust-mode subscribers and
+   * emits it only from shim-owned insertion paths selected by Rust admission
+   * planning.
    */
   util::event::Event<TransactionManager, const trx_hash_t &> const transaction_added_{};
 
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-                     std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
-      : TransactionManagerOld(conf, db, std::move(final_chain), node_addr),
-        runtime_(rustaxa::create_transaction_manager_runtime_from_storage(
-            db->rustStorage(), db->getStatusField(StatusDbField::TrxCount),
-            rustaxa::TransactionQueueConfig{conf.transactions_pool_size})) {}
+                     std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr);
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -324,9 +336,8 @@ class TransactionManager : public TransactionManagerOld {
   /**
    * Emit the Rust-mode pending-transaction event.
    *
-   * Only shim-owned insertion code calls this helper. It intentionally emits the facade event
-   * rather than the inherited legacy event so subscribers attached to the Rust-mode
-   * `TransactionManager` observe Rust-planned proposable admissions without a legacy owner hook.
+   * Only shim-owned insertion code calls this helper, so subscribers attached
+   * to the Rust-mode facade observe Rust-planned proposable admissions.
    */
   void emitTransactionAddedForRust(const trx_hash_t &trx_hash) const { transaction_added_.emit(trx_hash); }
 
@@ -339,9 +350,15 @@ class TransactionManager : public TransactionManagerOld {
    * event emission, logging, EVM estimation execution, historical/proposal-period
    * account reads, and lifecycle orchestration.
    */
+  const FullNodeConfig &kConf;
+  static constexpr uint64_t kEstimateGasLimit = 200000;
+  std::shared_ptr<final_chain::FinalChain> final_chain_;
   ::rust::Box<rustaxa::BridgeTransactionManagerRuntime> runtime_;
+  util::ThreadPool estimation_thread_pool_;
   mutable std::shared_mutex transactions_mutex_;
   mutable std::mutex pack_mutex_;
+
+  LOG_OBJECTS_DEFINE
 };
 
 }  // namespace taraxa

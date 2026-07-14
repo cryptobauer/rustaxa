@@ -399,8 +399,18 @@ Implementation notes:
   payload, uniqueness, round-marker, and voted-block state. C++ receives only a compact snapshot to materialize the
   still-public own/reward vote sidecars. The post-construction storage attachment API and the legacy constructor's three
   C++ `DbStorage` scans are deleted.
-- `transaction_manager_shim::getTransactionsMutex` no longer forwards through `TransactionManagerOld`; it is now a
-  shim-owned method that routes to a lock stored on `TransactionManager` itself through the existing friend access helper.
+- `transaction_manager_shim` is now a standalone full overlay: Rust-enabled builds no longer inherit, construct, or
+  compile `TransactionManagerOld`. The facade preserves `enable_shared_from_this<TransactionManager>`, the complete
+  public API, event identity, locks, FinalChain/EVM executor, thread pool, and logging shell, while the Rust runtime
+  remains the only queue, sidecar, gas-cache, transaction-count, and persistence owner. The upstream header/source are
+  restored clean, and Rust now restores `TrxCount` directly from its storage handle during fallible runtime construction
+  instead of accepting a C++ `DbStorage` bootstrap fact.
+  Validation passed with the 26 focused Rust transaction-manager tests, all 36 transaction-manager shim tests, the six
+  transaction-queue shim tests, all 17 transaction tests, all three gas-pricer tests, all nine Rust storage bridge tests,
+  a focused PBFT proposal/overlay run, both rewrite boundary guards, `make rewrite-validate-fast`, and
+  `make rewrite-validate-consensus`. Two additional PBFT DAG-creation cases encountered the known `/tmp/taraxa0`
+  RocksDB fixture self-lock after the proposal case completed; they did not report a transaction-manager assertion or
+  behavior failure.
 - `dag_manager_shim::setNetwork` no longer forwards to `DagManagerOld`; the shim now only stores the local shim-owned
   network pointer at this seam.
 - `dag_manager_shim` now owns the public `VerifyBlockReturnType` enum locally instead of aliasing
@@ -501,6 +511,11 @@ Acceptance:
   storage-authoritative: the facade materializes votes only for the public getter/network boundary instead of maintaining
   a second C++ object vector. Remaining vote-manager work is external FinalChain/key/slashing fact execution and eventual
   absorption of the public facade into the Rust PBFT runtime, not legacy base ownership.
+  `transaction_manager_shim` is also no longer a legacy-derived runtime. Rust mode excludes the legacy implementation
+  source entirely, and the standalone facade owns only public/executor shell state. Its Rust runtime restores the durable
+  transaction count natively and remains authoritative for the queue, live payload sidecars, gas cache, and transaction
+  persistence. Remaining transaction-manager work is the classified FinalChain/EVM, public materialization, event,
+  logging, and lifecycle shell rather than legacy base ownership.
 
 Implementation notes:
 
