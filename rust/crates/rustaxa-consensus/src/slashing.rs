@@ -321,6 +321,10 @@ pub struct DoubleVotingProofInput {
 pub enum DoubleVotingProofPlanStatus {
     Planned,
     Disabled,
+    /// Vote A predates the configured Magnolia activation period. The legacy
+    /// manager gates submission on vote A only and permits the activation
+    /// period itself.
+    BeforeMagnoliaActivation,
     MismatchedVoteCoordinates,
     DuplicateProof,
     NoFundedSubmitter,
@@ -344,11 +348,11 @@ pub enum DoubleVotingProofSubmissionStatus {
 
 /// Rust decision returned for one double-vote proof attempt.
 ///
-/// `should_submit` is false when reporting is disabled, the votes are for
-/// different PBFT slots, or the proof hash was already submitted. When it is
-/// true, `proof_hash` is the canonical duplicate-cache key and `call_data` is
-/// the byte-for-byte slashing contract call payload C++ should place into the
-/// transaction input.
+/// `should_submit` is false when reporting is disabled, vote A predates
+/// Magnolia, the votes are for different PBFT slots, the proof hash was already
+/// submitted, or no funded submitter exists. When it is true, `proof_hash` is
+/// the canonical duplicate-cache key and `call_data` is the byte-for-byte
+/// slashing contract call payload C++ should place into the transaction input.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DoubleVotingProofPlan {
     pub status: DoubleVotingProofPlanStatus,
@@ -372,12 +376,14 @@ pub struct DoubleVotingProofSubmissionPlan {
 
 /// Double-voting proof planner with a bounded submitted-proof cache.
 ///
-/// The cache mirrors the legacy `ExpirationCache` shape: insertion is FIFO and
-/// when the size exceeds `max_submitted_proofs`, `delete_step` oldest entries
-/// are evicted. Proofs are marked submitted only after C++ successfully inserts
-/// the generated transaction, matching the legacy side-effect ordering.
+/// Magnolia activation is immutable bootstrap configuration. The cache mirrors
+/// the legacy `ExpirationCache` shape: insertion is FIFO and when the size
+/// exceeds `max_submitted_proofs`, `delete_step` oldest entries are evicted.
+/// Proofs are marked submitted only after C++ successfully inserts the generated
+/// transaction, matching the legacy side-effect ordering.
 pub struct SlashingProofPlanner {
     report_malicious_behaviour: bool,
+    magnolia_activation_period: u64,
     submitted_proofs: HashSet<H256>,
     submitted_order: VecDeque<H256>,
     max_submitted_proofs: usize,
@@ -388,10 +394,13 @@ impl SlashingProofPlanner {
     /// Creates an empty planner for local slashing proof submission.
     ///
     /// `report_malicious_behaviour` disables proof generation when false.
+    /// `magnolia_activation_period` is the first vote-A period eligible for
+    /// proof submission; period zero therefore means active from genesis.
     /// Cache limits must be non-zero so duplicate detection has the same
     /// bounded behavior as the legacy manager.
     pub fn new(
         report_malicious_behaviour: bool,
+        magnolia_activation_period: u64,
         max_submitted_proofs: usize,
         delete_step: usize,
     ) -> Result<Self> {
@@ -405,6 +414,7 @@ impl SlashingProofPlanner {
         );
         Ok(Self {
             report_malicious_behaviour,
+            magnolia_activation_period,
             submitted_proofs: HashSet::new(),
             submitted_order: VecDeque::new(),
             max_submitted_proofs,
@@ -414,12 +424,19 @@ impl SlashingProofPlanner {
 
     /// Builds a double-voting proof transaction plan when the proof is new.
     ///
-    /// The method does not mutate the submitted-proof cache; callers must invoke
-    /// [`SlashingProofPlanner::mark_submitted`] only after the transaction was
-    /// accepted for insertion.
+    /// Disabled reporting takes precedence over the vote-A Magnolia boundary,
+    /// followed by slot validation, duplicate detection, and submitter choice.
+    /// Rejected plans do not mutate the submitted-proof cache; callers must
+    /// invoke [`SlashingProofPlanner::mark_submitted`] only after the transaction
+    /// was accepted for insertion.
     pub fn plan_double_voting_proof(&self, input: DoubleVotingProofInput) -> DoubleVotingProofPlan {
         if !self.report_malicious_behaviour {
             return DoubleVotingProofPlan::not_submitted(DoubleVotingProofPlanStatus::Disabled);
+        }
+        if input.vote_a_period < self.magnolia_activation_period {
+            return DoubleVotingProofPlan::not_submitted(
+                DoubleVotingProofPlanStatus::BeforeMagnoliaActivation,
+            );
         }
         if !same_pbft_slot(&input) {
             return DoubleVotingProofPlan::not_submitted(
@@ -804,7 +821,7 @@ mod tests {
 
     #[test]
     fn plans_call_data_and_canonical_hash_for_matching_votes() {
-        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
 
         let plan = planner.plan_double_voting_proof(input(2, 1));
 
@@ -825,7 +842,7 @@ mod tests {
 
     #[test]
     fn fixture_canonical_proof_hash_matches_legacy_sorted_rlp_pair() {
-        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
         let expected = h256_hex("3adcdeea9dd9a4219614e50270f3aba4ab10f39f111bfb028dadeee274cdabd9");
 
         let forward = planner.plan_double_voting_proof(input(0x22, 0x11));
@@ -837,7 +854,7 @@ mod tests {
 
     #[test]
     fn fixture_call_data_matches_legacy_solidity_bytes_layout() {
-        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
         let proof = input(0x11, 0x22);
 
         let plan = planner.plan_double_voting_proof(proof);
@@ -858,13 +875,13 @@ mod tests {
 
     #[test]
     fn rejects_disabled_reporting_or_mismatched_slot() {
-        let disabled = SlashingProofPlanner::new(false, 1000, 100).unwrap();
+        let disabled = SlashingProofPlanner::new(false, 11, 1000, 100).unwrap();
         assert_eq!(
             disabled.plan_double_voting_proof(input(1, 2)).status,
             DoubleVotingProofPlanStatus::Disabled
         );
 
-        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
         let mut mismatched = input(1, 2);
         mismatched.vote_b_round = 3;
         assert_eq!(
@@ -874,8 +891,53 @@ mod tests {
     }
 
     #[test]
+    fn enforces_magnolia_vote_a_boundary_before_slot_validation() {
+        let planner = SlashingProofPlanner::new(true, 10, 1000, 100).unwrap();
+
+        let activation_plan = planner.plan_double_voting_proof(input(1, 2));
+        assert_eq!(activation_plan.status, DoubleVotingProofPlanStatus::Planned);
+
+        let mut before_activation = input(3, 4);
+        before_activation.vote_a_period = 9;
+        before_activation.vote_b_period = 8;
+        assert_eq!(
+            planner.plan_double_voting_proof(before_activation).status,
+            DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
+        );
+
+        let mut vote_b_before_activation = input(5, 6);
+        vote_b_before_activation.vote_b_period = 9;
+        assert_eq!(
+            planner
+                .plan_double_voting_proof(vote_b_before_activation)
+                .status,
+            DoubleVotingProofPlanStatus::MismatchedVoteCoordinates,
+            "the legacy activation gate checks vote A only"
+        );
+        assert!(planner.submitted_proofs.is_empty());
+        assert!(planner.submitted_order.is_empty());
+    }
+
+    #[test]
+    fn supports_maximum_magnolia_activation_period_without_overflow() {
+        let planner = SlashingProofPlanner::new(true, u64::MAX, 1000, 100).unwrap();
+        assert_eq!(
+            planner.plan_double_voting_proof(input(1, 2)).status,
+            DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
+        );
+
+        let mut at_activation = input(3, 4);
+        at_activation.vote_a_period = u64::MAX;
+        at_activation.vote_b_period = u64::MAX;
+        assert_eq!(
+            planner.plan_double_voting_proof(at_activation).status,
+            DoubleVotingProofPlanStatus::Planned
+        );
+    }
+
+    #[test]
     fn selects_first_funded_submitter() {
-        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
         let mut proof = input(1, 2);
         proof.submitters = vec![
             SlashingSubmitterFact {
@@ -899,7 +961,7 @@ mod tests {
 
     #[test]
     fn rejects_when_no_submitter_has_balance() {
-        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
         let mut proof = input(1, 2);
         proof.submitters[0].balance = U256::zero();
 
@@ -911,7 +973,7 @@ mod tests {
 
     #[test]
     fn marks_submitted_only_after_success_and_rejects_duplicates() {
-        let mut planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let mut planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
         let proof = input(1, 2);
         let plan = planner.plan_double_voting_proof(proof.clone());
 
@@ -927,7 +989,7 @@ mod tests {
 
     #[test]
     fn submitted_cache_evicts_oldest_entries_by_delete_step() {
-        let mut planner = SlashingProofPlanner::new(true, 3, 2).unwrap();
+        let mut planner = SlashingProofPlanner::new(true, 0, 3, 2).unwrap();
         let hashes = [hash(1), hash(2), hash(3), hash(4)];
 
         for proof_hash in hashes {
@@ -942,7 +1004,7 @@ mod tests {
 
     #[test]
     fn mirrors_legacy_abi_padding_for_full_words() {
-        let planner = SlashingProofPlanner::new(true, 1000, 100).unwrap();
+        let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
         let mut proof = input(1, 2);
         proof.vote_a_rlp = vec![0x55; WORD_SIZE];
         proof.vote_b_rlp = vec![0xaa; WORD_SIZE];

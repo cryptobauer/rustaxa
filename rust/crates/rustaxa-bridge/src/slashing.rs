@@ -20,12 +20,17 @@ const SLASHING_PROOF_CACHE_MAX_SIZE: usize = 1000;
 const SLASHING_PROOF_CACHE_DELETE_STEP: usize = 100;
 
 /// Creates a deterministic slashing planner with legacy-compatible cache limits.
+///
+/// `magnolia_activation_period` is immutable bootstrap configuration. Vote A
+/// must be at or after this period; zero activates reporting from genesis.
 pub fn create_slashing_proof_planner(
     report_malicious_behaviour: bool,
+    magnolia_activation_period: u64,
 ) -> Result<Box<BridgeSlashingProofPlanner>> {
     Ok(Box::new(BridgeSlashingProofPlanner(std::sync::Mutex::new(
         SlashingProofPlanner::new(
             report_malicious_behaviour,
+            magnolia_activation_period,
             SLASHING_PROOF_CACHE_MAX_SIZE,
             SLASHING_PROOF_CACHE_DELETE_STEP,
         )?,
@@ -113,6 +118,7 @@ fn double_voting_proof_plan_status_code(status: DoubleVotingProofPlanStatus) -> 
         DoubleVotingProofPlanStatus::MismatchedVoteCoordinates => 2,
         DoubleVotingProofPlanStatus::DuplicateProof => 3,
         DoubleVotingProofPlanStatus::NoFundedSubmitter => 4,
+        DoubleVotingProofPlanStatus::BeforeMagnoliaActivation => 5,
     }
 }
 
@@ -183,7 +189,7 @@ mod tests {
 
     #[test]
     fn bridges_planner_plan_output() {
-        let planner = create_slashing_proof_planner(true).unwrap();
+        let planner = create_slashing_proof_planner(true, 0).unwrap();
         let input = proof_input(2, 1, vec![submitter(0, true, 9)]);
 
         let plan = planner.slashing_plan_double_voting_proof(input).unwrap();
@@ -205,8 +211,64 @@ mod tests {
     }
 
     #[test]
+    fn bridge_propagates_magnolia_activation_period() {
+        let before = create_slashing_proof_planner(true, 101).unwrap();
+        let plan = before
+            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
+            .unwrap();
+        assert_eq!(
+            plan.status,
+            double_voting_proof_plan_status_code(
+                DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
+            )
+        );
+        assert!(!plan.should_submit);
+
+        let at_activation = create_slashing_proof_planner(true, 100).unwrap();
+        assert_eq!(
+            at_activation
+                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)],))
+                .unwrap()
+                .status,
+            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Planned)
+        );
+    }
+
+    #[test]
+    fn bridge_plan_status_codes_remain_stable() {
+        assert_eq!(
+            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Planned),
+            0
+        );
+        assert_eq!(
+            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Disabled),
+            1
+        );
+        assert_eq!(
+            double_voting_proof_plan_status_code(
+                DoubleVotingProofPlanStatus::MismatchedVoteCoordinates
+            ),
+            2
+        );
+        assert_eq!(
+            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::DuplicateProof),
+            3
+        );
+        assert_eq!(
+            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::NoFundedSubmitter),
+            4
+        );
+        assert_eq!(
+            double_voting_proof_plan_status_code(
+                DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
+            ),
+            5
+        );
+    }
+
+    #[test]
     fn bridge_output_matches_slashing_fixture_bytes() {
-        let planner = create_slashing_proof_planner(true).unwrap();
+        let planner = create_slashing_proof_planner(true, 0).unwrap();
 
         let plan = planner
             .slashing_plan_double_voting_proof(proof_input(0x22, 0x11, vec![submitter(3, true, 9)]))
@@ -240,7 +302,7 @@ mod tests {
 
     #[test]
     fn bridge_report_marks_submission_once() {
-        let planner = create_slashing_proof_planner(true).unwrap();
+        let planner = create_slashing_proof_planner(true, 0).unwrap();
         let plan = planner
             .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
             .unwrap();
@@ -271,7 +333,7 @@ mod tests {
 
     #[test]
     fn bridge_reports_submission_executor_outcome() {
-        let planner = create_slashing_proof_planner(true).unwrap();
+        let planner = create_slashing_proof_planner(true, 0).unwrap();
         let plan = planner
             .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
             .unwrap();

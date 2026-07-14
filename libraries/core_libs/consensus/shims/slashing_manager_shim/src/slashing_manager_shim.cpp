@@ -99,7 +99,8 @@ SlashingManager::SlashingManager(const FullNodeConfig& config, std::shared_ptr<f
     : final_chain_(std::move(final_chain)),
       trx_manager_(std::move(trx_manager)),
       gas_pricer_(std::move(gas_pricer)),
-      planner_(rustaxa::create_slashing_proof_planner(config.report_malicious_behaviour)),
+      planner_(rustaxa::create_slashing_proof_planner(config.report_malicious_behaviour,
+                                                      config.genesis.state.hardforks.magnolia_hf.block_num)),
       kConfig(config) {}
 
 bool SlashingManager::submitDoubleVotingProof(const std::shared_ptr<PbftVote>& vote_a,

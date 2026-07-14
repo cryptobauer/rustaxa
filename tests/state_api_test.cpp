@@ -216,7 +216,7 @@ TEST_F(StateAPITest, slashing) {
   for (auto& cfg : node_cfgs) {
     cfg.genesis.state.dpos.delegation_delay = 2;
     cfg.genesis.state.hardforks.magnolia_hf.jail_time = 2;
-    cfg.genesis.state.hardforks.magnolia_hf.block_num = 0;
+    cfg.genesis.state.hardforks.magnolia_hf.block_num = 3;
     cfg.report_malicious_behaviour = true;
   }
 
@@ -224,16 +224,29 @@ TEST_F(StateAPITest, slashing) {
   auto node = nodes.begin()->get();
   auto node_cfg = node_cfgs.begin();
   ASSERT_EQ(true, node->getFinalChain()->dposIsEligible(node->getFinalChain()->lastBlockNumber(), node->getAddress()));
+  ASSERT_HAPPENS({10s, 100ms}, [&](auto& ctx) {
+    WAIT_EXPECT_GE(ctx, node->getFinalChain()->lastBlockNumber(),
+                   node_cfg->genesis.state.hardforks.magnolia_hf.block_num)
+  });
 
-  // Generate 2 cert votes for 2 different blocks
-  auto vote_a = node->getVoteManager()->generateVote(blk_hash_t{1}, PbftVoteTypes::cert_vote, 1, 1, 3,
+  auto slashing_manager = std::make_shared<SlashingManager>(*node_cfg, node->getFinalChain(),
+                                                            node->getTransactionManager(), node->getGasPricer());
+
+  // Magnolia activates at period 3. Evidence from the preceding period must
+  // be rejected by the Rust planner configured through SlashingManager.
+  auto preactivation_vote_a = node->getVoteManager()->generateVote(blk_hash_t{3}, PbftVoteTypes::cert_vote, 2, 1, 3,
+                                                                   node_cfg->getFirstWallet());
+  auto preactivation_vote_b = node->getVoteManager()->generateVote(blk_hash_t{4}, PbftVoteTypes::cert_vote, 2, 1, 3,
+                                                                   node_cfg->getFirstWallet());
+  ASSERT_FALSE(slashing_manager->submitDoubleVotingProof(preactivation_vote_a, preactivation_vote_b));
+
+  // Evidence at the exact activation period is accepted.
+  auto vote_a = node->getVoteManager()->generateVote(blk_hash_t{1}, PbftVoteTypes::cert_vote, 3, 1, 3,
                                                      node_cfg->getFirstWallet());
-  auto vote_b = node->getVoteManager()->generateVote(blk_hash_t{2}, PbftVoteTypes::cert_vote, 1, 1, 3,
+  auto vote_b = node->getVoteManager()->generateVote(blk_hash_t{2}, PbftVoteTypes::cert_vote, 3, 1, 3,
                                                      node_cfg->getFirstWallet());
 
   // Commit double voting proof
-  auto slashing_manager = std::make_shared<SlashingManager>(*node_cfg, node->getFinalChain(),
-                                                            node->getTransactionManager(), node->getGasPricer());
   ASSERT_EQ(true, slashing_manager->submitDoubleVotingProof(vote_a, vote_b));
 
   // After few blocks malicious validator should be jailed

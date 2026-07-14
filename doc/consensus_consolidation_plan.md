@@ -524,6 +524,18 @@ Implementation notes:
   task-distributor, code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation
   or blockchain agent was needed for this detachment because the Rust planner and contract executor behavior did not
   change; the Magnolia parity follow-up is explicitly blockchain-facing.
+- The Magnolia slashing parity follow-up closes both defects exposed by that detachment validation. The shim now supplies
+  the immutable Magnolia activation period when it constructs the Rust planner; Rust checks the legacy vote-A boundary
+  after the reporting flag and before slot equality, accepts equality, returns appended stable status code `5` for
+  pre-activation evidence, and leaves duplicate state unchanged on rejection. Separately, Rust FinalChain now interprets
+  Magnolia and Cacti activation block zero as active from genesis by using the legacy inclusive block comparison. Local
+  evidence-period policy remains distinct from transaction-inclusion activation, so old evidence submitted after
+  activation remains contract-valid. Focused Rust boundary/execution tests and `StateAPITest.slashing` cover construction
+  wiring, pre-activation rejection, equality acceptance, inclusion, jailing, and jailed-vote eligibility. Tier 1, the
+  FinalChain Tier 2 gate, startup smoke, and the consensus Tier 2 command passed; the latter still exposed pre-existing
+  suite-order database-lock failures, while isolated PBFT and pillar-count reruns passed and the unrelated pillar-sync
+  rerun reproduced its existing PBFT runtime panic. Blockchain, API, architecture, Rust, C++, and independent reviewer
+  agents covered the policy split, compatibility surface, implementation, and closeout.
 - Custom agents used:
   - `rust-engineer`: confirmed Slice 5 bridge handles are still required by C++ public facade surfaces and recommended
     gas-pricer narrowing instead of handle deletion.

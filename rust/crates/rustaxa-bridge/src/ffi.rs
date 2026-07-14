@@ -4990,6 +4990,7 @@ pub mod rustaxa_ffi {
 
         pub fn create_slashing_proof_planner(
             report_malicious_behaviour: bool,
+            magnolia_activation_period: u64,
         ) -> Result<Box<BridgeSlashingProofPlanner>>;
         pub fn slashing_plan_double_voting_proof(
             self: &BridgeSlashingProofPlanner,

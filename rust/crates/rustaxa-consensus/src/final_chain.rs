@@ -3269,12 +3269,11 @@ impl FinalChain {
     }
 
     fn magnolia_active(&self, block_number: u64) -> bool {
-        self.rewards_config.magnolia_period != 0
-            && block_number >= self.rewards_config.magnolia_period
+        block_number >= self.rewards_config.magnolia_period
     }
 
     fn cacti_active(&self, block_number: u64) -> bool {
-        self.rewards_config.cacti_period != 0 && block_number >= self.rewards_config.cacti_period
+        block_number >= self.rewards_config.cacti_period
     }
 
     fn slashing_is_jailed(
@@ -8077,6 +8076,56 @@ mod tests {
     }
 
     #[test]
+    fn hardfork_activation_period_zero_is_active_from_genesis() {
+        let zero_path = temp_db_path("hardfork-activation-zero");
+        let zero_storage = Arc::new(Storage::new(Config::new(zero_path.clone())).unwrap());
+        let zero_activation = FinalChain::new_with_rewards_config(
+            zero_storage.clone(),
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 0,
+                cacti_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(zero_activation.magnolia_active(0));
+        assert!(zero_activation.cacti_active(0));
+
+        let boundary_path = temp_db_path("hardfork-activation-boundary");
+        let boundary_storage = Arc::new(Storage::new(Config::new(boundary_path.clone())).unwrap());
+        let boundary = FinalChain::new_with_rewards_config(
+            boundary_storage.clone(),
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 2,
+                cacti_period: 3,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!boundary.magnolia_active(1));
+        assert!(boundary.magnolia_active(2));
+        assert!(!boundary.cacti_active(2));
+        assert!(boundary.cacti_active(3));
+
+        drop(zero_activation);
+        drop(zero_storage);
+        drop(boundary);
+        drop(boundary_storage);
+        let _ = std::fs::remove_dir_all(zero_path);
+        let _ = std::fs::remove_dir_all(boundary_path);
+    }
+
+    #[test]
     fn reads_batch_one_indexes() {
         let path = temp_db_path("batch-one-indexes");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -8696,8 +8745,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(path);
     }
 
-    #[test]
-    fn finalize_block_executes_slashing_double_vote_and_filters_dpos_votes() {
+    fn assert_finalize_block_executes_slashing(magnolia_period: u64, cacti_period: u64) {
         let path = temp_db_path("finalize-slashing-double-vote");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator_key = SigningKey::from_slice(&[0x51; 32]).unwrap();
@@ -8761,8 +8809,8 @@ mod tests {
                 dag_vdf_sortition_total_vote_count_until_period: 0,
             },
             FinalChainRewardsConfig {
-                magnolia_period: 1,
-                cacti_period: 1,
+                magnolia_period,
+                cacti_period,
                 magnolia_jail_time: 2,
                 cacti_jail_time: 2,
                 ..Default::default()
@@ -8838,6 +8886,87 @@ mod tests {
             U256::from(1)
         );
         assert_eq!(&jailed_validators.code_retval[76..96], &validator);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_executes_slashing_at_nonzero_activation_boundary() {
+        assert_finalize_block_executes_slashing(1, 1);
+    }
+
+    #[test]
+    fn finalize_block_executes_slashing_when_hardforks_activate_at_zero() {
+        assert_finalize_block_executes_slashing(0, 0);
+    }
+
+    #[test]
+    fn slashing_uses_magnolia_then_cacti_jail_rules_at_boundary() {
+        let path = temp_db_path("slashing-cacti-boundary");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator_key = SigningKey::from_slice(&[0x61; 32]).unwrap();
+        let validator_h160 = address_from_signing_key(&validator_key);
+        let mut validator = [0u8; 20];
+        validator.copy_from_slice(validator_h160.as_bytes());
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            300_000,
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                ..Default::default()
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 1,
+                cacti_period: 3,
+                magnolia_jail_time: 7,
+                cacti_jail_time: 11,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let vote_period = 1;
+        let sortition = legacy_vrf_sortition_rlp(vote_period, 2, 4, 0x6a);
+        let proof_before_cacti =
+            verify_legacy_double_voting_proof_call_data(&commit_double_voting_proof_input(
+                &signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(200), &sortition),
+                &signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(201), &sortition),
+            ))
+            .unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+
+        let before_cacti = final_chain
+            .apply_slashing_double_voting_proof(&mut snapshot, None, 2, proof_before_cacti)
+            .unwrap();
+        assert_eq!(before_cacti.status_code, 1);
+        assert_eq!(snapshot.slashing_jail_blocks[&validator], 2 + 7);
+        assert_eq!(
+            final_chain.dpos_effective_vote_count(&snapshot, 2, validator),
+            10,
+            "pre-Cacti jailing must not remove the validator's eligible votes"
+        );
+
+        let proof_at_cacti =
+            verify_legacy_double_voting_proof_call_data(&commit_double_voting_proof_input(
+                &signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(202), &sortition),
+                &signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(203), &sortition),
+            ))
+            .unwrap();
+        let at_cacti = final_chain
+            .apply_slashing_double_voting_proof(&mut snapshot, None, 3, proof_at_cacti)
+            .unwrap();
+        assert_eq!(at_cacti.status_code, 1);
+        assert_eq!(snapshot.slashing_jail_blocks[&validator], 3 + 11);
+        assert_eq!(
+            final_chain.dpos_effective_vote_count(&snapshot, 3, validator),
+            0
+        );
 
         drop(final_chain);
         drop(storage);
