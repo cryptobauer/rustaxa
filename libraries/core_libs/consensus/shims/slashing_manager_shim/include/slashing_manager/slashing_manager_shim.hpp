@@ -2,6 +2,7 @@
 
 #include <memory>
 
+#include "common/types.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 
 namespace taraxa {
@@ -9,6 +10,7 @@ namespace taraxa {
 struct FullNodeConfig;
 class GasPricer;
 class PbftVote;
+class PillarVote;
 class TransactionManager;
 namespace final_chain {
 class FinalChain;
@@ -36,7 +38,8 @@ struct SlashingDoubleVoteEvidence {
  * double-voting proof planning is routed through Rust. Submitter nonce and
  * balance facts are read through the Rust FinalChain runtime; C++ still owns
  * gas-price lookup, transaction construction, signing, and transaction-pool
- * insertion. No production path delegates to `SlashingManagerOld`.
+ * insertion. The facade is standalone and has no legacy implementation
+ * dependency.
  */
 class SlashingManager {
  public:

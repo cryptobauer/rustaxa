@@ -504,6 +504,26 @@ Implementation notes:
   code-mapper, api-designer, architect-reviewer, cpp-pro, and independent reviewer agents covered mapping, design,
   implementation, and closeout. No Rust implementation or blockchain/EVM agent was needed because this slice changed
   only C++ overlay/build ownership and preserved the Rust runtime and bridge API.
+- The standalone slashing facade is now fully detached from `SlashingManagerOld`: feature-enabled builds exclude the
+  untouched original source, the overlay wrapper includes only its self-contained facade, and the compile rename plus
+  assertion-only scaffold test are retired. The module flag remains because master Rust configurations may validly use
+  the original manager when Rust VerifiedVotes and its FinalChain/GasPricer dependency bundle are disabled. The live
+  facade, `BridgeSlashingProofPlanner`, normalized-evidence overload, and live-`PbftVote` compatibility overload remain
+  for the accepted FinalChain account-read, gas-bid, signing, transaction construction, insertion, and network/test
+  executor edges. A separate blockchain-facing parity slice must supply Magnolia activation to the Rust planner; the
+  current Rust path otherwise lacks the legacy pre-Magnolia proof-submission gate, and dead `*Old` compilation does not
+  correct that production behavior. Validation passed 19 focused Rust consensus slashing tests, five Rust bridge
+  slashing tests, the `taraxad` and `state_api_test` builds, both rewrite boundary guards, Tier 1, Tier 2 consensus,
+  the FinalChain gate, and startup smoke. The focused `StateAPITest.slashing` accepted the proof transaction but twice
+  timed out waiting for the validator to become jailed; because source/symbol audits prove the detached legacy object
+  was never called and no runtime behavior changed, this is recorded as an existing full-node FinalChain/slashing
+  validation gap rather than a reason to retain dead scaffold. Feature-on metadata contains only the shim source and no
+  `SlashingManagerOld` symbols, module-disabled/all-off metadata selects the untouched original source without a rename,
+  invalid dependency configurations still fail, and the upstream original files remain unchanged. Mapping,
+  decomposition, API design, architecture review, C++ implementation, and independent closeout review use the
+  task-distributor, code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation
+  or blockchain agent was needed for this detachment because the Rust planner and contract executor behavior did not
+  change; the Magnolia parity follow-up is explicitly blockchain-facing.
 - Custom agents used:
   - `rust-engineer`: confirmed Slice 5 bridge handles are still required by C++ public facade surfaces and recommended
     gas-pricer narrowing instead of handle deletion.

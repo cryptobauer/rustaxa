@@ -821,7 +821,10 @@ The current Rust consensus footprint is broad but still incomplete:
   cache decisions, unweighted vote evidence payload normalization, submitter selection, and slashing contract calldata
   construction through Rust; the PBFT vote admission route now passes Rust-normalized unweighted payload records, while
   C++ keeps account reads, gas bidding, transaction signing, transaction-pool insertion, and the live-vote overload for
-  remaining compatibility callers.
+  remaining compatibility callers. The standalone facade no longer imports or compiles `SlashingManagerOld`; the
+  module-disabled and pure-C++ routes retain the untouched original implementation. A pre-existing parity gap remains
+  tracked separately: the Rust planner does not yet receive the Magnolia activation period needed to suppress
+  pre-Magnolia proof submission as the legacy implementation did.
 - `rustaxa-types` contains shared Rust domain and codec types, including the legacy transaction envelope used by
   Rust-enabled transaction-manager shims to decode canonical RLP bytes, hash transactions, recover/validate senders,
   compute intrinsic gas coverage, and surface deterministic nonce/gas/value/cost facts without calling C++

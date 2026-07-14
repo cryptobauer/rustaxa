@@ -86,12 +86,6 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     add_test(verified_votes_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/verified_votes_shim_test)
 endif()
 
-if(RUSTAXA_ENABLE_SLASHING_MANAGER)
-    add_executable(slashing_manager_shim_test slashing_manager_shim_test.cpp)
-    target_link_libraries(slashing_manager_shim_test test_util)
-    add_test(slashing_manager_shim_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/slashing_manager_shim_test)
-endif()
-
 if(RUSTAXA_ENABLE)
     add_executable(transaction_manager_shim_test transaction_manager_shim_test.cpp)
     target_link_libraries(transaction_manager_shim_test test_util)
