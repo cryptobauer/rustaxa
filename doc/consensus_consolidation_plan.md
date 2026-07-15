@@ -1,9 +1,9 @@
 # Consensus Consolidation Plan
 
-This follows up on `doc/consensus_touchpoints.md`. That document is now the closed inventory of external consensus
-touchpoints and facade shapes. This plan is the next cleanup wave: shrink or remove bridge/shim scaffolding that became
-obsolete after the dedicated network, execution, and query APIs landed, and consolidate Rust consensus/storage usage so
-internal Rust paths no longer look like C++ compatibility paths.
+This is the cleanup wave after the dedicated network, execution, and query facades landed: shrink or remove bridge/shim
+scaffolding made obsolete by those boundaries, and consolidate Rust consensus/storage usage so internal Rust paths no
+longer look like C++ compatibility paths. `PLAN.md` owns the strategic facade boundaries, while this document tracks the
+ordered compatibility-deletion slices.
 
 ## Target State
 

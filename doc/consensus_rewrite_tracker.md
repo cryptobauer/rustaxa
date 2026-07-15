@@ -1,8 +1,8 @@
 # Consensus Rewrite Tracker
 
 This tracker expands the consensus section in `PLAN.md`. Keep it current as consensus code moves from C++ into Rust.
-Required test coverage and parity gates for the Rust consensus model are defined in
-`doc/consensus_model_test_plan.md`.
+Consensus validation policy is defined in `doc/rewrite_validation_strategy.md`; subsystem-specific minimum coverage and
+unresolved gaps are tracked in the **Validation Matrix** and **Current Open Items** below.
 
 ## Status Legend
 
@@ -159,6 +159,12 @@ FinalChain facade closeout: the Rust-mode `final_chain::FinalChain` overlay is s
 compiles, or exposes `FinalChainOld`. Rust production builds exclude the untouched legacy `final_chain.cpp`; pure-C++
 reference builds retain it. The remaining C++ `ExternalEvmStateApiClient` and `StateAPI` work is the classified external
 EVM/state executor boundary, not legacy FinalChain delegation.
+
+External facade closeout: `ConsensusNetworkApi`, `ConsensusExecutionApi`, and `ConsensusQueryApi` are the dedicated
+network/tarcap, external-EVM/StateAPI, and public-read boundaries. They expose typed operations and DTOs without exposing
+consensus managers or mutable internal state. Their remaining C++ code is transport execution, EVM/state execution,
+public formatting/materialization, or explicitly tracked compatibility glue. Strategic ownership and invariants live in
+`PLAN.md`; exact APIs live with the Rust facade modules and bridge tests.
 
 ## PBFT Manager Breakthrough Boundary
 

@@ -270,6 +270,10 @@ Current Rust repositories include:
 - `PbftRepository`
 - `TransactionRepository`
 
+This section and the current repository implementations are the storage coverage source of truth. Do not maintain a
+separate unchecked repository checklist: add remaining storage work to **Storage Gaps and Risks** or
+`doc/consensus_rewrite_tracker.md`, and remove an item when the implementation and required validation land.
+
 ### Storage Gaps and Risks
 
 - Compatibility shells are still large because public C++ APIs, network/query materialization, storage conformance tests,
@@ -655,6 +659,22 @@ Closeout definition now in force: consensus production behavior outside network/
 require C++ shims or broad bridge compatibility code as decision authority. New work that needs consensus behavior should
 extend Rust runtimes, typed ports, or Rust-owned planners first. If a remaining C++ shim or bridge path is touched, either
 keep it as a clearly classified adapter/executor boundary or move the behavior into Rust in the same slice.
+
+### External Consensus Facade Boundaries
+
+Three Rust-owned facades define the long-lived external consensus contracts. They are narrow operation boundaries, not
+service locators: they must not expose consensus manager handles, mutable sidecars, storage iterators, `DbStorage`, or
+internal runtime state.
+
+| Boundary | Rust facade | Rust ownership | External executor or adapter ownership |
+| --- | --- | --- | --- |
+| Network and tarcap | `ConsensusNetworkApi` | Canonical packet ingestion, typed consensus/network work planning, effect identity, and executor-result validation | Peer transport, packet wrapping, send/gossip policy, peer marking/reporting, disconnects, and queue scheduling |
+| External EVM and StateAPI | `ConsensusExecutionApi` | Execution request identity, typed report validation, lifecycle and publication planning, and storage-publication authorization | EVM/state execution, staged state mutation, receipts/log execution details, contract calls, and concrete `StateAPI` operations |
+| Public reads | `ConsensusQueryApi` | Stable read-only consensus DTOs backed by Rust storage and query logic | RPC/GraphQL/plugin formatting, live network/admin views, and public C++ object materialization where still required |
+
+C++ adapters may execute or format these contracts, but they must not recreate consensus decisions from returned facts.
+Residual adapter deletion belongs in `doc/consensus_rewrite_tracker.md`; exact DTOs and methods are owned by the Rust
+facade modules and their bridge tests rather than by a separate touchpoint inventory.
 
 Rules:
 
