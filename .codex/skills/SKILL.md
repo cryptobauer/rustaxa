@@ -1,6 +1,6 @@
 ---
 name: implement-rustaxa-consensus-slice
-description: Select, design, implement, validate, and close out a bounded Rustaxa consensus rewrite slice. Use for requests such as "implement the next consensus slice", "continue the consensus rewrite", audit a proposed slice, remove remaining C++ consensus authority, or advance Rust consensus ownership with optional API, architecture, Rust, and C++ agent delegation.
+description: Select, design, implement, validate, and close out a bounded Rustaxa consensus rewrite slice with required code mapping, boundary-appropriate API, architecture, Rust, and C++ delegation, and independent review. Use for requests such as "implement the next consensus slice", "continue the consensus rewrite", audit a proposed slice, remove remaining C++ consensus authority, or advance Rust consensus ownership.
 ---
 
 # Implement Rustaxa Consensus Slice
@@ -25,12 +25,11 @@ Delegate when the user explicitly requests agents, repository instructions requi
 materially improve a non-trivial design or implementation slice. Do not spawn agents merely because the skill triggered.
 Handle process reviews, status answers, and simple planning locally unless delegation adds concrete value.
 
-Custom-agent use is a profile-binding requirement, not a role-play prompt. Invoke the named profile from
-`.codex/agents/<name>.toml` through the runtime's custom-agent selector and verify the resolved profile from the tool result
-or agent metadata. Do not use an arbitrary task label (for example, a slice-specific Rust or C++ task name) as a substitute
-for `rust-engineer`, `cpp-pro`, or another configured profile. If the active delegation interface cannot select or confirm
-the profile, tell the task owner before delegated implementation or review proceeds; do not claim that the custom agent or
-its configured model was used. The profile TOML files are the source of truth for model assignments and permissions.
+The profile TOML files are the source of truth for agent names, instructions, models, reasoning, permissions, skills, and
+MCP configuration. Prefer native profile binding and verify the resolved identity. If the runtime cannot select or verify
+a profile, follow the fallback-emulation policy in `AGENTS.md`: reproduce the selected profile's
+`developer_instructions` verbatim, reproduce other settings wherever supported, state any gaps, and label the child
+`<name> fallback emulation`. Never claim that fallback emulation is verified profile use.
 
 - Use `task-distributor` once for a broad multi-slice goal that needs dependency-aware decomposition.
 - Use `code-mapper` when ownership, call paths, state flow, or remaining compatibility boundaries are unclear.
@@ -47,6 +46,35 @@ Assign concrete, non-overlapping tasks and name the expected artifact or decisio
 implementation scope to multiple agents unless they are intentionally providing independent reviews. Keep the critical
 path local: inspect enough code yourself to integrate the work, resolve conflicts, review every change, and verify
 behavior.
+
+## Required Orchestration
+
+For every non-trivial implementation slice:
+
+1. Use `code-mapper` to inspect the relevant ownership, state flow, existing Rust paths, bridge and shim boundaries,
+   tests, and compatibility debt. Give it a bounded read-only assignment and require file/symbol evidence, risks, reuse
+   opportunities, and unresolved questions. Wait for its report before finalizing the design. Reuse a still-current report
+   during review-fix iterations unless the implementation materially changes the researched boundary.
+2. Use `api-designer` when the slice changes a Rust/C++ contract or public compatibility surface, and
+   `architect-reviewer` when it changes ownership, dependency direction, persistence boundaries, fallback behavior, or
+   maintainability. Wait for required design reports before implementation.
+3. Give the research and design reports to `rust-engineer` for bounded Rust domain, bridge, storage, codec, and Rust-test
+   work. Use `cpp-pro` for bounded C++ shim, CMake, bridge-wiring, and C++-test work. They may run concurrently only when
+   ownership does not overlap. Wait for their reports, inspect the changes locally, and integrate them in the parent.
+4. After integration and targeted validation, use `reviewer` in a fresh independent read-only context to review the
+   complete intended slice diff. Require exactly one disposition: `APPROVED`, or `CHANGES_REQUESTED` with prioritized,
+   evidence-backed findings and missing validation.
+5. Return accepted findings to the appropriate `rust-engineer` or `cpp-pro`, integrate the fixes, rerun affected
+   validation, and request another complete review. Repeat until the reviewer returns `APPROVED`. Do not commit first.
+6. Use `blockchain-engineer` in this sequence only when the task explicitly crosses an EVM, contract, signing, gas,
+   slashing-transaction, or on-chain transaction-lifecycle boundary.
+
+Use `task-distributor` once at the beginning of a broad multi-slice goal to produce dependency-aware decomposition. The
+parent owns slice selection, integration, validation, commits, and goal state throughout the workflow.
+
+Spawn every child with no inherited conversation turns, or the smallest supported context, and provide only its bounded
+assignment, required source paths, prior reports, invariants, and return format. A child must not create, update, complete,
+block, resume, or otherwise operate on the parent `/goal`; it must finish only the delegated assignment.
 
 ## Slice Selection
 

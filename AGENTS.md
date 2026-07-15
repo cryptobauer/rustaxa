@@ -97,13 +97,22 @@ configured, rerun CMake or `make configure` before invoking `check-static` so th
 
 - Treat `.codex/agents/*.toml` as the source of truth for custom-agent names, models, reasoning effort, permissions, and
   role instructions. Do not duplicate model assignments in plans or task prompts.
-- When repository instructions or a skill requires a named custom agent, delegation must bind the corresponding custom
-  profile. An arbitrary spawned task name or a prompt asking a generic agent to act like that role is not equivalent.
-- Verify profile resolution from the delegation interface or returned agent metadata before relying on the agent's work.
-  If the active interface cannot select or confirm the configured profile, do not silently substitute a generic agent:
-  report the limitation to the task owner and keep required delegated work unclaimed.
-- Closeout reports may list a custom agent under "used" only when its configured profile was confirmed. Otherwise label
-  the work accurately as generic delegation or local primary-agent work.
+- Before delegating, select the named custom agent whose description matches the bounded task, state that name in the
+  parent thread, define the expected return artifact, and wait for its report before integrating or relying on the work.
+- Prefer native custom-agent invocation. Verify the resolved profile from the delegation result, agent metadata, or client
+  agent UI. Do not silently substitute the built-in `default`, `worker`, or `explorer` agent for a required named agent.
+- If the active runtime cannot select or verify named custom agents, a generic child may be used as an explicitly labeled
+  `<name> fallback emulation`: read the selected TOML, reproduce its `developer_instructions` verbatim in the child task,
+  and reproduce its model, reasoning effort, sandbox, skills, and MCP configuration wherever the interface permits.
+  State which settings were and were not reproduced. Fallback emulation is not verified profile use and must never be
+  reported as such.
+- A fallback-emulated reviewer satisfies an independent-review requirement only when it receives the complete intended
+  diff in an independent read-only context, returns an evidence-backed report before commit, and is labeled accurately.
+- Keep child assignments isolated from parent orchestration. Give each child only the bounded task context it needs; do
+  not ask it to select later slices, integrate unrelated work, commit, or create, update, complete, block, resume, or
+  otherwise operate on the parent `/goal`. Only the parent agent owns goal state and final integration.
+- Closeout reports must distinguish verified custom profiles, fallback emulations, generic delegation, and local
+  primary-agent work.
 
 ## Storage Rewrite Validation
 
