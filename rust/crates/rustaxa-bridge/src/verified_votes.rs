@@ -1010,6 +1010,9 @@ impl BridgeVerifiedVotes {
             sortition_params_change_threshold_upper: 0,
             has_reward_votes_reset: true,
             reward_votes_bundle_rlp,
+            has_prepared_pillar_block: false,
+            prepared_pillar_block_period: 0,
+            prepared_pillar_block_rlp: Vec::new(),
         })
     }
 
@@ -2492,6 +2495,9 @@ mod tests {
             sortition_params_change_threshold_upper: 0,
             has_reward_votes_reset: false,
             reward_votes_bundle_rlp: Vec::new(),
+            has_prepared_pillar_block: false,
+            prepared_pillar_block_period: 0,
+            prepared_pillar_block_rlp: Vec::new(),
         };
 
         let result = votes

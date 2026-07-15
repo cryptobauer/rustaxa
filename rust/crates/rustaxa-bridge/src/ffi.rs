@@ -42,6 +42,7 @@ use rustaxa_consensus::PillarVotes;
 use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -261,7 +262,7 @@ pub struct BridgePillarChainRuntime {
     ///
     /// The snapshot is published only after its canonical row is durably
     /// persisted. All runtime consumers bind their work to its generation.
-    pub current_anchor: RwLock<PillarCurrentAnchorSnapshot>,
+    pub current_anchor: RwLock<PillarChainStateSnapshot>,
     /// One-time single-vote preparations keyed by canonical vote hash.
     ///
     /// Apply removes the entry before mutation. External entries are always
@@ -269,6 +270,15 @@ pub struct BridgePillarChainRuntime {
     /// trusted entries can only be created through the explicitly named
     /// local/restart restoration route.
     pub single_vote_preparations: Mutex<SingleVotePreparationRegistry>,
+    /// One-time prepared pillar finalization payloads keyed by caller token.
+    ///
+    /// Entries are bounded, reused for identical prepare requests, and removed
+    /// only after acknowledgement authenticates the matching durable row.
+    /// Missing or mismatched durable rows retain the token for a safe retry.
+    pub pillar_block_finalization_preparations:
+        Mutex<HashMap<u64, PillarBlockFinalizationPreparation>>,
+    /// Process-local finalization token sequence used by one-time prepare/ack.
+    pub next_pillar_block_finalization_preparation_token: u64,
 }
 
 /// Runtime-internal one-time preparation state for one canonical pillar vote.
@@ -290,15 +300,35 @@ pub struct SingleVotePreparationRegistry {
     pub entries: std::collections::BTreeMap<H256, SingleVotePreparation>,
 }
 
-/// Runtime-owned canonical current pillar state.
+/// One-time prepared payload used to acknowledge a pillar-block finalization.
+pub struct PillarBlockFinalizationPreparation {
+    /// Runtime generation observed when the finalization was prepared.
+    pub anchor_generation: u64,
+    /// Canonical pillar block period prepared for persistence.
+    pub prepared_pillar_block_period: u64,
+    /// Canonical pillar block RLP prepared for persistence.
+    pub prepared_pillar_block_rlp: Vec<u8>,
+    /// Vote-period cutoff for `PillarVotes::erase_votes` after acknowledgement.
+    pub matching_vote_cleanup_min_period: u64,
+    /// Whether compatibility event emission should run after ack.
+    pub should_emit: bool,
+}
+
+/// Runtime-owned canonical pillar-chain snapshot.
 ///
-/// Vote-count materialization intentionally remains outside this snapshot:
-/// C++ may decode it from `current_data_rlp` for compatibility, while Rust owns
-/// only the anchor identity and canonical bytes needed by consensus decisions.
-pub struct PillarCurrentAnchorSnapshot {
+/// The canonical current-data bytes retain validator vote counts for Rust-owned
+/// creation planning and for temporary C++ current-block materialization. The
+/// latest-finalized block remains decoded alongside its canonical bytes so
+/// linkage and finalization never accept C++-supplied parent identity.
+#[derive(Debug)]
+pub struct PillarChainStateSnapshot {
     pub anchor: Option<PillarCurrentAnchor>,
     pub current_data_rlp: Vec<u8>,
     pub current_block_rlp: Vec<u8>,
+    /// Canonical latest-finalized pillar block restored and updated by Rust.
+    pub latest_finalized_block: Option<rustaxa_types::pillar::PillarBlock>,
+    /// Canonical bytes for compatibility-only C++ materialization.
+    pub latest_finalized_block_rlp: Vec<u8>,
     pub generation: u64,
 }
 
@@ -1423,6 +1453,9 @@ pub mod rustaxa_ffi {
         sortition_params_change_threshold_upper: u16,
         has_reward_votes_reset: bool,
         reward_votes_bundle_rlp: Vec<u8>,
+        has_prepared_pillar_block: bool,
+        prepared_pillar_block_period: u64,
+        prepared_pillar_block_rlp: Vec<u8>,
     }
 
     /// Cacti dynamic-lambda configuration for Rust PBFT finalization planning.
@@ -2696,14 +2729,12 @@ pub mod rustaxa_ffi {
 
     /// Durable pillar-chain rows required to reconstruct manager startup state.
     ///
-    /// Empty byte vectors represent rows that have not yet been persisted. When
-    /// `latest_block_rlp` is present, Rust derives its following PBFT period and
-    /// returns that period's opaque data row in
-    /// `latest_pillar_votes_period_data_rlp`.
+    /// Empty byte vectors represent rows that have not yet been persisted. Rust
+    /// owns the latest-finalized block snapshot and derives its following PBFT
+    /// period before returning that period's opaque data row.
     struct PillarChainStartupBootstrap {
         own_vote_rlp: Vec<u8>,
         current_block_data_rlp: Vec<u8>,
-        latest_block_rlp: Vec<u8>,
         latest_pillar_votes_period_data_rlp: Vec<u8>,
     }
 
@@ -2757,15 +2788,12 @@ pub mod rustaxa_ffi {
         pbft_block_hash: [u8; 32],
     }
 
-    /// Parent-linkage facts for one candidate pillar block.
-    struct PillarBlockLinkageFact {
+    /// Candidate facts for runtime-owned pillar-block parent-linkage planning.
+    struct PillarBlockLinkageRequest {
         pillar_block_period: u64,
         pillar_block_previous_hash: [u8; 32],
         first_pillar_block_period: u64,
         pillar_blocks_interval: u64,
-        has_last_finalized_pillar_block: bool,
-        last_finalized_period: u64,
-        last_finalized_hash: [u8; 32],
     }
 
     /// Result of deterministic pillar-block parent-linkage planning.
@@ -2783,17 +2811,14 @@ pub mod rustaxa_ffi {
         expected_previous_period: u64,
     }
 
-    /// Typed facts for Rust-side pillar-block shell planning.
-    struct PillarBlockCreationFact {
+    /// External facts for runtime-owned pillar-block shell planning.
+    struct PillarBlockCreationRequest {
         pillar_block_period: u64,
         state_root: [u8; 32],
         bridge_root: [u8; 32],
         bridge_epoch: [u8; 32],
         first_pillar_block_period: u64,
         pillar_blocks_interval: u64,
-        has_last_finalized_pillar_block: bool,
-        last_finalized_period: u64,
-        last_finalized_hash: [u8; 32],
     }
 
     /// Rust-planned shell fields and validator deltas for temporary C++
@@ -2813,37 +2838,62 @@ pub mod rustaxa_ffi {
 
     /// Compact request for Rust-owned pillar-block finalization execution.
     ///
-    /// C++ supplies the requested hash and compact last-finalized compatibility
-    /// fact. Rust derives current identity/RLP from its runtime snapshot and
-    /// owns verified-vote lookup, planning, persistence, and vote cleanup.
+    /// C++ supplies only the requested hash. Rust derives current and
+    /// latest-finalized identity from its runtime snapshot and owns verified-
+    /// vote lookup and planning. The prepared canonical row is persisted in
+    /// the PBFT primary batch, then Rust authenticates it during acknowledgement
+    /// before publishing the latest snapshot and cleaning votes.
     struct PillarBlockFinalizationRequest {
         requested_pillar_block_hash: [u8; 32],
-        has_last_finalized_pillar_block: bool,
-        last_finalized_hash: [u8; 32],
     }
 
-    /// Result of Rust-owned pillar-block finalization execution.
+    /// Result of Rust-owned pillar-block finalization prepare.
     ///
     /// Status values match the native pillar finalization planner: `0` ready,
     /// `1` missing current block, `2` current hash mismatch, `3` missing
-    /// votes, and `4` already finalized. `success` is true only when
-    /// finalization produced selected pillar-vote payloads for the PBFT
-    /// period-data boundary.
-    struct PillarBlockFinalizationResult {
+    /// votes, and `4` already finalized.
+    ///
+    /// In the ready path, Rust emits the canonical pillar block RLP plus a
+    /// one-time preparation token so C++ can attach it to the existing PBFT
+    /// primary persistence stage instead of mutating storage here.
+    struct PillarBlockFinalizationPrepareResult {
         status: u8,
         success: bool,
         should_request_votes: bool,
         has_request_votes_period: bool,
         request_votes_period: u64,
-        persisted: bool,
-        cleaned_votes: bool,
         should_emit: bool,
         current_period: u64,
         current_hash: [u8; 32],
         block_weight: u64,
         selected_weight: u64,
         selected_vote_count: u64,
+        prepared_pillar_block_period: u64,
+        prepared_pillar_block_rlp: Vec<u8>,
+        has_prepared_pillar_block: bool,
+        preparation_anchor_generation: u64,
+        preparation_token: u64,
         votes: Vec<PillarVoteRecord>,
+    }
+
+    /// Request to acknowledge one prepared pillar-block finalization.
+    ///
+    /// The generation + token pair is required before persistence side-effects
+    /// can be applied. This keeps replay and stale acknowledge paths explicit.
+    struct PillarBlockFinalizationAcknowledgeRequest {
+        anchor_generation: u64,
+        preparation_token: u64,
+    }
+
+    /// Result after acknowledging one prepared pillar-block finalization.
+    ///
+    /// Returns the latest finalized identity that is now mirrored into the runtime
+    /// snapshot so compatibility event emission can use one canonical source.
+    #[derive(Debug)]
+    struct PillarBlockFinalizationAcknowledgeResult {
+        should_emit: bool,
+        latest_finalized_period: u64,
+        latest_finalized_hash: [u8; 32],
     }
 
     struct UniqueVoterInsertOutcome {
@@ -5424,21 +5474,18 @@ pub mod rustaxa_ffi {
         // Consensus pillar votes
 
         pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
-        /// Computes ordered validator vote-count changes for a pillar block.
-        pub fn plan_pillar_vote_count_changes(
+        pub fn pillar_chain_runtime_plan_block_creation(
+            self: &BridgePillarChainRuntime,
+            request: PillarBlockCreationRequest,
             current_vote_counts: Vec<PillarValidatorVoteCount>,
-            previous_vote_counts: Vec<PillarValidatorVoteCount>,
-        ) -> Result<Vec<PillarValidatorVoteCountChange>>;
-
-        /// Validates pillar-block parent linkage.
-        pub fn plan_pillar_block_linkage(
-            fact: PillarBlockLinkageFact,
-        ) -> Result<PillarBlockLinkagePlan>;
-        pub fn plan_pillar_block_creation_with_vote_counts(
-            fact: PillarBlockCreationFact,
-            current_vote_counts: Vec<PillarValidatorVoteCount>,
-            previous_vote_counts: Vec<PillarValidatorVoteCount>,
         ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
+        pub fn pillar_chain_runtime_plan_block_linkage(
+            self: &BridgePillarChainRuntime,
+            request: PillarBlockLinkageRequest,
+        ) -> Result<PillarBlockLinkagePlan>;
+        pub fn pillar_chain_runtime_latest_finalized_block_rlp(
+            self: &BridgePillarChainRuntime,
+        ) -> Result<Vec<u8>>;
 
         type BridgePillarChainStorage;
         type BridgePillarChainRuntime;
@@ -5533,10 +5580,14 @@ pub mod rustaxa_ffi {
             block_hash: &[u8; 32],
             max_votes_per_bundle: usize,
         ) -> Result<PillarVoteNetworkBundleLookup>;
-        pub fn pillar_chain_runtime_finalize_block_for_pbft(
+        pub fn pillar_chain_runtime_prepare_finalized_block_for_pbft(
             self: &mut BridgePillarChainRuntime,
             request: PillarBlockFinalizationRequest,
-        ) -> Result<PillarBlockFinalizationResult>;
+        ) -> Result<PillarBlockFinalizationPrepareResult>;
+        pub fn pillar_chain_runtime_ack_finalize_block_for_pbft(
+            self: &mut BridgePillarChainRuntime,
+            request: PillarBlockFinalizationAcknowledgeRequest,
+        ) -> Result<PillarBlockFinalizationAcknowledgeResult>;
 
         // Consensus sortition
 

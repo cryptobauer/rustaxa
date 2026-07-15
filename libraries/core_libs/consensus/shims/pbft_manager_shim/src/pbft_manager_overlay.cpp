@@ -516,6 +516,9 @@ rustaxa::PbftFinalizationStorageWriteStage makeFinalizationStorageStage(uint8_t 
   write_stage.sortition_params_change_interval_efficiency = 0;
   write_stage.sortition_params_change_threshold_upper = 0;
   write_stage.has_reward_votes_reset = false;
+  write_stage.has_prepared_pillar_block = false;
+  write_stage.prepared_pillar_block_period = 0;
+  write_stage.prepared_pillar_block_rlp = rust::Vec<uint8_t>{};
 
   return write_stage;
 }
@@ -3271,6 +3274,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
   const uint32_t block_lambda = dynamic_lambda_plan.period_lambda;
   const uint32_t dynamic_blocks_per_year = dynamic_lambda_enabled ? dynamic_lambda_plan.blocks_per_year : 0;
   bool pillar_block_finalized = false;
+  std::optional<pillar_chain::PillarChainManager::FinalizePillarBlockPreflightResult> pillar_preflight;
   const auto pillar_block_hash = period_data.pbft_blk->getExtraData()
                                      ? period_data.pbft_blk->getExtraData()->getPillarBlockHash()
                                      : std::optional<blk_hash_t>();
@@ -3288,7 +3292,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
                    << " could not finalize pillar block " << *pillar_block_hash;
       return false;
     }
-    period_data.pillar_votes_ = std::move(pillar_finalization.pillar_votes);
+    pillar_preflight = std::move(pillar_finalization);
+    // Retain the shared-pointer payload for compatibility emission after the
+    // primary batch commits and the protected DAG/transaction locks release.
+    period_data.pillar_votes_ = pillar_preflight->pillar_votes;
     pillar_block_finalized = true;
   }
 
@@ -3749,7 +3756,16 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return false;
   }
   rust::Vec<rustaxa::PbftFinalizationStorageWriteStage> first_persistence_stages;
-  first_persistence_stages.push_back(makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary));
+  auto primary_storage_stage = makeFinalizationStorageStage(kPbftFinalizationStorageStagePrimary);
+  if (pillar_preflight.has_value() && pillar_preflight->has_prepared_pillar_block) {
+    primary_storage_stage.has_prepared_pillar_block = true;
+    primary_storage_stage.prepared_pillar_block_period = pillar_preflight->prepared_pillar_block_period;
+    primary_storage_stage.prepared_pillar_block_rlp.reserve(pillar_preflight->prepared_pillar_block_rlp.size());
+    for (const auto block_data_byte : pillar_preflight->prepared_pillar_block_rlp) {
+      primary_storage_stage.prepared_pillar_block_rlp.push_back(block_data_byte);
+    }
+  }
+  first_persistence_stages.push_back(std::move(primary_storage_stage));
 
   // Replace current reward votes
   if (finalization_plan.storage_write_intent.reset_reward_votes) {
@@ -3776,6 +3792,7 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
 
   rustaxa::PbftManagerFinalizationExecutorState boundary{};
   bool dispatch_complete = false;
+  FinalizationDispatchResult protected_dispatch = FinalizationDispatchResult::kReleaseProtectedLocks;
   {
     // This makes sure that no DAG block or transaction can be added or change state in transaction and dag manager
     // when finalizing pbft block with dag blocks and transactions
@@ -3799,13 +3816,36 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     if (!boundary.can_continue) {
       return fail_boundary("primary storage", boundary);
     }
-    const auto protected_dispatch = dispatch_finalization_actions(boundary, true, false);
-    if (protected_dispatch == FinalizationDispatchResult::kFailed) {
-      return false;
+    try {
+      protected_dispatch = dispatch_finalization_actions(boundary, true, false);
+    } catch (const std::exception &e) {
+      LOG(log_er_) << "Protected PBFT finalization action threw after primary storage for block " << pbft_block_hash
+                   << ", period " << block_pbft_period << ": " << e.what();
+      protected_dispatch = FinalizationDispatchResult::kFailed;
     }
     if (protected_dispatch == FinalizationDispatchResult::kComplete) {
       dispatch_complete = true;
     }
+  }
+
+  // The Rust executor has committed the primary PBFT batch at this point, and
+  // the protected DAG/transaction locks are no longer held. Only now may the
+  // pillar runtime publish its latest snapshot, clean votes, and emit the
+  // compatibility event.
+  if (pillar_preflight.has_value() &&
+      !pillar_chain_mgr_->acknowledgePillarBlockForPbft(pillar_preflight->preparation_anchor_generation,
+                                                       pillar_preflight->preparation_token,
+                                                       pillar_preflight->pillar_votes)) {
+    LOG(log_er_) << "Pillar finalization acknowledge failed for PBFT block " << pbft_block_hash << ", period "
+                 << block_pbft_period << ", pillar block hash " << *pillar_block_hash;
+    return false;
+  }
+
+  // A protected action can fail after the primary batch has committed. Defer
+  // that failure return until after pillar reconciliation so the durable row
+  // cannot leave the runtime preparation pending until restart.
+  if (protected_dispatch == FinalizationDispatchResult::kFailed) {
+    return false;
   }
 
   LOG(log_nf_) << "Pushed new PBFT block " << pbft_block_hash << " into chain. Period: " << block_pbft_period

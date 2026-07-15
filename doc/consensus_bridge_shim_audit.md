@@ -67,7 +67,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgeProposedBlocks` | `proposed_blocks.rs` | `proposed_blocks_shim`, DAG/vote manager shims | C++ public compatibility facade | Proposed-block tracking is private Rust PBFT/DAG runtime state. |
 | `BridgeRewardsStatsRuntime` | `rewards_stats.rs` | `rewards_stats_shim`, storage shim batch append | C++ public compatibility facade | Rewards stats writes/reads are driven from Rust finalization without C++ facade/batch passing. |
 | `BridgePillarChainStorage` | `pillar_chain.rs` | `storage_shim` | C++ public compatibility facade | Pillar chain storage is native Rust-owned; the compatibility handle exposes only storage-shim operations with active C++ callers. |
-| `BridgePillarChainRuntime` | `pillar_chain.rs`, `pillar_votes.rs` | `pillar_chain_manager_shim` | Internal Rust route | Owns the canonical current-anchor snapshot/generation, pillar threshold and anchor decisions, vote aggregation, generation-bound synced bundle apply, and PBFT-facing pillar finalization. Remove after the C++ PillarChainManager facade is retired or replaced by narrower external ports. |
+| `BridgePillarChainRuntime` | `pillar_chain.rs`, `pillar_votes.rs` | `pillar_chain_manager_shim` | Internal Rust route | Owns canonical current and latest-finalized pillar snapshots, validator vote-count history, pillar threshold/anchor/creation/linkage decisions, vote aggregation, generation-bound synced bundle apply, and PBFT-facing pillar finalization. Remove after the C++ PillarChainManager facade is retired or replaced by narrower external ports. |
 | `BridgeSortitionParamsManager` | `sortition.rs` | `sortition_params_manager_shim` | C++ public compatibility facade | Sortition params persistence/query is native Rust storage/query behavior. |
 | `BridgeTransactionManagerRuntime` | `transaction_manager.rs` | `transaction_manager_shim`, app/bootstrap | C++ public compatibility facade | Transaction admission/packing runs behind native Rust runtime and minimal external submission API. |
 | `BridgeGasPricer` | `gas_pricer.rs` | `gas_pricer_shim` | C++ public compatibility facade | Gas pricing is native Rust query/runtime behavior. The exported CXX surface is limited to construction, bid, pool-aware bid, and finalized-block update. |
@@ -85,7 +85,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `key_manager_shim` | Standalone FinalChain key-fact adapter; feature-on builds import and compile no legacy manager scaffold | App/bootstrap/key manager users | External boundary | Keep the public facade until key ownership is redesigned; the dead `KeyManagerOld` compile scaffold is removed. |
 | `pbft_chain_shim` | Standalone Rust-backed PBFT chain facade | PBFT manager, RPC/public readers, and tests | C++ public compatibility facade | Feature-on builds no longer import or compile `PbftChainOld`; C++ retains locking, legacy JsonCpp formatting, and temporary `PbftBlock` materialization. Delete after PBFT chain state becomes private to Rust PBFT manager/runtime and public callers use narrower APIs. |
 | `pbft_manager_shim` | Standalone PBFT manager Rust runtime facade; feature-on builds import and compile no legacy manager scaffold | App bootstrap and consensus loop | Internal Rust route | Collapse the remaining C++ executor/materialization shell into native Rust application services only as the classified network/EVM/lifecycle/public boundaries gain narrower ports. |
-| `pillar_chain_manager_shim` | Standalone pillar manager compatibility facade; current-anchor decisions, threshold arithmetic, live vote aggregation, synced bundle apply, and PBFT-facing pillar finalization route through `BridgePillarChainRuntime` around external FinalChain facts | App/consensus pillar paths | C++ public compatibility facade | Pillar-votes builds import and compile neither `PillarChainManagerOld` nor the unused legacy `PillarVotes` implementation. Delete after signing/materialization, network/events, and FinalChain fact ports move behind native Rust application boundaries. |
+| `pillar_chain_manager_shim` | Standalone pillar manager compatibility facade; current/latest-finalized state, creation/linkage decisions, threshold arithmetic, live vote aggregation, synced bundle apply, and PBFT-facing pillar finalization route through `BridgePillarChainRuntime` around external FinalChain facts | App/consensus pillar paths | C++ public compatibility facade | Pillar-votes builds import and compile neither `PillarChainManagerOld` nor the unused legacy `PillarVotes` implementation. Delete after signing/materialization, network/events, and FinalChain fact ports move behind native Rust application boundaries. |
 | `pillar_votes_shim` | Pillar vote index/admission facade | Retired after this slice | Obsolete scaffold | Removed. `pillar_chain_manager_shim` uses `BridgePillarChainRuntime` for live vote state; no C++ shim behavior remains. |
 | `proposed_blocks_shim` | Standalone Rust-backed proposed-block facade | DAG manager, vote manager, PBFT paths | C++ public compatibility facade | The facade no longer imports or compiles `ProposedBlocksOld`; Rust owns metadata, canonical RLP, persistence, restore, and cleanup through an internally retained storage handle. Delete after proposed-block tracking is folded into Rust PBFT/DAG runtime and no C++ caller requires `PbftBlock` materialization. |
 | `rewards_stats_shim` | Standalone FinalChain-owned rewards statistics facade | FinalChain publication and rewards tests | C++ public compatibility facade | The facade no longer imports or compiles `StatsOld`, and its former module flag is retired because FinalChain unconditionally uses the shim-only publication API. Delete after Rust finalization owns rewards stats writes/reads directly and the external StateAPI edge no longer needs C++ `BlockStats`; until then the narrowed publication edge exposes only reward distribution stats and a storage-update DTO while the Rust process plan remains inside the shim until publication commit succeeds. |
@@ -477,6 +477,15 @@ Current snapshot after DAG manager verify-result API cleanup:
   total-vote fact from the accepted FinalChain boundary, then calls the runtime threshold method. The operation-tagged
   current-anchor planner uses checked PBFT-period subtraction and restart-interval addition, with explicit missing,
   mismatch, underflow, invalid-interval, overflow, and not-due statuses.
+- Latest-finalized pillar identity is now part of the runtime snapshot rather than a C++ manager field. Runtime
+  construction loads and canonically validates both current and latest-finalized pillar rows; malformed latest bytes fail
+  before publication. Creation derives previous vote counts from the canonical current-data row and derives its parent
+  from the latest-finalized snapshot. Linkage and PBFT finalization use the same snapshot, and successful persistence
+  publishes the new finalized block before the runtime returns. C++ supplies only external block/FinalChain facts and
+  materializes canonical latest-block bytes for its public compatibility getter. The standalone CXX
+  `plan_pillar_vote_count_changes`, `plan_pillar_block_linkage`, and
+  `plan_pillar_block_creation_with_vote_counts` exports, their broad caller-supplied parent facts, and their C++
+  bridge-mechanics tests are removed.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` no longer performs shim-local per-vote
   inspection or supplies a C++ current hash. Runtime prepare inspects canonical vote RLPs and returns recovered voters,
   expected hash, and anchor generation; C++ performs the one remaining external FinalChain DPoS batch read; runtime
@@ -518,12 +527,18 @@ Current snapshot after DAG manager verify-result API cleanup:
 - `PillarChainManager::isRelevantPillarVote` now enters the pillar runtime through
   `pillar_chain_runtime_plan_vote_relevance`. The obsolete C++ `pillarVoteExistsByLookup` payload materialization and
   hash scan are deleted; Rust owns duplicate detection from the runtime vote index before running the relevance planner.
-- PBFT-facing pillar-block finalization now enters through
-  `BridgePillarChainRuntime::pillar_chain_runtime_finalize_block_for_pbft`, which owns selected-vote lookup,
-  deterministic finalization planning, finalized-block storage persistence, and vote cleanup ordering. The old CXX
+- PBFT-facing pillar-block finalization now uses a prepare/commit/acknowledge protocol. Rust prepare owns selected-vote
+  lookup and deterministic planning but performs no durable pillar write, vote cleanup, snapshot publication, or event
+  emission. Its bounded generation-bound registry reuses identical preparations and evicts the oldest entry at its cap.
+  The prepared canonical pillar row is appended to the same Rust-owned primary PBFT storage batch; only after that batch
+  commits does acknowledge authenticate the exact durable row, publish the latest-finalized runtime snapshot, and clean
+  the matching votes. Missing or mismatched rows retain the token for retry. C++ always reconciles after protected locks
+  are released, including a protected-action failure after primary commit, and holds its compatibility mutex through
+  acknowledgement and latest identity materialization before unlocking for event emission. Direct one-shot
+  finalization is an explicit unsupported Rust-mode compatibility path. The old CXX
   planner exports `plan_pbft_finalization_pillar_preflight`, `report_pbft_finalization_pillar_preflight`, and
   `plan_pillar_block_finalization` plus their bridge-only DTOs are deleted. C++ still owns network vote-bundle requests,
-  legacy vote materialization for `PeriodData`, live mirror assignment, and event emission.
+  legacy vote materialization for `PeriodData`, and event emission.
 - Pillar-vote network egress no longer materializes C++ `PillarVote` objects. `GetPillarVotesBundlePacketHandler`
   requests packet-ready optimized bundle chunks from `pillar_chain_manager_shim`, which delegates to
   `BridgePillarChainRuntime::pillar_chain_runtime_build_verified_vote_network_bundles`. Rust returns inner optimized

@@ -92,6 +92,10 @@ TEST_F(PillarChainTest, pillar_blocks_create) {
     ASSERT_TRUE(latest_pillar_block);
     ASSERT_EQ(latest_pillar_block->getPeriod(),
               pillar_blocks_count * node_cfgs[0].genesis.state.hardforks.ficus_hf.pillar_blocks_interval);
+    const auto manager_latest_pillar_block = node->getPillarChainManager()->getLastFinalizedPillarBlock();
+    ASSERT_TRUE(manager_latest_pillar_block);
+    EXPECT_EQ(manager_latest_pillar_block->getHash(), latest_pillar_block->getHash());
+    EXPECT_TRUE(node->getPillarChainManager()->isPillarBlockLatestFinalized(latest_pillar_block->getHash()));
   }
 }
 

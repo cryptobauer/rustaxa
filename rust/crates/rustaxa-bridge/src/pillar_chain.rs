@@ -8,10 +8,10 @@
 //! writes for pillar rows that this shim routes to `rustaxa-storage`.
 
 use crate::ffi::rustaxa_ffi::{
-    PillarBlockCreationFact as FfiPillarBlockCreationFact,
+    PillarBlockCreationRequest as FfiPillarBlockCreationRequest,
     PillarBlockCreationWithVoteCountsPlan as FfiPillarBlockCreationWithVoteCountsPlan,
-    PillarBlockLinkageFact as FfiPillarBlockLinkageFact,
     PillarBlockLinkagePlan as FfiPillarBlockLinkagePlan,
+    PillarBlockLinkageRequest as FfiPillarBlockLinkageRequest,
     PillarChainStartupBootstrap as FfiPillarChainStartupBootstrap,
     PillarCurrentAnchorDecisionRequest as FfiPillarCurrentAnchorDecisionRequest,
     PillarCurrentAnchorDecisionResult as FfiPillarCurrentAnchorDecisionResult,
@@ -19,7 +19,7 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
 use crate::ffi::{
-    BridgePillarChainRuntime, BridgePillarChainStorage, BridgeStorage, PillarCurrentAnchorSnapshot,
+    BridgePillarChainRuntime, BridgePillarChainStorage, BridgeStorage, PillarChainStateSnapshot,
     SingleVotePreparationRegistry,
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
@@ -74,16 +74,33 @@ pub fn create_pillar_chain_runtime(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePillarChainRuntime>> {
     let current_data_rlp = consensus_load_current_pillar_block_data_storage(storage.0.as_ref())?;
-    let current_anchor = decode_current_anchor_snapshot(current_data_rlp, 0)
-        .context("restore current pillar anchor snapshot")?;
-    Ok(Box::new(BridgePillarChainRuntime {
+    let latest_finalized_block_rlp =
+        consensus_load_latest_pillar_block_storage(storage.0.as_ref())?;
+    let current_anchor =
+        decode_current_anchor_snapshot(current_data_rlp, latest_finalized_block_rlp, 0)
+            .context("restore current pillar anchor snapshot")?;
+    let mut runtime = BridgePillarChainRuntime {
         storage: storage.0.clone(),
         votes: rustaxa_consensus::PillarVotes::new(),
         current_anchor: RwLock::new(current_anchor),
         single_vote_preparations: std::sync::Mutex::new(SingleVotePreparationRegistry {
             entries: std::collections::BTreeMap::new(),
         }),
-    }))
+        pillar_block_finalization_preparations: std::sync::Mutex::new(
+            std::collections::HashMap::new(),
+        ),
+        next_pillar_block_finalization_preparation_token: 0,
+    };
+    {
+        let current_anchor = runtime
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        if let Some(latest) = &current_anchor.latest_finalized_block {
+            runtime.votes.erase_votes(latest.period.saturating_add(1));
+        }
+    }
+    Ok(Box::new(runtime))
 }
 
 impl BridgePillarChainStorage {
@@ -178,10 +195,12 @@ impl BridgePillarChainRuntime {
         // observe bytes that are not yet durable. A failed write leaves the
         // prior in-memory snapshot unchanged.
         save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)?;
-        *snapshot = PillarCurrentAnchorSnapshot {
+        *snapshot = PillarChainStateSnapshot {
             anchor: Some(anchor),
             current_data_rlp: data_rlp,
             current_block_rlp,
+            latest_finalized_block: snapshot.latest_finalized_block.clone(),
+            latest_finalized_block_rlp: snapshot.latest_finalized_block_rlp.clone(),
             generation,
         };
         Ok(())
@@ -213,8 +232,8 @@ impl BridgePillarChainRuntime {
     ///   choose storage keys or compose a separate storage bridge handle.
     ///
     /// Outputs:
-    /// - Returns this node's own vote, current pillar sidecar, latest finalized
-    ///   pillar block, and the period-data row following that latest block.
+    /// - Returns this node's own vote, current pillar sidecar, and the
+    ///   period-data row following the runtime-owned latest finalized block.
     /// - Missing rows are represented by empty byte vectors.
     ///
     /// Invariants and edge behavior:
@@ -234,22 +253,24 @@ impl BridgePillarChainRuntime {
             .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
             .current_data_rlp
             .clone();
-        let latest_block_rlp = consensus_load_latest_pillar_block_storage(self.storage.as_ref())?;
-        let latest_pillar_votes_period_data_rlp = if latest_block_rlp.is_empty() {
-            Vec::new()
-        } else {
-            let latest_block = PillarBlock::decode_rlp(&latest_block_rlp)?;
-            let vote_period = latest_block
-                .period
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("latest pillar block period overflow"))?;
-            consensus_load_pillar_period_data_storage(self.storage.as_ref(), vote_period)?
-        };
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let latest_pillar_votes_period_data_rlp =
+            if let Some(latest_block) = &snapshot.latest_finalized_block {
+                let vote_period = latest_block
+                    .period
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow::anyhow!("latest pillar block period overflow"))?;
+                consensus_load_pillar_period_data_storage(self.storage.as_ref(), vote_period)?
+            } else {
+                Vec::new()
+            };
 
         Ok(FfiPillarChainStartupBootstrap {
             own_vote_rlp,
             current_block_data_rlp,
-            latest_block_rlp,
             latest_pillar_votes_period_data_rlp,
         })
     }
@@ -302,17 +323,131 @@ impl BridgePillarChainRuntime {
     pub fn pillar_chain_runtime_consensus_threshold(&self, total_vote_count: u64) -> u64 {
         consensus_plan_pillar_consensus_threshold(total_vote_count)
     }
+
+    /// Plans pillar-block construction from external FinalChain facts and the
+    /// runtime-owned current/latest pillar snapshots.
+    pub fn pillar_chain_runtime_plan_block_creation(
+        &self,
+        request: FfiPillarBlockCreationRequest,
+        current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
+    ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let (last_finalized_period, last_finalized_hash) = snapshot
+            .latest_finalized_block
+            .as_ref()
+            .map(|block| (Some(block.period), Some(block.hash())))
+            .unwrap_or((None, None));
+        let creation_plan =
+            consensus_plan_pillar_block_creation(ConsensusPillarBlockCreationFact {
+                pillar_block_period: request.pillar_block_period,
+                state_root: H256::from(request.state_root),
+                bridge_root: H256::from(request.bridge_root),
+                bridge_epoch: H256::from(request.bridge_epoch),
+                first_pillar_block_period: request.first_pillar_block_period,
+                pillar_blocks_interval: request.pillar_blocks_interval,
+                last_finalized_period,
+                last_finalized_hash,
+            })?;
+        let current_vote_counts = current_vote_counts
+            .into_iter()
+            .map(vote_count_to_consensus)
+            .collect::<Vec<_>>();
+        let previous_vote_counts =
+            if request.pillar_block_period == request.first_pillar_block_period {
+                Vec::new()
+            } else {
+                ensure!(
+                    !snapshot.current_data_rlp.is_empty(),
+                    "current pillar vote-count snapshot is missing"
+                );
+                CurrentPillarBlockDataDb::decode_rlp(&snapshot.current_data_rlp)?
+                    .vote_counts
+                    .into_iter()
+                    .map(|vote_count| ConsensusPillarValidatorVoteCount {
+                        address: vote_count.address,
+                        vote_count: vote_count.vote_count,
+                    })
+                    .collect()
+            };
+        let vote_count_changes = consensus_plan_vote_count_changes(
+            current_vote_counts.as_slice(),
+            previous_vote_counts.as_slice(),
+        )?
+        .into_iter()
+        .map(FfiPillarValidatorVoteCountChange::from)
+        .collect();
+        Ok(
+            FfiPillarBlockCreationWithVoteCountsPlan::from_creation_plan(
+                creation_plan,
+                vote_count_changes,
+            ),
+        )
+    }
+
+    /// Validates candidate linkage against the runtime-owned latest finalized
+    /// pillar block.
+    pub fn pillar_chain_runtime_plan_block_linkage(
+        &self,
+        request: FfiPillarBlockLinkageRequest,
+    ) -> Result<FfiPillarBlockLinkagePlan> {
+        let snapshot = self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let (last_finalized_period, last_finalized_hash) = snapshot
+            .latest_finalized_block
+            .as_ref()
+            .map(|block| (Some(block.period), Some(block.hash())))
+            .unwrap_or((None, None));
+        Ok(FfiPillarBlockLinkagePlan::from(
+            consensus_plan_pillar_block_linkage(ConsensusPillarBlockLinkageFact {
+                pillar_block_period: request.pillar_block_period,
+                pillar_block_previous_hash: H256::from(request.pillar_block_previous_hash),
+                first_pillar_block_period: request.first_pillar_block_period,
+                pillar_blocks_interval: request.pillar_blocks_interval,
+                last_finalized_period,
+                last_finalized_hash,
+            })?,
+        ))
+    }
+
+    /// Returns canonical latest-finalized pillar bytes solely for the public
+    /// C++ compatibility getter.
+    pub fn pillar_chain_runtime_latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
+        Ok(self
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
+            .latest_finalized_block_rlp
+            .clone())
+    }
 }
 
 fn decode_current_anchor_snapshot(
     current_data_rlp: Vec<u8>,
+    latest_finalized_block_rlp: Vec<u8>,
     generation: u64,
-) -> Result<PillarCurrentAnchorSnapshot> {
+) -> Result<PillarChainStateSnapshot> {
+    let latest_finalized_block = if latest_finalized_block_rlp.is_empty() {
+        None
+    } else {
+        let block = PillarBlock::decode_rlp(&latest_finalized_block_rlp)?;
+        ensure!(
+            block.encode_rlp() == latest_finalized_block_rlp,
+            "latest finalized pillar block must use canonical RLP"
+        );
+        Some(block)
+    };
     if current_data_rlp.is_empty() {
-        return Ok(PillarCurrentAnchorSnapshot {
+        return Ok(PillarChainStateSnapshot {
             anchor: None,
             current_data_rlp,
             current_block_rlp: Vec::new(),
+            latest_finalized_block,
+            latest_finalized_block_rlp,
             generation,
         });
     }
@@ -322,98 +457,64 @@ fn decode_current_anchor_snapshot(
         "current pillar block data must use canonical RLP"
     );
     let current_block_rlp = decoded.pillar_block.encode_rlp();
-    Ok(PillarCurrentAnchorSnapshot {
+    let snapshot = PillarChainStateSnapshot {
         anchor: Some(ConsensusPillarCurrentAnchor {
             period: decoded.pillar_block.period,
             hash: decoded.pillar_block.hash(),
         }),
         current_data_rlp,
         current_block_rlp,
+        latest_finalized_block,
+        latest_finalized_block_rlp,
         generation,
-    })
+    };
+
+    validate_current_latest_pillar_anchor_relationship(&snapshot)?;
+    Ok(snapshot)
 }
 
-/// Computes ordered validator vote-count changes for a pillar block.
-///
-/// The C++ shim supplies the current DPoS vote-count snapshot and the previous
-/// current-pillar snapshot when one exists. Rust returns legacy-compatible
-/// signed deltas without constructing a `PillarBlock`.
-pub fn plan_pillar_vote_count_changes(
-    current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
-    previous_vote_counts: Vec<FfiPillarValidatorVoteCount>,
-) -> Result<Vec<FfiPillarValidatorVoteCountChange>> {
-    let current_vote_counts = current_vote_counts
-        .into_iter()
-        .map(vote_count_to_consensus)
-        .collect::<Vec<_>>();
-    let previous_vote_counts = previous_vote_counts
-        .into_iter()
-        .map(vote_count_to_consensus)
-        .collect::<Vec<_>>();
+fn validate_current_latest_pillar_anchor_relationship(
+    snapshot: &PillarChainStateSnapshot,
+) -> Result<()> {
+    let Some(current_anchor) = snapshot.anchor else {
+        return Ok(());
+    };
+    let Some(latest_finalized_block) = &snapshot.latest_finalized_block else {
+        return Ok(());
+    };
 
-    Ok(
-        consensus_plan_vote_count_changes(&current_vote_counts, &previous_vote_counts)?
-            .into_iter()
-            .map(FfiPillarValidatorVoteCountChange::from)
-            .collect(),
-    )
+    let current_period = current_anchor.period;
+    let current_hash = current_anchor.hash;
+    let latest_period = latest_finalized_block.period;
+    let latest_hash = latest_finalized_block.hash();
+
+    if current_period < latest_period {
+        bail!("PILLAR_ANCHOR_LATEST_AHEAD_OF_CURRENT");
+    }
+
+    if current_period == latest_period && current_hash != latest_hash {
+        bail!("PILLAR_ANCHOR_CURRENT_LATEST_HASH_MISMATCH");
+    }
+
+    if current_period == latest_period {
+        return Ok(());
+    }
+
+    ensure!(
+        decoded_current_pillar_previous_hash(snapshot)? == latest_hash,
+        "PILLAR_ANCHOR_BROKEN_SUCCESSOR_PREVIOUS_HASH"
+    );
+    Ok(())
 }
 
-/// Validates pillar-block parent linkage and returns an explicit status code.
-pub fn plan_pillar_block_linkage(
-    fact: FfiPillarBlockLinkageFact,
-) -> Result<FfiPillarBlockLinkagePlan> {
-    Ok(FfiPillarBlockLinkagePlan::from(
-        consensus_plan_pillar_block_linkage(linkage_fact_to_consensus(fact))?,
-    ))
-}
-
-/// Plans the shell fields and ordered vote-count deltas used by temporary C++
-/// `PillarBlock` materialization.
-///
-/// Inputs:
-/// - `fact`: typed pillar period/config, finalized parent, state root, and
-///   bridge root/epoch facts.
-/// - `current_vote_counts`: latest DPoS eligible-vote snapshot.
-/// - `previous_vote_counts`: snapshot stored with the current pillar block, or
-///   an empty vector for the first pillar block.
-///
-/// Outputs:
-/// - Returns CXX-safe hashes and linkage status that C++ uses to construct the
-///   current `PillarBlock` object.
-/// - Returns legacy-compatible signed vote-count deltas in deterministic order.
-///
-/// Invariants and edge behavior:
-/// - Bridge root and epoch are consumed by Rust planning before C++ uses them.
-/// - Linkage planning and vote-count delta planning either both succeed under
-///   this API or the pillar block is not materialized.
-pub fn plan_pillar_block_creation_with_vote_counts(
-    fact: FfiPillarBlockCreationFact,
-    current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
-    previous_vote_counts: Vec<FfiPillarValidatorVoteCount>,
-) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
-    let creation_plan = consensus_plan_pillar_block_creation(creation_fact_to_consensus(fact))?;
-    let current_vote_counts = current_vote_counts
-        .into_iter()
-        .map(vote_count_to_consensus)
-        .collect::<Vec<_>>();
-    let previous_vote_counts = previous_vote_counts
-        .into_iter()
-        .map(vote_count_to_consensus)
-        .collect::<Vec<_>>();
-    let vote_count_changes = consensus_plan_vote_count_changes(
-        current_vote_counts.as_slice(),
-        previous_vote_counts.as_slice(),
-    )?
-    .into_iter()
-    .map(FfiPillarValidatorVoteCountChange::from)
-    .collect();
-    Ok(
-        FfiPillarBlockCreationWithVoteCountsPlan::from_creation_plan(
-            creation_plan,
-            vote_count_changes,
-        ),
-    )
+fn decoded_current_pillar_previous_hash(
+    snapshot: &PillarChainStateSnapshot,
+) -> Result<ethereum_types::H256> {
+    if snapshot.current_data_rlp.is_empty() {
+        bail!("PILLAR_ANCHOR_CURRENT_DATA_MISSING");
+    }
+    let decoded = CurrentPillarBlockDataDb::decode_rlp(&snapshot.current_data_rlp)?;
+    Ok(decoded.pillar_block.previous_pillar_block_hash)
 }
 
 fn vote_count_to_consensus(
@@ -422,40 +523,6 @@ fn vote_count_to_consensus(
     ConsensusPillarValidatorVoteCount {
         address: H160::from(value.address),
         vote_count: value.vote_count,
-    }
-}
-
-fn linkage_fact_to_consensus(value: FfiPillarBlockLinkageFact) -> ConsensusPillarBlockLinkageFact {
-    ConsensusPillarBlockLinkageFact {
-        pillar_block_period: value.pillar_block_period,
-        pillar_block_previous_hash: H256::from(value.pillar_block_previous_hash),
-        first_pillar_block_period: value.first_pillar_block_period,
-        pillar_blocks_interval: value.pillar_blocks_interval,
-        last_finalized_period: value
-            .has_last_finalized_pillar_block
-            .then_some(value.last_finalized_period),
-        last_finalized_hash: value
-            .has_last_finalized_pillar_block
-            .then_some(H256::from(value.last_finalized_hash)),
-    }
-}
-
-fn creation_fact_to_consensus(
-    value: FfiPillarBlockCreationFact,
-) -> ConsensusPillarBlockCreationFact {
-    ConsensusPillarBlockCreationFact {
-        pillar_block_period: value.pillar_block_period,
-        state_root: H256::from(value.state_root),
-        bridge_root: H256::from(value.bridge_root),
-        bridge_epoch: H256::from(value.bridge_epoch),
-        first_pillar_block_period: value.first_pillar_block_period,
-        pillar_blocks_interval: value.pillar_blocks_interval,
-        last_finalized_period: value
-            .has_last_finalized_pillar_block
-            .then_some(value.last_finalized_period),
-        last_finalized_hash: value
-            .has_last_finalized_pillar_block
-            .then_some(H256::from(value.last_finalized_hash)),
     }
 }
 
@@ -512,21 +579,6 @@ mod tests {
         std::env::temp_dir().join(format!("{name}_{nonce}"))
     }
 
-    fn addr(value: u8) -> [u8; 20] {
-        [value; 20]
-    }
-
-    fn hash(value: u64) -> [u8; 32] {
-        H256::from_low_u64_be(value).into()
-    }
-
-    fn vote_count(address: u8, vote_count: u64) -> FfiPillarValidatorVoteCount {
-        FfiPillarValidatorVoteCount {
-            address: addr(address),
-            vote_count,
-        }
-    }
-
     fn canonical_current_data(period: u64) -> Vec<u8> {
         CurrentPillarBlockDataDb {
             pillar_block: PillarBlock {
@@ -542,133 +594,237 @@ mod tests {
         .encode_rlp()
     }
 
-    #[test]
-    fn bridge_plans_vote_count_changes() {
-        let changes = plan_pillar_vote_count_changes(
-            vec![vote_count(3, 5), vote_count(1, 7)],
-            vec![vote_count(3, 2), vote_count(2, 4)],
-        )
-        .unwrap();
-
-        assert_eq!(changes.len(), 3);
-        assert_eq!(changes[0].address, addr(1));
-        assert_eq!(changes[0].vote_count_change, 7);
-        assert_eq!(changes[1].address, addr(2));
-        assert_eq!(changes[1].vote_count_change, -4);
-        assert_eq!(changes[2].address, addr(3));
-        assert_eq!(changes[2].vote_count_change, 3);
-    }
-
-    #[test]
-    fn bridge_plans_pillar_block_linkage() {
-        let valid = plan_pillar_block_linkage(FfiPillarBlockLinkageFact {
-            pillar_block_period: 8,
-            pillar_block_previous_hash: hash(44),
-            first_pillar_block_period: 4,
-            pillar_blocks_interval: 4,
-            has_last_finalized_pillar_block: true,
-            last_finalized_period: 4,
-            last_finalized_hash: hash(44),
-        })
-        .unwrap();
-
-        assert!(valid.valid);
-        assert_eq!(valid.status, 0);
-
-        let invalid = plan_pillar_block_linkage(FfiPillarBlockLinkageFact {
-            pillar_block_period: 8,
-            pillar_block_previous_hash: hash(45),
-            first_pillar_block_period: 4,
-            pillar_blocks_interval: 4,
-            has_last_finalized_pillar_block: true,
-            last_finalized_period: 4,
-            last_finalized_hash: hash(44),
-        })
-        .unwrap();
-
-        assert!(!invalid.valid);
-        assert_eq!(invalid.status, 4);
-    }
-
-    #[test]
-    fn bridge_plans_pillar_block_creation_with_bridge_facts() {
-        let plan = plan_pillar_block_creation_with_vote_counts(
-            FfiPillarBlockCreationFact {
-                pillar_block_period: 18,
-                state_root: hash(0xA1),
-                bridge_root: hash(0xB2),
-                bridge_epoch: hash(0xC3),
-                first_pillar_block_period: 10,
-                pillar_blocks_interval: 8,
-                has_last_finalized_pillar_block: true,
-                last_finalized_period: 10,
-                last_finalized_hash: hash(0xD4),
+    fn canonical_current_data_with_vote_counts(period: u64) -> Vec<u8> {
+        CurrentPillarBlockDataDb {
+            pillar_block: PillarBlock {
+                period,
+                state_root: H256::from_low_u64_be(1),
+                previous_pillar_block_hash: H256::from_low_u64_be(2),
+                bridge_root: H256::from_low_u64_be(3),
+                epoch: 4,
+                validator_vote_count_changes: Vec::new(),
             },
-            vec![vote_count(3, 5), vote_count(1, 7)],
-            vec![vote_count(3, 2), vote_count(2, 4)],
-        )
-        .expect("creation planning should succeed");
+            vote_counts: vec![
+                rustaxa_types::pillar::ValidatorVoteCount {
+                    address: H160::from_low_u64_be(1),
+                    vote_count: 3,
+                },
+                rustaxa_types::pillar::ValidatorVoteCount {
+                    address: H160::from_low_u64_be(2),
+                    vote_count: 8,
+                },
+                rustaxa_types::pillar::ValidatorVoteCount {
+                    address: H160::from_low_u64_be(3),
+                    vote_count: 5,
+                },
+            ],
+        }
+        .encode_rlp()
+    }
 
-        assert!(plan.valid);
-        assert_eq!(plan.status, 0);
-        assert_eq!(plan.previous_pillar_block_hash, hash(0xD4));
-        assert_eq!(plan.state_root, hash(0xA1));
-        assert_eq!(plan.bridge_root, hash(0xB2));
-        assert_eq!(plan.bridge_epoch, hash(0xC3));
-        assert_eq!(plan.vote_count_changes.len(), 3);
-        assert_eq!(plan.vote_count_changes[0].address, addr(1));
-        assert_eq!(plan.vote_count_changes[0].vote_count_change, 7);
+    fn decode_current_anchor_snapshot_for_test(
+        current_data_rlp: Vec<u8>,
+        latest_finalized_block_rlp: Vec<u8>,
+    ) -> anyhow::Result<PillarChainStateSnapshot> {
+        decode_current_anchor_snapshot(current_data_rlp, latest_finalized_block_rlp, 0)
+    }
+
+    fn canonical_current_block_with_previous(period: u64, previous: H256) -> Vec<u8> {
+        CurrentPillarBlockDataDb {
+            pillar_block: PillarBlock {
+                period,
+                state_root: H256::from_low_u64_be(period.saturating_add(2)),
+                previous_pillar_block_hash: previous,
+                bridge_root: H256::from_low_u64_be(period.saturating_add(3)),
+                epoch: period.saturating_add(4),
+                validator_vote_count_changes: Vec::new(),
+            },
+            vote_counts: Vec::new(),
+        }
+        .encode_rlp()
+    }
+
+    fn canonical_pillar_block(period: u64, previous: H256, state_root_offset: u64) -> PillarBlock {
+        PillarBlock {
+            period,
+            state_root: H256::from_low_u64_be(state_root_offset),
+            previous_pillar_block_hash: previous,
+            bridge_root: H256::from_low_u64_be(period.saturating_add(state_root_offset)),
+            epoch: state_root_offset,
+            validator_vote_count_changes: Vec::new(),
+        }
     }
 
     #[test]
-    fn bridge_plans_first_pillar_block_creation_with_null_parent() {
-        let plan = plan_pillar_block_creation_with_vote_counts(
-            FfiPillarBlockCreationFact {
-                pillar_block_period: 10,
-                state_root: hash(0xA1),
-                bridge_root: hash(0xB2),
-                bridge_epoch: hash(0xC3),
-                first_pillar_block_period: 10,
-                pillar_blocks_interval: 8,
-                has_last_finalized_pillar_block: false,
-                last_finalized_period: 0,
-                last_finalized_hash: [0; 32],
-            },
-            vec![vote_count(3, 5), vote_count(1, 7)],
-            Vec::new(),
-        )
-        .expect("first creation planning should succeed");
+    fn decode_current_anchor_snapshot_validates_allowed_relationships() {
+        assert!(decode_current_anchor_snapshot_for_test(Vec::new(), Vec::new()).is_ok());
 
-        assert!(plan.valid);
-        assert_eq!(plan.status, 1);
-        assert_eq!(plan.previous_pillar_block_hash, [0; 32]);
-        assert_eq!(plan.vote_count_changes.len(), 2);
-        assert_eq!(plan.vote_count_changes[0].address, addr(3));
-        assert_eq!(plan.vote_count_changes[0].vote_count_change, 5);
+        assert!(
+            decode_current_anchor_snapshot_for_test(canonical_current_data(41), Vec::new(),)
+                .is_ok()
+        );
+
+        let exact_latest = canonical_pillar_block(41, H256::from_low_u64_be(10), 11);
+        let exact_current = CurrentPillarBlockDataDb {
+            pillar_block: exact_latest.clone(),
+            vote_counts: Vec::new(),
+        }
+        .encode_rlp();
+        assert!(
+            decode_current_anchor_snapshot_for_test(exact_current, exact_latest.encode_rlp(),)
+                .is_ok()
+        );
+
+        let latest = canonical_pillar_block(41, H256::from_low_u64_be(12), 13);
+        let successor = canonical_current_block_with_previous(42, latest.hash());
+        assert!(decode_current_anchor_snapshot_for_test(successor, latest.encode_rlp(),).is_ok());
+
+        let latest_for_gap = canonical_pillar_block(4, H256::from_low_u64_be(10), 11);
+        let current_with_gap = canonical_current_block_with_previous(8, latest_for_gap.hash());
+        assert!(decode_current_anchor_snapshot_for_test(
+            current_with_gap,
+            latest_for_gap.encode_rlp(),
+        )
+        .is_ok());
     }
 
     #[test]
-    fn bridge_rejects_creation_when_vote_count_delta_overflows() {
-        let err = match plan_pillar_block_creation_with_vote_counts(
-            FfiPillarBlockCreationFact {
-                pillar_block_period: 10,
-                state_root: hash(0xA1),
-                bridge_root: hash(0xB2),
-                bridge_epoch: hash(0xC3),
-                first_pillar_block_period: 10,
-                pillar_blocks_interval: 8,
-                has_last_finalized_pillar_block: false,
-                last_finalized_period: 0,
-                last_finalized_hash: [0; 32],
-            },
-            vec![vote_count(3, u64::from(i32::MAX as u32) + 1)],
-            Vec::new(),
-        ) {
-            Ok(_) => panic!("oversized first-block vote count should be rejected"),
-            Err(err) => err,
-        };
+    fn decode_current_anchor_snapshot_rejects_invalid_latest_relationships() {
+        let latest_ahead = canonical_pillar_block(42, H256::from_low_u64_be(10), 11).encode_rlp();
+        assert!(decode_current_anchor_snapshot_for_test(
+            canonical_current_block_with_previous(41, H256::from_low_u64_be(1)),
+            latest_ahead.clone(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("PILLAR_ANCHOR_LATEST_AHEAD_OF_CURRENT"));
 
-        assert!(err.to_string().contains("i32 range"));
+        let latest_same_period =
+            canonical_pillar_block(41, H256::from_low_u64_be(10), 11).encode_rlp();
+        let mismatched_current =
+            canonical_current_block_with_previous(41, H256::from_low_u64_be(12));
+        assert!(decode_current_anchor_snapshot_for_test(
+            mismatched_current,
+            latest_same_period.clone(),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("PILLAR_ANCHOR_CURRENT_LATEST_HASH_MISMATCH"));
+
+        let latest_gap = canonical_pillar_block(41, H256::from_low_u64_be(10), 11).encode_rlp();
+        let successor_gap = canonical_current_block_with_previous(43, H256::from_low_u64_be(1));
+        assert!(
+            decode_current_anchor_snapshot_for_test(successor_gap, latest_gap.clone(),)
+                .unwrap_err()
+                .to_string()
+                .contains("PILLAR_ANCHOR_BROKEN_SUCCESSOR_PREVIOUS_HASH")
+        );
+
+        let latest_with_previous =
+            canonical_pillar_block(41, H256::from_low_u64_be(10), 11).encode_rlp();
+        let successor_bad_previous =
+            canonical_current_block_with_previous(42, H256::from_low_u64_be(12));
+        assert!(decode_current_anchor_snapshot_for_test(
+            successor_bad_previous,
+            latest_with_previous,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("PILLAR_ANCHOR_BROKEN_SUCCESSOR_PREVIOUS_HASH"));
+    }
+
+    #[test]
+    fn runtime_owns_latest_finalized_linkage_and_creation_facts() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_creation");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let latest = PillarBlock {
+                period: 10,
+                state_root: H256::from_low_u64_be(1),
+                previous_pillar_block_hash: H256::from_low_u64_be(2),
+                bridge_root: H256::from_low_u64_be(3),
+                epoch: 4,
+                validator_vote_count_changes: Vec::new(),
+            };
+            save_current_pillar_block_data_storage(
+                storage.0.as_ref(),
+                &canonical_current_data_with_vote_counts(10),
+            )
+            .unwrap();
+            save_finalized_pillar_block_storage(
+                storage.0.as_ref(),
+                latest.period,
+                &latest.encode_rlp(),
+            )
+            .unwrap();
+
+            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let creation = runtime
+                .pillar_chain_runtime_plan_block_creation(
+                    FfiPillarBlockCreationRequest {
+                        pillar_block_period: 20,
+                        state_root: H256::from_low_u64_be(0xA1).into(),
+                        bridge_root: H256::from_low_u64_be(0xB2).into(),
+                        bridge_epoch: H256::from_low_u64_be(0xC3).into(),
+                        first_pillar_block_period: 10,
+                        pillar_blocks_interval: 10,
+                    },
+                    vec![
+                        FfiPillarValidatorVoteCount {
+                            address: H160::from_low_u64_be(1).into(),
+                            vote_count: 3,
+                        },
+                        FfiPillarValidatorVoteCount {
+                            address: H160::from_low_u64_be(3).into(),
+                            vote_count: 9,
+                        },
+                        FfiPillarValidatorVoteCount {
+                            address: H160::from_low_u64_be(4).into(),
+                            vote_count: 4,
+                        },
+                    ],
+                )
+                .unwrap();
+            assert!(creation.valid);
+            assert_eq!(creation.previous_pillar_block_hash, latest.hash().0);
+            assert_eq!(creation.vote_count_changes.len(), 3);
+            assert_eq!(
+                creation.vote_count_changes[0].address,
+                H160::from_low_u64_be(2).0
+            );
+            assert_eq!(creation.vote_count_changes[0].vote_count_change, -8);
+            assert_eq!(
+                creation.vote_count_changes[1].address,
+                H160::from_low_u64_be(3).0
+            );
+            assert_eq!(creation.vote_count_changes[1].vote_count_change, 4);
+            assert_eq!(
+                creation.vote_count_changes[2].address,
+                H160::from_low_u64_be(4).0
+            );
+            assert_eq!(creation.vote_count_changes[2].vote_count_change, 4);
+
+            let linkage = runtime
+                .pillar_chain_runtime_plan_block_linkage(FfiPillarBlockLinkageRequest {
+                    pillar_block_period: 20,
+                    pillar_block_previous_hash: latest.hash().0,
+                    first_pillar_block_period: 10,
+                    pillar_blocks_interval: 10,
+                })
+                .unwrap();
+            assert!(linkage.valid);
+            let wrong_linkage = runtime
+                .pillar_chain_runtime_plan_block_linkage(FfiPillarBlockLinkageRequest {
+                    pillar_block_period: 20,
+                    pillar_block_previous_hash: H256::from_low_u64_be(999).0,
+                    first_pillar_block_period: 10,
+                    pillar_blocks_interval: 10,
+                })
+                .unwrap();
+            assert!(!wrong_linkage.valid);
+            assert_eq!(wrong_linkage.status, 4);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -779,7 +935,7 @@ mod tests {
             validator_vote_count_changes: Vec::new(),
         }
         .encode_rlp();
-        let current_data = canonical_current_data(41);
+        let current_data = canonical_current_data(42);
 
         {
             let storage =
@@ -814,7 +970,12 @@ mod tests {
 
             assert_eq!(bootstrap.own_vote_rlp, vec![0xC3, 0x02]);
             assert_eq!(bootstrap.current_block_data_rlp, current_data);
-            assert_eq!(bootstrap.latest_block_rlp, latest_block);
+            assert_eq!(
+                runtime
+                    .pillar_chain_runtime_latest_finalized_block_rlp()
+                    .expect("latest finalized block should load from runtime"),
+                latest_block
+            );
             assert_eq!(
                 bootstrap.latest_pillar_votes_period_data_rlp,
                 vec![0xC3, 0x04]
@@ -839,7 +1000,10 @@ mod tests {
 
             assert!(bootstrap.own_vote_rlp.is_empty());
             assert!(bootstrap.current_block_data_rlp.is_empty());
-            assert!(bootstrap.latest_block_rlp.is_empty());
+            assert!(runtime
+                .pillar_chain_runtime_latest_finalized_block_rlp()
+                .expect("empty latest finalized block should load")
+                .is_empty());
             assert!(bootstrap.latest_pillar_votes_period_data_rlp.is_empty());
         }
 
@@ -1004,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_runtime_startup_bootstrap_rejects_malformed_latest_block() {
+    fn bridge_runtime_factory_rejects_malformed_latest_block() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_malformed_bootstrap");
         {
             let storage =
@@ -1012,14 +1176,11 @@ mod tests {
                     .expect("storage should initialize");
             save_finalized_pillar_block_storage(storage.0.as_ref(), 42, &[0xC1, 0x01])
                 .expect("malformed latest bytes should persist opaquely");
-            let runtime =
-                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
-
-            let error = match runtime.pillar_chain_runtime_load_startup_bootstrap() {
-                Ok(_) => panic!("malformed latest block should reject startup"),
+            let error = match create_pillar_chain_runtime(&storage) {
+                Ok(_) => panic!("malformed latest block should reject runtime construction"),
                 Err(error) => error,
             };
-            assert!(error.to_string().contains("six items"));
+            assert!(format!("{error:#}").contains("six items"));
         }
 
         let _ = fs::remove_dir_all(temp_dir);

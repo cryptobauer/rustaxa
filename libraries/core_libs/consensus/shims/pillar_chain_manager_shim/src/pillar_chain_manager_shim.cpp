@@ -300,39 +300,28 @@ std::vector<std::shared_ptr<PillarVote>> materializePillarVotes(
   return votes;
 }
 
-rustaxa::PillarBlockLinkageFact toBridgeLinkageFact(const FicusHardforkConfig& ficus_hf_config,
-                                                    const std::shared_ptr<PillarBlock>& pillar_block,
-                                                    const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
-  rustaxa::PillarBlockLinkageFact fact{};
-  fact.pillar_block_period = pillar_block->getPeriod();
-  fact.pillar_block_previous_hash = toBridgeHash(pillar_block->getPreviousBlockHash());
-  fact.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
-  fact.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
-  fact.has_last_finalized_pillar_block = static_cast<bool>(last_finalized_pillar_block);
-  if (last_finalized_pillar_block) {
-    fact.last_finalized_period = last_finalized_pillar_block->getPeriod();
-    fact.last_finalized_hash = toBridgeHash(last_finalized_pillar_block->getHash());
-  }
-  return fact;
+rustaxa::PillarBlockLinkageRequest toBridgeLinkageRequest(const FicusHardforkConfig& ficus_hf_config,
+                                                         const std::shared_ptr<PillarBlock>& pillar_block) {
+  rustaxa::PillarBlockLinkageRequest request{};
+  request.pillar_block_period = pillar_block->getPeriod();
+  request.pillar_block_previous_hash = toBridgeHash(pillar_block->getPreviousBlockHash());
+  request.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
+  request.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
+  return request;
 }
 
-rustaxa::PillarBlockCreationFact toBridgeCreationFact(
+rustaxa::PillarBlockCreationRequest toBridgeCreationRequest(
     const FicusHardforkConfig& ficus_hf_config, PbftPeriod period,
     const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
-    const h256& bridge_epoch, const std::shared_ptr<PillarBlock>& last_finalized_pillar_block) {
-  rustaxa::PillarBlockCreationFact fact{};
-  fact.pillar_block_period = period;
-  fact.state_root = toBridgeHash(block_header->state_root);
-  fact.bridge_root = toBridgeHash(bridge_root);
-  fact.bridge_epoch = toBridgeHash(bridge_epoch);
-  fact.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
-  fact.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
-  fact.has_last_finalized_pillar_block = static_cast<bool>(last_finalized_pillar_block);
-  if (last_finalized_pillar_block) {
-    fact.last_finalized_period = last_finalized_pillar_block->getPeriod();
-    fact.last_finalized_hash = toBridgeHash(last_finalized_pillar_block->getHash());
-  }
-  return fact;
+    const h256& bridge_epoch) {
+  rustaxa::PillarBlockCreationRequest request{};
+  request.pillar_block_period = period;
+  request.state_root = toBridgeHash(block_header->state_root);
+  request.bridge_root = toBridgeHash(bridge_root);
+  request.bridge_epoch = toBridgeHash(bridge_epoch);
+  request.first_pillar_block_period = ficus_hf_config.firstPillarBlockPeriod();
+  request.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
+  return request;
 }
 
 }  // namespace
@@ -681,9 +670,7 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
       final_chain_{std::move(final_chain)},
       key_manager_(std::move(key_manager)),
       node_addr_(node_addr),
-      last_finalized_pillar_block_{},
       current_pillar_block_{},
-      current_pillar_block_vote_counts_{},
       mutex_{} {
   LOG_OBJECTS_CREATE("PILLAR_CHAIN");
 
@@ -696,12 +683,9 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
   if (auto&& current_pillar_block_data = decodeCurrentPillarBlockDataFromRustBytes(bootstrap.current_block_data_rlp);
       current_pillar_block_data.has_value()) {
     current_pillar_block_ = std::move(current_pillar_block_data->pillar_block);
-    current_pillar_block_vote_counts_ = std::move(current_pillar_block_data->vote_counts);
   }
 
-  if (auto&& latest_pillar_block = decodePillarBlockFromRustBytes(bootstrap.latest_block_rlp); latest_pillar_block) {
-    last_finalized_pillar_block_ = std::move(latest_pillar_block);
-
+  if (!bootstrap.latest_pillar_votes_period_data_rlp.empty()) {
     const auto last_finalized_pillar_block_votes =
         decodePeriodPillarVotesFromRustBytes(bootstrap.latest_pillar_votes_period_data_rlp);
     // There should always be pillar votes stored in period data for finalized pillar block
@@ -716,37 +700,12 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     PbftPeriod period, const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
     const h256& bridge_epoch) {
   auto new_vote_counts = loadPillarValidatorVoteCounts(final_chain_, period);
-  std::shared_ptr<PillarBlock> last_finalized_pillar_block;
-  rust::Vec<rustaxa::PillarValidatorVoteCount> previous_vote_counts;
-
-  // First ever pillar block
-  if (period != kFicusHfConfig.firstPillarBlockPeriod()) {
-    last_finalized_pillar_block = getLastFinalizedPillarBlock();
-    // This should never happen !!!
-    if (!last_finalized_pillar_block) {
-      LOG(log_er_) << "Empty last finalized pillar block, new pillar block period " << period;
-      assert(false);
-      return nullptr;
-    }
-
-    // !!!Note: No need to protect current_pillar_block_vote_counts_ as it is read & written only in this function,
-    // which is always called once in a time
-    // This should never happen !!!
-    if (current_pillar_block_vote_counts_.empty()) {
-      LOG(log_er_) << "Empty current pillar block vote counts, new pillar block period " << period;
-      assert(false);
-      return nullptr;
-    }
-
-    previous_vote_counts = toBridgeVoteCounts(current_pillar_block_vote_counts_);
-  }
 
   rustaxa::PillarBlockCreationWithVoteCountsPlan creation_plan{};
   try {
-    creation_plan = rustaxa::plan_pillar_block_creation_with_vote_counts(
-        toBridgeCreationFact(kFicusHfConfig, period, block_header, bridge_root, bridge_epoch,
-                             last_finalized_pillar_block),
-        toBridgeVoteCounts(new_vote_counts), std::move(previous_vote_counts));
+    creation_plan = pillar_runtime_->pillar_chain_runtime_plan_block_creation(
+        toBridgeCreationRequest(kFicusHfConfig, period, block_header, bridge_root, bridge_epoch),
+        toBridgeVoteCounts(new_vote_counts));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to plan pillar block creation in Rust for period " << period << ": " << e.what();
     return nullptr;
@@ -786,7 +745,6 @@ void PillarChainManager::saveNewPillarBlock(const std::shared_ptr<PillarBlock>& 
   pillar_runtime_->pillar_chain_runtime_apply_current_block_data(
       toRustBytes(util::rlp_enc(CurrentPillarBlockDataDb{pillar_block, new_vote_counts})));
   current_pillar_block_ = pillar_block;
-  current_pillar_block_vote_counts_ = std::move(new_vote_counts);
 }
 
 std::shared_ptr<PillarVote> PillarChainManager::genAndPlacePillarVote(PbftPeriod period,
@@ -815,120 +773,165 @@ std::shared_ptr<PillarVote> PillarChainManager::genAndPlacePillarVote(PbftPeriod
   return vote;
 }
 
-std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock(const blk_hash_t& pillar_block_hash) {
-  // Serialize the compatibility snapshot with the Rust finalization
-  // transaction. Lock ordering is C++ `mutex_` first, then Rust runtime
-  // internals; callbacks run only after this lock is released.
-  std::unique_lock<std::shared_mutex> compatibility_lock(mutex_);
-  const auto last_finalized_pillar_block = last_finalized_pillar_block_;
-
-  rustaxa::PillarBlockFinalizationRequest finalization_request{};
-  finalization_request.requested_pillar_block_hash = toBridgeHash(pillar_block_hash);
-  finalization_request.has_last_finalized_pillar_block = static_cast<bool>(last_finalized_pillar_block);
-  if (last_finalized_pillar_block) {
-    finalization_request.last_finalized_hash = toBridgeHash(last_finalized_pillar_block->getHash());
-  }
-
-  rustaxa::PillarBlockFinalizationResult finalization_result{};
-  try {
-    finalization_result =
-        pillar_runtime_->pillar_chain_runtime_finalize_block_for_pbft(std::move(finalization_request));
-  } catch (const std::exception& e) {
-    LOG(log_er_) << "Unable to finalize pillar block in Rust for " << pillar_block_hash << ": " << e.what();
-    return {};
-  }
-
-  std::vector<std::shared_ptr<PillarVote>> pillar_votes;
-  if (finalization_result.success) {
-    try {
-      pillar_votes = materializePillarVotes(finalization_result.votes);
-    } catch (const std::exception& e) {
-      LOG(log_er_) << "Unable to materialize verified pillar votes for finalized block " << pillar_block_hash << ": "
-                   << e.what();
-      return {};
-    }
-  }
-
-  switch (finalization_result.status) {
-    case kPillarFinalizationReady:
-      break;
-    case kPillarFinalizationMissingCurrentBlock:
-      LOG(log_er_) << "Cannot finalize pillar block " << pillar_block_hash << ". Empty current pillar block";
-      return {};
-    case kPillarFinalizationCurrentBlockHashMismatch:
-      LOG(log_er_) << "Cannot finalize pillar block " << pillar_block_hash << ". Provided pillar block hash "
-                   << pillar_block_hash << " != current pillar block hash "
-                   << fromBridgeBlockHash(finalization_result.current_hash);
-      return {};
-    case kPillarFinalizationMissingVotes:
-      LOG(log_er_) << "Cannot finalize pillar block " << pillar_block_hash
-                   << ". Not enough pillar votes for pillar block. Request it";
-      {
-        const auto should_request_votes =
-            finalization_result.should_request_votes && finalization_result.has_request_votes_period;
-        const auto request_votes_period = finalization_result.request_votes_period;
-        compatibility_lock.unlock();
-        if (!should_request_votes) {
-          return {};
-        }
-        if (auto net = network_.lock()) {
-          net->requestPillarBlockVotesBundle(request_votes_period, pillar_block_hash);
-        }
-      }
-      return {};
-    case kPillarFinalizationAlreadyFinalized:
-      LOG(log_er_) << "Pillar block already " << pillar_block_hash << " already finalized";
-      return finalization_result.success ? pillar_votes : std::vector<std::shared_ptr<PillarVote>>{};
-    default:
-      LOG(log_er_) << "Unable to finalize pillar block " << pillar_block_hash << ". Unknown Rust status "
-                   << static_cast<uint64_t>(finalization_result.status);
-      return {};
-  }
-
-  LOG(log_nf_) << "Pillar block " << pillar_block_hash << " with period " << finalization_result.current_period
-               << " finalized";
-
-  std::shared_ptr<PillarBlock> finalized_pillar_block;
-  const auto result_hash = fromBridgeBlockHash(finalization_result.current_hash);
-  if (!current_pillar_block_ || current_pillar_block_->getPeriod() != finalization_result.current_period ||
-      current_pillar_block_->getHash() != result_hash) {
-    LOG(log_er_) << "Rust finalized pillar block " << result_hash << " with period "
-                 << finalization_result.current_period << ", but the compatibility object does not match";
-    return {};
-  }
-  finalized_pillar_block = current_pillar_block_;
-  last_finalized_pillar_block_ = finalized_pillar_block;
-  compatibility_lock.unlock();
-  if (finalization_result.should_emit) {
-    pillar_block_finalized_emitter_.emit(PillarBlockData{finalized_pillar_block, pillar_votes});
-  }
-
-  return finalization_result.success ? pillar_votes : std::vector<std::shared_ptr<PillarVote>>{};
+std::vector<std::shared_ptr<PillarVote>> PillarChainManager::finalizePillarBlock(const blk_hash_t&) {
+  throw std::runtime_error(
+      "Direct pillar finalization is unsupported in Rust-mode compatibility path. "
+      "Use finalizePillarBlockForPbftPreflight() + pbft manager acknowledge path.");
 }
 
 PillarChainManager::FinalizePillarBlockPreflightResult PillarChainManager::finalizePillarBlockForPbftPreflight(
     const blk_hash_t& pillar_block_hash) {
   FinalizePillarBlockPreflightResult result;
-  result.pillar_votes = finalizePillarBlock(pillar_block_hash);
-  result.pillar_vote_count = result.pillar_votes.size();
-  result.success = !result.pillar_votes.empty();
+  rustaxa::PillarBlockFinalizationRequest finalization_request{};
+  finalization_request.requested_pillar_block_hash = toBridgeHash(pillar_block_hash);
+
+  rustaxa::PillarBlockFinalizationPrepareResult preflight_result{};
+  std::unique_lock<std::shared_mutex> compatibility_lock(mutex_);
+  try {
+    preflight_result =
+        pillar_runtime_->pillar_chain_runtime_prepare_finalized_block_for_pbft(std::move(finalization_request));
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to prepare pillar block finalization in Rust for " << pillar_block_hash << ": " << e.what();
+    return result;
+  }
+
+  result.success = preflight_result.success;
+  result.should_request_votes = preflight_result.should_request_votes;
+  result.has_request_votes_period = preflight_result.has_request_votes_period;
+  result.request_votes_period = preflight_result.request_votes_period;
+  result.should_emit = preflight_result.should_emit;
+  result.pillar_vote_count = preflight_result.selected_vote_count;
+  result.prepared_pillar_block_period = preflight_result.prepared_pillar_block_period;
+  result.prepared_pillar_block_rlp = fromRustBytes(preflight_result.prepared_pillar_block_rlp);
+  result.has_prepared_pillar_block = preflight_result.has_prepared_pillar_block;
+  result.preparation_anchor_generation = preflight_result.preparation_anchor_generation;
+  result.preparation_token = preflight_result.preparation_token;
+
+  if (preflight_result.success && !preflight_result.votes.empty()) {
+    try {
+      result.pillar_votes = materializePillarVotes(preflight_result.votes);
+    } catch (const std::exception& e) {
+      LOG(log_er_) << "Unable to materialize verified pillar votes for finalized block " << pillar_block_hash << ": "
+                   << e.what();
+      result.success = false;
+      result.pillar_votes.clear();
+      return result;
+    }
+  }
+
+  switch (preflight_result.status) {
+    case kPillarFinalizationReady:
+      break;
+    case kPillarFinalizationMissingCurrentBlock:
+      LOG(log_er_) << "Cannot prepare pillar finalization for block " << pillar_block_hash
+                   << ". Empty current pillar block";
+      return result;
+    case kPillarFinalizationCurrentBlockHashMismatch:
+      LOG(log_er_) << "Cannot prepare pillar finalization for block " << pillar_block_hash
+                   << ". Requested block hash " << pillar_block_hash << " != current pillar block hash "
+                   << fromBridgeBlockHash(preflight_result.current_hash);
+      return result;
+    case kPillarFinalizationMissingVotes:
+      LOG(log_er_) << "Cannot prepare pillar finalization for block " << pillar_block_hash
+                   << ". Not enough pillar votes for pillar block. Request it";
+      {
+        const auto should_request_votes =
+            preflight_result.should_request_votes && preflight_result.has_request_votes_period;
+        const auto request_votes_period = preflight_result.request_votes_period;
+        if (should_request_votes) {
+          compatibility_lock.unlock();
+          if (auto net = network_.lock()) {
+            net->requestPillarBlockVotesBundle(request_votes_period, pillar_block_hash);
+          }
+        }
+      }
+      return result;
+    case kPillarFinalizationAlreadyFinalized:
+      LOG(log_nf_) << "Pillar block already " << pillar_block_hash << " already finalized";
+      return result;
+    default:
+      LOG(log_er_) << "Unable to prepare pillar finalization for block " << pillar_block_hash << ". Unknown Rust status "
+                   << static_cast<uint64_t>(preflight_result.status);
+      result.success = false;
+      return result;
+  }
+
+  if (result.should_emit) {
+    LOG(log_nf_) << "Pillar block finalization prepared for block " << pillar_block_hash << " with period "
+                 << preflight_result.current_period;
+  }
+
   return result;
 }
 
-bool PillarChainManager::isPillarBlockLatestFinalized(const blk_hash_t& block_hash) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
+bool PillarChainManager::acknowledgePillarBlockForPbft(
+    uint64_t anchor_generation, uint64_t preparation_token,
+    const std::vector<std::shared_ptr<PillarVote>>& pillar_votes) {
+  // Serialize acknowledgment with current/latest compatibility reads. Keep
+  // the lock through materialization and identity verification, but never
+  // invoke the compatibility emitter while holding it.
+  std::unique_lock<std::shared_mutex> compatibility_lock(mutex_);
+  rustaxa::PillarBlockFinalizationAcknowledgeRequest request{};
+  request.anchor_generation = anchor_generation;
+  request.preparation_token = preparation_token;
 
-  // Current pillar block was already pushed into the pillar chain
-  if (last_finalized_pillar_block_ && last_finalized_pillar_block_->getHash() == block_hash) {
+  rustaxa::PillarBlockFinalizationAcknowledgeResult ack_result{};
+  try {
+    ack_result = pillar_runtime_->pillar_chain_runtime_ack_finalize_block_for_pbft(std::move(request));
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to acknowledge pillar finalization for anchor generation " << anchor_generation << ", token "
+                 << preparation_token << ": " << e.what();
+    return false;
+  }
+
+  if (!ack_result.should_emit) {
+    LOG(log_dg_) << "Rust anchor ack for generation " << anchor_generation << ", token " << preparation_token
+                 << " completed without event emission";
     return true;
   }
 
-  return false;
+  std::shared_ptr<PillarBlock> latest_pillar_block;
+  try {
+    latest_pillar_block =
+        decodePillarBlockFromRustBytes(pillar_runtime_->pillar_chain_runtime_latest_finalized_block_rlp());
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to materialize latest finalized pillar block from Rust runtime: " << e.what();
+    return false;
+  }
+  if (!latest_pillar_block) {
+    LOG(log_er_) << "Unable to emit PillarBlockData in compatibility layer: latest finalized pillar block unavailable";
+    return false;
+  }
+
+  if (latest_pillar_block->getPeriod() != ack_result.latest_finalized_period ||
+      latest_pillar_block->getHash() != fromBridgeBlockHash(ack_result.latest_finalized_hash)) {
+    LOG(log_er_) << "Compatibility pillar finalization identity changed after Rust ack: expected period "
+                 << ack_result.latest_finalized_period << " hash "
+                 << fromBridgeBlockHash(ack_result.latest_finalized_hash) << ", runtime reports "
+                 << latest_pillar_block->getPeriod() << "/" << latest_pillar_block->getHash();
+    return false;
+  }
+
+  compatibility_lock.unlock();
+  pillar_block_finalized_emitter_.emit(PillarBlockData{latest_pillar_block, pillar_votes});
+  return true;
+}
+
+bool PillarChainManager::isPillarBlockLatestFinalized(const blk_hash_t& block_hash) const {
+  const auto latest = getLastFinalizedPillarBlock();
+  return latest && latest->getHash() == block_hash;
 }
 
 std::shared_ptr<PillarBlock> PillarChainManager::getLastFinalizedPillarBlock() const {
+  // Preserve the compatibility publication boundary: finalization holds this
+  // mutex until the Rust snapshot and the C++ current-block mirror agree.
   std::shared_lock<std::shared_mutex> lock(mutex_);
-  return last_finalized_pillar_block_;
+  try {
+    return decodePillarBlockFromRustBytes(pillar_runtime_->pillar_chain_runtime_latest_finalized_block_rlp());
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to materialize latest finalized pillar block from Rust runtime: " << e.what();
+    return nullptr;
+  }
 }
 
 std::shared_ptr<PillarBlock> PillarChainManager::getCurrentPillarBlock() const {
@@ -1291,14 +1294,14 @@ bool PillarChainManager::isValidPillarBlock(const std::shared_ptr<PillarBlock>& 
     return false;
   }
 
-  const auto last_finalized_pillar_block = getLastFinalizedPillarBlock();
   try {
-    const auto plan = rustaxa::plan_pillar_block_linkage(
-        toBridgeLinkageFact(kFicusHfConfig, pillar_block, last_finalized_pillar_block));
+    const auto plan = pillar_runtime_->pillar_chain_runtime_plan_block_linkage(
+        toBridgeLinkageRequest(kFicusHfConfig, pillar_block));
     if (plan.valid) {
       return true;
     }
 
+    const auto last_finalized_pillar_block = getLastFinalizedPillarBlock();
     if (!last_finalized_pillar_block) {
       LOG(log_er_) << "Invalid pillar block: missing last finalized pillar block, new pillar block "
                    << pillar_block->getHash() << "(" << pillar_block->getPeriod() << "), linkage status "
@@ -1336,13 +1339,6 @@ std::optional<uint64_t> PillarChainManager::getPillarConsensusThreshold(PbftPeri
   }
 
   return threshold;
-}
-
-std::vector<PillarBlock::ValidatorVoteCountChange> PillarChainManager::getOrderedValidatorsVoteCountsChanges(
-    const std::vector<state_api::ValidatorVoteCount>& current_vote_counts,
-    const std::vector<state_api::ValidatorVoteCount>& previous_pillar_block_vote_counts) {
-  return fromBridgeVoteCountChanges(rustaxa::plan_pillar_vote_count_changes(
-      toBridgeVoteCounts(current_vote_counts), toBridgeVoteCounts(previous_pillar_block_vote_counts)));
 }
 
 void PillarChainManager::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }

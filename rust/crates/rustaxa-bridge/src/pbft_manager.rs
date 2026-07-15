@@ -172,6 +172,9 @@ impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
             has_reward_votes_reset: value.has_reward_votes_reset,
             reward_votes_bundle_rlp: value.reward_votes_bundle_rlp,
             extra_reward_vote_hashes: Vec::new(),
+            has_prepared_pillar_block: value.has_prepared_pillar_block,
+            prepared_pillar_block_period: value.prepared_pillar_block_period,
+            prepared_pillar_block_rlp: value.prepared_pillar_block_rlp,
         }
     }
 }
@@ -1776,6 +1779,9 @@ fn empty_finalization_stage(stage: u8) -> PbftFinalizationStorageWriteStage {
         has_reward_votes_reset: false,
         reward_votes_bundle_rlp: Vec::new(),
         extra_reward_vote_hashes: Vec::new(),
+        has_prepared_pillar_block: false,
+        prepared_pillar_block_period: 0,
+        prepared_pillar_block_rlp: Vec::new(),
     }
 }
 
@@ -5056,6 +5062,9 @@ mod tests {
                     sortition_params_change_threshold_upper: 0,
                     has_reward_votes_reset: stage == FINALIZATION_STAGE_REWARD_VOTES_RESET,
                     reward_votes_bundle_rlp,
+                    has_prepared_pillar_block: false,
+                    prepared_pillar_block_period: 0,
+                    prepared_pillar_block_rlp: Vec::new(),
                 }
             };
             pbft_manager_runtime_start_finalization_executor(

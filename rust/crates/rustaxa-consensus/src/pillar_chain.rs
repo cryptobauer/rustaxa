@@ -513,13 +513,14 @@ pub fn plan_pillar_block_finalization(
         };
     }
 
-    if !fact.threshold_met || fact.selected_vote_count == 0 {
-        let request_votes_period = fact.current_period.checked_add(1);
+    if fact.has_last_finalized_pillar_block
+        && fact.last_finalized_hash == fact.requested_pillar_block_hash
+    {
         return PillarBlockFinalizationPlan {
-            status: PillarBlockFinalizationStatus::MissingVotes,
-            return_votes: false,
-            should_request_votes: request_votes_period.is_some(),
-            request_votes_period,
+            status: PillarBlockFinalizationStatus::AlreadyFinalized,
+            return_votes: true,
+            should_request_votes: false,
+            request_votes_period: None,
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,
@@ -529,14 +530,13 @@ pub fn plan_pillar_block_finalization(
         };
     }
 
-    if fact.has_last_finalized_pillar_block
-        && fact.last_finalized_hash == fact.requested_pillar_block_hash
-    {
+    if !fact.threshold_met || fact.selected_vote_count == 0 {
+        let request_votes_period = fact.current_period.checked_add(1);
         return PillarBlockFinalizationPlan {
-            status: PillarBlockFinalizationStatus::AlreadyFinalized,
-            return_votes: true,
-            should_request_votes: false,
-            request_votes_period: None,
+            status: PillarBlockFinalizationStatus::MissingVotes,
+            return_votes: false,
+            should_request_votes: request_votes_period.is_some(),
+            request_votes_period,
             should_persist: false,
             should_emit: false,
             current_period: fact.current_period,

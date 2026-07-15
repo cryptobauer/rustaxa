@@ -767,8 +767,9 @@ Acceptance:
   `pbft_manager_shim` still coordinates external finalization effects and lifecycle paths. `pillar_chain_manager_shim`
   now routes current-anchor decisions, threshold arithmetic, live vote state, and PBFT-facing pillar finalization through
   `BridgePillarChainRuntime`, but still owns external FinalChain DPoS reads, temporary `PillarBlock` materialization,
-  PBFT `PeriodData` vote materialization, current-block compatibility mirrors, network vote-bundle requests, and event
-  emission.
+  PBFT `PeriodData` vote materialization, the current-block compatibility mirror, network vote-bundle requests, and event
+  emission. Latest-finalized identity and validator vote-count history are Rust-runtime-owned and no longer mirrored as
+  C++ decision state.
   `vote_manager_shim` is no longer a legacy-derived runtime: it is a standalone public facade whose authoritative
   verified-vote restart state is restored inside Rust. Its locally generated own-vote collection is now also
   storage-authoritative: the facade materializes votes only for the public getter/network boundary instead of maintaining
@@ -906,6 +907,38 @@ Implementation notes:
   and the startup smoke gate. Mapping, API/architecture design, Rust/C++ implementation, and independent closeout review
   used the code-mapper, api-designer, architect-reviewer, rust-engineer, cpp-pro, and reviewer agents. No blockchain/EVM
   agent was needed because FinalChain/EVM execution and contract behavior remain unchanged external boundaries.
+- `BridgePillarChainRuntime` now also restores, canonically validates, publishes, and queries the latest-finalized pillar
+  block inside the same lock-protected pillar snapshot. Pillar creation reads its previous validator vote-count snapshot
+  from the runtime-owned canonical current-data row, while creation and linkage planning derive the finalized parent
+  period/hash internally. PBFT-facing finalization now prepares a generation-bound canonical pillar row without mutating
+  durable or published state, appends that row to the same Rust-owned primary PBFT storage batch, and acknowledges only
+  after commit to authenticate the exact durable row, publish the latest-finalized snapshot, and clean matching votes.
+  Missing or mismatched durable rows retain the bounded, same-generation reusable preparation token for retry. PBFT
+  reconciliation runs after protected locks are released even when a later protected action reports failure, and the
+  compatibility mutex covers acknowledge plus latest-block identity materialization but not event callbacks. Startup
+  rejects a latest period ahead of current, conflicting same-period identities, or broken successor linkage, and
+  latest-row lookup compares decoded numeric periods so little-endian rollover cannot select
+  period 255 over period 256. The C++ facade no longer owns
+  `last_finalized_pillar_block_` or `current_pillar_block_vote_counts_`; its public latest-block getter materializes the
+  runtime's canonical bytes only at the compatibility boundary. The standalone CXX vote-count, linkage, and creation
+  planners plus their bridge-mechanics tests are deleted; native consensus planner tests and runtime-owned bridge tests
+  retain the behavior coverage. Because the active delegation interface cannot select or report
+  `.codex/agents/*.toml` profiles, the required roles were run as explicitly labeled fallback emulations using each
+  profile's exact TOML instructions and settings; they are not claimed as verified custom-profile invocations.
+  Validation completed for the uncommitted follow-up:
+  - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge runtime_finalization -- --nocapture`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus pillar_chain -- --nocapture`
+  - `cmake --build /build --target rust_consensus_tests pillar_chain_test pbft_manager_test --parallel 12`
+  - focused CXX pillar bridge, pillar creation/sync, and PBFT proposal tests
+  - `cmake --build /build --target rust_storage_tests --parallel 12` and `/build/bin/rust_storage_tests`
+  - both rewrite boundary guards, `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and
+    `.githooks/pre-commit`
+  - original upstream pillar-manager header/source diffs remain empty
+  The isolated `PillarChainTest.finalize_root_in_pillar_block` fixture still aborts before the changed runtime route at
+  the classified external-EVM boundary because block 3 has no committed external-EVM bridge-root state; pillar creation,
+  pillar sync, runtime finalization, and the PBFT proposal consumer pass independently.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` now routes synced bundle RLPs through
   Rust-owned batch inspection and `BridgePillarChainRuntime` weighted apply APIs. C++ only performs the external
   FinalChain DPoS weight lookup in one batched read, then passes canonical RLP bytes and weights back to Rust for
@@ -950,13 +983,17 @@ Implementation notes:
   `BridgePillarChainRuntime::pillar_chain_runtime_plan_vote_relevance`. Rust now decodes the vote RLP and derives
   duplicate membership from runtime-owned vote state, so the C++ shim no longer materializes Rust-retained payloads or
   scans them only to supply `vote_already_known`.
-- PBFT-facing pillar-block finalization now calls
-  `BridgePillarChainRuntime::pillar_chain_runtime_finalize_block_for_pbft`. Rust owns selected-vote lookup,
-  deterministic pillar finalization planning, finalized-block storage persistence, and vote cleanup ordering. The
+- PBFT-facing pillar-block finalization now calls Rust prepare before the PBFT primary batch and Rust acknowledge after
+  that batch commits. Rust owns selected-vote lookup, deterministic planning, same-batch pillar persistence, durable-row
+  authentication, runtime publication, and vote cleanup ordering; prepare itself is side-effect-free apart from its
+  bounded generation-bound token registry, which reuses identical requests and evicts the oldest entry at its cap.
+  Missing or mismatched durable rows preserve the token for retry, while successful acknowledgement consumes it. C++
+  runs acknowledgement after protected locks are released even if a protected finalization action failed, and holds the
+  compatibility mutex through acknowledgement and latest identity materialization before unlocking for event emission. The
   bridge-only CXX exports `plan_pbft_finalization_pillar_preflight`,
   `report_pbft_finalization_pillar_preflight`, and `plan_pillar_block_finalization` plus their DTOs are deleted. C++
   still owns the missing-vote network request, legacy vote materialization for PBFT `PeriodData`, live
-  `last_finalized_pillar_block_` mirror assignment, and pillar-finalized event emission.
+  compatibility materialization, and pillar-finalized event emission.
 - `GetPillarVotesBundlePacketHandler` no longer calls `PillarChainManager::getVerifiedPillarVotes()` or reconstructs
   C++ `PillarVote` objects for network serving. It now asks `pillar_chain_manager_shim` for packet-ready optimized
   bundle chunks from `BridgePillarChainRuntime::pillar_chain_runtime_build_verified_vote_network_bundles`, wraps each

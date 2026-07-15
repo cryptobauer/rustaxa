@@ -453,7 +453,7 @@ class PillarChainManager {
    *
    * Returns:
    * - Above-threshold votes used for finalization, or an empty vector when
-   *   finalization cannot proceed.
+   *   direct C++ finalization is unsupported.
    */
   std::vector<std::shared_ptr<PillarVote>> finalizePillarBlock(const blk_hash_t& pillar_block_hash);
 
@@ -469,6 +469,13 @@ class PillarChainManager {
    * - `success == true` when pillar finalization produced above-threshold votes.
    * - `pillar_vote_count` mirrors the payload count reported back to Rust.
    * - `pillar_votes` are temporary C++ executor payloads for PeriodData only.
+   * - `has_prepared_pillar_block` gates whether this preflight produced a
+   *   one-time C++-attached stage payload for the primary PBFT storage batch.
+   * - `prepared_pillar_block_period`/`prepared_pillar_block_rlp` are the
+   *   exact pillar block payload that must be attached by C++ when the Rust
+   *   execution reached primary storage.
+   * - `preparation_anchor_generation` and `preparation_token` are required for
+   *   the deferred C++ ack path before event emission.
    *
    * Invariants:
    * - Rust owns current-anchor and threshold decisions before returning
@@ -477,10 +484,43 @@ class PillarChainManager {
    */
   struct FinalizePillarBlockPreflightResult {
     bool success = false;
+    bool should_request_votes = false;
+    bool has_request_votes_period = false;
+    PbftPeriod request_votes_period = 0;
+    bool should_emit = false;
     uint64_t pillar_vote_count = 0;
+    PbftPeriod prepared_pillar_block_period = 0;
+    bytes prepared_pillar_block_rlp;
+    bool has_prepared_pillar_block = false;
+    uint64_t preparation_anchor_generation = 0;
+    uint64_t preparation_token = 0;
     std::vector<std::shared_ptr<PillarVote>> pillar_votes;
   };
   FinalizePillarBlockPreflightResult finalizePillarBlockForPbftPreflight(const blk_hash_t& pillar_block_hash);
+
+  /**
+   * Acknowledges one Rust-owned pillar finalization preparation.
+   *
+   * Inputs:
+   * - `anchor_generation` + `preparation_token` identify the deterministic
+   *   Rust preparation consumed by this ack call.
+   * - `pillar_votes` are the compatibility votes materialized during preflight
+   *   and used only for compatibility emission payloads.
+   *
+   * Returns:
+   * - `true` when the ack call succeeded and all compatibility checks passed.
+   * - `false` when Rust call fails or the current pillar identity changed before
+   *   compatibility emission can run.
+   *
+   * Ownership and failure boundaries:
+   * - This is the only C++ point allowed to emit `PillarBlockData`.
+   * - Rust acknowledgment and latest-block materialization are serialized
+   *   under the compatibility mutex; event emission runs after it is released.
+   * - Event emission remains gated on the Rust ack result and an identity
+   *   check against the materialized latest block.
+   */
+  bool acknowledgePillarBlockForPbft(uint64_t anchor_generation, uint64_t preparation_token,
+                                     const std::vector<std::shared_ptr<PillarVote>>& pillar_votes);
 
   /**
    * Returns the current local pillar block, or `nullptr` before one is created.
@@ -657,13 +697,6 @@ class PillarChainManager {
 
  private:
   /**
-   * Computes ordered validator vote-count deltas between the current and previous pillar block snapshots.
-   */
-  std::vector<PillarBlock::ValidatorVoteCountChange> getOrderedValidatorsVoteCountsChanges(
-      const std::vector<state_api::ValidatorVoteCount>& current_vote_counts,
-      const std::vector<state_api::ValidatorVoteCount>& previous_pillar_block_vote_counts);
-
-  /**
    * Persists and installs a new current pillar block snapshot.
    */
   void saveNewPillarBlock(const std::shared_ptr<PillarBlock>& pillar_block,
@@ -679,9 +712,7 @@ class PillarChainManager {
 
   const addr_t node_addr_;
 
-  std::shared_ptr<PillarBlock> last_finalized_pillar_block_;
   std::shared_ptr<PillarBlock> current_pillar_block_;
-  std::vector<state_api::ValidatorVoteCount> current_pillar_block_vote_counts_;
 
   /**
    * Bounded receipts for successful external validation calls awaiting add.

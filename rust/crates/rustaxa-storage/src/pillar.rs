@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::sync::Arc;
 
 use crate::Column;
@@ -28,16 +28,31 @@ impl<D: DbReader> PillarRepository<D> {
     /// Returns the newest serialized pillar block payload in storage.
     /// C++ mapping: `DbStorage::getLatestPillarBlock() const`.
     pub fn latest_rlp(&self) -> Result<Option<Vec<u8>>> {
-        if let Some(item) = self.db.iter_rev(Column::PillarBlock).next() {
-            let (_, value) = item?;
-            let value = value.into_vec();
-            if value.is_empty() {
-                return Ok(None);
+        let mut latest: Option<(u64, Vec<u8>)> = None;
+
+        for item in self.db.iter(Column::PillarBlock) {
+            let (key, value) = item?;
+            if key.len() != 8 {
+                continue;
             }
-            return Ok(Some(value));
+            let period = u64::from_le_bytes(
+                key.as_ref()
+                    .try_into()
+                    .map_err(|_| anyhow!("pillar block period key has invalid length"))?,
+            );
+            if value.is_empty() {
+                continue;
+            }
+            let should_replace = latest
+                .as_ref()
+                .map(|(candidate, _)| period > *candidate)
+                .unwrap_or(true);
+            if should_replace {
+                latest = Some((period, value.to_vec()));
+            }
         }
 
-        Ok(None)
+        Ok(latest.map(|(_, value)| value))
     }
 
     /// Returns serialized local pillar vote payload for current pillar state.
@@ -219,6 +234,21 @@ mod tests {
         db.put(Column::PillarBlock, &3u64.to_le_bytes(), &[0xA3]);
 
         assert_eq!(repo.latest_rlp().unwrap(), Some(vec![0xA5]));
+    }
+
+    #[test]
+    fn latest_pillar_block_rlp_uses_numerically_correct_period_order() {
+        let db = Arc::new(MockPillarStore::new());
+        let repo = PillarRepository::new(db.clone());
+        assert_eq!(repo.latest_rlp().unwrap(), None);
+
+        db.put(Column::PillarBlock, &254u64.to_le_bytes(), &[0xA0]);
+        db.put(Column::PillarBlock, &255u64.to_le_bytes(), &[0xA1]);
+        db.put(Column::PillarBlock, &256u64.to_le_bytes(), &[0xA2]);
+        assert_eq!(repo.latest_rlp().unwrap(), Some(vec![0xA2]));
+
+        db.put(Column::PillarBlock, &4096u64.to_le_bytes(), &[0xA3]);
+        assert_eq!(repo.latest_rlp().unwrap(), Some(vec![0xA3]));
     }
 
     #[test]

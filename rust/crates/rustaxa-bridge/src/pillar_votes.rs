@@ -13,9 +13,10 @@
 #[cfg(test)]
 use crate::ffi::rustaxa_ffi::PillarVoteRelevanceFact as FfiPillarVoteRelevanceFact;
 use crate::ffi::rustaxa_ffi::{
-    PillarBlockFinalizationRequest, PillarBlockFinalizationResult, PillarVoteBundleApplyPlan,
-    PillarVoteBundleHash, PillarVoteInspection, PillarVoteNetworkBundleChunk,
-    PillarVoteNetworkBundleLookup, PillarVoteRecord,
+    PillarBlockFinalizationAcknowledgeRequest, PillarBlockFinalizationAcknowledgeResult,
+    PillarBlockFinalizationPrepareResult, PillarBlockFinalizationRequest,
+    PillarVoteBundleApplyPlan, PillarVoteBundleHash, PillarVoteInspection,
+    PillarVoteNetworkBundleChunk, PillarVoteNetworkBundleLookup, PillarVoteRecord,
     PillarVoteRelevancePlan as FfiPillarVoteRelevancePlan, PillarVoteRlpPayload,
     PillarVoteRuntimeRelevanceContext, PillarVoteSingleAdmissionApplyInput,
     PillarVoteSingleAdmissionApplyPlan, PillarVoteSingleAdmissionContext,
@@ -34,15 +35,15 @@ use rustaxa_consensus::{
     PillarVoteRelevancePlan as ConsensusPillarVoteRelevancePlan, PillarVotes, VerifiedPillarVote,
 };
 use rustaxa_consensus::{
-    plan_pillar_block_finalization, save_finalized_pillar_block_storage,
-    PillarBlockFinalizationFact, PillarBlockFinalizationStatus,
+    plan_pillar_block_finalization, PillarBlockFinalizationFact, PillarBlockFinalizationStatus,
 };
 use rustaxa_storage::Storage;
-use rustaxa_types::{
-    decode_optimized_pillar_votes_bundle_rlp, encode_optimized_pillar_votes_bundle_rlp, PillarVote,
-};
 #[cfg(test)]
-use rustaxa_types::{CurrentPillarBlockDataDb, PillarBlock};
+use rustaxa_types::CurrentPillarBlockDataDb;
+use rustaxa_types::{
+    decode_optimized_pillar_votes_bundle_rlp, encode_optimized_pillar_votes_bundle_rlp,
+    PillarBlock, PillarVote,
+};
 use std::collections::HashMap;
 
 const PILLAR_VOTE_BUNDLE_STATUS_VALID: u8 = 0;
@@ -64,6 +65,7 @@ const PILLAR_VOTE_STATUS_MISSING_PREPARATION: u8 = 11;
 /// caller boundary must preserve external-vs-trusted provenance when deciding
 /// whether a new preparation is permitted.
 const MAX_SINGLE_VOTE_PREPARATIONS: usize = 4_096;
+const MAX_PILLAR_BLOCK_FINALIZATION_PREPARATIONS: usize = 16;
 const PILLAR_VOTE_STATUS_UNKNOWN: u8 = 255;
 
 #[cfg(test)]
@@ -551,29 +553,30 @@ impl BridgePillarChainRuntime {
         })
     }
 
-    /// Finalizes one pillar block for the PBFT finalization boundary.
+    /// Prepares one pillar block for PBFT finalization.
     ///
     /// Inputs:
-    /// - `request` carries the requested hash and compact last-finalized fact.
-    ///   Current identity and canonical block RLP come from the runtime snapshot.
+    /// - `request` carries only the requested hash. Current identity, canonical
+    ///   block RLP, and latest-finalized identity come from the runtime
+    ///   snapshot.
     ///
     /// Outputs:
     /// - Returns the deterministic pillar-finalization status plus selected
-    ///   vote payloads when finalization or already-finalized replay succeeds.
-    /// - Requests a network vote bundle through `should_request_votes` when
-    ///   Rust detects missing threshold votes.
+    ///   vote payloads when the ready path succeeds.
+    /// - Returns a generation-bound one-time preparation token and the canonical
+    ///   pillar block payload for the PBFT primary storage stage.
     ///
-    /// Invariants and edge behavior:
-    /// - Rust owns verified-vote lookup, finalization planning, storage
-    ///   persistence, and vote cleanup ordering.
-    /// - Storage is committed before in-memory vote cleanup. Cleanup is skipped
-    ///   if persistence fails.
+    /// Edge behavior:
+    /// - `AlreadyFinalized` is checked before any live-vote lookup, so a
+    ///   cleaned vote state cannot force duplicate finalization into
+    ///   `MissingVotes`.
+    /// - No storage is mutated in this call.
     /// - C++ still owns network requests, legacy `PillarVote` materialization,
     ///   event emission, and PBFT `PeriodData` payload assembly.
-    pub fn pillar_chain_runtime_finalize_block_for_pbft(
+    pub fn pillar_chain_runtime_prepare_finalized_block_for_pbft(
         &mut self,
         request: PillarBlockFinalizationRequest,
-    ) -> Result<PillarBlockFinalizationResult> {
+    ) -> Result<PillarBlockFinalizationPrepareResult> {
         let requested_hash = H256::from(request.requested_pillar_block_hash);
         let snapshot = self
             .current_anchor
@@ -585,7 +588,18 @@ impl BridgePillarChainRuntime {
             .map(|anchor| anchor.period)
             .unwrap_or_default();
         let current_hash = current_anchor.map(|anchor| anchor.hash).unwrap_or_default();
-        let lookup = if current_anchor.is_some() && current_hash == requested_hash {
+        let lookup = if snapshot
+            .latest_finalized_block
+            .as_ref()
+            .is_some_and(|block| block.hash() == requested_hash)
+        {
+            rustaxa_consensus::PillarVotesLookup {
+                threshold_met: false,
+                block_weight: 0,
+                selected_weight: 0,
+                votes: Vec::new(),
+            }
+        } else if current_anchor.is_some() && current_hash == requested_hash {
             if let Some(vote_period) = current_period.checked_add(1) {
                 self.votes
                     .get_verified_votes(vote_period, requested_hash, true)
@@ -616,25 +630,13 @@ impl BridgePillarChainRuntime {
             block_weight: lookup.block_weight,
             selected_weight: lookup.selected_weight,
             selected_vote_count,
-            has_last_finalized_pillar_block: request.has_last_finalized_pillar_block,
-            last_finalized_hash: H256::from(request.last_finalized_hash),
+            has_last_finalized_pillar_block: snapshot.latest_finalized_block.is_some(),
+            last_finalized_hash: snapshot
+                .latest_finalized_block
+                .as_ref()
+                .map(PillarBlock::hash)
+                .unwrap_or_default(),
         });
-
-        let mut persisted = false;
-        let mut cleaned_votes = false;
-        if plan.status == PillarBlockFinalizationStatus::Ready && plan.should_persist {
-            save_finalized_pillar_block_storage(
-                self.storage.as_ref(),
-                plan.current_period,
-                &current_block_rlp,
-            )?;
-            persisted = true;
-            self.votes
-                .erase_votes(plan.current_period.saturating_add(1));
-            cleaned_votes = true;
-        }
-        // The snapshot read guard is deliberately retained through planning,
-        // durable finalization, and vote cleanup.
 
         let votes = if plan.return_votes {
             lookup
@@ -647,21 +649,195 @@ impl BridgePillarChainRuntime {
         };
         let success = plan.return_votes && !votes.is_empty();
 
-        Ok(PillarBlockFinalizationResult {
+        if plan.status == PillarBlockFinalizationStatus::Ready && plan.should_persist {
+            let preparation_anchor_generation = snapshot.generation;
+            let preparation_token = {
+                let mut preparations = self
+                    .pillar_block_finalization_preparations
+                    .lock()
+                    .map_err(|_| anyhow!("pillar block finalization preparation lock poisoned"))?;
+                preparations
+                    .retain(|_, prepared| prepared.anchor_generation == snapshot.generation);
+                if let Some((token, _)) = preparations.iter().find(|(_, prepared)| {
+                    prepared.anchor_generation == preparation_anchor_generation
+                        && prepared.prepared_pillar_block_period == plan.current_period
+                        && prepared.prepared_pillar_block_rlp == current_block_rlp
+                }) {
+                    *token
+                } else {
+                    if preparations.len() >= MAX_PILLAR_BLOCK_FINALIZATION_PREPARATIONS {
+                        let oldest_token = preparations.keys().min().copied().ok_or_else(|| {
+                            anyhow!("PILLAR_BLOCK_FINALIZATION_PREPARATION_CAP_EMPTY")
+                        })?;
+                        preparations.remove(&oldest_token);
+                    }
+                    let preparation_token = self
+                        .next_pillar_block_finalization_preparation_token
+                        .checked_add(1)
+                        .ok_or_else(|| {
+                            anyhow!("PILLAR_BLOCK_FINALIZATION_TOKEN_SEQUENCE_OVERFLOW")
+                        })?;
+                    self.next_pillar_block_finalization_preparation_token = preparation_token;
+                    preparations.insert(
+                        preparation_token,
+                        crate::ffi::PillarBlockFinalizationPreparation {
+                            anchor_generation: preparation_anchor_generation,
+                            prepared_pillar_block_period: plan.current_period,
+                            prepared_pillar_block_rlp: current_block_rlp.clone(),
+                            matching_vote_cleanup_min_period: plan
+                                .current_period
+                                .checked_add(1)
+                                .unwrap_or(0),
+                            should_emit: plan.should_emit,
+                        },
+                    );
+                    preparation_token
+                }
+            };
+
+            return Ok(PillarBlockFinalizationPrepareResult {
+                status: plan.status.as_u8(),
+                success,
+                should_request_votes: plan.should_request_votes,
+                has_request_votes_period: plan.request_votes_period.is_some(),
+                request_votes_period: plan.request_votes_period.unwrap_or_default(),
+                should_emit: plan.should_emit,
+                current_period: plan.current_period,
+                current_hash: current_hash.0,
+                block_weight: plan.block_weight,
+                selected_weight: plan.selected_weight,
+                selected_vote_count: plan.selected_vote_count,
+                prepared_pillar_block_period: plan.current_period,
+                prepared_pillar_block_rlp: current_block_rlp,
+                has_prepared_pillar_block: true,
+                preparation_anchor_generation: preparation_anchor_generation,
+                preparation_token,
+                votes,
+            });
+        }
+
+        Ok(PillarBlockFinalizationPrepareResult {
             status: plan.status.as_u8(),
             success,
             should_request_votes: plan.should_request_votes,
             has_request_votes_period: plan.request_votes_period.is_some(),
             request_votes_period: plan.request_votes_period.unwrap_or_default(),
-            persisted,
-            cleaned_votes,
             should_emit: plan.should_emit,
             current_period: plan.current_period,
             current_hash: current_hash.into(),
             block_weight: plan.block_weight,
             selected_weight: plan.selected_weight,
             selected_vote_count: plan.selected_vote_count,
+            prepared_pillar_block_period: 0,
+            prepared_pillar_block_rlp: Vec::new(),
+            has_prepared_pillar_block: false,
+            preparation_anchor_generation: snapshot.generation,
+            preparation_token: 0,
             votes,
+        })
+    }
+
+    /// Acknowledges one prepared pillar-block finalization.
+    ///
+    /// Inputs:
+    /// - `request` binds a one-time preparation token to the generation observed
+    ///   during prepare.
+    /// - Snapshot generation and token must match to be eligible for acknowledgement.
+    ///
+    /// Outputs:
+    /// - Mirrors the latest finalized pillar identity into the runtime snapshot.
+    /// - Cleans matching in-memory vote state.
+    /// - Returns whether compatibility event emission should run.
+    pub fn pillar_chain_runtime_ack_finalize_block_for_pbft(
+        &mut self,
+        request: PillarBlockFinalizationAcknowledgeRequest,
+    ) -> Result<PillarBlockFinalizationAcknowledgeResult> {
+        let (
+            preparation_anchor_generation,
+            prepared_pillar_block_period,
+            prepared_pillar_block_rlp,
+            matching_vote_cleanup_min_period,
+            should_emit,
+        ) = {
+            let snapshot = self
+                .current_anchor
+                .read()
+                .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+            ensure!(
+                snapshot.generation == request.anchor_generation,
+                "PILLAR_BLOCK_FINALIZATION_ACK_STALE_GENERATION"
+            );
+
+            let preparations = self
+                .pillar_block_finalization_preparations
+                .lock()
+                .map_err(|_| anyhow!("pillar block finalization preparation lock poisoned"))?;
+            let prepared = preparations
+                .get(&request.preparation_token)
+                .ok_or_else(|| anyhow!("PILLAR_BLOCK_FINALIZATION_ACK_TOKEN_REUSED"))?;
+            ensure!(
+                prepared.anchor_generation == request.anchor_generation,
+                "PILLAR_BLOCK_FINALIZATION_ACK_MISMATCHED_GENERATION"
+            );
+            (
+                prepared.anchor_generation,
+                prepared.prepared_pillar_block_period,
+                prepared.prepared_pillar_block_rlp.clone(),
+                prepared.matching_vote_cleanup_min_period,
+                prepared.should_emit,
+            )
+        };
+
+        let persisted_block = self
+            .storage
+            .pillar()
+            .rlp(prepared_pillar_block_period)?
+            .ok_or_else(|| anyhow!("PILLAR_BLOCK_FINALIZATION_PREPARED_BLOCK_NOT_PERSISTENT"))?;
+        ensure!(
+            persisted_block == prepared_pillar_block_rlp,
+            "PILLAR_BLOCK_FINALIZATION_PREPARED_BLOCK_MISMATCH"
+        );
+
+        let finalized_block = PillarBlock::decode_rlp(&prepared_pillar_block_rlp)?;
+        let finalized_hash = finalized_block.hash();
+        ensure!(
+            finalized_block.encode_rlp() == prepared_pillar_block_rlp,
+            "PILLAR_BLOCK_FINALIZATION_PREPARED_BLOCK_NON_CANONICAL"
+        );
+
+        {
+            let mut snapshot = self
+                .current_anchor
+                .write()
+                .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+            ensure!(
+                snapshot.generation == request.anchor_generation,
+                "PILLAR_BLOCK_FINALIZATION_ACK_STALE_GENERATION"
+            );
+            snapshot.latest_finalized_block = Some(finalized_block);
+            snapshot.latest_finalized_block_rlp = prepared_pillar_block_rlp.clone();
+        }
+
+        {
+            let mut preparations = self
+                .pillar_block_finalization_preparations
+                .lock()
+                .map_err(|_| anyhow!("pillar block finalization preparation lock poisoned"))?;
+            let prepared = preparations
+                .remove(&request.preparation_token)
+                .ok_or_else(|| anyhow!("PILLAR_BLOCK_FINALIZATION_ACK_TOKEN_REUSED"))?;
+            ensure!(
+                prepared.anchor_generation == preparation_anchor_generation,
+                "PILLAR_BLOCK_FINALIZATION_ACK_MISMATCHED_GENERATION"
+            );
+        }
+
+        self.votes.erase_votes(matching_vote_cleanup_min_period);
+
+        Ok(PillarBlockFinalizationAcknowledgeResult {
+            should_emit,
+            latest_finalized_period: prepared_pillar_block_period,
+            latest_finalized_hash: finalized_hash.0,
         })
     }
 }
@@ -1741,7 +1917,7 @@ mod tests {
     }
 
     #[test]
-    fn pillar_chain_runtime_finalizes_block_for_pbft_with_owned_storage() {
+    fn pillar_chain_runtime_prepares_and_acknowledges_block_for_pbft_with_owned_storage() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_finalization");
         {
             let storage =
@@ -1774,29 +1950,55 @@ mod tests {
             assert_eq!(applied.status, PILLAR_VOTE_STATUS_VALID);
             assert!(applied.accepted);
 
-            let finalized = runtime
-                .pillar_chain_runtime_finalize_block_for_pbft(PillarBlockFinalizationRequest {
-                    requested_pillar_block_hash: vote.block_hash.into(),
-                    has_last_finalized_pillar_block: false,
-                    last_finalized_hash: [0; 32],
-                })
-                .expect("pillar finalization should run");
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .expect("pillar finalization should prepare");
 
-            assert_eq!(finalized.status, 0);
-            assert!(finalized.success);
-            assert!(finalized.persisted);
-            assert!(finalized.cleaned_votes);
-            assert!(finalized.should_emit);
-            assert_eq!(finalized.selected_vote_count, 1);
-            assert_eq!(finalized.votes.len(), 1);
+            assert_eq!(prepared.status, 0);
+            assert!(prepared.success);
+            assert!(prepared.should_emit);
+            assert!(prepared.has_prepared_pillar_block);
+            assert_eq!(prepared.prepared_pillar_block_period, 41);
+            assert_eq!(prepared.prepared_pillar_block_rlp, block_rlp);
+            assert_eq!(prepared.selected_vote_count, 1);
+            assert_eq!(prepared.votes.len(), 1);
             assert_eq!(
-                finalized.votes[0].vote_hash,
+                prepared.votes[0].vote_hash,
                 Into::<[u8; 32]>::into(vote.hash(true))
+            );
+
+            pillar_storage
+                .pillar_chain_storage_apply_finalized_block(41, block_rlp.clone())
+                .expect("PBFT primary batch fixture should persist the prepared row");
+            let acknowledged = runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                    PillarBlockFinalizationAcknowledgeRequest {
+                        anchor_generation: prepared.preparation_anchor_generation,
+                        preparation_token: prepared.preparation_token,
+                    },
+                )
+                .expect("pillar finalization should acknowledge");
+            assert!(acknowledged.should_emit);
+
+            assert_eq!(acknowledged.latest_finalized_period, 41);
+            assert_eq!(
+                acknowledged.latest_finalized_hash,
+                Into::<[u8; 32]>::into(block.hash())
             );
             assert_eq!(
                 pillar_storage
                     .pillar_chain_storage_load_block(41)
-                    .expect("finalized block should load"),
+                    .expect("persisted prepared row should remain durable"),
+                block_rlp
+            );
+            assert_eq!(
+                runtime
+                    .pillar_chain_runtime_latest_finalized_block_rlp()
+                    .expect("runtime latest-finalized snapshot should update"),
                 block_rlp,
             );
         }
@@ -2167,17 +2369,342 @@ mod tests {
                 .pillar_chain_runtime_apply_current_block_data(current_rlp)
                 .unwrap();
             let result = runtime
-                .pillar_chain_runtime_finalize_block_for_pbft(PillarBlockFinalizationRequest {
-                    requested_pillar_block_hash: block.hash().into(),
-                    has_last_finalized_pillar_block: false,
-                    last_finalized_hash: [0; 32],
-                })
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: block.hash().into(),
+                    },
+                )
                 .unwrap();
             assert_eq!(result.status, 3);
             assert_eq!(result.current_period, u64::MAX);
             assert_eq!(result.current_hash, Into::<[u8; 32]>::into(block.hash()));
             assert!(!result.should_request_votes);
             assert!(!result.has_request_votes_period);
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn runtime_finalization_prepares_already_finalized_without_votes_after_ack_cleanup() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_already_finalized_replay");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(41);
+            let pillar_storage = create_pillar_chain_storage(&storage);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .unwrap();
+            let signing_key = SigningKey::from_slice(&[0x30; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
+            runtime
+                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .unwrap();
+            runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .unwrap();
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .unwrap();
+            pillar_storage
+                .pillar_chain_storage_apply_finalized_block(41, block.encode_rlp())
+                .unwrap();
+            runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                    PillarBlockFinalizationAcknowledgeRequest {
+                        anchor_generation: prepared.preparation_anchor_generation,
+                        preparation_token: prepared.preparation_token,
+                    },
+                )
+                .unwrap();
+
+            let replayed = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(replayed.status, 4);
+            assert!(!replayed.has_prepared_pillar_block);
+            assert!(!replayed.should_emit);
+            assert!(replayed.votes.is_empty());
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn runtime_finalization_prepare_is_reused_within_generation_for_same_block() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_finalization_reuse");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .unwrap();
+            let signing_key = SigningKey::from_slice(&[0x20; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
+            runtime
+                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .unwrap();
+            runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .unwrap();
+
+            let first = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .expect("first finalization prepare should succeed");
+            let second = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .expect("second finalization prepare should reuse");
+
+            assert!(first.has_prepared_pillar_block);
+            assert!(second.has_prepared_pillar_block);
+            assert_eq!(first.preparation_token, second.preparation_token);
+            assert_eq!(
+                runtime
+                    .pillar_block_finalization_preparations
+                    .lock()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn runtime_finalization_ack_preserves_token_until_prepared_row_is_persistent_and_matching() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_finalization_ack_retry");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).expect("storage should open");
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let pillar_storage = create_pillar_chain_storage(&storage);
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .unwrap();
+            let signing_key = SigningKey::from_slice(&[0x50; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
+            runtime
+                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .unwrap();
+            runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .unwrap();
+
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .unwrap();
+            let ack_request =
+                |generation: u64, token: u64| PillarBlockFinalizationAcknowledgeRequest {
+                    anchor_generation: generation,
+                    preparation_token: token,
+                };
+
+            let missing = runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(ack_request(
+                    prepared.preparation_anchor_generation,
+                    prepared.preparation_token,
+                ))
+                .expect_err("prepared pillar row should be required");
+            assert!(missing
+                .to_string()
+                .contains("PILLAR_BLOCK_FINALIZATION_PREPARED_BLOCK_NOT_PERSISTENT"));
+
+            let wrong_block = PillarBlock {
+                period: 41,
+                state_root: H256::from_low_u64_be(99),
+                previous_pillar_block_hash: block.previous_pillar_block_hash,
+                bridge_root: block.bridge_root,
+                epoch: 4,
+                validator_vote_count_changes: Vec::new(),
+            }
+            .encode_rlp();
+            pillar_storage
+                .pillar_chain_storage_apply_finalized_block(41, wrong_block)
+                .unwrap();
+
+            let stale = runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(ack_request(
+                    prepared.preparation_anchor_generation,
+                    prepared.preparation_token,
+                ))
+                .expect_err("prepared block hash mismatch should preserve token");
+            assert!(stale
+                .to_string()
+                .contains("PILLAR_BLOCK_FINALIZATION_PREPARED_BLOCK_MISMATCH"));
+
+            pillar_storage
+                .pillar_chain_storage_apply_finalized_block(41, block.encode_rlp())
+                .unwrap();
+            let acknowledged = runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(ack_request(
+                    prepared.preparation_anchor_generation,
+                    prepared.preparation_token,
+                ))
+                .expect("matching persisted prepared pillar row should allow ack");
+            assert!(acknowledged.should_emit);
+            assert_eq!(acknowledged.latest_finalized_period, 41);
+            assert_eq!(
+                acknowledged.latest_finalized_hash,
+                Into::<[u8; 32]>::into(block.hash())
+            );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn pillar_chain_runtime_finalization_ack_rejects_reused_token() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_prep_token_reuse");
+        {
+            let storage =
+                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
+                    .expect("storage should initialize");
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let pillar_storage = create_pillar_chain_storage(&storage);
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .unwrap();
+            let signing_key = SigningKey::from_slice(&[0x31; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
+            runtime
+                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .unwrap();
+            runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        validator_vote_count: 6,
+                        has_threshold: true,
+                        threshold: 5,
+                    },
+                )
+                .unwrap();
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .unwrap();
+            pillar_storage
+                .pillar_chain_storage_apply_finalized_block(41, block.encode_rlp())
+                .unwrap();
+            runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                    PillarBlockFinalizationAcknowledgeRequest {
+                        anchor_generation: prepared.preparation_anchor_generation,
+                        preparation_token: prepared.preparation_token,
+                    },
+                )
+                .unwrap();
+
+            let repeated = runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                    PillarBlockFinalizationAcknowledgeRequest {
+                        anchor_generation: prepared.preparation_anchor_generation,
+                        preparation_token: prepared.preparation_token,
+                    },
+                )
+                .expect_err("reused token should reject");
+            assert!(repeated
+                .to_string()
+                .contains("PILLAR_BLOCK_FINALIZATION_ACK_TOKEN_REUSED"));
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn pillar_chain_runtime_finalization_ack_rejects_stale_generation() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_prep_token_stale_generation");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let (block, current_rlp) = current_data(41);
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .unwrap();
+            let signing_key = SigningKey::from_slice(&[0x32; 32]).unwrap();
+            let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
+            runtime
+                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .unwrap();
+            runtime
+                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                    PillarVoteSingleAdmissionApplyInput {
+                        vote_hash: vote.hash(true).into(),
+                        has_threshold: true,
+                        threshold: 5,
+                        validator_vote_count: 6,
+                    },
+                )
+                .unwrap();
+            let prepared = runtime
+                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                    PillarBlockFinalizationRequest {
+                        requested_pillar_block_hash: vote.block_hash.into(),
+                    },
+                )
+                .unwrap();
+
+            runtime
+                .pillar_chain_runtime_apply_current_block_data(current_data(42).1)
+                .unwrap();
+            let stale = runtime
+                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                    PillarBlockFinalizationAcknowledgeRequest {
+                        anchor_generation: prepared.preparation_anchor_generation,
+                        preparation_token: prepared.preparation_token,
+                    },
+                )
+                .expect_err("stale generation should reject");
+            assert!(stale
+                .to_string()
+                .contains("PILLAR_BLOCK_FINALIZATION_ACK_STALE_GENERATION"));
         }
         let _ = fs::remove_dir_all(temp_dir);
     }

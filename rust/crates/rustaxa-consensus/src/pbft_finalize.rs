@@ -31,6 +31,7 @@ use anyhow::{Context, Result};
 use ethereum_types::H256;
 use rlp::{Rlp, RlpStream};
 use rustaxa_storage::{Column, Storage, StorageWriteBatch, StoredFinalizedRewardVoteCursor};
+use rustaxa_types::pillar::PillarBlock;
 use std::collections::HashSet;
 
 use crate::sortition::SortitionParamsChange;
@@ -996,6 +997,12 @@ pub struct PbftFinalizationStorageWriteStage {
     pub reward_votes_bundle_rlp: Vec<u8>,
     /// Extra cert-voted reward vote hashes to delete during reset.
     pub extra_reward_vote_hashes: Vec<H256>,
+    /// Gate for appending prepared pillar-block persistence in this stage.
+    pub has_prepared_pillar_block: bool,
+    /// Canonical pillar period to persist.
+    pub prepared_pillar_block_period: u64,
+    /// Canonical pillar block RLP to persist.
+    pub prepared_pillar_block_rlp: Vec<u8>,
 }
 
 impl Default for PbftFinalizationStorageWriteStage {
@@ -1011,6 +1018,9 @@ impl Default for PbftFinalizationStorageWriteStage {
             has_reward_votes_reset: false,
             reward_votes_bundle_rlp: Vec::new(),
             extra_reward_vote_hashes: Vec::new(),
+            has_prepared_pillar_block: false,
+            prepared_pillar_block_period: 0,
+            prepared_pillar_block_rlp: Vec::new(),
         }
     }
 }
@@ -1119,7 +1129,7 @@ fn append_pbft_finalization_storage_write(
 ) -> Result<PbftFinalizedPeriodApplyResult> {
     match stage.stage {
         APPEND_STAGE_PRIMARY_FINALIZATION => {
-            append_pbft_finalized_period_storage_writes_impl(storage, batch, write_set)
+            append_pbft_finalized_period_storage_writes_impl(storage, batch, write_set, &stage)
         }
         APPEND_STAGE_DYNAMIC_LAMBDA => append_pbft_finalization_dynamic_lambda_storage_writes_impl(
             storage,
@@ -1250,7 +1260,12 @@ pub fn append_pbft_finalized_period_storage_writes(
     batch: &mut StorageWriteBatch,
     write_set: &PbftFinalizationStorageWriteIntent,
 ) -> Result<PbftFinalizedPeriodApplyResult> {
-    append_pbft_finalized_period_storage_writes_impl(storage, batch, write_set)
+    append_pbft_finalized_period_storage_writes_impl(
+        storage,
+        batch,
+        write_set,
+        &PbftFinalizationStorageWriteStage::default(),
+    )
 }
 
 /// Appends dynamic-lambda persistence writes to a Rust-owned batch.
@@ -1307,6 +1322,7 @@ fn append_pbft_finalized_period_storage_writes_impl(
     storage: &Storage,
     batch: &mut StorageWriteBatch,
     write_set: &PbftFinalizationStorageWriteIntent,
+    stage: &PbftFinalizationStorageWriteStage,
 ) -> Result<PbftFinalizedPeriodApplyResult> {
     if !write_set.persist_pbft_head && !write_set.persist_period_data {
         return Ok(apply_result(
@@ -1440,6 +1456,71 @@ fn append_pbft_finalized_period_storage_writes_impl(
                 .get_raw(Column::Transactions, hash.as_bytes())?
                 .is_none();
         }
+
+        if stage.has_prepared_pillar_block {
+            if stage.prepared_pillar_block_rlp.is_empty() {
+                return Ok(apply_result(
+                    PbftFinalizedPeriodApplyStatus::MissingRequiredPayload,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_MISSING_PREPARED_PILLAR_BLOCK_RLP",
+                ));
+            }
+
+            let prepared_pillar_block =
+                match PillarBlock::decode_rlp(&stage.prepared_pillar_block_rlp) {
+                    Ok(block) => block,
+                    Err(_) => {
+                        return Ok(apply_result(
+                            PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+                            write_set,
+                            0,
+                            0,
+                            "PBFT_FINALIZE_MALFORMED_PREPARED_PILLAR_BLOCK",
+                        ));
+                    }
+                };
+            if prepared_pillar_block.encode_rlp() != stage.prepared_pillar_block_rlp {
+                return Ok(apply_result(
+                    PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_NON_CANONICAL_PREPARED_PILLAR_BLOCK",
+                ));
+            }
+            if prepared_pillar_block.period != stage.prepared_pillar_block_period {
+                return Ok(apply_result(
+                    PbftFinalizedPeriodApplyStatus::RejectedWriteSet,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_PREPARED_PILLAR_BLOCK_PERIOD_MISMATCH",
+                ));
+            }
+
+            let pillar_block_key = stage.prepared_pillar_block_period.to_le_bytes();
+            if check_existing_value(
+                storage,
+                Column::PillarBlock,
+                &pillar_block_key,
+                &stage.prepared_pillar_block_rlp,
+                "PBFT_FINALIZE_CONFLICTING_PILLAR_BLOCK",
+            )? {
+                return Ok(apply_result(
+                    PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite,
+                    write_set,
+                    0,
+                    0,
+                    "PBFT_FINALIZE_CONFLICTING_PILLAR_BLOCK",
+                ));
+            }
+
+            already_applied &= storage
+                .get_raw(Column::PillarBlock, &pillar_block_key)?
+                .is_some();
+        }
     }
 
     if write_set.persist_pbft_head {
@@ -1499,6 +1580,18 @@ fn append_pbft_finalized_period_storage_writes_impl(
                     &block_position_rlp(write_set.block_period, write.position),
                 )
                 .context("PBFT_FINALIZE_BATCH_TRANSACTION_LOCATION")?;
+        }
+
+        if stage.has_prepared_pillar_block {
+            let pillar_block_key = stage.prepared_pillar_block_period.to_le_bytes();
+            storage
+                .batch_put_raw(
+                    batch,
+                    Column::PillarBlock,
+                    &pillar_block_key,
+                    &stage.prepared_pillar_block_rlp,
+                )
+                .context("PBFT_FINALIZE_BATCH_PREPARED_PILLAR_BLOCK")?;
         }
     }
 
@@ -3265,6 +3358,18 @@ mod tests {
         H256::from_low_u64_be(v)
     }
 
+    fn canonical_pillar_block(period: u64) -> Vec<u8> {
+        rustaxa_types::pillar::PillarBlock {
+            period,
+            state_root: H256::from_low_u64_be(period.saturating_add(1)),
+            previous_pillar_block_hash: H256::from_low_u64_be(period.saturating_sub(1)),
+            bridge_root: H256::from_low_u64_be(period.saturating_add(2)),
+            epoch: period,
+            validator_vote_count_changes: Vec::new(),
+        }
+        .encode_rlp()
+    }
+
     fn storage_write_intent() -> PbftFinalizationStorageWriteIntent {
         PbftFinalizationStorageWriteIntent {
             persist_pbft_head: true,
@@ -3523,6 +3628,160 @@ mod tests {
                 .expect("idempotent commit should succeed");
         }
 
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn append_primary_storage_commits_prepared_pillar_row_and_rejects_conflicts() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_pillar_atomic");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let write_set = storage_write_intent();
+            let pillar_period = 42_u64;
+            let pillar_rlp = canonical_pillar_block(pillar_period);
+            let stage = PbftFinalizationStorageWriteStage {
+                has_prepared_pillar_block: true,
+                prepared_pillar_block_period: pillar_period,
+                prepared_pillar_block_rlp: pillar_rlp.clone(),
+                ..Default::default()
+            };
+
+            let mut batch = storage.create_write_batch();
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                &mut batch,
+                &write_set,
+                stage.clone(),
+            )
+            .expect("primary stage with pillar row should append");
+            assert_eq!(result.status, PbftFinalizedPeriodApplyStatus::Applied);
+            storage
+                .commit_write_batch_with_sync(batch, false)
+                .expect("PBFT and pillar rows should commit atomically");
+            assert_eq!(
+                storage
+                    .get_raw(Column::PillarBlock, &pillar_period.to_le_bytes())
+                    .expect("pillar row should load"),
+                Some(pillar_rlp.clone())
+            );
+
+            let mut retry_batch = storage.create_write_batch();
+            let retry = append_pbft_finalization_storage_write(
+                &storage,
+                &mut retry_batch,
+                &write_set,
+                stage.clone(),
+            )
+            .expect("matching retry should be classified");
+            assert_eq!(
+                retry.status,
+                PbftFinalizedPeriodApplyStatus::AlreadyAppliedSameValues
+            );
+
+            let mut conflict_batch = storage.create_write_batch();
+            let conflicting_pillar_rlp = rustaxa_types::pillar::PillarBlock {
+                period: pillar_period,
+                state_root: H256::from_low_u64_be(0xfeed),
+                previous_pillar_block_hash: H256::from_low_u64_be(pillar_period.saturating_sub(1)),
+                bridge_root: H256::from_low_u64_be(pillar_period.saturating_add(2)),
+                epoch: pillar_period,
+                validator_vote_count_changes: Vec::new(),
+            }
+            .encode_rlp();
+            let conflict = append_pbft_finalization_storage_write(
+                &storage,
+                &mut conflict_batch,
+                &write_set,
+                PbftFinalizationStorageWriteStage {
+                    prepared_pillar_block_rlp: conflicting_pillar_rlp,
+                    ..stage
+                },
+            )
+            .expect("conflicting retry should be classified");
+            assert_eq!(
+                conflict.status,
+                PbftFinalizedPeriodApplyStatus::ConflictingExistingWrite
+            );
+            assert_eq!(
+                conflict.error_code,
+                "PBFT_FINALIZE_CONFLICTING_PILLAR_BLOCK"
+            );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn append_primary_storage_rejects_malformed_prepared_pillar_block_rlp() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_pillar_malformed");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let write_set = storage_write_intent();
+            let mut batch = storage.create_write_batch();
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                &mut batch,
+                &write_set,
+                PbftFinalizationStorageWriteStage {
+                    has_prepared_pillar_block: true,
+                    prepared_pillar_block_period: 42,
+                    prepared_pillar_block_rlp: vec![0xc1, 0x03],
+                    ..Default::default()
+                },
+            )
+            .expect("malformed prepared pillar block should be classified");
+            assert_eq!(
+                result.status,
+                PbftFinalizedPeriodApplyStatus::RejectedWriteSet
+            );
+            assert_eq!(
+                result.error_code,
+                "PBFT_FINALIZE_MALFORMED_PREPARED_PILLAR_BLOCK"
+            );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn append_primary_storage_rejects_prepared_pillar_block_period_mismatch() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_finalize_pillar_period_mismatch");
+        {
+            let storage =
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize");
+            let write_set = storage_write_intent();
+            let mut batch = storage.create_write_batch();
+            let decoded = rustaxa_types::pillar::PillarBlock {
+                period: 41,
+                state_root: H256::from_low_u64_be(5),
+                previous_pillar_block_hash: H256::from_low_u64_be(4),
+                bridge_root: H256::from_low_u64_be(6),
+                epoch: 7,
+                validator_vote_count_changes: Vec::new(),
+            }
+            .encode_rlp();
+            let result = append_pbft_finalization_storage_write(
+                &storage,
+                &mut batch,
+                &write_set,
+                PbftFinalizationStorageWriteStage {
+                    has_prepared_pillar_block: true,
+                    prepared_pillar_block_period: 42,
+                    prepared_pillar_block_rlp: decoded.clone(),
+                    ..Default::default()
+                },
+            )
+            .expect("prepared pillar block period mismatch should be rejected");
+            assert_eq!(
+                result.status,
+                PbftFinalizedPeriodApplyStatus::RejectedWriteSet
+            );
+            assert_eq!(
+                result.error_code,
+                "PBFT_FINALIZE_PREPARED_PILLAR_BLOCK_PERIOD_MISMATCH"
+            );
+        }
         let _ = fs::remove_dir_all(temp_dir);
     }
 
