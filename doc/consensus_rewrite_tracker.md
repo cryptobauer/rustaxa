@@ -255,6 +255,47 @@ execution, or public API materialization into the consensus storage cleanup.
 
 No separate file now tracks this cleanup; `doc/consensus_rewrite_tracker.md` is the active tracking location.
 
+### Remaining Consensus Work Queue
+
+This is the dependency-ordered execution queue for the remaining consensus rewrite. `PLAN.md` defines the ownership
+boundary, `doc/consensus_consolidation_plan.md` provides slice design and historical implementation detail, and
+`doc/consensus_bridge_shim_audit.md` is the mechanical bridge/shim deletion inventory. Update this queue whenever a
+slice changes status or exposes a new dependency; do not create another consensus gap or cleanup tracker.
+
+Statuses are `ready` (can be selected now), `blocked` (a named dependency or scope decision is missing), `active`
+(incremental work is in progress), and `complete` (the completion condition and required validation have landed).
+Activating an item still requires a bounded implementation slice with the validation and review required by
+`doc/rewrite_validation_strategy.md` and `.codex/skills/SKILL.md`.
+
+#### Required consolidation and parity work
+
+| ID | Status | Work | Depends on | Complete when |
+| --- | --- | --- | --- | --- |
+| `CRW-01` | `ready` | Select the minimal Rust application-service composition boundary. Start with a PBFT-cluster-only root unless code mapping proves a shared DAG/transaction/pillar root removes more active compatibility surface without creating a service locator. | None | The selected ownership graph, retained external facades, constructor/bootstrap path, and first deletable handles are recorded in this tracker and the bridge audit. |
+| `CRW-02` | `blocked` | Compose `BridgePbftManagerRuntime` and `BridgePbftChain` behind one application-owned PBFT service; migrate app/bootstrap, `pbft_manager_shim`, and `pbft_chain_shim` callers. | `CRW-01` | One Rust service owns PBFT manager and chain lifetime/state, the standalone chain/runtime construction path is deleted, and C++ remains only an executor or public compatibility shell. |
+| `CRW-03` | `blocked` | Absorb PBFT-private state handles into the PBFT application service, starting with proposed blocks and verified votes, then rewards/sortition state used only by PBFT progress and finalization. | `CRW-02` | Chain-private state is no longer independently located or passed through CXX; obsolete `BridgeProposedBlocks`, `BridgeVerifiedVotes`, and PBFT-only rewards/sortition exports and shim mechanics are deleted after their callers migrate. |
+| `CRW-04` | `blocked` | Compose transaction/gas and DAG graph/manager/proposer runtimes behind application-owned Rust services with native FinalChain/storage ports. | `CRW-01`; coordinate shared dependencies with `CRW-02` | C++ shims no longer pass internal bridge handles between transaction, DAG, PBFT, FinalChain, or storage services; they perform input conversion, explicit EVM/network execution, and public materialization only. |
+| `CRW-05` | `blocked` | Compose pillar, slashing, sortition, and rewards planning/state behind their Rust application owner rather than standalone internal handles. | `CRW-01`; `CRW-02` where PBFT owns the lifetime | Remaining C++ code is limited to FinalChain/DPoS fact execution, signing, transaction insertion, tarcap/event execution, and public materialization; internal bridge handles and cross-shim lookup paths are deleted. |
+| `CRW-06` | `blocked` | Delete storage compatibility scaffolding after runtime consumers move: `BridgeStorage`, `BridgeStorageBatch`, storage query-family handles, broad storage-shim calls, and related `DbStorage` compatibility access. | Relevant consumer migrations in `CRW-02` through `CRW-05` | No production consensus route uses broad storage handles or C++/bridge batch authority. Retained admin, migration, test, network, and public-query behavior is narrow, explicitly classified, or explicitly unsupported in Rust mode. |
+| `CRW-07` | `active` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, `BridgeConsensusExecutionApi`, application/bootstrap handles, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
+| `CRW-08` | `ready` | Close remaining FinalChain/DPoS behavior parity: required contract methods outside the currently supported mutation subset and full failed-contract receipt parity for older supported paths. | A bounded method/receipt family and expected legacy behavior must be selected per slice | All required current-ABI DPoS/slashing behaviors in the selected family execute through Rust account/DPoS state with byte-compatible receipts, logs, blooms, persistence, restart behavior, and targeted legacy-vs-Rust parity coverage. |
+| `CRW-09` | `ready` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | Select one type family or execution transcript per slice | Consensus-internal request, recovery, publication, and audit data remains Rust-owned; C++ `StateAPI` supplies only the external execution/committed-state operations allowed by `PLAN.md`, with byte-compatible codec and transcript coverage. |
+| `CRW-10` | `blocked` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-09`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
+
+Recommended next selection: complete `CRW-01`, then implement `CRW-02` as the first structural bridge-handle reduction.
+`CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim
+surface.
+
+#### Scope-gated follow-up work
+
+These items are tracked so they are not mistaken for forgotten consensus gaps, but they do not block the current
+non-network/non-EVM consensus closeout. They require an explicit task-owner scope decision before implementation.
+
+| ID | Status | Work | Unblock condition | Complete when |
+| --- | --- | --- | --- | --- |
+| `CRW-N01` | `blocked` | Implement the application arena network ingress/egress pipelines, finish PBFT gossip effect-drain integration, and fix the deferred vote packet duplicate-with-block delivery gap in the rewrite-side network path. | Explicitly start the network/tarcap rewrite boundary. | Rust owns packet inspection, consensus admission/routing, typed effects, and result validation; C++ tarcap owns only transport execution, wrapping, peer mechanics, and queue scheduling. |
+| `CRW-E01` | `blocked` | Move concrete EVM/state execution, receipt execution details, arbitrary contract calls, or `state_db/` mutation into Rust. | Explicitly expand the accepted external-EVM boundary in `PLAN.md`. | A separately approved design and parity plan replaces the current `ConsensusExecutionApi` executor boundary without moving consensus authority back into C++. |
+
 PBFT manager compatibility removal is tracked in the consolidated PBFT ownership boundary in `PLAN.md`. That plan treats
 network/tarcap and EVM/state execution as the only long-lived C++ executor boundaries; all other PBFT manager shim and
 bridge compatibility should move into Rust-owned runtimes, typed ports, or explicit public API materialization edges.

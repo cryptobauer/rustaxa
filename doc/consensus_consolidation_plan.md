@@ -2,8 +2,9 @@
 
 This is the cleanup wave after the dedicated network, execution, and query facades landed: shrink or remove bridge/shim
 scaffolding made obsolete by those boundaries, and consolidate Rust consensus/storage usage so internal Rust paths no
-longer look like C++ compatibility paths. `PLAN.md` owns the strategic facade boundaries, while this document tracks the
-ordered compatibility-deletion slices.
+longer look like C++ compatibility paths. `PLAN.md` owns the strategic facade boundaries,
+`doc/consensus_rewrite_tracker.md` owns the current dependency-ordered **Remaining Consensus Work Queue**, and this
+document retains detailed slice design, implementation history, and compatibility-deletion rationale.
 
 ## Target State
 
@@ -40,11 +41,13 @@ Delegate concrete, non-overlapping work. The primary implementer still owns inte
 conflict resolution, validation, deletion of obsolete scaffolding, and the final closeout report.
 
 The named roles above refer to the configured profiles in `.codex/agents/*.toml`, whose TOML files are the source of truth
-for model selection and permissions. A generic subagent with a similar task label does not satisfy this requirement.
-Before using delegated output, the primary implementer must confirm that the delegation runtime resolved the requested
-profile. If the runtime cannot select or report the profile, stop the required delegated work and report that tooling
-limitation rather than claiming custom-agent coverage. Slice closeout notes must list only profiles that were actually
-confirmed; intended roles and generic delegation must be identified separately.
+for model selection and permissions. Prefer native custom-agent invocation and confirm the resolved profile from runtime
+metadata or the client UI. If the runtime cannot select or verify a named profile, follow the fallback-emulation policy
+in `AGENTS.md`: read the selected TOML, reproduce its `developer_instructions` verbatim, reproduce its other settings
+where the interface permits, and label the child `<name> fallback emulation`. This is not verified profile use. A
+fallback-emulated reviewer satisfies independent review only with the complete intended diff in a fresh read-only
+context and an evidence-backed disposition before commit. Slice closeout must distinguish verified profiles, fallback
+emulations, generic delegation, and local primary-agent work.
 
 ## Current Cleanup Pressure Points
 
@@ -2359,7 +2362,11 @@ Acceptance:
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus network_api`
   - `cmake --build /build --target rust_consensus_tests final_chain_test pbft_manager_test --parallel 12`
 
-## Suggested Execution Order
+## Historical Execution Order
+
+This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
+work. Select the next `ready` item from the **Remaining Consensus Work Queue** in
+`doc/consensus_rewrite_tracker.md`; that queue owns current dependencies, scope gates, and completion conditions.
 
 1. Slice 0: audit table and closeout checks.
 2. Slice 1: query API injection, because it is the lowest-risk repeated bridge construction cleanup.

@@ -14,7 +14,14 @@ Read these repository sources before selecting a slice:
 - `AGENTS.md`
 - `PLAN.md`
 - `doc/consensus_rewrite_tracker.md`
+- `doc/consensus_consolidation_plan.md`
+- `doc/consensus_bridge_shim_audit.md`
 - `doc/rewrite_validation_strategy.md`
+
+Treat the **Remaining Consensus Work Queue** in `doc/consensus_rewrite_tracker.md` as the execution-order source of
+truth. Use `PLAN.md` for scope and accepted ownership boundaries, the consolidation plan for detailed slice design and
+history, and the bridge/shim audit for live consumers and deletion conditions. Do not create a separate consensus gap,
+cleanup, or slice tracker.
 
 Inspect the current branch, worktree, recent commits, and relevant implementation. Preserve unrelated user changes. If an
 inspection command fails, diagnose it and use an available safe alternative rather than guessing.
@@ -82,6 +89,16 @@ Audit the roadmap and implementation before proposing work. The non-network/non-
 manager protocol-runtime boundary are currently complete. Do not recreate completed ownership slices or treat accepted
 executor and compatibility boundaries as unfinished consensus logic.
 
+Start from a `ready` item in the tracker's **Remaining Consensus Work Queue** and verify its status against current code
+before finalizing the slice. Do not start a `blocked` item until its named dependency or explicit task-owner scope
+decision is satisfied. Mark the selected item `active` when implementation begins, keep its stable `CRW-*` identifier
+through bounded follow-up slices, and mark it `complete` only when its documented completion condition and required
+validation have landed. Update cross-cutting `CRW-07` in the same commit whenever bridge handles, CXX carriers, module
+flags, shims, or compatibility-only tests are narrowed or deleted.
+
+Items `CRW-N01` and `CRW-E01` are scope-gated follow-ups. They do not block the current consensus closeout and must not
+be selected unless the task owner explicitly expands the network/tarcap or concrete EVM/state-execution boundary.
+
 Choose a slice only when it does at least one of the following:
 
 - Closes a demonstrated regression against the consensus closeout definition.
@@ -140,11 +157,21 @@ For every implementation slice, run Tier 1:
 make rewrite-validate-fast
 ```
 
-For deterministic subsystem changes, bridge/shim routing, or runtime-facing consensus behavior, run Tier 2:
+For deterministic subsystem changes, bridge/shim routing, or runtime-facing behavior, run the applicable Tier 2 gate:
 
 ```bash
+# Consensus and consensus shims
 make rewrite-validate-consensus
+
+# FinalChain, DPoS, StateAPI adapters, and CRW-08/CRW-09
+make rewrite-validate-final-chain
+
+# Storage behavior; coordinate first because this includes the expensive conformance diff
+make rewrite-validate-storage
 ```
+
+Run every applicable subsystem gate when a slice crosses boundaries. Escalate to Tier 3 when the validation strategy
+classifies the change as broad, shared, production-routing, upstream-sync, or otherwise high risk.
 
 Before production-routing deterministic behavior, require Rust unit coverage plus C++/Rust parity through a fixture,
 transcript, conformance check, or focused bridge/shim test. For startup, sync, consensus, or finalization paths, also
@@ -178,7 +205,11 @@ instructions justify it, and distinguish pre-existing findings from regressions.
 - Confirm no accidental original C++ edits exist outside allowed shim or guarded patterns.
 - For every touched upstream-owned C++ path, run `git diff upstream-main -- <path>` and require an empty diff or document
   the explicitly approved temporary exception.
-- Update `PLAN.md` or `doc/consensus_rewrite_tracker.md` when roadmap status or tracked debt changes.
+- Update the selected `CRW-*` item in `doc/consensus_rewrite_tracker.md` whenever implementation status, dependencies,
+  completion evidence, or tracked debt changes. Update `PLAN.md` only when scope, architecture, or an accepted ownership
+  boundary changes.
+- Keep `doc/consensus_consolidation_plan.md` and `doc/consensus_bridge_shim_audit.md` current in the same slice whenever
+  bridge/shim design, consumers, classifications, deletion conditions, or implementation status changes.
 - Confirm newly obsolete rewrite-owned code was removed or explicitly documented as compatibility debt.
 - Run `git diff --check`, review the final diff, and preserve unrelated worktree changes.
 - Commit only when requested, using the repository's Conventional Commit rules.
