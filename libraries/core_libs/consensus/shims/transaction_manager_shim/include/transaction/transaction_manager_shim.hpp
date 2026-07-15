@@ -19,6 +19,7 @@
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 #include "transaction/transaction.hpp"
+#include "transaction/transaction_manager_bridge_types.hpp"
 
 namespace taraxa {
 
@@ -231,7 +232,7 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
    *   hash for the supplied facts.
    */
   rustaxa::TransactionManagerVerifyNotFinalizedOutcome verifyTransactionsNotFinalizedDetailed(
-      std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> &&facts);
+      std::vector<TransactionManagerVerifyNotFinalizedInput> &&facts);
 
   /**
    * Materialize DAG block transactions from live C++ views and Rust-backed storage.

@@ -20,14 +20,14 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
     TransactionManagerGasEstimationResult, TransactionManagerHashCommand,
     TransactionManagerPublicAdmissionCommandReport, TransactionManagerPublicInsertResult,
-    TransactionManagerRuntimeAdmissionOutcome, TransactionManagerSidecarInsertInput,
-    TransactionManagerSidecarLookupRequest, TransactionManagerTransactionView,
-    TransactionManagerTransactionViewPlan, TransactionManagerTransactionViewRequest,
-    TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyNotFinalizedOutcome,
-    TransactionManagerVerifyNotFinalizedSidecarFact, TransactionManagerVerifyTransactionFact,
-    TransactionManagerVerifyTransactionOutcome, TransactionPackPreparedPlan,
-    TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
-    TransactionPackSessionEstimateInput, TransactionPackSessionStep,
+    TransactionManagerSidecarInsertInput, TransactionManagerSidecarLookupRequest,
+    TransactionManagerTransactionView, TransactionManagerTransactionViewPlan,
+    TransactionManagerTransactionViewRequest, TransactionManagerValidatedInsertRuntimeFact,
+    TransactionManagerVerifyNotFinalizedOutcome, TransactionManagerVerifyNotFinalizedSidecarFact,
+    TransactionManagerVerifyTransactionFact, TransactionManagerVerifyTransactionOutcome,
+    TransactionPackPreparedPlan, TransactionPackSelectedTransaction,
+    TransactionPackSessionCandidate, TransactionPackSessionEstimateInput,
+    TransactionPackSessionStep,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
     TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
     TransactionQueueProposableAccountFact, TransactionQueueStoredTransaction,
@@ -79,6 +79,7 @@ struct TransactionManagerRuntimeQueueCleanupPlan {
     finalized_account_purged: TransactionManagerRuntimeQueuePurgePlan,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 struct TransactionManagerRuntimeQueueInsertOutcome {
     status: u8,
     inserted_hash_found: bool,
@@ -89,6 +90,25 @@ struct TransactionManagerRuntimeQueueInsertOutcome {
 
 struct TransactionManagerRuntimeQueuePurgePlan {
     removed_hashes: Vec<TransactionQueueHash>,
+}
+
+/// Module-private result of one fact-backed runtime admission command.
+///
+/// Inputs are the validated-insert plan, queue mutation result, and FinalChain
+/// facts assembled by the runtime. The carrier preserves the public insertion
+/// statuses, finalized-period evidence, and live shell-effect hash until it is
+/// converted into `TransactionManagerAdmissionCommandReport`. It never crosses
+/// CXX, owns no queue entries, and represents no fallible state: errors are
+/// returned before construction.
+struct TransactionManagerRuntimeAdmissionOutcome {
+    insert_status: u8,
+    transaction_status: u8,
+    requires_finalized_lookup: bool,
+    finalized_period_known: bool,
+    finalized_period: u64,
+    emit_transaction_added: bool,
+    inserted_hash_found: bool,
+    inserted_hash: [u8; 32],
 }
 
 #[derive(Debug)]
@@ -2105,8 +2125,6 @@ impl BridgeTransactionManagerRuntime {
                 && queue_outcome.status == TransactionQueueInsertStatus::Inserted as u8,
             inserted_hash_found: queue_outcome.inserted_hash_found,
             inserted_hash: queue_outcome.inserted_hash,
-            demoted_hashes: queue_outcome.demoted_hashes,
-            overflow_removed_hashes: queue_outcome.overflow_removed_hashes,
         })
     }
 

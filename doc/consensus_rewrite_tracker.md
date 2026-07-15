@@ -239,6 +239,13 @@ execution, or public API materialization into the consensus storage cleanup.
   generic iterator/existence boundaries are explicitly marked as `RUSTAXA_ADMIN_COMPAT_UNSUPPORTED`,
   `RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY`, or `RUSTAXA_QUERY_COMPAT_READ`. This keeps snapshot/range/compaction/migration and
   broad iterator shells visible as compatibility debt without treating them as production consensus storage blockers.
+- Slice 7 — CXX carrier minimization is active: the transaction finalized-check identity input moved from generated
+  CXX into a shim-owned C++ carrier, and four transaction/DAG staging DTOs moved from `ffi.rs` into private Rust module
+  types. The live sidecar/outcome/apply contracts are unchanged. The mechanical export census now proves that further
+  reduction is not a dead-export sweep: all production exports have callers, while the one test-only FinalChain seed
+  helper is an enforced storage-conformance boundary. The next structural reduction must first compose active
+  consensus runtimes behind an application-owned Rust service, then migrate their C++ compatibility callers before
+  deleting handles or operation exports.
 
 No separate file now tracks this cleanup; `doc/consensus_rewrite_tracker.md` is the active tracking location.
 

@@ -2305,6 +2305,14 @@ Implementation status:
   `StateAPI` remains the external EVM/state database boundary.
 - The broader Slice 8 API shrink remains open; this guard is the closeout mechanism for future bridge-handle deletions
   and additions.
+- The 2026-07-15 minimum-surface audit found no ordinary no-caller CXX function export: every exported function has a
+  production C++ caller except the guard-confined FinalChain storage-conformance fixture helper. The first carrier
+  cleanup therefore removes bridge declarations rather than behavior: the C++-only transaction finalized-check input
+  is now a documented shim-owned type, while the transaction admission outcome and three DAG finalization staging
+  carriers are private Rust module types. C++ continues to receive only the existing transaction admission command
+  report, finalized-check sidecar outcome, and DAG finalization apply payload. Further material shrink requires
+  migrating active compatibility callers behind an application-owned Rust service; it must not be presented as an
+  unused-export deletion pass.
 - PBFT finalization report-surface cleanup removed the bridge-only `PbftFinalizationLiveMutationReport` CXX DTO and the
   PBFT manager shim's `makeFinalizationExternalEffectReport` mapper. Follow-up cleanup removed the public generic
   `PbftFinalizationExternalEffectReport` CXX DTO and the generic advancement API entirely. Live C++ finalization

@@ -28,12 +28,12 @@ std::array<uint8_t, 32> toBridgeU256(const Value& value) {
   return out;
 }
 
-std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> verifyFacts(const SharedTransactions& trxs) {
-  std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
+std::vector<TransactionManagerVerifyNotFinalizedInput> verifyFacts(const SharedTransactions& trxs) {
+  std::vector<TransactionManagerVerifyNotFinalizedInput> facts;
   facts.reserve(trxs.size());
   uint64_t input_index = 0;
   for (const auto& trx : trxs) {
-    rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
+    TransactionManagerVerifyNotFinalizedInput fact;
     fact.input_index = input_index++;
     fact.hash = toBridgeHash(trx->getHash());
     fact.transaction_nonce = toBridgeU256(trx->getNonce());

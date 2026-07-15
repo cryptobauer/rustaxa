@@ -3539,17 +3539,6 @@ pub mod rustaxa_ffi {
         not_finalized: Vec<TransactionManagerFilterAction>,
     }
 
-    /// Input for Rust runtime `verifyTransactionsNotFinalized` decisions with
-    /// sender account facts sourced by the C++ external-EVM boundary before
-    /// calling the fact-backed Rust verifier.
-    #[allow(dead_code)]
-    struct TransactionManagerVerifyNotFinalizedRuntimeFact {
-        input_index: u64,
-        hash: [u8; 32],
-        transaction_nonce: [u8; 32],
-        sender: [u8; 20],
-    }
-
     /// Input for `verifyTransactionsNotFinalized` when sender nonce facts are
     /// supplied by the C++ external-EVM boundary.
     struct TransactionManagerVerifyNotFinalizedSidecarFact {
@@ -3620,25 +3609,6 @@ pub mod rustaxa_ffi {
         account_balance: [u8; 32],
         finalized_period_known: bool,
         finalized_period: u64,
-    }
-
-    /// Runtime-executed TransactionManager admission outcome.
-    ///
-    /// Rust owns the validated-admission queue mutation and the public
-    /// `insertTransaction` status mapping. C++ supplies verification,
-    /// FinalChain account/finalized facts, and executes returned event/logging
-    /// side effects.
-    struct TransactionManagerRuntimeAdmissionOutcome {
-        insert_status: u8,
-        transaction_status: u8,
-        requires_finalized_lookup: bool,
-        finalized_period_known: bool,
-        finalized_period: u64,
-        emit_transaction_added: bool,
-        inserted_hash_found: bool,
-        inserted_hash: [u8; 32],
-        demoted_hashes: Vec<TransactionQueueHash>,
-        overflow_removed_hashes: Vec<TransactionQueueHash>,
     }
 
     /// One direct transaction hash in a typed TransactionManager command report.
@@ -4103,34 +4073,6 @@ pub mod rustaxa_ffi {
     struct DagManagerAnchors {
         old_anchor: [u8; 32],
         anchor: [u8; 32],
-    }
-
-    struct DagManagerFinalizationPlan {
-        finalized_count: u64,
-        counter_update_hashes: Vec<DagHash>,
-        expired_hashes: Vec<DagHash>,
-        remaining_hashes: Vec<DagHash>,
-        /// Transaction hashes that can be removed after this finalized transition.
-        ///
-        /// Plan payloads are pre-apply facts. Apply payloads return the same hashes
-        /// after Rust has removed them from non-finalized storage, so C++ must use
-        /// them only for live sidecar cleanup.
-        remove_transaction_hashes: Vec<DagTransactionHash>,
-    }
-
-    /// Storage-derived counter update fact for a finalized DAG block.
-    struct DagFinalizedCounterUpdate {
-        hash: [u8; 32],
-        level: u64,
-        tips_count: u64,
-    }
-
-    /// Rust-storage-backed cleanup payload after applying a finalized DAG order.
-    struct DagManagerFinalizationCleanupPayload {
-        counter_updates: Vec<DagFinalizedCounterUpdate>,
-        expired_hashes: Vec<DagHash>,
-        /// Expired transaction hashes selected for Rust-owned storage deletion.
-        remove_transaction_hashes: Vec<DagTransactionHash>,
     }
 
     /// Rust-applied finalized DAG order result for C++ live side effects.

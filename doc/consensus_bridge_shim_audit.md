@@ -269,6 +269,14 @@ Current snapshot after DAG manager verify-result API cleanup:
   appenders or native Rust DAG repositories, so the broad CXX storage methods have been deleted.
 - The remaining callers of broad `BridgeStorage::save_period_data` now route through the dedicated storage-shim batch
   appender or native Rust period storage, so the broad CXX storage method has been deleted.
+- A complete 2026-07-15 CXX function census found no unclassified no-caller function export. Every retained function
+  has a production C++ source caller except `storage_shim_seed_final_chain_conformance_lookup_rows`, whose sole
+  storage-conformance caller remains enforced by `scripts/rewrite_storage_boundary_guard.sh`. Five shared declarations
+  that were not Rust/C++ contracts have been removed from `ffi.rs`: C++ now owns
+  `TransactionManagerVerifyNotFinalizedInput` in the transaction-manager overlay, and Rust privately owns the
+  transaction admission outcome plus the DAG finalization plan, counter-update, and cleanup carriers. The live
+  `TransactionManagerVerifyNotFinalizedSidecarFact`, `TransactionManagerVerifyNotFinalizedOutcome`,
+  `TransactionManagerAdmissionCommandReport`, and `DagManagerFinalizationApplyPayload` contracts are unchanged.
 - The remaining callers of broad `BridgeStorage::save_transaction`, `remove_transaction`, `save_transaction_location`,
   `save_system_transaction`, and `save_period_system_transactions_hashes` now route through dedicated storage-shim batch
   appenders or native Rust transaction repositories, so the broad CXX storage methods have been deleted.

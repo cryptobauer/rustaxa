@@ -1,9 +1,8 @@
 use crate::ffi::rustaxa_ffi::{
-    DagAddBlockEffectPlan, DagAddBlockRuntimeInput, DagBlockLookup, DagFinalizedCounterUpdate,
-    DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors, DagManagerBlock,
-    DagManagerFinalizationApplyPayload, DagManagerFinalizationCleanupPayload,
-    DagManagerFinalizationPlan, DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload,
-    DagOrder, DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
+    DagAddBlockEffectPlan, DagAddBlockRuntimeInput, DagBlockLookup, DagFrontier, DagHash,
+    DagLevelHashes, DagManagerAnchors, DagManagerBlock, DagManagerFinalizationApplyPayload,
+    DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload, DagOrder,
+    DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
     DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
     DagProposerBlockIntentNowInput, DagProposerFrontierFacts, DagProposerSessionStep,
     DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput, DagProposerSigningReport,
@@ -61,6 +60,47 @@ use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 use rustaxa_storage::Storage;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Module-private deterministic plan for advancing DAG finalization state.
+///
+/// The carrier is produced from a validated anchor transition and contains the
+/// finalized count plus the block sets needed to derive Rust-storage counter
+/// updates and cleanup. Hash vectors retain domain ordering and may be empty for
+/// an empty period. The plan performs no I/O, never crosses CXX, and is returned
+/// only after state-transition validation succeeds.
+struct DagManagerFinalizationPlan {
+    finalized_count: u64,
+    counter_update_hashes: Vec<DagHash>,
+    expired_hashes: Vec<DagHash>,
+    remaining_hashes: Vec<DagHash>,
+}
+
+/// Module-private storage-derived counter update for one finalized DAG block.
+///
+/// `hash` identifies the finalized block, while `level` and `tips_count` are
+/// authoritative values read from Rust storage. The value is an intermediate
+/// cleanup fact, owns no storage state, and is created only after the referenced
+/// block resolves successfully.
+#[cfg_attr(not(test), allow(dead_code))]
+struct DagFinalizedCounterUpdate {
+    hash: [u8; 32],
+    level: u64,
+    tips_count: u64,
+}
+
+/// Module-private cleanup result for a finalized DAG order.
+///
+/// The carrier combines storage-derived counter updates, expired DAG hashes,
+/// and expired transaction hashes selected for Rust-owned deletion. Ordering is
+/// preserved for deterministic application and live sidecar reporting. It never
+/// crosses CXX directly; storage/decode failures are propagated before it is
+/// constructed, and every vector may be empty for an empty transition.
+#[cfg_attr(not(test), allow(dead_code))]
+struct DagManagerFinalizationCleanupPayload {
+    counter_updates: Vec<DagFinalizedCounterUpdate>,
+    expired_hashes: Vec<DagHash>,
+    remove_transaction_hashes: Vec<DagTransactionHash>,
+}
 
 #[cfg(test)]
 const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
@@ -477,7 +517,7 @@ impl BridgeDagManagerRuntime {
     /// Output:
     /// - deterministic finalization plan including unique finalized count and side-effect hashes.
     #[cfg(test)]
-    pub fn dag_manager_runtime_set_finalized_order(
+    fn dag_manager_runtime_set_finalized_order(
         &mut self,
         new_anchor: [u8; 32],
         new_anchor_level: u64,
@@ -501,7 +541,6 @@ impl BridgeDagManagerRuntime {
                         .copied()
                         .collect(),
                 ),
-                remove_transaction_hashes: Vec::new(),
             });
         }
 
@@ -520,14 +559,13 @@ impl BridgeDagManagerRuntime {
     /// This method is a test-only convenience wrapper for callers that already
     /// have a full `DagManagerFinalizationPlan`.
     #[cfg(test)]
-    pub fn dag_manager_runtime_finalization_cleanup_payload(
+    fn dag_manager_runtime_finalization_cleanup_payload(
         &self,
         plan: DagManagerFinalizationPlan,
     ) -> Result<DagManagerFinalizationCleanupPayload> {
         let DagManagerFinalizationPlan {
             finalized_count: _,
             counter_update_hashes,
-            remove_transaction_hashes: _,
             expired_hashes,
             remaining_hashes,
         } = plan;
@@ -602,7 +640,6 @@ impl BridgeDagManagerRuntime {
                         .copied()
                         .collect(),
                 ),
-                remove_transaction_hashes: Vec::new(),
             }
         } else {
             let anchor_level = self
@@ -2233,7 +2270,6 @@ fn to_bridge_finalization_plan(
         counter_update_hashes: to_dag_hashes(plan.counter_update_hashes),
         expired_hashes: to_dag_hashes(plan.expired_hashes),
         remaining_hashes: to_dag_hashes(plan.remaining_hashes),
-        remove_transaction_hashes: Vec::new(),
     }
 }
 
@@ -3891,7 +3927,6 @@ mod tests {
                     counter_update_hashes: vec![DagHash { hash: [8u8; 32] }],
                     expired_hashes: vec![DagHash { hash: [3u8; 32] }, DagHash { hash: [4u8; 32] }],
                     remaining_hashes: vec![DagHash { hash: [6u8; 32] }],
-                    remove_transaction_hashes: vec![],
                 })
                 .expect("finalization cleanup payload should compute");
 

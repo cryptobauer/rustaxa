@@ -684,12 +684,12 @@ rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> periodDataTransactionIden
   return identities;
 }
 
-std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> toVerifyNotFinalizedFacts(
+std::vector<TransactionManagerVerifyNotFinalizedInput> toVerifyNotFinalizedFacts(
     const rust::Vec<rustaxa::PeriodDataQueueTransactionIdentity> &identities) {
-  std::vector<rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact> facts;
+  std::vector<TransactionManagerVerifyNotFinalizedInput> facts;
   facts.reserve(identities.size());
   for (const auto &identity : identities) {
-    rustaxa::TransactionManagerVerifyNotFinalizedRuntimeFact fact;
+    TransactionManagerVerifyNotFinalizedInput fact;
     fact.input_index = identity.input_index;
     fact.hash = identity.hash;
     fact.transaction_nonce = identity.transaction_nonce;
