@@ -937,6 +937,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   completion throws. Rust stages transaction rows/count and DAG block/index/counters in one shared batch, commits before
   publishing either runtime, and returns only counters, queue-erasure logs, and shell effects. The public
   `TransactionManager::saveTransactionsFromDagBlock` compatibility API remains unchanged.
+- Accepted-add account facts now resolve inside `dag_manager_shim.cpp` through DagManager's existing FinalChain facade.
+  The private `TransactionManager::resolveDagAddBlockAccountNonceFacts` declaration, forwarding definition, and
+  `TransactionManagerRustShimAccess` implementation are deleted. Indexed request order, zero-account fallback on lookup
+  failure, and the missing-FinalChain exception remain unchanged without a DAG-to-transaction-manager relay.
 - The storage differential's pure-C++ build now keeps the upstream pillar-vote bundle materialization path behind
   `!RUSTAXA_ENABLE_PILLAR_VOTES`; only feature-on builds call the shim-only optimized bundle API. This is an explicit
   guarded integration change in the upstream-owned network handler, preventing main-only pillar routing from leaking

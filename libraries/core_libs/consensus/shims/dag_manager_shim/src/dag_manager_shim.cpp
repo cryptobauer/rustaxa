@@ -14,6 +14,7 @@
 
 #include "dag/dag_block.hpp"
 #include "dag/dag_manager.hpp"
+#include "final_chain/final_chain.hpp"
 #include "key_manager/key_manager.hpp"
 #include "libdevcore/Common.h"
 #include "network/network.hpp"
@@ -72,6 +73,52 @@ blk_hash_t from_bridge_hash(const std::array<uint8_t, 32> &hash) {
 
 trx_hash_t from_bridge_transaction_hash(const std::array<uint8_t, 32> &hash) {
   return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
+}
+
+addr_t from_bridge_address(const std::array<uint8_t, 20> &address) {
+  return addr_t(address.data(), addr_t::ConstructFromPointer);
+}
+
+std::array<uint8_t, 32> to_bridge_u256(const u256 &value) {
+  std::array<uint8_t, 32> out{};
+  const auto bytes = dev::toBigEndian(value);
+  if (bytes.size() > out.size()) {
+    throw std::overflow_error("u256 value cannot be represented in 32 bridge bytes");
+  }
+  std::copy(bytes.begin(), bytes.end(), out.begin() + (out.size() - bytes.size()));
+  return out;
+}
+
+/**
+ * Resolve the latest FinalChain account nonces requested by an accepted Rust DAG-add cursor.
+ *
+ * Inputs are indexed sender requests recovered and validated by Rust during non-mutating add preparation plus the
+ * DagManager-owned FinalChain facade. Output facts preserve request indices. Account lookup failures use the legacy
+ * zero-account nonce; a non-empty request list without FinalChain throws before composed persistence begins.
+ */
+rust::Vec<rustaxa::DagAddBlockAccountNonceFact> resolve_dag_add_block_account_nonce_facts(
+    const std::shared_ptr<final_chain::FinalChain> &final_chain,
+    const rust::Vec<rustaxa::DagAddBlockAccountRequest> &requests) {
+  if (!requests.empty() && !final_chain) {
+    throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
+  }
+
+  rust::Vec<rustaxa::DagAddBlockAccountNonceFact> facts;
+  facts.reserve(requests.size());
+  for (const auto &request : requests) {
+    std::optional<state_api::Account> account;
+    try {
+      account = final_chain->getAccount(from_bridge_address(request.sender));
+    } catch (const std::exception &) {
+      // Preserve legacy DAG persistence behavior when the latest account is unavailable.
+    }
+
+    rustaxa::DagAddBlockAccountNonceFact fact;
+    fact.input_index = request.input_index;
+    fact.account_nonce = to_bridge_u256(account.value_or(state_api::ZeroAccount).nonce);
+    facts.push_back(std::move(fact));
+  }
+  return facts;
 }
 
 blk_hash_t from_bridge_dag_hash(const rustaxa::DagHash &hash) { return from_bridge_hash(hash.hash); }
@@ -580,7 +627,8 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
       });
   rustaxa::DagAddBlockCompletionInput completion_input;
   completion_input.cursor_id = preparation.cursor_id;
-  completion_input.account_nonce_facts = trx_mgr_->resolveDagAddBlockAccountNonceFacts(preparation.account_requests);
+  completion_input.account_nonce_facts =
+      resolve_dag_add_block_account_nonce_facts(final_chain_, preparation.account_requests);
   const auto committed =
       dag_transaction_service_->service().dag_transaction_service_complete_add_block(std::move(completion_input));
   abort_prepared_add = false;
@@ -651,7 +699,8 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
       });
   rustaxa::DagAddBlockCompletionInput completion_input;
   completion_input.cursor_id = preparation.cursor_id;
-  completion_input.account_nonce_facts = trx_mgr_->resolveDagAddBlockAccountNonceFacts(preparation.account_requests);
+  completion_input.account_nonce_facts =
+      resolve_dag_add_block_account_nonce_facts(final_chain_, preparation.account_requests);
   const auto committed =
       dag_transaction_service_->service().dag_transaction_service_complete_add_block(std::move(completion_input));
   abort_prepared_add = false;

@@ -2810,6 +2810,22 @@ application-service transition while preserving public object APIs and post-comm
   upstream packet materialization in pure-C++ mode; both configurations build. The independent reviewer returned
   `APPROVED` after the cursor atomicity and closeout-documentation fixes.
 
+### CRW-04 Accepted-DAG Account-Fact Relay Deletion
+
+This bounded follow-up removes the remaining accepted-add DagManager-to-TransactionManager fact relay without moving
+the explicit FinalChain executor boundary into Rust.
+
+- A shim-local DagManager adapter resolves Rust-requested senders through DagManager's existing FinalChain facade and
+  returns the indexed nonce facts consumed by COMPLETE. It preserves the zero-account fallback when `getAccount`
+  throws and the existing `DbException` when non-empty requests have no FinalChain.
+- Both public DAG add paths use that adapter under the existing cursor lifetime guard and add-session serialization.
+  The private TransactionManager declaration, forwarding definition, and shim-access implementation are deleted; the
+  separate verify-block transaction-availability adapter remains unchanged.
+- Focused validation passed: `dag_block_test` (13 tests), `dag_test` (6), and `transaction_manager_shim_test` (35).
+  The three Rust-enabled targets rebuilt successfully, the full pre-commit hook passed, and
+  `make rewrite-validate-consensus` completed with its existing classified shared-fixture lock diagnostics. Formatting,
+  bridge-inventory, upstream-shape, and whitespace checks also passed. Independent review returned `APPROVED`.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

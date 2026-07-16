@@ -358,16 +358,6 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   std::pair<rustaxa::DagVerifyBlockSessionStep, SharedTransactions> executeDagVerifyTransactionAvailability() const;
 
   /**
-   * Resolve latest FinalChain account nonces requested by an accepted Rust DAG-add cursor.
-   *
-   * Each indexed request contains the sender recovered and validated by Rust during non-mutating add preparation. The
-   * returned facts preserve request indices and use the legacy zero-account nonce when the latest account read throws.
-   * A non-empty request list requires FinalChain; otherwise this adapter throws before composed persistence begins.
-   */
-  rust::Vec<rustaxa::DagAddBlockAccountNonceFact> resolveDagAddBlockAccountNonceFacts(
-      const rust::Vec<rustaxa::DagAddBlockAccountRequest> &requests) const;
-
-  /**
    * Emit the Rust-mode pending-transaction event.
    *
    * Only shim-owned insertion code calls this helper, so subscribers attached

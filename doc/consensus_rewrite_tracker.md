@@ -323,7 +323,9 @@ fields and public TransactionManager getter relays are deleted from the CXX begi
 executor inputs remain explicit. Accepted DAG persistence is now also composed: a cursor-bound prepare/complete flow
 revalidates the add plan and commits transaction rows/count plus DAG block/index/counters in one shared storage batch
 before publishing graph or transaction runtime state. The C++ transaction-save, DAG-save, graph-add, and add-order
-relays are deleted; only latest FinalChain nonce facts and post-commit logs/materialization/events/gossip remain external.
+relays are deleted. DagManager now resolves the cursor's latest FinalChain nonce requests directly through its existing
+FinalChain facade, so the DagManager-to-TransactionManager account-fact relay and its private helper surface are also
+deleted; post-commit logs/materialization/events/gossip remain external.
 Continue by auditing the remaining CRW-04 boundary inventory and selecting the next ownership slice from live production
 relays rather than compatibility-only surfaces.
 `CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim

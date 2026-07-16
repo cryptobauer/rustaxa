@@ -411,27 +411,6 @@ class TransactionManagerRustShimAccess {
     }
   }
 
-  /** Resolves the narrow latest-account nonce facts requested by an accepted DAG-add cursor. */
-  static rust::Vec<rustaxa::DagAddBlockAccountNonceFact> resolveDagAddBlockAccountNonceFacts(
-      const TransactionManager& manager, const rust::Vec<rustaxa::DagAddBlockAccountRequest>& requests) {
-    if (!requests.empty() && !manager.final_chain_) {
-      throw DbException(
-          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
-    }
-
-    rust::Vec<rustaxa::DagAddBlockAccountNonceFact> facts;
-    facts.reserve(requests.size());
-    for (const auto& request : requests) {
-      const auto account =
-          latestAccountFact(manager, fromBridgeAddress(request.sender)).value_or(state_api::ZeroAccount);
-      rustaxa::DagAddBlockAccountNonceFact fact;
-      fact.input_index = request.input_index;
-      fact.account_nonce = toBridgeU256(account.nonce);
-      facts.push_back(std::move(fact));
-    }
-    return facts;
-  }
-
   static rust::Vec<rustaxa::TransactionQueueAccountNonceFact> buildAccountNonceFacts(
       const TransactionManager& manager) {
     rust::Vec<rustaxa::TransactionQueueAccountNonceFact> account_nonce_facts;
@@ -1650,11 +1629,6 @@ SharedTransactions TransactionManager::getTransactions(const vec_trx_t& trxs_has
 std::pair<rustaxa::DagVerifyBlockSessionStep, SharedTransactions>
 TransactionManager::executeDagVerifyTransactionAvailability() const {
   return TransactionManagerRustShimAccess::executeDagVerifyTransactionAvailability(*this);
-}
-
-rust::Vec<rustaxa::DagAddBlockAccountNonceFact> TransactionManager::resolveDagAddBlockAccountNonceFacts(
-    const rust::Vec<rustaxa::DagAddBlockAccountRequest>& requests) const {
-  return TransactionManagerRustShimAccess::resolveDagAddBlockAccountNonceFacts(*this, requests);
 }
 
 std::shared_ptr<Transaction> TransactionManager::getTransaction(const trx_hash_t& hash) const {
