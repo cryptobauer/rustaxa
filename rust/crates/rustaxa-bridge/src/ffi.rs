@@ -3874,15 +3874,6 @@ pub mod rustaxa_ffi {
         tips: Vec<DagHash>,
     }
 
-    struct DagProposerFrontierFacts {
-        pivot: [u8; 32],
-        tips: Vec<DagHash>,
-        propose_level: u64,
-        anchor: [u8; 32],
-        non_finalized_block_count: u64,
-        non_finalized_min_difficulty: u32,
-    }
-
     struct DagPivotTipsValidation {
         ok: bool,
         expected_level: u64,
@@ -3987,29 +3978,36 @@ pub mod rustaxa_ffi {
         authorization_facts: DagDposAuthorizationFacts,
     }
 
-    /// C++-originated facts for Rust DAG proposal-attempt planning.
-    struct DagProposerAttemptInput {
+    /// External/configured facts used to open one runtime-owned proposal session.
+    ///
+    /// The caller supplies wallet identity, limits, and live transaction pressure. Rust derives the DAG frontier,
+    /// proposal level/period/hash, and observation fingerprint atomically from the runtime. Invalid storage state is
+    /// returned as an error; missing proposal-period mapping produces a terminal session step instead.
+    struct DagProposerSessionBeginInput {
         transaction_pool_size: u64,
         non_finalized_transaction_count: u64,
         max_non_finalized_transactions: u64,
-        frontier_facts: DagProposerFrontierFacts,
-        proposal_period_found: bool,
-        proposal_period: u64,
-        last_finalized_period: u64,
         dag_expiry_level_limit: u64,
         wallet_vrf_public_key: [u8; 32],
         wallet_vrf_secret: [u8; 64],
-        authorization_facts: DagDposAuthorizationFacts,
-        sortition_params: SortitionRuntimeParams,
         max_non_finalized_dag_blocks: u64,
         max_non_finalized_dag_blocks_low_difficulty: u64,
-        last_propose_level: u64,
-        retry_count: u64,
         max_retry_count: u64,
         proposal_weight_limit: u64,
         total_transaction_shards: u16,
         node_transaction_shard: u16,
         shard_period_interval: u64,
+    }
+
+    /// FinalChain and sortition facts collected for the runtime-derived proposal period.
+    ///
+    /// These facts answer the session's collect action and must correspond to the `proposal_period` in that step. Rust
+    /// revalidates its observation before consuming them; stale observations terminate without retry mutation, while
+    /// storage/decode/planner failures return an error and remove the session.
+    struct DagProposerExternalProposalFactsReport {
+        last_finalized_period: u64,
+        authorization_facts: DagDposAuthorizationFacts,
+        sortition_params: SortitionRuntimeParams,
     }
 
     /// Rust-planned transaction packing request for a DAG proposal attempt.
@@ -4021,32 +4019,11 @@ pub mod rustaxa_ffi {
         shard_period_interval: u64,
     }
 
-    /// Rust-owned DAG proposal-attempt decision.
-    struct DagProposerAttemptPlan {
-        action: u8,
-        reason_code: u32,
-        frontier_pivot: [u8; 32],
-        frontier_tips: Vec<DagHash>,
-        anchor: [u8; 32],
-        proposal_level: u64,
-        proposal_period_found: bool,
-        proposal_period: u64,
-        last_finalized_period: u64,
-        period_block_hash_found: bool,
-        period_block_hash: [u8; 32],
-        vrf_input: Vec<u8>,
-        vote_count: u64,
-        max_vote_count: u64,
-        vdf_difficulty: u16,
-        vdf_stale: bool,
-        old_proposal: bool,
-        update_retry_state: bool,
-        next_last_propose_level: u64,
-        next_retry_count: u64,
-        transaction_request: DagProposerTransactionPackRequest,
-    }
-
-    /// Step returned by the Rust-owned DAG proposer session cursor.
+    /// Complete instruction/result snapshot returned by the Rust-owned DAG proposer cursor.
+    ///
+    /// `status` distinguishes active, complete, and invalid-report outcomes; `action` selects the one external boundary
+    /// to execute. Retry fields are authoritative only when `update_retry_state` is true. Vectors may be empty when the
+    /// selected action does not consume them. Terminal steps remove the cursor after the step is constructed.
     struct DagProposerSessionStep {
         status: u8,
         action: u8,
@@ -4083,19 +4060,9 @@ pub mod rustaxa_ffi {
         transaction_gas_estimations: Vec<u64>,
     }
 
-    /// Report from a live in-flight VDF wait observation.
-    struct DagProposerVdfWaitReport {
-        latest_proposal_level: u64,
-    }
-
     /// Report that a live VDF proof executor boundary has completed.
     struct DagProposerVdfProofReport {
         proof_ok: bool,
-    }
-
-    /// Report after the compatibility stale-proof sleep observes latest level.
-    struct DagProposerStaleProofReport {
-        latest_proposal_level: u64,
     }
 
     /// Report after C++ executes the signing boundary for a proposed DAG block.
@@ -4608,9 +4575,6 @@ pub mod rustaxa_ffi {
             anchor: &[u8; 32],
         ) -> DagOrder;
         pub fn dag_manager_runtime_frontier(self: &BridgeDagManagerRuntime) -> DagFrontier;
-        pub fn dag_manager_runtime_proposer_frontier_facts(
-            self: &BridgeDagManagerRuntime,
-        ) -> DagProposerFrontierFacts;
         pub fn dag_manager_runtime_ghost_path(
             self: &BridgeDagManagerRuntime,
             source: &[u8; 32],
@@ -4669,23 +4633,24 @@ pub mod rustaxa_ffi {
             self: &BridgeDagManagerRuntime,
             input: DagProposerStorageTipSelectionInput,
         ) -> Result<DagProposerTipSelectionPlan>;
-        pub fn dag_manager_runtime_plan_proposal_attempt(
-            self: &BridgeDagManagerRuntime,
-            input: DagProposerAttemptInput,
-        ) -> Result<DagProposerAttemptPlan>;
+        /// Opens a runtime-owned proposer cursor from wallet/configuration and transaction-pressure inputs.
+        /// Returns a unique cursor id or a storage/decode error; Rust derives all DAG observation facts, and callers
+        /// must eventually consume a terminal step or call the idempotent abort function.
         pub fn dag_manager_runtime_begin_proposer_session(
             runtime: &mut BridgeDagManagerRuntime,
-            input: DagProposerAttemptInput,
+            input: DagProposerSessionBeginInput,
         ) -> Result<u64>;
+        /// Idempotently removes a live proposer cursor without planner or retry effects.
+        /// Returns true only when this call removed the cursor; missing or already-removed ids return false.
+        pub fn dag_manager_runtime_abort_proposer_session(
+            runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
+        ) -> bool;
         pub fn dag_manager_runtime_ensure_proposal_period_mapping(
             self: &BridgeDagManagerRuntime,
             level: u64,
             period: u64,
         ) -> Result<bool>;
-        pub fn dag_manager_runtime_proposal_period_for_level(
-            self: &BridgeDagManagerRuntime,
-            level: u64,
-        ) -> Result<PeriodLookup>;
         pub fn dag_manager_runtime_period_block_hash(
             self: &BridgeDagManagerRuntime,
             period: u64,
@@ -4716,29 +4681,40 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgeDagManagerRuntime,
             report: DagVerifyBlockGasReport,
         ) -> DagVerifyBlockSessionStep;
+        /// Reads the cursor's current executor instruction; terminal reads remove it.
+        /// Missing ids return an invalid-report step and do not mutate retry state.
         pub fn dag_manager_runtime_proposer_session_next(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
         ) -> DagProposerSessionStep;
+        /// Supplies the requested FinalChain/sortition facts after Rust revalidates its observation.
+        /// Any returned error removes the cursor, so callers may also invoke abort safely during generic cleanup.
+        pub fn dag_manager_runtime_proposer_session_report_external_facts(
+            runtime: &mut BridgeDagManagerRuntime,
+            session_id: u64,
+            report: DagProposerExternalProposalFactsReport,
+        ) -> Result<DagProposerSessionStep>;
         pub fn dag_manager_runtime_proposer_session_report_transactions(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
             report: DagProposerTransactionPackReport,
         ) -> DagProposerSessionStep;
-        pub fn dag_manager_runtime_proposer_session_report_vdf_wait(
+        /// Polls VDF cancellation using the current Rust-derived proposal frontier level.
+        /// Missing/out-of-order ids return an invalid-report step; cancellation returns a terminal cancel action.
+        pub fn dag_manager_runtime_proposer_session_poll_vdf(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
-            report: DagProposerVdfWaitReport,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
             report: DagProposerVdfProofReport,
         ) -> DagProposerSessionStep;
-        pub fn dag_manager_runtime_proposer_session_report_stale_proof(
+        /// Rechecks a stale proof after compatibility sleep using the current Rust-derived proposal frontier level.
+        /// The cursor either advances to block construction or terminates with authoritative retry effects.
+        pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
-            report: DagProposerStaleProofReport,
         ) -> DagProposerSessionStep;
         pub fn dag_manager_runtime_proposer_session_report_signing(
             runtime: &mut BridgeDagManagerRuntime,

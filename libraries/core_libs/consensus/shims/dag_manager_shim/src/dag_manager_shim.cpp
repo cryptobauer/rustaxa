@@ -412,9 +412,7 @@ std::shared_ptr<DagManager> DagManager::getShared() {
   }
 }
 
-void DagManager::setNetwork(std::weak_ptr<Network> network) {
-  network_ = network;
-}
+void DagManager::setNetwork(std::weak_ptr<Network> network) { network_ = network; }
 
 bool DagManager::isDagBlockKnown(const blk_hash_t &hash) const {
   std::shared_lock lock(rust_graphs_mutex_);
@@ -799,8 +797,7 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
   }
 }
 
-DagFinalizationOrderReport DagManager::setDagBlockOrderForPbftFinalization(blk_hash_t const &anchor,
-                                                                           PbftPeriod period,
+DagFinalizationOrderReport DagManager::setDagBlockOrderForPbftFinalization(blk_hash_t const &anchor, PbftPeriod period,
                                                                            vec_blk_t const &dag_order) {
   const auto finalized_count = setDagBlockOrder(anchor, period, dag_order);
 
@@ -915,9 +912,7 @@ uint32_t DagManager::getNonFinalizedBlocksMinDifficulty() const {
   return rust_graphs_->runtime->dag_manager_runtime_non_finalized_min_difficulty();
 }
 
-std::shared_mutex &DagManager::getDagMutex() {
-  return dag_finalization_mutex_;
-}
+std::shared_mutex &DagManager::getDagMutex() { return dag_finalization_mutex_; }
 
 SortitionParamsManager &DagManager::sortitionParamsManager() { return sortition_params_manager_; }
 
@@ -929,11 +924,6 @@ uint64_t DagManager::getDagExpiryLevel() const {
 }
 
 uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_period_; }
-
-rustaxa::DagProposerFrontierFacts DagManager::getProposerFrontierFacts() const {
-  std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_proposer_frontier_facts();
-}
 
 rustaxa::DagProposerBlockConstructionPlan DagManager::planProposerBlockConstruction(
     rustaxa::DagProposerStorageBlockConstructionInput input) const {
@@ -947,14 +937,14 @@ rustaxa::DagProposerTipSelectionPlan DagManager::planProposerTipSelection(
   return rust_graphs_->runtime->dag_manager_runtime_plan_proposal_tip_selection(std::move(input));
 }
 
-rustaxa::DagProposerAttemptPlan DagManager::planProposerAttempt(rustaxa::DagProposerAttemptInput input) const {
-  std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_plan_proposal_attempt(std::move(input));
-}
-
-uint64_t DagManager::beginProposerSession(rustaxa::DagProposerAttemptInput input) {
+uint64_t DagManager::beginProposerSession(rustaxa::DagProposerSessionBeginInput input) {
   std::unique_lock lock(rust_graphs_mutex_);
   return rustaxa::dag_manager_runtime_begin_proposer_session(*rust_graphs_->runtime, std::move(input));
+}
+
+bool DagManager::abortProposerSession(uint64_t session_id) {
+  std::unique_lock lock(rust_graphs_mutex_);
+  return rustaxa::dag_manager_runtime_abort_proposer_session(*rust_graphs_->runtime, session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::proposerSessionNext(uint64_t session_id) {
@@ -962,32 +952,35 @@ rustaxa::DagProposerSessionStep DagManager::proposerSessionNext(uint64_t session
   return rustaxa::dag_manager_runtime_proposer_session_next(*rust_graphs_->runtime, session_id);
 }
 
+rustaxa::DagProposerSessionStep DagManager::reportProposerExternalProposalFacts(
+    uint64_t session_id, rustaxa::DagProposerExternalProposalFactsReport report) {
+  std::unique_lock lock(rust_graphs_mutex_);
+  return rustaxa::dag_manager_runtime_proposer_session_report_external_facts(*rust_graphs_->runtime, session_id,
+                                                                             std::move(report));
+}
+
 rustaxa::DagProposerSessionStep DagManager::reportProposerTransactions(
     uint64_t session_id, rustaxa::DagProposerTransactionPackReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
   return rustaxa::dag_manager_runtime_proposer_session_report_transactions(*rust_graphs_->runtime, session_id,
-                                                                          std::move(report));
+                                                                           std::move(report));
 }
 
-rustaxa::DagProposerSessionStep DagManager::reportProposerVdfWait(uint64_t session_id,
-                                                                  rustaxa::DagProposerVdfWaitReport report) {
+rustaxa::DagProposerSessionStep DagManager::pollProposerVdfWait(uint64_t session_id) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_vdf_wait(*rust_graphs_->runtime, session_id,
-                                                                       std::move(report));
+  return rustaxa::dag_manager_runtime_proposer_session_poll_vdf(*rust_graphs_->runtime, session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerVdfProof(uint64_t session_id,
                                                                    rustaxa::DagProposerVdfProofReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
   return rustaxa::dag_manager_runtime_proposer_session_report_vdf_proof(*rust_graphs_->runtime, session_id,
-                                                                       std::move(report));
+                                                                        std::move(report));
 }
 
-rustaxa::DagProposerSessionStep DagManager::reportProposerStaleProof(uint64_t session_id,
-                                                                     rustaxa::DagProposerStaleProofReport report) {
+rustaxa::DagProposerSessionStep DagManager::resumeProposerAfterStaleProofSleep(uint64_t session_id) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_stale_proof(*rust_graphs_->runtime, session_id,
-                                                                          std::move(report));
+  return rustaxa::dag_manager_runtime_proposer_session_resume_stale_proof(*rust_graphs_->runtime, session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerSigning(uint64_t session_id,
@@ -1002,15 +995,6 @@ rustaxa::DagProposerSessionStep DagManager::reportProposerAddBlock(uint64_t sess
   std::unique_lock lock(rust_graphs_mutex_);
   return rustaxa::dag_manager_runtime_proposer_session_report_add_block(*rust_graphs_->runtime, session_id,
                                                                         std::move(report));
-}
-
-std::optional<PbftPeriod> DagManager::getProposalPeriodForDagLevel(level_t level) const {
-  std::shared_lock lock(rust_graphs_mutex_);
-  const auto lookup = rust_graphs_->runtime->dag_manager_runtime_proposal_period_for_level(level);
-  if (!lookup.found) {
-    return std::nullopt;
-  }
-  return lookup.period;
 }
 
 blk_hash_t DagManager::getPeriodBlockHashForDagProposal(PbftPeriod period) const {

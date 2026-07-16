@@ -446,6 +446,21 @@ Implementation notes:
   binaries with the same five in-process `/tmp/taraxa0` RocksDB-lock failures plus the known Go/cgo static-link failure.
   Feature-on build metadata and the core archive contain neither the original source object nor any
   `DagOld`/`PivotTreeOld` symbol; original DAG and manager source/header diffs versus `upstream-main` remain empty.
+- DAG proposer sessions now derive and fingerprint frontier, proposal-period, and period-hash observations inside
+  `BridgeDagManagerRuntime`. FinalChain and sortition facts are collected outside the runtime lock and accepted only
+  after revalidation; graph changes terminate the attempt before transaction packing or retry mutation. VDF polling and
+  stale-proof resume also derive the current proposal level inside the runtime, so C++ no longer echoes DAG-owned
+  frontier, proposal-period, or latest-level facts through standalone CXX exports/report carriers. An idempotent abort
+  route plus a C++ scope guard removes every live cursor on normal return or exception; fallible Rust report paths also
+  remove the cursor before returning, so a session cannot retain wallet-secret material after its caller unwinds.
+  Validation passed all 17 focused native Rust proposer tests, all 289 Rust bridge tests, all 13 `dag_block_test` cases,
+  all six Rust-mode `dag_test` manager cases, `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and the
+  Rust-enabled startup smoke. The task-owner-preapproved Tier 3 CTest gate passed 21 of 27 binaries; its failures retained
+  the known same-process `/tmp/taraxa0` RocksDB-lock fixture defect in `pillar_chain_test`, `full_node_test`,
+  `network_test`, `pbft_manager_test`, and `vote_test`, plus the unrelated Go/cgo static-link failure. The Python Tier 3
+  command remained blocked before collection because the Python 3.13 environment lacks development headers required to
+  build its pinned `cytoolz` and `pyethash` dependencies. Original DAG manager and proposer files remain clean versus
+  `upstream-main`.
 - The standalone DAG block proposer facade is fully detached from `DagBlockProposerOld`. Feature-on builds exclude the
   untouched original `dag_block_proposer.cpp`, the overlay wrapper directly includes the self-contained executor
   facade, and the compile rename is deleted. The facade now explicitly includes its configuration, thread-pool, and

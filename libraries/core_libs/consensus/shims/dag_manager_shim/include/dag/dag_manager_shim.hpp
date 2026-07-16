@@ -141,13 +141,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   uint64_t getDagExpiryLevel() const;
   uint64_t getMaxLevelsPerPeriod() const;
   /**
-   * Returns Rust-owned DAG graph facts needed by one proposer attempt.
-   *
-   * The Rust DAG runtime supplies the frontier, next proposal level, current anchor, and non-finalized pressure facts.
-   * C++ uses this only for temporary transaction/VDF/block materialization boundaries.
-   */
-  rustaxa::DagProposerFrontierFacts getProposerFrontierFacts() const;
-  /**
    * Plans proposer block construction using tip metadata loaded from Rust storage.
    *
    * The Rust DAG runtime loads frontier-tip blocks, recovers tip senders, and owns gas/tip selection facts. C++ keeps
@@ -164,37 +157,43 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   rustaxa::DagProposerTipSelectionPlan planProposerTipSelection(
       rustaxa::DagProposerStorageTipSelectionInput input) const;
   /**
-   * Plans a DAG proposal attempt up to the live transaction-packing boundary.
-   *
-   * Rust collects DAG runtime/storage facts and owns the pre-transaction proposal decision. C++ supplies live outer
-   * facts such as transaction pool pressure, FinalChain authorization facts, wallet keys, and retry state.
-   */
-  rustaxa::DagProposerAttemptPlan planProposerAttempt(rustaxa::DagProposerAttemptInput input) const;
-  /**
    * Opens a runtime-owned proposer cursor for one `DagBlockProposer::proposeDagBlock` attempt.
    *
-   * C++ executes only requested live effects and reports their results before
-   * the Rust DAG runtime cursor advances.
+   * The input contains transaction pressure, wallet identity, and static proposal limits. Rust observes its DAG
+   * frontier and proposal-period mapping atomically; C++ executes only requested external effects after this method
+   * releases the runtime lock.
    */
-  uint64_t beginProposerSession(rustaxa::DagProposerAttemptInput input);
+  uint64_t beginProposerSession(rustaxa::DagProposerSessionBeginInput input);
+  /**
+   * Abort and remove one runtime-owned proposer session.
+   *
+   * This cleanup operation performs no proposal planning, retry-state mutation,
+   * or external effects. It is idempotent: a session already removed by normal
+   * completion or a previous abort is a no-op.
+   *
+   * @param session_id runtime-issued proposer session identifier
+   * @return true when this call removed a live session, false when no session existed
+   * @throws bridge or synchronization exceptions before cleanup completes
+   */
+  bool abortProposerSession(uint64_t session_id);
   rustaxa::DagProposerSessionStep proposerSessionNext(uint64_t session_id);
+  /**
+   * Reports FinalChain and sortition facts requested by a proposer session.
+   *
+   * The caller collects these facts without holding the DAG runtime lock. Rust reacquires the lock, revalidates its
+   * stored DAG observation, and either advances to transaction packing or terminates a stale attempt.
+   */
+  rustaxa::DagProposerSessionStep reportProposerExternalProposalFacts(
+      uint64_t session_id, rustaxa::DagProposerExternalProposalFactsReport report);
   rustaxa::DagProposerSessionStep reportProposerTransactions(uint64_t session_id,
                                                              rustaxa::DagProposerTransactionPackReport report);
-  rustaxa::DagProposerSessionStep reportProposerVdfWait(uint64_t session_id, rustaxa::DagProposerVdfWaitReport report);
+  rustaxa::DagProposerSessionStep pollProposerVdfWait(uint64_t session_id);
   rustaxa::DagProposerSessionStep reportProposerVdfProof(uint64_t session_id,
                                                          rustaxa::DagProposerVdfProofReport report);
-  rustaxa::DagProposerSessionStep reportProposerStaleProof(uint64_t session_id,
-                                                           rustaxa::DagProposerStaleProofReport report);
+  rustaxa::DagProposerSessionStep resumeProposerAfterStaleProofSleep(uint64_t session_id);
   rustaxa::DagProposerSessionStep reportProposerSigning(uint64_t session_id, rustaxa::DagProposerSigningReport report);
   rustaxa::DagProposerSessionStep reportProposerAddBlock(uint64_t session_id,
                                                          rustaxa::DagProposerAddBlockReport report);
-  /**
-   * Resolves the proposal period for a DAG level through the Rust DAG runtime.
-   *
-   * Missing storage rows are returned as `std::nullopt`. Storage backend or
-   * decoding failures are propagated as bridge exceptions.
-   */
-  std::optional<PbftPeriod> getProposalPeriodForDagLevel(level_t level) const;
   /**
    * Returns the PBFT block hash for a finalized period through Rust storage.
    *

@@ -31,6 +31,7 @@ constexpr uint8_t kDagProposerSessionActionCancelVdf = 3;
 constexpr uint8_t kDagProposerSessionActionStaleProofSleep = 4;
 constexpr uint8_t kDagProposerSessionActionBuildBlock = 5;
 constexpr uint8_t kDagProposerSessionActionAddBlock = 6;
+constexpr uint8_t kDagProposerSessionActionCollectExternalProposalFacts = 7;
 constexpr uint32_t kDagProposerReasonMissingProposalPeriod = 1;
 constexpr uint32_t kDagProposerReasonVrfKeyMismatch = 3;
 constexpr uint32_t kDagProposerReasonZeroDenominator = 6;
@@ -116,39 +117,30 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
 }
 
 bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData>& node_dag_proposer_data) {
-  const auto frontier_facts = dag_mgr_->getProposerFrontierFacts();
-  const auto proposal_period = dag_mgr_->getProposalPeriodForDagLevel(frontier_facts.propose_level);
-  const auto final_chain_facts =
-      final_chain_->dagProposerFinalChainFacts(proposal_period, node_dag_proposer_data->wallet.node_addr);
-  rustaxa::SortitionRuntimeParams sortition_params{};
-  if (proposal_period.has_value()) {
-    sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(*proposal_period);
-  }
+  rustaxa::DagProposerSessionBeginInput begin_input;
+  begin_input.transaction_pool_size = trx_mgr_->getTransactionPoolSize();
+  begin_input.non_finalized_transaction_count = trx_mgr_->getNonfinalizedTrxSize();
+  begin_input.max_non_finalized_transactions = kMaxNonFinalizedTransactions;
+  begin_input.dag_expiry_level_limit = kDagExpiryLevelLimit;
+  begin_input.wallet_vrf_public_key = node_dag_proposer_data->wallet.vrf_pk.asArray();
+  begin_input.wallet_vrf_secret = node_dag_proposer_data->wallet.vrf_secret.asArray();
+  begin_input.max_non_finalized_dag_blocks = kMaxNonFinalizedDagBlocks;
+  begin_input.max_non_finalized_dag_blocks_low_difficulty = kMaxNonFinalizedDagBlocksLowDifficulty;
+  begin_input.max_retry_count = node_dag_proposer_data->max_num_tries;
+  begin_input.proposal_weight_limit = kDagProposeGasLimit;
+  begin_input.total_transaction_shards = total_trx_shards_;
+  begin_input.node_transaction_shard = node_dag_proposer_data->trx_shard;
+  begin_input.shard_period_interval = kShardProposePeriodInterval;
 
-  rustaxa::DagProposerAttemptInput attempt_input;
-  attempt_input.transaction_pool_size = trx_mgr_->getTransactionPoolSize();
-  attempt_input.non_finalized_transaction_count = trx_mgr_->getNonfinalizedTrxSize();
-  attempt_input.max_non_finalized_transactions = kMaxNonFinalizedTransactions;
-  attempt_input.frontier_facts = frontier_facts;
-  attempt_input.proposal_period_found = proposal_period.has_value();
-  attempt_input.proposal_period = proposal_period.value_or(0);
-  attempt_input.last_finalized_period = final_chain_facts.last_finalized_period;
-  attempt_input.dag_expiry_level_limit = kDagExpiryLevelLimit;
-  attempt_input.wallet_vrf_public_key = node_dag_proposer_data->wallet.vrf_pk.asArray();
-  attempt_input.wallet_vrf_secret = node_dag_proposer_data->wallet.vrf_secret.asArray();
-  attempt_input.authorization_facts = final_chain_facts.authorization_facts;
-  attempt_input.sortition_params = sortition_params;
-  attempt_input.max_non_finalized_dag_blocks = kMaxNonFinalizedDagBlocks;
-  attempt_input.max_non_finalized_dag_blocks_low_difficulty = kMaxNonFinalizedDagBlocksLowDifficulty;
-  attempt_input.last_propose_level = 0;
-  attempt_input.retry_count = 0;
-  attempt_input.max_retry_count = node_dag_proposer_data->max_num_tries;
-  attempt_input.proposal_weight_limit = kDagProposeGasLimit;
-  attempt_input.total_transaction_shards = total_trx_shards_;
-  attempt_input.node_transaction_shard = node_dag_proposer_data->trx_shard;
-  attempt_input.shard_period_interval = kShardProposePeriodInterval;
-
-  const auto proposer_session_id = dag_mgr_->beginProposerSession(std::move(attempt_input));
+  const auto proposer_session_id = dag_mgr_->beginProposerSession(std::move(begin_input));
+  dev::ScopeGuard abort_session_on_exit([dag_manager = dag_mgr_, proposer_session_id] {
+    try {
+      dag_manager->abortProposerSession(proposer_session_id);
+    } catch (...) {
+      // Destructors must not replace an active proposer exception. Normal terminal
+      // paths already removed the session, so the idempotent abort is a no-op.
+    }
+  });
   auto step = dag_mgr_->proposerSessionNext(proposer_session_id);
   auto fail_on_invalid_report = [](const rustaxa::DagProposerSessionStep& plan) {
     if (plan.status == kDagProposerSessionStatusInvalidReport) {
@@ -181,6 +173,22 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     return plan.return_value;
   };
 
+  if (auto done = finish_if_complete(step)) {
+    return *done;
+  }
+  if (step.action != kDagProposerSessionActionCollectExternalProposalFacts) {
+    throw std::runtime_error("Rust DAG proposer session did not request external proposal facts");
+  }
+
+  const auto proposal_period = std::optional<PbftPeriod>{step.proposal_period};
+  const auto final_chain_facts =
+      final_chain_->dagProposerFinalChainFacts(proposal_period, node_dag_proposer_data->wallet.node_addr);
+  auto sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(step.proposal_period);
+  rustaxa::DagProposerExternalProposalFactsReport external_facts_report;
+  external_facts_report.last_finalized_period = final_chain_facts.last_finalized_period;
+  external_facts_report.authorization_facts = final_chain_facts.authorization_facts;
+  external_facts_report.sortition_params = sortition_params;
+  step = dag_mgr_->reportProposerExternalProposalFacts(proposer_session_id, std::move(external_facts_report));
   if (auto done = finish_if_complete(step)) {
     return *done;
   }
@@ -239,10 +247,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   std::future<void> result = sync.get_future();
   while (result.wait_for(std::chrono::milliseconds(step.vdf_poll_interval_ms)) != std::future_status::ready) {
-    const auto latest_level = dag_mgr_->getProposerFrontierFacts().propose_level;
-    rustaxa::DagProposerVdfWaitReport wait_report;
-    wait_report.latest_proposal_level = latest_level;
-    const auto wait_step = dag_mgr_->reportProposerVdfWait(proposer_session_id, std::move(wait_report));
+    const auto wait_step = dag_mgr_->pollProposerVdfWait(proposer_session_id);
     fail_on_invalid_report(wait_step);
     if (wait_step.action == kDagProposerSessionActionCancelVdf) {
       cancellation_token = true;
@@ -276,9 +281,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   if (step.action == kDagProposerSessionActionStaleProofSleep) {
     thisThreadSleepForMilliSeconds(step.stale_proof_sleep_ms);
-    rustaxa::DagProposerStaleProofReport stale_report;
-    stale_report.latest_proposal_level = dag_mgr_->getProposerFrontierFacts().propose_level;
-    step = dag_mgr_->reportProposerStaleProof(proposer_session_id, std::move(stale_report));
+    step = dag_mgr_->resumeProposerAfterStaleProofSleep(proposer_session_id);
     if (auto done = finish_if_complete(step)) {
       return *done;
     }

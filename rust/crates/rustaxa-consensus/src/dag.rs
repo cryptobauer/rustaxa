@@ -214,6 +214,8 @@ pub const DAG_PROPOSER_REASON_WORKER_PACKET_QUEUE_OVER_LIMIT: u32 = 21;
 pub const DAG_PROPOSER_REASON_WORKER_NO_BLOCK_PROPOSED: u32 = 22;
 /// DAG proposer signing executor failed before add-block submission.
 pub const DAG_PROPOSER_REASON_SIGNING_FAILED: u32 = 23;
+/// DAG proposer observation changed while external facts were collected.
+pub const DAG_PROPOSER_REASON_STALE_OBSERVATION: u32 = 24;
 /// Rust-owned proposer VDF poll cadence executed by the compatibility shell.
 pub const DAG_PROPOSER_VDF_POLL_INTERVAL_MS: u64 = 100;
 /// Rust-owned stale-proof delay executed by the compatibility shell.
@@ -2467,8 +2469,9 @@ pub fn plan_dag_proposer_vdf_wait(input: DagProposerVdfWaitInput) -> DagProposer
 
 /// Plans whether a stale proposer VDF proof should be skipped after sleeping.
 ///
-/// C++ provides the latest proposal level observed after the compatibility
-/// sleep. Rust owns the resulting action and retry cursor for the skip case.
+/// The caller provides the latest proposal level after the compatibility
+/// sleep. The bridge runtime derives that level from `DagManagerState`; this
+/// planner owns the resulting action and retry cursor for the skip case.
 pub fn plan_dag_proposer_stale_proof(
     input: DagProposerStaleProofInput,
 ) -> DagProposerStaleProofPlan {

@@ -3,18 +3,17 @@ use crate::ffi::rustaxa_ffi::{
     DagLevelHashes, DagManagerAnchors, DagManagerBlock, DagManagerFinalizationApplyPayload,
     DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload, DagOrder,
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
-    DagProposerAttemptInput, DagProposerAttemptPlan, DagProposerBlockConstructionPlan,
-    DagProposerBlockIntentNowInput, DagProposerFrontierFacts, DagProposerSessionStep,
+    DagProposerBlockConstructionPlan, DagProposerBlockIntentNowInput,
+    DagProposerExternalProposalFactsReport, DagProposerSessionBeginInput, DagProposerSessionStep,
     DagProposerSignedBlockIntent, DagProposerSignedBlockIntentInput, DagProposerSigningReport,
-    DagProposerStaleProofReport, DagProposerStorageBlockConstructionInput,
-    DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
-    DagProposerTransactionPackReport, DagProposerTransactionPackRequest,
-    DagProposerUnsignedBlockIntent, DagProposerVdfProofReport, DagProposerVdfWaitReport,
+    DagProposerStorageBlockConstructionInput, DagProposerStorageTipSelectionInput,
+    DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
+    DagProposerTransactionPackRequest, DagProposerUnsignedBlockIntent, DagProposerVdfProofReport,
     DagProposerWorkerCommand, DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash,
     DagTransactionRlpLookup, DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport,
     DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport,
     DagVerifyBlockVdfReport, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionResult,
-    HashLookup, PeriodLookup, SortitionRuntimeParams,
+    HashLookup, SortitionRuntimeParams,
 };
 use crate::ffi::{BridgeDagManagerRuntime, BridgeStorage};
 use anyhow::{ensure, Context, Result};
@@ -41,8 +40,10 @@ use rustaxa_consensus::dag::{
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
+    DagProposerAttemptPlan as DomainDagProposerAttemptPlan,
     DagProposerBlockConstructionPlan as DomainDagProposerBlockConstructionPlan,
     DagProposerBlockIntentInput as DomainDagProposerBlockIntentInput,
+    DagProposerFrontierFacts as DomainDagProposerFrontierFacts,
     DagProposerSignedBlockIntentInput as DomainDagProposerSignedBlockIntentInput,
     DagProposerStorageBlockConstructionInput as DomainDagProposerStorageBlockConstructionInput,
     DagProposerStorageTipSelectionInput as DomainDagProposerStorageTipSelectionInput,
@@ -60,6 +61,7 @@ use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 use rustaxa_storage::Storage;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tiny_keccak::{Hasher, Keccak};
 
 /// Module-private deterministic plan for advancing DAG finalization state.
 ///
@@ -102,9 +104,6 @@ struct DagManagerFinalizationCleanupPayload {
     remove_transaction_hashes: Vec<DagTransactionHash>,
 }
 
-#[cfg(test)]
-const DAG_PROPOSER_ACTION_CONTINUE: u8 = 1;
-
 const DAG_VERIFY_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_VERIFY_SESSION_STATUS_COMPLETE: u8 = 1;
 const DAG_VERIFY_SESSION_STATUS_INVALID_REPORT: u8 = 2;
@@ -124,6 +123,7 @@ const DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF: u8 = 3;
 const DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP: u8 = 4;
 const DAG_PROPOSER_SESSION_ACTION_BUILD_BLOCK: u8 = 5;
 const DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK: u8 = 6;
+const DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS: u8 = 7;
 
 #[derive(Clone)]
 enum DagVerifyBlockSessionAction {
@@ -155,6 +155,7 @@ pub struct DagVerifyBlockSession {
 }
 
 enum DagProposerSessionAction {
+    CollectExternalProposalFacts,
     PackTransactions,
     StartVdf,
     StaleProofSleep,
@@ -171,7 +172,9 @@ enum DagProposerSessionAction {
 /// and network effects owned by downstream executors.
 pub struct DagProposerSession {
     action: DagProposerSessionAction,
-    attempt: DagProposerAttemptPlan,
+    begin_input: DagProposerSessionBeginInput,
+    observation: DagProposerObservation,
+    attempt: DomainDagProposerAttemptPlan,
     retry_key: [u8; 32],
     minimum_vdf_difficulty: u16,
     status: u8,
@@ -185,6 +188,16 @@ pub struct DagProposerSession {
     selected_transaction_hashes: Vec<H256>,
     transaction_gas_estimations: Vec<u64>,
     error_code: String,
+}
+
+#[derive(Clone)]
+struct DagProposerObservation {
+    frontier: DomainDagProposerFrontierFacts,
+    proposal_period_found: bool,
+    proposal_period: u64,
+    period_block_hash_found: bool,
+    period_block_hash: H256,
+    fingerprint: [u8; 32],
 }
 
 /// Rust-owned durable retry cursor for one configured DAG proposer wallet.
@@ -701,80 +714,18 @@ impl BridgeDagManagerRuntime {
         to_bridge_frontier(self.state.frontier())
     }
 
-    /// Returns Rust-owned graph facts needed by one DAG proposer attempt.
-    ///
-    /// This keeps proposer frontier selection, next-level calculation, anchor comparison, and non-finalized pressure
-    /// facts inside the Rust DAG runtime. C++ still owns network throttling, transaction materialization, async VDF
-    /// execution, and final `DagBlock` construction while those boundaries remain open.
-    pub fn dag_manager_runtime_proposer_frontier_facts(&self) -> DagProposerFrontierFacts {
-        let facts = self.state.proposer_frontier_facts();
-        DagProposerFrontierFacts {
-            pivot: facts.frontier.pivot.into(),
-            tips: to_dag_hashes(facts.frontier.tips),
-            propose_level: facts.propose_level,
-            anchor: facts.anchor.into(),
-            non_finalized_block_count: facts.non_finalized_block_count as u64,
-            non_finalized_min_difficulty: facts.non_finalized_min_difficulty,
-        }
-    }
-
-    /// Plans one DAG proposal attempt up to the live transaction-packing boundary.
-    ///
-    /// Rust owns pre-transaction proposal decision ordering, local VRF probing for VDF difficulty, non-finalized DAG
-    /// pressure, and stale retry effects. C++ applies the returned action and still owns network throttling, live
-    /// transaction packing/materialization, EVM gas estimation, async VDF proof, final `DagBlock` construction, and
-    /// network/add-block side effects.
-    pub fn dag_manager_runtime_plan_proposal_attempt(
-        &self,
-        input: DagProposerAttemptInput,
-    ) -> Result<DagProposerAttemptPlan> {
-        let period_block_hash = if input.proposal_period_found {
-            let lookup =
-                period_block_hash_from_storage(self.storage.as_ref(), input.proposal_period)?;
-            if !lookup.found && input.proposal_period == 0 {
-                rustaxa_consensus::dag::DagHashStorageLookup {
-                    found: true,
-                    hash: H256::zero(),
-                }
-            } else {
-                lookup
-            }
-        } else {
-            rustaxa_consensus::dag::DagHashStorageLookup {
-                found: false,
-                hash: H256::zero(),
-            }
-        };
-        let plan = plan_dag_proposer_attempt(to_domain_dag_proposer_attempt_input(
-            input,
-            period_block_hash,
-        ))?;
-        Ok(to_bridge_dag_proposer_attempt_plan(plan))
-    }
-
     /// Opens a runtime-owned DAG proposer cursor for one proposal attempt.
     ///
-    /// The cursor starts by running the existing Rust proposal-attempt planner. Non-continuing plans become terminal
-    /// steps immediately; continuing plans request the live transaction-packing executor boundary. All later stages
-    /// advance only through explicit C++ reports.
-    pub fn begin_proposer_session(&mut self, mut input: DagProposerAttemptInput) -> Result<u64> {
-        let minimum_vdf_difficulty = input.sortition_params.difficulty_min;
+    /// The cursor atomically derives the frontier, proposal period, period hash, and an observation fingerprint from
+    /// Rust-owned runtime state. A valid observation first requests only FinalChain authorization and sortition facts;
+    /// the planner runs after those facts arrive and only if the observation still matches. Later stages advance through
+    /// explicit external reports or runtime-derived VDF frontier polls.
+    pub fn begin_proposer_session(&mut self, input: DagProposerSessionBeginInput) -> Result<u64> {
         let retry_key = input.wallet_vrf_public_key;
-        let retry_state =
-            self.proposer_retry_states
-                .entry(retry_key)
-                .or_insert(DagProposerRetryState {
-                    last_propose_level: 0,
-                    retry_count: 0,
-                    max_retry_count: input.max_retry_count,
-                });
-        retry_state.max_retry_count = input.max_retry_count;
-        input.last_propose_level = retry_state.last_propose_level;
-        input.retry_count = retry_state.retry_count;
-        input.max_retry_count = retry_state.max_retry_count;
-        let attempt = self.dag_manager_runtime_plan_proposal_attempt(input)?;
-        let action = if attempt.action == rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
-            DagProposerSessionAction::PackTransactions
+        let observation = self.proposer_observation()?;
+        let attempt = placeholder_attempt(&observation, &input);
+        let action = if observation.proposal_period_found {
+            DagProposerSessionAction::CollectExternalProposalFacts
         } else {
             DagProposerSessionAction::Complete
         };
@@ -795,14 +746,20 @@ impl BridgeDagManagerRuntime {
             DagProposerSession {
                 action,
                 status,
+                begin_input: input,
+                observation,
                 retry_key,
-                reason_code: attempt.reason_code,
+                reason_code: if attempt.proposal_period_found {
+                    rustaxa_consensus::dag::DAG_PROPOSER_REASON_OK
+                } else {
+                    rustaxa_consensus::dag::DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD
+                },
                 return_value: false,
                 update_retry_state: attempt.update_retry_state,
                 next_last_propose_level: attempt.next_last_propose_level,
                 next_retry_count: attempt.next_retry_count,
                 record_proposed_block: false,
-                minimum_vdf_difficulty,
+                minimum_vdf_difficulty: 0,
                 vdf_message: Vec::new(),
                 selected_transaction_hashes: Vec::new(),
                 transaction_gas_estimations: Vec::new(),
@@ -811,6 +768,44 @@ impl BridgeDagManagerRuntime {
             },
         );
         Ok(session_id)
+    }
+
+    fn proposer_observation(&self) -> Result<DagProposerObservation> {
+        let frontier = self.state.proposer_frontier_facts();
+        let proposal_period =
+            proposal_period_for_level_from_storage(self.storage.as_ref(), frontier.propose_level)?;
+        let period_block_hash = if proposal_period.found {
+            let lookup =
+                period_block_hash_from_storage(self.storage.as_ref(), proposal_period.period)?;
+            if !lookup.found && proposal_period.period == 0 {
+                rustaxa_consensus::dag::DagHashStorageLookup {
+                    found: true,
+                    hash: H256::zero(),
+                }
+            } else {
+                lookup
+            }
+        } else {
+            rustaxa_consensus::dag::DagHashStorageLookup {
+                found: false,
+                hash: H256::zero(),
+            }
+        };
+        let fingerprint = proposer_observation_fingerprint(
+            &frontier,
+            proposal_period.found,
+            proposal_period.period,
+            period_block_hash.found,
+            period_block_hash.hash,
+        );
+        Ok(DagProposerObservation {
+            frontier,
+            proposal_period_found: proposal_period.found,
+            proposal_period: proposal_period.period,
+            period_block_hash_found: period_block_hash.found,
+            period_block_hash: period_block_hash.hash,
+            fingerprint,
+        })
     }
 
     /// Returns the ghost path from a source block.
@@ -1058,17 +1053,6 @@ impl BridgeDagManagerRuntime {
     /// Rust storage returns the first persisted `(level -> period)` row at or
     /// after the requested level. Missing rows are reported as `found = false`
     /// instead of errors, while malformed storage/backend failures are errors.
-    pub fn dag_manager_runtime_proposal_period_for_level(
-        &self,
-        level: u64,
-    ) -> Result<PeriodLookup> {
-        let lookup = proposal_period_for_level_from_storage(self.storage.as_ref(), level)?;
-        Ok(PeriodLookup {
-            found: lookup.found,
-            period: lookup.period,
-        })
-    }
-
     /// Returns the canonical PBFT block hash for finalized `period`.
     ///
     /// The hash is derived from item 0 of the canonical `PeriodData` RLP stored
@@ -1330,11 +1314,12 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
     complete_verify_block_session(session, result.reject_code)
 }
 
-/// Opens a keyed DAG proposal cursor inside the long-lived DAG manager runtime.
+/// Opens a DAG proposal cursor inside the long-lived DAG manager runtime.
 ///
 /// Inputs:
 /// - `runtime`: the DAG manager runtime that owns graph state, storage, and proposal cursors.
-/// - `input`: compact attempt facts collected by the C++ proposer shell for one wallet attempt.
+/// - `input`: wallet/configuration and live transaction-pressure facts for one attempt. Frontier and proposal-period
+///   facts are derived from the runtime and are never accepted from C++.
 ///
 /// Outputs:
 /// - Returns the runtime-local cursor id that C++ must pass to `dag_manager_runtime_proposer_session_next` and report
@@ -1343,15 +1328,34 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
 /// Invariants and edge behavior:
 /// - Proposal cursors are DAG-manager implementation state and are not exported as standalone CXX handles.
 /// - Multiple wallets may hold active proposal cursors concurrently; each cursor advances only through its returned id.
+/// - A changed runtime observation terminates before planner or retry-state mutation.
 /// - Terminal cursors are removed after their terminal step is observed.
 pub fn dag_manager_runtime_begin_proposer_session(
     runtime: &mut BridgeDagManagerRuntime,
-    input: DagProposerAttemptInput,
+    input: DagProposerSessionBeginInput,
 ) -> Result<u64> {
     runtime.begin_proposer_session(input)
 }
 
-/// Returns the next requested action for the runtime-owned DAG proposal cursor.
+/// Removes a runtime-owned DAG proposal cursor without applying retry-state effects.
+///
+/// Inputs: `runtime` owns the cursor registry and `session_id` identifies the cursor to remove.
+/// Output: `true` only when a live cursor was removed. Missing, already-terminal, and previously aborted ids return
+/// `false`, making cleanup idempotent and safe during exception unwinding.
+/// Invariants and edge behavior: abort never creates or updates retry state, never runs a planner, and never reports an
+/// error.
+pub fn dag_manager_runtime_abort_proposer_session(
+    runtime: &mut BridgeDagManagerRuntime,
+    session_id: u64,
+) -> bool {
+    runtime.proposer_sessions.remove(&session_id).is_some()
+}
+
+/// Returns the current requested action for a runtime-owned DAG proposal cursor.
+///
+/// Inputs: `runtime` owns the cursor and `session_id` selects it. Output is a complete executor instruction snapshot;
+/// active calls do not advance the cursor. A terminal step removes the cursor, and a missing id returns an
+/// `INVALID_REPORT` step with no retry effects.
 pub fn dag_manager_runtime_proposer_session_next(
     runtime: &mut BridgeDagManagerRuntime,
     session_id: u64,
@@ -1361,6 +1365,103 @@ pub fn dag_manager_runtime_proposer_session_next(
     };
     let step = dag_proposer_session_step(session);
     finish_dag_proposer_session_step(runtime, session_id, step)
+}
+
+/// Accepts FinalChain authorization and sortition facts for the runtime-derived proposal period.
+///
+/// Inputs: `session_id` must name a cursor requesting external facts; `report` contains only the external facts Rust
+/// cannot derive from the DAG runtime. Output is the next packing or terminal instruction.
+/// Invariants and edge behavior: Rust recomputes the observation before planning. A changed observation terminates the
+/// cursor without retry mutation; an out-of-order report returns an invalid terminal step. Storage/decode/planner errors
+/// return `Err` and remove the cursor before returning, so no fallible path leaves an unreachable live session.
+pub fn dag_manager_runtime_proposer_session_report_external_facts(
+    runtime: &mut BridgeDagManagerRuntime,
+    session_id: u64,
+    report: DagProposerExternalProposalFactsReport,
+) -> Result<DagProposerSessionStep> {
+    let Some(session) = runtime.proposer_sessions.get(&session_id) else {
+        return Ok(dag_proposer_session_not_started_step());
+    };
+    if !matches!(
+        session.action,
+        DagProposerSessionAction::CollectExternalProposalFacts
+    ) {
+        let session = runtime.proposer_sessions.get_mut(&session_id).unwrap();
+        let step = invalid_dag_proposer_report(
+            session,
+            "DAG_PROPOSER_SESSION_UNEXPECTED_EXTERNAL_FACTS_REPORT",
+        );
+        return Ok(finish_dag_proposer_session_step(runtime, session_id, step));
+    }
+
+    let current = match runtime.proposer_observation() {
+        Ok(current) => current,
+        Err(error) => {
+            runtime.proposer_sessions.remove(&session_id);
+            return Err(error);
+        }
+    };
+    let original_fingerprint = runtime.proposer_sessions[&session_id]
+        .observation
+        .fingerprint;
+    if current.fingerprint != original_fingerprint {
+        let session = runtime.proposer_sessions.get_mut(&session_id).unwrap();
+        session.action = DagProposerSessionAction::Complete;
+        session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+        session.reason_code = rustaxa_consensus::dag::DAG_PROPOSER_REASON_STALE_OBSERVATION;
+        session.error_code = "DAG_PROPOSER_SESSION_STALE_OBSERVATION".to_owned();
+        let step = dag_proposer_session_step(session);
+        return Ok(finish_dag_proposer_session_step(runtime, session_id, step));
+    }
+
+    let session = &runtime.proposer_sessions[&session_id];
+    let retry = runtime.proposer_retry_states.get(&session.retry_key);
+    let last_propose_level = retry.map_or(0, |state| state.last_propose_level);
+    let retry_count = retry.map_or(0, |state| state.retry_count);
+    let input = domain_attempt_input(
+        &session.begin_input,
+        &session.observation,
+        report,
+        last_propose_level,
+        retry_count,
+    );
+    let minimum_vdf_difficulty = input.sortition_params.vdf.difficulty_min;
+    let attempt = match plan_dag_proposer_attempt(input) {
+        Ok(attempt) => attempt,
+        Err(error) => {
+            runtime.proposer_sessions.remove(&session_id);
+            return Err(error);
+        }
+    };
+    let action = if attempt.action == rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
+        DagProposerSessionAction::PackTransactions
+    } else {
+        DagProposerSessionAction::Complete
+    };
+    let session = runtime.proposer_sessions.get_mut(&session_id).unwrap();
+    runtime
+        .proposer_retry_states
+        .entry(session.retry_key)
+        .or_insert(DagProposerRetryState {
+            last_propose_level,
+            retry_count,
+            max_retry_count: session.begin_input.max_retry_count,
+        })
+        .max_retry_count = session.begin_input.max_retry_count;
+    session.status = if matches!(action, DagProposerSessionAction::Complete) {
+        DAG_PROPOSER_SESSION_STATUS_COMPLETE
+    } else {
+        DAG_PROPOSER_SESSION_STATUS_ACTIVE
+    };
+    session.action = action;
+    session.reason_code = attempt.reason_code;
+    session.update_retry_state = attempt.update_retry_state;
+    session.next_last_propose_level = attempt.next_last_propose_level;
+    session.next_retry_count = attempt.next_retry_count;
+    session.minimum_vdf_difficulty = minimum_vdf_difficulty;
+    session.attempt = attempt;
+    let step = dag_proposer_session_step(session);
+    Ok(finish_dag_proposer_session_step(runtime, session_id, step))
 }
 
 /// Reports live transaction-packing results to the runtime-owned DAG proposal cursor.
@@ -1408,7 +1509,7 @@ pub fn dag_manager_runtime_proposer_session_report_transactions(
                     .collect();
                 session.transaction_gas_estimations = report.transaction_gas_estimations;
                 session.vdf_message = construct_dag_vdf_message(
-                    H256::from(session.attempt.frontier_pivot),
+                    session.attempt.frontier.pivot,
                     &session.selected_transaction_hashes,
                 );
                 session.action = DagProposerSessionAction::StartVdf;
@@ -1419,12 +1520,16 @@ pub fn dag_manager_runtime_proposer_session_report_transactions(
     finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
-/// Reports VDF worker wait progress to the runtime-owned DAG proposal cursor.
-pub fn dag_manager_runtime_proposer_session_report_vdf_wait(
+/// Polls whether the runtime-owned proposal cursor should cancel its in-flight VDF.
+///
+/// The current proposal level is derived from the Rust DAG frontier. A matching active VDF remains active; sufficient
+/// frontier advancement returns a terminal cancel step with retry-reset facts. Missing or out-of-order ids return an
+/// invalid-report step.
+pub fn dag_manager_runtime_proposer_session_poll_vdf(
     runtime: &mut BridgeDagManagerRuntime,
     session_id: u64,
-    report: DagProposerVdfWaitReport,
 ) -> DagProposerSessionStep {
+    let latest_proposal_level = runtime.state.proposer_frontier_facts().propose_level;
     let step = {
         let Some(session) = runtime.proposer_sessions.get_mut(&session_id) else {
             return dag_proposer_session_not_started_step();
@@ -1435,7 +1540,7 @@ pub fn dag_manager_runtime_proposer_session_report_vdf_wait(
             let wait =
                 plan_dag_proposer_vdf_wait(rustaxa_consensus::dag::DagProposerVdfWaitInput {
                     proposal_level: session.attempt.proposal_level,
-                    latest_proposal_level: report.latest_proposal_level,
+                    latest_proposal_level,
                     vdf_difficulty: session.attempt.vdf_difficulty,
                     minimum_vdf_difficulty: session.minimum_vdf_difficulty,
                 });
@@ -1487,12 +1592,15 @@ pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
     finish_dag_proposer_session_step(runtime, session_id, step)
 }
 
-/// Reports stale-proof recheck results to the runtime-owned DAG proposal cursor.
-pub fn dag_manager_runtime_proposer_session_report_stale_proof(
+/// Resumes a stale-proof cursor after the external compatibility sleep.
+///
+/// The current proposal level is derived from the Rust DAG frontier. An unchanged level advances to block construction;
+/// an advanced level terminates with retry-reset facts. Missing or out-of-order ids return an invalid-report step.
+pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
     runtime: &mut BridgeDagManagerRuntime,
     session_id: u64,
-    report: DagProposerStaleProofReport,
 ) -> DagProposerSessionStep {
+    let latest_proposal_level = runtime.state.proposer_frontier_facts().propose_level;
     let step = {
         let Some(session) = runtime.proposer_sessions.get_mut(&session_id) else {
             return dag_proposer_session_not_started_step();
@@ -1506,7 +1614,7 @@ pub fn dag_manager_runtime_proposer_session_report_stale_proof(
             let stale =
                 plan_dag_proposer_stale_proof(rustaxa_consensus::dag::DagProposerStaleProofInput {
                     proposal_level: session.attempt.proposal_level,
-                    latest_proposal_level: report.latest_proposal_level,
+                    latest_proposal_level,
                 });
             session.reason_code = stale.reason_code;
             session.update_retry_state = stale.update_retry_state;
@@ -1813,36 +1921,44 @@ fn to_domain_sortition_params(params: SortitionRuntimeParams) -> SortitionParams
     }
 }
 
-fn to_domain_dag_proposer_attempt_input(
-    input: DagProposerAttemptInput,
-    period_block_hash: rustaxa_consensus::dag::DagHashStorageLookup,
+fn domain_attempt_input(
+    input: &DagProposerSessionBeginInput,
+    observation: &DagProposerObservation,
+    report: DagProposerExternalProposalFactsReport,
+    last_propose_level: u64,
+    retry_count: u64,
 ) -> DomainDagProposerAttemptInput {
     DomainDagProposerAttemptInput {
         transaction_pool_size: input.transaction_pool_size,
         non_finalized_transaction_count: input.non_finalized_transaction_count,
         max_non_finalized_transactions: input.max_non_finalized_transactions,
-        frontier: to_domain_dag_proposer_frontier_facts(input.frontier_facts),
-        proposal_period_found: input.proposal_period_found,
-        proposal_period: input.proposal_period,
-        last_finalized_period: input.last_finalized_period,
+        frontier: observation.frontier.clone(),
+        proposal_period_found: observation.proposal_period_found,
+        proposal_period: observation.proposal_period,
+        last_finalized_period: report.last_finalized_period,
         dag_expiry_level_limit: input.dag_expiry_level_limit,
-        period_block_hash_found: period_block_hash.found,
-        period_block_hash: period_block_hash.hash,
+        period_block_hash_found: observation.period_block_hash_found,
+        period_block_hash: observation.period_block_hash,
         wallet_vrf_public_key: input.wallet_vrf_public_key,
         wallet_vrf_secret: input.wallet_vrf_secret,
         authorization_facts: rustaxa_consensus::dag::DagDposAuthorizationFacts {
-            vrf_key: input.authorization_facts.vrf_key.as_slice().try_into().ok(),
-            vrf_key_found: input.authorization_facts.vrf_key_found,
-            sender_eligible_vote_count: input.authorization_facts.sender_eligible_vote_count,
-            vdf_sortition_max_vote_count: input.authorization_facts.vdf_sortition_max_vote_count,
-            eligibility_status: input.authorization_facts.eligibility_status,
+            vrf_key: report
+                .authorization_facts
+                .vrf_key
+                .as_slice()
+                .try_into()
+                .ok(),
+            vrf_key_found: report.authorization_facts.vrf_key_found,
+            sender_eligible_vote_count: report.authorization_facts.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: report.authorization_facts.vdf_sortition_max_vote_count,
+            eligibility_status: report.authorization_facts.eligibility_status,
         },
-        sortition_params: to_domain_sortition_params(input.sortition_params),
+        sortition_params: to_domain_sortition_params(report.sortition_params),
         max_non_finalized_dag_blocks: input.max_non_finalized_dag_blocks,
         max_non_finalized_dag_blocks_low_difficulty: input
             .max_non_finalized_dag_blocks_low_difficulty,
-        last_propose_level: input.last_propose_level,
-        retry_count: input.retry_count,
+        last_propose_level,
+        retry_count,
         max_retry_count: input.max_retry_count,
         proposal_weight_limit: input.proposal_weight_limit,
         total_transaction_shards: input.total_transaction_shards,
@@ -1851,57 +1967,63 @@ fn to_domain_dag_proposer_attempt_input(
     }
 }
 
-fn to_domain_dag_proposer_frontier_facts(
-    facts: DagProposerFrontierFacts,
-) -> rustaxa_consensus::dag::DagProposerFrontierFacts {
-    rustaxa_consensus::dag::DagProposerFrontierFacts {
-        frontier: rustaxa_consensus::dag::DagFrontier {
-            pivot: H256::from(facts.pivot),
-            tips: facts
-                .tips
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect(),
+fn placeholder_attempt(
+    observation: &DagProposerObservation,
+    input: &DagProposerSessionBeginInput,
+) -> DomainDagProposerAttemptPlan {
+    DomainDagProposerAttemptPlan {
+        action: rustaxa_consensus::dag::DAG_PROPOSER_ACTION_SKIP,
+        reason_code: rustaxa_consensus::dag::DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD,
+        frontier: observation.frontier.frontier.clone(),
+        anchor: observation.frontier.anchor,
+        proposal_level: observation.frontier.propose_level,
+        proposal_period_found: observation.proposal_period_found,
+        proposal_period: observation.proposal_period,
+        last_finalized_period: 0,
+        period_block_hash_found: observation.period_block_hash_found,
+        period_block_hash: observation.period_block_hash,
+        vrf_input: Vec::new(),
+        vote_count: 0,
+        max_vote_count: 0,
+        vdf_difficulty: 0,
+        vdf_stale: false,
+        old_proposal: false,
+        update_retry_state: false,
+        next_last_propose_level: 0,
+        next_retry_count: 0,
+        transaction_request: rustaxa_consensus::dag::DagProposerTransactionPackRequest {
+            proposal_period: observation.proposal_period,
+            weight_limit: input.proposal_weight_limit,
+            total_transaction_shards: input.total_transaction_shards,
+            node_transaction_shard: input.node_transaction_shard,
+            shard_period_interval: input.shard_period_interval,
         },
-        propose_level: facts.propose_level,
-        anchor: H256::from(facts.anchor),
-        non_finalized_block_count: facts.non_finalized_block_count as usize,
-        non_finalized_min_difficulty: facts.non_finalized_min_difficulty,
     }
 }
 
-fn to_bridge_dag_proposer_attempt_plan(
-    plan: rustaxa_consensus::dag::DagProposerAttemptPlan,
-) -> DagProposerAttemptPlan {
-    DagProposerAttemptPlan {
-        action: plan.action,
-        reason_code: plan.reason_code,
-        frontier_pivot: plan.frontier.pivot.into(),
-        frontier_tips: to_dag_hashes(plan.frontier.tips),
-        anchor: plan.anchor.into(),
-        proposal_level: plan.proposal_level,
-        proposal_period_found: plan.proposal_period_found,
-        proposal_period: plan.proposal_period,
-        last_finalized_period: plan.last_finalized_period,
-        period_block_hash_found: plan.period_block_hash_found,
-        period_block_hash: plan.period_block_hash.into(),
-        vrf_input: plan.vrf_input,
-        vote_count: plan.vote_count,
-        max_vote_count: plan.max_vote_count,
-        vdf_difficulty: plan.vdf_difficulty,
-        vdf_stale: plan.vdf_stale,
-        old_proposal: plan.old_proposal,
-        update_retry_state: plan.update_retry_state,
-        next_last_propose_level: plan.next_last_propose_level,
-        next_retry_count: plan.next_retry_count,
-        transaction_request: DagProposerTransactionPackRequest {
-            proposal_period: plan.transaction_request.proposal_period,
-            weight_limit: plan.transaction_request.weight_limit,
-            total_transaction_shards: plan.transaction_request.total_transaction_shards,
-            node_transaction_shard: plan.transaction_request.node_transaction_shard,
-            shard_period_interval: plan.transaction_request.shard_period_interval,
-        },
+fn proposer_observation_fingerprint(
+    frontier: &DomainDagProposerFrontierFacts,
+    proposal_period_found: bool,
+    proposal_period: u64,
+    period_block_hash_found: bool,
+    period_block_hash: H256,
+) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    hasher.update(frontier.frontier.pivot.as_bytes());
+    for tip in &frontier.frontier.tips {
+        hasher.update(tip.as_bytes());
     }
+    hasher.update(&frontier.propose_level.to_be_bytes());
+    hasher.update(frontier.anchor.as_bytes());
+    hasher.update(&(frontier.non_finalized_block_count as u64).to_be_bytes());
+    hasher.update(&frontier.non_finalized_min_difficulty.to_be_bytes());
+    hasher.update(&[u8::from(proposal_period_found)]);
+    hasher.update(&proposal_period.to_be_bytes());
+    hasher.update(&[u8::from(period_block_hash_found)]);
+    hasher.update(period_block_hash.as_bytes());
+    let mut output = [0_u8; 32];
+    hasher.finalize(&mut output);
+    output
 }
 
 fn to_dag_hashes(hashes: Vec<H256>) -> Vec<DagHash> {
@@ -1924,6 +2046,9 @@ fn to_bridge_transaction_hashes(hashes: Vec<H256>) -> Vec<DagTransactionHash> {
 
 fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSessionStep {
     let action = match session.action {
+        DagProposerSessionAction::CollectExternalProposalFacts => {
+            DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
+        }
         DagProposerSessionAction::PackTransactions => DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS,
         DagProposerSessionAction::StartVdf => DAG_PROPOSER_SESSION_ACTION_START_VDF,
         DagProposerSessionAction::StaleProofSleep => DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP,
@@ -1939,12 +2064,13 @@ fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSession
         update_retry_state: session.update_retry_state,
         next_last_propose_level: session.next_last_propose_level,
         next_retry_count: session.next_retry_count,
-        frontier_pivot: session.attempt.frontier_pivot,
+        frontier_pivot: session.attempt.frontier.pivot.into(),
         frontier_tips: session
             .attempt
-            .frontier_tips
+            .frontier
+            .tips
             .iter()
-            .map(|hash| DagHash { hash: hash.hash })
+            .map(|hash| DagHash { hash: hash.0 })
             .collect(),
         proposal_level: session.attempt.proposal_level,
         proposal_period: session.attempt.proposal_period,
@@ -2260,7 +2386,8 @@ fn dag_reference_metadata_from_runtime_or_storage(
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::{
-        DagDposAuthorizationFacts, DagProposerAttemptInput, SortitionRuntimeParams,
+        DagDposAuthorizationFacts, DagProposerExternalProposalFactsReport,
+        DagProposerSessionBeginInput, SortitionRuntimeParams,
     };
     use crate::ffi::{BridgeDagStorageQueries, BridgeStorage, BridgeTransactionStorageQueries};
     use crate::storage::{
@@ -2676,12 +2803,6 @@ mod tests {
             assert!(after.found);
             assert_eq!(after.period, 0);
 
-            let runtime_lookup = runtime
-                .dag_manager_runtime_proposal_period_for_level(100)
-                .expect("runtime lookup should succeed");
-            assert!(runtime_lookup.found);
-            assert_eq!(runtime_lookup.period, 0);
-
             assert!(!runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(100, 0)
                 .expect("idempotent ensure should succeed"));
@@ -2735,161 +2856,42 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn dag_manager_runtime_plan_proposal_attempt_uses_rust_storage_period_hash() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposal_attempt");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
-                .expect("runtime should initialize");
-
-            runtime
-                .dag_manager_runtime_ensure_proposal_period_mapping(1, 7)
-                .expect("proposal-period mapping should save");
-            let pbft_block = signed_pbft_block(7, 99);
-            let expected_hash: [u8; 32] =
-                PbftBlockLink::try_from(SignedPbftBlockRlp::new(&pbft_block))
-                    .expect("test PBFT block should decode")
-                    .block_hash
-                    .into();
-            storage
-                .0
-                .period()
-                .write(7, &period_data_with_pbft_block(&pbft_block))
-                .expect("period data save should succeed");
-
-            let vrf_key =
-                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let plan = runtime
-                .dag_manager_runtime_plan_proposal_attempt(DagProposerAttemptInput {
-                    transaction_pool_size: 1,
-                    non_finalized_transaction_count: 0,
-                    max_non_finalized_transactions: 100,
-                    frontier_facts: DagProposerFrontierFacts {
-                        pivot: [1u8; 32],
-                        tips: Vec::new(),
-                        propose_level: 1,
-                        anchor: [1u8; 32],
-                        non_finalized_block_count: 0,
-                        non_finalized_min_difficulty: u32::MAX,
-                    },
-                    proposal_period_found: true,
-                    proposal_period: 7,
-                    last_finalized_period: 7,
-                    dag_expiry_level_limit: 100,
-                    wallet_vrf_public_key: vrf_key,
-                    wallet_vrf_secret: SECRET_KEY,
-                    authorization_facts: DagDposAuthorizationFacts {
-                        vrf_key_found: true,
-                        vrf_key: vrf_key.to_vec(),
-                        sender_eligible_vote_count: 10,
-                        vdf_sortition_max_vote_count: 20,
-                        eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-                    },
-                    sortition_params: SortitionRuntimeParams {
-                        threshold_upper: u16::MAX,
-                        difficulty_min: 3,
-                        difficulty_max: 3,
-                        difficulty_stale: 9,
-                        lambda_bound: 128,
-                    },
-                    max_non_finalized_dag_blocks: 100,
-                    max_non_finalized_dag_blocks_low_difficulty: 50,
-                    last_propose_level: 0,
-                    retry_count: 0,
-                    max_retry_count: 20,
-                    proposal_weight_limit: 1_000,
-                    total_transaction_shards: 4,
-                    node_transaction_shard: 2,
-                    shard_period_interval: 10,
-                })
-                .expect("proposal attempt should plan");
-
-            assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
-            assert_eq!(plan.proposal_level, 1);
-            assert!(plan.period_block_hash_found);
-            assert_eq!(plan.period_block_hash, expected_hash);
-            assert_eq!(plan.transaction_request.proposal_period, 7);
-            assert_eq!(plan.transaction_request.weight_limit, 1_000);
-            assert_eq!(plan.transaction_request.total_transaction_shards, 4);
-            assert_eq!(plan.transaction_request.node_transaction_shard, 2);
-            assert_eq!(plan.transaction_request.shard_period_interval, 10);
-            assert!(!plan.vrf_input.is_empty());
+    fn proposer_session_begin_input(vrf_key: [u8; 32]) -> DagProposerSessionBeginInput {
+        DagProposerSessionBeginInput {
+            transaction_pool_size: 1,
+            non_finalized_transaction_count: 0,
+            max_non_finalized_transactions: 100,
+            dag_expiry_level_limit: 100,
+            wallet_vrf_public_key: vrf_key,
+            wallet_vrf_secret: SECRET_KEY,
+            max_non_finalized_dag_blocks: 100,
+            max_non_finalized_dag_blocks_low_difficulty: 50,
+            max_retry_count: 20,
+            proposal_weight_limit: 1_000,
+            total_transaction_shards: 4,
+            node_transaction_shard: 2,
+            shard_period_interval: 10,
         }
-
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    #[test]
-    fn dag_manager_runtime_plan_proposal_attempt_uses_zero_hash_for_bootstrap_period() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_bootstrap_proposal_attempt");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
-                .expect("runtime should initialize");
-
-            runtime
-                .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
-                .expect("proposal-period mapping should save");
-
-            let vrf_key =
-                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let plan = runtime
-                .dag_manager_runtime_plan_proposal_attempt(DagProposerAttemptInput {
-                    transaction_pool_size: 1,
-                    non_finalized_transaction_count: 0,
-                    max_non_finalized_transactions: 100,
-                    frontier_facts: DagProposerFrontierFacts {
-                        pivot: [1u8; 32],
-                        tips: Vec::new(),
-                        propose_level: 1,
-                        anchor: [1u8; 32],
-                        non_finalized_block_count: 0,
-                        non_finalized_min_difficulty: u32::MAX,
-                    },
-                    proposal_period_found: true,
-                    proposal_period: 0,
-                    last_finalized_period: 0,
-                    dag_expiry_level_limit: 100,
-                    wallet_vrf_public_key: vrf_key,
-                    wallet_vrf_secret: SECRET_KEY,
-                    authorization_facts: DagDposAuthorizationFacts {
-                        vrf_key_found: true,
-                        vrf_key: vrf_key.to_vec(),
-                        sender_eligible_vote_count: 10,
-                        vdf_sortition_max_vote_count: 20,
-                        eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-                    },
-                    sortition_params: SortitionRuntimeParams {
-                        threshold_upper: u16::MAX,
-                        difficulty_min: 3,
-                        difficulty_max: 3,
-                        difficulty_stale: 9,
-                        lambda_bound: 128,
-                    },
-                    max_non_finalized_dag_blocks: 100,
-                    max_non_finalized_dag_blocks_low_difficulty: 50,
-                    last_propose_level: 0,
-                    retry_count: 0,
-                    max_retry_count: 20,
-                    proposal_weight_limit: 1_000,
-                    total_transaction_shards: 1,
-                    node_transaction_shard: 0,
-                    shard_period_interval: 10,
-                })
-                .expect("bootstrap proposal attempt should plan");
-
-            assert_eq!(plan.action, DAG_PROPOSER_ACTION_CONTINUE);
-            assert!(plan.period_block_hash_found);
-            assert_eq!(plan.period_block_hash, [0; 32]);
-            assert!(!plan.vrf_input.is_empty());
+    fn proposer_external_facts(vrf_key: [u8; 32]) -> DagProposerExternalProposalFactsReport {
+        DagProposerExternalProposalFactsReport {
+            last_finalized_period: 7,
+            authorization_facts: DagDposAuthorizationFacts {
+                vrf_key_found: true,
+                vrf_key: vrf_key.to_vec(),
+                sender_eligible_vote_count: 10,
+                vdf_sortition_max_vote_count: 20,
+                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+            sortition_params: SortitionRuntimeParams {
+                threshold_upper: u16::MAX,
+                difficulty_min: 3,
+                difficulty_max: 3,
+                difficulty_stale: 9,
+                lambda_bound: 128,
+            },
         }
-
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
@@ -2957,58 +2959,28 @@ mod tests {
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
             let session_id = dag_manager_runtime_begin_proposer_session(
                 &mut runtime,
-                DagProposerAttemptInput {
-                    transaction_pool_size: 1,
-                    non_finalized_transaction_count: 0,
-                    max_non_finalized_transactions: 100,
-                    frontier_facts: DagProposerFrontierFacts {
-                        pivot: [1u8; 32],
-                        tips: Vec::new(),
-                        propose_level: 1,
-                        anchor: [1u8; 32],
-                        non_finalized_block_count: 0,
-                        non_finalized_min_difficulty: u32::MAX,
-                    },
-                    proposal_period_found: true,
-                    proposal_period: 7,
-                    last_finalized_period: 7,
-                    dag_expiry_level_limit: 100,
-                    wallet_vrf_public_key: vrf_key,
-                    wallet_vrf_secret: SECRET_KEY,
-                    authorization_facts: DagDposAuthorizationFacts {
-                        vrf_key_found: true,
-                        vrf_key: vrf_key.to_vec(),
-                        sender_eligible_vote_count: 10,
-                        vdf_sortition_max_vote_count: 20,
-                        eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-                    },
-                    sortition_params: SortitionRuntimeParams {
-                        threshold_upper: u16::MAX,
-                        difficulty_min: 3,
-                        difficulty_max: 3,
-                        difficulty_stale: 9,
-                        lambda_bound: 128,
-                    },
-                    max_non_finalized_dag_blocks: 100,
-                    max_non_finalized_dag_blocks_low_difficulty: 50,
-                    last_propose_level: 0,
-                    retry_count: 0,
-                    max_retry_count: 20,
-                    proposal_weight_limit: 1_000,
-                    total_transaction_shards: 4,
-                    node_transaction_shard: 2,
-                    shard_period_interval: 10,
-                },
+                proposer_session_begin_input(vrf_key),
             )
             .expect("session should open");
 
             let first = dag_manager_runtime_proposer_session_next(&mut runtime, session_id);
             assert_eq!(first.status, DAG_PROPOSER_SESSION_STATUS_ACTIVE);
-            assert_eq!(first.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
+            assert_eq!(
+                first.action,
+                DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
+            );
             assert_eq!(first.transaction_request.proposal_period, 7);
+
+            let pack = dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                session_id,
+                proposer_external_facts(vrf_key),
+            )
+            .expect("external facts should be accepted");
+            assert_eq!(pack.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
             assert_eq!(first.vdf_poll_interval_ms, 100);
             assert_eq!(first.stale_proof_sleep_ms, 1_000);
-            assert!(!first.vrf_input.is_empty());
+            assert!(!pack.vrf_input.is_empty());
 
             let start_vdf = dag_manager_runtime_proposer_session_report_transactions(
                 &mut runtime,
@@ -3027,13 +2999,8 @@ mod tests {
                 dag_vdf_message(&[1u8; 32], vec![DagHash { hash: [2u8; 32] }])
             );
 
-            let still_waiting = dag_manager_runtime_proposer_session_report_vdf_wait(
-                &mut runtime,
-                session_id,
-                DagProposerVdfWaitReport {
-                    latest_proposal_level: 1,
-                },
-            );
+            let still_waiting =
+                dag_manager_runtime_proposer_session_poll_vdf(&mut runtime, session_id);
             assert_eq!(still_waiting.action, DAG_PROPOSER_SESSION_ACTION_START_VDF);
 
             let build = dag_manager_runtime_proposer_session_report_vdf_proof(
@@ -3089,7 +3056,7 @@ mod tests {
     }
 
     #[test]
-    fn dag_manager_runtime_proposer_sessions_are_keyed_by_attempt() {
+    fn dag_manager_runtime_proposer_sessions_are_independent() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_keyed_sessions");
 
         {
@@ -3101,9 +3068,6 @@ mod tests {
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 7)
                 .expect("first proposal-period mapping should save");
-            runtime
-                .dag_manager_runtime_ensure_proposal_period_mapping(2, 7)
-                .expect("second proposal-period mapping should save");
             let pbft_block = signed_pbft_block(7, 99);
             storage
                 .0
@@ -3113,55 +3077,16 @@ mod tests {
 
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let make_input = |propose_level: u64, pivot: [u8; 32]| DagProposerAttemptInput {
-                transaction_pool_size: 1,
-                non_finalized_transaction_count: 0,
-                max_non_finalized_transactions: 100,
-                frontier_facts: DagProposerFrontierFacts {
-                    pivot,
-                    tips: Vec::new(),
-                    propose_level,
-                    anchor: pivot,
-                    non_finalized_block_count: 0,
-                    non_finalized_min_difficulty: u32::MAX,
-                },
-                proposal_period_found: true,
-                proposal_period: 7,
-                last_finalized_period: 7,
-                dag_expiry_level_limit: 100,
-                wallet_vrf_public_key: vrf_key,
-                wallet_vrf_secret: SECRET_KEY,
-                authorization_facts: DagDposAuthorizationFacts {
-                    vrf_key_found: true,
-                    vrf_key: vrf_key.to_vec(),
-                    sender_eligible_vote_count: 10,
-                    vdf_sortition_max_vote_count: 20,
-                    eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-                },
-                sortition_params: SortitionRuntimeParams {
-                    threshold_upper: u16::MAX,
-                    difficulty_min: 3,
-                    difficulty_max: 3,
-                    difficulty_stale: 9,
-                    lambda_bound: 128,
-                },
-                max_non_finalized_dag_blocks: 100,
-                max_non_finalized_dag_blocks_low_difficulty: 50,
-                last_propose_level: 0,
-                retry_count: 0,
-                max_retry_count: 20,
-                proposal_weight_limit: 1_000,
-                total_transaction_shards: 4,
-                node_transaction_shard: 2,
-                shard_period_interval: 10,
-            };
-
-            let first_id =
-                dag_manager_runtime_begin_proposer_session(&mut runtime, make_input(1, [1u8; 32]))
-                    .expect("first session should open");
-            let second_id =
-                dag_manager_runtime_begin_proposer_session(&mut runtime, make_input(2, [3u8; 32]))
-                    .expect("second session should open");
+            let first_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("first session should open");
+            let second_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("second session should open");
             assert_ne!(first_id, second_id);
 
             let second_first_step =
@@ -3169,18 +3094,29 @@ mod tests {
             assert_eq!(second_first_step.status, DAG_PROPOSER_SESSION_STATUS_ACTIVE);
             assert_eq!(
                 second_first_step.action,
-                DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
+                DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
             );
-            assert_eq!(second_first_step.proposal_level, 2);
+            assert_eq!(second_first_step.proposal_level, 1);
 
             let first_first_step =
                 dag_manager_runtime_proposer_session_next(&mut runtime, first_id);
             assert_eq!(first_first_step.status, DAG_PROPOSER_SESSION_STATUS_ACTIVE);
             assert_eq!(
                 first_first_step.action,
-                DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
+                DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
             );
             assert_eq!(first_first_step.proposal_level, 1);
+
+            let second_pack = dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                second_id,
+                proposer_external_facts(vrf_key),
+            )
+            .expect("second report should succeed");
+            assert_eq!(
+                second_pack.action,
+                DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
+            );
 
             let second_start_vdf = dag_manager_runtime_proposer_session_report_transactions(
                 &mut runtime,
@@ -3195,19 +3131,30 @@ mod tests {
                 second_start_vdf.action,
                 DAG_PROPOSER_SESSION_ACTION_START_VDF
             );
-            assert_eq!(second_start_vdf.proposal_level, 2);
+            assert_eq!(second_start_vdf.proposal_level, 1);
             assert_eq!(
                 second_start_vdf.vdf_message,
-                dag_vdf_message(&[3u8; 32], vec![DagHash { hash: [4u8; 32] }])
+                dag_vdf_message(&[1u8; 32], vec![DagHash { hash: [4u8; 32] }])
             );
 
             let first_still_waiting =
                 dag_manager_runtime_proposer_session_next(&mut runtime, first_id);
             assert_eq!(
                 first_still_waiting.action,
-                DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
+                DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
             );
             assert_eq!(first_still_waiting.proposal_level, 1);
+
+            let first_pack = dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                first_id,
+                proposer_external_facts(vrf_key),
+            )
+            .expect("first report should succeed");
+            assert_eq!(
+                first_pack.action,
+                DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
+            );
 
             let first_start_vdf = dag_manager_runtime_proposer_session_report_transactions(
                 &mut runtime,
@@ -3227,6 +3174,350 @@ mod tests {
                 first_start_vdf.vdf_message,
                 dag_vdf_message(&[1u8; 32], vec![DagHash { hash: [2u8; 32] }])
             );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_proposer_session_handles_missing_period_and_invalid_reports() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_invalid");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+
+            let missing_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("missing-period session should open");
+            let missing = dag_manager_runtime_proposer_session_next(&mut runtime, missing_id);
+            assert_eq!(missing.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(
+                missing.reason_code,
+                rustaxa_consensus::dag::DAG_PROPOSER_REASON_MISSING_PROPOSAL_PERIOD
+            );
+
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
+                .expect("bootstrap proposal-period mapping should save");
+            let invalid_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("session should open");
+            let invalid = dag_manager_runtime_proposer_session_report_transactions(
+                &mut runtime,
+                invalid_id,
+                DagProposerTransactionPackReport {
+                    network_throttled: false,
+                    transaction_hashes: Vec::new(),
+                    transaction_gas_estimations: Vec::new(),
+                },
+            );
+            assert_eq!(invalid.status, DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT);
+            assert_eq!(
+                invalid.error_code,
+                "DAG_PROPOSER_SESSION_UNEXPECTED_TRANSACTION_REPORT"
+            );
+
+            let after_invalid = dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                invalid_id,
+                proposer_external_facts(vrf_key),
+            )
+            .expect("unknown-session report should return a step");
+            assert_eq!(
+                after_invalid.status,
+                DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT
+            );
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_abort_proposer_session_is_idempotent() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_abort");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
+                .expect("bootstrap proposal-period mapping should save");
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+            let session_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("session should open");
+            assert!(runtime.proposer_sessions.contains_key(&session_id));
+
+            assert!(dag_manager_runtime_abort_proposer_session(
+                &mut runtime,
+                session_id
+            ));
+            assert!(!runtime.proposer_sessions.contains_key(&session_id));
+            assert!(!dag_manager_runtime_abort_proposer_session(
+                &mut runtime,
+                session_id
+            ));
+            assert!(!dag_manager_runtime_abort_proposer_session(
+                &mut runtime,
+                u64::MAX
+            ));
+            assert!(!runtime.proposer_retry_states.contains_key(&vrf_key));
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_external_facts_error_removes_proposer_session() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_report_error");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 7)
+                .expect("proposal-period mapping should save");
+            storage
+                .0
+                .period()
+                .write(7, &period_data_with_pbft_block(&signed_pbft_block(7, 99)))
+                .expect("valid period data should save");
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+            let session_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("session should open");
+            assert!(runtime.proposer_sessions.contains_key(&session_id));
+
+            storage
+                .0
+                .period()
+                .write(7, &vec![0x80])
+                .expect("corrupt period data should save");
+            assert!(dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                session_id,
+                proposer_external_facts(vrf_key),
+            )
+            .is_err());
+            assert!(!runtime.proposer_sessions.contains_key(&session_id));
+            assert!(!dag_manager_runtime_abort_proposer_session(
+                &mut runtime,
+                session_id
+            ));
+            assert!(!runtime.proposer_retry_states.contains_key(&vrf_key));
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_proposer_session_rejects_stale_observation_before_retry_mutation() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_stale_observation");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
+                .expect("bootstrap proposal-period mapping should save");
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+            let session_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("session should open");
+            assert_eq!(
+                dag_manager_runtime_proposer_session_next(&mut runtime, session_id).action,
+                DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
+            );
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [2u8; 32],
+                    pivot: [1u8; 32],
+                    tips: Vec::new(),
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("frontier mutation should succeed");
+            let stale = dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                session_id,
+                proposer_external_facts(vrf_key),
+            )
+            .expect("stale report should return a terminal step");
+            assert_eq!(stale.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(
+                stale.reason_code,
+                rustaxa_consensus::dag::DAG_PROPOSER_REASON_STALE_OBSERVATION
+            );
+            assert_eq!(stale.error_code, "DAG_PROPOSER_SESSION_STALE_OBSERVATION");
+            assert!(!runtime.proposer_retry_states.contains_key(&vrf_key));
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_proposer_session_uses_runtime_frontier_for_vdf_cancel() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_vdf_cancel");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
+                .expect("bootstrap proposal-period mapping should save");
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+            let session_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("session should open");
+            let pack = dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                session_id,
+                proposer_external_facts(vrf_key),
+            )
+            .expect("external facts should be accepted");
+            assert_eq!(pack.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
+            let start = dag_manager_runtime_proposer_session_report_transactions(
+                &mut runtime,
+                session_id,
+                DagProposerTransactionPackReport {
+                    network_throttled: false,
+                    transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
+                    transaction_gas_estimations: vec![100],
+                },
+            );
+            assert_eq!(start.action, DAG_PROPOSER_SESSION_ACTION_START_VDF);
+            runtime
+                .proposer_sessions
+                .get_mut(&session_id)
+                .expect("session should remain active")
+                .minimum_vdf_difficulty = start.vdf_difficulty.saturating_sub(1);
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [1u8; 32],
+                    tips: Vec::new(),
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("frontier mutation should succeed");
+            let cancelled = dag_manager_runtime_proposer_session_poll_vdf(&mut runtime, session_id);
+            assert_eq!(cancelled.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(cancelled.action, DAG_PROPOSER_SESSION_ACTION_CANCEL_VDF);
+        }
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn dag_manager_runtime_proposer_session_resumes_stale_proof_from_runtime_frontier() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_stale_resume");
+
+        {
+            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+                .expect("storage should initialize");
+            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+                .expect("runtime should initialize");
+            runtime
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
+                .expect("bootstrap proposal-period mapping should save");
+            let vrf_key =
+                public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
+            runtime.proposer_retry_states.insert(
+                vrf_key,
+                DagProposerRetryState {
+                    last_propose_level: 1,
+                    retry_count: 20,
+                    max_retry_count: 20,
+                },
+            );
+            let session_id = dag_manager_runtime_begin_proposer_session(
+                &mut runtime,
+                proposer_session_begin_input(vrf_key),
+            )
+            .expect("session should open");
+            let mut facts = proposer_external_facts(vrf_key);
+            facts.sortition_params.difficulty_min = 9;
+            facts.sortition_params.difficulty_max = 9;
+            facts.sortition_params.difficulty_stale = 9;
+            let pack = dag_manager_runtime_proposer_session_report_external_facts(
+                &mut runtime,
+                session_id,
+                facts,
+            )
+            .expect("external facts should be accepted");
+            assert!(pack.vdf_stale);
+            assert_eq!(pack.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
+            assert_eq!(
+                dag_manager_runtime_proposer_session_report_transactions(
+                    &mut runtime,
+                    session_id,
+                    DagProposerTransactionPackReport {
+                        network_throttled: false,
+                        transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
+                        transaction_gas_estimations: vec![100],
+                    },
+                )
+                .action,
+                DAG_PROPOSER_SESSION_ACTION_START_VDF
+            );
+            let sleep = dag_manager_runtime_proposer_session_report_vdf_proof(
+                &mut runtime,
+                session_id,
+                DagProposerVdfProofReport { proof_ok: true },
+            );
+            assert_eq!(sleep.action, DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP);
+
+            runtime
+                .dag_manager_runtime_add_block(DagManagerBlock {
+                    hash: [3u8; 32],
+                    pivot: [1u8; 32],
+                    tips: Vec::new(),
+                    level: 2,
+                    difficulty: 100,
+                })
+                .expect("frontier mutation should succeed");
+
+            let resumed =
+                dag_manager_runtime_proposer_session_resume_stale_proof(&mut runtime, session_id);
+            assert_eq!(resumed.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
+            assert_eq!(resumed.action, DAG_PROPOSER_SESSION_ACTION_NONE);
+            assert_eq!(
+                resumed.reason_code,
+                rustaxa_consensus::dag::DAG_PROPOSER_REASON_STALE_VDF_RETRY
+            );
+            assert!(resumed.update_retry_state);
+            assert_eq!(resumed.proposal_level, 1);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -3403,48 +3694,6 @@ mod tests {
                 runtime.dag_manager_runtime_non_finalized_min_difficulty(),
                 u32::MAX
             );
-        }
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_manager_runtime_proposer_frontier_facts_cross_cxx_boundary() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_proposer_frontier");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
-                .expect("runtime should initialize");
-
-            runtime
-                .dag_manager_runtime_add_block(DagManagerBlock {
-                    hash: [2u8; 32],
-                    pivot: [1u8; 32],
-                    tips: vec![],
-                    level: 2,
-                    difficulty: 100,
-                })
-                .expect("add block 2");
-            runtime
-                .dag_manager_runtime_add_block(DagManagerBlock {
-                    hash: [3u8; 32],
-                    pivot: [2u8; 32],
-                    tips: vec![DagHash { hash: [1u8; 32] }],
-                    level: 3,
-                    difficulty: 80,
-                })
-                .expect("add block 3");
-
-            let facts = runtime.dag_manager_runtime_proposer_frontier_facts();
-
-            assert_eq!(facts.pivot, [3u8; 32]);
-            assert!(facts.tips.is_empty());
-            assert_eq!(facts.propose_level, 4);
-            assert_eq!(facts.anchor, [1u8; 32]);
-            assert_eq!(facts.non_finalized_block_count, 2);
-            assert_eq!(facts.non_finalized_min_difficulty, 80);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
