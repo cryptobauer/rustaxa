@@ -178,6 +178,27 @@ val_t fromBridgeU256(const std::array<uint8_t, 32>& value) {
   return dev::fromBigEndian<val_t>(dev::bytes(value.begin(), value.end()));
 }
 
+rustaxa::GasPricerConfig gasPricerConfigFromNodeConfig(const FullNodeConfig& config) {
+  rustaxa::GasPricerConfig bridge_config;
+  bridge_config.percentile = config.genesis.gas_price.percentile;
+  bridge_config.minimum_price = toBridgeU256(val_t(config.genesis.state.hardforks.soleirolia_hf.trx_min_gas_price));
+  bridge_config.history_blocks = config.genesis.gas_price.blocks;
+  bridge_config.is_light_node = config.is_light_node;
+  bridge_config.blocks_gas_pricer = config.blocks_gas_pricer;
+  return bridge_config;
+}
+
+rust::Vec<rustaxa::GasPricerGasPrice> gasPricesFromTransactions(const SharedTransactions& trxs) {
+  rust::Vec<rustaxa::GasPricerGasPrice> gas_prices;
+  gas_prices.reserve(trxs.size());
+  for (const auto& trx : trxs) {
+    rustaxa::GasPricerGasPrice gas_price;
+    gas_price.price = toBridgeU256(trx->getGasPrice());
+    gas_prices.push_back(std::move(gas_price));
+  }
+  return gas_prices;
+}
+
 rustaxa::LegacyTransactionInspection inspectRegularTransaction(const std::shared_ptr<Transaction>& transaction,
                                                                const char* error_prefix) {
   if (!transaction) {
@@ -278,7 +299,8 @@ TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_p
     : kConf(conf),
       final_chain_(std::move(final_chain)),
       runtime_(rustaxa::create_transaction_manager_runtime_from_storage(
-          db->rustStorage(), rustaxa::TransactionQueueConfig{conf.transactions_pool_size})),
+          db->rustStorage(), rustaxa::TransactionQueueConfig{conf.transactions_pool_size},
+          gasPricerConfigFromNodeConfig(conf), conf.propose_dag_gas_limit)),
       estimation_thread_pool_(std::thread::hardware_concurrency() / 2) {
   LOG_OBJECTS_CREATE("TRXMGR");
 }
@@ -1217,6 +1239,16 @@ class TransactionManagerRustShimAccess {
         manager.kConf.propose_dag_gas_limit));
   }
 
+  static val_t gasPriceBid(const TransactionManager& manager) {
+    std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
+    return fromBridgeU256(manager.runtime_->transaction_manager_runtime_gas_price_bid());
+  }
+
+  static void updateGasPrice(TransactionManager& manager, const SharedTransactions& trxs) {
+    std::unique_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
+    manager.runtime_->transaction_manager_runtime_gas_price_update(gasPricesFromTransactions(trxs));
+  }
+
   /**
    * Materializes ordered transaction hashes from the Rust-owned transaction view.
    *
@@ -1412,6 +1444,14 @@ bool TransactionManager::transactionsDropped() const {
 
 val_t TransactionManager::getMinGasPriceForBlockInclusion() const {
   return TransactionManagerRustShimAccess::getMinGasPriceForBlockInclusion(*this);
+}
+
+val_t TransactionManager::gasPriceBid() const {
+  return TransactionManagerRustShimAccess::gasPriceBid(*this);
+}
+
+void TransactionManager::updateGasPrice(const SharedTransactions& trxs) {
+  TransactionManagerRustShimAccess::updateGasPrice(*this, trxs);
 }
 
 std::shared_ptr<Transaction> TransactionManager::getNonFinalizedTransaction(const trx_hash_t& hash) const {

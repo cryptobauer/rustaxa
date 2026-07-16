@@ -35,7 +35,6 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/sortition.rs` | `BridgeSortitionParamsManager`, `create_sortition_params_manager*` | `sortition_params_manager_shim`, query/RPC paths through storage | C++ public compatibility facade | Delete after sortition parameter persistence and query reads are native Rust consensus/storage APIs. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | Transaction RLP inspection and bridge DTO helpers | Transaction manager, period-data queue, tests | External boundary | Keep only wire/codec compatibility helpers needed at C++ network/RPC boundaries. Move internal transaction facts to `rustaxa-types`/native consensus. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | `BridgeTransactionManagerRuntime` | `transaction_manager_shim`, RPC submission paths, tests | C++ public compatibility facade | Standalone sidecar and admission-execution handles are retired; live sidecar and DAG-save execution state are private runtime state. Delete the remaining runtime bridge after the transaction manager public C++ facade is retired or all admission/packing paths are native Rust. Keep external EVM/final-chain callbacks as a minimal API. |
-| `rust/crates/rustaxa-bridge/src/gas_pricer.rs` | `BridgeGasPricer`, `create_gas_pricer*`, bid/update methods | `gas_pricer_shim`, transaction/RPC gas estimation | C++ public compatibility facade | Delete after gas pricing history and query are Rust-owned behind the transaction/final-chain runtime API. The CXX-only storage init method has been removed; storage restoration is construction-time only. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | `BridgeSlashingProofPlanner`, `create_slashing_proof_planner` | `slashing_manager_shim` | C++ public compatibility facade | Delete after slashing proof planning is invoked by Rust consensus runtime instead of C++ manager facade. Direct mark-only CXX export is deleted; C++ reports executor outcomes through the submission-report API and receives only the submitted/not-submitted boolean it uses. The live Rust-admission path now passes one normalized double-vote evidence payload with a shared PBFT slot instead of two records plus loose slot scalars. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF bridge helpers | VDF C++ integration/tests | External boundary | Keep the live VDF/prove/verify, atomic-backed cancellation token, and legacy sortition APIs until VDF is explicitly folded into native Rust or a dedicated external VDF API. No-caller scalar/helper exports are deleted when they are covered by native `rustaxa-vdf` tests. |
 
@@ -67,7 +66,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgePillarChainRuntime` | `pillar_chain.rs`, `pillar_votes.rs` | `pillar_chain_manager_shim` | Internal Rust route | Owns canonical current and latest-finalized pillar snapshots, validator vote-count history, pillar threshold/anchor/creation/linkage decisions, vote aggregation, generation-bound synced bundle apply, and PBFT-facing pillar finalization. Remove after the C++ PillarChainManager facade is retired or replaced by narrower external ports. |
 | `BridgeSortitionParamsManager` | `sortition.rs` | `sortition_params_manager_shim` | C++ public compatibility facade | Sortition params persistence/query is native Rust storage/query behavior. |
 | `BridgeTransactionManagerRuntime` | `transaction_manager.rs` | `transaction_manager_shim`, app/bootstrap | C++ public compatibility facade | Transaction admission/packing runs behind native Rust runtime and minimal external submission API. |
-| `BridgeGasPricer` | `gas_pricer.rs` | `gas_pricer_shim` | C++ public compatibility facade | Gas pricing is native Rust query/runtime behavior. The exported CXX surface is limited to construction, bid, pool-aware bid, and finalized-block update. |
 | `BridgeSlashingProofPlanner` | `slashing.rs` | `slashing_manager_shim` | C++ public compatibility facade | Slashing planning runs inside Rust consensus runtime. |
 
 ## Consensus Shim Directories
@@ -668,10 +666,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   remaining external action order. Missing, stale, mismatched, and empty-chain requests are rejected; the duplicated
   `ApplyResetConsensusTransition` action and embedded transition plan are removed. FinalChain wait,
   VoteManager/timer/wallet/proposed-block compatibility effects remain explicit.
-- `BridgeGasPricer` no longer exports a separate `gas_pricer_init_from_storage` CXX method. Rust-mode storage history
-  restoration is owned by `create_gas_pricer_from_storage`, so C++ cannot create a gas-pricer runtime and later inject
-  broad storage access through a second bridge call. The obsolete Rust test-only `gas_pricer_init_from_storage` method is
-  also deleted; bridge tests now cover the production constructor path directly.
+- `BridgeGasPricer`, its bridge module, both constructors, and all bid/update exports are retired. The native
+  `GasPriceOracle` is composed into `BridgeTransactionManagerRuntime`; its production constructor restores gas history
+  through the same native storage owner that restores transaction state. Pool bids inspect the runtime-owned queue and
+  proposal gas limit directly. The C++ `GasPricer` remains only as a public compatibility facade and delegates production
+  work to `TransactionManager`; its storage-free combined runtime is limited to standalone facade tests.
 - `BridgePeriodDataQueue`, `period_data_queue_shim`, and `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` are retired. PBFT manager
   runtime owns period-data queue metadata through `pbft_manager_runtime_period_data_queue_*`; the C++ PBFT manager shim
   now temporarily owns only live `PeriodData` and peer sidecars, while cert-vote payloads are sourced directly from

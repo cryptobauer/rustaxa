@@ -81,6 +81,19 @@ impl GasPriceOracle {
         pool_price.max(self.config.minimum_price)
     }
 
+    /// Returns the bid selected by this oracle's configured production mode.
+    ///
+    /// Block-history mode ignores the supplied pool price and returns the
+    /// rolling historical bid. Pool mode applies the configured minimum floor
+    /// to the supplied runtime-owned queue price.
+    pub fn configured_bid(&self, pool_price: U256) -> U256 {
+        if self.config.blocks_gas_pricer {
+            self.bid()
+        } else {
+            self.bid_from_pool(pool_price)
+        }
+    }
+
     /// Records gas prices from a newly finalized non-empty block.
     ///
     /// Empty inputs and zero minimum prices leave the oracle unchanged. When
@@ -325,6 +338,19 @@ mod tests {
 
         assert_eq!(oracle.bid_from_pool(U256::from(3)), U256::from(10));
         assert_eq!(oracle.bid(), U256::from(10));
+    }
+
+    #[test]
+    fn configured_bid_keeps_mode_selection_inside_oracle() {
+        let mut block_oracle = GasPriceOracle::new(config(50, 1, 10)).unwrap();
+        block_oracle.update_from_gas_prices([U256::from(7)]);
+        assert_eq!(block_oracle.configured_bid(U256::from(99)), U256::from(7));
+
+        let mut pool_config = config(50, 10, 10);
+        pool_config.blocks_gas_pricer = false;
+        let pool_oracle = GasPriceOracle::new(pool_config).unwrap();
+        assert_eq!(pool_oracle.configured_bid(U256::from(3)), U256::from(10));
+        assert_eq!(pool_oracle.configured_bid(U256::from(12)), U256::from(12));
     }
 
     #[test]

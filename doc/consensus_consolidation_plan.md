@@ -235,12 +235,13 @@ Implementation status:
 - Remaining storage query handles live in `rustaxa-bridge` compatibility modules, C++ storage/query shims, and bridge or
   conformance tests. They are still valid compatibility debt until the corresponding C++ public facades move to native
   Rust services.
-- Gas-pricer finalized-history restoration is construction-time-only through `create_gas_pricer_from_storage`; the
-  obsolete `gas_pricer_init_from_storage` storage injection helper has been deleted from the Rust bridge tests and
-  implementation.
+- Gas-pricer finalized-history restoration is construction-time-only through the composed
+  `create_transaction_manager_runtime_from_storage` constructor. The obsolete late storage-injection helper and the
+  later standalone gas-pricer constructors are deleted; transaction state and gas history now publish through one
+  runtime owner.
 - Validation for the gas-pricer storage-injection cleanup:
   - `cargo fmt --manifest-path rust/Cargo.toml --all --check`
-  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge gas_pricer`
+  - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge transaction_runtime_`
 
 ## Slice 4: Thin the Storage Shim to a Compatibility Shell
 
@@ -2002,10 +2003,23 @@ Implementation status:
 - The guard compares CXX `type Bridge*;` exports in `rust/crates/rustaxa-bridge/src/ffi.rs` to the exported-handle table
   in `doc/consensus_bridge_shim_audit.md`, fails on undocumented exported handles, and warns on stale audit rows after
   deletions.
-- `BridgeGasPricer` CXX exports have been narrowed: `gas_pricer_init_from_storage` is no longer exported because
-  Rust-mode storage history restoration is owned by `create_gas_pricer_from_storage`.
-- The obsolete test-only `BridgeGasPricer::gas_pricer_init_from_storage` helper has also been removed; bridge tests now
-  exercise `create_gas_pricer_from_storage` directly.
+- `BridgeGasPricer` is retired after transaction/gas service composition. `BridgeTransactionManagerRuntime` now owns
+  `GasPriceOracle`, the proposal DAG gas limit, and the queue used to derive pool bids. Storage-backed construction
+  restores both transaction count and finalized gas-price history before returning the runtime, so production has one
+  state owner and no independent gas-pricer handle or late storage injection.
+- The old `create_gas_pricer`, `create_gas_pricer_from_storage`, `gas_pricer_bid`, `gas_pricer_bid_from_pool`, and
+  `gas_pricer_update` CXX exports and the bridge-only `gas_pricer.rs` module are deleted. Production `GasPricer` calls
+  shim-owned `TransactionManager` bid/update methods under the transaction runtime lock; pool mode derives its queue
+  floor in Rust instead of passing a scalar through C++. A clearly storage-free combined runtime constructor remains
+  only to preserve standalone `GasPricer` facade tests.
+- Transaction/gas composition validation passed all 286 `rustaxa-bridge` tests, all 643 `rustaxa-consensus` tests,
+  `gas_pricer_test` (2/2), `transaction_manager_shim_test` (36/36), `transaction_test` (13/13), `dag_test` (12/12),
+  the fast bridge/storage inventory gates, and the Rust-enabled startup smoke. Tier 3 CTest remained 22/28: the same
+  five broad binaries reuse `/tmp/taraxa0` within one process and fail on RocksDB lock acquisition, while `go_test`
+  remains blocked by the existing static cgo linker environment. The Python entrypoint remained blocked before test
+  collection because pinned `cytoolz` and `pyethash` cannot build against the available Python 3.13 environment without
+  `Python.h`. The direct `rust_consensus_tests` result remained 43/62 with the established legacy reward-cursor bootstrap
+  fixture ambiguity; no transaction/gas case failed.
 - `BridgeStorage` CXX exports have been narrowed: the obsolete broad `set_genesis_hash` mutator is deleted because
   Rust-mode `DbStorage::setGenesisHash` uses the dedicated `storage_shim_set_genesis_hash` compatibility API.
 - The storage conformance runner now also seeds genesis through `storage_shim_set_genesis_hash`, so it no longer depends

@@ -294,9 +294,34 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   bool transactionsDropped() const;
 
   /**
-   * Return the live queue's minimum gas price for inclusion in the configured DAG gas limit.
+   * Return the live queue's minimum gas price for compatibility callers.
+   *
+   * New Rust-mode pricing must use `gasPriceBid`, which keeps the queue floor
+   * and oracle combination inside the combined runtime. This method exposes the
+   * raw queue floor only to preserve the stable public API.
    */
   val_t getMinGasPriceForBlockInclusion() const;
+
+  /**
+   * Return the combined runtime's current gas-price bid.
+   *
+   * Rust selects block-history or pool mode from the runtime-owned configuration.
+   * Pool mode derives the queue floor using the runtime-owned proposal gas limit;
+   * neither the mode selector nor a queue-derived scalar crosses back through C++.
+   *
+   * @return the current Rust-owned bid as a C++ compatibility value
+   */
+  val_t gasPriceBid() const;
+
+  /**
+   * Update the combined runtime's historical gas-price oracle from a finalized block.
+   *
+   * C++ extracts only each transaction's canonical gas price from the finalized
+   * callback payload. Empty blocks are no-ops; bridge failures propagate.
+   *
+   * @param trxs finalized block transactions whose gas prices seed the next bid
+   */
+  void updateGasPrice(const SharedTransactions &trxs);
 
   /**
    * Lookup one transaction by hash from live C++ views or Rust-backed storage.

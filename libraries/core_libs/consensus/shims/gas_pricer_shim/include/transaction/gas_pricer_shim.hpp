@@ -1,10 +1,8 @@
 #pragma once
 
-#include <array>
 #include <memory>
 #include <optional>
 #include <shared_mutex>
-#include <vector>
 
 #include "config/genesis.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -20,13 +18,15 @@ class TransactionManager;
  *
  * This class intentionally replaces the legacy `GasPricer` C++ implementation in
  * Rust-enabled builds. It preserves the upstream constructor/destructor and query
- * APIs while delegating pricing decisions to a Rust `BridgeGasPricer`.
+ * APIs while delegating pricing decisions to the Rust-owned transaction-manager
+ * runtime.
  *
  * Behavior notes:
- * - `bid` in block mode returns Rust state from historical/rolling block gas prices.
- * - `bid` in pool mode queries `TransactionManager` for minimum inclusion gas and
- *   lets Rust compute a final pool-aware bid.
- * - `update` forwards extracted gas prices from a finalized block into Rust.
+ * - Production instances route block and pool bids through `TransactionManager`;
+ *   pool queue inspection and oracle combination remain inside its combined runtime.
+ * - `update` forwards finalized-block transactions to that same runtime.
+ * - A null-manager block-mode instance owns a storage-free combined runtime solely
+ *   for standalone compatibility tests. It is never production authority.
  * - No fallback to the legacy C++ pricing logic is performed in Rust mode.
  */
 class GasPricer {
@@ -60,7 +60,7 @@ class GasPricer {
   std::shared_ptr<TransactionManager> trx_mgr_;
 
   mutable std::shared_mutex mutex_;
-  std::optional<::rust::Box<rustaxa::BridgeGasPricer>> gas_pricer_;
+  std::optional<::rust::Box<rustaxa::BridgeTransactionManagerRuntime>> compatibility_runtime_;
 };
 
 }  // namespace taraxa

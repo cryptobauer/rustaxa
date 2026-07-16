@@ -1,6 +1,5 @@
 use crate::dag::*;
 use crate::final_chain::*;
-use crate::gas_pricer::*;
 use crate::network::*;
 use crate::pbft_chain::*;
 use crate::pbft_manager::*;
@@ -143,8 +142,6 @@ pub struct BridgeConsensusExecutionApi(pub ConsensusExecutionApi);
 /// DTOs for public adapters. It does not expose consensus managers, storage
 /// iterators, or mutable sidecars.
 pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
-
-pub struct BridgeGasPricer(pub Mutex<GasPriceOracle>, pub Option<Arc<Storage>>);
 
 /// Rust-owned external network/tarcap facade.
 ///
@@ -389,6 +386,8 @@ pub struct BridgeSortitionParamsManager {
 pub struct BridgeTransactionManagerRuntime {
     pub sidecar: TransactionManagerSidecar,
     pub queue: TransactionQueue,
+    pub gas_price_oracle: GasPriceOracle,
+    pub proposal_dag_gas_limit: u64,
     pub storage: Option<Arc<Storage>>,
     pub last_drop_observed: Option<Instant>,
     pub transaction_pack_session: Option<TransactionManagerRuntimePackSession>,
@@ -5196,25 +5195,6 @@ pub mod rustaxa_ffi {
             current_period: u64,
             sync: bool,
         ) -> Result<RewardsStatsApplyResult>;
-        // Consensus gas pricer
-
-        type BridgeGasPricer;
-
-        pub fn create_gas_pricer(config: GasPricerConfig) -> Result<Box<BridgeGasPricer>>;
-        pub fn create_gas_pricer_from_storage(
-            config: GasPricerConfig,
-            storage: &BridgeStorage,
-        ) -> Result<Box<BridgeGasPricer>>;
-        pub fn gas_pricer_bid(self: &BridgeGasPricer) -> Result<[u8; 32]>;
-        pub fn gas_pricer_bid_from_pool(
-            self: &BridgeGasPricer,
-            pool_price: &[u8; 32],
-        ) -> Result<[u8; 32]>;
-        pub fn gas_pricer_update(
-            self: &BridgeGasPricer,
-            gas_prices: Vec<GasPricerGasPrice>,
-        ) -> Result<()>;
-
         // Consensus slashing proof planner
 
         type BridgeSlashingProofPlanner;
@@ -5238,7 +5218,20 @@ pub mod rustaxa_ffi {
         pub fn create_transaction_manager_runtime_from_storage(
             storage: &BridgeStorage,
             config: TransactionQueueConfig,
+            gas_pricer_config: GasPricerConfig,
+            proposal_dag_gas_limit: u64,
         ) -> Result<Box<BridgeTransactionManagerRuntime>>;
+        /// Compatibility-only storage-free runtime for standalone GasPricer tests.
+        pub fn create_transaction_manager_runtime_for_gas_pricer(
+            gas_pricer_config: GasPricerConfig,
+        ) -> Result<Box<BridgeTransactionManagerRuntime>>;
+        pub fn transaction_manager_runtime_gas_price_bid(
+            self: &BridgeTransactionManagerRuntime,
+        ) -> [u8; 32];
+        pub fn transaction_manager_runtime_gas_price_update(
+            self: &mut BridgeTransactionManagerRuntime,
+            gas_prices: Vec<GasPricerGasPrice>,
+        );
         pub fn transaction_manager_runtime_pack_prepare_sharded(
             self: &mut BridgeTransactionManagerRuntime,
             weight_limit: u64,

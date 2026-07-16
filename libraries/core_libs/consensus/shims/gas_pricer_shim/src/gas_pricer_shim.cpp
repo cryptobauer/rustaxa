@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstdint>
@@ -6,7 +5,6 @@
 #include <mutex>
 #include <stdexcept>
 
-#include "storage/storage.hpp"
 #include "transaction/gas_pricer.hpp"
 #include "transaction/transaction_manager.hpp"
 
@@ -53,40 +51,44 @@ rust::Vec<rustaxa::GasPricerGasPrice> extract_tx_gas_prices(const SharedTransact
 GasPricer::GasPricer(const GenesisConfig& config, bool is_light_node, bool is_blocks_gas_pricer,
                      std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<DbStorage> db)
     : kIsLightNode(is_light_node), kBlocksGasPricer(is_blocks_gas_pricer), trx_mgr_(std::move(trx_mgr)) {
+  static_cast<void>(db);
   assert(config.gas_price.percentile <= 100);
-  if (kBlocksGasPricer && db) {
-    gas_pricer_ = rustaxa::create_gas_pricer_from_storage(to_bridge_config(config, kIsLightNode, kBlocksGasPricer),
-                                                          db->rustStorage());
-  } else {
-    gas_pricer_ = rustaxa::create_gas_pricer(to_bridge_config(config, kIsLightNode, kBlocksGasPricer));
+  if (!trx_mgr_ && kBlocksGasPricer) {
+    compatibility_runtime_ =
+        rustaxa::create_transaction_manager_runtime_for_gas_pricer(to_bridge_config(config, kIsLightNode, true));
   }
 }
 
 GasPricer::~GasPricer() = default;
 
 u256 GasPricer::bid() const {
-  std::shared_lock lock(mutex_);
-  if (!gas_pricer_) {
-    return 0;
+  if (trx_mgr_) {
+    return trx_mgr_->gasPriceBid();
   }
 
-  if (kBlocksGasPricer) {
-    return from_bridge_u256(gas_pricer_.value()->gas_pricer_bid());
-  }
-
-  if (!trx_mgr_) {
+  if (!kBlocksGasPricer || !compatibility_runtime_) {
     throw std::logic_error("GasPricer::bid requested pool price with no TransactionManager");
   }
-  return from_bridge_u256(
-      gas_pricer_.value()->gas_pricer_bid_from_pool(to_bridge_u256(trx_mgr_->getMinGasPriceForBlockInclusion())));
+
+  std::shared_lock lock(mutex_);
+  return from_bridge_u256(compatibility_runtime_.value()->transaction_manager_runtime_gas_price_bid());
 }
 
 void GasPricer::update(const SharedTransactions& trxs) {
+  if (trx_mgr_) {
+    trx_mgr_->updateGasPrice(trxs);
+    return;
+  }
+
   if (!kBlocksGasPricer || trxs.empty()) {
     return;
   }
+
+  if (!compatibility_runtime_) {
+    throw std::logic_error("GasPricer::update requested block price update with no runtime");
+  }
   std::unique_lock lock(mutex_);
-  gas_pricer_.value()->gas_pricer_update(extract_tx_gas_prices(trxs));
+  compatibility_runtime_.value()->transaction_manager_runtime_gas_price_update(extract_tx_gas_prices(trxs));
 }
 
 }  // namespace taraxa
