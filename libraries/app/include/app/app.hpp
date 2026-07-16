@@ -16,6 +16,9 @@
 namespace taraxa {
 
 class Plugin;
+#ifdef RUSTAXA_ENABLE
+class PbftService;
+#endif
 
 class App : public std::enable_shared_from_this<App>, public AppBase {
  public:
@@ -102,6 +105,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<PbftManager> pbft_mgr_;
   std::shared_ptr<PbftChain> pbft_chain_;
+#ifdef RUSTAXA_ENABLE
+  std::shared_ptr<PbftService> pbft_service_;
+#endif
   std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr_;
   std::shared_ptr<KeyManager> key_manager_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;

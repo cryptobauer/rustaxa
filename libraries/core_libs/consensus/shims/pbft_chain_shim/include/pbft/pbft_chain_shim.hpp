@@ -2,13 +2,12 @@
 
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <shared_mutex>
 #include <string>
 
 #include "logger/logger.hpp"
 #include "pbft/pbft_block.hpp"
-#include "rustaxa-bridge/ffi.rs.h"
+#include "pbft/pbft_service.hpp"
 
 namespace taraxa {
 
@@ -22,26 +21,35 @@ class DbStorage;
  * Rust-mode PBFT chain facade.
  *
  * This class preserves the public C++ `PbftChain` API while routing deterministic head state transitions and validation
- * checks to Rust. It is a standalone facade and does not inherit from or delegate to the legacy C++ implementation.
+ * checks to the application-owned Rust PBFT service. It does not inherit from or delegate to the legacy C++
+ * implementation.
  *
  * Invariants:
  * - Rust restores persisted PBFT head JSON and recovers the hidden last non-null DAG anchor from native storage
  * - public PBFT head JSON formatting remains owned by the C++ shim for compatibility with existing callers
- * - Rust owns in-memory size, non-empty-size, latest block hash, and latest non-null DAG anchor state
+ * - the shared PBFT service owns in-memory size, non-empty-size, latest block hash, and latest non-null DAG anchor
+ * state
  * - `getJsonStrForBlock` is a pure preview and does not mutate state or write storage
  * - `updatePbftChain` mutates only in-memory state; `PbftManager` remains responsible for batched persistence
  */
 class PbftChain {
  public:
   /**
-   * Creates a Rust-backed PBFT chain and restores head state through `rustaxa-storage`.
+   * Creates a chain-only compatibility PBFT service and restores head state through `rustaxa-storage`.
    *
-   * `db` must be non-null and expose a Rust storage handle. The Rust runtime clones that storage owner during
+   * `db` must be non-null and expose a Rust storage handle. The Rust service clones that storage owner during
    * construction, so later block lookups do not depend on the C++ `DbStorage` lifetime.
    *
    * If no persisted head exists, Rust initializes the legacy zero-head record through the native storage module.
    */
   explicit PbftChain([[maybe_unused]] addr_t node_addr, std::shared_ptr<DbStorage> db);
+
+  /**
+   * Creates the production compatibility facade over the application-owned PBFT service.
+   *
+   * The shared holder keeps the Rust service alive for every facade operation; no nested Rust reference is retained.
+   */
+  explicit PbftChain([[maybe_unused]] addr_t node_addr, SharedPbftService pbft_service);
   ~PbftChain();
 
   PbftChain(const PbftChain&) = delete;
@@ -106,16 +114,6 @@ class PbftChain {
   void updatePbftChain(blk_hash_t const& pbft_block_hash, blk_hash_t const& anchor_hash);
 
   /**
-   * Updates the in-memory Rust PBFT chain head from the Rust finalization write intent and returns PBFT-chain head
-   * facts.
-   *
-   * Inputs are the Rust-planned finalization write intent. Rust derives the finalized block hash and anchor hash from
-   * that intent, then returns post-mutation chain size/head/anchor facts for manager-boundary validation.
-   */
-  rustaxa::PbftChainFinalizationUpdateReport updatePbftChainForPbftFinalization(
-      const rustaxa::PbftFinalizationStorageWritePlan& write_intent);
-
-  /**
    * Verifies that `pbft_block` extends the current Rust PBFT head.
    *
    * Returns false for period or previous-hash mismatch and throws only for unexpected bridge errors.
@@ -124,7 +122,7 @@ class PbftChain {
 
  private:
   mutable std::shared_mutex chain_head_access_;
-  std::optional<::rust::Box<rustaxa::BridgePbftChain>> rust_chain_;
+  SharedPbftService pbft_service_;
 
   LOG_OBJECTS_DEFINE
 };

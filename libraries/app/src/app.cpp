@@ -156,30 +156,30 @@ void App::init(const cli::Config &cli_conf) {
     std::terminate();
   }
 
+#ifdef RUSTAXA_ENABLE
+  rustaxa::PbftServiceConfig pbft_manager_config{};
+  pbft_manager_config.genesis_lambda_ms = conf_.genesis.pbft.lambda_ms;
+  pbft_manager_config.cacti_lambda_max_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_max;
+  pbft_manager_config.cacti_lambda_default_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_default;
+  pbft_manager_config.cacti_block = conf_.genesis.state.hardforks.cacti_hf.block_num;
+  pbft_manager_config.max_exponential_lambda_ms = 60000;
+  pbft_manager_config.max_steps = 13;
+  pbft_manager_config.deadline_ms = 4 * static_cast<uint64_t>(conf_.genesis.pbft.lambda_ms);
+  pbft_manager_config.polling_interval_ms = 100;
+  pbft_service_ =
+      std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db_->rustStorage(), pbft_manager_config));
+  pbft_chain_ = std::make_shared<PbftChain>(node_addr, pbft_service_);
+#else
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
+#endif
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
 #ifdef RUSTAXA_ENABLE
-  rustaxa::PbftManagerStartupFact pbft_manager_startup_fact{};
-  const auto current_pbft_period = pbft_chain_->getPbftChainSize() + 1;
-  pbft_manager_startup_fact.current_period = current_pbft_period;
-  pbft_manager_startup_fact.cacti_active_at_chain_size =
-      conf_.genesis.state.hardforks.isOnCactiHardfork(current_pbft_period - 1);
-  pbft_manager_startup_fact.genesis_lambda_ms = conf_.genesis.pbft.lambda_ms;
-  pbft_manager_startup_fact.cacti_lambda_max_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_max;
-  pbft_manager_startup_fact.cacti_lambda_default_ms = conf_.genesis.state.hardforks.cacti_hf.lambda_default;
-  pbft_manager_startup_fact.cacti_block = conf_.genesis.state.hardforks.cacti_hf.block_num;
-  pbft_manager_startup_fact.max_exponential_lambda_ms = 60000;
-  pbft_manager_startup_fact.max_steps = 13;
-  pbft_manager_startup_fact.deadline_ms = 4 * static_cast<uint64_t>(conf_.genesis.pbft.lambda_ms);
-  pbft_manager_startup_fact.polling_interval_ms = 100;
-  auto pbft_manager_runtime =
-      rustaxa::create_pbft_manager_runtime_from_storage(db_->rustStorage(), pbft_manager_startup_fact);
-  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, std::move(pbft_manager_runtime), pbft_chain_, vote_mgr_,
-                                            dag_mgr_, trx_mgr_, final_chain_, pillar_chain_mgr_);
+  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_service_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_,
+                                            final_chain_, pillar_chain_mgr_);
 #else
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);

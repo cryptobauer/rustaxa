@@ -1,15 +1,14 @@
 //! PBFT-chain bridge adapters backed by the Rust consensus and storage implementations.
 //!
-//! A storage-backed [`BridgePbftChain`] owns a cloned `Arc` to the native Rust storage. Its block-existence and canonical
-//! RLP lookups therefore remain valid after the originating C++ `DbStorage` bridge handle is destroyed.
+//! Both production and chain-only compatibility construction return the same
+//! [`BridgePbftService`]. Chain state is protected by its own read/write lock,
+//! so public reads do not contend on the separately synchronized manager.
 
 use crate::ffi::rustaxa_ffi::{
     PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
-    PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport,
-    PbftChainHeadPayload, PbftFinalizationStorageWritePlan as FfiPbftFinalizationStorageWritePlan,
+    PbftChainHeadPayload,
 };
-use crate::ffi::BridgePbftChain;
-use crate::ffi::BridgeStorage;
+use crate::ffi::{BridgePbftChainState, BridgePbftService, BridgeStorage};
 use anyhow::anyhow;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_chain::{
@@ -22,48 +21,52 @@ use rustaxa_storage::Storage;
 const PBFT_VALIDATION_VALID: u8 = 0;
 const PBFT_VALIDATION_PERIOD_MISMATCH: u8 = 1;
 const PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH: u8 = 2;
-/// Creates a Rust PBFT chain state model from a C++-parsed head payload.
-///
-/// The bridge intentionally receives structured state instead of raw JSON so C++ can preserve the legacy JsonCpp
-/// formatting used for persisted `pbft_head` records.
-#[cfg(test)]
-pub fn create_pbft_chain(
-    head: PbftChainHeadPayload,
-) -> Result<Box<BridgePbftChain>, anyhow::Error> {
-    Ok(Box::new(BridgePbftChain {
-        state: PbftChain::new(head.into())?,
-        storage: None,
-        initialized_default: false,
-    }))
-}
-
 /// Creates a Rust PBFT chain state model directly from native Rust storage.
 ///
 /// The bridge is only a DTO adapter: storage recovery, legacy head parsing,
 /// default-head initialization, and last-anchor recovery are owned by
-/// `rustaxa-consensus`. The returned [`BridgePbftChain`] clones and owns the
-/// storage `Arc`, so its runtime lookups do not depend on the lifetime of the
-/// supplied bridge handle or the originating C++ `DbStorage` object.
-pub fn create_pbft_chain_from_storage(
+/// `rustaxa-consensus`. The returned [`BridgePbftService`] clones and owns the
+/// storage `Arc`, so its compatibility lookups do not depend on the lifetime
+/// of the supplied bridge handle or the originating C++ `DbStorage` object.
+pub fn create_pbft_chain_service_from_storage(
     storage: &BridgeStorage,
-) -> Result<Box<BridgePbftChain>, anyhow::Error> {
+) -> Result<Box<BridgePbftService>, anyhow::Error> {
     let restored = domain_restore_pbft_chain_from_storage(storage.0.as_ref())?;
-    Ok(Box::new(BridgePbftChain {
-        state: PbftChain::new(restored.head)?,
+    Ok(Box::new(BridgePbftService {
+        manager: std::sync::Mutex::new(None),
+        chain: std::sync::Arc::new(std::sync::RwLock::new(BridgePbftChainState {
+            state: PbftChain::new(restored.head)?,
+            initialized_default: restored.initialized_default,
+        })),
         storage: Some(storage.0.clone()),
-        initialized_default: restored.initialized_default,
+        bootstrap_complete: std::sync::atomic::AtomicBool::new(true),
     }))
 }
 
-impl BridgePbftChain {
+#[cfg(test)]
+fn create_pbft_chain_from_storage(
+    storage: &BridgeStorage,
+) -> Result<Box<BridgePbftService>, anyhow::Error> {
+    create_pbft_chain_service_from_storage(storage)
+}
+
+impl BridgePbftService {
     /// Returns whether storage recovery initialized the default PBFT chain head.
     pub fn pbft_chain_initialized_default(&self) -> bool {
-        self.initialized_default
+        self.chain
+            .read()
+            .expect("PBFT chain lock poisoned")
+            .initialized_default
     }
 
     /// Returns the current PBFT chain head payload for C++ JSON formatting and public accessors.
     pub fn pbft_chain_head(&self) -> PbftChainHeadPayload {
-        self.state.head().into()
+        self.chain
+            .read()
+            .expect("PBFT chain lock poisoned")
+            .state
+            .head()
+            .into()
     }
 
     /// Returns a non-mutating preview for the legacy persisted-head JSON path.
@@ -73,6 +76,9 @@ impl BridgePbftChain {
         increments_non_empty_size: bool,
     ) -> Result<PbftChainHeadPayload, anyhow::Error> {
         Ok(self
+            .chain
+            .read()
+            .expect("PBFT chain lock poisoned")
             .state
             .project_legacy_json_head(H256::from(*block_hash), increments_non_empty_size)?
             .into())
@@ -80,45 +86,17 @@ impl BridgePbftChain {
 
     /// Applies an in-memory PBFT chain update without writing storage.
     pub fn pbft_chain_update(
-        &mut self,
+        &self,
         block_hash: &[u8; 32],
         anchor_hash: &[u8; 32],
     ) -> Result<PbftChainHeadPayload, anyhow::Error> {
         Ok(self
+            .chain
+            .write()
+            .expect("PBFT chain lock poisoned")
             .state
             .update(H256::from(*block_hash), H256::from(*anchor_hash))?
             .into())
-    }
-
-    /// Applies the PBFT-chain finalization mutation described by a Rust-planned
-    /// storage intent and returns PBFT-chain-owned head facts.
-    ///
-    /// Inputs:
-    /// - `write_intent`: accepted finalization write plan from the Rust planner.
-    ///
-    /// Outputs:
-    /// - Post-mutation PBFT-chain head facts for manager-runtime validation.
-    ///
-    /// Invariants and edge behavior:
-    /// - Block hash, anchor hash, and period are derived from the accepted Rust
-    ///   finalization intent, not from C++ sidecar state.
-    /// - Persistence remains outside this method; the caller must have already
-    ///   applied the Rust-owned finalized-period storage write stages.
-    /// - Errors from the underlying PBFT-chain update are returned before any
-    ///   report is emitted.
-    pub fn pbft_chain_update_for_finalization(
-        &mut self,
-        write_intent: &FfiPbftFinalizationStorageWritePlan,
-    ) -> Result<FfiPbftChainFinalizationUpdateReport, anyhow::Error> {
-        let head = self.state.update(
-            H256::from(write_intent.pbft_block_hash),
-            H256::from(write_intent.anchor_hash),
-        )?;
-        Ok(FfiPbftChainFinalizationUpdateReport {
-            size: head.size,
-            last_pbft_block_hash: head.last_pbft_block_hash.into(),
-            last_non_null_anchor_hash: head.last_non_null_pbft_dag_anchor_hash.into(),
-        })
     }
 
     /// Returns whether this storage-backed PBFT chain runtime has a finalized
@@ -143,6 +121,9 @@ impl BridgePbftChain {
         prev_hash: &[u8; 32],
     ) -> PbftBlockValidationResult {
         match self
+            .chain
+            .read()
+            .expect("PBFT chain lock poisoned")
             .state
             .validate_next_block(period, H256::from(*prev_hash))
         {
@@ -320,6 +301,11 @@ mod tests {
 
         assert!(chain.pbft_chain_initialized_default());
         assert_eq!(chain.pbft_chain_head().size, 0);
+        assert!(chain
+            .manager
+            .lock()
+            .expect("PBFT manager lock should remain healthy")
+            .is_none());
     }
 
     #[test]
@@ -350,73 +336,5 @@ mod tests {
         assert!(loaded.found);
         assert_eq!(loaded.block_rlp, block);
         assert!(!missing.found);
-    }
-
-    #[test]
-    fn bridge_pbft_chain_finalization_update_derives_report_from_write_intent() {
-        let mut chain = create_pbft_chain(
-            PbftChainHead {
-                head_hash: H256::zero(),
-                size: 9,
-                non_empty_size: 4,
-                last_pbft_block_hash: hash(8),
-                last_non_null_pbft_dag_anchor_hash: hash(77),
-            }
-            .into(),
-        )
-        .unwrap();
-        let mut write_intent = FfiPbftFinalizationStorageWritePlan {
-            persist_pbft_head: true,
-            persist_period_data: true,
-            reset_reward_votes: false,
-            update_sortition_params: false,
-            apply_dynamic_lambda_update: false,
-            persist_period_lambda: false,
-            persist_executed_pbft_status: false,
-            process_pillar_block: false,
-            pbft_block_hash: hash(99).into(),
-            pbft_head_hash: H256::zero().into(),
-            block_period: 10,
-            null_anchor: false,
-            anchor_hash: hash(123).into(),
-            reward_vote_period: 0,
-            reward_vote_round: 0,
-            reward_vote_step: 0,
-            reward_vote_block_hash: H256::zero().into(),
-            period_lambda: 0,
-            blocks_per_year: 0,
-            rounds_count_dynamic_lambda: 0,
-            dynamic_lambda: 0,
-            executed_pbft_status: false,
-            pbft_head_payload: Vec::new(),
-            period_data_rlp: Vec::new(),
-            dag_block_period_writes: Vec::new(),
-            transaction_location_writes: Vec::new(),
-        };
-
-        let report = chain
-            .pbft_chain_update_for_finalization(&write_intent)
-            .unwrap();
-
-        assert_eq!(report.size, 10);
-        assert_eq!(H256::from(report.last_pbft_block_hash), hash(99));
-        assert_eq!(H256::from(report.last_non_null_anchor_hash), hash(123));
-
-        write_intent.pbft_block_hash = hash(100).into();
-        write_intent.anchor_hash = H256::zero().into();
-        write_intent.block_period = 11;
-        let null_anchor_report = chain
-            .pbft_chain_update_for_finalization(&write_intent)
-            .unwrap();
-
-        assert_eq!(null_anchor_report.size, 11);
-        assert_eq!(
-            H256::from(null_anchor_report.last_pbft_block_hash),
-            hash(100)
-        );
-        assert_eq!(
-            H256::from(null_anchor_report.last_non_null_anchor_hash),
-            hash(123)
-        );
     }
 }

@@ -7,7 +7,6 @@
 
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup,
-    PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport,
     PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
     PbftDynamicLambdaFact as FfiPbftDynamicLambdaFact,
     PbftFinalizationCleanupPlan as FfiPbftFinalizationCleanupPlan,
@@ -55,13 +54,13 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerRuntimeStorageApplyResult as FfiPbftManagerRuntimeStorageApplyResult,
     PbftManagerRuntimeTickFact as FfiPbftManagerRuntimeTickFact,
     PbftManagerSleepPlan as FfiPbftManagerSleepPlan,
-    PbftManagerStartupFact as FfiPbftManagerStartupFact,
     PbftManagerStartupReplayRangeFact as FfiPbftManagerStartupReplayRangeFact,
     PbftManagerStartupReplayRangePlan as FfiPbftManagerStartupReplayRangePlan,
     PbftManagerStateActionEffect as FfiPbftManagerStateActionEffect,
     PbftManagerStateActionEffectReport as FfiPbftManagerStateActionEffectReport,
     PbftManagerStateActionFact as FfiPbftManagerStateActionFact,
     PbftManagerStateActionSessionStep as FfiPbftManagerStateActionSessionStep,
+    PbftServiceConfig as FfiPbftServiceConfig,
     PbftSyncQueueDrainReport as FfiPbftSyncQueueDrainReport,
     PbftSyncQueueDrainReportResult as FfiPbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStep as FfiPbftSyncQueueDrainStep,
@@ -75,10 +74,14 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
     TransactionManagerFinalizedStatusCommandReport as FfiTransactionManagerFinalizedStatusCommandReport,
 };
-use crate::ffi::{BridgePbftManagerRuntime, BridgeStorage};
+use crate::ffi::{
+    BridgePbftChainState, BridgePbftManagerRuntimeState, BridgePbftService, BridgeStorage,
+};
 use anyhow::anyhow;
 use rustaxa_consensus::dag::dag_block_period_from_storage;
-use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
+use rustaxa_consensus::pbft_chain::{
+    pbft_block_exists_in_storage, restore_pbft_chain_from_storage, PbftChain,
+};
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
@@ -151,7 +154,7 @@ use rustaxa_consensus::pbft_sync::{
     next_pbft_sync_queue_drain_step as next_domain_pbft_sync_queue_drain_step,
     report_pbft_sync_queue_drain_step as report_domain_pbft_sync_queue_drain_step,
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
-    PbftSyncQueueDrainStep,
+    PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
@@ -419,6 +422,22 @@ const TRANSITION_STORAGE_STATUS_REJECTED: u8 = 1;
 #[cfg(test)]
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 
+/// Rust-only startup facts for tests that exercise manager restore independently
+/// from the production service's chain-derived bootstrap contract.
+#[cfg(test)]
+pub(crate) struct TestPbftManagerStartupFact {
+    pub current_period: u64,
+    pub cacti_active_at_chain_size: bool,
+    pub genesis_lambda_ms: u64,
+    pub cacti_lambda_max_ms: u64,
+    pub cacti_lambda_default_ms: u64,
+    pub cacti_block: u64,
+    pub max_exponential_lambda_ms: u64,
+    pub max_steps: u64,
+    pub deadline_ms: u64,
+    pub polling_interval_ms: u64,
+}
+
 fn to_startup_u32(value: u64, field: &str) -> anyhow::Result<u32> {
     u32::try_from(value).map_err(|_| anyhow!("PBFT_MANAGER_STARTUP_{field}_OVERFLOW"))
 }
@@ -447,10 +466,100 @@ fn broadcast_status_from_u8(value: u8) -> PbftManagerBroadcastStatus {
 /// - Missing legacy round/step/lambda fields keep existing compatibility
 ///   defaults through the storage repository.
 /// - Rejected startup facts return a Rust error before C++ mirrors are updated.
+pub fn create_pbft_service_from_storage(
+    storage: &BridgeStorage,
+    config: FfiPbftServiceConfig,
+) -> anyhow::Result<Box<BridgePbftService>> {
+    let restored_chain = restore_pbft_chain_from_storage(storage.0.as_ref())?;
+    let current_period = restored_chain.head.size.saturating_add(1);
+    let cacti_active_at_chain_size = restored_chain.head.size >= config.cacti_block;
+    let runtime = create_domain_pbft_manager_runtime_from_storage(
+        &storage.0,
+        PbftManagerStorageStartupFact {
+            current_period,
+            cacti_active_at_chain_size,
+            genesis_lambda_ms: to_startup_u32(config.genesis_lambda_ms, "GENESIS_LAMBDA")?,
+            cacti_lambda_max_ms: to_startup_u32(config.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
+            cacti_lambda_default_ms: to_startup_u32(
+                config.cacti_lambda_default_ms,
+                "CACTI_LAMBDA_DEFAULT",
+            )?,
+            cacti_block: config.cacti_block,
+            max_exponential_lambda_ms: config.max_exponential_lambda_ms,
+            max_steps: config.max_steps,
+            deadline_ms: config.deadline_ms,
+            polling_interval_ms: config.polling_interval_ms,
+        },
+    )?;
+
+    let chain = std::sync::Arc::new(std::sync::RwLock::new(BridgePbftChainState {
+        state: PbftChain::new(restored_chain.head)?,
+        initialized_default: restored_chain.initialized_default,
+    }));
+    Ok(Box::new(BridgePbftService {
+        manager: std::sync::Mutex::new(Some(BridgePbftManagerRuntimeState {
+            state: runtime,
+            storage: storage.0.clone(),
+            period_data_queue: PeriodDataQueue::new(),
+            pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
+            pbft_sync_admission_session: None,
+            state_action_effect_session: None,
+            runtime_session: None,
+            proposal_session: None,
+            finalization_runtime_session: None,
+            finalization_runtime_plan: None,
+            finalization_reward_votes_reset_generation: 0,
+            chain: chain.clone(),
+        })),
+        chain,
+        storage: Some(storage.0.clone()),
+        bootstrap_complete: std::sync::atomic::AtomicBool::new(false),
+    }))
+}
+
+/// Marks the typed PBFT startup replay phase complete.
+///
+/// The transition is one-way and uses release ordering so manager command
+/// threads observe every replay mutation performed before this call. Live
+/// daemon, proposal, and sync-session entry points remain fail-closed until the
+/// application completes replay and calls this function.
+pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> anyhow::Result<()> {
+    if service
+        .manager
+        .lock()
+        .expect("PBFT manager lock poisoned")
+        .is_none()
+    {
+        return Err(anyhow!("PBFT_SERVICE_CHAIN_ONLY"));
+    }
+    service
+        .bootstrap_complete
+        .store(true, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
+#[cfg(test)]
 pub fn create_pbft_manager_runtime_from_storage(
     storage: &BridgeStorage,
-    fact: FfiPbftManagerStartupFact,
-) -> anyhow::Result<Box<BridgePbftManagerRuntime>> {
+    fact: TestPbftManagerStartupFact,
+) -> anyhow::Result<Box<BridgePbftService>> {
+    let service = create_pbft_service_from_storage(
+        storage,
+        FfiPbftServiceConfig {
+            genesis_lambda_ms: fact.genesis_lambda_ms,
+            cacti_lambda_max_ms: fact.cacti_lambda_max_ms,
+            cacti_lambda_default_ms: fact.cacti_lambda_default_ms,
+            cacti_block: if fact.cacti_active_at_chain_size {
+                0
+            } else {
+                u64::MAX
+            },
+            max_exponential_lambda_ms: fact.max_exponential_lambda_ms,
+            max_steps: fact.max_steps,
+            deadline_ms: fact.deadline_ms,
+            polling_interval_ms: fact.polling_interval_ms,
+        },
+    )?;
     let runtime = create_domain_pbft_manager_runtime_from_storage(
         &storage.0,
         PbftManagerStorageStartupFact {
@@ -469,20 +578,9 @@ pub fn create_pbft_manager_runtime_from_storage(
             polling_interval_ms: fact.polling_interval_ms,
         },
     )?;
-
-    Ok(Box::new(BridgePbftManagerRuntime {
-        state: runtime,
-        storage: storage.0.clone(),
-        period_data_queue: PeriodDataQueue::new(),
-        pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
-        pbft_sync_admission_session: None,
-        state_action_effect_session: None,
-        runtime_session: None,
-        proposal_session: None,
-        finalization_runtime_session: None,
-        finalization_runtime_plan: None,
-        finalization_reward_votes_reset_generation: 0,
-    }))
+    service.manager_state().state = runtime;
+    pbft_service_complete_bootstrap(&service)?;
+    Ok(service)
 }
 
 /// Loads one finalized period for PBFT manager startup replay through runtime-owned storage.
@@ -503,10 +601,11 @@ pub fn create_pbft_manager_runtime_from_storage(
 /// - `found = false` is an explicit missing-period result and does not trigger
 ///   a legacy storage fallback.
 pub fn pbft_manager_runtime_load_startup_replay_period(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     period: u64,
     load_period_lambda: bool,
 ) -> anyhow::Result<crate::ffi::rustaxa_ffi::PbftManagerStartupReplayPeriod> {
+    let runtime = runtime.manager_state();
     let replay = load_domain_pbft_manager_startup_replay_period(
         runtime.storage.as_ref(),
         period,
@@ -526,9 +625,8 @@ pub fn pbft_manager_runtime_load_startup_replay_period(
 }
 
 /// Returns the current Rust-owned PBFT manager runtime snapshot.
-pub fn pbft_manager_runtime_snapshot(
-    runtime: &BridgePbftManagerRuntime,
-) -> FfiPbftManagerRuntimeSnapshot {
+pub fn pbft_manager_runtime_snapshot(runtime: &BridgePbftService) -> FfiPbftManagerRuntimeSnapshot {
+    let runtime = runtime.manager_state();
     runtime.state.snapshot().into()
 }
 
@@ -549,11 +647,12 @@ pub fn pbft_manager_runtime_snapshot(
 /// - C++ no longer reads individual queue internals through separate bridge
 ///   exports.
 pub fn pbft_manager_runtime_period_data_queue_snapshot(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     pbft_chain_size: u64,
     current_period: u64,
     chain_last_hash: [u8; 32],
 ) -> FfiPeriodDataQueueSnapshot {
+    let runtime = runtime.manager_state();
     FfiPeriodDataQueueSnapshot {
         period: runtime.period_data_queue.period(),
         syncing_period: runtime.period_data_queue.syncing_period(pbft_chain_size),
@@ -567,7 +666,8 @@ pub fn pbft_manager_runtime_period_data_queue_snapshot(
 }
 
 /// Clears PBFT manager runtime queue metadata.
-pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &mut BridgePbftManagerRuntime) {
+pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &BridgePbftService) {
+    let mut runtime = runtime.manager_state();
     runtime.period_data_queue.clear();
 }
 
@@ -591,6 +691,24 @@ fn queue_drain_report_result_into_ffi(
     }
 }
 
+fn queue_drain_bootstrap_incomplete_step() -> FfiPbftSyncQueueDrainStep {
+    FfiPbftSyncQueueDrainStep {
+        action: PbftSyncQueueDrainAction::ContractError.as_u8(),
+        status: PbftSyncQueueDrainStatus::InvalidReport.as_u8(),
+        clean_before_period: 0,
+        can_continue: false,
+        error_code: "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE".to_owned(),
+    }
+}
+
+fn queue_drain_bootstrap_incomplete_report() -> FfiPbftSyncQueueDrainReportResult {
+    FfiPbftSyncQueueDrainReportResult {
+        status: PbftSyncQueueDrainStatus::InvalidReport.as_u8(),
+        can_continue: false,
+        error_code: "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE".to_owned(),
+    }
+}
+
 fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQueueDrainReport {
     PbftSyncQueueDrainReport {
         action: PbftSyncQueueDrainAction::from_u8(value.action),
@@ -611,7 +729,11 @@ fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQu
 /// - C++ calls this once at the start of each `pushSyncedPbftBlocksIntoChain`
 ///   pass. The live `PeriodData` sidecars remain C++-owned for now, but the
 ///   planner session no longer requires a standalone CXX bridge handle.
-pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &mut BridgePbftManagerRuntime) {
+pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService) {
+    if !runtime.accepts_live_commands() {
+        return;
+    }
+    let mut runtime = runtime.manager_state();
     runtime.pbft_sync_queue_drain_session = create_domain_pbft_sync_queue_drain_session();
 }
 
@@ -630,10 +752,14 @@ pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &mut BridgePbft
 ///   temporary executor for live sidecar cleanup, period processing, block
 ///   pushing, and network sync-state updates.
 pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     queue_size: usize,
     current_period: u64,
 ) -> FfiPbftSyncQueueDrainStep {
+    if !runtime.accepts_live_commands() {
+        return queue_drain_bootstrap_incomplete_step();
+    }
+    let mut runtime = runtime.manager_state();
     queue_drain_step_into_ffi(next_domain_pbft_sync_queue_drain_step(
         &mut runtime.pbft_sync_queue_drain_session,
         queue_size,
@@ -655,9 +781,13 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
 /// - Invalid, mismatched, or failed reports terminate the runtime-owned session
 ///   exactly as the retired standalone bridge session did.
 pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     report: FfiPbftSyncQueueDrainReport,
 ) -> FfiPbftSyncQueueDrainReportResult {
+    if !runtime.accepts_live_commands() {
+        return queue_drain_bootstrap_incomplete_report();
+    }
+    let mut runtime = runtime.manager_state();
     queue_drain_report_result_into_ffi(report_domain_pbft_sync_queue_drain_step(
         &mut runtime.pbft_sync_queue_drain_session,
         queue_drain_report_from_ffi(report),
@@ -669,7 +799,7 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
 /// C++ remains the temporary owner of live `PeriodData`, `PbftVote`, and peer sidecars.
 /// Rust owns the compact queue ordering, admission, cleanup, and pop-source decisions.
 pub fn pbft_manager_runtime_period_data_queue_push(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     entry_id: u64,
     period: u64,
     block_hash: [u8; 32],
@@ -691,6 +821,7 @@ pub fn pbft_manager_runtime_period_data_queue_push(
     max_pbft_size: u64,
     current_block_cert_vote_rlps: Vec<FfiPeriodDataQueuePbftVotePayload>,
 ) -> anyhow::Result<FfiPeriodDataQueuePushOutcome> {
+    let mut runtime = runtime.manager_state();
     Ok(runtime
         .period_data_queue
         .push(
@@ -742,16 +873,18 @@ pub fn pbft_manager_runtime_period_data_queue_push(
 
 /// Pops one PBFT sync queue metadata entry from PBFT manager runtime state.
 pub fn pbft_manager_runtime_period_data_queue_pop(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> anyhow::Result<FfiPeriodDataQueuePopPlan> {
+    let mut runtime = runtime.manager_state();
     Ok(runtime.period_data_queue.pop()?.into())
 }
 
 /// Removes stale PBFT sync queue metadata entries from PBFT manager runtime state.
 pub fn pbft_manager_runtime_period_data_queue_clean_old_data(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     period: u64,
 ) -> Vec<FfiPeriodDataQueueEntryRef> {
+    let mut runtime = runtime.manager_state();
     runtime
         .period_data_queue
         .clean_old_data(period)
@@ -912,9 +1045,10 @@ pub fn plan_pbft_manager_startup_replay_ranges(
 /// returned effect list owns the surrounding advance-period order while C++
 /// remains the temporary executor.
 pub fn pbft_manager_runtime_plan_advance_period_after_reset(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     pbft_chain_size: u64,
 ) -> FfiPbftManagerAdvancePeriodPlan {
+    let runtime = runtime.manager_state();
     runtime
         .state
         .plan_advance_period_after_reset(pbft_chain_size)
@@ -949,9 +1083,10 @@ pub fn validate_pbft_manager_advance_period_action_report(
 
 /// Records a completed Rust-planned period advance in the long-lived runtime.
 pub fn pbft_manager_runtime_apply_period_advance(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     new_period: u64,
 ) -> FfiPbftManagerRuntimeSnapshot {
+    let mut runtime = runtime.manager_state();
     runtime
         .state
         .apply_committed_period_advance(new_period)
@@ -976,12 +1111,13 @@ pub fn pbft_manager_runtime_apply_period_advance(
 /// - Zero counters are rejected by the runtime and returned as an invalid
 ///   snapshot without mutating the previous counter state.
 pub fn pbft_manager_runtime_apply_broadcast_counters(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     broadcast_votes_counter: u32,
     rebroadcast_votes_counter: u32,
     broadcast_reward_votes_counter: u32,
     rebroadcast_reward_votes_counter: u32,
 ) -> FfiPbftManagerRuntimeSnapshot {
+    let mut runtime = runtime.manager_state();
     runtime
         .state
         .apply_committed_broadcast_counters(
@@ -1011,8 +1147,9 @@ pub fn pbft_manager_runtime_apply_broadcast_counters(
 /// - Storage read errors are returned to C++ instead of being mapped to an
 ///   empty result.
 pub fn pbft_manager_runtime_cert_voted_block_in_round(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> anyhow::Result<Vec<u8>> {
+    let runtime = runtime.manager_state();
     Ok(runtime
         .storage
         .pbft()
@@ -1039,16 +1176,22 @@ pub fn pbft_manager_runtime_cert_voted_block_in_round(
 /// - C++ must update its live `cert_voted_block_for_round_` sidecar only after
 ///   this call succeeds and the returned snapshot is ready.
 pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     period: u64,
     round: u32,
     block_hash: [u8; 32],
     block_rlp: Vec<u8>,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
+    let mut runtime = runtime.manager_state();
     save_cert_voted_block_in_round_storage(runtime.storage.as_ref(), u64::from(round), &block_rlp)?;
-    Ok(pbft_manager_runtime_apply_cert_voted_block_metadata(
-        runtime, period, round, block_hash,
-    ))
+    Ok(runtime
+        .state
+        .apply_committed_cert_voted_block(
+            period,
+            u64::from(round),
+            ethereum_types::H256::from(block_hash),
+        )
+        .into())
 }
 
 /// Records cert-voted block metadata after an existing recovery payload was materialized.
@@ -1067,11 +1210,12 @@ pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
 /// - C++ may still keep a temporary `PbftBlock` object for APIs and vote
 ///   generation, but Rust owns the compact metadata used by protocol planners.
 pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     period: u64,
     round: u32,
     block_hash: [u8; 32],
 ) -> FfiPbftManagerRuntimeSnapshot {
+    let mut runtime = runtime.manager_state();
     runtime
         .state
         .apply_committed_cert_voted_block(
@@ -1098,9 +1242,10 @@ pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
 ///   `DagBlock` vector sidecar used by FinalChain/finalization executors.
 /// - The result is live runtime state and is not persisted.
 pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     anchor_hash: &[u8; 32],
 ) -> bool {
+    let runtime = runtime.manager_state();
     runtime
         .state
         .has_cached_anchor_dag_order(ethereum_types::H256::from(*anchor_hash))
@@ -1122,9 +1267,10 @@ pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
 ///   sidecar or refreshed an existing one.
 /// - Re-recording an anchor is idempotent.
 pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     anchor_hash: [u8; 32],
 ) -> FfiPbftManagerRuntimeSnapshot {
+    let mut runtime = runtime.manager_state();
     runtime
         .state
         .record_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
@@ -1146,9 +1292,10 @@ pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
 /// - Removing a missing anchor is idempotent and leaves scalar runtime state
 ///   untouched.
 pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     anchor_hash: [u8; 32],
 ) -> FfiPbftManagerRuntimeSnapshot {
+    let mut runtime = runtime.manager_state();
     runtime
         .state
         .remove_cached_anchor_dag_order(ethereum_types::H256::from(anchor_hash))
@@ -1170,8 +1317,9 @@ pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
 /// - C++ still materializes the temporary `PillarVote` sidecar for network
 ///   gossip until pillar vote network payloads move to Rust.
 pub fn pbft_manager_runtime_own_pillar_block_vote(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> anyhow::Result<Vec<u8>> {
+    let runtime = runtime.manager_state();
     load_own_pillar_block_vote_storage(runtime.storage.as_ref())
 }
 
@@ -1191,9 +1339,10 @@ fn transition_runtime_apply_result(
 
 /// Plans, persists, and commits one lifecycle transition as a Rust-owned operation.
 pub fn pbft_manager_runtime_execute_lifecycle_transition(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     request: FfiPbftManagerLifecycleTransitionRequest,
 ) -> anyhow::Result<FfiPbftManagerLifecycleTransitionResult> {
+    let mut runtime = runtime.manager_state();
     let kind = PbftManagerTransitionKind::from_u8(request.kind);
     let plan = runtime
         .state
@@ -1287,8 +1436,9 @@ pub fn pbft_manager_runtime_execute_lifecycle_transition(
 /// - The Rust runtime changes only after that Rust storage write succeeds.
 /// - The returned snapshot is the authoritative source for C++ live mirrors.
 pub fn pbft_manager_runtime_apply_executed_block_reset(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> anyhow::Result<FfiPbftManagerRuntimeStorageApplyResult> {
+    let mut runtime = runtime.manager_state();
     if apply_executed_block_reset_storage(runtime.storage.as_ref()).is_err() {
         return Ok(transition_runtime_apply_result(
             TRANSITION_STORAGE_STATUS_REJECTED,
@@ -1324,9 +1474,10 @@ pub fn pbft_manager_runtime_apply_executed_block_reset(
 /// - Unsupported status ids are rejected by `rustaxa-consensus`; this is not a
 ///   generic PBFT manager status write bridge.
 pub fn pbft_manager_runtime_apply_next_voted_status(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     status: u8,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
+    let mut runtime = runtime.manager_state();
     apply_next_voted_status_storage(runtime.storage.as_ref(), status)?;
     runtime.state.apply_committed_next_voted_status(status);
     Ok(runtime.state.snapshot().into())
@@ -1348,10 +1499,11 @@ pub fn pbft_manager_runtime_apply_next_voted_status(
 ///   owned by the finalization/dynamic-lambda storage paths.
 /// - The runtime snapshot changes only after Rust storage accepts the write.
 pub fn pbft_manager_runtime_apply_cursor_field(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     field: u8,
     value: u32,
 ) -> anyhow::Result<FfiPbftManagerRuntimeSnapshot> {
+    let mut runtime = runtime.manager_state();
     apply_pbft_manager_cursor_field_storage(runtime.storage.as_ref(), field, value)?;
     runtime.state.apply_committed_cursor_field(field, value);
     Ok(runtime.state.snapshot().into())
@@ -1372,9 +1524,10 @@ pub fn pbft_manager_runtime_apply_cursor_field(
 ///   but the durable lookup is owned by `rustaxa-consensus` over
 ///   `rustaxa-storage`.
 pub fn pbft_manager_runtime_dag_block_period(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     hash: &[u8; 32],
 ) -> anyhow::Result<FfiBlockPeriodLookup> {
+    let runtime = runtime.manager_state();
     let lookup =
         dag_block_period_from_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))?;
     Ok(FfiBlockPeriodLookup {
@@ -1397,9 +1550,10 @@ pub fn pbft_manager_runtime_dag_block_period(
 /// - This is a storage fact lookup only. PBFT block materialization for network
 ///   and API compatibility remains outside this helper.
 pub fn pbft_manager_runtime_pbft_block_in_db(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     hash: &[u8; 32],
 ) -> anyhow::Result<bool> {
+    let runtime = runtime.manager_state();
     pbft_block_exists_in_storage(runtime.storage.as_ref(), ethereum_types::H256::from(*hash))
 }
 
@@ -1411,7 +1565,7 @@ pub fn pbft_manager_runtime_pbft_block_in_db(
 /// uses only the supplied fact; future runtime policy can be added here without
 /// reintroducing a standalone CXX entry point.
 pub fn pbft_manager_runtime_plan_finalization_intent(
-    _runtime: &BridgePbftManagerRuntime,
+    _runtime: &BridgePbftService,
     fact: FfiPbftFinalizationIntentFact,
 ) -> FfiPbftFinalizationIntentPlan {
     plan_domain_pbft_finalization_intent(fact.into()).into()
@@ -1435,9 +1589,10 @@ pub fn pbft_manager_runtime_plan_finalization_intent(
 /// - `finalized_period = 0` with active dynamic-lambda is treated as having no
 ///   previous persisted lambda, matching the lower-bound lookup contract.
 pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     fact: FfiPbftDynamicLambdaFact,
 ) -> anyhow::Result<FfiPbftManagerFinalizationDynamicLambdaPlan> {
+    let runtime = runtime.manager_state();
     let dynamic_lambda_active = fact.dynamic_lambda_active;
     let finalized_period = fact.finalized_period;
     let plan = plan_domain_pbft_dynamic_lambda(PbftDynamicLambdaFact::from(fact));
@@ -1477,16 +1632,21 @@ pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
 /// - Starting a new tick replaces any incomplete previous tick, matching the
 ///   legacy per-loop allocation behavior.
 pub fn pbft_manager_runtime_begin_session(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     fact: FfiPbftManagerRuntimeTickFact,
 ) {
+    if !runtime.accepts_live_commands() {
+        return;
+    }
+    let mut runtime = runtime.manager_state();
     runtime.runtime_session = Some(create_domain_pbft_manager_runtime_session(fact.into()));
 }
 
 /// Returns the next requested action for the runtime-owned tick session.
 pub fn pbft_manager_runtime_session_next(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> FfiPbftManagerRuntimeSessionStep {
+    let runtime = runtime.manager_state();
     let Some(session) = runtime.runtime_session.as_ref() else {
         return runtime_session_not_started_step();
     };
@@ -1495,22 +1655,29 @@ pub fn pbft_manager_runtime_session_next(
 
 /// Reports one C++-executed action back to the runtime-owned tick session.
 pub fn pbft_manager_runtime_session_report(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     report: FfiPbftManagerRuntimeActionReport,
 ) -> FfiPbftManagerRuntimeSessionStep {
+    let mut runtime = runtime.manager_state();
     let Some(session) = runtime.runtime_session.take() else {
         return runtime_session_not_started_step();
     };
     runtime.runtime_session = Some(report_pbft_manager_runtime_action(session, report.into()));
-    pbft_manager_runtime_session_next(runtime)
+    runtime
+        .runtime_session
+        .as_ref()
+        .map(next_pbft_manager_runtime_action)
+        .map(Into::into)
+        .unwrap_or_else(runtime_session_not_started_step)
 }
 
 /// Plans whether the C++ PBFT manager shell should wait using the Rust runtime
 /// deadline.
 pub fn plan_pbft_manager_runtime_sleep_until_next_step(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     round_elapsed_ms: i64,
 ) -> FfiPbftManagerSleepPlan {
+    let runtime = runtime.manager_state();
     plan_domain_pbft_manager_runtime_sleep_until_next_step(
         &runtime.state.snapshot(),
         round_elapsed_ms,
@@ -1541,7 +1708,8 @@ pub fn plan_pbft_manager_eligible_wallet_period_wait(
 }
 
 /// Aborts the runtime-owned PBFT manager tick session.
-pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime) {
+pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService) {
+    let mut runtime = runtime.manager_state();
     if let Some(session) = runtime.runtime_session.take() {
         runtime.runtime_session = Some(abort_domain_pbft_manager_runtime_session(session));
     }
@@ -1582,9 +1750,10 @@ fn runtime_session_not_started_step() -> FfiPbftManagerRuntimeSessionStep {
 /// - Starting a new session replaces any previous incomplete state-action
 ///   cursor, matching the legacy per-call session allocation behavior.
 pub fn pbft_manager_runtime_begin_state_action_effect_session(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     fact: FfiPbftManagerStateActionFact,
 ) {
+    let mut runtime = runtime.manager_state();
     runtime.state_action_effect_session = Some(
         create_domain_pbft_manager_state_action_effect_session(fact.into()),
     );
@@ -1592,8 +1761,9 @@ pub fn pbft_manager_runtime_begin_state_action_effect_session(
 
 /// Returns the next effect requested by the runtime-owned state-action session.
 pub fn pbft_manager_runtime_state_action_effect_session_next(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> FfiPbftManagerStateActionSessionStep {
+    let mut runtime = runtime.manager_state();
     let Some(session) = runtime.state_action_effect_session.as_mut() else {
         return state_action_effect_session_not_started_step();
     };
@@ -1602,9 +1772,10 @@ pub fn pbft_manager_runtime_state_action_effect_session_next(
 
 /// Reports one C++-executed state-action effect to Rust and returns the next step.
 pub fn pbft_manager_runtime_state_action_effect_session_report(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     report: FfiPbftManagerStateActionEffectReport,
 ) -> FfiPbftManagerStateActionSessionStep {
+    let mut runtime = runtime.manager_state();
     let Some(session) = runtime.state_action_effect_session.as_mut() else {
         return state_action_effect_session_not_started_step();
     };
@@ -1649,16 +1820,24 @@ fn state_action_effect_session_not_started_step() -> FfiPbftManagerStateActionSe
 /// - Starting a new proposal replaces any incomplete previous proposal, matching
 ///   the legacy per-call allocation behavior.
 pub fn pbft_manager_runtime_begin_proposal_session(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     fact: FfiPbftManagerProposalInitialFact,
 ) {
+    if !runtime.accepts_live_commands() {
+        return;
+    }
+    let mut runtime = runtime.manager_state();
     runtime.proposal_session = Some(create_domain_pbft_manager_proposal_session(fact.into()));
 }
 
 /// Returns the next proposal-construction action or build command.
 pub fn pbft_manager_proposal_session_next(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> FfiPbftManagerProposalSessionStep {
+    if !runtime.accepts_live_commands() {
+        return proposal_session_not_started_step();
+    }
+    let mut runtime = runtime.manager_state();
     let Some(session) = runtime.proposal_session.as_mut() else {
         return proposal_session_not_started_step();
     };
@@ -1667,9 +1846,10 @@ pub fn pbft_manager_proposal_session_next(
 
 /// Reports one C++-loaded DAG order to the runtime-owned proposal session.
 pub fn pbft_manager_proposal_session_report_dag_order(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     report: FfiPbftManagerProposalDagOrderReport,
 ) -> FfiPbftManagerProposalSessionStep {
+    let mut runtime = runtime.manager_state();
     let Some(session) = runtime.proposal_session.as_mut() else {
         return proposal_session_not_started_step();
     };
@@ -1722,7 +1902,7 @@ pub fn report_pbft_manager_broadcast(
 /// - C++ owns live PBFT chain, FinalChain, reward-vote, pillar, and DAG
 ///   execution and calls this again after updating the corresponding status in
 ///   the fact bundle.
-/// - No validation cursor is stored in `BridgePbftManagerRuntime`; callers keep
+/// - No validation cursor is stored in `BridgePbftService`; callers keep
 ///   the per-block fact bundle local to the validation path.
 pub fn plan_pbft_manager_block_validation(
     fact: FfiPbftManagerBlockValidationFact,
@@ -1862,7 +2042,7 @@ impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
 }
 
 fn finalization_drain_result(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     drain: &FinalizationOwnedActionDrainState,
     next_step: FinalizationRuntimeSessionStep,
     error_code: String,
@@ -1883,7 +2063,7 @@ fn finalization_drain_result(
 }
 
 fn finalization_executor_state_from_step(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     step: FinalizationRuntimeSessionStep,
     error_code: String,
 ) -> FfiPbftManagerFinalizationExecutorState {
@@ -1912,7 +2092,7 @@ fn finalization_executor_state_from_step(
 }
 
 fn finalization_executor_state_from_drain(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     drain: FinalizationOwnedActionDrainResult,
 ) -> FfiPbftManagerFinalizationExecutorState {
     FfiPbftManagerFinalizationExecutorState {
@@ -1940,13 +2120,13 @@ fn finalization_executor_state_from_drain(
 }
 
 fn drain_finalization_executor_state(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let drain = pbft_manager_runtime_drain_owned_finalization_actions(runtime)?;
     Ok(finalization_executor_state_from_drain(runtime, drain))
 }
 
-fn clear_finalization_runtime(runtime: &mut BridgePbftManagerRuntime) {
+fn clear_finalization_runtime(runtime: &mut BridgePbftManagerRuntimeState) {
     runtime.finalization_runtime_session = None;
     runtime.finalization_runtime_plan = None;
     runtime.finalization_reward_votes_reset_generation = 0;
@@ -1961,7 +2141,7 @@ fn finalization_executor_state_is_terminal(
 }
 
 fn finish_finalization_executor_boundary(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     result: anyhow::Result<FfiPbftManagerFinalizationExecutorState>,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     match result {
@@ -1979,7 +2159,7 @@ fn finish_finalization_executor_boundary(
 }
 
 fn stored_finalization_plan(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
 ) -> anyhow::Result<PbftFinalizationPlan> {
     runtime
         .finalization_runtime_plan
@@ -2032,7 +2212,7 @@ fn base_finalization_live_report(
 /// operate on this manager-owned session. Starting a new session replaces any
 /// incomplete prior finalization cursor.
 fn pbft_manager_runtime_begin_finalization_session(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     plan: &FfiPbftFinalizationIntentPlan,
 ) {
     runtime.finalization_reward_votes_reset_generation = 0;
@@ -2049,7 +2229,7 @@ fn pbft_manager_runtime_begin_finalization_session(
 /// pillar side effects, but the action cursor and terminal status stay on the
 /// existing manager runtime.
 fn pbft_manager_runtime_begin_finalization_resume_session(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     plan: PbftFinalizationResumePlan,
 ) {
     runtime.finalization_runtime_session = Some(start_pbft_finalization_resume_runtime(&plan));
@@ -2057,7 +2237,7 @@ fn pbft_manager_runtime_begin_finalization_resume_session(
 
 /// Returns the next manager-owned PBFT finalization action without advancing the cursor.
 fn pbft_manager_runtime_finalization_session_next(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
 ) -> FinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_ref() else {
         return pbft_finalization_session_missing_step();
@@ -2072,7 +2252,7 @@ fn pbft_manager_runtime_finalization_session_next(
 /// session into a terminal status and returns that terminal step.
 #[cfg(test)]
 fn pbft_manager_runtime_finalization_session_report(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     cursor: u32,
     action: u8,
     success: bool,
@@ -2096,11 +2276,11 @@ fn pbft_manager_runtime_finalization_session_report(
 /// Reports one structured action result to the manager-owned finalization cursor.
 ///
 /// This preserves action-specific error codes while keeping the cursor state on
-/// `BridgePbftManagerRuntime`. The session remains available for inspection
+/// `BridgePbftService`. The session remains available for inspection
 /// after terminal statuses until C++ explicitly aborts it or starts the next
 /// finalization session.
 fn pbft_manager_runtime_finalization_session_report_action(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     report: FinalizationRuntimeActionReport,
 ) -> FinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_mut() else {
@@ -2163,7 +2343,7 @@ fn pbft_manager_runtime_finalization_session_report_action(
 /// - Unknown actions and cursor mismatches are still handled by the shared
 ///   `pbft_manager_runtime_finalization_session_report_action` contract.
 fn pbft_manager_runtime_report_finalization_live_mutation(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     report: PbftFinalizationLiveMutationReport,
 ) -> anyhow::Result<FinalizationRuntimeSessionStep> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
@@ -2216,25 +2396,26 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 ///   one of the typed finalization advancement APIs after executing one
 ///   external action.
 pub fn pbft_manager_runtime_start_finalization_executor(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut runtime = runtime.manager_state();
     let resume_generation = (request.mode == FINALIZATION_EXECUTOR_MODE_RESUME
         && runtime.finalization_reward_votes_reset_generation != 0
         && runtime.finalization_reward_votes_reset_generation
             == runtime.storage.extra_reward_votes_reset_generation())
     .then_some(runtime.finalization_reward_votes_reset_generation)
     .unwrap_or(0);
-    clear_finalization_runtime(runtime);
+    clear_finalization_runtime(&mut runtime);
     if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
         runtime.finalization_reward_votes_reset_generation = resume_generation;
     }
-    let result = pbft_manager_runtime_start_finalization_executor_inner(runtime, request);
-    finish_finalization_executor_boundary(runtime, result)
+    let result = pbft_manager_runtime_start_finalization_executor_inner(&mut runtime, request);
+    finish_finalization_executor_boundary(&mut runtime, result)
 }
 
 fn pbft_manager_runtime_start_finalization_executor_inner(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
@@ -2316,7 +2497,7 @@ fn pbft_manager_runtime_start_finalization_executor_inner(
 ///   manager-owned finalization cursor.
 /// - External side effects are never executed here.
 fn pbft_manager_runtime_advance_finalization_live_mutation(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     cursor: u32,
     build_report: impl FnOnce(
         PbftFinalizationRuntimeAction,
@@ -2332,7 +2513,7 @@ fn pbft_manager_runtime_advance_finalization_live_mutation(
 }
 
 fn pbft_manager_runtime_advance_finalization_live_mutation_inner(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     cursor: u32,
     build_report: impl FnOnce(
         PbftFinalizationRuntimeAction,
@@ -2415,19 +2596,23 @@ fn pbft_manager_runtime_advance_finalization_live_mutation_inner(
 /// - Cursor mismatch, missing action, and unknown action preserve the same
 ///   finalization executor contract as successful typed advancement APIs.
 pub fn pbft_manager_runtime_fail_finalization_external_effect(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     status: u8,
     error_code: String,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut runtime = runtime.manager_state();
     let result = pbft_manager_runtime_fail_finalization_external_effect_inner(
-        runtime, cursor, status, error_code,
+        &mut runtime,
+        cursor,
+        status,
+        error_code,
     );
-    finish_finalization_executor_boundary(runtime, result)
+    finish_finalization_executor_boundary(&mut runtime, result)
 }
 
 fn pbft_manager_runtime_fail_finalization_external_effect_inner(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
     cursor: u32,
     status: u8,
     error_code: String,
@@ -2514,15 +2699,20 @@ fn pbft_manager_runtime_fail_finalization_external_effect_inner(
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_transaction_status(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     report: FfiTransactionManagerFinalizedStatusCommandReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.finalized_transaction_count = report.accepted_count;
-        live_report
-    })
+    let mut runtime = runtime.manager_state();
+    pbft_manager_runtime_advance_finalization_live_mutation(
+        &mut runtime,
+        cursor,
+        |action, write_set| {
+            let mut live_report = base_finalization_live_report(action, write_set);
+            live_report.finalized_transaction_count = report.accepted_count;
+            live_report
+        },
+    )
 }
 
 /// Reports PBFT-chain finalized-head update facts to the manager-owned PBFT
@@ -2535,30 +2725,6 @@ pub fn pbft_manager_runtime_advance_finalization_transaction_status(
 ///   finalized head update.
 ///
 /// Outputs:
-/// - The next PBFT finalization executor state.
-///
-/// Invariants and edge behavior:
-/// - C++ does not construct a generic PBFT finalization external-effect report
-///   for the PBFT-chain client.
-/// - Rust derives the PBFT finalization action from the cursor and maps only the
-///   PBFT-chain size, head hash, and last non-null anchor hash needed for
-///   live-mutation validation.
-/// - Cursor mismatch and validation failure use the same executor-state
-///   contract as every typed finalization advancement API.
-pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
-    runtime: &mut BridgePbftManagerRuntime,
-    cursor: u32,
-    report: FfiPbftChainFinalizationUpdateReport,
-) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.pbft_chain_size = report.size;
-        live_report.pbft_chain_head_hash = report.last_pbft_block_hash.into();
-        live_report.pbft_chain_last_anchor_hash = report.last_non_null_anchor_hash.into();
-        live_report
-    })
-}
-
 /// Reports finalized DAG-order facts to the manager-owned PBFT finalization executor.
 ///
 /// Inputs:
@@ -2578,15 +2744,20 @@ pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_dag_order(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     finalized_count: u64,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.dag_finalized_count = finalized_count;
-        live_report
-    })
+    let mut runtime = runtime.manager_state();
+    pbft_manager_runtime_advance_finalization_live_mutation(
+        &mut runtime,
+        cursor,
+        |action, write_set| {
+            let mut live_report = base_finalization_live_report(action, write_set);
+            live_report.dag_finalized_count = finalized_count;
+            live_report
+        },
+    )
 }
 
 /// Reports sortition finalization commit facts to the manager-owned PBFT
@@ -2610,20 +2781,25 @@ pub fn pbft_manager_runtime_advance_finalization_dag_order(
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     report: FfiPbftManagerFinalizationSortitionCommitReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.sortition_changed = report.changed;
-        live_report.sortition_change_period = report.change_period;
-        live_report.sortition_change_interval_efficiency = report.change_interval_efficiency;
-        live_report.sortition_change_threshold_upper = report.change_threshold_upper;
-        live_report.sortition_current_threshold_upper = report.current_threshold_upper;
-        live_report.sortition_params_changes_count = report.params_changes_count;
-        live_report
-    })
+    let mut runtime = runtime.manager_state();
+    pbft_manager_runtime_advance_finalization_live_mutation(
+        &mut runtime,
+        cursor,
+        |action, write_set| {
+            let mut live_report = base_finalization_live_report(action, write_set);
+            live_report.sortition_changed = report.changed;
+            live_report.sortition_change_period = report.change_period;
+            live_report.sortition_change_interval_efficiency = report.change_interval_efficiency;
+            live_report.sortition_change_threshold_upper = report.change_threshold_upper;
+            live_report.sortition_current_threshold_upper = report.current_threshold_upper;
+            live_report.sortition_params_changes_count = report.params_changes_count;
+            live_report
+        },
+    )
 }
 
 /// Reports reward-vote reset finalization facts to the manager-owned PBFT
@@ -2649,23 +2825,28 @@ pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     report: FfiPbftManagerFinalizationRewardVotesResetReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
+    let mut runtime = runtime.manager_state();
     let reset_provenance_valid = report.reward_votes_reset_generation != 0
         && report.reward_votes_reset_generation
             == runtime.finalization_reward_votes_reset_generation
         && report.reward_votes_reset_generation
             == runtime.storage.extra_reward_votes_reset_generation();
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.reward_votes_period = report.period;
-        live_report.reward_votes_round = report.round;
-        live_report.reward_votes_block_hash = report.block_hash.into();
-        live_report.reward_votes_reset_provenance_valid = reset_provenance_valid;
-        live_report
-    })
+    pbft_manager_runtime_advance_finalization_live_mutation(
+        &mut runtime,
+        cursor,
+        |action, write_set| {
+            let mut live_report = base_finalization_live_report(action, write_set);
+            live_report.reward_votes_period = report.period;
+            live_report.reward_votes_round = report.round;
+            live_report.reward_votes_block_hash = report.block_hash.into();
+            live_report.reward_votes_reset_provenance_valid = reset_provenance_valid;
+            live_report
+        },
+    )
 }
 
 /// Reports FinalChain dispatch or replay facts to the manager-owned PBFT
@@ -2689,17 +2870,22 @@ pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     report: FfiPbftManagerFinalizationFinalChainDispatchReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.final_chain_dispatched = true;
-        live_report.final_chain_blocks_per_year = report.blocks_per_year;
-        live_report.final_chain_last_block = report.last_block;
-        live_report
-    })
+    let mut runtime = runtime.manager_state();
+    pbft_manager_runtime_advance_finalization_live_mutation(
+        &mut runtime,
+        cursor,
+        |action, write_set| {
+            let mut live_report = base_finalization_live_report(action, write_set);
+            live_report.final_chain_dispatched = true;
+            live_report.final_chain_blocks_per_year = report.blocks_per_year;
+            live_report.final_chain_last_block = report.last_block;
+            live_report
+        },
+    )
 }
 
 /// Reports PBFT finalization pillar post-processing facts to the manager-owned executor.
@@ -2723,18 +2909,23 @@ pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     report: FfiPbftManagerFinalizationPillarPostProcessingReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    let manager_period = pbft_manager_runtime_snapshot(runtime).period;
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.manager_period = manager_period;
-        live_report.pillar_processed_period = report.processed_period;
-        live_report.pillar_request_period = report.request_period;
-        live_report
-    })
+    let mut runtime = runtime.manager_state();
+    let manager_period = runtime.state.snapshot().period;
+    pbft_manager_runtime_advance_finalization_live_mutation(
+        &mut runtime,
+        cursor,
+        |action, write_set| {
+            let mut live_report = base_finalization_live_report(action, write_set);
+            live_report.manager_period = manager_period;
+            live_report.pillar_processed_period = report.processed_period;
+            live_report.pillar_request_period = report.request_period;
+            live_report
+        },
+    )
 }
 
 /// Reports PBFT finalization advance-period facts to the manager-owned executor.
@@ -2756,15 +2947,20 @@ pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
 /// - Cursor mismatch and validation failure use the same executor-state
 ///   contract as every typed finalization advancement API.
 pub fn pbft_manager_runtime_advance_finalization_advance_period(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     cursor: u32,
     report: FfiPbftManagerFinalizationAdvancePeriodReport,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
-    pbft_manager_runtime_advance_finalization_live_mutation(runtime, cursor, |action, write_set| {
-        let mut live_report = base_finalization_live_report(action, write_set);
-        live_report.manager_period = report.manager_period;
-        live_report
-    })
+    let mut runtime = runtime.manager_state();
+    pbft_manager_runtime_advance_finalization_live_mutation(
+        &mut runtime,
+        cursor,
+        |action, write_set| {
+            let mut live_report = base_finalization_live_report(action, write_set);
+            live_report.manager_period = report.manager_period;
+            live_report
+        },
+    )
 }
 
 /// Drains PBFT-manager-owned actions from the current finalization cursor.
@@ -2784,13 +2980,15 @@ pub fn pbft_manager_runtime_advance_finalization_advance_period(
 ///
 /// Invariants and edge behavior:
 /// - This helper never executes FinalChain/EVM, DAG, transaction-manager,
-///   PBFT-chain, sortition, vote-manager, pillar, or network side effects.
+///   sortition, vote-manager, pillar, or network side effects. The PBFT-chain
+///   update is service-owned and executes while the manager lock is held,
+///   following the documented manager-before-chain lock order.
 /// - Storage commits happen before live Rust snapshot mutation.
 /// - Cursor reports are submitted through the same runtime session contract used
 ///   by C++ for external actions, so cursor mismatch/failure semantics stay
 ///   centralized.
 fn pbft_manager_runtime_drain_owned_finalization_actions(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut BridgePbftManagerRuntimeState,
 ) -> anyhow::Result<FinalizationOwnedActionDrainResult> {
     let domain_plan = stored_finalization_plan(runtime)?;
     let write_set = domain_plan.storage_write_intent.clone();
@@ -2819,6 +3017,46 @@ fn pbft_manager_runtime_drain_owned_finalization_actions(
         };
 
         match action {
+            PbftFinalizationRuntimeAction::UpdatePbftChain => {
+                let head = runtime
+                    .chain
+                    .write()
+                    .expect("PBFT chain lock poisoned")
+                    .state
+                    .update(
+                        domain_plan.storage_write_intent.pbft_block_hash,
+                        domain_plan.storage_write_intent.anchor_hash,
+                    )?;
+                let validation = validate_domain_pbft_finalization_live_mutation_report(
+                    &domain_plan,
+                    PbftFinalizationLiveMutationReport {
+                        pbft_chain_size: head.size,
+                        pbft_chain_head_hash: head.last_pbft_block_hash,
+                        pbft_chain_last_anchor_hash: head.last_non_null_pbft_dag_anchor_hash,
+                        ..base_finalization_live_report(action, &write_set)
+                    },
+                );
+                let accepted = validation.accepted;
+                let next_step = pbft_manager_runtime_finalization_session_report_action(
+                    runtime,
+                    FinalizationRuntimeActionReport {
+                        cursor: current_step.cursor,
+                        action: current_step.action,
+                        success: accepted,
+                        status: validation.status.as_u8(),
+                        error_code: validation.error_code,
+                    },
+                );
+                if !accepted {
+                    return Ok(finalization_drain_result(
+                        runtime,
+                        &drain,
+                        next_step,
+                        "PBFT_FINALIZE_CHAIN_LIVE_REJECTED".to_string(),
+                    ));
+                }
+                drain.drained_actions += 1;
+            }
             PbftFinalizationRuntimeAction::ApplyDynamicLambda => {
                 let mut stage = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
                 stage.rounds_count_dynamic_lambda =
@@ -3578,7 +3816,6 @@ impl From<PbftManagerAdvancePeriodActionReportResult>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi::PbftChainFinalizationUpdateReport as FfiPbftChainFinalizationUpdateReport;
     use crate::ffi::rustaxa_ffi::PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig;
     use crate::ffi::rustaxa_ffi::PbftFinalizationIntentFact as FfiPbftFinalizationIntentFact;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
@@ -3770,7 +4007,7 @@ mod tests {
         }
     }
 
-    fn runtime_for_startup(name: &str) -> Box<BridgePbftManagerRuntime> {
+    fn runtime_for_startup(name: &str) -> Box<BridgePbftService> {
         let temp_path = unique_temp_dir(name);
         let storage =
             crate::storage::create_storage(temp_path.to_str().expect("utf-8 temp path")).unwrap();
@@ -3779,7 +4016,7 @@ mod tests {
         create_pbft_manager_runtime_from_storage(&storage, startup).unwrap()
     }
 
-    fn runtime_for_tick(tick: FfiPbftManagerRuntimeTickFact) -> Box<BridgePbftManagerRuntime> {
+    fn runtime_for_tick(tick: FfiPbftManagerRuntimeTickFact) -> Box<BridgePbftService> {
         let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_runtime_session");
         pbft_manager_runtime_begin_session(&mut runtime, tick);
         runtime
@@ -4019,8 +4256,8 @@ mod tests {
         }
     }
 
-    fn startup_fact() -> FfiPbftManagerStartupFact {
-        FfiPbftManagerStartupFact {
+    fn startup_fact() -> TestPbftManagerStartupFact {
+        TestPbftManagerStartupFact {
             current_period: 10,
             cacti_active_at_chain_size: true,
             genesis_lambda_ms: 100,
@@ -4032,6 +4269,156 @@ mod tests {
             deadline_ms: 1_000,
             polling_interval_ms: 100,
         }
+    }
+
+    fn service_config(cacti_block: u64) -> FfiPbftServiceConfig {
+        let startup = startup_fact();
+        FfiPbftServiceConfig {
+            genesis_lambda_ms: startup.genesis_lambda_ms,
+            cacti_lambda_max_ms: startup.cacti_lambda_max_ms,
+            cacti_lambda_default_ms: startup.cacti_lambda_default_ms,
+            cacti_block,
+            max_exponential_lambda_ms: startup.max_exponential_lambda_ms,
+            max_steps: startup.max_steps,
+            deadline_ms: startup.deadline_ms,
+            polling_interval_ms: startup.polling_interval_ms,
+        }
+    }
+
+    #[test]
+    fn pbft_service_derives_period_and_cacti_activation_from_restored_chain() {
+        let path = unique_temp_dir("rustaxa_bridge_pbft_service_bootstrap_derivation");
+        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
+
+        let active = create_pbft_service_from_storage(&storage, service_config(0)).unwrap();
+        let active_snapshot = pbft_manager_runtime_snapshot(&active);
+        assert_eq!(active_snapshot.period, 1);
+        assert_eq!(active_snapshot.current_round_lambda_ms, 1_500);
+
+        let inactive = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
+        let inactive_snapshot = pbft_manager_runtime_snapshot(&inactive);
+        assert_eq!(inactive_snapshot.period, 1);
+        assert_eq!(inactive_snapshot.current_round_lambda_ms, 100);
+    }
+
+    #[test]
+    fn pbft_service_rejects_live_sessions_until_bootstrap_completes() {
+        let path = unique_temp_dir("rustaxa_bridge_pbft_service_bootstrap_phase");
+        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
+        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
+
+        pbft_manager_runtime_begin_session(&service, fact(STATE_VALUE_PROPOSAL));
+        assert_eq!(
+            pbft_manager_runtime_session_next(&service).error_code,
+            "PBFT_MANAGER_RUNTIME_SESSION_NOT_STARTED"
+        );
+        pbft_manager_runtime_begin_proposal_session(&service, proposal_fact());
+        assert_eq!(
+            pbft_manager_proposal_session_next(&service).error_code,
+            "PBFT_MANAGER_PROPOSAL_SESSION_NOT_STARTED"
+        );
+        crate::pbft_sync::pbft_manager_runtime_begin_pbft_sync_admission(
+            &service,
+            crate::ffi::rustaxa_ffi::PbftSyncAdmissionInitialFact {
+                block_period: 1,
+                block_prev_hash: [0; 32],
+                chain_last_hash: [0; 32],
+                chain_last_period: 0,
+                block_in_chain: false,
+                dag_transaction_hashes: Vec::new(),
+                period_data_transaction_hashes: Vec::new(),
+                extra_data_required: false,
+                extra_data_present: false,
+                extra_data_pillar_block_hash_present: false,
+                pillar_votes_required: false,
+                pillar_votes_present: false,
+                previous_cert_votes_present: true,
+                previous_cert_first_vote_has_weight: false,
+            },
+        );
+        assert_eq!(
+            crate::pbft_sync::pbft_manager_runtime_pbft_sync_admission_next(&service).error_code,
+            "PBFT_SYNC_ADMISSION_SESSION_NOT_STARTED"
+        );
+        pbft_manager_runtime_begin_pbft_sync_queue_drain(&service);
+        let blocked_drain = pbft_manager_runtime_pbft_sync_queue_drain_next(&service, 1, 1);
+        assert!(!blocked_drain.can_continue);
+        assert_eq!(
+            blocked_drain.error_code,
+            "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE"
+        );
+
+        pbft_service_complete_bootstrap(&service).unwrap();
+        pbft_manager_runtime_begin_session(&service, fact(STATE_VALUE_PROPOSAL));
+        assert!(pbft_manager_runtime_session_next(&service).can_continue);
+        pbft_manager_runtime_begin_proposal_session(&service, proposal_fact());
+        assert!(pbft_manager_proposal_session_next(&service)
+            .error_code
+            .is_empty());
+        crate::pbft_sync::pbft_manager_runtime_begin_pbft_sync_admission(
+            &service,
+            crate::ffi::rustaxa_ffi::PbftSyncAdmissionInitialFact {
+                block_period: 1,
+                block_prev_hash: [0; 32],
+                chain_last_hash: [0; 32],
+                chain_last_period: 0,
+                block_in_chain: false,
+                dag_transaction_hashes: Vec::new(),
+                period_data_transaction_hashes: Vec::new(),
+                extra_data_required: false,
+                extra_data_present: false,
+                extra_data_pillar_block_hash_present: false,
+                pillar_votes_required: false,
+                pillar_votes_present: false,
+                previous_cert_votes_present: true,
+                previous_cert_first_vote_has_weight: false,
+            },
+        );
+        assert!(
+            crate::pbft_sync::pbft_manager_runtime_pbft_sync_admission_next(&service).has_check
+        );
+        pbft_manager_runtime_begin_pbft_sync_queue_drain(&service);
+        let ready_drain = pbft_manager_runtime_pbft_sync_queue_drain_next(&service, 1, 1);
+        assert!(ready_drain.can_continue);
+        assert_ne!(ready_drain.error_code, "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE");
+    }
+
+    #[test]
+    fn pbft_service_shares_chain_visibility_with_manager_owned_state() {
+        let path = unique_temp_dir("rustaxa_bridge_pbft_service_shared_chain");
+        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
+        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
+
+        service.pbft_chain_update(&[7; 32], &[4; 32]).unwrap();
+        let public_head = service.pbft_chain_head();
+        let manager_chain_head = service
+            .manager_state()
+            .chain
+            .read()
+            .expect("PBFT chain lock should remain healthy")
+            .state
+            .head();
+
+        assert_eq!(public_head.size, manager_chain_head.size);
+        assert_eq!(
+            public_head.last_pbft_block_hash,
+            <[u8; 32]>::from(manager_chain_head.last_pbft_block_hash)
+        );
+    }
+
+    #[test]
+    fn pbft_service_constructor_fails_without_publishing_partial_state() {
+        let path = unique_temp_dir("rustaxa_bridge_pbft_service_failure");
+        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
+        let mut config = service_config(1);
+        config.genesis_lambda_ms = 0;
+
+        let error = create_pbft_service_from_storage(&storage, config)
+            .err()
+            .expect("invalid immutable configuration must reject construction");
+        assert!(error
+            .to_string()
+            .contains("PBFT_MANAGER_STARTUP_INVALID_LAMBDA_CONFIG"));
     }
 
     fn finalization_fact() -> FfiPbftFinalizationIntentFact {
@@ -4090,7 +4477,7 @@ mod tests {
         }
     }
 
-    fn runtime_for_finalization_test(name: &str) -> (PathBuf, Box<BridgePbftManagerRuntime>) {
+    fn runtime_for_finalization_test(name: &str) -> (PathBuf, Box<BridgePbftService>) {
         let temp_dir = unique_temp_dir(name);
         let storage = create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
             .expect("storage should initialize");
@@ -4098,6 +4485,18 @@ mod tests {
         startup.cacti_active_at_chain_size = false;
         let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
             .expect("runtime should initialize");
+        runtime
+            .chain
+            .write()
+            .expect("PBFT chain lock should remain healthy")
+            .state = PbftChain::new(rustaxa_consensus::pbft_chain::PbftChainHead {
+            head_hash: ethereum_types::H256::from([8; 32]),
+            size: 9,
+            non_empty_size: 5,
+            last_pbft_block_hash: ethereum_types::H256::from([3; 32]),
+            last_non_null_pbft_dag_anchor_hash: ethereum_types::H256::from([2; 32]),
+        })
+        .expect("test PBFT chain head should be valid");
         (temp_dir, runtime)
     }
 
@@ -4153,17 +4552,18 @@ mod tests {
     }
 
     fn advance_finalization_cursor_to_action(
-        runtime: &mut BridgePbftManagerRuntime,
+        runtime: &BridgePbftService,
         expected_action: PbftFinalizationRuntimeAction,
     ) {
         loop {
-            let step = pbft_manager_runtime_finalization_session_next(runtime);
+            let step =
+                pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
             assert!(step.has_action);
             if step.action == expected_action.as_u8() {
                 break;
             }
             let next = pbft_manager_runtime_finalization_session_report(
-                runtime,
+                &mut *runtime.manager_state(),
                 step.cursor,
                 step.action,
                 true,
@@ -4173,27 +4573,36 @@ mod tests {
         }
     }
 
-    fn assert_finalization_session_cleared(runtime: &mut BridgePbftManagerRuntime) {
-        let step = pbft_manager_runtime_finalization_session_next(runtime);
+    fn assert_finalization_session_cleared(runtime: &BridgePbftService) {
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         assert_eq!(
             step.status,
             PbftFinalizationRuntimeStatus::ActionMismatch.as_u8()
         );
         assert!(!step.has_action);
         assert_eq!(step.error_code, "PBFT_FINALIZE_RUNTIME_SESSION_NOT_STARTED");
-        assert!(runtime.finalization_runtime_session.is_none());
-        assert!(runtime.finalization_runtime_plan.is_none());
-        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
+        assert!(runtime
+            .manager_state()
+            .finalization_runtime_session
+            .is_none());
+        assert!(runtime.manager_state().finalization_runtime_plan.is_none());
+        assert_eq!(
+            runtime
+                .manager_state()
+                .finalization_reward_votes_reset_generation,
+            0
+        );
     }
 
     #[test]
     fn manager_runtime_owns_finalization_cursor_and_completion() {
-        let (_temp_dir, mut runtime) =
+        let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_cursor");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
 
-        let mut step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let mut step =
+            pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         assert_eq!(step.status, PbftFinalizationRuntimeStatus::Active.as_u8());
         assert!(step.has_action);
         assert_eq!(step.cursor, 0);
@@ -4204,7 +4613,7 @@ mod tests {
         while step.has_action {
             actions.push(step.action);
             step = pbft_manager_runtime_finalization_session_report(
-                &mut runtime,
+                &mut *runtime.manager_state(),
                 step.cursor,
                 step.action,
                 true,
@@ -4239,7 +4648,7 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_live_report");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
@@ -4250,9 +4659,11 @@ mod tests {
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
             &write_set,
         );
-        let accepted =
-            pbft_manager_runtime_report_finalization_live_mutation(&mut runtime, accepted_report)
-                .expect("live mutation report should validate");
+        let accepted = pbft_manager_runtime_report_finalization_live_mutation(
+            &mut *runtime.manager_state(),
+            accepted_report,
+        )
+        .expect("live mutation report should validate");
 
         assert_eq!(
             accepted.status,
@@ -4263,7 +4674,7 @@ mod tests {
             PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8()
         );
 
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
@@ -4273,9 +4684,11 @@ mod tests {
             &write_set,
         );
         rejected_report.finalized_transaction_count = 0;
-        let rejected =
-            pbft_manager_runtime_report_finalization_live_mutation(&mut runtime, rejected_report)
-                .expect("live mutation report should validate");
+        let rejected = pbft_manager_runtime_report_finalization_live_mutation(
+            &mut *runtime.manager_state(),
+            rejected_report,
+        )
+        .expect("live mutation report should validate");
 
         assert_eq!(
             rejected.status,
@@ -4292,13 +4705,13 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_transaction_status_report");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::UpdateFinalizedTransactions,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_transaction_status(
             &mut runtime,
             step.cursor,
@@ -4315,32 +4728,23 @@ mod tests {
         assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
         assert_eq!(
             state.action,
-            PbftFinalizationRuntimeAction::UpdatePbftChain.as_u8()
+            PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
         );
     }
 
     #[test]
-    fn manager_runtime_advances_finalization_with_pbft_chain_report() {
+    fn manager_runtime_internalizes_pbft_chain_update() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_pbft_chain_report");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::UpdatePbftChain,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
-        let state = pbft_manager_runtime_advance_finalization_pbft_chain(
-            &mut runtime,
-            step.cursor,
-            FfiPbftChainFinalizationUpdateReport {
-                size: 10,
-                last_pbft_block_hash: [7; 32],
-                last_non_null_anchor_hash: [4; 32],
-            },
-        )
-        .expect("typed PBFT-chain report should advance finalization");
+        let state = drain_finalization_executor_state(&mut *runtime.manager_state())
+            .expect("service-owned PBFT-chain update should drain");
 
         assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
         assert_eq!(
@@ -4348,6 +4752,10 @@ mod tests {
             PbftFinalizationRuntimeAction::FinalizeFinalChain.as_u8()
         );
         assert!(state.cleared_anchor_dag_cache);
+        let head = runtime.pbft_chain_head();
+        assert_eq!(head.size, 10);
+        assert_eq!(head.last_pbft_block_hash, [7; 32]);
+        assert_eq!(head.last_non_null_anchor_hash, [4; 32]);
     }
 
     #[test]
@@ -4355,13 +4763,13 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_dag_order_report");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::SetDagBlockOrder,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state =
             pbft_manager_runtime_advance_finalization_dag_order(&mut runtime, step.cursor, 2)
                 .expect("typed DAG-order report should advance finalization");
@@ -4378,13 +4786,13 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_commit_report");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitSortitionRuntime,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_sortition_commit(
             &mut runtime,
             step.cursor,
@@ -4411,13 +4819,13 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_no_change");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitSortitionRuntime,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_sortition_commit(
             &mut runtime,
             step.cursor,
@@ -4444,13 +4852,13 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_reject");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitSortitionRuntime,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_sortition_commit(
             &mut runtime,
             step.cursor,
@@ -4480,20 +4888,30 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_reward_votes_reset_report");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
         let reset_generation = {
-            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            let guard = runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .lock_extra_reward_votes()
+                .unwrap();
             guard
-                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .commit_reset_batch(
+                    runtime.storage.as_ref().unwrap().create_write_batch(),
+                    false,
+                )
                 .unwrap()
         };
-        runtime.finalization_reward_votes_reset_generation = reset_generation;
+        runtime
+            .manager_state()
+            .finalization_reward_votes_reset_generation = reset_generation;
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
             &mut runtime,
             step.cursor,
@@ -4518,19 +4936,27 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_reward_votes_reset_reject");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
         let reset_generation = {
-            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            let guard = runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .lock_extra_reward_votes()
+                .unwrap();
             guard
-                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .commit_reset_batch(
+                    runtime.storage.as_ref().unwrap().create_write_batch(),
+                    false,
+                )
                 .unwrap()
         };
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
             &mut runtime,
             step.cursor,
@@ -4560,29 +4986,48 @@ mod tests {
             "rustaxa_bridge_pbft_manager_reward_votes_reset_storage_check",
         );
         let old_generation = {
-            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            let guard = runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .lock_extra_reward_votes()
+                .unwrap();
             guard
-                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .commit_reset_batch(
+                    runtime.storage.as_ref().unwrap().create_write_batch(),
+                    false,
+                )
                 .unwrap()
         };
         runtime
             .storage
+            .as_ref()
+            .unwrap()
             .pbft()
             .write_extra_reward_vote(H256::from_low_u64_be(77), &[0x01])
             .unwrap();
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
-        assert_eq!(runtime.finalization_reward_votes_reset_generation, 0);
         assert_eq!(
-            runtime.storage.extra_reward_votes_reset_generation(),
+            runtime
+                .manager_state()
+                .finalization_reward_votes_reset_generation,
+            0
+        );
+        assert_eq!(
+            runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .extra_reward_votes_reset_generation(),
             old_generation
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
             &mut runtime,
             step.cursor,
@@ -4611,21 +5056,31 @@ mod tests {
             "rustaxa_bridge_pbft_manager_reward_votes_reset_provenance_after_admission",
         );
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
 
         let reset_generation = {
-            let guard = runtime.storage.lock_extra_reward_votes().unwrap();
+            let guard = runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .lock_extra_reward_votes()
+                .unwrap();
             guard
-                .commit_reset_batch(runtime.storage.create_write_batch(), false)
+                .commit_reset_batch(
+                    runtime.storage.as_ref().unwrap().create_write_batch(),
+                    false,
+                )
                 .unwrap()
         };
-        runtime.finalization_reward_votes_reset_generation = reset_generation;
+        runtime
+            .manager_state()
+            .finalization_reward_votes_reset_generation = reset_generation;
         let admission = persist_pbft_vote_progress(
-            &runtime.storage,
+            &runtime.storage.as_ref().unwrap(),
             PbftVoteProgressPersistenceWrite {
                 extra_reward_vote: Some(PbftVoteStorageRecord {
                     hash: H256::from_low_u64_be(88),
@@ -4637,11 +5092,15 @@ mod tests {
         .unwrap();
         assert_eq!(admission.applied_writes, 1);
         assert_eq!(
-            runtime.storage.extra_reward_votes_reset_generation(),
+            runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .extra_reward_votes_reset_generation(),
             reset_generation
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_reward_votes_reset(
             &mut runtime,
             step.cursor,
@@ -4656,7 +5115,13 @@ mod tests {
 
         assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
         assert_eq!(
-            runtime.storage.pbft().extra_reward_vote_hashes().unwrap(),
+            runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .pbft()
+                .extra_reward_vote_hashes()
+                .unwrap(),
             vec![H256::from_low_u64_be(88)]
         );
     }
@@ -4674,13 +5139,13 @@ mod tests {
         let mut fact = finalization_fact();
         fact.process_pillar_block_after_advance = true;
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, fact);
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::ProcessPillarBlock,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_pillar_post_processing(
             &mut runtime,
             step.cursor,
@@ -4705,16 +5170,22 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_anchor_cache_owned_drain");
         pbft_manager_runtime_record_cached_anchor_dag_order(&mut runtime, [42; 32]);
-        assert_eq!(runtime.state.cached_anchor_dag_order_count(), 1);
+        assert_eq!(
+            runtime
+                .manager_state()
+                .state
+                .cached_anchor_dag_order_count(),
+            1
+        );
 
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::ClearAnchorDagCache,
         );
 
-        let state = drain_finalization_executor_state(&mut runtime)
+        let state = drain_finalization_executor_state(&mut *runtime.manager_state())
             .expect("owned anchor cache clear should drain");
 
         assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
@@ -4724,7 +5195,13 @@ mod tests {
         );
         assert!(state.drained_actions >= 1);
         assert!(state.cleared_anchor_dag_cache);
-        assert_eq!(runtime.state.cached_anchor_dag_order_count(), 0);
+        assert_eq!(
+            runtime
+                .manager_state()
+                .state
+                .cached_anchor_dag_order_count(),
+            0
+        );
     }
 
     #[test]
@@ -4733,13 +5210,13 @@ mod tests {
             "rustaxa_bridge_pbft_manager_final_chain_dispatch_report",
         );
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::FinalizeFinalChain,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_final_chain_dispatch(
             &mut runtime,
             step.cursor,
@@ -4763,13 +5240,13 @@ mod tests {
             "rustaxa_bridge_pbft_manager_final_chain_dispatch_reject",
         );
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::FinalizeFinalChain,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_final_chain_dispatch(
             &mut runtime,
             step.cursor,
@@ -4798,13 +5275,13 @@ mod tests {
         let mut fact = finalization_fact();
         fact.process_pillar_block_after_advance = true;
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, fact);
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
         advance_finalization_cursor_to_action(
             &mut runtime,
             PbftFinalizationRuntimeAction::AdvancePeriod,
         );
 
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let state = pbft_manager_runtime_advance_finalization_advance_period(
             &mut runtime,
             step.cursor,
@@ -4828,19 +5305,20 @@ mod tests {
                     .expect("storage should initialize");
             let mut startup = startup_fact();
             startup.cacti_active_at_chain_size = false;
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
                 .expect("runtime should initialize");
             let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-            pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+            pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
 
             loop {
-                let step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+                let step =
+                    pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
                 if step.action == PbftFinalizationRuntimeAction::ApplyDynamicLambda.as_u8() {
                     break;
                 }
                 assert!(step.has_action);
                 let next = pbft_manager_runtime_finalization_session_report(
-                    &mut runtime,
+                    &mut *runtime.manager_state(),
                     step.cursor,
                     step.action,
                     true,
@@ -4849,8 +5327,10 @@ mod tests {
                 assert!(next.can_continue);
             }
 
-            let dynamic = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
-                .expect("dynamic-lambda drain should run");
+            let dynamic = pbft_manager_runtime_drain_owned_finalization_actions(
+                &mut *runtime.manager_state(),
+            )
+            .expect("dynamic-lambda drain should run");
             assert_eq!(dynamic.drained_actions, 1);
             assert!(dynamic.applied_dynamic_lambda);
             assert!(dynamic.has_snapshot);
@@ -4873,7 +5353,7 @@ mod tests {
             );
 
             let final_chain = pbft_manager_runtime_finalization_session_report(
-                &mut runtime,
+                &mut *runtime.manager_state(),
                 dynamic.next_step.cursor,
                 dynamic.next_step.action,
                 true,
@@ -4884,8 +5364,10 @@ mod tests {
                 PbftFinalizationRuntimeAction::PersistExecutedStatus.as_u8()
             );
 
-            let executed = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
-                .expect("executed-status drain should run");
+            let executed = pbft_manager_runtime_drain_owned_finalization_actions(
+                &mut *runtime.manager_state(),
+            )
+            .expect("executed-status drain should run");
             assert_eq!(executed.drained_actions, 2);
             assert!(executed.persisted_executed_status);
             assert!(executed.set_executed_flag);
@@ -4904,13 +5386,18 @@ mod tests {
 
     #[test]
     fn manager_runtime_finalization_cursor_stops_on_failure_or_mismatch() {
-        let (_temp_dir, mut runtime) =
+        let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_failure");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
 
-        let failed =
-            pbft_manager_runtime_finalization_session_report(&mut runtime, 0, 0, false, 77);
+        let failed = pbft_manager_runtime_finalization_session_report(
+            &mut *runtime.manager_state(),
+            0,
+            0,
+            false,
+            77,
+        );
         assert_eq!(
             failed.status,
             PbftFinalizationRuntimeStatus::ActionFailed.as_u8()
@@ -4919,9 +5406,14 @@ mod tests {
         assert_eq!(failed.cursor, 0);
         assert_eq!(failed.error_code, "PBFT_FINALIZE_RUNTIME_ACTION_STATUS_77");
 
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
-        let mismatch =
-            pbft_manager_runtime_finalization_session_report(&mut runtime, 1, 0, true, 0);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
+        let mismatch = pbft_manager_runtime_finalization_session_report(
+            &mut *runtime.manager_state(),
+            1,
+            0,
+            true,
+            0,
+        );
         assert_eq!(
             mismatch.status,
             PbftFinalizationRuntimeStatus::ActionMismatch.as_u8()
@@ -4932,13 +5424,13 @@ mod tests {
 
     #[test]
     fn manager_runtime_finalization_cursor_preserves_structured_error_codes() {
-        let (_temp_dir, mut runtime) =
+        let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_error_code");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime, &plan);
+        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
 
         let failed = pbft_manager_runtime_finalization_session_report_action(
-            &mut runtime,
+            &mut *runtime.manager_state(),
             FinalizationRuntimeActionReport {
                 cursor: 0,
                 action: 0,
@@ -4957,7 +5449,7 @@ mod tests {
 
     #[test]
     fn manager_runtime_finalization_resume_cursor_replays_tail_actions() {
-        let (_temp_dir, mut runtime) =
+        let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_resume");
         let resume = PbftFinalizationResumePlan {
             status: PbftFinalizationResumeStatus::NeedsFinalChainReplay,
@@ -4971,14 +5463,18 @@ mod tests {
             ],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_FINAL_CHAIN_REPLAY".to_string(),
         };
-        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, resume);
+        pbft_manager_runtime_begin_finalization_resume_session(
+            &mut *runtime.manager_state(),
+            resume,
+        );
 
-        let mut step = pbft_manager_runtime_finalization_session_next(&mut runtime);
+        let mut step =
+            pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let mut actions = Vec::new();
         while step.has_action {
             actions.push(step.action);
             step = pbft_manager_runtime_finalization_session_report(
-                &mut runtime,
+                &mut *runtime.manager_state(),
                 step.cursor,
                 step.action,
                 true,
@@ -5011,7 +5507,7 @@ mod tests {
         dynamic.rounds_count_dynamic_lambda = plan.storage_write_intent.rounds_count_dynamic_lambda;
         dynamic.dynamic_lambda = plan.storage_write_intent.dynamic_lambda;
         apply_domain_pbft_finalization_storage_writes(
-            runtime.storage.as_ref(),
+            runtime.storage.as_ref().unwrap().as_ref(),
             &write_set,
             vec![
                 empty_finalization_stage(0),
@@ -5049,7 +5545,7 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_executor_reset_generation");
 
-        let start_fresh = |runtime: &mut BridgePbftManagerRuntime| {
+        let start_fresh = |runtime: &BridgePbftService| {
             let plan = pbft_manager_runtime_plan_finalization_intent(runtime, finalization_fact());
             let ffi_stage = |stage, reward_votes_bundle_rlp: Vec<u8>| {
                 crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage {
@@ -5138,7 +5634,11 @@ mod tests {
         );
         assert_eq!(
             resumed.reward_votes_reset_generation,
-            runtime.storage.extra_reward_votes_reset_generation()
+            runtime
+                .storage
+                .as_ref()
+                .unwrap()
+                .extra_reward_votes_reset_generation()
         );
     }
 
@@ -5152,7 +5652,7 @@ mod tests {
                     .expect("storage should initialize");
             let mut startup = startup_fact();
             startup.cacti_active_at_chain_size = false;
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
+            let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
                 .expect("runtime should initialize");
             let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
             let resume = PbftFinalizationResumePlan {
@@ -5165,11 +5665,17 @@ mod tests {
                 ],
                 error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
             };
-            runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
-            pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, resume);
+            runtime.manager_state().finalization_runtime_plan =
+                Some(PbftFinalizationPlan::from(&plan));
+            pbft_manager_runtime_begin_finalization_resume_session(
+                &mut *runtime.manager_state(),
+                resume,
+            );
 
-            let drained = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
-                .expect("resume owned-action drain should run");
+            let drained = pbft_manager_runtime_drain_owned_finalization_actions(
+                &mut *runtime.manager_state(),
+            )
+            .expect("resume owned-action drain should run");
 
             assert_eq!(drained.drained_actions, 2);
             assert!(drained.persisted_executed_status);
@@ -5191,7 +5697,7 @@ mod tests {
 
     #[test]
     fn manager_runtime_drain_reports_rejected_owned_storage_action() {
-        let (_temp_dir, mut runtime) =
+        let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_finalization_drain_reject");
         let mut plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         plan.storage_write_intent.persist_executed_pbft_status = false;
@@ -5202,11 +5708,15 @@ mod tests {
             replay_actions: vec![PbftFinalizationRuntimeAction::PersistExecutedStatus],
             error_code: "PBFT_FINALIZE_RESUME_NEEDS_EXECUTED_STATUS".to_string(),
         };
-        runtime.finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
-        pbft_manager_runtime_begin_finalization_resume_session(&mut runtime, resume);
+        runtime.manager_state().finalization_runtime_plan = Some(PbftFinalizationPlan::from(&plan));
+        pbft_manager_runtime_begin_finalization_resume_session(
+            &mut *runtime.manager_state(),
+            resume,
+        );
 
-        let rejected = pbft_manager_runtime_drain_owned_finalization_actions(&mut runtime)
-            .expect("rejected owned-action drain should report through result");
+        let rejected =
+            pbft_manager_runtime_drain_owned_finalization_actions(&mut *runtime.manager_state())
+                .expect("rejected owned-action drain should report through result");
 
         assert_eq!(rejected.drained_actions, 0);
         assert!(!rejected.next_step.can_continue);
@@ -5568,7 +6078,7 @@ mod tests {
     #[test]
     fn bridge_runtime_executes_lifecycle_transition_from_owned_cursor() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_transition");
-        let before = runtime.state.snapshot();
+        let before = runtime.manager_state().state.snapshot();
         let result = pbft_manager_runtime_execute_lifecycle_transition(
             &mut runtime,
             lifecycle_transition_request(PbftManagerTransitionKind::ToFilter.as_u8()),
@@ -5589,6 +6099,8 @@ mod tests {
         let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_clear_own_votes");
         runtime
             .storage
+            .as_ref()
+            .unwrap()
             .pbft()
             .write_own_verified_vote(H256::from_low_u64_be(71), &[0xC1])
             .unwrap();
@@ -5602,6 +6114,8 @@ mod tests {
         assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
         assert!(runtime
             .storage
+            .as_ref()
+            .unwrap()
             .pbft()
             .own_verified_vote_hashes()
             .unwrap()
@@ -5611,9 +6125,9 @@ mod tests {
     #[test]
     fn bridge_runtime_advance_requires_matching_committed_reset() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_runtime_advance_provenance");
-        let before = runtime.state.snapshot();
+        let before = runtime.manager_state().state.snapshot();
         assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
-        assert_eq!(runtime.state.snapshot(), before);
+        assert_eq!(runtime.manager_state().state.snapshot(), before);
 
         let mut request = lifecycle_transition_request(TRANSITION_RESET);
         request.target_period = 10;
@@ -5630,11 +6144,11 @@ mod tests {
             pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, advance_request)
                 .unwrap();
         assert_eq!(advance_reset.status, TRANSITION_STORAGE_STATUS_APPLIED);
-        let committed = runtime.state.snapshot();
+        let committed = runtime.manager_state().state.snapshot();
 
         assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 0).accepted);
         assert!(!pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 9).accepted);
-        assert_eq!(runtime.state.snapshot(), committed);
+        assert_eq!(runtime.manager_state().state.snapshot(), committed);
         assert!(pbft_manager_runtime_plan_advance_period_after_reset(&runtime, 10).accepted);
         let applied = pbft_manager_runtime_apply_period_advance(&mut runtime, 11);
         assert_eq!(applied.status, 0);
@@ -5644,14 +6158,14 @@ mod tests {
     #[test]
     fn bridge_runtime_rejects_unneeded_network_step_presence_without_mutation() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_network_presence");
-        let before = runtime.state.snapshot();
+        let before = runtime.manager_state().state.snapshot();
         let mut request = lifecycle_transition_request(TRANSITION_FILTER);
         request.has_network_next_voting_step = true;
         request.network_next_voting_step = 7;
         let result =
             pbft_manager_runtime_execute_lifecycle_transition(&mut runtime, request).unwrap();
         assert_eq!(result.status, TRANSITION_STORAGE_STATUS_REJECTED);
-        assert_eq!(runtime.state.snapshot(), before);
+        assert_eq!(runtime.manager_state().state.snapshot(), before);
         assert_eq!(
             result.error_code,
             "PBFT_MANAGER_TRANSITION_NETWORK_STEP_PRESENCE_MISMATCH"
@@ -6325,14 +6839,29 @@ mod tests {
                 &runtime,
                 &second_anchor
             ));
-            assert_eq!(runtime.state.cached_anchor_dag_order_count(), 2);
+            assert_eq!(
+                runtime
+                    .manager_state()
+                    .state
+                    .cached_anchor_dag_order_count(),
+                2
+            );
 
-            let clear_snapshot = runtime.state.clear_cached_anchor_dag_order();
+            let clear_snapshot = runtime
+                .manager_state()
+                .state
+                .clear_cached_anchor_dag_order();
             assert_eq!(
                 clear_snapshot.status,
                 rustaxa_consensus::pbft_manager::PbftManagerStartupRestoreStatus::Ready
             );
-            assert_eq!(runtime.state.cached_anchor_dag_order_count(), 0);
+            assert_eq!(
+                runtime
+                    .manager_state()
+                    .state
+                    .cached_anchor_dag_order_count(),
+                0
+            );
             assert!(!pbft_manager_runtime_has_cached_anchor_dag_order(
                 &runtime,
                 &first_anchor

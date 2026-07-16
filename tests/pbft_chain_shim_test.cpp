@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "pbft/pbft_chain.hpp"
+#include "pbft/pbft_service.hpp"
 #include "pbft/period_data.hpp"
 #include "storage/storage.hpp"
 #include "test_util/test_util.hpp"
@@ -44,6 +45,24 @@ TEST_F(PbftChainShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
   const auto projected = chain.getJsonStrForBlock(blk_hash_t(404), true);
   EXPECT_NE(projected.find(blk_hash_t(404).toString()), std::string::npos);
   EXPECT_EQ(chain.getPbftChainSize(), 1);
+}
+
+TEST_F(PbftChainShimDataTest, sharedServicePublishesOneChainStateAcrossFacades) {
+  const auto block = makeBlock(1, 505);
+  auto db = std::make_shared<DbStorage>(data_dir);
+  auto service = std::make_shared<PbftService>(rustaxa::create_pbft_chain_service_from_storage(db->rustStorage()));
+
+  PbftChain writer(addr_t{}, service);
+  PbftChain reader(addr_t{}, service);
+  writer.updatePbftChain(block->getBlockHash(), block->getPivotDagBlockHash());
+
+  EXPECT_EQ(reader.getPbftChainSize(), 1);
+  EXPECT_EQ(reader.getLastPbftBlockHash(), block->getBlockHash());
+  EXPECT_EQ(reader.getLastNonNullPbftBlockAnchor(), block->getPivotDagBlockHash());
+
+  service.reset();
+  EXPECT_EQ(writer.getPbftChainSize(), 1);
+  EXPECT_EQ(reader.getPbftChainSize(), 1);
 }
 
 }  // namespace taraxa::core_tests

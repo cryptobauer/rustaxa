@@ -43,8 +43,10 @@ use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -171,9 +173,8 @@ pub struct BridgeDagManagerRuntime {
 /// PBFT chain runtime wrapper. Pure state-only instances are used by unit tests
 /// and deterministic head transitions; storage-backed instances own the shared
 /// Rust storage handle used for PBFT block lookup/materialization.
-pub struct BridgePbftChain {
+pub(crate) struct BridgePbftChainState {
     pub state: PbftChain,
-    pub storage: Option<Arc<Storage>>,
     pub initialized_default: bool,
 }
 
@@ -216,7 +217,7 @@ pub struct BridgePillarChainStorage {
 ///   statuses while `state` is updated only after Rust storage commits succeed.
 /// - C++ callers must update live compatibility mirrors only from snapshots
 ///   returned by this runtime.
-pub struct BridgePbftManagerRuntime {
+pub(crate) struct BridgePbftManagerRuntimeState {
     pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
     pub storage: Arc<Storage>,
     pub period_data_queue: PeriodDataQueue,
@@ -235,6 +236,54 @@ pub struct BridgePbftManagerRuntime {
     /// preserve it only while it still matches the shared storage generation;
     /// process restart initializes it to zero and requires a new reset commit.
     pub finalization_reward_votes_reset_generation: u64,
+    pub chain: Arc<RwLock<BridgePbftChainState>>,
+}
+
+/// Application-owned PBFT service shared by the C++ manager and chain facades.
+///
+/// The service is the sole Rust owner of PBFT manager/session state, PBFT chain
+/// state, and their common storage handle. Manager commands are serialized by
+/// `manager`; chain reads may proceed concurrently through `chain`. Operations
+/// that need both domains acquire `manager` before `chain` and never retain a
+/// guard across a C++ executor call. A chain-only compatibility instance has no
+/// manager state and is held privately by the C++ `PbftChain` adapter, which
+/// exposes only chain receiver calls. Reaching a manager receiver through that
+/// adapter is therefore a bridge-wiring bug, not a recoverable runtime input.
+pub struct BridgePbftService {
+    pub(crate) manager: Mutex<Option<BridgePbftManagerRuntimeState>>,
+    pub(crate) chain: Arc<RwLock<BridgePbftChainState>>,
+    pub(crate) storage: Option<Arc<Storage>>,
+    pub(crate) bootstrap_complete: AtomicBool,
+}
+
+pub(crate) struct BridgePbftManagerGuard<'a>(MutexGuard<'a, Option<BridgePbftManagerRuntimeState>>);
+
+impl std::ops::Deref for BridgePbftManagerGuard<'_> {
+    type Target = BridgePbftManagerRuntimeState;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("PBFT manager operation requires a production service")
+    }
+}
+
+impl std::ops::DerefMut for BridgePbftManagerGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_mut()
+            .expect("PBFT manager operation requires a production service")
+    }
+}
+
+impl BridgePbftService {
+    pub(crate) fn manager_state(&self) -> BridgePbftManagerGuard<'_> {
+        BridgePbftManagerGuard(self.manager.lock().expect("PBFT manager lock poisoned"))
+    }
+
+    pub(crate) fn accepts_live_commands(&self) -> bool {
+        self.bootstrap_complete.load(Ordering::Acquire)
+    }
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
@@ -1196,13 +1245,6 @@ pub mod rustaxa_ffi {
         last_non_null_anchor_hash: [u8; 32],
     }
 
-    /// PBFT-chain-owned result after applying a finalization head update.
-    struct PbftChainFinalizationUpdateReport {
-        size: u64,
-        last_pbft_block_hash: [u8; 32],
-        last_non_null_anchor_hash: [u8; 32],
-    }
-
     struct PbftBlockStorageLookup {
         found: bool,
         block_rlp: Vec<u8>,
@@ -1512,11 +1554,11 @@ pub mod rustaxa_ffi {
         polling_interval_ms: u64,
     }
 
-    /// Configuration and current-period facts needed for Rust-owned PBFT
-    /// manager startup restore from storage.
-    struct PbftManagerStartupFact {
-        current_period: u64,
-        cacti_active_at_chain_size: bool,
+    /// Immutable application configuration for coherent PBFT service restore.
+    ///
+    /// The restored chain head supplies the current period and determines
+    /// whether Cacti is active; callers cannot inject either derived fact.
+    struct PbftServiceConfig {
         genesis_lambda_ms: u64,
         cacti_lambda_max_ms: u64,
         cacti_lambda_default_ms: u64,
@@ -4634,42 +4676,38 @@ pub mod rustaxa_ffi {
 
         // Consensus PBFT chain
 
-        type BridgePbftChain;
+        type BridgePbftService;
 
-        pub fn create_pbft_chain_from_storage(
+        pub fn create_pbft_chain_service_from_storage(
             storage: &BridgeStorage,
-        ) -> Result<Box<BridgePbftChain>>;
-        pub fn pbft_chain_initialized_default(self: &BridgePbftChain) -> bool;
-        pub fn pbft_chain_head(self: &BridgePbftChain) -> PbftChainHeadPayload;
+        ) -> Result<Box<BridgePbftService>>;
+        pub fn pbft_chain_initialized_default(self: &BridgePbftService) -> bool;
+        pub fn pbft_chain_head(self: &BridgePbftService) -> PbftChainHeadPayload;
         pub fn pbft_chain_project_legacy_json_head(
-            self: &BridgePbftChain,
+            self: &BridgePbftService,
             block_hash: &[u8; 32],
             increments_non_empty_size: bool,
         ) -> Result<PbftChainHeadPayload>;
         pub fn pbft_chain_update(
-            self: &mut BridgePbftChain,
+            self: &BridgePbftService,
             block_hash: &[u8; 32],
             anchor_hash: &[u8; 32],
         ) -> Result<PbftChainHeadPayload>;
-        pub fn pbft_chain_update_for_finalization(
-            self: &mut BridgePbftChain,
-            write_intent: &PbftFinalizationStorageWritePlan,
-        ) -> Result<PbftChainFinalizationUpdateReport>;
         pub fn pbft_chain_block_exists(
-            self: &BridgePbftChain,
+            self: &BridgePbftService,
             block_hash: &[u8; 32],
         ) -> Result<bool>;
         pub fn pbft_chain_block_rlp(
-            self: &BridgePbftChain,
+            self: &BridgePbftService,
             block_hash: &[u8; 32],
         ) -> Result<PbftBlockStorageLookup>;
         pub fn pbft_chain_validate_block(
-            self: &BridgePbftChain,
+            self: &BridgePbftService,
             period: u64,
             prev_hash: &[u8; 32],
         ) -> PbftBlockValidationResult;
         pub fn load_pbft_sync_egress_payload(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             block_period: u64,
             last_block: bool,
             pbft_chain_synced: bool,
@@ -4677,48 +4715,49 @@ pub mod rustaxa_ffi {
             reward_votes_period: u64,
         ) -> Result<PbftSyncEgressPayload>;
         pub fn pbft_manager_runtime_begin_pbft_sync_admission(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             fact: PbftSyncAdmissionInitialFact,
         );
         pub fn pbft_manager_runtime_pbft_sync_admission_next(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             report: PbftSyncAdmissionStatusReport,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             report: PbftSyncAdmissionTransactionReport,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn abort_pbft_manager_runtime_pbft_sync_admission(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> PbftSyncAdmissionSessionStep;
         pub fn validate_pbft_sync_cert_vote_bundle(
             fact: PbftSyncCertVoteBundleFact,
         ) -> PbftSyncCertVoteBundleValidation;
-        type BridgePbftManagerRuntime;
-        pub fn create_pbft_manager_runtime_from_storage(
+
+        pub fn create_pbft_service_from_storage(
             storage: &BridgeStorage,
-            fact: PbftManagerStartupFact,
-        ) -> Result<Box<BridgePbftManagerRuntime>>;
+            config: PbftServiceConfig,
+        ) -> Result<Box<BridgePbftService>>;
+        pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> Result<()>;
         pub fn pbft_manager_runtime_load_startup_replay_period(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             period: u64,
             load_period_lambda: bool,
         ) -> Result<PbftManagerStartupReplayPeriod>;
         pub fn pbft_manager_runtime_snapshot(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_period_data_queue_snapshot(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             pbft_chain_size: u64,
             current_period: u64,
             chain_last_hash: [u8; 32],
         ) -> PeriodDataQueueSnapshot;
-        pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &mut BridgePbftManagerRuntime);
+        pub fn pbft_manager_runtime_period_data_queue_clear(runtime: &BridgePbftService);
         pub fn pbft_manager_runtime_period_data_queue_push(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             entry_id: u64,
             period: u64,
             block_hash: [u8; 32],
@@ -4741,29 +4780,27 @@ pub mod rustaxa_ffi {
             current_block_cert_vote_rlps: Vec<PeriodDataQueuePbftVotePayload>,
         ) -> Result<PeriodDataQueuePushOutcome>;
         pub fn pbft_manager_runtime_period_data_queue_pop(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> Result<PeriodDataQueuePopPlan>;
         pub fn pbft_manager_runtime_period_data_queue_clean_old_data(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             period: u64,
         ) -> Vec<PeriodDataQueueEntryRef>;
-        pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(
-            runtime: &mut BridgePbftManagerRuntime,
-        );
+        pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService);
         pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             queue_size: usize,
             current_period: u64,
         ) -> PbftSyncQueueDrainStep;
         pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             report: PbftSyncQueueDrainReport,
         ) -> PbftSyncQueueDrainReportResult;
         pub fn plan_pbft_manager_startup_replay_ranges(
             fact: PbftManagerStartupReplayRangeFact,
         ) -> PbftManagerStartupReplayRangePlan;
         pub fn pbft_manager_runtime_plan_advance_period_after_reset(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             pbft_chain_size: u64,
         ) -> PbftManagerAdvancePeriodPlan;
         pub fn validate_pbft_manager_advance_period_action_report(
@@ -4771,135 +4808,130 @@ pub mod rustaxa_ffi {
             report: PbftManagerAdvancePeriodActionReport,
         ) -> PbftManagerAdvancePeriodActionReportResult;
         pub fn pbft_manager_runtime_apply_period_advance(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             new_period: u64,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_apply_broadcast_counters(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             broadcast_votes_counter: u32,
             rebroadcast_votes_counter: u32,
             broadcast_reward_votes_counter: u32,
             rebroadcast_reward_votes_counter: u32,
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_cert_voted_block_in_round(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_save_cert_voted_block_in_round(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             period: u64,
             round: u32,
             block_hash: [u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_apply_cert_voted_block_metadata(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             period: u64,
             round: u32,
             block_hash: [u8; 32],
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_has_cached_anchor_dag_order(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             anchor_hash: &[u8; 32],
         ) -> bool;
         pub fn pbft_manager_runtime_record_cached_anchor_dag_order(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             anchor_hash: [u8; 32],
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_remove_cached_anchor_dag_order(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             anchor_hash: [u8; 32],
         ) -> PbftManagerRuntimeSnapshot;
         pub fn pbft_manager_runtime_own_pillar_block_vote(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> Result<Vec<u8>>;
         pub fn pbft_manager_runtime_execute_lifecycle_transition(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             request: PbftManagerLifecycleTransitionRequest,
         ) -> Result<PbftManagerLifecycleTransitionResult>;
         pub fn pbft_manager_runtime_apply_executed_block_reset(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> Result<PbftManagerRuntimeStorageApplyResult>;
         pub fn pbft_manager_runtime_apply_next_voted_status(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             status: u8,
         ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_apply_cursor_field(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             field: u8,
             value: u32,
         ) -> Result<PbftManagerRuntimeSnapshot>;
         pub fn pbft_manager_runtime_dag_block_period(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             hash: &[u8; 32],
         ) -> Result<BlockPeriodLookup>;
         pub fn pbft_manager_runtime_pbft_block_in_db(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             hash: &[u8; 32],
         ) -> Result<bool>;
         pub fn pbft_manager_runtime_plan_finalization_dynamic_lambda(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             fact: PbftDynamicLambdaFact,
         ) -> Result<PbftManagerFinalizationDynamicLambdaPlan>;
         pub fn pbft_manager_runtime_plan_finalization_intent(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             fact: PbftFinalizationIntentFact,
         ) -> PbftFinalizationIntentPlan;
         pub fn pbft_manager_runtime_start_finalization_executor(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             request: PbftFinalizationExecutorStartRequest,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_fail_finalization_external_effect(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             status: u8,
             error_code: String,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_transaction_status(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             report: TransactionManagerFinalizedStatusCommandReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
-        pub fn pbft_manager_runtime_advance_finalization_pbft_chain(
-            runtime: &mut BridgePbftManagerRuntime,
-            cursor: u32,
-            report: PbftChainFinalizationUpdateReport,
-        ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_dag_order(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             finalized_count: u64,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             report: PbftManagerFinalizationSortitionCommitReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             report: PbftManagerFinalizationRewardVotesResetReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_final_chain_dispatch(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             report: PbftManagerFinalizationFinalChainDispatchReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_pillar_post_processing(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             report: PbftManagerFinalizationPillarPostProcessingReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_advance_period(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             cursor: u32,
             report: PbftManagerFinalizationAdvancePeriodReport,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_begin_session(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             fact: PbftManagerRuntimeTickFact,
         );
         pub fn plan_pbft_manager_runtime_sleep_until_next_step(
-            runtime: &BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             round_elapsed_ms: i64,
         ) -> PbftManagerSleepPlan;
         pub fn plan_pbft_manager_finalization_wait(
@@ -4909,25 +4941,25 @@ pub mod rustaxa_ffi {
             fact: PbftManagerEligibleWalletPeriodWaitFact,
         ) -> PbftManagerEligibleWalletPeriodWaitPlan;
         pub fn pbft_manager_runtime_begin_state_action_effect_session(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             fact: PbftManagerStateActionFact,
         );
         pub fn pbft_manager_runtime_state_action_effect_session_next(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> PbftManagerStateActionSessionStep;
         pub fn pbft_manager_runtime_state_action_effect_session_report(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             report: PbftManagerStateActionEffectReport,
         ) -> PbftManagerStateActionSessionStep;
         pub fn pbft_manager_runtime_begin_proposal_session(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             fact: PbftManagerProposalInitialFact,
         );
         pub fn pbft_manager_proposal_session_next(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> PbftManagerProposalSessionStep;
         pub fn pbft_manager_proposal_session_report_dag_order(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             report: PbftManagerProposalDagOrderReport,
         ) -> PbftManagerProposalSessionStep;
         pub fn plan_pbft_manager_broadcast(
@@ -4947,13 +4979,13 @@ pub mod rustaxa_ffi {
             candidates: Vec<PbftManagerLeaderCandidateInputFact>,
         ) -> PbftManagerLeaderCandidatePlan;
         pub fn pbft_manager_runtime_session_next(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
         ) -> PbftManagerRuntimeSessionStep;
         pub fn pbft_manager_runtime_session_report(
-            runtime: &mut BridgePbftManagerRuntime,
+            runtime: &BridgePbftService,
             report: PbftManagerRuntimeActionReport,
         ) -> PbftManagerRuntimeSessionStep;
-        pub fn abort_pbft_manager_runtime_session(runtime: &mut BridgePbftManagerRuntime);
+        pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService);
         // Consensus proposed PBFT blocks
 
         type BridgeProposedBlocks;

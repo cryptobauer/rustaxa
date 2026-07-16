@@ -47,8 +47,8 @@ class RustPbftChainTest : public ::testing::Test {
     return out;
   }
 
-  static rust::Box<BridgePbftChain> create_chain(std::string_view name, uint64_t size, uint64_t non_empty_size,
-                                                 uint8_t last_block) {
+  static rust::Box<BridgePbftService> create_chain(std::string_view name, uint64_t size, uint64_t non_empty_size,
+                                                   uint8_t last_block) {
     const auto test_dir = std::filesystem::temp_directory_path() / std::string(name);
     if (std::filesystem::exists(test_dir)) {
       std::filesystem::remove_all(test_dir);
@@ -58,7 +58,7 @@ class RustPbftChainTest : public ::testing::Test {
     const auto head = head_json(size, non_empty_size, last_block);
     storage_shim_save_pbft_head(*batch, h256(0), bytes(head));
     storage_shim_commit_batch(std::move(batch), false);
-    auto chain = create_pbft_chain_from_storage(*storage);
+    auto chain = create_pbft_chain_service_from_storage(*storage);
     std::filesystem::remove_all(test_dir);
     return chain;
   }

@@ -19,7 +19,7 @@ use crate::ffi::rustaxa_ffi::{
     PbftSyncTransactionQueryPlan as FfiPbftSyncTransactionQueryPlan,
     PbftSyncTransactionWarning as FfiPbftSyncTransactionWarning,
 };
-use crate::ffi::BridgePbftManagerRuntime;
+use crate::ffi::BridgePbftService;
 use ethereum_types::H256;
 use rustaxa_consensus::pbft_sync::{
     abort_pbft_sync_admission_session as abort_domain_pbft_sync_admission_session,
@@ -38,32 +38,41 @@ use rustaxa_consensus::pbft_sync::{
 
 /// Starts a manager-owned synced-period admission cursor.
 pub fn pbft_manager_runtime_begin_pbft_sync_admission(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     fact: FfiPbftSyncAdmissionInitialFact,
 ) {
+    if !runtime.accepts_live_commands() {
+        return;
+    }
+    let mut runtime = runtime.manager_state();
     runtime.pbft_sync_admission_session =
         Some(create_domain_pbft_sync_admission_session(fact.into()));
 }
 
 /// Returns the current admission check without advancing the cursor.
 pub fn pbft_manager_runtime_pbft_sync_admission_next(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> FfiPbftSyncAdmissionSessionStep {
+    if !runtime.accepts_live_commands() {
+        return sync_admission_not_started_step();
+    }
+    let mut runtime = runtime.manager_state();
     let step = runtime
         .pbft_sync_admission_session
         .as_ref()
         .map(next_domain_pbft_sync_admission_session)
         .map(Into::into)
         .unwrap_or_else(sync_admission_not_started_step);
-    clear_terminal_sync_admission(runtime, &step);
+    clear_terminal_sync_admission(&mut runtime, &step);
     step
 }
 
 /// Reports a final-chain, reward, cert, or pillar validation result.
 pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     report: FfiPbftSyncAdmissionStatusReport,
 ) -> FfiPbftSyncAdmissionSessionStep {
+    let mut runtime = runtime.manager_state();
     let Some(session) = runtime.pbft_sync_admission_session.as_mut() else {
         return sync_admission_not_started_step();
     };
@@ -76,15 +85,16 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_status(
         PbftSyncFactStatus::from_u8(report.status),
     )
     .into();
-    clear_terminal_sync_admission(runtime, &step);
+    clear_terminal_sync_admission(&mut runtime, &step);
     step
 }
 
 /// Reports the requested transaction-manager lookup result.
 pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     report: FfiPbftSyncAdmissionTransactionReport,
 ) -> FfiPbftSyncAdmissionSessionStep {
+    let mut runtime = runtime.manager_state();
     let Some(session) = runtime.pbft_sync_admission_session.as_mut() else {
         return sync_admission_not_started_step();
     };
@@ -106,12 +116,12 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
         },
     )
     .into();
-    clear_terminal_sync_admission(runtime, &step);
+    clear_terminal_sync_admission(&mut runtime, &step);
     step
 }
 
 fn clear_terminal_sync_admission(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &mut crate::ffi::BridgePbftManagerRuntimeState,
     step: &FfiPbftSyncAdmissionSessionStep,
 ) {
     if step.complete || !step.can_continue {
@@ -121,8 +131,9 @@ fn clear_terminal_sync_admission(
 
 /// Aborts and clears the current synced-period admission cursor.
 pub fn abort_pbft_manager_runtime_pbft_sync_admission(
-    runtime: &mut BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
 ) -> FfiPbftSyncAdmissionSessionStep {
+    let mut runtime = runtime.manager_state();
     let step = runtime
         .pbft_sync_admission_session
         .as_mut()
@@ -140,13 +151,14 @@ pub fn abort_pbft_manager_runtime_pbft_sync_admission(
 /// and the deterministic decision about whether those sidecars belong on the
 /// packet.
 pub fn load_pbft_sync_egress_payload(
-    runtime: &BridgePbftManagerRuntime,
+    runtime: &BridgePbftService,
     block_period: u64,
     last_block: bool,
     pbft_chain_synced: bool,
     reward_votes_present: bool,
     reward_votes_period: u64,
 ) -> anyhow::Result<FfiPbftSyncEgressPayload> {
+    let runtime = runtime.manager_state();
     let payload = load_domain_pbft_sync_egress_payload(
         runtime.storage.as_ref(),
         PbftSyncRewardVoteAttachmentFact {
@@ -333,8 +345,9 @@ impl From<PbftSyncTransactionWarning> for FfiPbftSyncTransactionWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi::PbftManagerStartupFact as FfiPbftManagerStartupFact;
-    use crate::pbft_manager::create_pbft_manager_runtime_from_storage;
+    use crate::pbft_manager::{
+        create_pbft_manager_runtime_from_storage, TestPbftManagerStartupFact,
+    };
     use crate::storage::create_storage;
     use std::fs;
     use std::path::PathBuf;
@@ -350,8 +363,8 @@ mod tests {
         ))
     }
 
-    fn startup_fact() -> FfiPbftManagerStartupFact {
-        FfiPbftManagerStartupFact {
+    fn startup_fact() -> TestPbftManagerStartupFact {
+        TestPbftManagerStartupFact {
             current_period: 10,
             cacti_active_at_chain_size: false,
             genesis_lambda_ms: 100,
@@ -446,7 +459,10 @@ mod tests {
         assert!(accepted.complete);
         assert!(accepted.plan.accept_period_data);
         assert_eq!(accepted.plan.warnings.len(), 2);
-        assert!(runtime.pbft_sync_admission_session.is_none());
+        assert!(runtime
+            .manager_state()
+            .pbft_sync_admission_session
+            .is_none());
         let missing = pbft_manager_runtime_pbft_sync_admission_next(&mut runtime);
         assert_eq!(
             missing.error_code,
@@ -498,7 +514,10 @@ mod tests {
         );
         assert!(mismatch.complete);
         assert!(!mismatch.can_continue);
-        assert!(runtime.pbft_sync_admission_session.is_none());
+        assert!(runtime
+            .manager_state()
+            .pbft_sync_admission_session
+            .is_none());
 
         drop(runtime);
         drop(storage);

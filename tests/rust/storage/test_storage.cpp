@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string_view>
 
 #include "rustaxa-bridge/ffi.rs.h"
 
@@ -37,6 +38,15 @@ class StorageTest : public ::testing::Test {
     return out;
   }
 
+  static rust::Vec<uint8_t> bytes(std::string_view value) {
+    rust::Vec<uint8_t> out;
+    out.reserve(value.size());
+    for (const auto ch : value) {
+      out.push_back(static_cast<uint8_t>(ch));
+    }
+    return out;
+  }
+
   static std::vector<uint8_t> to_std_vec(const rust::Vec<uint8_t>& values) {
     return std::vector<uint8_t>(values.begin(), values.end());
   }
@@ -64,19 +74,17 @@ constexpr uint8_t kPbftVotePersistenceApplied = 0;
 constexpr uint8_t kPbftVotePersistenceRejected = 1;
 constexpr uint8_t kPbftManagerTransitionStorageApplied = 0;
 
-PbftManagerStartupFact makePbftManagerStartupFact() {
-  PbftManagerStartupFact fact{};
-  fact.current_period = 10;
-  fact.cacti_active_at_chain_size = false;
-  fact.genesis_lambda_ms = 100;
-  fact.cacti_lambda_max_ms = 1500;
-  fact.cacti_lambda_default_ms = 500;
-  fact.cacti_block = 100;
-  fact.max_exponential_lambda_ms = 60000;
-  fact.max_steps = 13;
-  fact.deadline_ms = 1000;
-  fact.polling_interval_ms = 100;
-  return fact;
+PbftServiceConfig makePbftServiceConfig() {
+  PbftServiceConfig config{};
+  config.genesis_lambda_ms = 100;
+  config.cacti_lambda_max_ms = 1500;
+  config.cacti_lambda_default_ms = 500;
+  config.cacti_block = 100;
+  config.max_exponential_lambda_ms = 60000;
+  config.max_steps = 13;
+  config.deadline_ms = 1000;
+  config.polling_interval_ms = 100;
+  return config;
 }
 
 TEST_F(StorageTest, CreateStorage) {
@@ -205,9 +213,12 @@ TEST_F(StorageTest, ApplyPbftManagerTransitionStorageCommitsCursorStatusesAndOwn
   storage_shim_save_pbft_mgr_status(*seed_batch, 2, true);
   storage_shim_save_pbft_mgr_status(*seed_batch, 3, true);
   storage_shim_save_own_verified_vote(*seed_batch, own_vote_hash, bytes({0x74}));
+  const std::string pbft_head =
+      R"({"head_hash":"0x0000000000000000000000000000000000000000000000000000000000000000","size":9,"non_empty_size":0,"last_pbft_block_hash":"0x0000000000000000000000000000000000000000000000000000000000000000"})";
+  storage_shim_save_pbft_head(*seed_batch, h256(0), bytes(pbft_head));
   storage_shim_commit_batch(std::move(seed_batch), false);
 
-  auto runtime = create_pbft_manager_runtime_from_storage(*storage, makePbftManagerStartupFact());
+  auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig());
   PbftManagerLifecycleTransitionRequest request{};
   request.kind = 0;
   request.target_period = 1;

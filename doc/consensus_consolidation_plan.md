@@ -813,6 +813,56 @@ public query, signing/VDF, and app lifecycle boundaries remain unchanged. The im
 duplicate-resume ordering, atomic durable/live publication, storage failure and crash recovery, bootstrap rejection,
 concurrent compatibility reads, and shared-service teardown before deleting the standalone routes.
 
+### CRW-02 PBFT application-service implementation result
+
+The PBFT-only service is implemented as the sole exported `BridgePbftService` owner for PBFT manager runtime/session
+state, PBFT chain state/lookups, and their native storage lifetime. `App` creates one production service after FinalChain
+and transaction setup, then shares one shim-owned RAII holder with `PbftChain` and `PbftManager`. Rust restores the chain
+first and derives manager period/Cacti activation from the durable head; C++ no longer constructs two independent bridge
+handles or injects those derived facts.
+
+Manager and chain state use separate Rust locks with manager-before-chain ordering for combined operations. The service
+starts behind a readiness gate, and `PbftManager` publishes bootstrap completion only after constructor replay and restart
+processing. The daemon, proposal, and PBFT sync entry points reject premature use. The public chain constructor and
+`updatePbftChain(...)` remain compatibility/test adapters over the service, while production app bootstrap uses the
+shared service-aware constructor.
+
+The finalization `UpdatePbftChain` action is now manager-owned service work. Rust applies the chain mutation from the
+accepted write intent, validates the resulting size/hash/anchor facts, advances the existing finalization cursor, and
+returns the next external effect. The C++ action case, payload sidecar,
+`PbftChain::updatePbftChainForPbftFinalization`, `PbftChainFinalizationUpdateReport`, and
+`pbft_manager_runtime_advance_finalization_pbft_chain` are deleted. The independent `BridgePbftManagerRuntime` and
+`BridgePbftChain` CXX types, production factories, and facade-owned boxes are also gone.
+
+Cross-cutting `CRW-07` cleanup removed the obsolete CXX `PbftManagerStartupFact`. Rust tests use a private startup fixture;
+C++ consensus/storage fixtures seed the persisted PBFT head and call the production service constructor. The app changes
+remain guarded by `RUSTAXA_ENABLE`; their non-empty `git diff upstream-main` is an accepted app-bootstrap integration
+exception, while all original PBFT manager/chain implementation files remain untouched and Rust routing stays in the
+full shim overlays.
+
+Tier 1 and Tier 2 validation are complete: `make rewrite-validate-consensus`, `make rewrite-validate-smoke`, the 9-test
+`rust_storage_tests` binary, `rewrite_bridge_inventory_guard.sh`, `rewrite_storage_boundary_guard.sh`, and
+`git diff --check` all pass. The upstream-file audit is empty for the original PBFT manager/chain headers and sources; its
+only output is the guarded App bootstrap exception documented above. Existing CMake developer warnings and expected DAG
+restore diagnostics remain non-fatal.
+
+Tier 3 was authorized and executed because this shared service changes production startup, sync, finalization, and
+consensus-runtime routing. The Python 3.10 integration run passed its five-node JSON-RPC scenario (`1 passed` in 149.62
+seconds). Full CTest built every registered target and passed 22 of 28 suites. Five C++ binaries exposed a pre-existing
+test lifecycle defect: default-enabled RPC owns an API that indirectly retains `App`, while `App::close()` does not invoke
+plugin shutdown, so fixed `/tmp/taraxa*` RocksDB paths remain locked between gtests in the same process. The new service
+adds no reverse ownership edge and replaces two pre-existing cloned Rust storage owners with one shared owner. Clean,
+non-overlapping `PillarChainTest.votes_count_changes` runs passed both on this diff (`1 passed` in 24.495 seconds) and in a
+separate detached build of committed HEAD `03016f9` (`1 passed` in 20.309 seconds), confirming that the overlapping-run
+panic and broad lock cascade are not CRW-02 regressions.
+
+The sixth CTest failure, `go_test`, is an environment/script issue: its generated script applies static RocksDB CGO flags
+to every package while static zlib/snappy archives are absent from the default linker path. Supplying temporary Conan-built
+Snappy and existing Conan zlib archives allowed all state/contract packages to pass; the two remaining pure-Go packages
+failed only from the unconditional static-CGO libc link, then passed separately with `CGO_ENABLED=0` (`150 passed` across
+the two packages). These classified pre-existing harness/environment failures do not invalidate the passing CRW-02
+Rust/C++ parity, subsystem, startup, and integration evidence. Independent review approved the completed slice.
+
 Implementation notes:
 
 - VoteManager no longer mirrors locally generated own votes in `own_verified_votes_`. `BridgeVerifiedVotes` enumerates

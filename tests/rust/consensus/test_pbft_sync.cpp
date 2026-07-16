@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <initializer_list>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -111,7 +112,7 @@ rust::Vec<PbftFinalizationStorageWriteStage> storageStages(
 }
 
 PbftManagerFinalizationExecutorState startFreshFinalizationExecutor(
-    BridgePbftManagerRuntime& runtime, const PbftFinalizationIntentPlan& plan,
+    BridgePbftService& runtime, const PbftFinalizationIntentPlan& plan,
     rust::Vec<PbftFinalizationStorageWriteStage> primary_stages) {
   PbftFinalizationExecutorStartRequest request{};
   request.mode = kPbftFinalizationExecutorModeFresh;
@@ -122,7 +123,7 @@ PbftManagerFinalizationExecutorState startFreshFinalizationExecutor(
   return pbft_manager_runtime_start_finalization_executor(runtime, request);
 }
 
-PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(BridgePbftManagerRuntime& runtime,
+PbftManagerFinalizationExecutorState startResumeFinalizationExecutor(BridgePbftService& runtime,
                                                                      const PbftFinalizationIntentPlan& plan,
                                                                      uint64_t final_chain_last_block) {
   PbftFinalizationExecutorStartRequest request{};
@@ -197,19 +198,37 @@ PbftManagerRuntimeTickFact makePbftManagerRuntimeTick(uint8_t state) {
   return fact;
 }
 
-PbftManagerStartupFact makePbftManagerStartupFact() {
-  PbftManagerStartupFact fact;
-  fact.current_period = 10;
-  fact.cacti_active_at_chain_size = true;
-  fact.genesis_lambda_ms = 100;
-  fact.cacti_lambda_max_ms = 1'500;
-  fact.cacti_lambda_default_ms = 500;
-  fact.cacti_block = 1;
-  fact.max_exponential_lambda_ms = 60'000;
-  fact.max_steps = 13;
-  fact.deadline_ms = 1'000;
-  fact.polling_interval_ms = 100;
-  return fact;
+PbftServiceConfig makePbftServiceConfig(bool cacti_active = true) {
+  PbftServiceConfig config;
+  config.genesis_lambda_ms = 100;
+  config.cacti_lambda_max_ms = 1'500;
+  config.cacti_lambda_default_ms = 500;
+  config.cacti_block = cacti_active ? 1 : 100;
+  config.max_exponential_lambda_ms = 60'000;
+  config.max_steps = 13;
+  config.deadline_ms = 1'000;
+  config.polling_interval_ms = 100;
+  return config;
+}
+
+rust::Vec<uint8_t> bridgeBytes(std::string_view input) {
+  rust::Vec<uint8_t> out;
+  out.reserve(input.size());
+  for (const auto ch : input) {
+    out.push_back(static_cast<uint8_t>(ch));
+  }
+  return out;
+}
+
+void seedPbftChainPeriod(const rust::Box<BridgeStorage>& storage, uint64_t current_period = 10) {
+  std::ostringstream head;
+  head
+      << R"({"head_hash":"0x0000000000000000000000000000000000000000000000000000000000000000","size":)"
+      << current_period - 1
+      << R"(,"non_empty_size":0,"last_pbft_block_hash":"0x0000000000000000000000000000000000000000000000000000000000000000"})";
+  auto batch = create_storage_shim_batch(*storage);
+  storage_shim_save_pbft_head(*batch, h256(0), bridgeBytes(head.str()));
+  storage_shim_commit_batch(std::move(batch), false);
 }
 
 PbftManagerRuntimeActionReport managerRuntimeReport(uint32_t cursor, uint8_t action, uint8_t result) {
@@ -263,22 +282,21 @@ std::filesystem::path uniqueTempDir(const std::string& name) {
   return path;
 }
 
-rust::Box<BridgePbftManagerRuntime> managerRuntimeForTick(PbftManagerRuntimeTickFact tick) {
+rust::Box<BridgePbftService> managerRuntimeForTick(PbftManagerRuntimeTickFact tick) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_runtime_session");
   auto storage = create_storage(test_dir.string());
-  auto startup_fact = makePbftManagerStartupFact();
-  startup_fact.cacti_active_at_chain_size = false;
-  auto runtime = create_pbft_manager_runtime_from_storage(*storage, startup_fact);
+  seedPbftChainPeriod(storage);
+  auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
+  pbft_service_complete_bootstrap(*runtime);
   pbft_manager_runtime_begin_session(*runtime, tick);
   return runtime;
 }
 
-rust::Box<BridgePbftManagerRuntime> managerRuntimeForFinalizationSession() {
+rust::Box<BridgePbftService> managerRuntimeForFinalizationSession() {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_session");
   auto storage = create_storage(test_dir.string());
-  auto startup_fact = makePbftManagerStartupFact();
-  startup_fact.cacti_active_at_chain_size = false;
-  return create_pbft_manager_runtime_from_storage(*storage, startup_fact);
+  seedPbftChainPeriod(storage);
+  return create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
 }
 
 PbftFinalizationIntentPlan finalizationIntentPlan(PbftFinalizationIntentFact fact) {
@@ -476,7 +494,8 @@ TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
   storage_shim_save_pbft_mgr_status(*seed_batch, kPbftMgrStatusNextVotedValue, true);
   storage_shim_commit_batch(std::move(seed_batch), false);
 
-  const auto runtime = create_pbft_manager_runtime_from_storage(*storage, makePbftManagerStartupFact());
+  seedPbftChainPeriod(storage);
+  const auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig());
   const auto snapshot = pbft_manager_runtime_snapshot(*runtime);
 
   EXPECT_EQ(snapshot.status, kPbftManagerStartupStatusReady);
@@ -497,9 +516,8 @@ TEST(RustPbftSyncTest, ManagerStartupRestoreRecordsRuntimeSnapshotFromStorage) {
 TEST(RustPbftSyncTest, ManagerStateActionEffectSessionRecordsFinishPollingTranscript) {
   const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_state_action_runtime");
   auto storage = create_storage(test_dir.string());
-  auto startup_fact = makePbftManagerStartupFact();
-  startup_fact.cacti_active_at_chain_size = false;
-  auto runtime = create_pbft_manager_runtime_from_storage(*storage, startup_fact);
+  seedPbftChainPeriod(storage);
+  auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
   auto fact = makePbftManagerStateActionFact(4);
   fact.has_current_round_soft_value = true;
   fact.has_previous_round_next_null = true;

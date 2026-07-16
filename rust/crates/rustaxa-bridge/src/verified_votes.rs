@@ -1768,7 +1768,7 @@ mod tests {
 
         let mut runtime = crate::pbft_manager::create_pbft_manager_runtime_from_storage(
             &storage,
-            crate::ffi::rustaxa_ffi::PbftManagerStartupFact {
+            crate::pbft_manager::TestPbftManagerStartupFact {
                 current_period: 10,
                 cacti_active_at_chain_size: false,
                 genesis_lambda_ms: 100,

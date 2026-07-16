@@ -25,6 +25,7 @@
 #include "logger/logger.hpp"
 #include "network/network.hpp"
 #include "pbft/pbft_block_extra_data.hpp"
+#include "pbft/pbft_service.hpp"
 #include "pbft/period_data.hpp"
 #include "pbft/proposed_blocks.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
@@ -152,10 +153,10 @@ class PbftManager {
   using time_point = std::chrono::system_clock::time_point;
 
  public:
-  PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
-              rust::Box<rustaxa::BridgePbftManagerRuntime> pbft_manager_runtime, std::shared_ptr<PbftChain> pbft_chain,
-              std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
-              std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
+  PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db, SharedPbftService pbft_service,
+              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
+              std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+              std::shared_ptr<final_chain::FinalChain> final_chain,
               std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
   ~PbftManager();
   PbftManager(const PbftManager &) = delete;
@@ -734,9 +735,9 @@ class PbftManager {
   // Compatibility edge kept only for network/EVM/public materialization and lifecycle wiring while the shim owns those
   // boundaries.
   std::shared_ptr<DbStorage> db_;
-  // Rust-owned PBFT manager runtime. Remaining C++ fields below are compatibility mirrors or executor/public API
-  // materialization caches; they must not be used as Rust-mode protocol authority.
-  mutable std::optional<rust::Box<rustaxa::BridgePbftManagerRuntime>> pbft_manager_runtime_;
+  // Application-owned Rust PBFT service shared with the chain facade. Remaining C++ fields below are compatibility
+  // mirrors or executor/public API materialization caches; they must not be used as Rust-mode protocol authority.
+  SharedPbftService pbft_service_;
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;
