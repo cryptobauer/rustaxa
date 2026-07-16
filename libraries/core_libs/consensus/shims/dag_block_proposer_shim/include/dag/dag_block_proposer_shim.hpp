@@ -12,10 +12,6 @@
 #include "dag/dag_block.hpp"
 #include "logger/logger.hpp"
 
-namespace rustaxa {
-struct DagProposerSignedBlockIntent;
-}
-
 namespace taraxa {
 
 /** @addtogroup DAG
@@ -36,9 +32,10 @@ class FinalChain;
  *
  * The class preserves the public `DagBlockProposer` API while moving deterministic proposal facts toward Rust. C++
  * still owns worker/network orchestration, live network-throttle and VDF execution, node-secret signature execution,
- * and compatibility frontier/hash/payload materialization. Rust owns canonical proposal VRF/VDF message bytes,
- * proposer tip-pruning and signed-block RLP planning, VDF wait/stale-proof decisions, post-boundary retry-state resets,
- * and DPoS/VDF authorization facts through the Rust-backed FinalChain shim.
+ * and compatibility transaction payload materialization. Rust owns canonical proposal VRF/VDF message bytes, proposer
+ * tip-pruning, unsigned block planning, signing-hash derivation, signed-block RLP finalization, VDF wait/stale-proof
+ * decisions, post-boundary retry-state resets, and DPoS/VDF authorization facts through the Rust-backed FinalChain
+ * shim.
  *
  * Edge behavior:
  * - proposal returns `false` when the transaction pool, DPoS facts, VRF key, or vote denominator are unavailable
@@ -88,8 +85,13 @@ class DagBlockProposer {
   /**
    * Attempts to propose one DAG block for `node_dag_proposer_data`.
    *
-   * Returns `true` when the loop should immediately try another proposal, including the legacy cancellation case where
-   * a stale in-flight proof was cancelled. Returns `false` when no block was proposed and the caller should wait.
+   * Rust owns the runtime session and all deterministic block construction. C++ executes transaction packing, VDF,
+   * node-secret signing, and add-block side effects without holding the DAG runtime lock. Every successfully opened
+   * session is removed on normal completion or aborted during unwinding.
+   *
+   * Returns `true` when the loop should immediately try another proposal, including the cancellation case where a stale
+   * in-flight proof was cancelled. Returns `false` when no block was proposed and the caller should wait. Executor,
+   * bridge, or invalid-session failures propagate as exceptions after session cleanup.
    */
   bool proposeDagBlock(const std::shared_ptr<NodeDagProposerData>& node_dag_proposer_data);
 
@@ -126,19 +128,6 @@ class DagBlockProposer {
     std::vector<dev::bytes> transaction_rlps;
     std::vector<uint64_t> gas_estimations;
   };
-
-  /**
-   * Creates a signed DAG block intent from already selected proposal data.
-   *
-   * Inputs are the current frontier, computed level, Rust-selected transaction hashes and gas estimates, completed VDF
-   * sortition, and node signing secret. Rust plans the block gas estimate, selected tips, timestamp, canonical signing
-   * hash, and signed block RLP; C++ only supplies the temporary key-manager signature.
-   */
-  rustaxa::DagProposerSignedBlockIntent createSignedDagBlockIntent(DagFrontier&& frontier, level_t level,
-                                                                   const vec_trx_t& trx_hashes,
-                                                                   std::vector<uint64_t>&& estimations,
-                                                                   vdf_sortition::VdfSortition&& vdf,
-                                                                   const dev::Secret& node_secret) const;
 
   /**
    * Returns transactions, hashes, and gas estimates for the configured proposer shard.

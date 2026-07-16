@@ -29,7 +29,7 @@ constexpr uint8_t kDagProposerSessionActionPackTransactions = 1;
 constexpr uint8_t kDagProposerSessionActionStartVdf = 2;
 constexpr uint8_t kDagProposerSessionActionCancelVdf = 3;
 constexpr uint8_t kDagProposerSessionActionStaleProofSleep = 4;
-constexpr uint8_t kDagProposerSessionActionBuildBlock = 5;
+constexpr uint8_t kDagProposerSessionActionSignBlock = 5;
 constexpr uint8_t kDagProposerSessionActionAddBlock = 6;
 constexpr uint8_t kDagProposerSessionActionCollectExternalProposalFacts = 7;
 constexpr uint32_t kDagProposerReasonMissingProposalPeriod = 1;
@@ -122,12 +122,16 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   begin_input.non_finalized_transaction_count = trx_mgr_->getNonfinalizedTrxSize();
   begin_input.max_non_finalized_transactions = kMaxNonFinalizedTransactions;
   begin_input.dag_expiry_level_limit = kDagExpiryLevelLimit;
+  begin_input.proposer_address = node_dag_proposer_data->wallet.node_addr.asArray();
   begin_input.wallet_vrf_public_key = node_dag_proposer_data->wallet.vrf_pk.asArray();
   begin_input.wallet_vrf_secret = node_dag_proposer_data->wallet.vrf_secret.asArray();
   begin_input.max_non_finalized_dag_blocks = kMaxNonFinalizedDagBlocks;
   begin_input.max_non_finalized_dag_blocks_low_difficulty = kMaxNonFinalizedDagBlocksLowDifficulty;
   begin_input.max_retry_count = node_dag_proposer_data->max_num_tries;
   begin_input.proposal_weight_limit = kDagProposeGasLimit;
+  begin_input.pbft_gas_limit = kPbftGasLimit;
+  begin_input.dag_gas_limit = kDagGasLimit;
+  begin_input.max_tips = kDagBlockMaxTips;
   begin_input.total_transaction_shards = total_trx_shards_;
   begin_input.node_transaction_shard = node_dag_proposer_data->trx_shard;
   begin_input.shard_period_interval = kShardProposePeriodInterval;
@@ -196,9 +200,9 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     throw std::runtime_error("Rust DAG proposer session did not request transaction packing");
   }
 
-  DagFrontier frontier(from_bridge_hash(step.frontier_pivot), from_bridge_dag_hashes(step.frontier_tips));
-  LOG(log_dg_) << "Get frontier with pivot: " << frontier.pivot << " tips: " << frontier.tips;
-  assert(!frontier.pivot.isZero());
+  const auto frontier_pivot = from_bridge_hash(step.frontier_pivot);
+  LOG(log_dg_) << "Get frontier with pivot: " << frontier_pivot;
+  assert(!frontier_pivot.isZero());
   if (step.old_proposal) {
     LOG(log_wr_) << "Trying to propose old block " << step.proposal_level;
   }
@@ -276,6 +280,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
 
   rustaxa::DagProposerVdfProofReport proof_report;
   proof_report.proof_ok = true;
+  proof_report.vdf_rlp = to_rust_vec(vdf.rlp());
   step = dag_mgr_->reportProposerVdfProof(proposer_session_id, std::move(proof_report));
   fail_on_invalid_report(step);
 
@@ -286,18 +291,13 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
       return *done;
     }
   }
-  if (step.action != kDagProposerSessionActionBuildBlock) {
-    throw std::runtime_error("Rust DAG proposer session did not request block construction");
+  if (step.action != kDagProposerSessionActionSignBlock) {
+    throw std::runtime_error("Rust DAG proposer session did not request block signing");
   }
 
-  auto selected_transaction_hashes = from_bridge_dag_hashes(step.selected_transaction_hashes);
-  std::vector<uint64_t> selected_gas_estimations(step.transaction_gas_estimations.begin(),
-                                                 step.transaction_gas_estimations.end());
-  auto signed_block = createSignedDagBlockIntent(std::move(frontier), step.proposal_level, selected_transaction_hashes,
-                                                 std::move(selected_gas_estimations), std::move(vdf),
-                                                 node_dag_proposer_data->wallet.node_secret);
+  const auto signature = dev::sign(node_dag_proposer_data->wallet.node_secret, from_bridge_hash(step.signing_hash));
   rustaxa::DagProposerSigningReport signing_report;
-  signing_report.signature_ready = true;
+  signing_report.signature = to_rust_vec(signature.asBytes());
   step = dag_mgr_->reportProposerSigning(proposer_session_id, std::move(signing_report));
   fail_on_invalid_report(step);
   if (auto done = finish_if_complete(step)) {
@@ -307,9 +307,10 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     throw std::runtime_error("Rust DAG proposer session did not request add-block execution");
   }
 
-  const auto proposed_block_hash = from_bridge_hash(signed_block.block_hash);
+  auto selected_transaction_hashes = from_bridge_dag_hashes(step.selected_transaction_hashes);
+  const auto proposed_block_hash = from_bridge_hash(step.signed_block.block_hash);
   const auto proposed_transaction_count = selected_transaction_hashes.size();
-  auto add_report = dag_mgr_->addDagBlockRlp(std::move(signed_block), selected_transaction_hashes,
+  auto add_report = dag_mgr_->addDagBlockRlp(std::move(step.signed_block), selected_transaction_hashes,
                                              std::move(transaction_payloads.transaction_rlps), true);
   step = dag_mgr_->reportProposerAddBlock(proposer_session_id, std::move(add_report));
   if (step.record_proposed_block) {
@@ -411,47 +412,6 @@ vec_blk_t DagBlockProposer::selectDagBlockTips(const vec_blk_t& frontier_tips, u
 
   const auto plan = dag_mgr_->planProposerTipSelection(std::move(input));
   return from_bridge_dag_hashes(plan.selected_tips);
-}
-
-rustaxa::DagProposerSignedBlockIntent DagBlockProposer::createSignedDagBlockIntent(
-    DagFrontier&& frontier, level_t level, const vec_trx_t& trx_hashes, std::vector<uint64_t>&& estimations,
-    VdfSortition&& vdf, const dev::Secret& node_secret) const {
-  rustaxa::DagProposerStorageBlockConstructionInput plan_input;
-  plan_input.pbft_gas_limit = kPbftGasLimit;
-  plan_input.dag_gas_limit = kDagGasLimit;
-  plan_input.max_tips = kDagBlockMaxTips;
-  plan_input.frontier_tips.reserve(frontier.tips.size());
-  for (const auto& t : frontier.tips) {
-    plan_input.frontier_tips.push_back(to_bridge_dag_hash(t));
-  }
-
-  plan_input.transaction_gas_estimations.reserve(estimations.size());
-  for (const auto estimation : estimations) {
-    plan_input.transaction_gas_estimations.push_back(estimation);
-  }
-
-  const auto plan = dag_mgr_->planProposerBlockConstruction(std::move(plan_input));
-
-  rustaxa::DagProposerBlockIntentNowInput intent_input;
-  intent_input.pivot = to_bridge_hash(frontier.pivot);
-  intent_input.level = level;
-  intent_input.vdf_rlp = to_rust_vec(vdf.rlp());
-  intent_input.selected_tips.reserve(plan.selected_tips.size());
-  intent_input.transaction_hashes.reserve(trx_hashes.size());
-  for (const auto& hash : plan.selected_tips) {
-    intent_input.selected_tips.push_back(hash);
-  }
-  for (const auto& hash : trx_hashes) {
-    intent_input.transaction_hashes.push_back(to_bridge_dag_hash(hash));
-  }
-  intent_input.block_gas_estimation = plan.block_gas_estimation;
-
-  auto intent = rustaxa::dag_proposer_plan_block_intent_with_current_timestamp(std::move(intent_input));
-  const auto signature = dev::sign(node_secret, from_bridge_hash(intent.signing_hash));
-  rustaxa::DagProposerSignedBlockIntentInput signed_input;
-  signed_input.intent = std::move(intent);
-  signed_input.signature = to_rust_vec(signature.asBytes());
-  return rustaxa::dag_proposer_finalize_signed_block_intent(std::move(signed_input));
 }
 
 void DagBlockProposer::setNetwork(std::weak_ptr<Network> network) { network_ = std::move(network); }

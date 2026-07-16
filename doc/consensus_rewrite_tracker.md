@@ -292,11 +292,13 @@ for app/RPC/slashing consumers and delegates production work to `TransactionMana
 exists only for standalone compatibility tests. The follow-up bounded cleanup retired `BridgeDagGraph`, `dag_shim`, and
 their bridge-mechanics tests because production `BridgeDagManagerRuntime` already owns both native graphs. Direct legacy
 `Dag`/`PivotTree` behavior remains pure-C++ reference coverage; Rust mode keeps native `DagGraph` unit coverage and all
-production `DagManager` tests. The next manager/proposer slice makes session startup derive and fingerprint frontier,
-proposal-period, and period-hash observations inside `BridgeDagManagerRuntime`; external FinalChain/sortition facts are
-accepted only after revalidation, and VDF polling/stale-proof resume now read the current proposal level from the
-runtime instead of accepting a C++ echo. Continue afterward with another manager/proposer ownership crossing without
-widening into network, signing/VDF execution, or EVM execution.
+production `DagManager` tests. The next manager/proposer slices made session startup derive and fingerprint frontier,
+proposal-period, and period-hash observations inside `BridgeDagManagerRuntime`, then moved storage-backed block
+construction, timestamped unsigned-intent state, and canonical signed-RLP assembly into that keyed session. C++ now
+collects external FinalChain/sortition facts, executes VDF, signs only the Rust-returned hash, and executes the returned
+add-block payload. The standalone construction planner and unsigned/signed-intent bridge operations are retired.
+Continue with another CRW-04 composition or manager/transaction crossing without widening into network, signing/VDF
+execution, or EVM execution.
 `CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim
 surface.
 

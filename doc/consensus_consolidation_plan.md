@@ -461,6 +461,21 @@ Implementation notes:
   command remained blocked before collection because the Python 3.13 environment lacks development headers required to
   build its pinned `cytoolz` and `pyethash` dependencies. Original DAG manager and proposer files remain clean versus
   `upstream-main`.
+- DAG proposer block construction and canonical assembly now remain inside the same keyed Rust session. After VDF
+  execution, Rust revalidates the observation, loads tip metadata, applies gas/tip policy, selects the timestamp, and
+  stores the unsigned intent. C++ receives only its signing hash and returns only signature bytes; Rust validates the
+  signature and returns canonical signed block RLP/hash for the existing add-block executor. The standalone block-
+  construction planner, current-timestamp intent planner, signed-intent finalizer, and their bridge-only carriers are
+  deleted; public `selectDagBlockTips` compatibility planning remains. Session begin also retains the configured
+  proposer address: native finalization rejects unrecoverable signatures, and the bridge requires the recovered signer
+  to match that address before exposing an add-block payload. Invalid and wrong-key signatures remove the cursor without
+  retry mutation. Validation passed all 291 Rust bridge tests, five focused native block-construction tests, two focused
+  native tip-selection tests, three native intent/signature tests, all 13 `dag_block_test` cases,
+  all six Rust-mode `dag_test` cases, `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and the
+  Rust-enabled startup smoke. The task-owner-preapproved Tier 3 CTest gate again passed 21 of 27 binaries; the same five
+  same-process RocksDB-lock fixture failures and unrelated Go/cgo static-link failure remain. The Python Tier 3 setup
+  failure from this validation round remains applicable because its pinned native dependencies cannot build in the
+  unchanged Python 3.13 environment.
 - The standalone DAG block proposer facade is fully detached from `DagBlockProposerOld`. Feature-on builds exclude the
   untouched original `dag_block_proposer.cpp`, the overlay wrapper directly includes the self-contained executor
   facade, and the compile rename is deleted. The facade now explicitly includes its configuration, thread-pool, and

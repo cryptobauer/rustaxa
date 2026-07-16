@@ -925,12 +925,6 @@ uint64_t DagManager::getDagExpiryLevel() const {
 
 uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_period_; }
 
-rustaxa::DagProposerBlockConstructionPlan DagManager::planProposerBlockConstruction(
-    rustaxa::DagProposerStorageBlockConstructionInput input) const {
-  std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_plan_proposal_block_construction(std::move(input));
-}
-
 rustaxa::DagProposerTipSelectionPlan DagManager::planProposerTipSelection(
     rustaxa::DagProposerStorageTipSelectionInput input) const {
   std::shared_lock lock(rust_graphs_mutex_);

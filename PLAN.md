@@ -393,8 +393,10 @@ reference builds retain the untouched legacy RewardsStats header and source.
     `DagBlockProposerOld` scaffold. Rust owns proposer eligibility status decisions, legacy VRF
     input bytes, deterministic tip-selection policy, transaction-pack command flow, atomic DAG observation and
     revalidation, VDF input/message bytes, runtime-derived wait/cancel/stale-proof decisions, retry-cursor updates,
-    proposal timestamps, block construction planning, and final
-    signed-RLP construction after temporary C++ node-secret signing. C++ still owns thread/network orchestration, live
+    proposal timestamps, session-owned block construction and unsigned intent state, and final signed-RLP construction
+    after temporary C++ node-secret signing. C++ receives only the signing hash and returns only signature bytes; it no
+    longer echoes frontier, transaction, gas, timestamp, or unsigned-intent fields through standalone bridge planners.
+    C++ still owns thread/network orchestration, live
     network throttle checks, async VDF compute execution, node-secret signature execution, add-block effect execution,
     logging, and network egress.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks and the Rust-supported
@@ -642,8 +644,8 @@ Completed closeout slices:
    original `dag_manager.cpp`; pure-C++ builds retain the untouched original implementation.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
-   construction planning, signing boundary progression, and add-block terminal classification; C++ executes VDF,
-   signing, and add-block effects.
+   construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,
+   and add-block terminal classification; C++ executes VDF, signs the Rust-returned hash, and executes add-block effects.
 5. Vote, slashing, and pillar executor surface collapse: vote/pillar/slashing decisions consume Rust-retained payloads,
    compact facts, and typed plans; C++ executes signing, network, transaction insertion, and public sidecar edges.
 6. Rewards stats carrier ownership: Rust owns rewards-stat decisions, compatibility encoding, interval cache

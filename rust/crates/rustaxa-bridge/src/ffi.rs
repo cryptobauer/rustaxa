@@ -3980,9 +3980,11 @@ pub mod rustaxa_ffi {
 
     /// External/configured facts used to open one runtime-owned proposal session.
     ///
-    /// The caller supplies wallet identity, limits, and live transaction pressure. Rust derives the DAG frontier,
-    /// proposal level/period/hash, and observation fingerprint atomically from the runtime. Invalid storage state is
-    /// returned as an error; missing proposal-period mapping produces a terminal session step instead.
+    /// The caller supplies trusted wallet identity (VRF keys and proposer address), transaction pressure, packing
+    /// limits, and block-construction gas/tip limits. Rust derives the DAG frontier, proposal level/period/hash, and
+    /// observation fingerprint atomically from the runtime. Invalid storage state is returned as an error; a missing
+    /// proposal-period mapping produces a terminal session step instead. Identity and limits are retained by the cursor
+    /// and cannot be replaced at signing time.
     struct DagProposerSessionBeginInput {
         transaction_pool_size: u64,
         non_finalized_transaction_count: u64,
@@ -3990,6 +3992,7 @@ pub mod rustaxa_ffi {
         dag_expiry_level_limit: u64,
         wallet_vrf_public_key: [u8; 32],
         wallet_vrf_secret: [u8; 64],
+        proposer_address: [u8; 20],
         max_non_finalized_dag_blocks: u64,
         max_non_finalized_dag_blocks_low_difficulty: u64,
         max_retry_count: u64,
@@ -3997,6 +4000,9 @@ pub mod rustaxa_ffi {
         total_transaction_shards: u16,
         node_transaction_shard: u16,
         shard_period_interval: u64,
+        pbft_gas_limit: u64,
+        dag_gas_limit: u64,
+        max_tips: u16,
     }
 
     /// FinalChain and sortition facts collected for the runtime-derived proposal period.
@@ -4023,7 +4029,8 @@ pub mod rustaxa_ffi {
     ///
     /// `status` distinguishes active, complete, and invalid-report outcomes; `action` selects the one external boundary
     /// to execute. Retry fields are authoritative only when `update_retry_state` is true. Vectors may be empty when the
-    /// selected action does not consume them. Terminal steps remove the cursor after the step is constructed.
+    /// selected action does not consume them. Action 5 exposes only the Rust-owned intent's `signing_hash`; action 6
+    /// exposes the canonical `signed_block` executor payload. Terminal steps remove the cursor after construction.
     struct DagProposerSessionStep {
         status: u8,
         action: u8,
@@ -4033,7 +4040,6 @@ pub mod rustaxa_ffi {
         next_last_propose_level: u64,
         next_retry_count: u64,
         frontier_pivot: [u8; 32],
-        frontier_tips: Vec<DagHash>,
         proposal_level: u64,
         proposal_period: u64,
         last_finalized_period: u64,
@@ -4045,8 +4051,9 @@ pub mod rustaxa_ffi {
         old_proposal: bool,
         vdf_message: Vec<u8>,
         selected_transaction_hashes: Vec<DagHash>,
-        transaction_gas_estimations: Vec<u64>,
         transaction_request: DagProposerTransactionPackRequest,
+        signing_hash: [u8; 32],
+        signed_block: DagProposerSignedBlockIntent,
         record_proposed_block: bool,
         vdf_poll_interval_ms: u64,
         stale_proof_sleep_ms: u64,
@@ -4060,14 +4067,23 @@ pub mod rustaxa_ffi {
         transaction_gas_estimations: Vec<u64>,
     }
 
-    /// Report that a live VDF proof executor boundary has completed.
+    /// Result of the external VDF executor boundary.
+    ///
+    /// `vdf_rlp` is consumed only when `proof_ok` is true and becomes the canonical proof field of the session-owned
+    /// unsigned intent. The caller cannot supply any other block field. Malformed storage during subsequent construction
+    /// returns an error and removes the session.
     struct DagProposerVdfProofReport {
         proof_ok: bool,
+        vdf_rlp: Vec<u8>,
     }
 
-    /// Report after C++ executes the signing boundary for a proposed DAG block.
+    /// Recoverable signature returned by the external signer.
+    ///
+    /// The signature must be exactly 65 bytes over the signing hash from action 5 and recover to the trusted proposer
+    /// address captured at begin. Rust combines it only with the stored unsigned intent; malformed or wrong-key
+    /// signatures return an error and remove the session without retry mutation.
     struct DagProposerSigningReport {
-        signature_ready: bool,
+        signature: Vec<u8>,
     }
 
     /// Typed report after C++ materializes/signs/adds the proposed DAG block.
@@ -4097,26 +4113,11 @@ pub mod rustaxa_ffi {
         reason_code: u32,
     }
 
-    /// Rust-runtime DAG block construction facts for storage-backed tip metadata planning.
-    struct DagProposerStorageBlockConstructionInput {
-        frontier_tips: Vec<DagHash>,
-        transaction_gas_estimations: Vec<u64>,
-        pbft_gas_limit: u64,
-        dag_gas_limit: u64,
-        max_tips: u16,
-    }
-
     /// Rust-runtime DAG proposer tip-selection facts for the legacy compatibility API.
     struct DagProposerStorageTipSelectionInput {
         frontier_tips: Vec<DagHash>,
         gas_limit: u64,
         max_tips: u16,
-    }
-
-    /// Rust producer-side DAG block construction plan.
-    struct DagProposerBlockConstructionPlan {
-        selected_tips: Vec<DagHash>,
-        block_gas_estimation: u64,
     }
 
     /// Rust producer-side DAG tip-selection plan.
@@ -4125,35 +4126,10 @@ pub mod rustaxa_ffi {
         skipped_missing_tips: u64,
     }
 
-    /// Final unsigned DAG block fields whose timestamp is selected by Rust.
-    struct DagProposerBlockIntentNowInput {
-        pivot: [u8; 32],
-        level: u64,
-        vdf_rlp: Vec<u8>,
-        selected_tips: Vec<DagHash>,
-        transaction_hashes: Vec<DagHash>,
-        block_gas_estimation: u64,
-    }
-
-    /// Unsigned DAG block intent with the legacy signing hash C++ must sign temporarily.
-    struct DagProposerUnsignedBlockIntent {
-        pivot: [u8; 32],
-        level: u64,
-        timestamp: u64,
-        vdf_rlp: Vec<u8>,
-        selected_tips: Vec<DagHash>,
-        transaction_hashes: Vec<DagHash>,
-        block_gas_estimation: u64,
-        signing_hash: [u8; 32],
-    }
-
-    /// Recoverable signature supplied for a Rust-planned unsigned DAG block intent.
-    struct DagProposerSignedBlockIntentInput {
-        intent: DagProposerUnsignedBlockIntent,
-        signature: Vec<u8>,
-    }
-
-    /// Canonical signed DAG block bytes and hash returned by Rust.
+    /// Canonical signed DAG block executor payload returned by action 6.
+    ///
+    /// `block_rlp` is the complete eight-field canonical block encoding assembled from session-owned facts and the
+    /// external signature. `block_hash` is its Keccak hash. Both fields are empty/zero on non-add-block actions.
     struct DagProposerSignedBlockIntent {
         block_rlp: Vec<u8>,
         block_hash: [u8; 32],
@@ -4625,10 +4601,6 @@ pub mod rustaxa_ffi {
             tips_count: u64,
             block_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn dag_manager_runtime_plan_proposal_block_construction(
-            self: &BridgeDagManagerRuntime,
-            input: DagProposerStorageBlockConstructionInput,
-        ) -> Result<DagProposerBlockConstructionPlan>;
         pub fn dag_manager_runtime_plan_proposal_tip_selection(
             self: &BridgeDagManagerRuntime,
             input: DagProposerStorageTipSelectionInput,
@@ -4705,22 +4677,29 @@ pub mod rustaxa_ffi {
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
         ) -> DagProposerSessionStep;
+        /// Supplies proof success and canonical VDF RLP, revalidates the observation, and constructs the unsigned intent.
+        /// Success returns signing action 5; stale observations terminate without retry mutation, and construction
+        /// errors remove the cursor before throwing across CXX.
         pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
             report: DagProposerVdfProofReport,
-        ) -> DagProposerSessionStep;
-        /// Rechecks a stale proof after compatibility sleep using the current Rust-derived proposal frontier level.
-        /// The cursor either advances to block construction or terminates with authoritative retry effects.
+        ) -> Result<DagProposerSessionStep>;
+        /// Rechecks a stale proof after compatibility sleep and revalidates the complete Rust observation.
+        /// An unchanged observation constructs the stored proof's unsigned intent and returns signing action 5; stale
+        /// observations terminate without retry mutation, and construction errors remove the cursor.
         pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
-        ) -> DagProposerSessionStep;
+        ) -> Result<DagProposerSessionStep>;
+        /// Finalizes the stored unsigned intent with a 65-byte recoverable signature.
+        /// Success returns add-block action 6 with canonical RLP/hash; malformed signatures and finalization errors remove
+        /// the cursor, while missing/out-of-order ids return an invalid terminal step.
         pub fn dag_manager_runtime_proposer_session_report_signing(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
             report: DagProposerSigningReport,
-        ) -> DagProposerSessionStep;
+        ) -> Result<DagProposerSessionStep>;
         pub fn dag_manager_runtime_proposer_session_report_add_block(
             runtime: &mut BridgeDagManagerRuntime,
             session_id: u64,
@@ -4733,12 +4712,6 @@ pub mod rustaxa_ffi {
             input: DagVerifyVdfSortitionFromBlockInput,
         ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
-        pub fn dag_proposer_plan_block_intent_with_current_timestamp(
-            input: DagProposerBlockIntentNowInput,
-        ) -> Result<DagProposerUnsignedBlockIntent>;
-        pub fn dag_proposer_finalize_signed_block_intent(
-            input: DagProposerSignedBlockIntentInput,
-        ) -> Result<DagProposerSignedBlockIntent>;
         pub fn dag_manager_block_from_rlp(block_rlp: Vec<u8>) -> Result<DagManagerBlock>;
 
         // Consensus PBFT chain

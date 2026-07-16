@@ -2099,8 +2099,9 @@ pub fn plan_dag_proposer_block_intent(
 /// Finalizes a Rust DAG proposer block intent after the temporary C++ signer returns a recoverable signature.
 ///
 /// The returned RLP is canonical signed DAG block RLP and is suitable for C++ compatibility materialization,
-/// rustaxa-storage persistence, and hash verification. This function does not mutate DAG storage or graph state; those
-/// effects remain explicit add-block execution work until the DAG manager runtime owns them.
+/// rustaxa-storage persistence, and hash verification. The 65-byte legacy signature must recover a sender for the
+/// stored signing hash; address authorization remains the caller's trusted-identity check. This function does not mutate
+/// DAG storage or graph state; those effects remain explicit add-block execution work until the runtime owns them.
 pub fn finalize_dag_proposer_signed_block_intent(
     input: DagProposerSignedBlockIntentInput,
 ) -> Result<DagProposerSignedBlockIntent> {
@@ -2124,6 +2125,9 @@ pub fn finalize_dag_proposer_signed_block_intent(
         block.signing_hash() == input.intent.signing_hash,
         "DAG_PROPOSER_BLOCK_INTENT_SIGNING_HASH_MISMATCH"
     );
+    block
+        .recover_sender()
+        .context("DAG_PROPOSER_SIGNATURE_RECOVERY")?;
     let block_rlp = encode_dag_block_rlp(&block);
     let block_hash = keccak256(&block_rlp);
     Ok(DagProposerSignedBlockIntent {
@@ -5592,6 +5596,27 @@ mod tests {
             err.to_string()
                 .contains("DAG_PROPOSER_BLOCK_INTENT_SIGNATURE_LENGTH")
         );
+    }
+
+    #[test]
+    fn dag_proposer_block_intent_rejects_unrecoverable_signature() {
+        let intent = plan_dag_proposer_block_intent(DagProposerBlockIntentInput {
+            pivot: h(1),
+            level: 9,
+            timestamp: 12345,
+            vdf_rlp: vdf_payload_rlp(7, vec![1, 2], vec![3, 4]),
+            selected_tips: vec![h(2)],
+            transaction_hashes: vec![h(10)],
+            block_gas_estimation: 42_000,
+        });
+
+        let err = finalize_dag_proposer_signed_block_intent(DagProposerSignedBlockIntentInput {
+            intent,
+            signature: vec![0; 65],
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("DAG_PROPOSER_SIGNATURE_RECOVERY"));
     }
 
     #[test]

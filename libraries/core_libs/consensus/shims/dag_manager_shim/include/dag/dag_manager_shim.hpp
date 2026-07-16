@@ -94,9 +94,15 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   /**
    * Adds a DAG block from Rust-produced canonical signed block RLP.
    *
-   * Rust decodes compact manager facts from the canonical RLP and owns the add-block planning boundary. C++ only
-   * materializes temporary `DagBlock` and `Transaction` objects after acceptance when existing side-effect APIs still
-   * require them.
+   * `signed_block` contains the canonical RLP and matching hash finalized by Rust. `transaction_hashes` and
+   * `transaction_rlps` are the corresponding live transaction-pool payloads, while `proposed` and `save` select the
+   * existing event/gossip and persistence side effects. Rust decodes compact manager facts and owns add-block planning;
+   * C++ materializes temporary `DagBlock` and `Transaction` objects only when compatibility side-effect APIs require
+   * them.
+   *
+   * Returns a typed accepted/duplicate/expired/missing-reference report for the proposer session. A block hash/RLP
+   * mismatch, malformed canonical bytes, missing transaction payload, or bridge/storage failure propagates as an
+   * exception without holding the proposer-session DAG lock.
    */
   rustaxa::DagProposerAddBlockReport addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
                                                     const vec_trx_t &transaction_hashes,
@@ -141,14 +147,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   uint64_t getDagExpiryLevel() const;
   uint64_t getMaxLevelsPerPeriod() const;
   /**
-   * Plans proposer block construction using tip metadata loaded from Rust storage.
-   *
-   * The Rust DAG runtime loads frontier-tip blocks, recovers tip senders, and owns gas/tip selection facts. C++ keeps
-   * temporary transaction/VDF materialization and final `DagBlock` construction.
-   */
-  rustaxa::DagProposerBlockConstructionPlan planProposerBlockConstruction(
-      rustaxa::DagProposerStorageBlockConstructionInput input) const;
-  /**
    * Selects proposer tips using metadata loaded from Rust storage.
    *
    * This backs the legacy `DagBlockProposer::selectDagBlockTips` compatibility API while keeping missing-tip handling,
@@ -159,9 +157,12 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   /**
    * Opens a runtime-owned proposer cursor for one `DagBlockProposer::proposeDagBlock` attempt.
    *
-   * The input contains transaction pressure, wallet identity, and static proposal limits. Rust observes its DAG
-   * frontier and proposal-period mapping atomically; C++ executes only requested external effects after this method
-   * releases the runtime lock.
+   * The input contains transaction pressure, the configured 20-byte proposer node address, wallet VRF identity,
+   * gas/tip limits, and other static proposal limits. Rust retains the configured address as the authoritative expected
+   * signer; it is not recovered from mutable external facts. Rust also observes its DAG frontier and proposal-period
+   * mapping atomically and retains all deterministic construction state. The returned identifier is unique among live
+   * sessions. Bridge or allocation failures propagate as exceptions; no identifier is returned unless the cursor was
+   * installed.
    */
   uint64_t beginProposerSession(rustaxa::DagProposerSessionBeginInput input);
   /**
@@ -176,6 +177,12 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
    * @throws bridge or synchronization exceptions before cleanup completes
    */
   bool abortProposerSession(uint64_t session_id);
+  /**
+   * Returns the first requested effect for a live proposer session.
+   *
+   * The runtime lock is held only while Rust advances the cursor. Unknown or out-of-order session identifiers return an
+   * invalid-report step; bridge failures propagate as exceptions.
+   */
   rustaxa::DagProposerSessionStep proposerSessionNext(uint64_t session_id);
   /**
    * Reports FinalChain and sortition facts requested by a proposer session.
@@ -185,13 +192,51 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
    */
   rustaxa::DagProposerSessionStep reportProposerExternalProposalFacts(
       uint64_t session_id, rustaxa::DagProposerExternalProposalFactsReport report);
+  /**
+   * Reports transaction hashes and gas estimates produced by the live transaction-packing executor.
+   *
+   * Rust validates the report against the cursor and returns either a terminal result or the VDF request. The DAG lock
+   * is acquired only for report processing; transaction packing occurs before this call.
+   */
   rustaxa::DagProposerSessionStep reportProposerTransactions(uint64_t session_id,
                                                              rustaxa::DagProposerTransactionPackReport report);
+  /**
+   * Polls whether the Rust DAG frontier invalidated an in-flight VDF proof.
+   *
+   * Returns a cancellation or continuation step without waiting while holding the DAG lock. Unknown or out-of-order
+   * sessions return an invalid-report step.
+   */
   rustaxa::DagProposerSessionStep pollProposerVdfWait(uint64_t session_id);
+  /**
+   * Reports the completed canonical VDF RLP for Rust-owned block construction.
+   *
+   * Rust validates and retains the canonical bytes, selects tips, computes the block gas and signing hash, and returns
+   * a signing request or terminal/stale-proof step. VDF execution occurs outside the DAG lock. Storage, decoding, or
+   * block-construction failures remove the session and propagate as bridge exceptions.
+   */
   rustaxa::DagProposerSessionStep reportProposerVdfProof(uint64_t session_id,
                                                          rustaxa::DagProposerVdfProofReport report);
+  /**
+   * Resumes a stale-proof session after C++ performs the requested compatibility sleep.
+   *
+   * Rust rechecks its frontier under the DAG lock and returns either a terminal retry decision or a signing request.
+   * Block-construction failures remove the session and propagate as bridge exceptions.
+   */
   rustaxa::DagProposerSessionStep resumeProposerAfterStaleProofSleep(uint64_t session_id);
+  /**
+   * Reports the node-secret signature for the Rust-provided signing hash.
+   *
+   * Rust validates the signature bytes and finalizes canonical signed block RLP/hash, returned in the add-block step.
+   * Signing occurs before this call and no DAG lock crosses the signing boundary. Invalid signatures or finalization
+   * failures remove the session and propagate as bridge exceptions.
+   */
   rustaxa::DagProposerSessionStep reportProposerSigning(uint64_t session_id, rustaxa::DagProposerSigningReport report);
+  /**
+   * Reports the result of executing `addDagBlockRlp` for the Rust-produced signed block.
+   *
+   * Rust validates the outcome, applies terminal retry/record effects, removes the session, and returns the final
+   * result. Add-block execution occurs before this call and outside the proposer-session DAG lock.
+   */
   rustaxa::DagProposerSessionStep reportProposerAddBlock(uint64_t session_id,
                                                          rustaxa::DagProposerAddBlockReport report);
   /**
