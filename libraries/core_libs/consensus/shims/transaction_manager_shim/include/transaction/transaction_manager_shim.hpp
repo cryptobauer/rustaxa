@@ -137,18 +137,6 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
    */
   void saveTransactionsFromDagBlock(const SharedTransactions &trxs);
 
-  /**
-   * Persist transactions accepted by a DAG block from canonical payload facts.
-   *
-   * Rust inspects the supplied transaction RLP payloads, verifies each payload
-   * against the supplied DAG transaction hash, owns duplicate/finalized
-   * filtering, and commits the accepted storage/sidecar mutation. This avoids
-   * materializing live `Transaction` objects for proposed DAG blocks whose
-   * manager path already carries canonical transaction bytes.
-   */
-  void saveTransactionPayloadsFromDagBlock(const vec_trx_t &transaction_hashes,
-                                           const std::vector<dev::bytes> &transaction_rlps);
-
   std::pair<bool, std::string> insertTransaction(const std::shared_ptr<Transaction> &trx);
 
   /**
@@ -368,6 +356,16 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
    * step.
    */
   std::pair<rustaxa::DagVerifyBlockSessionStep, SharedTransactions> executeDagVerifyTransactionAvailability() const;
+
+  /**
+   * Resolve latest FinalChain account nonces requested by an accepted Rust DAG-add cursor.
+   *
+   * Each indexed request contains the sender recovered and validated by Rust during non-mutating add preparation. The
+   * returned facts preserve request indices and use the legacy zero-account nonce when the latest account read throws.
+   * A non-empty request list requires FinalChain; otherwise this adapter throws before composed persistence begins.
+   */
+  rust::Vec<rustaxa::DagAddBlockAccountNonceFact> resolveDagAddBlockAccountNonceFacts(
+      const rust::Vec<rustaxa::DagAddBlockAccountRequest> &requests) const;
 
   /**
    * Emit the Rust-mode pending-transaction event.

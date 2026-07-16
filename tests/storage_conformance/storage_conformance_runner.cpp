@@ -228,6 +228,7 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   // DAG missing + save/update/remove paths
   auto dag_hash_1 = h256Array(0x11);
   auto dag_hash_2 = h256Array(0x22);
+  auto dag_hash_3 = h256Array(0x33);
   auto dag_missing = h256Array(0xEE);
   auto dag_rlp = std::vector<uint8_t>{0xC0};
 
@@ -252,6 +253,11 @@ void runConformance(const fs::path& db_path, Transcript& transcript) {
   transcript.add("dag_period_lookup_period", toString(dag_period.period));
   transcript.add("dag_period_lookup_position", toString(dag_period.position));
 
+  auto dag_counter_batch = rustaxa::create_storage_shim_batch(*storage);
+  rust::Vec<rustaxa::DagCounterUpdate> dag_counter_updates;
+  dag_counter_updates.push_back(rustaxa::DagCounterUpdate{dag_hash_3, 2, 2});
+  rustaxa::storage_shim_update_dag_block_counters(*dag_counter_batch, std::move(dag_counter_updates), 3, 6);
+  rustaxa::storage_shim_commit_batch(std::move(dag_counter_batch), false);
   transcript.add("dag_counters_nonzero", toString(metadata_queries->get_status_field(kStatusFieldDagBlkCount) > 0 &&
                                                   metadata_queries->get_status_field(kStatusFieldDagEdgeCount) > 0));
 

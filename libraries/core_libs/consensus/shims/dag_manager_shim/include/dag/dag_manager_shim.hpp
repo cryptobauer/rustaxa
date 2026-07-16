@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -106,13 +107,14 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
    *
    * `signed_block` contains the canonical RLP and matching hash finalized by Rust. `transaction_hashes` and
    * `transaction_rlps` are the corresponding live transaction-pool payloads, while `proposed` and `save` select the
-   * existing event/gossip and persistence side effects. Rust decodes compact manager facts and owns add-block planning;
-   * C++ materializes temporary `DagBlock` and `Transaction` objects only when compatibility side-effect APIs require
-   * them.
+   * existing event/gossip and persistence side effects. Rust prepares and atomically completes the accepted DAG,
+   * transaction-storage, transaction-runtime, and graph transition; C++ materializes temporary `DagBlock` and
+   * `Transaction` objects only when compatibility side-effect APIs require them.
    *
    * Returns a typed accepted/duplicate/expired/missing-reference report for the proposer session. A block hash/RLP
-   * mismatch, malformed canonical bytes, missing transaction payload, or bridge/storage failure propagates as an
-   * exception without holding the proposer-session DAG lock.
+   * mismatch, malformed canonical bytes, missing transaction payload, FinalChain fact failure, or bridge/storage
+   * failure propagates as an exception without holding the proposer-session DAG lock. Durable completion precedes
+   * compatibility cache insertion, verified-event emission, and network gossip.
    */
   rustaxa::DagProposerAddBlockReport addDagBlockRlp(rustaxa::DagProposerSignedBlockIntent signed_block,
                                                     const vec_trx_t &transaction_hashes,
@@ -263,8 +265,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
 
  private:
   void mirrorDagCountersFromRuntime() const;
-  bool addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk);
-  bool addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk);
   std::pair<blk_hash_t, std::vector<blk_hash_t>> getRustFrontier() const;
 
   std::shared_ptr<TransactionManager> trx_mgr_;
@@ -282,9 +282,9 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   ExpirationCacheMap<blk_hash_t, std::shared_ptr<DagBlock>> seen_blocks_;
   // Serializes Rust DAG persistence/runtime mutation with compatibility-mirror
   // updates performed by this facade.
-  mutable std::shared_mutex rust_order_dag_blocks_mutex_;
   mutable std::shared_mutex rust_graphs_mutex_;
   mutable std::shared_mutex dag_finalization_mutex_;
+  mutable std::mutex rust_add_block_session_mutex_;
   SharedDagTransactionService dag_transaction_service_;
 };
 

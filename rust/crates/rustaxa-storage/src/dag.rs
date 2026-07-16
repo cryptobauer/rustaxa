@@ -190,16 +190,31 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
     /// C++ mapping: `DbStorage::saveDagBlock(const std::shared_ptr<DagBlock>&, Batch*)` (no batch path).
     pub fn write(&self, hash: H256, level: u64, tips_count: u64, block_rlp: &[u8]) -> Result<()> {
         let mut write_batch = self.db.create_batch();
-        self.db.batch_put(
-            &mut write_batch,
-            Column::DagBlocks,
-            hash.as_bytes(),
-            block_rlp,
-        )?;
+        let _ = self.append_write_to_batch(&mut write_batch, hash, level, tips_count, block_rlp)?;
+        self.db.commit_batch(write_batch)
+    }
+
+    /// Appends a non-finalized DAG block, its level index, and updated counters
+    /// to a caller-owned batch without committing it.
+    ///
+    /// Counter values are read before staging and returned as
+    /// `(dag_blocks, dag_edges)` so callers can construct an infallible
+    /// post-commit report. Callers must serialize competing DAG writes until the
+    /// shared batch commits so the staged absolute counters remain authoritative.
+    pub fn append_write_to_batch(
+        &self,
+        write_batch: &mut D::Batch,
+        hash: H256,
+        level: u64,
+        tips_count: u64,
+        block_rlp: &[u8],
+    ) -> Result<(u64, u64)> {
+        self.db
+            .batch_put(write_batch, Column::DagBlocks, hash.as_bytes(), block_rlp)?;
 
         let level_bytes = self.encode_level_hashes(level, hash)?;
         self.db.batch_put(
-            &mut write_batch,
+            write_batch,
             Column::DagBlocksLevel,
             &level.to_le_bytes(),
             &level_bytes,
@@ -213,19 +228,18 @@ impl<D: DbReader + DbWriter> DagRepository<D> {
             .wrapping_add(tips_count.wrapping_add(1));
 
         self.db.batch_put(
-            &mut write_batch,
+            write_batch,
             Column::Status,
             &[StatusField::DagBlkCount as u8],
             &dag_blocks_count.to_le_bytes(),
         )?;
         self.db.batch_put(
-            &mut write_batch,
+            write_batch,
             Column::Status,
             &[StatusField::DagEdgeCount as u8],
             &dag_edge_count.to_le_bytes(),
         )?;
-
-        self.db.commit_batch(write_batch)
+        Ok((dag_blocks_count, dag_edge_count))
     }
 
     /// Stores finalized DAG block location (period, position) for a block hash.

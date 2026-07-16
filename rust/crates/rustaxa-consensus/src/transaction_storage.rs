@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use ethereum_types::H256;
-use rustaxa_storage::{Column, StatusField, Storage};
+use rustaxa_storage::{Column, StatusField, Storage, StorageWriteBatch};
 
 /// Stored transaction lookup missed every storage source.
 pub const STORED_TRANSACTION_SOURCE_MISSING: u8 = 0;
@@ -86,10 +86,33 @@ pub fn save_non_finalized_transactions(
 ) -> Result<()> {
     let mut batch = storage.create_write_batch();
 
+    append_non_finalized_transactions_to_batch(
+        storage,
+        &mut batch,
+        transactions,
+        transaction_count,
+    )?;
+
+    storage
+        .commit_write_batch_with_sync(batch, false)
+        .context("NON_FINALIZED_TRANSACTION_BATCH_COMMIT")
+}
+
+/// Appends accepted non-finalized transactions and the authoritative count to
+/// a caller-owned Rust storage batch without committing it.
+///
+/// The caller controls the larger atomic write group. Dropping the batch leaves
+/// storage unchanged; a later successful commit publishes every appended row.
+pub fn append_non_finalized_transactions_to_batch(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    transactions: Vec<NonFinalizedTransactionStoragePayload>,
+    transaction_count: u64,
+) -> Result<()> {
     for transaction in transactions {
         storage
             .batch_put_raw(
-                &mut batch,
+                batch,
                 Column::Transactions,
                 transaction.hash.as_bytes(),
                 &transaction.trx_rlp,
@@ -99,16 +122,12 @@ pub fn save_non_finalized_transactions(
 
     storage
         .batch_put_raw(
-            &mut batch,
+            batch,
             Column::Status,
             &[StatusField::TrxCount as u8],
             &transaction_count.to_le_bytes(),
         )
-        .context("NON_FINALIZED_TRANSACTION_COUNT_WRITE")?;
-
-    storage
-        .commit_write_batch_with_sync(batch, false)
-        .context("NON_FINALIZED_TRANSACTION_BATCH_COMMIT")
+        .context("NON_FINALIZED_TRANSACTION_COUNT_WRITE")
 }
 
 /// Persists the manager-owned finalized transaction count.

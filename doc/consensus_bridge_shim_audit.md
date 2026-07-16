@@ -930,6 +930,17 @@ Current snapshot after DAG manager verify-result API cleanup:
   proposer-session start locks DAG before transaction and snapshots queue size plus non-finalized sidecar size directly
   from the sibling Rust runtime. `DagBlockProposer` no longer relays those observations through public TransactionManager
   getters; the cursor retains them for empty-pool, non-finalized-limit, and pack decisions.
+- Accepted DAG insertion now uses a cursor-bound composed prepare/complete transition. The direct
+  DagManager-to-TransactionManager save relay, standalone DAG block save, C++ graph-add helpers, and obsolete DAG
+  plan/save/add CXX exports are retired. The former add-order mutex is replaced by cursor-lifetime serialization across
+  each complete C++ add flow; matching idempotent abort guards release a prepared Rust cursor if external fact lookup or
+  completion throws. Rust stages transaction rows/count and DAG block/index/counters in one shared batch, commits before
+  publishing either runtime, and returns only counters, queue-erasure logs, and shell effects. The public
+  `TransactionManager::saveTransactionsFromDagBlock` compatibility API remains unchanged.
+- The storage differential's pure-C++ build now keeps the upstream pillar-vote bundle materialization path behind
+  `!RUSTAXA_ENABLE_PILLAR_VOTES`; only feature-on builds call the shim-only optimized bundle API. This is an explicit
+  guarded integration change in the upstream-owned network handler, preventing main-only pillar routing from leaking
+  into the C++ reference configuration.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

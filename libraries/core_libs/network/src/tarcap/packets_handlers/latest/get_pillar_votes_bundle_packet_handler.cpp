@@ -2,6 +2,7 @@
 
 #include <sstream>
 
+#include "network/tarcap/packets/latest/pillar_votes_bundle_packet.hpp"
 #include "network/tarcap/packets_handlers/latest/pillar_votes_bundle_packet_handler.hpp"
 
 namespace taraxa::network::tarcap {
@@ -37,6 +38,7 @@ void GetPillarVotesBundlePacketHandler::process(const threadpool::PacketData &pa
     throw MaliciousPeerException(err_msg.str());
   }
 
+#ifdef RUSTAXA_ENABLE_PILLAR_VOTES
   const auto chunks = pillar_chain_manager_->buildVerifiedPillarVoteNetworkBundles(
       packet.period, packet.pillar_block_hash, PillarVotesBundlePacketHandler::kMaxPillarVotesInBundleRlp);
   if (chunks.empty()) {
@@ -46,12 +48,12 @@ void GetPillarVotesBundlePacketHandler::process(const threadpool::PacketData &pa
   }
 
   for (size_t chunk_index = 0; chunk_index < chunks.size(); ++chunk_index) {
-    const auto& chunk = chunks[chunk_index];
+    const auto &chunk = chunks[chunk_index];
     dev::RLPStream packet_rlp(1);
     packet_rlp.appendRaw(chunk.optimized_bundle_rlp);
 
     if (sealAndSend(peer->getId(), SubprotocolPacketType::kPillarVotesBundlePacket, packet_rlp.invalidate())) {
-      for (const auto& vote_hash : chunk.vote_hashes) {
+      for (const auto &vote_hash : chunk.vote_hashes) {
         peer->markPillarVoteAsKnown(vote_hash);
       }
 
@@ -59,6 +61,44 @@ void GetPillarVotesBundlePacketHandler::process(const threadpool::PacketData &pa
                    << " sent to " << peer->getId() << " (Chunk " << chunk_index + 1 << "/" << chunks.size() << ")";
     }
   }
+#else
+  const auto votes = pillar_chain_manager_->getVerifiedPillarVotes(packet.period, packet.pillar_block_hash);
+  if (votes.empty()) {
+    LOG(log_dg_) << "No pillar votes for period " << packet.period << "and pillar block hash "
+                 << packet.pillar_block_hash;
+    return;
+  }
+
+  const size_t total_votes = votes.size();
+  size_t votes_sent = 0;
+  while (votes_sent < total_votes) {
+    const size_t chunk_size =
+        std::min(PillarVotesBundlePacketHandler::kMaxPillarVotesInBundleRlp, total_votes - votes_sent);
+
+    std::vector<std::shared_ptr<PillarVote> > pillar_votes;
+    pillar_votes.reserve(chunk_size);
+    for (size_t i = 0; i < chunk_size; ++i) {
+      pillar_votes.emplace_back(votes[votes_sent + i]);
+    }
+    PillarVotesBundlePacket pillar_votes_bundle_packet(OptimizedPillarVotesBundle{std::move(pillar_votes)});
+
+    if (sealAndSend(peer->getId(), SubprotocolPacketType::kPillarVotesBundlePacket,
+                    encodePacketRlp(pillar_votes_bundle_packet))) {
+      for (size_t i = 0; i < chunk_size; ++i) {
+        peer->markPillarVoteAsKnown(votes[votes_sent + i]->getHash());
+      }
+
+      LOG(log_nf_) << "Pillar votes bundle for period " << packet.period << ", hash " << packet.pillar_block_hash
+                   << " sent to " << peer->getId() << " (Chunk "
+                   << (votes_sent / PillarVotesBundlePacketHandler::kMaxPillarVotesInBundleRlp) + 1 << "/"
+                   << (total_votes + PillarVotesBundlePacketHandler::kMaxPillarVotesInBundleRlp - 1) /
+                          PillarVotesBundlePacketHandler::kMaxPillarVotesInBundleRlp
+                   << ")";
+    }
+
+    votes_sent += chunk_size;
+  }
+#endif
 }
 
 void GetPillarVotesBundlePacketHandler::requestPillarVotesBundle(PbftPeriod period, const blk_hash_t &pillar_block_hash,

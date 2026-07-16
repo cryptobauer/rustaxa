@@ -163,10 +163,12 @@ pub(crate) struct DagRuntimeState {
     pub storage: Arc<Storage>,
     pub next_proposer_session_id: u64,
     pub next_verify_block_session_id: u64,
+    pub next_add_block_session_id: u64,
     pub proposer_sessions: std::collections::BTreeMap<u64, crate::dag::DagProposerSession>,
     pub proposer_retry_states:
         std::collections::BTreeMap<[u8; 32], crate::dag::DagProposerRetryState>,
     pub verify_block_session: Option<crate::dag::DagVerifyBlockSession>,
+    pub pending_add_block: Option<crate::dag::DagAddBlockSession>,
 }
 
 /// PBFT chain runtime wrapper. Pure state-only instances are used by unit tests
@@ -4153,37 +4155,62 @@ pub mod rustaxa_ffi {
         block_hash: [u8; 32],
     }
 
-    /// Compact block facts used by the Rust DAG manager runtime to plan one
-    /// add-block execution from runtime-owned graph state.
-    struct DagAddBlockRuntimeInput {
-        save: bool,
-        proposed: bool,
-        block_hash: [u8; 32],
-        pivot: [u8; 32],
-        tips: Vec<DagHash>,
-        block_level: u64,
+    /// One canonical transaction payload supplied with an accepted DAG block.
+    struct DagAddBlockTransactionPayload {
+        hash: [u8; 32],
+        trx_rlp: Vec<u8>,
     }
 
-    /// Typed side effects C++ executes for a Rust-planned DAG add-block attempt.
-    struct DagAddBlockEffectPlan {
+    /// Canonical add-block input inspected by the composed DAG/transaction service.
+    struct DagAddBlockPrepareInput {
+        expected_block_hash: [u8; 32],
+        /// Whether the canonical RLP hash must match `expected_block_hash`.
+        /// Object-backed compatibility calls disable this and retain the object's
+        /// externally supplied identity while still decoding all other RLP facts.
+        validate_block_hash: bool,
+        block_rlp: Vec<u8>,
+        save: bool,
+        proposed: bool,
+        transactions: Vec<DagAddBlockTransactionPayload>,
+    }
+
+    /// Latest-account request for one inspected block transaction.
+    struct DagAddBlockAccountRequest {
+        input_index: u64,
+        sender: [u8; 20],
+    }
+
+    /// Non-mutating add-block preparation or terminal admission result.
+    struct DagAddBlockPreparation {
+        cursor_id: u64,
+        block_level: u64,
         accepted: bool,
         duplicate: bool,
         expired: bool,
-        persist_transactions: bool,
-        persist_block: bool,
-        add_to_graph: bool,
+        missing_references: Vec<DagHash>,
+        account_requests: Vec<DagAddBlockAccountRequest>,
+    }
+
+    /// Indexed latest account nonce returned after preparation.
+    struct DagAddBlockAccountNonceFact {
+        input_index: u64,
+        account_nonce: [u8; 32],
+    }
+
+    /// Cursor-bound completion facts for one prepared add-block transition.
+    struct DagAddBlockCompletionInput {
+        cursor_id: u64,
+        account_nonce_facts: Vec<DagAddBlockAccountNonceFact>,
+    }
+
+    /// Durable add-block result and retained C++ shell effects.
+    struct DagAddBlockCommitReport {
+        accepted: bool,
         emit_verified: bool,
         gossip: bool,
         proposed: bool,
-        missing_references: Vec<DagHash>,
-    }
-
-    struct DagManagerBlock {
-        hash: [u8; 32],
-        pivot: [u8; 32],
-        tips: Vec<DagHash>,
-        level: u64,
-        difficulty: u32,
+        queue_erased: Vec<TransactionManagerHashCommand>,
+        counters: DagPersistenceCounters,
     }
 
     struct DagManagerAnchors {
@@ -4539,15 +4566,21 @@ pub mod rustaxa_ffi {
         pub fn create_dag_transaction_service_for_gas_pricer(
             gas_pricer_config: GasPricerConfig,
         ) -> Result<Box<BridgeDagTransactionService>>;
-        pub fn dag_manager_runtime_add_block(
+        /// Prepares one canonical add-block transition without mutation.
+        pub fn dag_transaction_service_prepare_add_block(
             self: &BridgeDagTransactionService,
-            block: DagManagerBlock,
-        ) -> Result<()>;
-        /// Plans one add-block execution from Rust-owned runtime graph state.
-        pub fn dag_manager_runtime_plan_add_block(
+            input: DagAddBlockPrepareInput,
+        ) -> Result<DagAddBlockPreparation>;
+        /// Atomically persists and publishes one prepared add-block transition.
+        pub fn dag_transaction_service_complete_add_block(
             self: &BridgeDagTransactionService,
-            input: DagAddBlockRuntimeInput,
-        ) -> Result<DagAddBlockEffectPlan>;
+            input: DagAddBlockCompletionInput,
+        ) -> Result<DagAddBlockCommitReport>;
+        /// Idempotently aborts only the matching prepared add-block cursor.
+        pub fn dag_transaction_service_abort_add_block(
+            self: &BridgeDagTransactionService,
+            cursor_id: u64,
+        ) -> Result<bool>;
         /// Validates candidate pivot/tip references from Rust runtime state and
         /// storage without C++ `DagBlock` materialization.
         pub fn dag_manager_runtime_validate_pivot_tips(
@@ -4628,13 +4661,6 @@ pub mod rustaxa_ffi {
             self: &BridgeDagTransactionService,
             hash: &[u8; 32],
         ) -> Result<DagBlockLookup>;
-        pub fn dag_manager_runtime_save_block(
-            self: &BridgeDagTransactionService,
-            hash: &[u8; 32],
-            level: u64,
-            tips_count: u64,
-            block_rlp: Vec<u8>,
-        ) -> Result<()>;
         pub fn dag_manager_runtime_plan_proposal_tip_selection(
             self: &BridgeDagTransactionService,
             input: DagProposerStorageTipSelectionInput,
@@ -4786,7 +4812,6 @@ pub mod rustaxa_ffi {
             input: DagVerifyVdfSortitionFromBlockInput,
         ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
-        pub fn dag_manager_block_from_rlp(block_rlp: Vec<u8>) -> Result<DagManagerBlock>;
 
         // Consensus PBFT chain
 

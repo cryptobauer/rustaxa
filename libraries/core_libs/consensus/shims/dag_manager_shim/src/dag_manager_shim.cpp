@@ -15,6 +15,7 @@
 #include "dag/dag_block.hpp"
 #include "dag/dag_manager.hpp"
 #include "key_manager/key_manager.hpp"
+#include "libdevcore/Common.h"
 #include "network/network.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/transaction_manager.hpp"
@@ -56,15 +57,6 @@ rust::Vec<rustaxa::DagHash> to_bridge_dag_hashes(const std::unordered_set<blk_ha
   return out;
 }
 
-rust::Vec<rustaxa::DagHash> clone_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash> &hashes) {
-  rust::Vec<rustaxa::DagHash> out;
-  out.reserve(hashes.size());
-  for (const auto &hash : hashes) {
-    out.push_back(rustaxa::DagHash{hash.hash});
-  }
-  return out;
-}
-
 rust::Vec<rustaxa::DagTransactionHash> to_bridge_dag_transaction_hashes(const std::vector<trx_hash_t> &hashes) {
   rust::Vec<rustaxa::DagTransactionHash> out;
   out.reserve(hashes.size());
@@ -76,6 +68,10 @@ rust::Vec<rustaxa::DagTransactionHash> to_bridge_dag_transaction_hashes(const st
 
 blk_hash_t from_bridge_hash(const std::array<uint8_t, 32> &hash) {
   return blk_hash_t(hash.data(), blk_hash_t::ConstructFromPointer);
+}
+
+trx_hash_t from_bridge_transaction_hash(const std::array<uint8_t, 32> &hash) {
+  return trx_hash_t(hash.data(), trx_hash_t::ConstructFromPointer);
 }
 
 blk_hash_t from_bridge_dag_hash(const rustaxa::DagHash &hash) { return from_bridge_hash(hash.hash); }
@@ -101,47 +97,34 @@ std::map<uint64_t, std::unordered_set<blk_hash_t>> from_bridge_level_hashes(
   return out;
 }
 
-rustaxa::DagManagerBlock to_bridge_manager_block(const std::shared_ptr<DagBlock> &block) {
-  rustaxa::DagManagerBlock out;
-  out.hash = to_bridge_hash(block->getHash());
-  out.pivot = to_bridge_hash(block->getPivot());
-  out.tips = to_bridge_dag_hashes(block->getTips());
-  out.level = block->getLevel();
-  out.difficulty = block->getDifficulty();
+rust::Vec<uint8_t> to_rust_vec(const dev::bytes &bytes);
+
+rust::Vec<rustaxa::DagAddBlockTransactionPayload> to_bridge_add_block_transactions(
+    const vec_trx_t &transaction_hashes, const std::vector<dev::bytes> &transaction_rlps) {
+  rust::Vec<rustaxa::DagAddBlockTransactionPayload> out;
+  out.reserve(std::max(transaction_hashes.size(), transaction_rlps.size()));
+  for (size_t idx = 0; idx < std::max(transaction_hashes.size(), transaction_rlps.size()); ++idx) {
+    rustaxa::DagAddBlockTransactionPayload payload;
+    if (idx < transaction_hashes.size()) {
+      payload.hash = transaction_hashes[idx].asArray();
+    }
+    if (idx < transaction_rlps.size()) {
+      payload.trx_rlp = to_rust_vec(transaction_rlps[idx]);
+    }
+    out.push_back(std::move(payload));
+  }
   return out;
 }
 
-rustaxa::DagAddBlockRuntimeInput to_bridge_add_block_runtime_input(const std::shared_ptr<DagBlock> &block, bool save,
-                                                                   bool proposed) {
-  rustaxa::DagAddBlockRuntimeInput out;
-  out.save = save;
-  out.proposed = proposed;
-  out.block_hash = to_bridge_hash(block->getHash());
-  out.pivot = to_bridge_hash(block->getPivot());
-  out.tips = to_bridge_dag_hashes(block->getTips());
-  out.block_level = block->getLevel();
-  return out;
-}
-
-rustaxa::DagAddBlockRuntimeInput to_bridge_add_block_runtime_input(const rustaxa::DagManagerBlock &block, bool save,
-                                                                   bool proposed) {
-  rustaxa::DagAddBlockRuntimeInput out;
-  out.save = save;
-  out.proposed = proposed;
-  out.block_hash = block.hash;
-  out.pivot = block.pivot;
-  out.tips = clone_bridge_dag_hashes(block.tips);
-  out.block_level = block.level;
-  return out;
-}
-
-rustaxa::DagManagerBlock clone_bridge_manager_block(const rustaxa::DagManagerBlock &block) {
-  rustaxa::DagManagerBlock out;
-  out.hash = block.hash;
-  out.pivot = block.pivot;
-  out.tips = clone_bridge_dag_hashes(block.tips);
-  out.level = block.level;
-  out.difficulty = block.difficulty;
+rust::Vec<rustaxa::DagAddBlockTransactionPayload> to_bridge_add_block_transactions(const SharedTransactions &trxs) {
+  rust::Vec<rustaxa::DagAddBlockTransactionPayload> out;
+  out.reserve(trxs.size());
+  for (const auto &trx : trxs) {
+    rustaxa::DagAddBlockTransactionPayload payload;
+    payload.hash = trx->getHash().asArray();
+    payload.trx_rlp = to_rust_vec(trx->rlp());
+    out.push_back(std::move(payload));
+  }
   return out;
 }
 
@@ -355,26 +338,6 @@ void DagManager::mirrorDagCountersFromRuntime() const {
   db_->mirrorDagBlockCounters(counters.dag_blocks, counters.dag_edges);
 }
 
-bool DagManager::addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk) {
-  try {
-    dag_transaction_service_->service().dag_manager_runtime_add_block(to_bridge_manager_block(blk));
-    return true;
-  } catch (const std::exception &e) {
-    std::cerr << "DagManager: failed to add block to Rust state mirror: " << e.what() << std::endl;
-    return false;
-  }
-}
-
-bool DagManager::addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk) {
-  try {
-    dag_transaction_service_->service().dag_manager_runtime_add_block(clone_bridge_manager_block(blk));
-    return true;
-  } catch (const std::exception &e) {
-    std::cerr << "DagManager: failed to add block facts to Rust state mirror: " << e.what() << std::endl;
-    return false;
-  }
-}
-
 std::pair<blk_hash_t, std::vector<blk_hash_t>> DagManager::getRustFrontier() const {
   std::shared_lock lock(rust_graphs_mutex_);
   const auto frontier = dag_transaction_service_->service().dag_manager_runtime_frontier();
@@ -569,12 +532,8 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
                                                               std::vector<dev::bytes> &&transaction_rlps, bool proposed,
                                                               bool save) {
   const auto block_rlp = from_rust_bytes(signed_block.block_rlp);
-  const auto block_facts = rustaxa::dag_manager_block_from_rlp(to_rust_vec(block_rlp));
-  if (signed_block.block_hash != block_facts.hash) {
-    throw std::runtime_error("DagManager: signed DAG block hash does not match Rust-decoded RLP facts");
-  }
-  const auto blk_hash = from_bridge_hash(block_facts.hash);
-  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
+  const auto blk_hash = from_bridge_hash(signed_block.block_hash);
+  std::scoped_lock add_block_session_lock(rust_add_block_session_mutex_);
   auto make_add_report = [](bool accepted, bool duplicate, bool expired,
                             std::vector<blk_hash_t> missing_references = {}) {
     rustaxa::DagProposerAddBlockReport report;
@@ -585,46 +544,52 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
     return report;
   };
 
-  rustaxa::DagAddBlockEffectPlan add_plan;
-  {
-    std::shared_lock lock(rust_graphs_mutex_);
-    add_plan = dag_transaction_service_->service().dag_manager_runtime_plan_add_block(
-        to_bridge_add_block_runtime_input(block_facts, save, proposed));
-  }
-  if (add_plan.duplicate) {
+  rustaxa::DagAddBlockPrepareInput prepare_input;
+  prepare_input.expected_block_hash = signed_block.block_hash;
+  prepare_input.block_rlp = to_rust_vec(block_rlp);
+  prepare_input.save = save;
+  prepare_input.proposed = proposed;
+  prepare_input.validate_block_hash = true;
+  prepare_input.transactions = to_bridge_add_block_transactions(transaction_hashes, transaction_rlps);
+  auto preparation =
+      dag_transaction_service_->service().dag_transaction_service_prepare_add_block(std::move(prepare_input));
+  if (preparation.duplicate) {
     return make_add_report(true, true, false);
   }
-  if (add_plan.expired) {
+  if (preparation.expired) {
     std::cerr << "DagManager: dropping old block " << blk_hash << ". Expiry level: " << getDagExpiryLevel()
-              << ". Block level: " << block_facts.level << std::endl;
+              << ". Block level: " << preparation.block_level << std::endl;
     return make_add_report(false, false, true);
   }
-  if (!add_plan.accepted) {
-    return make_add_report(false, false, false, from_bridge_dag_hashes(add_plan.missing_references));
+  if (!preparation.accepted) {
+    return make_add_report(false, false, false, from_bridge_dag_hashes(preparation.missing_references));
   }
 
-  if (add_plan.persist_transactions) {
-    trx_mgr_->saveTransactionPayloadsFromDagBlock(transaction_hashes, transaction_rlps);
+  bool abort_prepared_add = true;
+  dev::ScopeGuard abort_add_on_exit(
+      [service = dag_transaction_service_, cursor_id = preparation.cursor_id, &abort_prepared_add] {
+        if (!abort_prepared_add) {
+          return;
+        }
+        try {
+          service->service().dag_transaction_service_abort_add_block(cursor_id);
+        } catch (...) {
+          // Destructors must not replace an active executor or completion exception.
+          // The abort is idempotent, so an already-consumed cursor is harmless.
+        }
+      });
+  rustaxa::DagAddBlockCompletionInput completion_input;
+  completion_input.cursor_id = preparation.cursor_id;
+  completion_input.account_nonce_facts = trx_mgr_->resolveDagAddBlockAccountNonceFacts(preparation.account_requests);
+  const auto committed =
+      dag_transaction_service_->service().dag_transaction_service_complete_add_block(std::move(completion_input));
+  abort_prepared_add = false;
+  if (!committed.accepted) {
+    return make_add_report(false, false, false);
   }
-  if (add_plan.persist_block) {
-    std::shared_lock lock(rust_graphs_mutex_);
-    dag_transaction_service_->service().dag_manager_runtime_save_block(block_facts.hash, block_facts.level,
-                                                                       block_facts.tips.size(), to_rust_vec(block_rlp));
-    mirrorDagCountersFromRuntime();
-  }
-
-  if (add_plan.add_to_graph) {
-    bool added_to_rust_graph = false;
-    {
-      std::unique_lock lock(rust_graphs_mutex_);
-      added_to_rust_graph = addBlockToRustGraphs(block_facts);
-      if (added_to_rust_graph) {
-        mirrorDagCountersFromRuntime();
-      }
-    }
-    if (!added_to_rust_graph) {
-      throw std::runtime_error("DagManager: failed to add persisted DAG block facts to Rust graph");
-    }
+  db_->mirrorDagBlockCounters(committed.counters.dag_blocks, committed.counters.dag_edges);
+  for (const auto &erased : committed.queue_erased) {
+    LOG(trx_mgr_->log_dg_) << "Transaction " << from_bridge_transaction_hash(erased.hash) << " removed from trx pool ";
   }
 
   auto blk = std::make_shared<DagBlock>(block_rlp);
@@ -633,79 +598,83 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
   }
   seen_blocks_.insert(blk_hash, blk);
 
-  if (add_plan.emit_verified) {
+  if (committed.emit_verified) {
     block_verified_.emit(blk);
   }
-  if (add_plan.gossip) {
+  if (committed.gossip) {
     auto trxs = materialize_transactions(transaction_hashes, transaction_rlps);
     if (std::shared_ptr<Network> net = network_.lock()) {
-      net->gossipDagBlock(blk, add_plan.proposed, trxs);
+      net->gossipDagBlock(blk, committed.proposed, trxs);
     }
   }
 
-  return make_add_report(true, false, false);
+  return make_add_report(committed.accepted, false, false);
 }
 
 std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shared_ptr<DagBlock> &blk,
                                                                  SharedTransactions &&trxs, bool proposed, bool save) {
   const auto blk_hash = blk->getHash();
-  std::scoped_lock order_lock(rust_order_dag_blocks_mutex_);
-
-  rustaxa::DagAddBlockEffectPlan add_plan;
-  {
-    std::shared_lock lock(rust_graphs_mutex_);
-    add_plan = dag_transaction_service_->service().dag_manager_runtime_plan_add_block(
-        to_bridge_add_block_runtime_input(blk, save, proposed));
-  }
-  if (add_plan.duplicate) {
+  std::scoped_lock add_block_session_lock(rust_add_block_session_mutex_);
+  rustaxa::DagAddBlockPrepareInput prepare_input;
+  prepare_input.expected_block_hash = to_bridge_hash(blk_hash);
+  prepare_input.block_rlp = to_rust_vec(blk->rlp(true));
+  prepare_input.save = save;
+  prepare_input.proposed = proposed;
+  prepare_input.validate_block_hash = false;
+  prepare_input.transactions = to_bridge_add_block_transactions(trxs);
+  auto preparation =
+      dag_transaction_service_->service().dag_transaction_service_prepare_add_block(std::move(prepare_input));
+  if (preparation.duplicate) {
     return {true, {}};
   }
-  if (add_plan.expired) {
+  if (preparation.expired) {
     std::cerr << "DagManager: dropping old block " << blk_hash << ". Expiry level: " << getDagExpiryLevel()
               << ". Block level: " << blk->getLevel() << std::endl;
     return {false, {}};
   }
-  if (!add_plan.accepted) {
-    return {false, from_bridge_dag_hashes(add_plan.missing_references)};
+  if (!preparation.accepted) {
+    return {false, from_bridge_dag_hashes(preparation.missing_references)};
   }
 
-  if (add_plan.persist_transactions) {
-    trx_mgr_->saveTransactionsFromDagBlock(trxs);
+  bool abort_prepared_add = true;
+  dev::ScopeGuard abort_add_on_exit(
+      [service = dag_transaction_service_, cursor_id = preparation.cursor_id, &abort_prepared_add] {
+        if (!abort_prepared_add) {
+          return;
+        }
+        try {
+          service->service().dag_transaction_service_abort_add_block(cursor_id);
+        } catch (...) {
+          // Destructors must not replace an active executor or completion exception.
+          // The abort is idempotent, so an already-consumed cursor is harmless.
+        }
+      });
+  rustaxa::DagAddBlockCompletionInput completion_input;
+  completion_input.cursor_id = preparation.cursor_id;
+  completion_input.account_nonce_facts = trx_mgr_->resolveDagAddBlockAccountNonceFacts(preparation.account_requests);
+  const auto committed =
+      dag_transaction_service_->service().dag_transaction_service_complete_add_block(std::move(completion_input));
+  abort_prepared_add = false;
+  if (!committed.accepted) {
+    return {false, {}};
   }
-  if (add_plan.persist_block) {
-    auto block_rlp = to_rust_vec(blk->rlp(true));
-    std::shared_lock lock(rust_graphs_mutex_);
-    dag_transaction_service_->service().dag_manager_runtime_save_block(to_bridge_hash(blk_hash), blk->getLevel(),
-                                                                       blk->getTips().size(), std::move(block_rlp));
-    mirrorDagCountersFromRuntime();
-  }
-
-  if (add_plan.add_to_graph) {
-    bool added_to_rust_graph = false;
-    {
-      std::unique_lock lock(rust_graphs_mutex_);
-      added_to_rust_graph = addBlockToRustGraphs(blk);
-      if (added_to_rust_graph) {
-        mirrorDagCountersFromRuntime();
-      }
-    }
-    if (!added_to_rust_graph) {
-      throw std::runtime_error("DagManager: failed to add persisted DAG block to Rust graph");
-    }
+  db_->mirrorDagBlockCounters(committed.counters.dag_blocks, committed.counters.dag_edges);
+  for (const auto &erased : committed.queue_erased) {
+    LOG(trx_mgr_->log_dg_) << "Transaction " << from_bridge_transaction_hash(erased.hash) << " removed from trx pool ";
   }
 
   seen_blocks_.insert(blk_hash, blk);
 
-  if (add_plan.emit_verified) {
+  if (committed.emit_verified) {
     block_verified_.emit(blk);
   }
-  if (add_plan.gossip) {
+  if (committed.gossip) {
     if (std::shared_ptr<Network> net = network_.lock()) {
-      net->gossipDagBlock(blk, add_plan.proposed, trxs);
+      net->gossipDagBlock(blk, committed.proposed, trxs);
     }
   }
 
-  return {true, {}};
+  return {committed.accepted, {}};
 }
 
 vec_blk_t DagManager::getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period) {

@@ -411,6 +411,27 @@ class TransactionManagerRustShimAccess {
     }
   }
 
+  /** Resolves the narrow latest-account nonce facts requested by an accepted DAG-add cursor. */
+  static rust::Vec<rustaxa::DagAddBlockAccountNonceFact> resolveDagAddBlockAccountNonceFacts(
+      const TransactionManager& manager, const rust::Vec<rustaxa::DagAddBlockAccountRequest>& requests) {
+    if (!requests.empty() && !manager.final_chain_) {
+      throw DbException(
+          "RUST_STORAGE_DAG_TX_PERSIST_FAILED: FinalChain is required for non-empty DAG transaction save");
+    }
+
+    rust::Vec<rustaxa::DagAddBlockAccountNonceFact> facts;
+    facts.reserve(requests.size());
+    for (const auto& request : requests) {
+      const auto account =
+          latestAccountFact(manager, fromBridgeAddress(request.sender)).value_or(state_api::ZeroAccount);
+      rustaxa::DagAddBlockAccountNonceFact fact;
+      fact.input_index = request.input_index;
+      fact.account_nonce = toBridgeU256(account.nonce);
+      facts.push_back(std::move(fact));
+    }
+    return facts;
+  }
+
   static rust::Vec<rustaxa::TransactionQueueAccountNonceFact> buildAccountNonceFacts(
       const TransactionManager& manager) {
     rust::Vec<rustaxa::TransactionQueueAccountNonceFact> account_nonce_facts;
@@ -818,7 +839,7 @@ class TransactionManagerRustShimAccess {
       transaction_hashes.emplace_back(transaction->getHash());
       transaction_rlps.emplace_back(transaction->rlp());
     }
-    saveTransactionPayloadsFromDagBlock(manager, transaction_hashes, transaction_rlps);
+    persistDagBlockTransactionPayloadsForCompatibility(manager, transaction_hashes, transaction_rlps);
   }
 
   /**
@@ -831,8 +852,9 @@ class TransactionManagerRustShimAccess {
    * storage/sidecar mutation. C++ keeps only the transaction mutex and logging
    * mechanics around the Rust-owned runtime/storage operation.
    */
-  static void saveTransactionPayloadsFromDagBlock(TransactionManager& manager, const vec_trx_t& transaction_hashes,
-                                                  const std::vector<dev::bytes>& transaction_rlps) {
+  static void persistDagBlockTransactionPayloadsForCompatibility(TransactionManager& manager,
+                                                                 const vec_trx_t& transaction_hashes,
+                                                                 const std::vector<dev::bytes>& transaction_rlps) {
     if (transaction_hashes.size() != transaction_rlps.size()) {
       throw DbException("RUST_STORAGE_DAG_TX_PERSIST_FAILED: DAG transaction payload lengths do not match");
     }
@@ -1595,11 +1617,6 @@ void TransactionManager::saveTransactionsFromDagBlock(const SharedTransactions& 
   TransactionManagerRustShimAccess::saveTransactionsFromDagBlock(*this, trxs);
 }
 
-void TransactionManager::saveTransactionPayloadsFromDagBlock(const vec_trx_t& transaction_hashes,
-                                                             const std::vector<dev::bytes>& transaction_rlps) {
-  TransactionManagerRustShimAccess::saveTransactionPayloadsFromDagBlock(*this, transaction_hashes, transaction_rlps);
-}
-
 void TransactionManager::removeNonFinalizedTransactions(std::unordered_set<trx_hash_t>&& transactions) {
   TransactionManagerRustShimAccess::removeNonFinalizedTransactions(*this, std::move(transactions));
 }
@@ -1633,6 +1650,11 @@ SharedTransactions TransactionManager::getTransactions(const vec_trx_t& trxs_has
 std::pair<rustaxa::DagVerifyBlockSessionStep, SharedTransactions>
 TransactionManager::executeDagVerifyTransactionAvailability() const {
   return TransactionManagerRustShimAccess::executeDagVerifyTransactionAvailability(*this);
+}
+
+rust::Vec<rustaxa::DagAddBlockAccountNonceFact> TransactionManager::resolveDagAddBlockAccountNonceFacts(
+    const rust::Vec<rustaxa::DagAddBlockAccountRequest>& requests) const {
+  return TransactionManagerRustShimAccess::resolveDagAddBlockAccountNonceFacts(*this, requests);
 }
 
 std::shared_ptr<Transaction> TransactionManager::getTransaction(const trx_hash_t& hash) const {

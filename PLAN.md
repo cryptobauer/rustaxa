@@ -660,6 +660,11 @@ Completed closeout slices:
    TransactionManager while holding the same DAG-then-transaction lock order. Those observations no longer cross CXX
    or route through public TransactionManager size getters; wallet identity, configured policy limits, FinalChain and
    sortition facts, network throttling, VDF work, signing, and add-block execution remain explicit boundaries.
+   Accepted DAG persistence is composed as a cursor-bound prepare/complete transition. Rust validates the canonical
+   block and transaction payloads, C++ supplies only latest FinalChain account-nonce facts, and completion revalidates
+   the DAG plan before committing transaction rows/count plus DAG block/index/counters in one shared storage batch.
+   Graph and transaction runtime state publish only after that commit; C++ retains post-commit public materialization,
+   logging, verified events, and network gossip.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
    construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,

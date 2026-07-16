@@ -146,8 +146,9 @@ transcript, conformance check, or focused bridge/shim test. For startup, sync, c
 require Rust-enabled subsystem or smoke coverage.
 
 Use Tier 3 for broad production routing, cross-subsystem behavior, upstream sync, or other high-risk changes. Ask the
-task owner before expensive repo-wide or differential gates when repository instructions require coordination. Never
-silently downgrade a required tier; report any residual validation gap.
+task owner before expensive repo-wide or differential gates when repository instructions require coordination, unless
+the active task or prompt records standing task-owner authorization for that gate. Never silently downgrade a required
+tier; report any residual validation gap.
 
 For every storage-module change, also run:
 
@@ -156,7 +157,8 @@ cmake --build /build --target rust_storage_tests --parallel 12
 /build/bin/rust_storage_tests
 ```
 
-Run affected C++ tests. Coordinate with the task owner before the expensive storage conformance diff when required:
+Run affected C++ tests. Coordinate with the task owner before the expensive storage conformance diff when required;
+recorded standing authorization in the active task or prompt satisfies this requirement:
 
 ```bash
 scripts/storage_conformance_diff.sh

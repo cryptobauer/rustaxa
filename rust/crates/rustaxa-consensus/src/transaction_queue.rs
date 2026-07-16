@@ -185,6 +185,7 @@ impl KnownTransactionCache {
 /// - each `(sender, nonce)` proposer slot points to the highest-gas-price proposable transaction for that slot
 /// - gas-price totals include only proposer transactions
 /// - `data_size` includes proposer and non-proposer payload sizes
+#[derive(Clone)]
 pub struct TransactionQueue {
     entries: HashMap<H256, StoredTransaction>,
     known_transactions: KnownTransactionCache,

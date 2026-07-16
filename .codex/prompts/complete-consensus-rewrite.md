@@ -20,6 +20,7 @@ Keep the selected tracker item, consolidation plan, and bridge audit synchronize
 architecture, or an accepted ownership boundary changes. Validate every slice at the required tier, obtain an
 independent review approval before committing, and commit each coherent slice separately. Preserve
 unrelated changes. Continue until no required `ready` items remain or progress is genuinely blocked by a named
-dependency; report blockers precisely and do not count scope-gated follow-ups as blockers. Ask before required expensive
-differential validation. Tier 3 test gates are explicitly pre-approved whenever the agent judges them warranted; run
-them without requesting additional task-owner confirmation.
+dependency; report blockers precisely and do not count scope-gated follow-ups as blockers. Tier 3 test gates are
+explicitly pre-approved whenever the agent judges them warranted; this standing authorization includes the expensive
+`scripts/storage_conformance_diff.sh` storage differential whenever it is required or warranted. Run those gates without
+requesting additional task-owner confirmation.

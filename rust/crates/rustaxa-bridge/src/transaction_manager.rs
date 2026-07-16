@@ -64,14 +64,14 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
 use rustaxa_consensus::transaction_storage::{
-    load_non_finalized_recovery_entries, load_stored_transactions,
-    remove_non_finalized_transactions, save_non_finalized_transactions, save_transaction_count,
+    append_non_finalized_transactions_to_batch, load_non_finalized_recovery_entries,
+    load_stored_transactions, remove_non_finalized_transactions, save_transaction_count,
     transaction_finalized, NonFinalizedTransactionRecoveryEntry,
     NonFinalizedTransactionStoragePayload, StoredTransactionLookupRequest,
     STORED_TRANSACTION_SOURCE_FINALIZED_REGULAR, STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM,
     STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
 };
-use rustaxa_storage::{StatusField, Storage};
+use rustaxa_storage::{StatusField, Storage, StorageWriteBatch};
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -79,6 +79,21 @@ use std::time::{Duration, Instant};
 struct TransactionManagerRuntimeQueueCleanupPlan {
     non_proposable_expired: TransactionManagerRuntimeQueuePurgePlan,
     finalized_account_purged: TransactionManagerRuntimeQueuePurgePlan,
+}
+
+/// Prepared DAG transaction persistence held until a shared DAG/transaction
+/// storage batch commits.
+pub(crate) struct PreparedDagTransactionSave {
+    accepted: Vec<DagTransactionSaveAccepted>,
+    accepted_payloads: Vec<NonFinalizedTransactionStoragePayload>,
+    target_transaction_count: u64,
+}
+
+/// Fully prevalidated live-state publication for a committed DAG transaction save.
+pub(crate) struct PreparedDagTransactionPublication {
+    queue: TransactionQueue,
+    sidecar: rustaxa_consensus::transaction_manager::TransactionManagerSidecar,
+    pub(crate) outcome: DagTransactionSaveOutcome,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -144,7 +159,7 @@ struct DagTransactionSaveAccepted {
     erased_from_queue: bool,
 }
 
-struct DagTransactionSaveOutcome {
+pub(crate) struct DagTransactionSaveOutcome {
     accepted: Vec<DagTransactionSaveAccepted>,
 }
 
@@ -246,7 +261,7 @@ fn command_admission_result_from_insert_outcome(
     }
 }
 
-fn dag_save_command_report(
+pub(crate) fn dag_save_command_report(
     outcome: &DagTransactionSaveOutcome,
 ) -> TransactionManagerDagSaveCommandReport {
     let mut queue_erased = Vec::new();
@@ -707,6 +722,24 @@ fn save_transactions_from_dag_block_with_runtime(
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<DagTransactionSaveOutcome> {
     let storage = transaction_manager_runtime_storage(runtime)?;
+    let prepared = prepare_transactions_from_dag_block_with_runtime(runtime, facts)?;
+    let publication = prepare_dag_transaction_publication(runtime, &prepared)?;
+    if !prepared.accepted_payloads.is_empty() {
+        let mut batch = storage.create_write_batch();
+        append_prepared_dag_transactions_to_batch(storage, &mut batch, &prepared)?;
+        storage
+            .commit_write_batch_with_sync(batch, false)
+            .context("TM_DAG_TX_BATCH_COMMIT")?;
+    }
+    Ok(publish_prepared_dag_transactions(runtime, publication))
+}
+
+/// Plans DAG transaction persistence without mutating storage or live runtime state.
+pub(crate) fn prepare_transactions_from_dag_block_with_runtime(
+    runtime: &TransactionRuntimeState,
+    facts: Vec<DagTransactionSaveSidecarFact>,
+) -> Result<PreparedDagTransactionSave> {
+    let storage = transaction_manager_runtime_storage(runtime)?;
     let plan = plan_transactions_from_dag_block(
         facts
             .into_iter()
@@ -741,22 +774,66 @@ fn save_transactions_from_dag_block_with_runtime(
         });
     }
 
-    if !accepted_payloads.is_empty() {
-        save_non_finalized_transactions(storage, accepted_payloads, plan.target_transaction_count)?;
-    }
+    Ok(PreparedDagTransactionSave {
+        accepted,
+        accepted_payloads,
+        target_transaction_count: plan.target_transaction_count,
+    })
+}
 
-    for (accepted_entry, payload) in accepted.iter_mut().zip(plan.accepted_transactions) {
-        accepted_entry.erased_from_queue = runtime.queue.erase(payload.hash);
-        runtime
-            .sidecar
-            .insert_non_finalized(payload.hash, payload.trx_rlp)
-            .context("TM_RUNTIME_DAG_TX_INSERT")?;
+/// Appends a prepared DAG transaction save to a caller-owned shared batch.
+pub(crate) fn append_prepared_dag_transactions_to_batch(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    prepared: &PreparedDagTransactionSave,
+) -> Result<()> {
+    if prepared.accepted_payloads.is_empty() {
+        return Ok(());
     }
-    runtime
-        .sidecar
-        .set_transaction_count(plan.target_transaction_count);
+    append_non_finalized_transactions_to_batch(
+        storage,
+        batch,
+        prepared.accepted_payloads.clone(),
+        prepared.target_transaction_count,
+    )
+}
 
-    Ok(DagTransactionSaveOutcome { accepted })
+/// Preapplies a DAG transaction save to cloned queue and sidecar state.
+pub(crate) fn prepare_dag_transaction_publication(
+    runtime: &TransactionRuntimeState,
+    prepared: &PreparedDagTransactionSave,
+) -> Result<PreparedDagTransactionPublication> {
+    let mut queue = runtime.queue.clone();
+    let mut sidecar = runtime.sidecar.clone();
+    let mut accepted = prepared
+        .accepted
+        .iter()
+        .map(|entry| DagTransactionSaveAccepted {
+            hash: entry.hash,
+            erased_from_queue: false,
+        })
+        .collect::<Vec<_>>();
+    for (accepted_entry, payload) in accepted.iter_mut().zip(prepared.accepted_payloads.iter()) {
+        accepted_entry.erased_from_queue = queue.erase(payload.hash);
+        sidecar.insert_non_finalized(payload.hash, payload.trx_rlp.clone())?;
+    }
+    sidecar.set_transaction_count(prepared.target_transaction_count);
+
+    Ok(PreparedDagTransactionPublication {
+        queue,
+        sidecar,
+        outcome: DagTransactionSaveOutcome { accepted },
+    })
+}
+
+/// Publishes a fully prevalidated DAG transaction live-state transition.
+pub(crate) fn publish_prepared_dag_transactions(
+    runtime: &mut TransactionRuntimeState,
+    publication: PreparedDagTransactionPublication,
+) -> DagTransactionSaveOutcome {
+    runtime.queue = publication.queue;
+    runtime.sidecar = publication.sidecar;
+    publication.outcome
 }
 
 /// Applies DAG transaction persistence and returns a typed command report.

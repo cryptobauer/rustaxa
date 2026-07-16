@@ -1,12 +1,12 @@
 use crate::ffi::rustaxa_ffi::{
-    DagAddBlockEffectPlan, DagAddBlockRuntimeInput, DagBlockLookup, DagFrontier, DagHash,
-    DagLevelHashes, DagManagerAnchors, DagManagerBlock, DagManagerFinalizationApplyPayload,
-    DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload, DagOrder,
-    DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
-    DagProposerExternalProposalFactsReport, DagProposerSessionBeginInput, DagProposerSessionStep,
-    DagProposerSignedBlockIntent, DagProposerSigningReport, DagProposerStorageTipSelectionInput,
-    DagProposerTipSelectionPlan, DagProposerVdfProofReport, DagProposerWorkerCommand,
-    DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
+    DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
+    DagManagerFinalizationApplyPayload, DagManagerNonFinalizedSize,
+    DagManagerNonFinalizedSyncPayload, DagOrder, DagPersistenceCounters, DagPivotTipsValidation,
+    DagProposerAddBlockReport, DagProposerExternalProposalFactsReport,
+    DagProposerSessionBeginInput, DagProposerSessionStep, DagProposerSignedBlockIntent,
+    DagProposerSigningReport, DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
+    DagProposerVdfProofReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
+    DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
     DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
     DagVerifyBlockSessionStep, DagVerifyBlockVdfReport, DagVerifyVdfSortitionFromBlockInput,
     DagVerifyVdfSortitionResult, HashLookup, SortitionRuntimeParams,
@@ -115,6 +115,40 @@ pub(crate) const DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS: u8 = 2;
 const DAG_VERIFY_SESSION_ACTION_VDF_SORTITION: u8 = 3;
 const DAG_VERIFY_SESSION_ACTION_GAS: u8 = 4;
 
+/// Private compact input for one runtime-owned add-block plan.
+pub(crate) struct DagAddBlockRuntimeInput {
+    pub save: bool,
+    pub proposed: bool,
+    pub block_hash: [u8; 32],
+    pub pivot: [u8; 32],
+    pub tips: Vec<DagHash>,
+    pub block_level: u64,
+}
+
+/// Private deterministic effects for one add-block attempt.
+pub(crate) struct DagAddBlockEffectPlan {
+    pub accepted: bool,
+    pub duplicate: bool,
+    pub expired: bool,
+    pub persist_transactions: bool,
+    pub persist_block: bool,
+    pub add_to_graph: bool,
+    pub emit_verified: bool,
+    pub gossip: bool,
+    pub proposed: bool,
+    pub missing_references: Vec<DagHash>,
+}
+
+/// Private bridge-shaped DAG block used by the retained internal runtime helpers and their tests.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct DagManagerBlock {
+    pub hash: [u8; 32],
+    pub pivot: [u8; 32],
+    pub tips: Vec<DagHash>,
+    pub level: u64,
+    pub difficulty: u32,
+}
+
 const DAG_PROPOSER_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_PROPOSER_SESSION_STATUS_COMPLETE: u8 = 1;
 const DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT: u8 = 2;
@@ -212,6 +246,39 @@ pub(crate) struct DagProposerTransactionObservation {
     pub non_finalized_transaction_count: u64,
 }
 
+/// One transaction inspected during non-mutating add-block preparation.
+#[derive(Clone)]
+pub(crate) struct DagAddBlockPreparedTransaction {
+    pub input_index: u64,
+    pub hash: H256,
+    pub trx_rlp: Vec<u8>,
+    pub transaction_nonce: [u8; 32],
+}
+
+/// Pending cursor for one composed accepted-DAG transition.
+#[derive(Clone)]
+pub(crate) struct DagAddBlockSession {
+    pub cursor_id: u64,
+    pub block: rustaxa_consensus::dag::DagManagerBlock,
+    pub block_rlp: Vec<u8>,
+    pub save: bool,
+    pub proposed: bool,
+    pub transactions: Vec<DagAddBlockPreparedTransaction>,
+    pub plan: DagAddBlockStoredPlan,
+}
+
+/// Copyable add-block plan retained across the external latest-account read.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DagAddBlockStoredPlan {
+    pub accepted: bool,
+    pub persist_transactions: bool,
+    pub persist_block: bool,
+    pub add_to_graph: bool,
+    pub emit_verified: bool,
+    pub gossip: bool,
+    pub proposed: bool,
+}
+
 #[derive(Clone)]
 struct DagProposerObservation {
     frontier: DomainDagProposerFrontierFacts,
@@ -264,9 +331,11 @@ pub(crate) fn build_dag_state_from_storage(
         storage: storage.0.clone(),
         next_proposer_session_id: 1,
         next_verify_block_session_id: 1,
+        next_add_block_session_id: 1,
         proposer_sessions: BTreeMap::new(),
         proposer_retry_states: BTreeMap::new(),
         verify_block_session: None,
+        pending_add_block: None,
     }))
 }
 
@@ -353,6 +422,7 @@ impl DagRuntimeState {
     }
 
     /// Adds one accepted DAG block to the in-memory Rust state.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn dag_manager_runtime_add_block(&mut self, block: DagManagerBlock) -> Result<()> {
         self.state.add_block(to_domain_block(block))
     }
@@ -1012,6 +1082,7 @@ impl DagRuntimeState {
 
     /// Persists one non-finalized DAG block through Rust storage and updates
     /// persistent DAG counters atomically.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn dag_manager_runtime_save_block(
         &self,
         hash: &[u8; 32],
@@ -1993,6 +2064,7 @@ pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Ve
     construct_dag_vdf_message(H256::from(*pivot), &hashes)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn dag_manager_block_from_rlp(block_rlp: Vec<u8>) -> Result<DagManagerBlock> {
     let block = domain_dag_manager_block_from_rlp(&block_rlp)?;
     Ok(DagManagerBlock {
@@ -2462,6 +2534,7 @@ fn to_bridge_finalization_cleanup_payload(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn to_domain_block(block: DagManagerBlock) -> DomainDagManagerBlock {
     DomainDagManagerBlock {
         hash: H256::from(block.hash),

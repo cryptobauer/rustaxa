@@ -1,12 +1,19 @@
-use crate::dag::build_dag_state_from_storage;
+use crate::dag::{build_dag_state_from_storage, DagAddBlockEffectPlan, DagAddBlockRuntimeInput};
 use crate::ffi::rustaxa_ffi::*;
 use crate::ffi::{
     BridgeStorage, DagRuntimeState, TransactionPackSessionOwner, TransactionRuntimeState,
 };
+use crate::transaction::legacy_transaction_inspection_from_bytes;
 use crate::transaction_manager::{
-    build_transaction_state_for_gas_pricer, build_transaction_state_from_storage,
+    append_prepared_dag_transactions_to_batch, build_transaction_state_for_gas_pricer,
+    build_transaction_state_from_storage, dag_save_command_report,
+    prepare_dag_transaction_publication, prepare_transactions_from_dag_block_with_runtime,
+    publish_prepared_dag_transactions,
 };
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, ensure, Context, Result};
+use ethereum_types::H256;
+use rustaxa_consensus::dag::dag_block_transaction_hashes;
+use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
 /// Application-owned consensus service containing the sibling DAG and transaction runtimes.
@@ -165,16 +172,6 @@ macro_rules! dag_shared_result {
     };
 }
 
-macro_rules! dag_mut_result {
-    ($name:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
-        pub fn $name(&self, $( $arg: $ty ),*) -> Result<$ret> {
-            let mut guard = self.dag()?;
-            let runtime = guard.as_mut().ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
-            runtime.$name($( $arg ),*)
-        }
-    };
-}
-
 impl BridgeDagTransactionService {
     transaction_shared!(transaction_manager_runtime_gas_price_bid() -> [u8; 32]);
     transaction_mut!(transaction_manager_runtime_gas_price_update(gas_prices: Vec<GasPricerGasPrice>) -> ());
@@ -254,8 +251,6 @@ impl BridgeDagTransactionService {
         Ok(committed.payload)
     }
 
-    dag_mut_result!(dag_manager_runtime_add_block(block: DagManagerBlock) -> ());
-    dag_shared_result!(dag_manager_runtime_plan_add_block(input: DagAddBlockRuntimeInput) -> DagAddBlockEffectPlan);
     dag_shared_result!(dag_manager_runtime_validate_pivot_tips(block_level: u64, pivot: &[u8; 32], tips: Vec<DagHash>) -> DagPivotTipsValidation);
     dag_shared_result!(dag_manager_runtime_non_finalized_sync_payload(known_hashes: Vec<DagHash>) -> DagManagerNonFinalizedSyncPayload);
     dag_shared_value_result!(dag_manager_runtime_compute_order(anchor: &[u8; 32]) -> DagOrder);
@@ -276,10 +271,317 @@ impl BridgeDagTransactionService {
     dag_shared_result!(dag_manager_runtime_is_block_known(hash: &[u8; 32]) -> bool);
     dag_shared_result!(dag_manager_runtime_tip_gas_estimations(tips: Vec<DagHash>) -> Vec<DagTipGas>);
     dag_shared_result!(dag_manager_runtime_load_block(hash: &[u8; 32]) -> DagBlockLookup);
-    dag_shared_result!(dag_manager_runtime_save_block(hash: &[u8; 32], level: u64, tips_count: u64, block_rlp: Vec<u8>) -> ());
     dag_shared_result!(dag_manager_runtime_plan_proposal_tip_selection(input: DagProposerStorageTipSelectionInput) -> DagProposerTipSelectionPlan);
     dag_shared_result!(dag_manager_runtime_period_block_hash(period: u64) -> HashLookup);
     dag_shared_result!(dag_manager_runtime_persistence_counters() -> DagPersistenceCounters);
+
+    /// Prepares one canonical add-block transition without mutating DAG,
+    /// transaction, or storage state.
+    pub fn dag_transaction_service_prepare_add_block(
+        &self,
+        input: DagAddBlockPrepareInput,
+    ) -> Result<DagAddBlockPreparation> {
+        let (mut dag_guard, _transaction) = self.dag_and_transaction()?;
+        let dag = dag_guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        ensure!(
+            dag.pending_add_block.is_none(),
+            "DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE"
+        );
+        let mut block = rustaxa_consensus::dag::dag_manager_block_from_rlp(&input.block_rlp)
+            .context("DAG_ADD_BLOCK_PREPARE_DECODE")?;
+        if input.validate_block_hash {
+            ensure!(
+                block.hash == H256::from(input.expected_block_hash),
+                "DAG_ADD_BLOCK_PREPARE_HASH_MISMATCH"
+            );
+        } else {
+            block.hash = H256::from(input.expected_block_hash);
+        }
+        let runtime_input = add_block_runtime_input(&block, input.save, input.proposed);
+        let plan = dag.dag_manager_runtime_plan_add_block(runtime_input)?;
+        if !plan.accepted || plan.duplicate || plan.expired {
+            return Ok(DagAddBlockPreparation {
+                cursor_id: 0,
+                block_level: block.level,
+                accepted: plan.accepted,
+                duplicate: plan.duplicate,
+                expired: plan.expired,
+                missing_references: plan.missing_references,
+                account_requests: Vec::new(),
+            });
+        }
+
+        let mut transactions = Vec::new();
+        let mut account_requests = Vec::new();
+        if plan.persist_transactions {
+            let expected_hashes = if input.validate_block_hash {
+                let block_transaction_hashes = dag_block_transaction_hashes(&input.block_rlp)
+                    .context("DAG_ADD_BLOCK_PREPARE_TRANSACTION_HASHES")?;
+                ensure!(
+                    block_transaction_hashes.len() == input.transactions.len(),
+                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_COUNT_MISMATCH"
+                );
+                block_transaction_hashes
+            } else {
+                input
+                    .transactions
+                    .iter()
+                    .map(|payload| H256::from(payload.hash))
+                    .collect()
+            };
+            for (input_index, (expected_hash, payload)) in expected_hashes
+                .into_iter()
+                .zip(input.transactions)
+                .enumerate()
+            {
+                ensure!(
+                    expected_hash == H256::from(payload.hash),
+                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_ORDER_MISMATCH"
+                );
+                let inspection = legacy_transaction_inspection_from_bytes(&payload.trx_rlp, 0)
+                    .context("DAG_ADD_BLOCK_PREPARE_TRANSACTION_DECODE")?;
+                ensure!(
+                    inspection.hash == payload.hash,
+                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_HASH_MISMATCH"
+                );
+                ensure!(
+                    inspection.sender_found,
+                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_SENDER_MISSING"
+                );
+                transactions.push(crate::dag::DagAddBlockPreparedTransaction {
+                    input_index: input_index as u64,
+                    hash: expected_hash,
+                    trx_rlp: payload.trx_rlp,
+                    transaction_nonce: inspection.nonce,
+                });
+                account_requests.push(DagAddBlockAccountRequest {
+                    input_index: input_index as u64,
+                    sender: inspection.sender,
+                });
+            }
+        }
+
+        let cursor_id = dag.next_add_block_session_id;
+        dag.next_add_block_session_id = cursor_id.wrapping_add(1).max(1);
+        let stored_plan = stored_add_block_plan(&plan);
+        let block_level = block.level;
+        dag.pending_add_block = Some(crate::dag::DagAddBlockSession {
+            cursor_id,
+            block,
+            block_rlp: input.block_rlp,
+            save: input.save,
+            proposed: input.proposed,
+            transactions,
+            plan: stored_plan,
+        });
+        Ok(DagAddBlockPreparation {
+            cursor_id,
+            block_level,
+            accepted: true,
+            duplicate: false,
+            expired: false,
+            missing_references: Vec::new(),
+            account_requests,
+        })
+    }
+
+    /// Completes one prepared add-block transition through a single durable
+    /// storage batch, then publishes prevalidated live state.
+    pub fn dag_transaction_service_complete_add_block(
+        &self,
+        input: DagAddBlockCompletionInput,
+    ) -> Result<DagAddBlockCommitReport> {
+        let (mut dag_guard, mut transaction) = self.dag_and_transaction()?;
+        let dag = dag_guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let session = dag
+            .pending_add_block
+            .as_ref()
+            .context("DAG_ADD_BLOCK_SESSION_NOT_STARTED")?
+            .clone();
+        ensure!(
+            session.cursor_id == input.cursor_id,
+            "DAG_ADD_BLOCK_SESSION_CURSOR_MISMATCH"
+        );
+        let current_plan = dag.dag_manager_runtime_plan_add_block(add_block_runtime_input(
+            &session.block,
+            session.save,
+            session.proposed,
+        ))?;
+        ensure!(
+            stored_add_block_plan(&current_plan) == session.plan
+                && current_plan.accepted
+                && !current_plan.duplicate
+                && !current_plan.expired,
+            "DAG_ADD_BLOCK_SESSION_STALE_PLAN"
+        );
+
+        let mut nonce_facts = BTreeMap::new();
+        for fact in input.account_nonce_facts {
+            ensure!(
+                nonce_facts
+                    .insert(fact.input_index, fact.account_nonce)
+                    .is_none(),
+                "DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_DUPLICATE"
+            );
+        }
+        ensure!(
+            nonce_facts.len() == session.transactions.len(),
+            "DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_COUNT_MISMATCH"
+        );
+        let transaction_facts = session
+            .transactions
+            .iter()
+            .map(|transaction| {
+                Ok(DagTransactionSaveSidecarFact {
+                    input_index: transaction.input_index,
+                    hash: transaction.hash.0,
+                    trx_rlp: transaction.trx_rlp.clone(),
+                    transaction_nonce: transaction.transaction_nonce,
+                    sender_account_nonce: *nonce_facts
+                        .get(&transaction.input_index)
+                        .context("DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_MISSING")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let prepared_transactions = if session.plan.persist_transactions {
+            Some(prepare_transactions_from_dag_block_with_runtime(
+                &transaction,
+                transaction_facts,
+            )?)
+        } else {
+            None
+        };
+        let prepared_transaction_publication = prepared_transactions
+            .as_ref()
+            .map(|prepared| prepare_dag_transaction_publication(&transaction, prepared))
+            .transpose()?;
+        let mut next_state = dag.state.clone();
+        if session.plan.add_to_graph {
+            next_state
+                .add_block(session.block.clone())
+                .context("DAG_ADD_BLOCK_GRAPH_PREVALIDATE")?;
+        }
+
+        let transaction_report = prepared_transaction_publication
+            .as_ref()
+            .map(|publication| dag_save_command_report(&publication.outcome))
+            .unwrap_or(TransactionManagerDagSaveCommandReport {
+                queue_erased: Vec::new(),
+            });
+        let counters;
+        let mut pending_batch = None;
+        if session.plan.persist_block {
+            let transaction_storage = transaction
+                .storage
+                .as_ref()
+                .context("TM_RUNTIME_STORAGE_UNAVAILABLE")?;
+            ensure!(
+                std::sync::Arc::ptr_eq(&dag.storage, transaction_storage),
+                "DAG_ADD_BLOCK_STORAGE_OWNER_MISMATCH"
+            );
+            let mut batch = dag.storage.create_write_batch();
+            if let Some(prepared) = prepared_transactions.as_ref() {
+                if !session.transactions.is_empty() {
+                    append_prepared_dag_transactions_to_batch(
+                        dag.storage.as_ref(),
+                        &mut batch,
+                        prepared,
+                    )?;
+                }
+            }
+            let (dag_blocks, dag_edges) = dag.storage.dag().append_write_to_batch(
+                &mut batch,
+                session.block.hash,
+                session.block.level,
+                session.block.tips.len() as u64,
+                &session.block_rlp,
+            )?;
+            counters = DagPersistenceCounters {
+                dag_blocks,
+                dag_edges,
+            };
+            pending_batch = Some(batch);
+        } else {
+            counters = dag.dag_manager_runtime_persistence_counters()?;
+        }
+
+        let removed_session = dag
+            .pending_add_block
+            .take()
+            .context("DAG_ADD_BLOCK_SESSION_DISAPPEARED_BEFORE_COMMIT")?;
+        if let Some(batch) = pending_batch {
+            if let Err(error) = dag.storage.commit_write_batch_with_sync(batch, false) {
+                dag.pending_add_block = Some(removed_session);
+                return Err(error).context("DAG_ADD_BLOCK_BATCH_COMMIT");
+            }
+        }
+        dag.state = next_state;
+        if let Some(publication) = prepared_transaction_publication {
+            let _ = publish_prepared_dag_transactions(&mut transaction, publication);
+        }
+        Ok(DagAddBlockCommitReport {
+            accepted: true,
+            emit_verified: session.plan.emit_verified,
+            gossip: session.plan.gossip,
+            proposed: session.plan.proposed,
+            queue_erased: transaction_report.queue_erased,
+            counters,
+        })
+    }
+
+    /// Idempotently aborts the matching add-block cursor without affecting a
+    /// newer or unrelated preparation.
+    pub fn dag_transaction_service_abort_add_block(&self, cursor_id: u64) -> Result<bool> {
+        let mut dag_guard = self.dag()?;
+        let dag = dag_guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        if dag
+            .pending_add_block
+            .as_ref()
+            .is_some_and(|session| session.cursor_id == cursor_id)
+        {
+            dag.pending_add_block = None;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+fn add_block_runtime_input(
+    block: &rustaxa_consensus::dag::DagManagerBlock,
+    save: bool,
+    proposed: bool,
+) -> DagAddBlockRuntimeInput {
+    DagAddBlockRuntimeInput {
+        save,
+        proposed,
+        block_hash: block.hash.0,
+        pivot: block.pivot.0,
+        tips: block
+            .tips
+            .iter()
+            .map(|tip| DagHash { hash: tip.0 })
+            .collect(),
+        block_level: block.level,
+    }
+}
+
+fn stored_add_block_plan(plan: &DagAddBlockEffectPlan) -> crate::dag::DagAddBlockStoredPlan {
+    crate::dag::DagAddBlockStoredPlan {
+        accepted: plan.accepted,
+        persist_transactions: plan.persist_transactions,
+        persist_block: plan.persist_block,
+        add_to_graph: plan.add_to_graph,
+        emit_verified: plan.emit_verified,
+        gossip: plan.gossip,
+        proposed: plan.proposed,
+    }
 }
 
 pub fn service_save_transactions_from_dag_block_command_report_with_runtime(
@@ -648,6 +950,7 @@ mod tests {
     use rustaxa_types::LegacyTransactionEnvelope;
     use rustaxa_vdf::vrf::public_key_from_secret;
     use std::fs;
+    use std::sync::{Arc, Barrier};
     use tiny_keccak::{Hasher, Keccak};
 
     const SECRET_KEY: [u8; 64] = [
@@ -774,6 +1077,42 @@ mod tests {
         block.append(&&[0u8; 65][..]);
         block.append(&0u64);
         block.out().to_vec()
+    }
+
+    fn composed_add_block_rlp(pivot: [u8; 32], level: u64, transactions: &[[u8; 32]]) -> Vec<u8> {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11u8; 80]);
+        vdf.append(&vec![0x22u8]);
+        vdf.append(&vec![0x33u8]);
+        vdf.append(&1u16);
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::from(pivot));
+        block.append(&level);
+        block.append(&0u64);
+        block.append(&vdf.out().to_vec());
+        block.begin_list(0);
+        block.begin_list(transactions.len());
+        for hash in transactions {
+            block.append(&H256::from(*hash));
+        }
+        block.append(&&[0u8; 65][..]);
+        block.append(&0u64);
+        block.out().to_vec()
+    }
+
+    fn add_block_prepare_input(
+        block_rlp: Vec<u8>,
+        save: bool,
+        transactions: Vec<DagAddBlockTransactionPayload>,
+    ) -> DagAddBlockPrepareInput {
+        DagAddBlockPrepareInput {
+            expected_block_hash: keccak256(&block_rlp).0,
+            validate_block_hash: true,
+            block_rlp,
+            save,
+            proposed: true,
+            transactions,
+        }
     }
 
     fn sign_hash(hash: [u8; 32]) -> Vec<u8> {
@@ -949,6 +1288,550 @@ mod tests {
         assert!(service
             .dag_transaction_service_proposer_pack_abort(ready_id)
             .unwrap());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_add_block_commits_transactions_block_graph_and_restart_state() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_composed_add");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let key = SigningKey::from_slice(&[0x61; 32]).unwrap();
+        let transaction_rlp = signed_legacy_transaction_rlp(&key);
+        let transaction = LegacyTransactionEnvelope::decode(&transaction_rlp).unwrap();
+        insert_test_queue_transaction(&service, 0x61);
+        let block_rlp = composed_add_block_rlp([1; 32], 1, &[transaction.hash.0]);
+        let block_hash = keccak256(&block_rlp);
+        let preparation = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                block_rlp.clone(),
+                true,
+                vec![DagAddBlockTransactionPayload {
+                    hash: transaction.hash.0,
+                    trx_rlp: transaction_rlp.clone(),
+                }],
+            ))
+            .unwrap();
+        assert!(preparation.accepted);
+        assert_eq!(preparation.account_requests.len(), 1);
+        assert_eq!(service.dag_manager_runtime_vertex_count().unwrap(), 1);
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 0);
+
+        let missing_fact = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: preparation.cursor_id,
+                account_nonce_facts: Vec::new(),
+            })
+            .err()
+            .expect("missing nonce fact must fail before the shared commit");
+        assert!(missing_fact
+            .to_string()
+            .contains("DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_COUNT_MISMATCH"));
+        assert_eq!(service.dag_manager_runtime_vertex_count().unwrap(), 1);
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 0);
+        assert!(
+            !service
+                .dag_manager_runtime_load_block(&block_hash.0)
+                .unwrap()
+                .found
+        );
+        assert!(storage
+            .0
+            .transaction()
+            .rlp(transaction.hash)
+            .unwrap()
+            .is_none());
+
+        let report = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: preparation.cursor_id,
+                account_nonce_facts: vec![DagAddBlockAccountNonceFact {
+                    input_index: 0,
+                    account_nonce: U256::zero().to_big_endian(),
+                }],
+            })
+            .unwrap();
+        assert!(report.accepted);
+        assert!(report.emit_verified);
+        assert!(report.gossip);
+        assert_eq!(report.queue_erased.len(), 1);
+        assert_eq!(report.counters.dag_blocks, 1);
+        assert_eq!(service.dag_manager_runtime_vertex_count().unwrap(), 2);
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 1);
+        assert!(service
+            .transaction()
+            .sidecar
+            .contains_non_finalized(transaction.hash));
+        assert_eq!(
+            storage.0.transaction().rlp(transaction.hash).unwrap(),
+            Some(transaction_rlp)
+        );
+        assert_eq!(
+            service
+                .dag_manager_runtime_load_block(&block_hash.0)
+                .unwrap()
+                .block_rlp,
+            block_rlp
+        );
+
+        drop(service);
+        let restored = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        assert_eq!(restored.dag_manager_runtime_vertex_count().unwrap(), 2);
+        assert_eq!(restored.transaction_manager_runtime_transaction_count(), 1);
+
+        let duplicate = restored
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                block_rlp,
+                true,
+                vec![DagAddBlockTransactionPayload {
+                    hash: [0; 32],
+                    trx_rlp: Vec::new(),
+                }],
+            ))
+            .unwrap();
+        assert!(duplicate.accepted);
+        assert!(duplicate.duplicate);
+        assert_eq!(duplicate.cursor_id, 0);
+
+        drop(restored);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_add_block_terminal_and_save_false_paths_do_not_persist_transactions() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_composed_add_terminal");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let missing_rlp = composed_add_block_rlp([0x77; 32], 1, &[[0xAA; 32]]);
+        let missing = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                missing_rlp,
+                true,
+                vec![DagAddBlockTransactionPayload {
+                    hash: [0; 32],
+                    trx_rlp: Vec::new(),
+                }],
+            ))
+            .unwrap();
+        assert!(!missing.accepted);
+        assert!(!missing.missing_references.is_empty());
+        assert_eq!(missing.cursor_id, 0);
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 0);
+
+        let no_save_rlp = composed_add_block_rlp([1; 32], 1, &[[0xBB; 32]]);
+        let no_save_hash = keccak256(&no_save_rlp);
+        let object_hash = [0xBC; 32];
+        let mut no_save_input = add_block_prepare_input(no_save_rlp, false, Vec::new());
+        no_save_input.expected_block_hash = object_hash;
+        no_save_input.validate_block_hash = false;
+        let no_save = service
+            .dag_transaction_service_prepare_add_block(no_save_input)
+            .unwrap();
+        assert!(no_save.accepted);
+        assert!(no_save.account_requests.is_empty());
+        let report = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: no_save.cursor_id,
+                account_nonce_facts: Vec::new(),
+            })
+            .unwrap();
+        assert!(!report.emit_verified);
+        assert!(!report.gossip);
+        assert_eq!(service.dag_manager_runtime_vertex_count().unwrap(), 2);
+        assert!(service
+            .dag_manager_runtime_is_block_known(&object_hash)
+            .unwrap());
+        assert!(!service
+            .dag_manager_runtime_is_block_known(&no_save_hash.0)
+            .unwrap());
+        assert!(
+            !service
+                .dag_manager_runtime_load_block(&no_save_hash.0)
+                .unwrap()
+                .found
+        );
+        assert_eq!(report.counters.dag_blocks, 0);
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 0);
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_add_block_object_compatibility_persists_only_supplied_transactions() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_composed_add_object");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let block_rlp = composed_add_block_rlp([1; 32], 1, &[[0xBD; 32]]);
+        let canonical_hash = keccak256(&block_rlp);
+        let object_hash = [0xBE; 32];
+        let mut input = add_block_prepare_input(block_rlp.clone(), true, Vec::new());
+        input.expected_block_hash = object_hash;
+        input.validate_block_hash = false;
+
+        let preparation = service
+            .dag_transaction_service_prepare_add_block(input)
+            .unwrap();
+        assert!(preparation.accepted);
+        assert!(preparation.account_requests.is_empty());
+        let report = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: preparation.cursor_id,
+                account_nonce_facts: Vec::new(),
+            })
+            .unwrap();
+
+        assert_eq!(report.counters.dag_blocks, 1);
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 0);
+        assert_eq!(
+            service
+                .dag_manager_runtime_load_block(&object_hash)
+                .unwrap()
+                .block_rlp,
+            block_rlp
+        );
+        assert!(
+            !service
+                .dag_manager_runtime_load_block(&canonical_hash.0)
+                .unwrap()
+                .found
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_add_block_preserves_finalized_nonce_filtering() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_composed_add_finalized");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let key = SigningKey::from_slice(&[0x62; 32]).unwrap();
+        let transaction_rlp = signed_legacy_transaction_rlp(&key);
+        let transaction = LegacyTransactionEnvelope::decode(&transaction_rlp).unwrap();
+        let pbft_block = signed_pbft_block(&SigningKey::from_slice(&[0x63; 32]).unwrap(), 1);
+        storage
+            .0
+            .transaction()
+            .write_location(transaction.hash, 1, 0, false)
+            .unwrap();
+        storage
+            .0
+            .period()
+            .write(1, &period_data_rlp(&pbft_block, &transaction_rlp))
+            .unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let block_rlp = composed_add_block_rlp([1; 32], 1, &[transaction.hash.0]);
+        let preparation = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                block_rlp,
+                true,
+                vec![DagAddBlockTransactionPayload {
+                    hash: transaction.hash.0,
+                    trx_rlp: transaction_rlp,
+                }],
+            ))
+            .unwrap();
+        let report = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: preparation.cursor_id,
+                account_nonce_facts: vec![DagAddBlockAccountNonceFact {
+                    input_index: 0,
+                    account_nonce: U256::from(2u64).to_big_endian(),
+                }],
+            })
+            .unwrap();
+        assert!(report.accepted);
+        assert!(report.queue_erased.is_empty());
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 0);
+        assert!(!service
+            .transaction()
+            .sidecar
+            .contains_non_finalized(transaction.hash));
+        assert_eq!(service.dag_manager_runtime_vertex_count().unwrap(), 2);
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_add_block_active_cursor_survives_second_terminal_and_malformed_prepares() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_composed_add_stale");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let first_rlp = composed_add_block_rlp([1; 32], 1, &[]);
+        let first = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                first_rlp,
+                true,
+                Vec::new(),
+            ))
+            .unwrap();
+        let second = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                composed_add_block_rlp([1; 32], 1, &[[0xDD; 32]]),
+                false,
+                Vec::new(),
+            ))
+            .err()
+            .expect("a second accepted prepare must not replace the active cursor");
+        assert!(second
+            .to_string()
+            .contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE"));
+
+        let terminal = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                composed_add_block_rlp([0x77; 32], 1, &[]),
+                true,
+                Vec::new(),
+            ))
+            .err()
+            .expect("a terminal second prepare must leave the active cursor intact");
+        assert!(terminal
+            .to_string()
+            .contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE"));
+
+        let malformed = service
+            .dag_transaction_service_prepare_add_block(DagAddBlockPrepareInput {
+                expected_block_hash: [0; 32],
+                validate_block_hash: true,
+                block_rlp: vec![0x80],
+                save: true,
+                proposed: false,
+                transactions: Vec::new(),
+            })
+            .err()
+            .expect("malformed second prepare must leave the active cursor intact");
+        assert!(malformed
+            .to_string()
+            .contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE"));
+
+        let report = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: first.cursor_id,
+                account_nonce_facts: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(report.counters.dag_blocks, 1);
+        assert_eq!(service.dag_manager_runtime_vertex_count().unwrap(), 2);
+        let retry = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: first.cursor_id,
+                account_nonce_facts: Vec::new(),
+            })
+            .err()
+            .expect("a committed cursor must already be gone");
+        assert!(retry
+            .to_string()
+            .contains("DAG_ADD_BLOCK_SESSION_NOT_STARTED"));
+
+        let malformed_without_active = service
+            .dag_transaction_service_prepare_add_block(DagAddBlockPrepareInput {
+                expected_block_hash: [0; 32],
+                validate_block_hash: true,
+                block_rlp: vec![0x80],
+                save: true,
+                proposed: false,
+                transactions: Vec::new(),
+            })
+            .err()
+            .expect("malformed input must be decoded once no cursor is active");
+        assert!(malformed_without_active
+            .to_string()
+            .contains("DAG_ADD_BLOCK_PREPARE_DECODE"));
+        let malformed_transaction = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                composed_add_block_rlp([1; 32], 1, &[[0xCC; 32]]),
+                true,
+                vec![DagAddBlockTransactionPayload {
+                    hash: [0xCC; 32],
+                    trx_rlp: vec![0x80],
+                }],
+            ))
+            .err()
+            .expect("malformed transaction must reject accepted preparation");
+        assert!(malformed_transaction
+            .to_string()
+            .contains("DAG_ADD_BLOCK_PREPARE_TRANSACTION_DECODE"));
+        assert_eq!(service.transaction_manager_runtime_transaction_count(), 0);
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_add_block_abort_is_matching_stale_safe_and_idempotent() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_composed_add_abort");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let first = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                composed_add_block_rlp([1; 32], 1, &[]),
+                true,
+                Vec::new(),
+            ))
+            .unwrap();
+        assert!(!service
+            .dag_transaction_service_abort_add_block(first.cursor_id + 1)
+            .unwrap());
+        assert!(service
+            .dag_transaction_service_abort_add_block(first.cursor_id)
+            .unwrap());
+        assert!(!service
+            .dag_transaction_service_abort_add_block(first.cursor_id)
+            .unwrap());
+
+        let second = service
+            .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                composed_add_block_rlp([1; 32], 1, &[]),
+                false,
+                Vec::new(),
+            ))
+            .unwrap();
+        assert_ne!(first.cursor_id, second.cursor_id);
+        assert!(!service
+            .dag_transaction_service_abort_add_block(first.cursor_id)
+            .unwrap());
+        let stale = service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: first.cursor_id,
+                account_nonce_facts: Vec::new(),
+            })
+            .err()
+            .expect("an old cursor must not consume the active cursor");
+        assert!(stale
+            .to_string()
+            .contains("DAG_ADD_BLOCK_SESSION_CURSOR_MISMATCH"));
+        assert!(service
+            .dag_transaction_service_abort_add_block(second.cursor_id)
+            .unwrap());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn composed_add_block_concurrent_prepares_publish_exactly_one_cursor() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_composed_add_concurrent");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = Arc::new(
+            *create_dag_transaction_service_from_storage(
+                &storage,
+                &[1; 32],
+                32,
+                100,
+                queue_config(),
+                gas_config(),
+                u64::MAX,
+            )
+            .unwrap(),
+        );
+        let barrier = Arc::new(Barrier::new(3));
+        let handles = [[0xD1; 32], [0xD2; 32]].map(|transaction_hash| {
+            let service = Arc::clone(&service);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                service
+                    .dag_transaction_service_prepare_add_block(add_block_prepare_input(
+                        composed_add_block_rlp([1; 32], 1, &[transaction_hash]),
+                        false,
+                        Vec::new(),
+                    ))
+                    .map_err(|error| error.to_string())
+            })
+        });
+        barrier.wait();
+        let results = handles.map(|handle| handle.join().unwrap());
+        let winner = results
+            .iter()
+            .find_map(|result| result.as_ref().ok())
+            .expect("one prepare must acquire the cursor");
+        let loser = results
+            .iter()
+            .find_map(|result| result.as_ref().err())
+            .expect("one prepare must observe the active cursor");
+        assert!(loser.contains("DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE"));
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+
+        service
+            .dag_transaction_service_complete_add_block(DagAddBlockCompletionInput {
+                cursor_id: winner.cursor_id,
+                account_nonce_facts: Vec::new(),
+            })
+            .unwrap();
+        assert_eq!(service.dag_manager_runtime_vertex_count().unwrap(), 2);
 
         drop(service);
         drop(storage);
