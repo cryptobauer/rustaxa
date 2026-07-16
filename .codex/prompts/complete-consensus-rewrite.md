@@ -11,14 +11,14 @@ required validation, documentation, and review have landed. Do not start a `bloc
 non-network/non-EVM consensus closeout. Update cross-cutting `CRW-07` in every slice that narrows or deletes bridge
 handles, CXX carriers, module flags, shims, or compatibility-only tests.
 
-Use RTK throughout. Decompose the dependency-ordered queue in the parent thread, then follow the skill's required
-per-slice orchestration with the relevant configured custom agents. Use `blockchain-engineer` only for explicitly scoped
-EVM, contract, signing, gas, slashing-transaction, or on-chain lifecycle work. Follow the repository's verified-profile
-and fallback-emulation policy truthfully.
+Use RTK throughout. Decompose the dependency-ordered queue in the parent thread and let Codex route work to the relevant
+configured custom agents from their descriptions; do not prescribe a fixed per-slice agent sequence. Use
+`blockchain-engineer` only for explicitly scoped EVM, contract, signing, gas, slashing-transaction, or on-chain lifecycle
+work.
 
 Keep the selected tracker item, consolidation plan, and bridge audit synchronized; update `PLAN.md` only when scope,
 architecture, or an accepted ownership boundary changes. Validate every slice at the required tier, obtain an
-independent `reviewer` verdict of `APPROVED` before committing, and commit each coherent slice separately. Preserve
+independent review approval before committing, and commit each coherent slice separately. Preserve
 unrelated changes. Continue until no required `ready` items remain or progress is genuinely blocked by a named
 dependency; report blockers precisely and do not count scope-gated follow-ups as blockers. Ask before required expensive
 Tier 3 or differential validation.

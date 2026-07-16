@@ -25,10 +25,10 @@ document retains detailed slice design, implementation history, and compatibilit
 - Do not remove pure C++ reference behavior from `cpp-reference`.
 - Do not delete compatibility DTO fields that still have a named external caller.
 
-## Agent Use
+## Agent Routing
 
-Implementation slices from this plan must use `$implement-rustaxa-consensus-slice` and delegate work to the relevant
-custom agents when their review or implementation scope is material:
+Implementation slices from this plan use `$implement-rustaxa-consensus-slice`. Let Codex decide whether and when to route
+work to configured custom agents based on their descriptions and the current slice:
 
 - `api-designer`: review Rust/C++ facade shape, DTO minimality, bridge compatibility, and whether a proposed API keeps
   consensus-internal callers out of shim/bridge routes.
@@ -37,17 +37,8 @@ custom agents when their review or implementation scope is material:
 - `rust-engineer`: implement or review Rust consensus, storage, bridge, codec, native service, and Rust test changes.
 - `cpp-pro`: implement or review C++ shim, CMake, bridge wiring, RPC/GraphQL, tarcap adapter, and C++ test changes.
 
-Delegate concrete, non-overlapping work. The primary implementer still owns integration, local code inspection,
-conflict resolution, validation, deletion of obsolete scaffolding, and the final closeout report.
-
-The named roles above refer to the configured profiles in `.codex/agents/*.toml`, whose TOML files are the source of truth
-for model selection and permissions. Prefer native custom-agent invocation and confirm the resolved profile from runtime
-metadata or the client UI. If the runtime cannot select or verify a named profile, follow the fallback-emulation policy
-in `AGENTS.md`: read the selected TOML, reproduce its `developer_instructions` verbatim, reproduce its other settings
-where the interface permits, and label the child `<name> fallback emulation`. This is not verified profile use. A
-fallback-emulated reviewer satisfies independent review only with the complete intended diff in a fresh read-only
-context and an evidence-backed disposition before commit. Slice closeout must distinguish verified profiles, fallback
-emulations, generic delegation, and local primary-agent work.
+When Codex delegates, keep assignments concrete and non-overlapping. The primary implementer still owns integration,
+local code inspection, conflict resolution, validation, deletion of obsolete scaffolding, and the final closeout report.
 
 ## Current Cleanup Pressure Points
 
@@ -925,9 +916,9 @@ Implementation notes:
   `last_finalized_pillar_block_` or `current_pillar_block_vote_counts_`; its public latest-block getter materializes the
   runtime's canonical bytes only at the compatibility boundary. The standalone CXX vote-count, linkage, and creation
   planners plus their bridge-mechanics tests are deleted; native consensus planner tests and runtime-owned bridge tests
-  retain the behavior coverage. Because the active delegation interface cannot select or report
-  `.codex/agents/*.toml` profiles, the required roles were run as explicitly labeled fallback emulations using each
-  profile's exact TOML instructions and settings; they are not claimed as verified custom-profile invocations.
+  retain the behavior coverage. The active delegation interface could not select or report `.codex/agents/*.toml`
+  profiles, so the resulting reports were generic delegation and were not claimed as verified custom-profile
+  invocations.
   Validation completed for the uncommitted follow-up:
   - `cargo check --manifest-path rust/Cargo.toml -p rustaxa-bridge --tests`
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-bridge pillar_chain -- --nocapture`
