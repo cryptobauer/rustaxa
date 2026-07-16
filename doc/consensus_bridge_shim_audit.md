@@ -941,6 +941,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   The private `TransactionManager::resolveDagAddBlockAccountNonceFacts` declaration, forwarding definition, and
   `TransactionManagerRustShimAccess` implementation are deleted. Indexed request order, zero-account fallback on lookup
   failure, and the missing-FinalChain exception remain unchanged without a DAG-to-transaction-manager relay.
+- Verify-block tip-gas lookup is now private Rust session work. The C++ `needs_tip_gas` calculation and
+  `dag_manager_runtime_tip_gas_estimations` call are deleted, along with the exported lookup, `DagTipGas`, and
+  `DagVerifyBlockGasReport::tip_gas_estimations`. C++ still reports externally sourced block gas, aggregate transaction
+  weight, and configured DAG/PBFT limits through the existing cursor-bound gas-report call.
 - The storage differential's pure-C++ build now keeps the upstream pillar-vote bundle materialization path behind
   `!RUSTAXA_ENABLE_PILLAR_VOTES`; only feature-on builds call the shim-only optimized bundle API. This is an explicit
   guarded integration change in the upstream-owned network handler, preventing main-only pillar routing from leaking

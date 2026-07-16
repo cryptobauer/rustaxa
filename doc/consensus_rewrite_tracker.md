@@ -325,7 +325,10 @@ revalidates the add plan and commits transaction rows/count plus DAG block/index
 before publishing graph or transaction runtime state. The C++ transaction-save, DAG-save, graph-add, and add-order
 relays are deleted. DagManager now resolves the cursor's latest FinalChain nonce requests directly through its existing
 FinalChain facade, so the DagManager-to-TransactionManager account-fact relay and its private helper surface are also
-deleted; post-commit logs/materialization/events/gossip remain external.
+deleted; post-commit logs/materialization/events/gossip remain external. Verify-block gas completion now keeps tip
+hashes and conditional canonical tip-gas loading inside the Rust verification session. C++ reports only the externally
+executed block gas, aggregate transaction weight, and configured DAG/PBFT limits; its `needs_tip_gas` branch, the
+`DagTipGas` CXX carrier, the gas-report tip vector, and the standalone tip-gas lookup export are deleted.
 Continue by auditing the remaining CRW-04 boundary inventory and selecting the next ownership slice from live production
 relays rather than compatibility-only surfaces.
 `CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim

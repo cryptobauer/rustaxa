@@ -334,14 +334,12 @@ rustaxa::DagVerifyBlockAuthorizationReport to_bridge_verify_block_authorization_
 
 rustaxa::DagVerifyBlockGasReport to_bridge_verify_block_gas_report(uint64_t block_gas_estimation,
                                                                    uint64_t estimated_transactions_weight,
-                                                                   uint64_t dag_gas_limit, uint64_t pbft_gas_limit,
-                                                                   rust::Vec<rustaxa::DagTipGas> tip_gas_estimations) {
+                                                                   uint64_t dag_gas_limit, uint64_t pbft_gas_limit) {
   rustaxa::DagVerifyBlockGasReport out;
   out.block_gas_estimation = block_gas_estimation;
   out.estimated_transactions_weight = estimated_transactions_weight;
   out.dag_gas_limit = dag_gas_limit;
   out.pbft_gas_limit = pbft_gas_limit;
-  out.tip_gas_estimations = std::move(tip_gas_estimations);
   return out;
 }
 
@@ -544,21 +542,12 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   const auto [dag_gas_limit, pbft_gas_limit] = genesis_config_.getGasLimits(proposal_period);
   const auto estimated_transactions_weight = trx_mgr_->estimateTransactions(all_block_trxs, proposal_period);
 
-  rust::Vec<rustaxa::DagTipGas> tip_gas_estimations;
-  const auto needs_tip_gas =
-      dag_gas_limit == 0 || static_cast<uint64_t>(blk->getTips().size() + 1) > pbft_gas_limit / dag_gas_limit;
-  if (needs_tip_gas) {
-    std::shared_lock lock(rust_graphs_mutex_);
-    tip_gas_estimations = dag_transaction_service_->service().dag_manager_runtime_tip_gas_estimations(
-        to_bridge_dag_hashes(blk->getTips()));
-  }
-
   {
     std::unique_lock lock(rust_graphs_mutex_);
     step = rustaxa::dag_manager_runtime_verify_block_session_report_gas(
         dag_transaction_service_->service(),
         to_bridge_verify_block_gas_report(blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit,
-                                          pbft_gas_limit, std::move(tip_gas_estimations)));
+                                          pbft_gas_limit));
   }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);

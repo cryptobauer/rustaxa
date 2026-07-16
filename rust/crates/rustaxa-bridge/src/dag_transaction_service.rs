@@ -269,7 +269,6 @@ impl BridgeDagTransactionService {
     dag_shared_value_result!(dag_manager_runtime_non_finalized_blocks_size() -> DagManagerNonFinalizedSize);
     dag_shared_value_result!(dag_manager_runtime_non_finalized_min_difficulty() -> u32);
     dag_shared_result!(dag_manager_runtime_is_block_known(hash: &[u8; 32]) -> bool);
-    dag_shared_result!(dag_manager_runtime_tip_gas_estimations(tips: Vec<DagHash>) -> Vec<DagTipGas>);
     dag_shared_result!(dag_manager_runtime_load_block(hash: &[u8; 32]) -> DagBlockLookup);
     dag_shared_result!(dag_manager_runtime_plan_proposal_tip_selection(input: DagProposerStorageTipSelectionInput) -> DagProposerTipSelectionPlan);
     dag_shared_result!(dag_manager_runtime_period_block_hash(period: u64) -> HashLookup);
@@ -907,7 +906,7 @@ fn verify_block_transaction_view_requests(
 }
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_authorization, dag_manager_runtime_verify_block_session_report_authorization(report: DagVerifyBlockAuthorizationReport) -> DagVerifyBlockSessionStep);
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_vdf, dag_manager_runtime_verify_block_session_report_vdf(report: DagVerifyBlockVdfReport) -> DagVerifyBlockSessionStep);
-dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
+dag_free_mut_fallible!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
 /// Opens a proposer session with transaction pressure derived from the sibling
 /// Rust TransactionManager while holding the universal DAG-then-transaction lock order.
 ///

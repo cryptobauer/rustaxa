@@ -2826,6 +2826,22 @@ the explicit FinalChain executor boundary into Rust.
   `make rewrite-validate-consensus` completed with its existing classified shared-fixture lock diagnostics. Formatting,
   bridge-inventory, upstream-shape, and whitespace checks also passed. Independent review returned `APPROVED`.
 
+### CRW-04 Verify-Block Tip-Gas Relay Deletion
+
+This bounded CRW-04/CRW-07 follow-up removes a storage-derived verification fact roundtrip while preserving external
+EVM gas estimation as an explicit C++ executor boundary.
+
+- The Rust verification cursor retains candidate tips and conditionally loads their canonical gas estimations itself
+  when evaluating the PBFT aggregate gas rule. The standalone `dag_manager_runtime_tip_gas_estimations` CXX export,
+  `DagTipGas` carrier, and `DagVerifyBlockGasReport::tip_gas_estimations` field are deleted.
+- `DagManager::verifyBlock` no longer duplicates Rust's `needs_tip_gas` policy or builds a tip vector. Its existing gas
+  report now carries only block gas estimation, aggregate transaction weight, DAG gas limit, and PBFT gas limit.
+- Focused C++ validation passed: the Rust-enabled `dag_block_test` and `dag_test` targets rebuilt against the narrowed
+  ABI, then passed 13 and 6 tests respectively. Focused Rust coverage passed 3 tests, the full `rustaxa-bridge` suite
+  passed 315 tests, and the full pre-commit hook passed. `make rewrite-validate-consensus` completed with its existing
+  classified shared-fixture lock diagnostics. C++ formatting, bridge inventory, upstream-shape, and whitespace checks
+  also passed. Independent review returned `APPROVED` after the validation record was completed.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

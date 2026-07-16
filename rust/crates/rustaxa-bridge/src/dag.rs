@@ -183,6 +183,8 @@ enum DagVerifyBlockSessionAction {
 pub struct DagVerifyBlockSession {
     cursor_id: u64,
     action: DagVerifyBlockSessionAction,
+    /// Canonical candidate tips retained for private gas lookup after VDF validation.
+    tips: Vec<H256>,
     proposal_period: u64,
     expected_transactions: u64,
     reject_code: u32,
@@ -1023,13 +1025,13 @@ impl DagRuntimeState {
         )
     }
 
-    /// Loads per-tip gas facts directly from Rust storage for DAG block verification.
+    /// Loads retained per-tip gas facts directly from Rust storage for DAG block verification.
     ///
     /// Inputs:
-    /// - `tips`: candidate tip hashes in the original block order.
+    /// - `tips`: candidate tip hashes retained in canonical block order.
     ///
     /// Outputs:
-    /// - one `DagTipGas` per input hash. Missing tips are returned as
+    /// - one domain `DagTipGas` per input hash. Missing tips are returned as
     ///   `found = false` so the Rust verification session can select the
     ///   legacy `MissingTip` status without C++ materializing `DagBlock`
     ///   objects or deriving gas facts from compatibility caches.
@@ -1038,21 +1040,17 @@ impl DagRuntimeState {
     /// - storage backend and decode failures are bridge errors because they
     ///   indicate corrupt or unavailable canonical DAG payloads rather than a
     ///   consensus-invalid missing tip.
-    pub fn dag_manager_runtime_tip_gas_estimations(
-        &self,
-        tips: Vec<DagHash>,
-    ) -> Result<Vec<crate::ffi::rustaxa_ffi::DagTipGas>> {
-        tips.into_iter()
-            .map(|tip| {
-                let hash = H256::from(tip.hash);
+    fn dag_manager_runtime_tip_gas_estimations(&self, tips: &[H256]) -> Result<Vec<DagTipGas>> {
+        tips.iter()
+            .map(|hash| {
                 if self
                     .storage
                     .dag()
-                    .by_hash_rlp_optional(hash)
+                    .by_hash_rlp_optional(*hash)
                     .context("DAG_RUNTIME_TIP_GAS_LOOKUP")?
                     .is_none()
                 {
-                    return Ok(crate::ffi::rustaxa_ffi::DagTipGas {
+                    return Ok(DagTipGas {
                         found: false,
                         gas_estimation: 0,
                     });
@@ -1061,9 +1059,9 @@ impl DagRuntimeState {
                 let block = self
                     .storage
                     .dag()
-                    .by_hash(hash)
+                    .by_hash(*hash)
                     .context("DAG_RUNTIME_TIP_GAS_DECODE")?;
-                Ok(crate::ffi::rustaxa_ffi::DagTipGas {
+                Ok(DagTipGas {
                     found: true,
                     gas_estimation: block.gas_estimation,
                 })
@@ -1192,7 +1190,7 @@ impl DagRuntimeState {
             DomainDagVerifyPrecheckStorageInput {
                 block_level: input.block_level,
                 pivot: H256::from(input.pivot),
-                tips,
+                tips: tips.clone(),
                 dag_expiry_level: self.state.dag_expiry_level(),
             },
         )
@@ -1215,6 +1213,7 @@ impl DagRuntimeState {
         self.verify_block_session = Some(DagVerifyBlockSession {
             cursor_id,
             action,
+            tips,
             proposal_period: precheck.proposal_period,
             expected_transactions,
             reject_code: precheck.reject_code,
@@ -1439,33 +1438,50 @@ pub fn dag_manager_runtime_verify_block_session_report_vdf(
     verify_block_session_step(session)
 }
 
-/// Reports gas facts to the runtime-owned DAG verification cursor.
+/// Reports external block/limit gas facts to the runtime-owned DAG verification cursor.
+///
+/// The active cursor owns canonical tip order. Rust reads tip gas from its
+/// private storage only when the legacy block-count condition requires the
+/// aggregate check. Missing tips remain typed consensus rejection; storage or
+/// decode failures return without advancing the cursor. Calls with no session
+/// or the wrong action preserve the existing status-coded report semantics and
+/// never perform a tip lookup.
 pub fn dag_manager_runtime_verify_block_session_report_gas(
     runtime: &mut DagRuntimeState,
     report: DagVerifyBlockGasReport,
-) -> DagVerifyBlockSessionStep {
-    let Some(session) = runtime.verify_block_session.as_mut() else {
-        return verify_block_session_not_started_step();
+) -> Result<DagVerifyBlockSessionStep> {
+    let Some(session) = runtime.verify_block_session.as_ref() else {
+        return Ok(verify_block_session_not_started_step());
     };
     if !matches!(session.action, DagVerifyBlockSessionAction::Gas) {
-        return invalid_verify_block_report(session, "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT");
+        let Some(session) = runtime.verify_block_session.as_mut() else {
+            return Ok(verify_block_session_not_started_step());
+        };
+        return Ok(invalid_verify_block_report(
+            session,
+            "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT",
+        ));
     }
+    let tips = session.tips.clone();
+    let needs_tip_gas = report.dag_gas_limit == 0
+        || (tips.len() as u64).saturating_add(1) > report.pbft_gas_limit / report.dag_gas_limit;
+    let tip_gas_estimations = if needs_tip_gas {
+        runtime.dag_manager_runtime_tip_gas_estimations(&tips)?
+    } else {
+        Vec::new()
+    };
 
     let result = validate_dag_verify_gas(DomainDagVerifyGasInput {
         block_gas_estimation: report.block_gas_estimation,
         estimated_transactions_weight: report.estimated_transactions_weight,
         dag_gas_limit: report.dag_gas_limit,
         pbft_gas_limit: report.pbft_gas_limit,
-        tip_gas_estimations: report
-            .tip_gas_estimations
-            .into_iter()
-            .map(|tip| DagTipGas {
-                found: tip.found,
-                gas_estimation: tip.gas_estimation,
-            })
-            .collect(),
+        tip_gas_estimations,
     });
-    complete_verify_block_session(session, result.reject_code)
+    let Some(session) = runtime.verify_block_session.as_mut() else {
+        return Ok(verify_block_session_not_started_step());
+    };
+    Ok(complete_verify_block_session(session, result.reject_code))
 }
 
 /// Opens a DAG proposal cursor inside the long-lived DAG manager runtime.
@@ -2662,6 +2678,43 @@ mod tests {
         stream.append(&block.signature.as_ref());
         stream.append(&block.gas_estimation);
         stream.out().to_vec()
+    }
+
+    fn advance_verify_session_to_gas(runtime: &mut DagRuntimeState, tip: H256) {
+        dag_manager_runtime_begin_verify_block_session(
+            runtime,
+            DagVerifyBlockSessionInput {
+                block_level: 5,
+                pivot: [1u8; 32],
+                tips: vec![DagHash { hash: tip.0 }],
+                block_transaction_hashes: vec![],
+                supplied_transaction_hashes: vec![],
+            },
+        )
+        .expect("verify session should initialize");
+        let authorization =
+            dag_manager_runtime_verify_block_session_apply_transaction_resolution(runtime, 0);
+        assert_eq!(
+            authorization.action,
+            DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+        );
+        let vdf = dag_manager_runtime_verify_block_session_report_authorization(
+            runtime,
+            DagVerifyBlockAuthorizationReport {
+                vrf_key_found: true,
+                sender_eligible_vote_count: 11,
+                vdf_sortition_max_vote_count: 33,
+                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+        );
+        assert_eq!(vdf.action, DAG_VERIFY_SESSION_ACTION_VDF_SORTITION);
+        let gas = dag_manager_runtime_verify_block_session_report_vdf(
+            runtime,
+            DagVerifyBlockVdfReport {
+                vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
+            },
+        );
+        assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
     }
 
     fn dag_block_with_vdf_payload_and_transaction_hashes(
@@ -4182,9 +4235,9 @@ mod tests {
                     estimated_transactions_weight: 10,
                     dag_gas_limit: 20,
                     pbft_gas_limit: 100,
-                    tip_gas_estimations: vec![],
                 },
-            );
+            )
+            .expect("gas report should resolve without tip lookup");
             assert!(complete.complete);
             assert_eq!(complete.status, DAG_VERIFY_SESSION_STATUS_COMPLETE);
             assert_eq!(complete.reject_code, 0);
@@ -4213,6 +4266,162 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn verify_gas_skips_stale_tip_lookup_when_count_policy_does_not_require_it() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_verify_gas_no_tip_lookup");
+        let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+            .expect("storage should initialize");
+        let tip = H256::from([0x71; 32]);
+        storage
+            .0
+            .dag()
+            .write(tip, 4, 0, &signed_dag_block_rlp(0x71, 4, 25))
+            .expect("tip should persist for verify precheck");
+        let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
+            .expect("runtime should initialize");
+        runtime
+            .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
+            .expect("mapping write should succeed");
+        advance_verify_session_to_gas(&mut runtime, tip);
+        storage
+            .0
+            .dag()
+            .remove(tip)
+            .expect("tip removal should simulate a stale storage view");
+
+        let complete = dag_manager_runtime_verify_block_session_report_gas(
+            &mut runtime,
+            DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 100,
+            },
+        )
+        .expect("non-required tip gas must not touch stale storage");
+        assert!(complete.complete);
+        assert_eq!(complete.reject_code, 0);
+
+        drop(runtime);
+        drop(storage);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn verify_gas_loads_retained_tips_only_when_count_policy_requires_it() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_verify_gas_required_tip_lookup");
+        let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+            .expect("storage should initialize");
+        let tip = H256::from([0x72; 32]);
+        storage
+            .0
+            .dag()
+            .write(tip, 4, 0, &signed_dag_block_rlp(0x72, 4, 25))
+            .expect("tip should persist for aggregate gas lookup");
+        let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
+            .expect("runtime should initialize");
+        runtime
+            .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
+            .expect("mapping write should succeed");
+        advance_verify_session_to_gas(&mut runtime, tip);
+
+        let complete = dag_manager_runtime_verify_block_session_report_gas(
+            &mut runtime,
+            DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 30,
+            },
+        )
+        .expect("required tip gas should load from private Rust storage");
+        assert!(complete.complete);
+        assert_eq!(
+            complete.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_BLOCK_TOO_BIG
+        );
+
+        advance_verify_session_to_gas(&mut runtime, tip);
+        storage
+            .0
+            .dag()
+            .remove(tip)
+            .expect("tip removal should simulate stale required metadata");
+        let missing = dag_manager_runtime_verify_block_session_report_gas(
+            &mut runtime,
+            DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 30,
+            },
+        )
+        .expect("a missing retained tip is a typed consensus rejection");
+        assert_eq!(
+            missing.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_MISSING_TIP
+        );
+
+        drop(runtime);
+        drop(storage);
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn verify_gas_wrong_action_rejects_before_retained_tip_lookup() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_verify_gas_wrong_action");
+        let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
+            .expect("storage should initialize");
+        let tip = H256::from([0x73; 32]);
+        storage
+            .0
+            .dag()
+            .write(tip, 4, 0, &signed_dag_block_rlp(0x73, 4, 25))
+            .expect("tip should persist for verify precheck");
+        let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
+            .expect("runtime should initialize");
+        runtime
+            .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
+            .expect("mapping write should succeed");
+        advance_verify_session_to_gas(&mut runtime, tip);
+        dag_manager_runtime_begin_verify_block_session(
+            &mut runtime,
+            DagVerifyBlockSessionInput {
+                block_level: 5,
+                pivot: [1u8; 32],
+                tips: vec![DagHash { hash: tip.0 }],
+                block_transaction_hashes: vec![],
+                supplied_transaction_hashes: vec![],
+            },
+        )
+        .expect("replacement session should initialize");
+        storage
+            .0
+            .dag()
+            .remove(tip)
+            .expect("tip removal should expose an accidental lookup");
+
+        let invalid = dag_manager_runtime_verify_block_session_report_gas(
+            &mut runtime,
+            DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 30,
+            },
+        )
+        .expect("wrong-action report should remain status coded");
+        assert_eq!(invalid.status, DAG_VERIFY_SESSION_STATUS_INVALID_REPORT);
+        assert_eq!(
+            invalid.error_code,
+            "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT"
+        );
+
+        drop(runtime);
+        drop(storage);
+        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

@@ -3957,19 +3957,15 @@ pub mod rustaxa_ffi {
         vdf_status: u8,
     }
 
-    /// Live gas-estimation report for one `verifyBlock` session.
+    /// External gas facts for one `verifyBlock` session.
+    ///
+    /// Rust retains canonical tips in the active cursor and derives any
+    /// required per-tip gas metadata from private DAG storage.
     struct DagVerifyBlockGasReport {
         block_gas_estimation: u64,
         estimated_transactions_weight: u64,
         dag_gas_limit: u64,
         pbft_gas_limit: u64,
-        tip_gas_estimations: Vec<DagTipGas>,
-    }
-
-    /// Per-tip gas metadata for Rust DAG verification gas decisions.
-    struct DagTipGas {
-        found: bool,
-        gas_estimation: u64,
     }
 
     /// Rust DAG VDF sortition verification result.
@@ -4651,12 +4647,7 @@ pub mod rustaxa_ffi {
             self: &BridgeDagTransactionService,
             hash: &[u8; 32],
         ) -> Result<bool>;
-        /// Loads per-tip gas facts from canonical Rust DAG storage for
-        /// verification gas checks without C++ `DagBlock` materialization.
-        pub fn dag_manager_runtime_tip_gas_estimations(
-            self: &BridgeDagTransactionService,
-            tips: Vec<DagHash>,
-        ) -> Result<Vec<DagTipGas>>;
+        /// Loads one canonical DAG block payload from Rust storage.
         pub fn dag_manager_runtime_load_block(
             self: &BridgeDagTransactionService,
             hash: &[u8; 32],
