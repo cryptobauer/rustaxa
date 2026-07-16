@@ -245,9 +245,10 @@ pub use pbft_vote_progress::{
     PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
 };
 pub use pbft_vote_runtime::{
-    PbftRewardVotePayloadSelection, PbftVoteAdmissionRuntime, PbftVoteRuntimeAdmissionOutcome,
-    PbftVoteRuntimeBundle, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
-    RewardVoteCursor, RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus,
+    PbftRewardVotePayloadSelection, PbftVoteAdmissionPersistenceStatus, PbftVoteAdmissionRuntime,
+    PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome, PbftVoteRuntimeBundle,
+    PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads, RewardVoteCursor,
+    RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus,
 };
 pub use pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,

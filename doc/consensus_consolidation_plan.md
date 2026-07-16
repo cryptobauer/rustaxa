@@ -973,10 +973,33 @@ incompatibility. Both new leader tests and the touched PBFT broadcast path pass 
 Tier 3 command does not reach test collection because its Python 3.13 environment cannot build pinned `cytoolz` and
 `pyethash` without `Python.h`, leaving `pytest` unavailable.
 
+The next CRW-03 sub-slice closes admission plus vote-progress persistence. The service now holds the vote mutex while it
+validates the canonical vote, checkpoints the bounded replay insertion/eviction delta, touched period/round, and incoming
+payload entry, applies the admission transition, and commits any Rust-selected extra-reward and `2t+1` rows through the
+existing single Rust storage batch. Applied or no-write transitions publish normally; rejected or failed persistence
+restores the exact checkpoint before unlock and returns no executable peer-known, gossip, slashing, proposed-block, or
+PBFT-progress effects. Replay-only rejection/duplicate/conflict paths and accepted transitions with no durable intent do
+not create empty batches. The C++ admission route now makes one service call and no longer receives or echoes Rust-built
+storage payloads into a subsequent persistence call. The generic progress persistence API remains for the separate
+non-admission period/round compatibility restore path.
+
+Focused validation passes all 641 `rustaxa-consensus` tests and all 284 `rustaxa-bridge` tests. Transaction-specific
+coverage proves no-write publication without a persistence call, exact replay FIFO/round/payload rollback on rejected or
+operational persistence failure, suppressed failure effects, and successful retry after rollback. The affected C++
+targets build, `verified_votes_shim_test` passes 3/3, isolated vote admission/threshold/reward/network tests pass, and
+`PbftManagerTest.propose_block_and_vote_broadcast` passes. Broader rewrite and Tier 3 gates also completed at closeout.
+`make rewrite-validate-fast`, `make rewrite-validate-consensus`, and `make rewrite-validate-smoke` all exit successfully.
+The direct `rust_consensus_tests` binary passes 43/62 cases; the remaining 19 PBFT-sync fixtures fail during service
+construction on the previously classified ambiguous legacy reward-cursor bootstrap, before the changed admission path
+runs. The task-owner-preapproved Tier 3 CTest gate passes 22/28 binaries (79%). Its six failures retain the known
+classifications: same-process `/tmp/taraxa0` RocksDB lock reuse in the five node-backed binaries and the unrelated
+Go/cgo static-linker failure. The touched admission and PBFT broadcast cases pass in isolated fresh processes. The Python
+Tier 3 command does not reach test collection because its Python 3.13 environment cannot build pinned `cytoolz` and
+`pyethash` without `Python.h`, leaving `pytest` unavailable.
+
 `CRW-03` remains active for the cross-domain consolidation that these ownership commits intentionally do not overclaim:
-live vote admission still persists some progress effects in a subsequent service call, and manager period cleanup still
-emits separate vote/proposed-block actions. Follow-ups must replace those with atomic service operations before the
-combined vote/proposal deletion condition is complete.
+manager period cleanup still emits separate vote/proposed-block actions. That follow-up must become one atomic service
+operation before the combined vote/proposal deletion condition is complete.
 
 Implementation notes:
 

@@ -216,6 +216,7 @@ class VoteManager {
    *
    * Edge behavior:
    * - Duplicate, invalid, or non-admitted votes return `accepted == false`.
+   * - Required progress-persistence failure throws before network, slashing, or PBFT-progress intents are exposed.
    * - Double-vote evidence is submitted inside `VoteManager`; callers use
    *   `report_slashing` only for peer-action policy.
    */

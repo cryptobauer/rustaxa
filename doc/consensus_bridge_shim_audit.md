@@ -132,7 +132,14 @@ are absent from the bridge inventory.
   Rust guards for C++ block validation, then revalidates a deterministic content fingerprint before applying validation
   reports or marking blocks valid. The production path no longer performs a separate proposal-vote snapshot, per-vote
   proposed-block lookup, or C++ chain-membership callback. Tentative local wallet candidates retain their stateless path.
-  CRW-03 stays active for admission plus progress persistence and manager-owned atomic vote/proposal cleanup.
+- The admission-plus-progress persistence sub-slice is implemented. One service call now validates and admits the vote,
+  checkpoints only the touched replay-cache delta, verified-vote round, and payload entry, commits any extra-reward and
+  `2t+1` progress writes through the existing Rust batch, and publishes the live transition only after that commit.
+  Persistence rejection restores the checkpoint before the vote lock is released and suppresses every network,
+  slashing, proposed-block, and PBFT-progress executor effect. Replay-only and accepted no-write transitions remain
+  explicitly process-local and storage-free. C++ no longer echoes Rust-built persistence payloads into a second service
+  call; the generic progress-persistence adapter remains only for non-admission period/round compatibility restore.
+  CRW-03 stays active for manager-owned atomic vote/proposal cleanup.
 
 ## Required Closeout Checks
 

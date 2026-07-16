@@ -429,34 +429,17 @@ class VerifiedVotes {
    * - `context`: current PBFT period/round and optional 2t+1 threshold facts.
    *
    * Outputs:
-   * - A flat Rust mutation/executor report with validation, replay, insertion,
-   *   peer-known, proposed-block sidecar, gossip, slashing, persistence,
-   *   threshold, and PBFT-progress intents.
+   * - A flat Rust mutation/executor report with validation, replay, insertion, durable publication status,
+   *   peer-known, proposed-block sidecar, gossip, slashing, threshold, and PBFT-progress intents.
    *
    * Invariants:
-   * - This call mutates only Rust verified-vote state and retained payload
-   *   sidecars. It does not attach a live C++ `PbftVote` object, materialize
-   *   compatibility vote buckets, or execute network/storage/slashing side
-   *   effects; callers must execute returned intents and may verify the
-   *   retained weighted payload with `verifyRuntimeAcceptedPayload`.
+   * - Rust persists required progress payloads before publishing the transition or any external intent.
+   * - Storage rejection leaves the transition unpublished and suppresses all external intents.
+   * - The call does not execute network or slashing side effects; callers may execute them only after publication.
    */
-  rustaxa::PbftVoteAdmissionRuntimeResult admitValidatedVote(rust::Slice<const uint8_t> canonical_vote_rlp,
-                                                             rustaxa::PbftVoteValidationExternalFacts validation_facts,
-                                                             rustaxa::PbftVoteEventFactFlags flags,
-                                                             rustaxa::PbftVoteProgressContext context);
-
-  /**
-   * Verifies retained weighted-payload invariants for a vote accepted by Rust runtime.
-   *
-   * Inputs:
-   * - `result`: runtime admission result returned by `admitValidatedVote`.
-   *
-   * Error behavior:
-   * - Missing or mismatched retained payloads are hard invariant errors on the
-   *   production admission path because Rust has already mutated authoritative
-   *   verified-vote state.
-   */
-  void verifyRuntimeAcceptedPayload(const rustaxa::PbftVoteAdmissionRuntimeResult& result) const;
+  rustaxa::PbftVoteAdmissionRuntimeResult admitAndPersistValidatedVote(
+      rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
+      rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context);
 
   /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.

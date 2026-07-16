@@ -184,6 +184,18 @@ struct RoundVerifiedVotes {
     network_t_plus_one_step: u64,
 }
 
+/// Bounded snapshot of one period/round mutation domain.
+///
+/// Vote admission can touch only one round. This checkpoint therefore clones
+/// that round alone and records whether it existed, allowing exact rollback
+/// without cloning unrelated periods or the full verified-vote index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedVotesRoundCheckpoint {
+    period: u64,
+    round: u64,
+    previous: Option<RoundVerifiedVotes>,
+}
+
 /// Unique-voter precheck outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UniqueVoterCheckOutcome {
@@ -305,6 +317,36 @@ impl VerifiedVotes {
     /// Creates an empty verified-votes index.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Captures the complete pre-transition state for one touched round.
+    pub(crate) fn checkpoint_round(&self, period: u64, round: u64) -> VerifiedVotesRoundCheckpoint {
+        VerifiedVotesRoundCheckpoint {
+            period,
+            round,
+            previous: self
+                .votes
+                .get(&period)
+                .and_then(|rounds| rounds.get(&round))
+                .cloned(),
+        }
+    }
+
+    /// Restores one round exactly and removes newly-created empty period maps.
+    pub(crate) fn restore_round(&mut self, checkpoint: VerifiedVotesRoundCheckpoint) {
+        if let Some(previous) = checkpoint.previous {
+            self.votes
+                .entry(checkpoint.period)
+                .or_default()
+                .insert(checkpoint.round, previous);
+            return;
+        }
+        if let Some(rounds) = self.votes.get_mut(&checkpoint.period) {
+            rounds.remove(&checkpoint.round);
+            if rounds.is_empty() {
+                self.votes.remove(&checkpoint.period);
+            }
+        }
     }
 
     /// Returns total count of stored vote hashes across all periods/rounds/steps.

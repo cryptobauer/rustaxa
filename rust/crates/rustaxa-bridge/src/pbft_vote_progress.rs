@@ -36,12 +36,10 @@ pub(crate) struct PbftVoteProgressExecutionAdapter {
     pub(crate) gossip_vote: bool,
     pub(crate) gossip_vote_hash: [u8; 32],
     pub(crate) report_slashing: bool,
-    pub(crate) persist_extra_reward_vote: bool,
     pub(crate) network_t_plus_one_step_updated: bool,
     pub(crate) drive_pbft_progress: bool,
     pub(crate) progress_period: u64,
     pub(crate) progress_round: u64,
-    pub(crate) persist_two_t_plus_one_votes: bool,
 }
 
 pub(crate) fn context_to_domain(value: &FfiPbftVoteProgressContext) -> PbftVoteProgressContext {
@@ -120,22 +118,8 @@ pub(crate) fn execution_plan_to_ffi(
         PbftVoteProgressIntent::GossipVote { vote_hash } => Some(*vote_hash),
         _ => None,
     });
-    let extra_reward_vote = plan.intents.iter().find_map(|intent| match intent {
-        PbftVoteProgressIntent::PersistExtraRewardVote { vote_hash } => Some(*vote_hash),
-        _ => None,
-    });
     let drive_progress = plan.intents.iter().find_map(|intent| match intent {
         PbftVoteProgressIntent::DrivePbftProgress { period, round } => Some((*period, *round)),
-        _ => None,
-    });
-    let two_t_plus_one = plan.intents.iter().find_map(|intent| match intent {
-        PbftVoteProgressIntent::PersistTwoTPlusOneVotes {
-            kind,
-            period,
-            round,
-            step,
-            block_hash,
-        } => Some((*kind, *period, *round, *step, *block_hash)),
         _ => None,
     });
     let threshold = plan.threshold_decision;
@@ -160,13 +144,11 @@ pub(crate) fn execution_plan_to_ffi(
         gossip_vote: gossip_vote.is_some(),
         gossip_vote_hash: gossip_vote.unwrap_or_default().into(),
         report_slashing: slashing.is_some(),
-        persist_extra_reward_vote: extra_reward_vote.is_some(),
         network_t_plus_one_step_updated: threshold
             .is_some_and(|decision| decision.network_t_plus_one_step_updated),
         drive_pbft_progress: drive_progress.is_some(),
         progress_period: drive_progress.map(|(period, _)| period).unwrap_or_default(),
         progress_round: drive_progress.map(|(_, round)| round).unwrap_or_default(),
-        persist_two_t_plus_one_votes: two_t_plus_one.is_some(),
     }
 }
 
@@ -303,8 +285,6 @@ mod tests {
         assert_eq!(plan.mark_vote_known_hash, [1; 32]);
         assert!(!plan.gossip_vote);
         assert!(plan.report_slashing);
-        assert!(!plan.persist_extra_reward_vote);
-        assert!(!plan.persist_two_t_plus_one_votes);
     }
 
     #[test]
@@ -336,7 +316,6 @@ mod tests {
         assert_eq!(plan.gossip_vote_hash, [1; 32]);
         assert!(plan.drive_pbft_progress);
         assert!(plan.network_t_plus_one_step_updated);
-        assert!(plan.persist_two_t_plus_one_votes);
     }
 
     #[test]
@@ -371,7 +350,6 @@ mod tests {
 
         assert!(plan.accepted);
         assert!(plan.gossip_vote);
-        assert!(plan.persist_extra_reward_vote);
     }
 
     #[test]

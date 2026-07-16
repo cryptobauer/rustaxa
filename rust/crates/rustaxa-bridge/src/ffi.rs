@@ -2360,11 +2360,10 @@ pub mod rustaxa_ffi {
     /// Runtime-owned PBFT vote admission transition result.
     ///
     /// This is the production-oriented `VoteManager::addVerifiedVote` bridge
-    /// result: Rust validates canonical bytes from caller-supplied facts,
-    /// mutates the Rust-owned verified-vote index, records vote payload
-    /// sidecars, and returns explicit executor effects. C++ still executes
-    /// storage writes, slashing transaction submission, logging, and temporary
-    /// live sidecar materialization.
+    /// result: Rust validates canonical bytes, applies a bounded in-memory
+    /// checkpoint, commits any required vote-progress batch, and publishes the
+    /// transition only after persistence succeeds. External effects are valid
+    /// only when `transition_published` is true.
     struct PbftVoteAdmissionRuntimeResult {
         status: u8,
         error_code: String,
@@ -2379,12 +2378,10 @@ pub mod rustaxa_ffi {
         vote: VerifiedVotePayload,
         has_verified_vote_add: bool,
         verified_vote_add: VerifiedVoteAddOutcome,
-        has_storage_vote: bool,
-        storage_vote: PbftVoteStorageRecord,
-        persist_extra_reward_vote: bool,
-        extra_reward_vote: PbftVoteStorageRecord,
-        persist_two_t_plus_one_votes: bool,
-        two_t_plus_one_bundle: PbftTwoTPlusOneVoteBundle,
+        persistence_required: bool,
+        persistence_status: u8,
+        persistence_applied_writes: u64,
+        transition_published: bool,
         mark_vote_known: bool,
         mark_vote_known_hash: [u8; 32],
         request_proposed_block_sidecar: bool,
@@ -5454,7 +5451,7 @@ pub mod rustaxa_ffi {
             two_t_plus_one_threshold: u64,
             apply_threshold_decision: bool,
         ) -> Result<VerifiedVoteAddOutcome>;
-        pub fn pbft_service_verified_votes_admit_validated_vote(
+        pub fn pbft_service_verified_votes_admit_and_persist(
             self: &BridgePbftService,
             canonical_vote_rlp: &[u8],
             validation_facts: PbftVoteValidationExternalFacts,

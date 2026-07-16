@@ -187,6 +187,18 @@ pub struct PbftVoteReplayCache {
     expiration: VecDeque<H256>,
 }
 
+/// Bounded replay-cache delta captured before one possible hash insertion.
+///
+/// The checkpoint stores only the incoming hash and any FIFO entry that the
+/// insertion can evict. It never clones the full replay set or expiration
+/// queue and can restore their exact pre-insertion membership and order.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(crate) struct PbftVoteReplayCheckpoint {
+    vote_hash: H256,
+    was_present: bool,
+    evicted: Vec<H256>,
+}
+
 impl PbftVoteReplayCache {
     /// Creates an empty replay cache with legacy-compatible capacity controls.
     ///
@@ -231,6 +243,34 @@ impl PbftVoteReplayCache {
             }
         }
         true
+    }
+
+    /// Captures the bounded FIFO delta for a subsequent insertion of `vote_hash`.
+    pub(crate) fn checkpoint_insert(&self, vote_hash: H256) -> PbftVoteReplayCheckpoint {
+        let was_present = self.hashes.contains(&vote_hash);
+        let evicted = if !was_present && self.hashes.len().saturating_add(1) > self.max_size {
+            self.expiration.front().copied().into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        PbftVoteReplayCheckpoint {
+            vote_hash,
+            was_present,
+            evicted,
+        }
+    }
+
+    /// Restores the exact replay membership and FIFO order captured by a checkpoint.
+    pub(crate) fn restore_insert(&mut self, checkpoint: PbftVoteReplayCheckpoint) {
+        if checkpoint.was_present {
+            return;
+        }
+        self.hashes.remove(&checkpoint.vote_hash);
+        self.expiration.retain(|hash| *hash != checkpoint.vote_hash);
+        for hash in checkpoint.evicted.into_iter().rev() {
+            self.hashes.insert(hash);
+            self.expiration.push_front(hash);
+        }
     }
 
     /// Returns the number of hashes currently retained.

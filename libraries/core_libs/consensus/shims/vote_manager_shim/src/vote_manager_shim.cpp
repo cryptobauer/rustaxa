@@ -48,6 +48,9 @@ constexpr uint8_t kPbftLeaderSelectionInvalidValidationReport = 4;
 constexpr uint8_t kPbftLeaderSelectionServiceUnavailable = 5;
 constexpr uint8_t kPbftVoteGenerationStatusZeroWeight = 6;
 constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
+constexpr uint8_t kPbftVoteAdmissionPersistenceNotRequired = 0;
+constexpr uint8_t kPbftVoteAdmissionPersistenceApplied = 1;
+constexpr uint8_t kPbftVoteAdmissionPersistenceRejected = 2;
 constexpr uint8_t kPbftTwoTPlusOneThresholdStatusAvailable = 0;
 constexpr uint8_t kPbftTwoTPlusOneThresholdStatusNeedsDposTotal = 1;
 constexpr uint8_t kPbftFinalChainFactStatusReady = 0;
@@ -223,30 +226,6 @@ rustaxa::PbftTwoTPlusOneVoteBundle makeTwoTPlusOneVoteBundle(TwoTPlusOneVotedBlo
   return bundle;
 }
 
-rustaxa::PbftVoteStorageRecord cloneVoteStorageRecord(const rustaxa::PbftVoteStorageRecord& record) {
-  rustaxa::PbftVoteStorageRecord out;
-  out.hash = record.hash;
-  out.vote_rlp.reserve(record.vote_rlp.size());
-  for (const auto byte : record.vote_rlp) {
-    out.vote_rlp.push_back(byte);
-  }
-  return out;
-}
-
-rustaxa::PbftTwoTPlusOneVoteBundle cloneTwoTPlusOneVoteBundle(const rustaxa::PbftTwoTPlusOneVoteBundle& bundle) {
-  rustaxa::PbftTwoTPlusOneVoteBundle out;
-  out.kind = bundle.kind;
-  out.period = bundle.period;
-  out.round = bundle.round;
-  out.step = bundle.step;
-  out.block_hash = bundle.block_hash;
-  out.votes_bundle_rlp.reserve(bundle.votes_bundle_rlp.size());
-  for (const auto byte : bundle.votes_bundle_rlp) {
-    out.votes_bundle_rlp.push_back(byte);
-  }
-  return out;
-}
-
 void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char* operation) {
   if (result.status == kPbftVotePersistenceStatusApplied) {
     return;
@@ -270,24 +249,6 @@ void persistVoteProgressToRustStorage(const VerifiedVotes& verified_votes,
   if (two_t_plus_one_type.has_value()) {
     write.has_two_t_plus_one_bundle = true;
     write.two_t_plus_one_bundle = makeTwoTPlusOneVoteBundle(*two_t_plus_one_type, two_t_plus_one_votes);
-  }
-
-  requireApplied(verified_votes.persistPbftVoteProgress(std::move(write)), "vote progress");
-}
-
-void persistVoteProgressPayloadsToRustStorage(const VerifiedVotes& verified_votes, bool has_extra_reward_vote,
-                                              const rustaxa::PbftVoteStorageRecord& extra_reward_vote,
-                                              bool has_two_t_plus_one_bundle,
-                                              const rustaxa::PbftTwoTPlusOneVoteBundle& two_t_plus_one_bundle) {
-  rustaxa::PbftVoteProgressPersistenceWrite write{};
-  if (has_extra_reward_vote) {
-    write.has_extra_reward_vote = true;
-    write.extra_reward_vote = cloneVoteStorageRecord(extra_reward_vote);
-  }
-
-  if (has_two_t_plus_one_bundle) {
-    write.has_two_t_plus_one_bundle = true;
-    write.two_t_plus_one_bundle = cloneTwoTPlusOneVoteBundle(two_t_plus_one_bundle);
   }
 
   requireApplied(verified_votes.persistPbftVoteProgress(std::move(write)), "vote progress");
@@ -674,17 +635,36 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     }
   }
 
-  const auto runtime_result = verified_votes_.admitValidatedVote(toBridgeByteSlice(canonical_vote_rlp), external_facts,
-                                                                 makeVoteEventFactFlags(), progress_context);
-  requireRuntimeVoteTransitionIntentsMatch(runtime_result, vote);
-  report.mark_vote_known = runtime_result.mark_vote_known;
-  report.mark_vote_known_hash = fromBridgeVoteHash(runtime_result.mark_vote_known_hash);
-  report.gossip_vote = runtime_result.gossip_vote;
-  report.gossip_vote_hash = fromBridgeVoteHash(runtime_result.gossip_vote_hash);
-  report.report_slashing = runtime_result.report_slashing;
-  report.drive_pbft_progress = runtime_result.drive_pbft_progress;
-  report.progress_period = runtime_result.progress_period;
-  report.progress_round = runtime_result.progress_round;
+  const auto runtime_result = verified_votes_.admitAndPersistValidatedVote(
+      toBridgeByteSlice(canonical_vote_rlp), external_facts, makeVoteEventFactFlags(), progress_context);
+  if (runtime_result.persistence_status == kPbftVoteAdmissionPersistenceRejected) {
+    std::stringstream err;
+    err << "Rust PBFT vote admission persistence rejected vote " << hash << ": "
+        << static_cast<std::string>(runtime_result.error_code);
+    LOG(log_er_) << err.str();
+    throw std::runtime_error(err.str());
+  }
+  if ((runtime_result.persistence_required &&
+       (runtime_result.persistence_status != kPbftVoteAdmissionPersistenceApplied ||
+        runtime_result.persistence_applied_writes == 0)) ||
+      (!runtime_result.persistence_required &&
+       (runtime_result.persistence_status != kPbftVoteAdmissionPersistenceNotRequired ||
+        runtime_result.persistence_applied_writes != 0))) {
+    throw std::runtime_error("Rust PBFT vote admission returned inconsistent persistence publication state");
+  }
+  if (runtime_result.transition_published) {
+    requireRuntimeVoteTransitionIntentsMatch(runtime_result, vote);
+    report.mark_vote_known = runtime_result.mark_vote_known;
+    report.mark_vote_known_hash = fromBridgeVoteHash(runtime_result.mark_vote_known_hash);
+    report.gossip_vote = runtime_result.gossip_vote;
+    report.gossip_vote_hash = fromBridgeVoteHash(runtime_result.gossip_vote_hash);
+    report.report_slashing = runtime_result.report_slashing;
+    report.drive_pbft_progress = runtime_result.drive_pbft_progress;
+    report.progress_period = runtime_result.progress_period;
+    report.progress_round = runtime_result.progress_round;
+  } else if (runtime_result.accepted) {
+    throw std::runtime_error("Rust PBFT vote admission accepted an unpublished transition");
+  }
 
   if (!runtime_result.has_validation || !runtime_result.validation.accepted ||
       runtime_result.validation.status != kPbftVoteValidationStatusValid) {
@@ -702,6 +682,9 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
   }
   if (!runtime_result.validation.has_sortition_threshold || !runtime_result.validation.weight_calculated) {
     throw std::runtime_error("VoteManager Rust PBFT vote admission accepted validation without weight facts");
+  }
+  if (!runtime_result.transition_published) {
+    return report;
   }
   requireRuntimeAdmissionVoteMatches(runtime_result.vote, vote, runtime_result.validation.calculated_weight);
 
@@ -725,20 +708,10 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
                  << " without a new verified-vote insertion";
     return report;
   }
-  if (!runtime_result.has_storage_vote) {
-    throw std::runtime_error("VoteManager Rust PBFT vote admission accepted without a storage payload");
-  }
-
-  verified_votes_.verifyRuntimeAcceptedPayload(runtime_result);
-
   LOG(log_nf_) << "Added verified vote: " << hash;
   LOG(log_dg_) << "Added verified vote: " << *vote;
 
   if (!two_t_plus_one.has_value()) [[unlikely]] {
-    if (runtime_result.persist_extra_reward_vote) {
-      persistVoteProgressPayloadsToRustStorage(verified_votes_, true, runtime_result.extra_reward_vote, false,
-                                               runtime_result.two_t_plus_one_bundle);
-    }
     LOG(log_er_) << "Cannot set(or not) 2t+1 voted block as 2t+1 threshold is unavailable, vote " << vote->getHash();
     report.accepted = true;
     return report;
@@ -749,18 +722,6 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
                  << vote->getRound() << ", step " << vote->getStep();
   }
 
-  if (!runtime_result.persist_two_t_plus_one_votes) {
-    if (runtime_result.persist_extra_reward_vote) {
-      persistVoteProgressPayloadsToRustStorage(verified_votes_, true, runtime_result.extra_reward_vote, false,
-                                               runtime_result.two_t_plus_one_bundle);
-    }
-    report.accepted = true;
-    return report;
-  }
-
-  persistVoteProgressPayloadsToRustStorage(verified_votes_, runtime_result.persist_extra_reward_vote,
-                                           runtime_result.extra_reward_vote, true,
-                                           runtime_result.two_t_plus_one_bundle);
   report.accepted = true;
   return report;
 }

@@ -61,10 +61,11 @@ use rustaxa_consensus::verified_votes::{
 };
 use rustaxa_consensus::{
     PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle, PbftVoteAdmissionRuntime,
+    PbftVoteAdmissionTransactionResult,
     PbftVotePersistenceResult as DomainPbftVotePersistenceResult,
     PbftVoteProgressPersistenceWrite as DomainPbftVoteProgressPersistenceWrite,
-    PbftVoteRuntimeAdmissionOutcome, PbftVoteStorageRecord as DomainPbftVoteStorageRecord,
-    RewardVoteCursor, RewardVoteCursorCommitStatus,
+    PbftVoteStorageRecord as DomainPbftVoteStorageRecord, RewardVoteCursor,
+    RewardVoteCursorCommitStatus,
 };
 use rustaxa_storage::Storage;
 use rustaxa_vdf::vrf;
@@ -375,7 +376,7 @@ impl VerifiedVotesAccess<'_> {
     /// Inserts `vote` into voted-value aggregation.
     ///
     /// Compatibility/test helper only; production admission must retain the
-    /// canonical vote payload sidecars through `verified_votes_admit_validated_vote`.
+    /// canonical vote payload sidecars through `verified_votes_admit_and_persist`.
     pub fn verified_votes_insert_voted_value(
         &mut self,
         vote: VerifiedVotePayload,
@@ -446,7 +447,7 @@ impl VerifiedVotesAccess<'_> {
     /// The caller provides `total_weight` for vote's voted-value bucket and
     /// `two_t_plus_one_threshold` for this vote type/period.
     /// Compatibility/test helper only. Production admission applies threshold
-    /// decisions inside `verified_votes_admit_validated_vote` so bundle
+    /// decisions inside `verified_votes_admit_and_persist` so bundle
     /// persistence can use Rust-retained weighted payloads.
     pub fn verified_votes_apply_threshold_decision(
         &mut self,
@@ -762,13 +763,14 @@ impl VerifiedVotesAccess<'_> {
         ))
     }
 
-    /// Runs one validation-backed PBFT vote admission transition.
+    /// Validates, persists, and publishes one PBFT vote admission transition.
     ///
     /// Rust validates canonical vote bytes from caller-supplied external facts,
-    /// records vote payload sidecars, mutates the single Rust verified-vote
-    /// index owned by the PBFT service, and returns explicit executor
-    /// effects for the C++ VoteManager shim.
-    pub fn verified_votes_admit_validated_vote(
+    /// checkpoints only the touched replay/round/payload state, commits every
+    /// required vote-progress write through one Rust batch, and exposes
+    /// external effects only after durable publication. Rejected persistence
+    /// restores the checkpoint exactly and returns a typed unpublished result.
+    pub fn verified_votes_admit_and_persist(
         &mut self,
         canonical_vote_rlp: &[u8],
         validation_facts: PbftVoteValidationExternalFacts,
@@ -779,13 +781,19 @@ impl VerifiedVotesAccess<'_> {
             canonical_vote_rlp,
             validation_facts_to_domain(validation_facts),
         )?;
-        let outcome = self.runtime.admit_validated_vote(
+        let storage = self.storage;
+        let result = self.runtime.admit_validated_vote_transactional(
             canonical_vote_rlp,
             &validation,
             flags_to_domain(flags),
             context_to_domain(&context),
+            |write| {
+                let storage =
+                    storage.ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STORAGE_UNAVAILABLE"))?;
+                persist_pbft_vote_progress(storage, write)
+            },
         )?;
-        Ok(runtime_outcome_to_ffi(validation, outcome, context))
+        Ok(runtime_outcome_to_ffi(validation, result, context))
     }
 
     /// Removes periods lower than `pbft_period`.
@@ -1600,7 +1608,7 @@ service_verified_votes_fallible! {
     fn pbft_service_verified_votes_get_two_t_plus_one_voted_block(period: u64, round: u64, kind: u8) -> TwoTPlusOneVotedBlockLookup => verified_votes_get_two_t_plus_one_voted_block;
     fn pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(period: u64, round: u64, kind: u8) -> TwoTPlusOneVotePayloadsLookup => verified_votes_get_two_t_plus_one_voted_block_payloads;
     fn pbft_service_verified_votes_add_verified_vote(vote: VerifiedVotePayload, weighted_vote: PbftVoteStorageRecord, two_t_plus_one_threshold: u64, apply_threshold_decision: bool) -> FfiVerifiedVoteAddOutcome => verified_votes_add_verified_vote;
-    fn pbft_service_verified_votes_admit_validated_vote(canonical_vote_rlp: &[u8], validation_facts: PbftVoteValidationExternalFacts, flags: PbftVoteEventFactFlags, context: FfiPbftVoteProgressContext) -> PbftVoteAdmissionRuntimeResult => verified_votes_admit_validated_vote;
+    fn pbft_service_verified_votes_admit_and_persist(canonical_vote_rlp: &[u8], validation_facts: PbftVoteValidationExternalFacts, flags: PbftVoteEventFactFlags, context: FfiPbftVoteProgressContext) -> PbftVoteAdmissionRuntimeResult => verified_votes_admit_and_persist;
     fn pbft_service_verified_votes_select_reward_vote_payloads(block_period: u64, requested_vote_hashes: Vec<PbftFinalizationHash>) -> FfiPbftRewardVotePayloadSelection => verified_votes_select_reward_vote_payloads;
     fn pbft_service_verified_votes_commit_reward_vote_cursor(write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan, reset_generation: u64) -> FfiRewardVoteCursorCommitResult => verified_votes_commit_reward_vote_cursor;
     fn pbft_service_verified_votes_save_own_verified_vote(record: PbftVoteStorageRecord) -> crate::ffi::rustaxa_ffi::PbftVotePersistenceResult => verified_votes_save_own_verified_vote;
@@ -1744,9 +1752,15 @@ const fn reward_error_code(status: PbftRewardVotesStatus) -> &'static str {
 
 fn runtime_outcome_to_ffi(
     validation: PbftCanonicalVoteValidation,
-    outcome: PbftVoteRuntimeAdmissionOutcome,
+    transaction: PbftVoteAdmissionTransactionResult,
     context: FfiPbftVoteProgressContext,
 ) -> PbftVoteAdmissionRuntimeResult {
+    let transition_published = transaction.transition_published;
+    let persistence_required = transaction.persistence_required;
+    let persistence_status = transaction.persistence_status.as_u8();
+    let persistence_applied_writes = transaction.persistence_applied_writes;
+    let persistence_error_code = transaction.persistence_error_code;
+    let outcome = transaction.outcome;
     let progress_fact = outcome.precheck.progress_fact;
     let empty_vote = empty_vote_payload();
     let vote = progress_fact
@@ -1763,10 +1777,13 @@ fn runtime_outcome_to_ffi(
         .as_ref()
         .map(|progress| progress.status)
         .unwrap_or(outcome.precheck.event_status.as_u8());
-    let error_code = progress
+    let mut error_code = progress
         .as_ref()
         .map(|progress| progress.error_code.clone())
         .unwrap_or_else(|| outcome.precheck.error_code.to_owned());
+    if !transition_published && !persistence_error_code.is_empty() {
+        error_code = persistence_error_code;
+    }
     let add_outcome = outcome.add_outcome.map(|add| {
         outcome_to_ffi_add_vote_outcome(
             copy_vote_payload(&vote),
@@ -1777,57 +1794,33 @@ fn runtime_outcome_to_ffi(
             empty_step_vote_payload_entry(),
         )
     });
-    let storage_vote = outcome
-        .storage_vote
-        .map(Into::into)
-        .unwrap_or_else(empty_storage_record);
-    let extra_reward_vote = if progress
-        .as_ref()
-        .map(|progress| progress.persist_extra_reward_vote)
-        .unwrap_or(false)
-    {
-        PbftVoteStorageRecord {
-            hash: storage_vote.hash,
-            vote_rlp: storage_vote.vote_rlp.clone(),
-        }
-    } else {
-        empty_storage_record()
-    };
-    let two_t_plus_one_bundle = if let Some(bundle) = outcome.two_t_plus_one_bundle {
-        PbftTwoTPlusOneVoteBundle {
-            kind: bundle.kind.into(),
-            period: bundle.period,
-            round: bundle.round,
-            step: bundle.step,
-            block_hash: bundle.block_hash.into(),
-            votes_bundle_rlp: bundle.votes_bundle_rlp,
-        }
-    } else {
-        empty_two_t_plus_one_bundle()
-    };
-    let (slashing_incoming_vote, slashing_conflicting_vote) =
+    let (slashing_incoming_vote, slashing_conflicting_vote) = if transition_published {
         if let Some(payloads) = outcome.slashing_payloads {
             (payloads.incoming.into(), payloads.conflicting.into())
         } else {
             (empty_storage_record(), empty_storage_record())
-        };
+        }
+    } else {
+        (empty_storage_record(), empty_storage_record())
+    };
 
     PbftVoteAdmissionRuntimeResult {
         status,
         error_code,
-        accepted: progress
-            .as_ref()
-            .map(|progress| progress.accepted)
-            .unwrap_or(false),
-        rejected: !validation.accepted,
+        accepted: transition_published
+            && progress
+                .as_ref()
+                .map(|progress| progress.accepted)
+                .unwrap_or(false),
+        rejected: !validation.accepted || !transition_published,
         has_validation: true,
         replay_should_mark: outcome.replay.should_mark,
-        replay_inserted: outcome.replay.inserted,
+        replay_inserted: transition_published && outcome.replay.inserted,
         replay_already_present: outcome.replay.already_present,
         validation: validation.into(),
         has_vote: progress_fact.is_some(),
         vote,
-        has_verified_vote_add: add_outcome.is_some(),
+        has_verified_vote_add: transition_published && add_outcome.is_some(),
         verified_vote_add: add_outcome.unwrap_or_else(|| {
             outcome_to_ffi_add_vote_outcome(
                 empty_vote_payload(),
@@ -1838,30 +1831,24 @@ fn runtime_outcome_to_ffi(
                 empty_step_vote_payload_entry(),
             )
         }),
-        has_storage_vote: storage_vote.hash != [0; 32],
-        storage_vote,
-        persist_extra_reward_vote: progress
-            .as_ref()
-            .map(|progress| progress.persist_extra_reward_vote)
-            .unwrap_or(false),
-        extra_reward_vote,
-        persist_two_t_plus_one_votes: progress
-            .as_ref()
-            .map(|progress| progress.persist_two_t_plus_one_votes)
-            .unwrap_or(false),
-        two_t_plus_one_bundle,
-        mark_vote_known: progress
-            .as_ref()
-            .map(|progress| progress.mark_vote_known)
-            .unwrap_or(false),
+        persistence_required,
+        persistence_status,
+        persistence_applied_writes,
+        transition_published,
+        mark_vote_known: transition_published
+            && progress
+                .as_ref()
+                .map(|progress| progress.mark_vote_known)
+                .unwrap_or(false),
         mark_vote_known_hash: progress
             .as_ref()
             .map(|progress| progress.mark_vote_known_hash)
             .unwrap_or_default(),
-        request_proposed_block_sidecar: progress
-            .as_ref()
-            .map(|progress| progress.request_proposed_block_sidecar)
-            .unwrap_or(false),
+        request_proposed_block_sidecar: transition_published
+            && progress
+                .as_ref()
+                .map(|progress| progress.request_proposed_block_sidecar)
+                .unwrap_or(false),
         proposed_block_sidecar_hash: progress
             .as_ref()
             .map(|progress| progress.proposed_block_sidecar_hash)
@@ -1870,28 +1857,32 @@ fn runtime_outcome_to_ffi(
             .as_ref()
             .map(|progress| progress.proposed_block_sidecar_period)
             .unwrap_or_default(),
-        gossip_vote: progress
-            .as_ref()
-            .map(|progress| progress.gossip_vote)
-            .unwrap_or(false),
+        gossip_vote: transition_published
+            && progress
+                .as_ref()
+                .map(|progress| progress.gossip_vote)
+                .unwrap_or(false),
         gossip_vote_hash: progress
             .as_ref()
             .map(|progress| progress.gossip_vote_hash)
             .unwrap_or_default(),
-        report_slashing: progress
-            .as_ref()
-            .map(|progress| progress.report_slashing)
-            .unwrap_or(false),
+        report_slashing: transition_published
+            && progress
+                .as_ref()
+                .map(|progress| progress.report_slashing)
+                .unwrap_or(false),
         slashing_incoming_vote,
         slashing_conflicting_vote,
-        network_t_plus_one_step_updated: progress
-            .as_ref()
-            .map(|progress| progress.network_t_plus_one_step_updated)
-            .unwrap_or(false),
-        drive_pbft_progress: progress
-            .as_ref()
-            .map(|progress| progress.drive_pbft_progress)
-            .unwrap_or(false),
+        network_t_plus_one_step_updated: transition_published
+            && progress
+                .as_ref()
+                .map(|progress| progress.network_t_plus_one_step_updated)
+                .unwrap_or(false),
+        drive_pbft_progress: transition_published
+            && progress
+                .as_ref()
+                .map(|progress| progress.drive_pbft_progress)
+                .unwrap_or(false),
         progress_period: progress
             .as_ref()
             .map(|progress| progress.progress_period)
@@ -1971,17 +1962,6 @@ fn empty_step_vote_payload_entry() -> VerifiedStepVotePayloadEntry {
         block_hash: [0; 32],
         total_weight: 0,
         votes: Vec::new(),
-    }
-}
-
-fn empty_two_t_plus_one_bundle() -> PbftTwoTPlusOneVoteBundle {
-    PbftTwoTPlusOneVoteBundle {
-        kind: 0,
-        period: 0,
-        round: 0,
-        step: 0,
-        block_hash: [0; 32],
-        votes_bundle_rlp: Vec::new(),
     }
 }
 
@@ -2180,7 +2160,10 @@ mod tests {
         PbftVoteIdentity, PbftVoteProgressFact, PbftVoteProgressIntent, PbftVoteProgressPlan,
         PbftVoteProgressStatus,
     };
-    use rustaxa_consensus::pbft_vote_runtime::PbftVoteRuntimeReplayOutcome;
+    use rustaxa_consensus::pbft_vote_runtime::{
+        PbftVoteAdmissionPersistenceStatus, PbftVoteRuntimeAdmissionOutcome,
+        PbftVoteRuntimeReplayOutcome,
+    };
     use rustaxa_consensus::pbft_vote_validation::PbftVoteValidationStatus;
     use rustaxa_consensus::{
         build_weighted_pbft_vote_payload, generate_pbft_vote, PbftVoteGenerationInput,
@@ -2275,6 +2258,19 @@ mod tests {
         let error = service
             .pbft_service_verified_votes_size()
             .expect_err("chain-only services have no verified-votes runtime");
+        assert!(error
+            .to_string()
+            .contains("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"));
+        let vote = generated_vote([0x40; 32], NODE_SECRET);
+        let error = match service.pbft_service_verified_votes_admit_and_persist(
+            &vote.vote_rlp,
+            validation_facts(),
+            runtime_flags(),
+            runtime_context(80),
+        ) {
+            Ok(_) => panic!("chain-only services cannot admit verified votes"),
+            Err(error) => error,
+        };
         assert!(error
             .to_string()
             .contains("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"));
@@ -3021,14 +3017,15 @@ mod tests {
 
     #[test]
     fn bridge_admission_exposes_retained_weighted_payloads() {
-        let votes = verified_votes_service_for_test(None).unwrap();
+        let storage = temp_bridge_storage("admission_retained_payloads");
+        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
         let first = generated_vote([0x22; 32], NODE_SECRET);
         let second = generated_vote([0x22; 32], NODE_SECRET_TWO);
         let first_hash: [u8; 32] = first.vote_hash.into();
         let second_hash: [u8; 32] = second.vote_hash.into();
 
         let first_result = votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &first.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3036,7 +3033,8 @@ mod tests {
             )
             .expect("first generated vote is admitted");
         assert!(first_result.accepted);
-        assert!(first_result.has_storage_vote);
+        assert!(first_result.transition_published);
+        assert!(!first_result.persistence_required);
 
         let lookup = votes
             .pbft_service_verified_votes_weighted_payload(&first_hash)
@@ -3046,7 +3044,7 @@ mod tests {
         assert!(!lookup.vote.vote_rlp.is_empty());
 
         let second_result = votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &second.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3054,6 +3052,8 @@ mod tests {
             )
             .expect("second generated vote is admitted");
         assert!(second_result.accepted);
+        assert!(second_result.transition_published);
+        assert!(!second_result.persistence_required);
 
         let payloads = votes
             .pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(
@@ -3090,7 +3090,7 @@ mod tests {
         let votes = verified_votes_service_for_test(None).unwrap();
         let generated = generated_vote([0x23; 32], NODE_SECRET);
         let admitted = votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &generated.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3098,36 +3098,40 @@ mod tests {
             )
             .expect("seed vote is admitted with a retained payload");
         let admitted_vote = copy_vote_payload(&admitted.vote);
+        let admitted_weighted =
+            build_weighted_pbft_vote_payload(&generated.vote_rlp, admitted_vote.weight)
+                .expect("admitted vote has a canonical weighted payload");
+        let admitted_storage: PbftVoteStorageRecord = admitted_weighted.into();
 
         let voted = votes
             .pbft_service_verified_votes_insert_voted_value(
                 copy_vote_payload(&admitted_vote),
-                copy_storage_record(&admitted.storage_vote),
+                copy_storage_record(&admitted_storage),
             )
             .unwrap();
         assert!(voted.bucket_found);
         assert_eq!(voted.bucket.votes.len(), 1);
-        assert_eq!(voted.bucket.votes[0].hash, admitted.storage_vote.hash);
+        assert_eq!(voted.bucket.votes[0].hash, admitted_storage.hash);
 
         let atomic = votes
             .pbft_service_verified_votes_insert_vote_atomic(
                 copy_vote_payload(&admitted_vote),
-                copy_storage_record(&admitted.storage_vote),
+                copy_storage_record(&admitted_storage),
             )
             .unwrap();
         assert!(atomic.bucket_found);
-        assert_eq!(atomic.bucket.votes[0].hash, admitted.storage_vote.hash);
+        assert_eq!(atomic.bucket.votes[0].hash, admitted_storage.hash);
 
         let added = votes
             .pbft_service_verified_votes_add_verified_vote(
                 copy_vote_payload(&admitted_vote),
-                copy_storage_record(&admitted.storage_vote),
+                copy_storage_record(&admitted_storage),
                 u64::MAX,
                 false,
             )
             .unwrap();
         assert!(added.bucket_found);
-        assert_eq!(added.bucket.votes[0].hash, admitted.storage_vote.hash);
+        assert_eq!(added.bucket.votes[0].hash, admitted_storage.hash);
 
         let conflicting = generated_vote([0x24; 32], NODE_SECRET);
         let conflicting_weighted =
@@ -3149,7 +3153,7 @@ mod tests {
             .unwrap();
         assert!(unique.conflict_found);
         assert!(unique.conflicting_vote_found);
-        assert_eq!(unique.conflicting_vote.hash, admitted.storage_vote.hash);
+        assert_eq!(unique.conflicting_vote.hash, admitted_storage.hash);
 
         let owned_conflict = unique.conflicting_vote;
         let owned_bucket = added.bucket;
@@ -3162,7 +3166,7 @@ mod tests {
             .votes
             .is_empty());
         assert!(!owned_conflict.vote_rlp.is_empty());
-        assert_eq!(owned_bucket.votes[0].hash, admitted.storage_vote.hash);
+        assert_eq!(owned_bucket.votes[0].hash, admitted_storage.hash);
     }
 
     #[test]
@@ -3191,14 +3195,15 @@ mod tests {
 
     #[test]
     fn bridge_builds_optimized_bundle_from_retained_payloads() {
-        let votes = verified_votes_service_for_test(None).unwrap();
+        let storage = temp_bridge_storage("optimized_bundle_retained_payloads");
+        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
         let first = generated_vote([0x24; 32], NODE_SECRET);
         let second = generated_vote([0x24; 32], NODE_SECRET_TWO);
         let first_hash: [u8; 32] = first.vote_hash.into();
         let second_hash: [u8; 32] = second.vote_hash.into();
 
         votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &first.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3206,7 +3211,7 @@ mod tests {
             )
             .expect("first generated vote is admitted");
         votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &second.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3261,12 +3266,13 @@ mod tests {
 
     #[test]
     fn bridge_plans_next_vote_bundle_egress_and_rejects_order_drift() {
-        let votes = verified_votes_service_for_test(None).unwrap();
+        let storage = temp_bridge_storage("next_bundle_egress");
+        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
         let first = generated_vote_for_type([0x25; 32], NODE_SECRET, PbftVoteType::Next, 4);
         let second = generated_vote_for_type([0x25; 32], NODE_SECRET_TWO, PbftVoteType::Next, 4);
 
         votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &first.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3274,7 +3280,7 @@ mod tests {
             )
             .expect("first generated vote is admitted");
         votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &second.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3331,7 +3337,7 @@ mod tests {
         let second_hash: [u8; 32] = second.vote_hash.into();
 
         votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &first.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3339,7 +3345,7 @@ mod tests {
             )
             .expect("first generated vote is admitted");
         votes
-            .pbft_service_verified_votes_admit_validated_vote(
+            .pbft_service_verified_votes_admit_and_persist(
                 &second.vote_rlp,
                 validation_facts(),
                 runtime_flags(),
@@ -3522,7 +3528,55 @@ mod tests {
             slashing_payloads: None,
         };
 
-        let result = runtime_outcome_to_ffi(validation, outcome, context);
+        let rejected = runtime_outcome_to_ffi(
+            validation.clone(),
+            PbftVoteAdmissionTransactionResult {
+                outcome: outcome.clone(),
+                persistence_required: true,
+                persistence_status: PbftVoteAdmissionPersistenceStatus::Rejected,
+                persistence_applied_writes: 0,
+                transition_published: false,
+                persistence_error_code: "PBFT_VOTE_PERSIST_STORAGE_OR_LOCK_FAILURE".to_owned(),
+            },
+            FfiPbftVoteProgressContext {
+                current_period: 3,
+                current_round: 2,
+                max_future_period_delta: 1,
+                has_two_t_plus_one_threshold: true,
+                two_t_plus_one_threshold: 5,
+                require_proposed_block_sidecar: false,
+                slashing_enabled: true,
+            },
+        );
+        assert!(!rejected.accepted);
+        assert!(rejected.rejected);
+        assert!(!rejected.transition_published);
+        assert_eq!(
+            rejected.persistence_status,
+            PbftVoteAdmissionPersistenceStatus::Rejected.as_u8()
+        );
+        assert!(!rejected.replay_inserted);
+        assert!(!rejected.has_verified_vote_add);
+        assert!(!rejected.mark_vote_known);
+        assert!(!rejected.request_proposed_block_sidecar);
+        assert!(!rejected.gossip_vote);
+        assert!(!rejected.report_slashing);
+        assert!(!rejected.drive_pbft_progress);
+        assert!(rejected.slashing_incoming_vote.vote_rlp.is_empty());
+        assert!(rejected.slashing_conflicting_vote.vote_rlp.is_empty());
+
+        let result = runtime_outcome_to_ffi(
+            validation,
+            PbftVoteAdmissionTransactionResult {
+                outcome,
+                persistence_required: false,
+                persistence_status: PbftVoteAdmissionPersistenceStatus::NotRequired,
+                persistence_applied_writes: 0,
+                transition_published: true,
+                persistence_error_code: String::new(),
+            },
+            context,
+        );
 
         assert!(result.accepted);
         assert!(result.mark_vote_known);
@@ -3542,7 +3596,7 @@ mod tests {
         for secret in [NODE_SECRET, NODE_SECRET_TWO] {
             let vote = generated_vote([0x35; 32], secret);
             votes
-                .pbft_service_verified_votes_admit_validated_vote(
+                .pbft_service_verified_votes_admit_and_persist(
                     &vote.vote_rlp,
                     validation_facts(),
                     runtime_flags(),

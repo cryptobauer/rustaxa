@@ -500,39 +500,11 @@ VerifiedVotes::AddVerifiedVoteOutcome VerifiedVotes::addVerifiedVoteWithThreshol
   return result;
 }
 
-rustaxa::PbftVoteAdmissionRuntimeResult VerifiedVotes::admitValidatedVote(
+rustaxa::PbftVoteAdmissionRuntimeResult VerifiedVotes::admitAndPersistValidatedVote(
     rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
     rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context) {
-  return pbft_service_->service().pbft_service_verified_votes_admit_validated_vote(canonical_vote_rlp, validation_facts,
-                                                                                   flags, context);
-}
-
-void VerifiedVotes::verifyRuntimeAcceptedPayload(const rustaxa::PbftVoteAdmissionRuntimeResult& result) const {
-  if (!result.accepted || !result.has_verified_vote_add || !result.verified_vote_add.inserted) {
-    return;
-  }
-  if (result.vote.vote_hash != result.verified_vote_add.vote.vote_hash) {
-    throw verifiedVotesError("runtime admission accepted mismatched vote hashes");
-  }
-  if (!result.has_storage_vote) {
-    throw verifiedVotesError("runtime admission accepted without a retained weighted payload");
-  }
-  if (result.storage_vote.hash != result.vote.vote_hash) {
-    throw verifiedVotesError("runtime admission retained weighted payload for a different vote hash");
-  }
-  if (result.verified_vote_add.vote.weight != result.vote.weight) {
-    throw verifiedVotesError("runtime admission verified-vote weight mismatches accepted vote");
-  }
-
-  const auto retained_vote = materializeWeightedPayload(result.storage_vote);
-  if (toBridgeHash(retained_vote->getHash()) != result.vote.vote_hash ||
-      toBridgeHash(retained_vote->getBlockHash()) != result.vote.block_hash ||
-      retained_vote->getPeriod() != result.vote.period || retained_vote->getRound() != result.vote.round ||
-      retained_vote->getStep() != result.vote.step ||
-      static_cast<uint8_t>(retained_vote->getType()) != result.vote.vote_type ||
-      retained_vote->getWeight().value_or(0) != result.vote.weight) {
-    throw verifiedVotesError("runtime admission retained payload mismatches accepted vote");
-  }
+  return pbft_service_->service().pbft_service_verified_votes_admit_and_persist(canonical_vote_rlp, validation_facts,
+                                                                                flags, context);
 }
 
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {

@@ -32,12 +32,18 @@ use crate::pbft_vote_payload::{
     build_weighted_pbft_vote_payload,
 };
 use crate::pbft_vote_progress::PbftVoteProgressContext;
+use crate::pbft_vote_progress::PbftVoteProgressIntent;
+use crate::pbft_vote_storage::{
+    PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,
+    PbftVoteProgressPersistenceWrite, PbftVoteStorageRecord,
+};
 use crate::pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
-    PbftVoteReplayCache, inspect_canonical_pbft_vote,
+    PbftVoteReplayCache, PbftVoteReplayCheckpoint, inspect_canonical_pbft_vote,
 };
 use crate::verified_votes::{
-    AddVerifiedVoteOutcome, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes, VotesWithWeight,
+    AddVerifiedVoteOutcome, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes,
+    VerifiedVotesRoundCheckpoint, VotesWithWeight,
 };
 
 /// Canonical and weighted PBFT vote payloads retained for one admitted vote.
@@ -266,6 +272,51 @@ pub struct PbftVoteRuntimeAdmissionOutcome {
     /// Unweighted slashing evidence payloads, when a duplicate-voter conflict
     /// was reported and both payloads were available.
     pub slashing_payloads: Option<PbftVoteRuntimeSlashingPayloads>,
+}
+
+/// Durable publication status for one transactional admission.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftVoteAdmissionPersistenceStatus {
+    /// The transition had no durable vote-progress effects.
+    NotRequired,
+    /// The complete persistence write committed before runtime publication.
+    Applied,
+    /// Persistence rejected or could not acquire/operate on storage.
+    Rejected,
+}
+
+impl PbftVoteAdmissionPersistenceStatus {
+    /// Stable bridge code for the publication result.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::NotRequired => 0,
+            Self::Applied => 1,
+            Self::Rejected => 2,
+        }
+    }
+}
+
+/// Transactional admission result after optional durable persistence.
+///
+/// `transition_published` is true only when the runtime mutation is visible
+/// and every required storage write committed. Rejected persistence returns
+/// the validation/admission diagnostic outcome for reporting, but runtime state
+/// has already been restored and downstream effects must not be executed.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteAdmissionTransactionResult {
+    pub outcome: PbftVoteRuntimeAdmissionOutcome,
+    pub persistence_required: bool,
+    pub persistence_status: PbftVoteAdmissionPersistenceStatus,
+    pub persistence_applied_writes: u64,
+    pub transition_published: bool,
+    pub persistence_error_code: String,
+}
+
+struct PbftVoteAdmissionCheckpoint {
+    replay: Option<PbftVoteReplayCheckpoint>,
+    round: VerifiedVotesRoundCheckpoint,
+    vote_hash: H256,
+    previous_payload: Option<PbftVoteRuntimePayload>,
 }
 
 /// Rust-owned PBFT vote admission state.
@@ -993,6 +1044,127 @@ impl PbftVoteAdmissionRuntime {
             .retain(|vote_hash, _| keep.contains(vote_hash));
     }
 
+    fn admission_checkpoint(
+        &self,
+        validation: &PbftCanonicalVoteValidation,
+    ) -> PbftVoteAdmissionCheckpoint {
+        PbftVoteAdmissionCheckpoint {
+            replay: validation
+                .mark_validated_replay
+                .then(|| self.replay_cache.checkpoint_insert(validation.vote_hash)),
+            round: self
+                .verified_votes
+                .checkpoint_round(validation.period, validation.round),
+            vote_hash: validation.vote_hash,
+            previous_payload: self.payloads.get(&validation.vote_hash).cloned(),
+        }
+    }
+
+    fn restore_admission_checkpoint(&mut self, checkpoint: PbftVoteAdmissionCheckpoint) {
+        if let Some(replay) = checkpoint.replay {
+            self.replay_cache.restore_insert(replay);
+        }
+        self.verified_votes.restore_round(checkpoint.round);
+        if let Some(payload) = checkpoint.previous_payload {
+            self.payloads.insert(checkpoint.vote_hash, payload);
+        } else {
+            self.payloads.remove(&checkpoint.vote_hash);
+        }
+    }
+
+    /// Admits and durably publishes one vote as a single runtime transaction.
+    ///
+    /// The runtime checkpoints only the replay insertion/eviction delta, the
+    /// touched period/round, and the incoming hash's previous payload. It then
+    /// executes normal admission, derives one existing vote-progress batch, and
+    /// invokes `persist` only when durable effects exist. Applied and no-write
+    /// transitions remain published. Rejected or operationally failed
+    /// persistence restores the exact checkpoint and returns a typed rejected
+    /// publication with no downstream effects authorized.
+    ///
+    /// The generic closure keeps failure injection stack-allocated for tests;
+    /// no trait object or full-runtime clone is used.
+    pub fn admit_validated_vote_transactional<F>(
+        &mut self,
+        canonical_vote_rlp: &[u8],
+        validation: &PbftCanonicalVoteValidation,
+        flags: PbftVoteEventFactFlags,
+        context: PbftVoteProgressContext,
+        persist: F,
+    ) -> Result<PbftVoteAdmissionTransactionResult>
+    where
+        F: FnOnce(PbftVoteProgressPersistenceWrite) -> Result<PbftVotePersistenceResult>,
+    {
+        let checkpoint = self.admission_checkpoint(validation);
+        let outcome =
+            match self.admit_validated_vote(canonical_vote_rlp, validation, flags, context) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.restore_admission_checkpoint(checkpoint);
+                    return Err(error);
+                }
+            };
+        let write = match admission_persistence_write(&outcome) {
+            Ok(write) => write,
+            Err(_) => {
+                self.restore_admission_checkpoint(checkpoint);
+                return Ok(PbftVoteAdmissionTransactionResult {
+                    outcome,
+                    persistence_required: true,
+                    persistence_status: PbftVoteAdmissionPersistenceStatus::Rejected,
+                    persistence_applied_writes: 0,
+                    transition_published: false,
+                    persistence_error_code: "PBFT_VOTE_ADMISSION_INVALID_PERSISTENCE_PLAN"
+                        .to_owned(),
+                });
+            }
+        };
+        let Some(write) = write else {
+            return Ok(PbftVoteAdmissionTransactionResult {
+                outcome,
+                persistence_required: false,
+                persistence_status: PbftVoteAdmissionPersistenceStatus::NotRequired,
+                persistence_applied_writes: 0,
+                transition_published: true,
+                persistence_error_code: String::new(),
+            });
+        };
+        match persist(write) {
+            Ok(result) if result.status == PbftVotePersistenceStatus::Applied => {
+                Ok(PbftVoteAdmissionTransactionResult {
+                    outcome,
+                    persistence_required: true,
+                    persistence_status: PbftVoteAdmissionPersistenceStatus::Applied,
+                    persistence_applied_writes: result.applied_writes,
+                    transition_published: true,
+                    persistence_error_code: result.error_code,
+                })
+            }
+            Ok(result) => {
+                self.restore_admission_checkpoint(checkpoint);
+                Ok(PbftVoteAdmissionTransactionResult {
+                    outcome,
+                    persistence_required: true,
+                    persistence_status: PbftVoteAdmissionPersistenceStatus::Rejected,
+                    persistence_applied_writes: 0,
+                    transition_published: false,
+                    persistence_error_code: result.error_code,
+                })
+            }
+            Err(_) => {
+                self.restore_admission_checkpoint(checkpoint);
+                Ok(PbftVoteAdmissionTransactionResult {
+                    outcome,
+                    persistence_required: true,
+                    persistence_status: PbftVoteAdmissionPersistenceStatus::Rejected,
+                    persistence_applied_writes: 0,
+                    transition_published: false,
+                    persistence_error_code: "PBFT_VOTE_PERSIST_STORAGE_OR_LOCK_FAILURE".to_owned(),
+                })
+            }
+        }
+    }
+
     /// Admits one validation-backed canonical PBFT vote into Rust-owned state.
     ///
     /// Inputs:
@@ -1174,6 +1346,88 @@ impl PbftVoteAdmissionRuntime {
     }
 }
 
+fn admission_persistence_write(
+    outcome: &PbftVoteRuntimeAdmissionOutcome,
+) -> Result<Option<PbftVoteProgressPersistenceWrite>> {
+    let Some(execution) = outcome.execution.as_ref() else {
+        return Ok(None);
+    };
+    let mut extra_reward_hash = None;
+    let mut two_t_plus_one_identity = None;
+    for intent in &execution.pipeline_step.progress_plan.intents {
+        match intent {
+            PbftVoteProgressIntent::PersistExtraRewardVote { vote_hash } => {
+                ensure!(
+                    extra_reward_hash.replace(*vote_hash).is_none(),
+                    "duplicate extra-reward persistence intent"
+                );
+            }
+            PbftVoteProgressIntent::PersistTwoTPlusOneVotes {
+                kind,
+                period,
+                round,
+                step,
+                block_hash,
+            } => {
+                ensure!(
+                    two_t_plus_one_identity
+                        .replace((*kind, *period, *round, *step, *block_hash))
+                        .is_none(),
+                    "duplicate 2t+1 persistence intent"
+                );
+            }
+            _ => {}
+        }
+    }
+    if extra_reward_hash.is_none() && two_t_plus_one_identity.is_none() {
+        return Ok(None);
+    }
+    let extra_reward_vote = extra_reward_hash
+        .map(|expected_hash| {
+            let vote = outcome
+                .storage_vote
+                .as_ref()
+                .context("extra-reward persistence intent missing weighted vote")?;
+            ensure!(
+                vote.hash == expected_hash,
+                "extra-reward persistence intent hash mismatch"
+            );
+            Ok(PbftVoteStorageRecord {
+                hash: vote.hash,
+                vote_rlp: vote.vote_rlp.clone(),
+            })
+        })
+        .transpose()?;
+    let two_t_plus_one_bundle = two_t_plus_one_identity
+        .map(|(kind, period, round, step, block_hash)| {
+            let bundle = outcome
+                .two_t_plus_one_bundle
+                .as_ref()
+                .context("2t+1 persistence intent missing weighted bundle")?;
+            ensure!(
+                bundle.kind == kind
+                    && bundle.period == period
+                    && bundle.round == round
+                    && bundle.step == step
+                    && bundle.block_hash == block_hash,
+                "2t+1 persistence intent identity mismatch"
+            );
+            Ok(PbftTwoTPlusOneVoteBundle {
+                kind: bundle.kind.into(),
+                period: bundle.period,
+                round: bundle.round,
+                step: bundle.step,
+                block_hash: bundle.block_hash,
+                votes_bundle_rlp: bundle.votes_bundle_rlp.clone(),
+            })
+        })
+        .transpose()?;
+    Ok(Some(PbftVoteProgressPersistenceWrite {
+        extra_reward_vote,
+        two_t_plus_one_bundle,
+    }))
+}
+
 trait RuntimePrecheckExt {
     fn should_insert(&self) -> bool;
 }
@@ -1337,6 +1591,13 @@ mod tests {
         }
     }
 
+    fn stale_reward_flags() -> PbftVoteEventFactFlags {
+        PbftVoteEventFactFlags {
+            valid_stale_reward_vote: true,
+            ..flags()
+        }
+    }
+
     fn context(threshold: Option<u64>) -> PbftVoteProgressContext {
         PbftVoteProgressContext {
             current_period: 12,
@@ -1390,6 +1651,162 @@ mod tests {
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0].hash, validation.vote_hash);
         assert!(!payloads[0].vote_rlp.is_empty());
+    }
+
+    #[test]
+    fn transactional_admission_publishes_no_write_without_calling_persistence() {
+        let rlp = vote_rlp([0x31; 32], 3);
+        let validation = validation(&rlp);
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+
+        let transaction = runtime
+            .admit_validated_vote_transactional(
+                &rlp,
+                &validation,
+                flags(),
+                context(Some(50)),
+                |_| panic!("no-write admission must not invoke persistence"),
+            )
+            .unwrap();
+
+        assert!(transaction.transition_published);
+        assert!(!transaction.persistence_required);
+        assert_eq!(
+            transaction.persistence_status,
+            PbftVoteAdmissionPersistenceStatus::NotRequired
+        );
+        assert_eq!(transaction.persistence_applied_writes, 0);
+        assert!(runtime.replay_contains(validation.vote_hash));
+        assert!(runtime.weighted_payload(validation.vote_hash).is_some());
+    }
+
+    #[test]
+    fn transactional_admission_rejection_restores_fifo_state_and_allows_retry() {
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        let first = vote_rlp([0x32; 32], 3);
+        let first_validation = validation(&first);
+        runtime
+            .admit_validated_vote(&first, &first_validation, flags(), context(Some(80)))
+            .unwrap();
+        runtime.reward_vote_cursor = Some(RewardVoteCursor {
+            period: 12,
+            round: 2,
+            step: 3,
+            block_hash: H256::from([0x32; 32]),
+        });
+        runtime.replay_cache = PbftVoteReplayCache::new(2, 1);
+        let oldest = H256::from_low_u64_be(101);
+        let newest = H256::from_low_u64_be(102);
+        assert!(runtime.replay_insert(oldest));
+        assert!(runtime.replay_insert(newest));
+
+        let rlp = vote_rlp_from_secret([0x32; 32], 3, NODE_SECRET_TWO);
+        let validation = validation(&rlp);
+        let mut persistence_context = context(Some(80));
+        persistence_context.current_period = 13;
+        let rejected = runtime
+            .admit_validated_vote_transactional(
+                &rlp,
+                &validation,
+                stale_reward_flags(),
+                persistence_context,
+                |write| {
+                    assert!(write.extra_reward_vote.is_some());
+                    Ok(PbftVotePersistenceResult {
+                        status: PbftVotePersistenceStatus::Rejected,
+                        applied_writes: 0,
+                        error_code: "TEST_PERSISTENCE_REJECTED".to_owned(),
+                    })
+                },
+            )
+            .unwrap();
+
+        assert!(rejected.persistence_required);
+        assert_eq!(
+            rejected.persistence_status,
+            PbftVoteAdmissionPersistenceStatus::Rejected
+        );
+        assert!(!rejected.transition_published);
+        assert_eq!(rejected.persistence_applied_writes, 0);
+        assert_eq!(rejected.persistence_error_code, "TEST_PERSISTENCE_REJECTED");
+        assert!(runtime.replay_contains(oldest));
+        assert!(runtime.replay_contains(newest));
+        assert!(!runtime.replay_contains(validation.vote_hash));
+        assert!(runtime.weighted_payload(validation.vote_hash).is_none());
+        assert_eq!(runtime.verified_votes().size(), 1);
+
+        let retried = runtime
+            .admit_validated_vote_transactional(
+                &rlp,
+                &validation,
+                stale_reward_flags(),
+                persistence_context,
+                |write| {
+                    assert!(write.extra_reward_vote.is_some());
+                    Ok(PbftVotePersistenceResult {
+                        status: PbftVotePersistenceStatus::Applied,
+                        applied_writes: 1,
+                        error_code: String::new(),
+                    })
+                },
+            )
+            .unwrap();
+
+        assert!(retried.transition_published);
+        assert_eq!(
+            retried.persistence_status,
+            PbftVoteAdmissionPersistenceStatus::Applied
+        );
+        assert_eq!(retried.persistence_applied_writes, 1);
+        assert!(!runtime.replay_contains(oldest));
+        assert!(runtime.replay_contains(newest));
+        assert!(runtime.replay_contains(validation.vote_hash));
+        assert!(runtime.weighted_payload(validation.vote_hash).is_some());
+        assert_eq!(runtime.verified_votes().size(), 2);
+    }
+
+    #[test]
+    fn transactional_admission_operational_failure_is_typed_and_restores_state() {
+        let first = vote_rlp([0x33; 32], 3);
+        let first_validation = validation(&first);
+        let rlp = vote_rlp_from_secret([0x33; 32], 3, NODE_SECRET_TWO);
+        let validation = validation(&rlp);
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+        runtime
+            .admit_validated_vote(&first, &first_validation, flags(), context(Some(80)))
+            .unwrap();
+        runtime.reward_vote_cursor = Some(RewardVoteCursor {
+            period: 12,
+            round: 2,
+            step: 3,
+            block_hash: H256::from([0x33; 32]),
+        });
+        let mut persistence_context = context(Some(80));
+        persistence_context.current_period = 13;
+
+        let transaction = runtime
+            .admit_validated_vote_transactional(
+                &rlp,
+                &validation,
+                stale_reward_flags(),
+                persistence_context,
+                |_| Err(anyhow::anyhow!("injected storage failure")),
+            )
+            .unwrap();
+
+        assert!(transaction.persistence_required);
+        assert_eq!(
+            transaction.persistence_status,
+            PbftVoteAdmissionPersistenceStatus::Rejected
+        );
+        assert!(!transaction.transition_published);
+        assert_eq!(
+            transaction.persistence_error_code,
+            "PBFT_VOTE_PERSIST_STORAGE_OR_LOCK_FAILURE"
+        );
+        assert!(!runtime.replay_contains(validation.vote_hash));
+        assert!(runtime.weighted_payload(validation.vote_hash).is_none());
+        assert_eq!(runtime.verified_votes().size(), 1);
     }
 
     #[test]
