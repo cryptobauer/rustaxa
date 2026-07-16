@@ -950,11 +950,33 @@ bridge findings; `make rewrite-validate-fast`, the final `make rewrite-validate-
 `make rewrite-validate-smoke` pass. An earlier Tier 2 attempt hit the unrelated nanosecond-order assertion in the VDF
 precision-cache timing test; that case passed immediately in isolation and the complete rerun exited successfully.
 
-`CRW-03` remains active for the cross-domain consolidation that this ownership commit intentionally does not overclaim:
-authoritative leader selection still snapshots proposal votes and proposed blocks in separate service calls, live vote
-admission still persists some progress effects in a subsequent service call, and manager period cleanup still emits
-separate vote/proposed-block actions. A follow-up must replace those with narrow snapshot/revalidate or atomic service
-operations before the combined vote/proposal deletion condition is complete.
+The next CRW-03 sub-slice closes authoritative leader snapshot/revalidation. `BridgePbftService` now prepares one owned,
+vote-hash-ordered snapshot containing proposal-vote payloads, aligned proposed-block payloads and validation flags, plus
+PBFT-chain membership while holding `votes -> proposed -> chain`. It fingerprints those facts, releases every Rust guard
+for the existing C++ `validatePbftBlock` executor, then reacquires the same lock order and rejects stale or identity-
+mismatched reports before mutation. Only the existing Rust leader planner can mark validated proposed blocks, and the
+selected vote/block pair returns as owned canonical payloads. The filtering path no longer calls `getProposalVotes()`,
+performs per-vote proposed-block lookups, or asks C++ for chain membership. The separate stateless local-wallet candidate
+path is unchanged.
+
+Focused validation passes all 284 `rustaxa-bridge` tests, including 22 verified-vote/service tests for deterministic
+fingerprints, accepted/rejected reports, stale vote/proposed-block/chain facts, invalid reports, and no mutation on stale
+or invalid finish. The two new C++ leader tests, isolated `VoteTest.verified_votes`, and isolated
+`PbftManagerTest.propose_block_and_vote_broadcast` also pass; both affected C++ test targets build successfully. Broader
+rewrite gates also complete as far as the current environment permits: `make rewrite-validate-fast`,
+`make rewrite-validate-consensus`, and `make rewrite-validate-smoke` exit successfully. The direct
+`rust_consensus_tests` binary passes 43/62 cases; the remaining 19 PBFT-sync fixtures fail during service construction on
+the previously classified ambiguous legacy reward-cursor bootstrap, before leader selection runs. Tier 3 CTest passes
+22/28 binaries (79%). The six failures retain their known classifications: same-process `/tmp/taraxa0` RocksDB lock
+reuse in node-backed suites, the associated network/TLS teardown behavior, and the unrelated Go/cgo static-linker
+incompatibility. Both new leader tests and the touched PBFT broadcast path pass in isolated fresh processes. The Python
+Tier 3 command does not reach test collection because its Python 3.13 environment cannot build pinned `cytoolz` and
+`pyethash` without `Python.h`, leaving `pytest` unavailable.
+
+`CRW-03` remains active for the cross-domain consolidation that these ownership commits intentionally do not overclaim:
+live vote admission still persists some progress effects in a subsequent service call, and manager period cleanup still
+emits separate vote/proposed-block actions. Follow-ups must replace those with atomic service operations before the
+combined vote/proposal deletion condition is complete.
 
 Implementation notes:
 

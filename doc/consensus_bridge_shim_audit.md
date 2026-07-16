@@ -126,8 +126,13 @@ network, logging, or gossip callbacks.
   batch lookup and only the selected leader is persisted/published.
 - The verified-vote ownership sub-slice is implemented. Production construction restores votes before publication;
 chain-only services fail vote calls explicitly; storage tests use the full service; and the standalone handle/factory
-are absent from the bridge inventory. CRW-03 stays active for combined leader snapshot/revalidation, admission plus
-progress persistence, and manager-owned atomic vote/proposal cleanup.
+are absent from the bridge inventory.
+- The leader snapshot/revalidation sub-slice is implemented. The authoritative filtering path captures proposal votes,
+  aligned proposed blocks, validation flags, and PBFT-chain membership under `votes -> proposed -> chain`, releases all
+  Rust guards for C++ block validation, then revalidates a deterministic content fingerprint before applying validation
+  reports or marking blocks valid. The production path no longer performs a separate proposal-vote snapshot, per-vote
+  proposed-block lookup, or C++ chain-membership callback. Tentative local wallet candidates retain their stateless path.
+  CRW-03 stays active for admission plus progress persistence and manager-owned atomic vote/proposal cleanup.
 
 ## Required Closeout Checks
 

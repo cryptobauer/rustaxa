@@ -2282,11 +2282,7 @@ void PbftManager::identifyBlock_() {
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentIdentifyLeaderAndSoftVote) {
           const auto leader_block_data = vote_mgr_->identifyLeaderBlock(
-              *pbft_service_, period, round,
-              [this](const auto &proposed_block_hash) {
-                return pbft_chain_->findPbftBlockInChain(proposed_block_hash);
-              },
-              [this](const auto &proposed_block) { return validatePbftBlock(proposed_block); });
+              period, round, [this](const auto &proposed_block) { return validatePbftBlock(proposed_block); });
           if (!leader_block_data.has_value()) {
             LOG(log_dg_) << "No leader block identified. Period " << period << ", round " << round;
             return kPbftManagerStateActionEffectResultSkippedNoWork;

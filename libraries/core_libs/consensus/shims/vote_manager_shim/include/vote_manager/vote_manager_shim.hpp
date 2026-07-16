@@ -266,9 +266,8 @@ class VoteManager {
    *   mark-valid commands, and deterministic ranking.
    *
    * Inputs:
-   * - `pbft_service` supplies authoritative proposed-block materialization and Rust-owned validation flags.
-   * - `block_in_chain` and `validate_block` are executor callbacks for PBFT
-   *   chain lookup and live block validation, which remain outside VoteManager.
+   * - `period` and `round` identify the authoritative Rust-owned proposal snapshot.
+   * - `validate_block` executes only the live block validation requests selected by Rust.
    *
    * Outputs:
    * - Returns the selected live proposed block and proposal vote when Rust
@@ -276,13 +275,12 @@ class VoteManager {
    * - Returns empty when no proposal vote can be selected.
    *
    * Invariants:
-   * - Proposal votes are read from the Rust-backed verified-vote facade.
-   * - Proposed-block mark-valid side effects are applied only from Rust planner
-   *   commands.
+   * - Proposal votes, chain membership, and proposed-block state are read atomically by the injected PBFT service.
+   * - C++ reports identity-bound validation results against the prepared snapshot; Rust rejects stale snapshots and
+   *   applies mark-valid state before returning owned selected vote/block payloads.
    */
   std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
-      const PbftService& pbft_service, PbftPeriod period, PbftRound round,
-      const std::function<bool(const blk_hash_t&)>& block_in_chain,
+      PbftPeriod period, PbftRound round,
       const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
   /**
    * Selects a leader from caller-supplied proposal votes.
@@ -919,18 +917,10 @@ class VoteManager {
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation);
 
  private:
-  /**
-   * Selects a leader using either the authoritative service index or an isolated local candidate set.
-   *
-   * Exactly one source is active: `pbft_service` for received proposals, or `local_candidates` for tentative wallet
-   * proposals. Local candidates are passed through Rust's stateless lookup API and are never persisted or published to
-   * the shared service. Rust owns ranking and authoritative mark-valid synchronization; C++ only materializes the
-   * selected compatibility block and vote.
-   */
-  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlockFromSource(
-      const PbftService* pbft_service,
+  /** Selects from isolated tentative wallet candidates without mutating authoritative service state. */
+  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>
+  identifyLeaderBlockFromLocalCandidates(
       std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,
-      std::vector<std::shared_ptr<PbftVote>>&& propose_votes,
       const std::function<bool(const blk_hash_t&)>& block_in_chain,
       const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
 
@@ -960,6 +950,7 @@ class VoteManager {
   std::shared_ptr<KeyManager> key_manager_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<SlashingManager> slashing_manager_;
+  SharedPbftService pbft_service_;
 
   std::atomic<PbftPeriod> current_pbft_period_{0};
   std::atomic<PbftRound> current_pbft_round_{0};

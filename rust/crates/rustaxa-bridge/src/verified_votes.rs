@@ -1,7 +1,9 @@
 use crate::ffi::rustaxa_ffi::{
     AtomicVoteInsertOutcome, DetermineNewRoundOutcome, PbftFinalizationHash,
-    PbftNextVotesBundleEgressPlan, PbftOptimizedVoteBundleBuildRequest,
-    PbftOptimizedVoteBundleBuildResult, PbftOptimizedVoteBundlePlan,
+    PbftLeaderCandidateSnapshot, PbftLeaderCandidateValidation, PbftLeaderSelectionFinishRequest,
+    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPlan,
+    PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
+    PbftOptimizedVoteBundlePlan,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
     PbftRewardVotesResetRequest as FfiPbftRewardVotesResetRequest,
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
@@ -23,11 +25,16 @@ use crate::ffi::BridgeStorage;
 use crate::pbft_vote_progress::{context_to_domain, execution_plan_to_ffi};
 use crate::pbft_vote_validation::threshold_plan_to_ffi;
 use ethereum_types::{H160, H256};
+use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes, apply_pbft_reward_votes_reset_storage,
     PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage as DomainPbftFinalizationStorageWriteStage,
     PbftFinalizedPeriodApplyResult, PbftRewardVotesResetStorageRequest,
+};
+use rustaxa_consensus::pbft_manager::{
+    plan_pbft_manager_leader_candidates, PbftManagerLeaderBlockValidationStatus,
+    PbftManagerLeaderCandidateInputFact, PbftManagerLeaderSelectionStatus,
 };
 use rustaxa_consensus::pbft_reward_votes::PbftRewardVotesStatus;
 use rustaxa_consensus::pbft_thresholds::{
@@ -60,6 +67,9 @@ use rustaxa_consensus::{
     RewardVoteCursor, RewardVoteCursorCommitStatus,
 };
 use rustaxa_storage::Storage;
+use rustaxa_vdf::vrf;
+use std::collections::{BTreeMap, BTreeSet};
+use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_OPTIMIZED_BUNDLE_READY: u8 = 0;
 const PBFT_OPTIMIZED_BUNDLE_NOT_FOUND: u8 = 1;
@@ -71,6 +81,13 @@ const PBFT_OPTIMIZED_BUNDLE_ORDER_MISMATCH: u8 = 6;
 const PBFT_OPTIMIZED_BUNDLE_MISSING_PAYLOAD: u8 = 7;
 const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_DECODE_ERROR: u8 = 8;
 const PBFT_OPTIMIZED_BUNDLE_PAYLOAD_METADATA_MISMATCH: u8 = 9;
+const PBFT_LEADER_SELECTED: u8 = 0;
+const PBFT_LEADER_NO_CANDIDATES: u8 = 1;
+const PBFT_LEADER_NO_ELIGIBLE: u8 = 2;
+const PBFT_LEADER_STALE_SNAPSHOT: u8 = 3;
+const PBFT_LEADER_INVALID_VALIDATION_REPORT: u8 = 4;
+const PBFT_LEADER_VALIDATED: u8 = 1;
+const PBFT_LEADER_REJECTED: u8 = 2;
 
 struct VerifiedVotesAccess<'a> {
     runtime: &'a mut PbftVoteAdmissionRuntime,
@@ -1218,6 +1235,317 @@ impl BridgePbftService {
             storage: self.storage.as_deref(),
         })
     }
+
+    /// Captures the complete owned proposal-vote candidate set for one period and round.
+    ///
+    /// The method acquires `verified_votes`, `proposed_blocks` (read), then
+    /// `chain` (read), returns candidates sorted by vote hash, and fingerprints
+    /// every vote/proposal/chain fact that finish must revalidate. Missing,
+    /// null, already-finalized, and already-valid candidates remain explicit
+    /// snapshot states; only an unavailable vote runtime is a bridge error.
+    pub fn pbft_service_prepare_leader_selection(
+        &self,
+        period: u64,
+        round: u64,
+    ) -> Result<PbftLeaderSelectionSnapshot, anyhow::Error> {
+        self.with_verified_votes(|votes| {
+            let proposed = self
+                .proposed_blocks
+                .read()
+                .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?;
+            let _chain = self
+                .chain
+                .read()
+                .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?;
+            build_leader_selection_snapshot(
+                votes,
+                &proposed,
+                self.storage.as_deref(),
+                period,
+                round,
+            )
+        })
+    }
+
+    /// Revalidates and finishes one prepared PBFT leader selection.
+    ///
+    /// The method acquires `verified_votes`, `proposed_blocks` (write), then
+    /// `chain` (read), rebuilds the content fingerprint before any mutation,
+    /// validates the external report set exactly, invokes the existing Rust
+    /// leader planner, and marks only planner-emitted `valid_blocks`. Stale or
+    /// malformed reports return an owned non-selected result without changing
+    /// proposed-block validity. The selected vote and block bytes are copied
+    /// before all guards are released.
+    pub fn pbft_service_finish_leader_selection(
+        &self,
+        request: PbftLeaderSelectionFinishRequest,
+    ) -> Result<PbftLeaderSelectionResult, anyhow::Error> {
+        self.with_verified_votes(|votes| {
+            let mut proposed = self
+                .proposed_blocks
+                .write()
+                .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?;
+            let _chain = self
+                .chain
+                .read()
+                .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?;
+            let snapshot = build_leader_selection_snapshot(
+                votes,
+                &proposed,
+                self.storage.as_deref(),
+                request.period,
+                request.round,
+            )?;
+            if snapshot.snapshot_fingerprint != request.snapshot_fingerprint {
+                return Ok(empty_leader_selection_result(
+                    PBFT_LEADER_STALE_SNAPSHOT,
+                    "PBFT_LEADER_SELECTION_STALE_SNAPSHOT",
+                ));
+            }
+
+            let validations = match validate_leader_selection_reports(
+                &snapshot.candidates,
+                request.validations,
+            ) {
+                Ok(validations) => validations,
+                Err(()) => {
+                    return Ok(empty_leader_selection_result(
+                        PBFT_LEADER_INVALID_VALIDATION_REPORT,
+                        "PBFT_LEADER_SELECTION_INVALID_VALIDATION_REPORT",
+                    ));
+                }
+            };
+
+            let mut facts = Vec::with_capacity(snapshot.candidates.len());
+            for candidate in &snapshot.candidates {
+                let inspection = inspect_canonical_pbft_vote(&candidate.vote_record.vote_rlp)?;
+                let validation_status = if candidate.proposed_block_is_valid {
+                    PbftManagerLeaderBlockValidationStatus::AlreadyValid
+                } else {
+                    match validations.get(&H256::from(candidate.vote_hash)).copied() {
+                        Some(PBFT_LEADER_VALIDATED) => {
+                            PbftManagerLeaderBlockValidationStatus::Validated
+                        }
+                        Some(PBFT_LEADER_REJECTED) => {
+                            PbftManagerLeaderBlockValidationStatus::Rejected
+                        }
+                        None => PbftManagerLeaderBlockValidationStatus::Rejected,
+                        Some(_) => unreachable!("validation statuses were checked"),
+                    }
+                };
+                facts.push(PbftManagerLeaderCandidateInputFact {
+                    vote_hash: H256::from(candidate.vote_hash),
+                    block_hash: H256::from(candidate.block_hash),
+                    period: request.period,
+                    credential: vrf::proof_to_hash(&inspection.vrf_proof)?,
+                    voter_public_key: inspection.recovered_public_key,
+                    weight_found: inspection.has_embedded_weight,
+                    weight: inspection.embedded_weight,
+                    block_in_chain: candidate.block_in_chain,
+                    proposed_block_found: candidate.proposed_block_found,
+                    block_validation_status: validation_status,
+                    pivot_hash: H256::from(candidate.pivot_hash),
+                });
+            }
+
+            let plan = plan_pbft_manager_leader_candidates(facts);
+            if plan.status == PbftManagerLeaderSelectionStatus::InvalidFact {
+                return Ok(empty_leader_selection_result(
+                    PBFT_LEADER_INVALID_VALIDATION_REPORT,
+                    plan.error_code,
+                ));
+            }
+            let selected_payload = if plan.selected {
+                snapshot.candidates.iter().find(|candidate| {
+                    candidate.vote_hash == plan.selected_vote_hash.0
+                        && candidate.block_hash == plan.selected_block_hash.0
+                })
+            } else {
+                None
+            };
+            if plan.selected && selected_payload.is_none() {
+                return Err(anyhow::anyhow!(
+                    "PBFT_LEADER_SELECTION_PLANNER_SELECTED_UNKNOWN_CANDIDATE"
+                ));
+            }
+
+            for command in &plan.valid_blocks {
+                proposed.mark_valid(command.period, command.block_hash)?;
+            }
+
+            let Some(selected) = selected_payload else {
+                return Ok(empty_leader_selection_result(
+                    if snapshot.candidates.is_empty() {
+                        PBFT_LEADER_NO_CANDIDATES
+                    } else {
+                        PBFT_LEADER_NO_ELIGIBLE
+                    },
+                    plan.error_code,
+                ));
+            };
+            Ok(PbftLeaderSelectionResult {
+                status: PBFT_LEADER_SELECTED,
+                error_code: plan.error_code.to_owned(),
+                selected: true,
+                selected_vote: PbftVoteStorageRecord {
+                    hash: selected.vote_record.hash,
+                    vote_rlp: selected.vote_record.vote_rlp.clone(),
+                },
+                selected_block_rlp: selected.proposed_block_rlp.clone(),
+            })
+        })
+    }
+}
+
+fn build_leader_selection_snapshot(
+    votes: &VerifiedVotesAccess<'_>,
+    proposed: &rustaxa_consensus::proposed_blocks::ProposedBlocks,
+    storage: Option<&Storage>,
+    period: u64,
+    round: u64,
+) -> Result<PbftLeaderSelectionSnapshot, anyhow::Error> {
+    let mut candidates = Vec::new();
+    for vote in votes
+        .runtime
+        .verified_votes()
+        .snapshot_votes()
+        .into_iter()
+        .filter(|vote| {
+            vote.period == period
+                && vote.round == round
+                && vote.step == 1
+                && vote.vote_type == PbftVoteType::Propose
+        })
+    {
+        let vote_record = votes
+            .runtime
+            .weighted_payload(vote.vote_hash)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("PBFT_LEADER_SELECTION_MISSING_VOTE_PAYLOAD"))?;
+        let proposed_block = proposed.get(period, vote.block_hash);
+        let block_in_chain = if vote.block_hash == H256::zero() {
+            false
+        } else if let Some(storage) = storage {
+            pbft_block_exists_in_storage(storage, vote.block_hash)?
+        } else {
+            false
+        };
+        let proposed_block_found = proposed_block.is_some();
+        let proposed_block_is_valid = proposed_block
+            .as_ref()
+            .map(|block| block.is_valid)
+            .unwrap_or(false);
+        candidates.push(PbftLeaderCandidateSnapshot {
+            vote_hash: vote.vote_hash.into(),
+            block_hash: vote.block_hash.into(),
+            vote_record: vote_record.into(),
+            proposed_block_found,
+            proposed_block_is_valid,
+            proposed_block_rlp: proposed_block
+                .as_ref()
+                .map(|block| block.block_rlp.clone())
+                .unwrap_or_default(),
+            pivot_hash: proposed_block
+                .as_ref()
+                .map(|block| block.pivot_hash.into())
+                .unwrap_or([0; 32]),
+            block_in_chain,
+            needs_external_validation: vote.block_hash != H256::zero()
+                && !block_in_chain
+                && proposed_block_found
+                && !proposed_block_is_valid,
+        });
+    }
+    candidates.sort_by_key(|candidate| candidate.vote_hash);
+    let snapshot_fingerprint = leader_selection_fingerprint(period, round, &candidates);
+    Ok(PbftLeaderSelectionSnapshot {
+        status: if candidates.is_empty() {
+            PBFT_LEADER_NO_CANDIDATES
+        } else {
+            PBFT_LEADER_SELECTED
+        },
+        error_code: if candidates.is_empty() {
+            "PBFT_LEADER_SELECTION_NO_CANDIDATES"
+        } else {
+            "PBFT_LEADER_SELECTION_READY"
+        }
+        .to_owned(),
+        period,
+        round,
+        snapshot_fingerprint,
+        candidates,
+    })
+}
+
+fn validate_leader_selection_reports(
+    candidates: &[PbftLeaderCandidateSnapshot],
+    reports: Vec<PbftLeaderCandidateValidation>,
+) -> Result<BTreeMap<H256, u8>, ()> {
+    let expected = candidates
+        .iter()
+        .filter(|candidate| candidate.needs_external_validation)
+        .map(|candidate| (H256::from(candidate.vote_hash), candidate.block_hash))
+        .collect::<BTreeMap<_, _>>();
+    if reports.len() != expected.len() {
+        return Err(());
+    }
+    let mut seen = BTreeSet::new();
+    let mut validated = BTreeMap::new();
+    for report in reports {
+        let vote_hash = H256::from(report.vote_hash);
+        if !seen.insert(vote_hash)
+            || expected.get(&vote_hash).copied() != Some(report.block_hash)
+            || !matches!(report.status, PBFT_LEADER_VALIDATED | PBFT_LEADER_REJECTED)
+        {
+            return Err(());
+        }
+        validated.insert(vote_hash, report.status);
+    }
+    Ok(validated)
+}
+
+fn leader_selection_fingerprint(
+    period: u64,
+    round: u64,
+    candidates: &[PbftLeaderCandidateSnapshot],
+) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    hasher.update(b"RUSTAXA_PBFT_LEADER_SELECTION_V1");
+    hasher.update(&period.to_be_bytes());
+    hasher.update(&round.to_be_bytes());
+    hasher.update(&(candidates.len() as u64).to_be_bytes());
+    for candidate in candidates {
+        hasher.update(&candidate.vote_hash);
+        hasher.update(&candidate.block_hash);
+        hasher.update(&candidate.vote_record.hash);
+        hasher.update(&keccak256(&candidate.vote_record.vote_rlp));
+        hasher.update(&[u8::from(candidate.proposed_block_found)]);
+        hasher.update(&[u8::from(candidate.proposed_block_is_valid)]);
+        hasher.update(&candidate.pivot_hash);
+        hasher.update(&keccak256(&candidate.proposed_block_rlp));
+        hasher.update(&[u8::from(candidate.block_in_chain)]);
+    }
+    let mut fingerprint = [0; 32];
+    hasher.finalize(&mut fingerprint);
+    fingerprint
+}
+
+fn keccak256(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Keccak::v256();
+    hasher.update(bytes);
+    let mut output = [0; 32];
+    hasher.finalize(&mut output);
+    output
+}
+
+fn empty_leader_selection_result(status: u8, error_code: &str) -> PbftLeaderSelectionResult {
+    PbftLeaderSelectionResult {
+        status,
+        error_code: error_code.to_owned(),
+        selected: false,
+        selected_vote: empty_storage_record(),
+        selected_block_rlp: Vec::new(),
+    }
 }
 
 macro_rules! service_verified_votes_plain {
@@ -1950,6 +2278,257 @@ mod tests {
         assert!(error
             .to_string()
             .contains("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"));
+        let error = match service.pbft_service_prepare_leader_selection(12, 2) {
+            Ok(_) => panic!("chain-only service must reject leader preparation"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"));
+    }
+
+    #[test]
+    fn leader_prepare_empty_and_deterministically_fingerprints_sorted_candidates() {
+        let storage = temp_bridge_storage("leader_prepare_order");
+        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        let empty = service
+            .pbft_service_prepare_leader_selection(12, 2)
+            .unwrap();
+        assert_eq!(empty.status, PBFT_LEADER_NO_CANDIDATES);
+        assert!(empty.candidates.is_empty());
+        let empty_result = service
+            .pbft_service_finish_leader_selection(finish_request(&empty, Vec::new()))
+            .unwrap();
+        assert_eq!(empty_result.status, PBFT_LEADER_NO_CANDIDATES);
+
+        insert_proposal_vote(&service, [0x41; 32], NODE_SECRET_TWO, 2);
+        insert_proposal_vote(&service, [0x42; 32], NODE_SECRET, 3);
+        insert_proposed_block(&service, [0x41; 32], [0x51; 32], vec![0x41, 0x01]);
+        insert_proposed_block(&service, [0x42; 32], [0x52; 32], vec![0x42, 0x02]);
+        let first = service
+            .pbft_service_prepare_leader_selection(12, 2)
+            .unwrap();
+        let second = service
+            .pbft_service_prepare_leader_selection(12, 2)
+            .unwrap();
+        assert_eq!(first.snapshot_fingerprint, second.snapshot_fingerprint);
+        assert_eq!(first.candidates.len(), 2);
+        assert!(first.candidates[0].vote_hash < first.candidates[1].vote_hash);
+        assert!(first
+            .candidates
+            .iter()
+            .all(|candidate| candidate.needs_external_validation));
+    }
+
+    #[test]
+    fn leader_prepare_preserves_missing_already_valid_and_in_chain_states() {
+        let storage = temp_bridge_storage("leader_prepare_states");
+        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        let missing_vote = insert_proposal_vote(&service, [0x43; 32], NODE_SECRET, 2);
+        let valid_vote = insert_proposal_vote(&service, [0x44; 32], NODE_SECRET_TWO, 2);
+        insert_proposed_block(&service, [0x44; 32], [0x54; 32], vec![0x44]);
+        service
+            .proposed_blocks
+            .write()
+            .unwrap()
+            .mark_valid(12, H256::from([0x44; 32]))
+            .unwrap();
+        let in_chain_vote = insert_proposal_vote(&service, [0x45; 32], [0x52; 32], 2);
+        insert_proposed_block(&service, [0x45; 32], [0x55; 32], vec![0x45]);
+        storage
+            .0
+            .period()
+            .write_pbft_period(H256::from([0x45; 32]), 12)
+            .unwrap();
+
+        let snapshot = service
+            .pbft_service_prepare_leader_selection(12, 2)
+            .unwrap();
+        let missing = snapshot
+            .candidates
+            .iter()
+            .find(|candidate| candidate.vote_hash == missing_vote)
+            .unwrap();
+        assert!(!missing.proposed_block_found);
+        assert!(!missing.needs_external_validation);
+        let valid = snapshot
+            .candidates
+            .iter()
+            .find(|candidate| candidate.vote_hash == valid_vote)
+            .unwrap();
+        assert!(valid.proposed_block_is_valid);
+        assert!(!valid.needs_external_validation);
+        let in_chain = snapshot
+            .candidates
+            .iter()
+            .find(|candidate| candidate.vote_hash == in_chain_vote)
+            .unwrap();
+        assert!(in_chain.block_in_chain);
+        assert!(!in_chain.needs_external_validation);
+        let result = service
+            .pbft_service_finish_leader_selection(finish_request(&snapshot, Vec::new()))
+            .unwrap();
+        assert_eq!(result.status, PBFT_LEADER_SELECTED);
+        assert_eq!(result.selected_vote.hash, valid_vote);
+    }
+
+    #[test]
+    fn leader_finish_accepts_or_rejects_without_extra_materialization_reads() {
+        let storage = temp_bridge_storage("leader_finish_accept_reject");
+        let accepted_service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        insert_proposal_vote(&accepted_service, [0x46; 32], NODE_SECRET, 4);
+        insert_proposed_block(&accepted_service, [0x46; 32], [0x56; 32], vec![0x46, 0x99]);
+        let snapshot = accepted_service
+            .pbft_service_prepare_leader_selection(12, 2)
+            .unwrap();
+        let result = accepted_service
+            .pbft_service_finish_leader_selection(finish_request(
+                &snapshot,
+                vec![leader_validation(
+                    &snapshot.candidates[0],
+                    PBFT_LEADER_VALIDATED,
+                )],
+            ))
+            .unwrap();
+        assert_eq!(result.status, PBFT_LEADER_SELECTED);
+        assert!(result.selected);
+        assert_eq!(result.selected_vote.hash, snapshot.candidates[0].vote_hash);
+        assert_eq!(result.selected_block_rlp, vec![0x46, 0x99]);
+        assert!(
+            accepted_service
+                .proposed_blocks
+                .read()
+                .unwrap()
+                .get(12, H256::from([0x46; 32]))
+                .unwrap()
+                .is_valid
+        );
+
+        let rejected_storage = temp_bridge_storage("leader_finish_rejected");
+        let rejected_service = verified_votes_service_for_test(Some(&rejected_storage)).unwrap();
+        insert_proposal_vote(&rejected_service, [0x47; 32], NODE_SECRET, 4);
+        insert_proposed_block(&rejected_service, [0x47; 32], [0x57; 32], vec![0x47]);
+        let snapshot = rejected_service
+            .pbft_service_prepare_leader_selection(12, 2)
+            .unwrap();
+        let result = rejected_service
+            .pbft_service_finish_leader_selection(finish_request(
+                &snapshot,
+                vec![leader_validation(
+                    &snapshot.candidates[0],
+                    PBFT_LEADER_REJECTED,
+                )],
+            ))
+            .unwrap();
+        assert_eq!(result.status, PBFT_LEADER_NO_ELIGIBLE);
+        assert!(!result.selected);
+        assert!(
+            !rejected_service
+                .proposed_blocks
+                .read()
+                .unwrap()
+                .get(12, H256::from([0x47; 32]))
+                .unwrap()
+                .is_valid
+        );
+    }
+
+    #[test]
+    fn leader_finish_rejects_invalid_reports_without_marking_valid() {
+        let storage = temp_bridge_storage("leader_invalid_reports");
+        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        insert_proposal_vote(&service, [0x48; 32], NODE_SECRET, 3);
+        insert_proposed_block(&service, [0x48; 32], [0x58; 32], vec![0x48]);
+        let snapshot = service
+            .pbft_service_prepare_leader_selection(12, 2)
+            .unwrap();
+        let invalid_cases = vec![
+            Vec::new(),
+            vec![leader_validation(&snapshot.candidates[0], 99)],
+            vec![
+                leader_validation(&snapshot.candidates[0], PBFT_LEADER_VALIDATED),
+                leader_validation(&snapshot.candidates[0], PBFT_LEADER_VALIDATED),
+            ],
+            vec![PbftLeaderCandidateValidation {
+                vote_hash: snapshot.candidates[0].vote_hash,
+                block_hash: [0x99; 32],
+                status: PBFT_LEADER_VALIDATED,
+            }],
+            vec![PbftLeaderCandidateValidation {
+                vote_hash: [0x98; 32],
+                block_hash: snapshot.candidates[0].block_hash,
+                status: PBFT_LEADER_VALIDATED,
+            }],
+        ];
+        for validations in invalid_cases {
+            let result = service
+                .pbft_service_finish_leader_selection(finish_request(&snapshot, validations))
+                .unwrap();
+            assert_eq!(result.status, PBFT_LEADER_INVALID_VALIDATION_REPORT);
+            assert!(
+                !service
+                    .proposed_blocks
+                    .read()
+                    .unwrap()
+                    .get(12, H256::from([0x48; 32]))
+                    .unwrap()
+                    .is_valid
+            );
+        }
+    }
+
+    #[test]
+    fn leader_finish_detects_vote_proposed_and_chain_staleness_without_mutation() {
+        let scenarios = ["vote", "proposed", "chain"];
+        for scenario in scenarios {
+            let storage = temp_bridge_storage(&format!("leader_stale_{scenario}"));
+            let service = verified_votes_service_for_test(Some(&storage)).unwrap();
+            insert_proposal_vote(&service, [0x49; 32], NODE_SECRET, 3);
+            insert_proposed_block(&service, [0x49; 32], [0x59; 32], vec![0x49]);
+            let snapshot = service
+                .pbft_service_prepare_leader_selection(12, 2)
+                .unwrap();
+            match scenario {
+                "vote" => {
+                    insert_proposal_vote(&service, [0x4A; 32], NODE_SECRET_TWO, 2);
+                }
+                "proposed" => {
+                    let mut proposed = service.proposed_blocks.write().unwrap();
+                    proposed.cleanup_before(13);
+                    assert!(proposed.push(
+                        12,
+                        H256::from([0x49; 32]),
+                        H256::from([0x5A; 32]),
+                        vec![0x49, 0x01],
+                    ));
+                }
+                "chain" => storage
+                    .0
+                    .period()
+                    .write_pbft_period(H256::from([0x49; 32]), 12)
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+            let result = service
+                .pbft_service_finish_leader_selection(finish_request(
+                    &snapshot,
+                    vec![leader_validation(
+                        &snapshot.candidates[0],
+                        PBFT_LEADER_VALIDATED,
+                    )],
+                ))
+                .unwrap();
+            assert_eq!(result.status, PBFT_LEADER_STALE_SNAPSHOT);
+            assert!(
+                !service
+                    .proposed_blocks
+                    .read()
+                    .unwrap()
+                    .get(12, H256::from([0x49; 32]))
+                    .unwrap()
+                    .is_valid
+            );
+        }
     }
 
     #[test]
@@ -2240,6 +2819,58 @@ mod tests {
         PbftVoteStorageRecord {
             hash: record.hash,
             vote_rlp: record.vote_rlp.clone(),
+        }
+    }
+
+    fn insert_proposal_vote(
+        service: &BridgePbftService,
+        block_hash: [u8; 32],
+        node_secret: [u8; 32],
+        weight: u64,
+    ) -> [u8; 32] {
+        let (vote, weighted) =
+            mutation_vote(block_hash, node_secret, PbftVoteType::Propose, 1, weight);
+        let vote_hash = vote.vote_hash;
+        service
+            .pbft_service_verified_votes_add_verified_vote(vote, weighted, u64::MAX, false)
+            .unwrap();
+        vote_hash
+    }
+
+    fn insert_proposed_block(
+        service: &BridgePbftService,
+        block_hash: [u8; 32],
+        pivot_hash: [u8; 32],
+        block_rlp: Vec<u8>,
+    ) {
+        assert!(service.proposed_blocks.write().unwrap().push(
+            12,
+            H256::from(block_hash),
+            H256::from(pivot_hash),
+            block_rlp,
+        ));
+    }
+
+    fn leader_validation(
+        candidate: &PbftLeaderCandidateSnapshot,
+        status: u8,
+    ) -> PbftLeaderCandidateValidation {
+        PbftLeaderCandidateValidation {
+            vote_hash: candidate.vote_hash,
+            block_hash: candidate.block_hash,
+            status,
+        }
+    }
+
+    fn finish_request(
+        snapshot: &PbftLeaderSelectionSnapshot,
+        validations: Vec<PbftLeaderCandidateValidation>,
+    ) -> PbftLeaderSelectionFinishRequest {
+        PbftLeaderSelectionFinishRequest {
+            period: snapshot.period,
+            round: snapshot.round,
+            snapshot_fingerprint: snapshot.snapshot_fingerprint,
+            validations,
         }
     }
 
