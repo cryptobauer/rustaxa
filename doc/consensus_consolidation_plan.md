@@ -533,7 +533,7 @@ Implementation notes:
   its compatibility state directly, and restores the upstream header's temporary protected hook to its original private
   shape. The shim already implemented the complete public surface, so this removes legacy constructor execution and
   implicit inherited fallback without changing the public C++ API.
-- Verified-vote startup is now authoritative in Rust. The storage-backed `BridgeVerifiedVotes` constructor reads own
+- Verified-vote startup is now authoritative in Rust. The storage-backed PBFT service constructor reads own
   votes, extra reward votes, and typed latest-round 2t+1 bundles through `rustaxa-storage`, validates canonical weighted
   payloads and bundle coordinates, deduplicates overlapping families by vote hash, and rebuilds Rust replay, retained
   payload, uniqueness, round-marker, and voted-block state. C++ receives only a compact snapshot to materialize the
@@ -545,7 +545,8 @@ Implementation notes:
   Verified-votes mode is one complete ownership bundle requiring the Rust storage, FinalChain, ProposedBlocks, and
   SlashingManager facades; the existing SlashingManager dependency also requires GasPricer, while its TransactionManager
   dependency owns the queue internally. Unsupported
-  partial flag combinations fail during configuration rather than gaining legacy adapters. Pure-C++ and Rust
+  partial flag combinations fail during configuration rather than gaining legacy adapters. The later CRW-03 ownership
+  commit moved that restored runtime into `BridgePbftService` and deleted the standalone handle/factory. Pure-C++ and Rust
   configurations without verified votes retain the untouched upstream implementation.
   Validation passed with the 14 focused Rust verified-votes tests, the two storage-backed verified-votes shim tests,
   four isolated VoteManager consumer tests, both focused PBFT manager consumer tests, all nine Rust storage bridge
@@ -554,7 +555,15 @@ Implementation notes:
   at configure time, the complete ownership bundle compiles with pillar support disabled, and a separate all-Rust-off
   build compiles the untouched upstream `vote_manager.cpp`. Archive/build-metadata audits found no `VoteManagerOld`
   symbol and no Rust-mode compile of the legacy VoteManager source; the original VoteManager header/source remain clean
-  versus `upstream-main`.
+  versus `upstream-main`. The task owner explicitly authorized Tier 3 tests whenever agent judgment warrants them. The
+  full CTest gate passed 22 of 28 test binaries; `pillar_chain_test`, `full_node_test`, `network_test`,
+  `pbft_manager_test`, and `vote_test` reproduced the known same-process fixture-lifetime defect in which the first case
+  passes and later cases cannot reacquire `/tmp/taraxa*/db/db/LOCK`. The affected verified-vote, PBFT-manager, and
+  next-vote network cases pass when run in isolated processes. The remaining `go_test` failure is an unrelated static
+  Go/cgo linker incompatibility in the configured environment. The Python integration gate was attempted but could not
+  collect tests: its pinned `cytoolz` and `pyethash` dependencies cannot build under Python 3.13 because the container
+  lacks Python development headers, leaving `pytest` unavailable. These Tier 3 environment and fixture failures do not
+  contradict the passing focused, rewrite, and smoke gates above.
 - `transaction_manager_shim` is now a standalone full overlay: Rust-enabled builds no longer inherit, construct, or
   compile `TransactionManagerOld`. The facade preserves `enable_shared_from_this<TransactionManager>`, the complete
   public API, event identity, locks, FinalChain/EVM executor, thread pool, and logging shell, while the Rust runtime
@@ -913,9 +922,43 @@ also exposed the previously classified same-process node-test lifecycle panic/Ro
 touched PBFT paths pass in fresh isolated processes, so this is retained as harness debt rather than hidden as a clean
 broad-suite signal.
 
+#### CRW-03 verified-vote absorption result
+
+The second ownership sub-slice is implemented. `BridgePbftService` now restores and owns
+`PbftVoteAdmissionRuntime` behind a sibling mutex before the production service is published. The explicit chain-only
+compatibility service carries no vote runtime; any accidental vote receiver call returns
+`PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE` instead of panicking or constructing a second authority.
+
+The retained `VerifiedVotes` and `VoteManager` C++ facades share the application-owned service. Their standalone
+`BridgeVerifiedVotes` box, storage-backed factory, direct `DbStorage` construction, and C++ `shared_mutex` are deleted.
+Full compatibility-map materialization, step-bucket materialization, and current reward-vote materialization each use
+one owned Rust snapshot taken under the service vote mutex; C++ decodes those owned canonical records only after the
+receiver returns. Network callers continue through `Network -> VoteManager`, and no Rust guard crosses validation,
+FinalChain/EVM, network, logging, or gossip work.
+
+Production construction now restores chain, proposed blocks, verified votes, and manager state before returning the
+single service. Storage bridge tests construct that production service rather than a separate vote handle, so malformed
+or ambiguous persisted vote state remains a startup error. `BridgeVerifiedVotes` and
+`create_verified_votes_index_from_storage` no longer exist in the CXX inventory.
+
+Focused validation passes all 279 `rustaxa-bridge` tests, 17 verified-vote module tests,
+`verified_votes_shim_test` 3/3, `rust_storage_tests` 9/9, and isolated VoteManager admission/snapshot, round-advance,
+own-vote restart, PBFT proposal/vote broadcast, and null-anchor finalization paths. The full `vote_test` binary still
+has the previously classified same-process `/tmp/taraxa*` database-fixture lifetime failure after its first node test;
+the affected paths pass in fresh processes. Strict all-target clippy remains blocked by pre-existing dependency and
+bridge findings; `make rewrite-validate-fast`, the final `make rewrite-validate-consensus` run, and
+`make rewrite-validate-smoke` pass. An earlier Tier 2 attempt hit the unrelated nanosecond-order assertion in the VDF
+precision-cache timing test; that case passed immediately in isolation and the complete rerun exited successfully.
+
+`CRW-03` remains active for the cross-domain consolidation that this ownership commit intentionally does not overclaim:
+authoritative leader selection still snapshots proposal votes and proposed blocks in separate service calls, live vote
+admission still persists some progress effects in a subsequent service call, and manager period cleanup still emits
+separate vote/proposed-block actions. A follow-up must replace those with narrow snapshot/revalidate or atomic service
+operations before the combined vote/proposal deletion condition is complete.
+
 Implementation notes:
 
-- VoteManager no longer mirrors locally generated own votes in `own_verified_votes_`. `BridgeVerifiedVotes` enumerates
+- VoteManager no longer mirrors locally generated own votes in `own_verified_votes_`. The service-owned vote runtime enumerates
   validated canonical own-vote records directly from native Rust storage in hash order; the public C++ getter creates
   transient `PbftVote` objects only when compatibility/network callers require them. Save and zero-input clear-all are
   Rust-owned persistence operations serialized across production handles by a shared `Storage` mutex; startup returns
@@ -1919,7 +1962,7 @@ Implementation status:
   dedicated `storage_shim_save_own_verified_vote` batch appender or native `rustaxa-consensus` vote persistence helpers,
   and the broad CXX mutator is deleted.
 - The remaining test-only callers of broad `BridgeStorage::persist_pbft_vote_progress` and
-  `BridgeStorage::clear_own_verified_votes` now use the narrower `BridgeVerifiedVotes` persistence facade, and the broad
+  `BridgeStorage::clear_own_verified_votes` now use the `BridgePbftService` vote persistence API, and the broad
   CXX methods are deleted from `BridgeStorage`.
 - The last test-only callers of broad `BridgeStorage::save_cert_voted_block_in_round` have been migrated to either the
   dedicated `storage_shim_save_cert_voted_block_in_round` batch appender or native Rust PBFT manager storage helpers, and
@@ -2014,14 +2057,15 @@ Implementation status:
   Live callers use runtime-owned DAG methods, `create_pbft_chain_from_storage`, and the hash-only transaction-manager
   runtime known check instead.
 - `BridgePbftVoteValidationRuntime` is deleted. The standalone validation replay/threshold runtime had no external C++
-  callsites and only protected older bridge tests; production Rust-mode vote validation uses `BridgeVerifiedVotes`, whose
+  callsites and only protected older bridge tests; production Rust-mode vote validation uses the runtime inside
+  `BridgePbftService`, whose
   admission runtime owns replay protection, threshold caching, verified-vote metadata, and retained payloads together.
 - Standalone PBFT vote planner CXX exports are deleted:
   `pbft_vote_progress_plan_precheck`, `pbft_vote_progress_plan_after_add`, `pbft_vote_ingress_plan`,
   `pbft_vote_bundle_ingress_plan`, `pbft_reward_votes_plan`, `pbft_vote_validation_plan`,
   `pbft_validate_canonical_vote`, `pbft_vote_event_fact_from_canonical_vote`, and
   `pbft_derive_vote_progress_fact_from_canonical_vote`. Live C++ ingress now uses `BridgeConsensusNetworkApi`, live
-  validation/admission/reward-vote materialization uses `BridgeVerifiedVotes`, and the bridge-only DTOs/modules that
+  validation/admission/reward-vote materialization uses `BridgePbftService`, and the bridge-only DTOs/modules that
   existed solely for the removed free functions are deleted. `pbft_inspect_canonical_vote`, weighted vote payload
   conversion, and vote generation helpers remain because `vote_manager_shim` still calls them directly.
 - The no-caller scalar threshold helper `pbft_vote_sortition_threshold_for_bridge` is also deleted from the CXX surface.

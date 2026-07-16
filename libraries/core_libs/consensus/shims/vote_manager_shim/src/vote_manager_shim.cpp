@@ -464,7 +464,7 @@ std::shared_ptr<PbftVote> materializeOwnVoteRecord(const rustaxa::PbftVoteStorag
 
 }  // namespace
 
-VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db,
+VoteManager::VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service,
                          std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<KeyManager> key_manager, std::shared_ptr<SlashingManager> slashing_manager)
     : kPbftConfig(config.genesis.pbft),
@@ -472,7 +472,7 @@ VoteManager::VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage
       final_chain_(std::move(final_chain)),
       key_manager_(std::move(key_manager)),
       slashing_manager_(std::move(slashing_manager)),
-      verified_votes_(dev::toAddress(config.getFirstWallet().node_secret), db->rustStorage()) {
+      verified_votes_(dev::toAddress(config.getFirstWallet().node_secret), std::move(pbft_service)) {
   const auto node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("VOTE_MGR");
 }
@@ -942,8 +942,8 @@ VoteManager::identifyLeaderBlockFromSource(
 
     rustaxa::ProposedBlockLookup proposed_block;
     if (pbft_service != nullptr) {
-      proposed_block = pbft_service->service().pbft_service_proposed_blocks_get(
-          vote->getPeriod(), toBridgeHash(proposed_block_hash));
+      proposed_block = pbft_service->service().pbft_service_proposed_blocks_get(vote->getPeriod(),
+                                                                                toBridgeHash(proposed_block_hash));
     } else {
       proposed_block = std::move(local_lookups[vote_index]);
     }

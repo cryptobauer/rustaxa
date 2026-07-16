@@ -159,6 +159,7 @@ use rustaxa_consensus::pbft_sync::{
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 use rustaxa_consensus::proposed_blocks::{restore_proposed_blocks_from_storage, ProposedBlocks};
+use rustaxa_consensus::PbftVoteAdmissionRuntime;
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
     for PbftFinalizationStorageWriteStage
@@ -473,6 +474,8 @@ pub fn create_pbft_service_from_storage(
 ) -> anyhow::Result<Box<BridgePbftService>> {
     let restored_chain = restore_pbft_chain_from_storage(storage.0.as_ref())?;
     let restored_proposed_blocks = restore_proposed_blocks_from_storage(storage.0.as_ref())?;
+    let restored_verified_votes =
+        PbftVoteAdmissionRuntime::restore_from_storage(storage.0.as_ref())?;
     let mut proposed_blocks = ProposedBlocks::new();
     for entry in restored_proposed_blocks {
         proposed_blocks.push(
@@ -524,6 +527,7 @@ pub fn create_pbft_service_from_storage(
         })),
         chain,
         proposed_blocks: std::sync::RwLock::new(proposed_blocks),
+        verified_votes: std::sync::Mutex::new(Some(restored_verified_votes)),
         storage: Some(storage.0.clone()),
         bootstrap_complete: std::sync::atomic::AtomicBool::new(false),
     }))
@@ -6300,6 +6304,8 @@ mod tests {
                 .pbft()
                 .write_manager_status(3, true)
                 .expect("null next status should persist");
+            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
+                .expect("runtime should restore");
             save_own_verified_vote(
                 &storage.0,
                 PbftVoteStorageRecord {
@@ -6307,10 +6313,7 @@ mod tests {
                     vote_rlp: vec![0xC0],
                 },
             )
-            .expect("own vote should persist");
-
-            let mut runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
-                .expect("runtime should restore");
+            .expect("own vote should persist after the service has restored");
             let before = pbft_manager_runtime_snapshot(&runtime);
             let result = pbft_manager_runtime_execute_lifecycle_transition(
                 &mut runtime,

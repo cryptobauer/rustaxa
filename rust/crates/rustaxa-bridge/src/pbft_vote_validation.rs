@@ -2,9 +2,9 @@
 //!
 //! The bridge exposes Rust-owned validation decisions without transferring
 //! ownership of live vote objects or cryptographic primitives. The production
-//! `VoteManager` shim uses the `BridgeVerifiedVotes` facade so validation
-//! replay protection, threshold caching, verified-vote metadata, and retained
-//! vote payloads share one Rust runtime.
+//! `VoteManager` shim uses verified-vote methods on `BridgePbftService` so
+//! validation replay protection, threshold caching, verified-vote metadata,
+//! and retained vote payloads share one Rust runtime.
 
 use crate::ffi::rustaxa_ffi::{
     PbftCanonicalVoteInspection as FfiPbftCanonicalVoteInspection,

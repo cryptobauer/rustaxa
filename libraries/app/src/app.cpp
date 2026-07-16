@@ -174,7 +174,12 @@ void App::init(const cli::Config &cli_conf) {
 #endif
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
+#ifdef RUSTAXA_ENABLE
+  vote_mgr_ =
+      std::make_shared<VoteManager>(conf_, pbft_service_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
+#else
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
+#endif
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
 #ifdef RUSTAXA_ENABLE

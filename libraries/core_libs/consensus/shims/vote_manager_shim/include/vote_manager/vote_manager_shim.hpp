@@ -14,6 +14,7 @@
 #include "final_chain/final_chain.hpp"
 #include "key_manager/key_manager.hpp"
 #include "pbft/pbft_chain.hpp"
+#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pbft_vote.hpp"
 #include "vote_manager/verified_votes.hpp"
@@ -183,15 +184,16 @@ class VoteManager {
   /**
    * Constructs the Rust-mode VoteManager overlay.
    *
-   * Inputs mirror the legacy `VoteManager` constructor. The overlay initializes
-   * shim-owned compatibility state; PBFT vote validation/admission state is
-   * owned by the Rust-backed `VerifiedVotes` facade.
+   * Rust mode receives the application-owned PBFT service instead of extracting
+   * an independent vote runtime from `DbStorage`. The overlay initializes
+   * shim-owned compatibility state while the shared service owns PBFT vote
+   * validation and admission state.
    *
    * Invariants:
    * - Public C++ API remains identical during the rewrite.
    * - Unported methods keep explicit shim-local forwarding TODOs.
    */
-  VoteManager(const FullNodeConfig& config, std::shared_ptr<DbStorage> db, std::shared_ptr<PbftChain> pbft_chain,
+  VoteManager(const FullNodeConfig& config, SharedPbftService pbft_service, std::shared_ptr<PbftChain> pbft_chain,
               std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
               std::shared_ptr<SlashingManager> slashing_manager);
   ~VoteManager() = default;

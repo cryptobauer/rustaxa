@@ -2,12 +2,12 @@
 
 #include <array>
 #include <optional>
-#include <shared_mutex>
 #include <unordered_map>
 #include <vector>
 
 #include "common/types.hpp"
 #include "logger/logger.hpp"
+#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote_manager/verified_votes_compat_types.hpp"
 
@@ -24,8 +24,9 @@ namespace taraxa {
  * Ownership and invariants:
  * - C++ owns live `PbftVote` objects and map containers referenced by vote
  *   processing code.
- * - The facade owns synchronization (`verified_votes_access_`) and provides the
- *   same read/write locking boundary as the legacy implementation.
+ * - The application-owned PBFT service owns synchronization for verified-vote
+ *   state. C++ materializes only owned bridge results after receiver calls
+ *   return.
  * - All period/round/step uniqueness and vote-weight accumulation semantics
  *   remain API-compatible with existing `VoteManager` call sites.
  */
@@ -134,13 +135,13 @@ class VerifiedVotes {
   };
 
   /**
-   * Constructs a storage-backed verified-votes runtime for production.
+   * Constructs the facade over the application-owned PBFT service.
    *
-   * The Rust factory restores authoritative verified-vote and reward-cursor
-   * state and retains storage for native queries. Factory or restore failures
-   * propagate from construction.
+   * The service must already contain the restored authoritative verified-vote
+   * and reward-cursor runtime. A missing service is rejected; receiver errors,
+   * including use of a chain-only service, propagate to the caller.
    */
-  VerifiedVotes([[maybe_unused]] addr_t node_addr, rustaxa::BridgeStorage& storage);
+  VerifiedVotes(addr_t node_addr, SharedPbftService pbft_service);
 
   /**
    * Loads all locally generated weighted PBFT vote records from native Rust storage.
@@ -503,18 +504,18 @@ class VerifiedVotes {
   static std::array<uint8_t, 20> toBridgeAddress(const addr_t& address);
   static uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32>& hash);
   rustaxa::VerifiedVotePayload toBridgeVotePayload(const std::shared_ptr<PbftVote>& vote) const;
+  rustaxa::PbftVoteStorageRecord toBridgeWeightedVoteRecord(const std::shared_ptr<PbftVote>& vote) const;
   std::shared_ptr<PbftVote> materializeWeightedPayload(const rustaxa::PbftVoteStorageRecord& record) const;
-  std::shared_ptr<PbftVote> materializeVoteForSnapshot(const rustaxa::VerifiedVotePayload& vote_data) const;
-  VotesWithWeight requireInsertedVotesWithWeightLocked(const std::shared_ptr<PbftVote>& vote, uint64_t total_weight,
-                                                       bool allow_later_bucket_growth = false) const;
-  VotesWithWeight requireInsertedVotesWithWeightLocked(const rustaxa::VerifiedVotePayload& vote_data,
-                                                       uint64_t total_weight,
-                                                       bool allow_later_bucket_growth = false) const;
+  std::shared_ptr<PbftVote> materializeVoteForSnapshot(const rustaxa::VerifiedVotePayload& vote_data,
+                                                       const rustaxa::PbftVoteStorageRecord& weighted_vote) const;
+  std::shared_ptr<PbftVote> materializeConflictVote(const rustaxa::PbftVoteStorageRecord& record,
+                                                    const std::array<uint8_t, 32>& expected_hash) const;
+  VotesWithWeight materializeInsertedVotesWithWeight(const rustaxa::VerifiedVotePayload& vote_data,
+                                                     const rustaxa::VerifiedStepVotePayloadEntry& bucket,
+                                                     uint64_t total_weight,
+                                                     bool allow_later_bucket_growth = false) const;
   PeriodVerifiedVotesMap buildSnapshotState() const;
-
-  std::shared_ptr<PbftVote> requireStoredVote(const vote_hash_t& vote_hash) const;
-  mutable std::shared_mutex verified_votes_access_;
-  mutable ::rust::Box<rustaxa::BridgeVerifiedVotes> rust_verified_votes_;
+  SharedPbftService pbft_service_;
 
   LOG_OBJECTS_DEFINE
 };

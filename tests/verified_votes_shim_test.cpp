@@ -11,6 +11,24 @@
 
 namespace taraxa::core_tests {
 
+#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
+namespace {
+
+SharedPbftService makeService(const std::shared_ptr<DbStorage>& db) {
+  rustaxa::PbftServiceConfig config{};
+  config.genesis_lambda_ms = 1000;
+  config.cacti_lambda_max_ms = 1000;
+  config.cacti_lambda_default_ms = 1000;
+  config.max_exponential_lambda_ms = 60000;
+  config.max_steps = 13;
+  config.deadline_ms = 4000;
+  config.polling_interval_ms = 100;
+  return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
+}
+
+}  // namespace
+#endif
+
 TEST(VerifiedVotesShimTest, compatibilityCarrierValuesAndDefaultsRemainStable) {
   static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::SoftVotedBlock) == 0);
   static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::CertVotedBlock) == 1);
@@ -57,7 +75,7 @@ struct VerifiedVotesShimDataTest : WithDataDir {};
 TEST_F(VerifiedVotesShimDataTest, emptyStorageBackedIndexApiContract) {
 #ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
   auto db = std::make_shared<DbStorage>(data_dir);
-  VerifiedVotes verified_votes(addr_t{}, db->rustStorage());
+  VerifiedVotes verified_votes(addr_t{}, makeService(db));
 #else
   VerifiedVotes verified_votes(addr_t{});
 #endif
@@ -85,5 +103,48 @@ TEST_F(VerifiedVotesShimDataTest, emptyStorageBackedIndexApiContract) {
   verified_votes.cleanupVotesByPeriod(10);
   EXPECT_EQ(verified_votes.size(), 0);
 }
+
+#ifdef RUSTAXA_ENABLE_VERIFIED_VOTES
+TEST_F(VerifiedVotesShimDataTest, mutationOutcomesCarryOwnedConflictAndBucketPayloads) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  VerifiedVotes verified_votes(addr_t{}, makeService(db));
+
+  const auto first_vote = genDummyVote(PbftVoteTypes::soft_vote, 1, 1, 2, blk_hash_t{1});
+  EXPECT_FALSE(verified_votes.insertUniqueVoter(first_vote).has_value());
+  const auto first_bucket = verified_votes.insertVotedValue(first_vote);
+  ASSERT_TRUE(first_bucket.has_value());
+  EXPECT_EQ(first_bucket->weight, first_vote->getWeight().value());
+  ASSERT_EQ(first_bucket->votes.size(), 1);
+  EXPECT_EQ(first_bucket->votes.at(first_vote->getHash())->getHash(), first_vote->getHash());
+
+  const auto conflicting_vote = genDummyVote(PbftVoteTypes::soft_vote, 1, 1, 2, blk_hash_t{2});
+  const auto conflict = verified_votes.insertUniqueVoter(conflicting_vote);
+  ASSERT_TRUE(conflict.has_value());
+  EXPECT_EQ((*conflict)->getHash(), first_vote->getHash());
+
+  const auto atomic_vote = genDummyVote(PbftVoteTypes::soft_vote, 2, 1, 2, blk_hash_t{3});
+  const auto atomic = verified_votes.insertVerifiedVoteAtomic(atomic_vote);
+  EXPECT_FALSE(atomic.conflicting_vote.has_value());
+  ASSERT_TRUE(atomic.votes_with_weight.has_value());
+  EXPECT_EQ(atomic.votes_with_weight->votes.at(atomic_vote->getHash())->getHash(), atomic_vote->getHash());
+  const auto atomic_conflicting_vote = genDummyVote(PbftVoteTypes::soft_vote, 2, 1, 2, blk_hash_t{33});
+  const auto atomic_conflict = verified_votes.insertVerifiedVoteAtomic(atomic_conflicting_vote);
+  ASSERT_TRUE(atomic_conflict.conflicting_vote.has_value());
+  EXPECT_EQ((*atomic_conflict.conflicting_vote)->getHash(), atomic_vote->getHash());
+  EXPECT_FALSE(atomic_conflict.votes_with_weight.has_value());
+
+  const auto threshold_vote = genDummyVote(PbftVoteTypes::soft_vote, 3, 1, 2, blk_hash_t{4});
+  const auto added = verified_votes.addVerifiedVoteWithThreshold(threshold_vote, std::nullopt);
+  EXPECT_TRUE(added.report.inserted);
+  EXPECT_FALSE(added.conflicting_vote.has_value());
+  ASSERT_TRUE(added.votes_with_weight.has_value());
+  EXPECT_EQ(added.votes_with_weight->votes.at(threshold_vote->getHash())->getHash(), threshold_vote->getHash());
+  const auto threshold_conflicting_vote = genDummyVote(PbftVoteTypes::soft_vote, 3, 1, 2, blk_hash_t{44});
+  const auto add_conflict = verified_votes.addVerifiedVoteWithThreshold(threshold_conflicting_vote, std::nullopt);
+  ASSERT_TRUE(add_conflict.conflicting_vote.has_value());
+  EXPECT_EQ((*add_conflict.conflicting_vote)->getHash(), threshold_vote->getHash());
+  EXPECT_FALSE(add_conflict.votes_with_weight.has_value());
+}
+#endif
 
 }  // namespace taraxa::core_tests

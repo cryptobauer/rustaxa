@@ -249,6 +249,17 @@ mod tests {
             votes_count: 0,
             conflict_found: false,
             conflicting_vote_hash: [0; 32],
+            conflicting_vote_found: false,
+            conflicting_vote: crate::ffi::rustaxa_ffi::PbftVoteStorageRecord {
+                hash: [0; 32],
+                vote_rlp: Vec::new(),
+            },
+            bucket_found: false,
+            bucket: crate::ffi::rustaxa_ffi::VerifiedStepVotePayloadEntry {
+                block_hash: [0; 32],
+                total_weight: 0,
+                votes: Vec::new(),
+            },
             used_secondary_slot: false,
             duplicate_vote_hash: false,
             threshold_applied: false,

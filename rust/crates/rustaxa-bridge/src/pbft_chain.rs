@@ -49,6 +49,7 @@ pub fn create_pbft_chain_service_from_storage(
             initialized_default: restored.initialized_default,
         })),
         proposed_blocks: std::sync::RwLock::new(proposed_blocks),
+        verified_votes: std::sync::Mutex::new(None),
         storage: Some(storage.0.clone()),
         bootstrap_complete: std::sync::atomic::AtomicBool::new(true),
     }))

@@ -19,7 +19,6 @@ use crate::storage::*;
 use crate::transaction::*;
 use crate::transaction_manager::*;
 use crate::vdf::*;
-use crate::verified_votes::*;
 use ethereum_types::H256;
 use rustaxa_consensus::dag::{DagGraph, DagManagerState};
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
@@ -238,16 +237,18 @@ pub(crate) struct BridgePbftManagerRuntimeState {
 /// The service is the sole Rust owner of PBFT manager/session state, PBFT chain
 /// state, proposed-block state, and their common storage handle. Manager
 /// commands are serialized by `manager`; chain and proposed-block reads use
-/// independent sibling lock domains. Operations that need both manager and
-/// chain acquire `manager` before `chain`; proposed-block operations never
-/// acquire either lock and no guard is retained across a C++ executor call. A
-/// chain-only compatibility instance has no manager state and is held privately
-/// by the C++ `PbftChain` adapter. Reaching a manager receiver through that
-/// adapter is therefore a bridge-wiring bug, not a recoverable runtime input.
+/// independent sibling lock domains, and every verified-vote operation is
+/// serialized by `verified_votes`. Operations that need both manager and chain
+/// acquire `manager` before `chain`; no guard is retained across a C++ executor
+/// call. A chain-only compatibility instance has neither manager nor verified-
+/// vote state and is held privately by the C++ `PbftChain` adapter. Reaching
+/// either unavailable receiver through that adapter is a bridge-wiring bug and
+/// returns an explicit error.
 pub struct BridgePbftService {
     pub(crate) manager: Mutex<Option<BridgePbftManagerRuntimeState>>,
     pub(crate) chain: Arc<RwLock<BridgePbftChainState>>,
     pub(crate) proposed_blocks: RwLock<rustaxa_consensus::proposed_blocks::ProposedBlocks>,
+    pub(crate) verified_votes: Mutex<Option<PbftVoteAdmissionRuntime>>,
     pub(crate) storage: Option<Arc<Storage>>,
     pub(crate) bootstrap_complete: AtomicBool,
 }
@@ -283,17 +284,6 @@ impl BridgePbftService {
 }
 
 pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
-
-/// Rust-owned verified-votes runtime used by the C++ VoteManager shim.
-///
-/// Production instances are constructed by a fallible storage-backed factory
-/// that restores the authoritative runtime before cloning the storage handle.
-/// Storage-free instances remain only for tests exercising in-memory vote
-/// admission behavior; they cannot expose a startup snapshot or persist writes.
-pub struct BridgeVerifiedVotes {
-    pub runtime: PbftVoteAdmissionRuntime,
-    pub storage: Option<Arc<Storage>>,
-}
 
 /// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
 ///
@@ -2357,7 +2347,7 @@ pub mod rustaxa_ffi {
 
     /// Rust-owned PBFT reward-vote materialization output.
     ///
-    /// This keeps reward-vote selection under the `BridgeVerifiedVotes`
+    /// This keeps reward-vote selection under the PBFT service's vote runtime
     /// runtime that owns verified-vote metadata and retained weighted payloads.
     /// When `accepted` is true, `selected_records` is ordered exactly like
     /// `selected_vote_hashes`.
@@ -2949,6 +2939,10 @@ pub mod rustaxa_ffi {
         accepted: bool,
         conflict_found: bool,
         conflicting_vote_hash: [u8; 32],
+        conflicting_vote_found: bool,
+        conflicting_vote: PbftVoteStorageRecord,
+        bucket_found: bool,
+        bucket: VerifiedStepVotePayloadEntry,
         used_secondary_slot: bool,
         duplicate_vote_hash: bool,
     }
@@ -2957,17 +2951,10 @@ pub mod rustaxa_ffi {
         inserted: bool,
         total_weight: u64,
         votes_count: usize,
-    }
-
-    struct VerifiedStepVotesEntry {
-        block_hash: [u8; 32],
-        total_weight: u64,
-        vote_hashes: Vec<DagHash>,
-    }
-
-    struct VerifiedStepVotesLookup {
-        found: bool,
-        entries: Vec<VerifiedStepVotesEntry>,
+        conflicting_vote_found: bool,
+        conflicting_vote: PbftVoteStorageRecord,
+        bucket_found: bool,
+        bucket: VerifiedStepVotePayloadEntry,
     }
 
     struct VerifiedVoteAddOutcome {
@@ -2977,6 +2964,10 @@ pub mod rustaxa_ffi {
         votes_count: usize,
         conflict_found: bool,
         conflicting_vote_hash: [u8; 32],
+        conflicting_vote_found: bool,
+        conflicting_vote: PbftVoteStorageRecord,
+        bucket_found: bool,
+        bucket: VerifiedStepVotePayloadEntry,
         used_secondary_slot: bool,
         duplicate_vote_hash: bool,
         threshold_applied: bool,
@@ -2995,6 +2986,10 @@ pub mod rustaxa_ffi {
         votes_count: usize,
         conflict_found: bool,
         conflicting_vote_hash: [u8; 32],
+        conflicting_vote_found: bool,
+        conflicting_vote: PbftVoteStorageRecord,
+        bucket_found: bool,
+        bucket: VerifiedStepVotePayloadEntry,
         used_secondary_slot: bool,
         duplicate_vote_hash: bool,
     }
@@ -3048,6 +3043,37 @@ pub mod rustaxa_ffi {
         period: u64,
         round: u64,
         network_t_plus_one_step: u64,
+    }
+
+    /// One metadata vote paired with its authoritative retained weighted payload.
+    struct VerifiedVoteStateSnapshotEntry {
+        vote: VerifiedVotePayload,
+        weighted_vote: PbftVoteStorageRecord,
+    }
+
+    /// Coherent owned snapshot of every verified-vote state family materialized by C++.
+    struct VerifiedVotesStateSnapshot {
+        votes: Vec<VerifiedVoteStateSnapshotEntry>,
+        round_markers: Vec<RoundMarkerSnapshot>,
+        two_t_plus_one: Vec<TwoTPlusOneSnapshotEntry>,
+    }
+
+    /// One voted-value bucket with owned payload records in canonical vote-hash order.
+    struct VerifiedStepVotePayloadEntry {
+        block_hash: [u8; 32],
+        total_weight: u64,
+        votes: Vec<PbftVoteStorageRecord>,
+    }
+
+    struct VerifiedStepVotePayloadsLookup {
+        found: bool,
+        entries: Vec<VerifiedStepVotePayloadEntry>,
+    }
+
+    /// Coherent reward cursor and the retained weighted payloads selected by that cursor.
+    struct RewardVotePayloadSnapshot {
+        cursor: RewardVoteCursorSnapshot,
+        records: Vec<PbftVoteStorageRecord>,
     }
 
     struct FinalChainBlockNumberLookup {
@@ -5266,166 +5292,161 @@ pub mod rustaxa_ffi {
 
         // Consensus verified votes
 
-        type BridgeVerifiedVotes;
-
-        pub fn create_verified_votes_index_from_storage(
-            storage: &BridgeStorage,
-        ) -> Result<Box<BridgeVerifiedVotes>>;
-        pub fn verified_votes_own_vote_records(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_own_vote_records(
+            self: &BridgePbftService,
         ) -> Result<Vec<PbftVoteStorageRecord>>;
-        pub fn verified_votes_size(self: &BridgeVerifiedVotes) -> u64;
-        pub fn verified_votes_replay_contains(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_size(self: &BridgePbftService) -> Result<u64>;
+        pub fn pbft_service_verified_votes_replay_contains(
+            self: &BridgePbftService,
             vote_hash: &[u8; 32],
-        ) -> bool;
-        pub fn verified_votes_replay_insert(
-            self: &mut BridgeVerifiedVotes,
+        ) -> Result<bool>;
+        pub fn pbft_service_verified_votes_replay_insert(
+            self: &BridgePbftService,
             vote_hash: &[u8; 32],
-        ) -> bool;
-        pub fn verified_votes_two_t_plus_one_threshold(
-            self: &mut BridgeVerifiedVotes,
+        ) -> Result<bool>;
+        pub fn pbft_service_verified_votes_two_t_plus_one_threshold(
+            self: &BridgePbftService,
             fact: PbftTwoTPlusOneThresholdFact,
-        ) -> PbftTwoTPlusOneThresholdPlan;
-        pub fn verified_votes_validate_canonical_vote(
-            self: &mut BridgeVerifiedVotes,
+        ) -> Result<PbftTwoTPlusOneThresholdPlan>;
+        pub fn pbft_service_verified_votes_validate_canonical_vote(
+            self: &BridgePbftService,
             canonical_vote_rlp: &[u8],
             validation_facts: PbftVoteValidationExternalFacts,
         ) -> Result<PbftVoteRuntimeValidationResult>;
-        pub fn verified_votes_insert_unique_voter(
-            self: &mut BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_insert_unique_voter(
+            self: &BridgePbftService,
             vote: VerifiedVotePayload,
+            weighted_vote: PbftVoteStorageRecord,
         ) -> Result<UniqueVoterInsertOutcome>;
-        pub fn verified_votes_insert_voted_value(
-            self: &mut BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_insert_voted_value(
+            self: &BridgePbftService,
             vote: VerifiedVotePayload,
+            weighted_vote: PbftVoteStorageRecord,
         ) -> Result<VotedValueInsertOutcome>;
-        pub fn verified_votes_insert_vote_atomic(
-            self: &mut BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_insert_vote_atomic(
+            self: &BridgePbftService,
             vote: VerifiedVotePayload,
+            weighted_vote: PbftVoteStorageRecord,
         ) -> Result<AtomicVoteInsertOutcome>;
-        pub fn verified_votes_apply_threshold_decision(
-            self: &mut BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_apply_threshold_decision(
+            self: &BridgePbftService,
             vote: VerifiedVotePayload,
             total_weight: u64,
             two_t_plus_one_threshold: u64,
         ) -> Result<ThresholdDecisionOutcome>;
-        pub fn verified_votes_set_network_t_plus_one_step(
-            self: &mut BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_set_network_t_plus_one_step(
+            self: &BridgePbftService,
             period: u64,
             round: u64,
             step: u64,
-        ) -> bool;
-        pub fn verified_votes_determine_new_round(
-            self: &BridgeVerifiedVotes,
+        ) -> Result<bool>;
+        pub fn pbft_service_verified_votes_determine_new_round(
+            self: &BridgePbftService,
             period: u64,
             current_round: u64,
-        ) -> DetermineNewRoundOutcome;
-        pub fn verified_votes_insert_two_t_plus_one_voted_block(
-            self: &mut BridgeVerifiedVotes,
+        ) -> Result<DetermineNewRoundOutcome>;
+        pub fn pbft_service_verified_votes_insert_two_t_plus_one_voted_block(
+            self: &BridgePbftService,
             period: u64,
             round: u64,
             kind: u8,
             block_hash: &[u8; 32],
             step: u64,
         ) -> Result<TwoTPlusOneInsertOutcome>;
-        pub fn verified_votes_get_two_t_plus_one_voted_block(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+            self: &BridgePbftService,
             period: u64,
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotedBlockLookup>;
-        pub fn verified_votes_get_two_t_plus_one_voted_block_payloads(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(
+            self: &BridgePbftService,
             period: u64,
             round: u64,
             kind: u8,
         ) -> Result<TwoTPlusOneVotePayloadsLookup>;
-        pub fn verified_votes_plan_next_votes_bundle_egress(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_plan_next_votes_bundle_egress(
+            self: &BridgePbftService,
             period: u64,
             round: u64,
-        ) -> PbftNextVotesBundleEgressPlan;
-        pub fn verified_votes_build_optimized_votes_bundle_egress(
-            self: &BridgeVerifiedVotes,
+        ) -> Result<PbftNextVotesBundleEgressPlan>;
+        pub fn pbft_service_verified_votes_build_optimized_votes_bundle_egress(
+            self: &BridgePbftService,
             request: PbftOptimizedVoteBundleBuildRequest,
-        ) -> PbftOptimizedVoteBundleBuildResult;
-        pub fn verified_votes_get_step_votes(
-            self: &BridgeVerifiedVotes,
-            period: u64,
-            round: u64,
-            step: u64,
-        ) -> VerifiedStepVotesLookup;
-        pub fn verified_votes_cleanup_votes_by_period(
-            self: &mut BridgeVerifiedVotes,
+        ) -> Result<PbftOptimizedVoteBundleBuildResult>;
+        pub fn pbft_service_verified_votes_cleanup_votes_by_period(
+            self: &BridgePbftService,
             pbft_period: u64,
-        );
-        pub fn verified_votes_add_verified_vote(
-            self: &mut BridgeVerifiedVotes,
+        ) -> Result<()>;
+        pub fn pbft_service_verified_votes_add_verified_vote(
+            self: &BridgePbftService,
             vote: VerifiedVotePayload,
+            weighted_vote: PbftVoteStorageRecord,
             two_t_plus_one_threshold: u64,
             apply_threshold_decision: bool,
         ) -> Result<VerifiedVoteAddOutcome>;
-        pub fn verified_votes_admit_validated_vote(
-            self: &mut BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_admit_validated_vote(
+            self: &BridgePbftService,
             canonical_vote_rlp: &[u8],
             validation_facts: PbftVoteValidationExternalFacts,
             flags: PbftVoteEventFactFlags,
             context: PbftVoteProgressContext,
         ) -> Result<PbftVoteAdmissionRuntimeResult>;
-        pub fn verified_votes_snapshot_votes(
-            self: &BridgeVerifiedVotes,
-        ) -> Vec<VerifiedVotePayload>;
-        pub fn verified_votes_weighted_payload(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_weighted_payload(
+            self: &BridgePbftService,
             vote_hash: &[u8; 32],
-        ) -> PbftVotePayloadLookup;
-        pub fn verified_votes_select_reward_vote_payloads(
-            self: &BridgeVerifiedVotes,
+        ) -> Result<PbftVotePayloadLookup>;
+        pub fn pbft_service_verified_votes_select_reward_vote_payloads(
+            self: &BridgePbftService,
             block_period: u64,
             requested_vote_hashes: Vec<PbftFinalizationHash>,
         ) -> Result<PbftRewardVotePayloadSelection>;
-        pub fn verified_votes_reward_vote_cursor(
-            self: &BridgeVerifiedVotes,
-        ) -> RewardVoteCursorSnapshot;
-        pub fn verified_votes_reward_vote_period(self: &BridgeVerifiedVotes) -> u64;
-        pub fn verified_votes_current_reward_vote_payloads(
-            self: &BridgeVerifiedVotes,
-        ) -> Result<Vec<PbftVoteStorageRecord>>;
-        pub fn verified_votes_commit_reward_vote_cursor(
-            self: &mut BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_reward_vote_cursor(
+            self: &BridgePbftService,
+        ) -> Result<RewardVoteCursorSnapshot>;
+        pub fn pbft_service_verified_votes_reward_vote_period(
+            self: &BridgePbftService,
+        ) -> Result<u64>;
+        pub fn pbft_service_verified_votes_commit_reward_vote_cursor(
+            self: &BridgePbftService,
             write_intent: &PbftFinalizationStorageWritePlan,
             reset_generation: u64,
         ) -> Result<RewardVoteCursorCommitResult>;
-        pub fn verified_votes_snapshot_two_t_plus_one(
-            self: &BridgeVerifiedVotes,
-        ) -> Vec<TwoTPlusOneSnapshotEntry>;
-        pub fn verified_votes_snapshot_round_markers(
-            self: &BridgeVerifiedVotes,
-        ) -> Vec<RoundMarkerSnapshot>;
-        pub fn verified_votes_save_own_verified_vote(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_state_snapshot(
+            self: &BridgePbftService,
+        ) -> Result<VerifiedVotesStateSnapshot>;
+        pub fn pbft_service_verified_votes_step_payloads(
+            self: &BridgePbftService,
+            period: u64,
+            round: u64,
+            step: u64,
+        ) -> Result<VerifiedStepVotePayloadsLookup>;
+        pub fn pbft_service_verified_votes_current_reward_snapshot(
+            self: &BridgePbftService,
+        ) -> Result<RewardVotePayloadSnapshot>;
+        pub fn pbft_service_verified_votes_save_own_verified_vote(
+            self: &BridgePbftService,
             record: PbftVoteStorageRecord,
         ) -> Result<PbftVotePersistenceResult>;
-        pub fn verified_votes_clear_own_verified_votes(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_clear_own_verified_votes(
+            self: &BridgePbftService,
         ) -> Result<PbftVotePersistenceResult>;
-        pub fn verified_votes_persist_pbft_vote_progress(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_persist_pbft_vote_progress(
+            self: &BridgePbftService,
             write: PbftVoteProgressPersistenceWrite,
         ) -> Result<PbftVotePersistenceResult>;
-        pub fn verified_votes_apply_pbft_finalization_storage_writes(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_apply_pbft_finalization_storage_writes(
+            self: &BridgePbftService,
             write_intent: &PbftFinalizationStorageWritePlan,
             stages: Vec<PbftFinalizationStorageWriteStage>,
             sync: bool,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
-        pub fn verified_votes_prepare_reward_votes_reset_stage(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_prepare_reward_votes_reset_stage(
+            self: &BridgePbftService,
             write_intent: &PbftFinalizationStorageWritePlan,
         ) -> Result<PbftFinalizationStorageWriteStage>;
-        pub fn verified_votes_apply_reward_votes_reset(
-            self: &BridgeVerifiedVotes,
+        pub fn pbft_service_verified_votes_apply_reward_votes_reset(
+            self: &BridgePbftService,
             request: PbftRewardVotesResetRequest,
         ) -> Result<PbftFinalizedPeriodApplyResult>;
 

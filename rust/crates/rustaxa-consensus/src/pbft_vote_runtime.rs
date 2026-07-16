@@ -569,6 +569,55 @@ impl PbftVoteAdmissionRuntime {
             .map(|payload| &payload.weighted)
     }
 
+    /// Retains a caller-supplied weighted payload for an already accepted metadata vote.
+    ///
+    /// The record is decoded and its canonical hash, voter, block, coordinates,
+    /// vote type, signature, and embedded weight must exactly match `vote`.
+    /// Existing byte-identical payloads are idempotent; conflicting bytes are
+    /// rejected without replacing the current sidecar. Callers must invoke this
+    /// only while serializing the metadata mutation that accepted the vote.
+    pub fn retain_weighted_payload(
+        &mut self,
+        vote: &VerifiedVote,
+        record: PbftVotePayloadRecord,
+    ) -> Result<()> {
+        let inspection = inspect_canonical_pbft_vote(&record.vote_rlp)?;
+        ensure!(
+            inspection.status == PbftCanonicalVoteInspectionStatus::Valid
+                && inspection.signature_valid
+                && inspection.has_embedded_weight,
+            "PBFT_VERIFIED_VOTE_WEIGHTED_PAYLOAD_INVALID"
+        );
+        ensure!(
+            record.hash == vote.vote_hash
+                && inspection.vote_hash == vote.vote_hash
+                && inspection.block_hash == vote.block_hash
+                && inspection.recovered_voter == vote.voter
+                && inspection.period == vote.period
+                && inspection.round == vote.round
+                && inspection.step == vote.step
+                && inspection.vote_type == vote.vote_type
+                && inspection.embedded_weight == vote.weight,
+            "PBFT_VERIFIED_VOTE_WEIGHTED_PAYLOAD_METADATA_MISMATCH"
+        );
+        let slashing = build_slashing_pbft_vote_payload(&record.vote_rlp)?;
+        if let Some(existing) = self.payloads.get(&vote.vote_hash) {
+            ensure!(
+                existing.weighted == record && existing.slashing == slashing,
+                "PBFT_VERIFIED_VOTE_WEIGHTED_PAYLOAD_CONFLICT"
+            );
+            return Ok(());
+        }
+        self.payloads.insert(
+            vote.vote_hash,
+            PbftVoteRuntimePayload {
+                slashing,
+                weighted: record,
+            },
+        );
+        Ok(())
+    }
+
     /// Returns all retained weighted PBFT vote payloads in deterministic vote-hash order.
     ///
     /// The returned records are suitable for temporary legacy materialization

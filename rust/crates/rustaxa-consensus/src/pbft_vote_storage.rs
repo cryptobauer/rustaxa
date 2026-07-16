@@ -194,7 +194,7 @@ pub fn persist_pbft_vote_progress(
 ///   before the batch is constructed, so callers cannot accidentally leave
 ///   rows behind by supplying an incomplete compatibility-sidecar list.
 /// - A storage-owned mutex serializes enumeration and commit with production
-///   saves and `BridgeVerifiedVotes` queries sharing the `Storage` instance.
+///   saves and PBFT-service verified-vote queries sharing the `Storage` instance.
 /// - Missing keys are RocksDB delete no-ops, matching legacy semantics.
 pub fn clear_own_verified_votes(storage: &Storage) -> Result<PbftVotePersistenceResult> {
     let _guard = storage.lock_own_verified_votes()?;
@@ -233,7 +233,7 @@ pub fn clear_own_verified_votes(storage: &Storage) -> Result<PbftVotePersistence
 /// - Existing own-vote rows for the same hash are overwritten, matching legacy
 ///   RocksDB put semantics.
 /// - A storage-owned mutex serializes the full save with lifecycle/direct
-///   clears and `BridgeVerifiedVotes` production queries sharing the storage.
+///   clears and PBFT-service verified-vote production queries sharing the storage.
 pub fn save_own_verified_vote(
     storage: &Storage,
     vote: PbftVoteStorageRecord,
