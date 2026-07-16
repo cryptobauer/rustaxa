@@ -4178,9 +4178,6 @@ pub mod rustaxa_ffi {
     struct DagManagerFinalizationApplyPayload {
         finalized_count: u64,
         expired_hashes: Vec<DagHash>,
-        /// Expired transaction hashes already removed from Rust-owned
-        /// non-finalized storage. C++ must only clear live sidecars for them.
-        remove_transaction_hashes: Vec<DagTransactionHash>,
     }
 
     struct DagManagerNonFinalizedSize {
@@ -4525,11 +4522,6 @@ pub mod rustaxa_ffi {
         pub fn create_dag_transaction_service_for_gas_pricer(
             gas_pricer_config: GasPricerConfig,
         ) -> Result<Box<BridgeDagTransactionService>>;
-        /// Rebuilds the DAG runtime snapshot from Rust PBFT/DAG storage without
-        /// using the legacy C++ graph mirror.
-        pub fn dag_manager_runtime_restore_from_storage(
-            self: &BridgeDagTransactionService,
-        ) -> Result<()>;
         pub fn dag_manager_runtime_add_block(
             self: &BridgeDagTransactionService,
             block: DagManagerBlock,
@@ -4644,11 +4636,6 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_abort_proposer_session(
             runtime: &BridgeDagTransactionService,
             session_id: u64,
-        ) -> Result<bool>;
-        pub fn dag_manager_runtime_ensure_proposal_period_mapping(
-            self: &BridgeDagTransactionService,
-            level: u64,
-            period: u64,
         ) -> Result<bool>;
         pub fn dag_manager_runtime_period_block_hash(
             self: &BridgeDagTransactionService,

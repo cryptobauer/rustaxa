@@ -92,15 +92,6 @@ std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash>
   return out;
 }
 
-std::vector<trx_hash_t> from_bridge_dag_transaction_hashes(const rust::Vec<rustaxa::DagTransactionHash> &hashes) {
-  std::vector<trx_hash_t> out;
-  out.reserve(hashes.size());
-  for (const auto &hash : hashes) {
-    out.emplace_back(from_bridge_dag_transaction_hash(hash));
-  }
-  return out;
-}
-
 std::map<uint64_t, std::unordered_set<blk_hash_t>> from_bridge_level_hashes(
     const rust::Vec<rustaxa::DagLevelHashes> &levels) {
   std::map<uint64_t, std::unordered_set<blk_hash_t>> out;
@@ -769,16 +760,6 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
     const auto finalized_count = finalized.finalized_count;
     for (const auto &bridge_hash : finalized.expired_hashes) {
       seen_blocks_.erase(from_bridge_dag_hash(bridge_hash));
-    }
-
-    const auto transactions_to_remove = from_bridge_dag_transaction_hashes(finalized.remove_transaction_hashes);
-    if (!transactions_to_remove.empty()) {
-      std::unordered_set<trx_hash_t> transactions_to_remove_set;
-      transactions_to_remove_set.reserve(transactions_to_remove.size());
-      for (const auto &hash : transactions_to_remove) {
-        transactions_to_remove_set.emplace(hash);
-      }
-      trx_mgr_->removeNonFinalizedTransactions(std::move(transactions_to_remove_set));
     }
 
     return static_cast<uint>(finalized_count);

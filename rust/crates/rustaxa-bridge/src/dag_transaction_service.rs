@@ -232,11 +232,31 @@ impl BridgeDagTransactionService {
         dag_transaction_service_proposer_pack_abort(self, session_id)
     }
 
-    dag_mut_result!(dag_manager_runtime_restore_from_storage() -> ());
+    /// Commits finalized DAG cleanup, then clears matching private transaction sidecars.
+    ///
+    /// Both runtimes are locked DAG then transaction. Transaction state remains untouched when the fallible DAG/storage
+    /// phase fails. After a successful DAG commit, sidecar removal is infallible because storage deletion already
+    /// occurred inside the DAG runtime. Only finalized count and expired DAG hashes cross CXX.
+    pub fn dag_manager_runtime_apply_finalized_order(
+        &self,
+        new_anchor: [u8; 32],
+        new_period: u64,
+        finalized_order: Vec<DagHash>,
+    ) -> Result<DagManagerFinalizationApplyPayload> {
+        let (mut dag_guard, mut transaction) = self.dag_and_transaction()?;
+        let dag = dag_guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        let committed =
+            dag.dag_manager_runtime_apply_finalized_order(new_anchor, new_period, finalized_order)?;
+        transaction
+            .remove_non_finalized_sidecars_after_dag_commit(&committed.remove_transaction_hashes);
+        Ok(committed.payload)
+    }
+
     dag_mut_result!(dag_manager_runtime_add_block(block: DagManagerBlock) -> ());
     dag_shared_result!(dag_manager_runtime_plan_add_block(input: DagAddBlockRuntimeInput) -> DagAddBlockEffectPlan);
     dag_shared_result!(dag_manager_runtime_validate_pivot_tips(block_level: u64, pivot: &[u8; 32], tips: Vec<DagHash>) -> DagPivotTipsValidation);
-    dag_mut_result!(dag_manager_runtime_apply_finalized_order(new_anchor: [u8; 32], new_period: u64, finalized_order: Vec<DagHash>) -> DagManagerFinalizationApplyPayload);
     dag_shared_result!(dag_manager_runtime_non_finalized_sync_payload(known_hashes: Vec<DagHash>) -> DagManagerNonFinalizedSyncPayload);
     dag_shared_value_result!(dag_manager_runtime_compute_order(anchor: &[u8; 32]) -> DagOrder);
     dag_shared_value_result!(dag_manager_runtime_frontier() -> DagFrontier);
@@ -258,7 +278,6 @@ impl BridgeDagTransactionService {
     dag_shared_result!(dag_manager_runtime_load_block(hash: &[u8; 32]) -> DagBlockLookup);
     dag_shared_result!(dag_manager_runtime_save_block(hash: &[u8; 32], level: u64, tips_count: u64, block_rlp: Vec<u8>) -> ());
     dag_shared_result!(dag_manager_runtime_plan_proposal_tip_selection(input: DagProposerStorageTipSelectionInput) -> DagProposerTipSelectionPlan);
-    dag_shared_result!(dag_manager_runtime_ensure_proposal_period_mapping(level: u64, period: u64) -> bool);
     dag_shared_result!(dag_manager_runtime_period_block_hash(period: u64) -> HashLookup);
     dag_shared_result!(dag_manager_runtime_persistence_counters() -> DagPersistenceCounters);
 }
@@ -513,7 +532,7 @@ dag_free_mut_result!(service_dag_manager_runtime_proposer_session_report_add_blo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::create_storage;
+    use crate::storage::{create_storage, create_transaction_storage_queries};
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
@@ -594,6 +613,22 @@ mod tests {
         stream.append(&U256::from_big_endian(&signature[..32]));
         stream.append(&U256::from_big_endian(&signature[32..]));
         stream.out().to_vec()
+    }
+
+    fn dag_block_rlp(level: u64, transactions: &[[u8; 32]]) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::from([1u8; 32]));
+        block.append(&level);
+        block.append(&0u64);
+        block.append(&vec![0xC0]);
+        block.begin_list(0);
+        block.begin_list(transactions.len());
+        for hash in transactions {
+            block.append(&H256::from(*hash));
+        }
+        block.append(&&[0u8; 65][..]);
+        block.append(&0u64);
+        block.out().to_vec()
     }
 
     fn sign_hash(hash: [u8; 32]) -> Vec<u8> {
@@ -677,6 +712,10 @@ mod tests {
         assert_eq!(full.transaction_manager_runtime_transaction_count(), 0);
         assert_eq!(full.dag_manager_runtime_vertex_count().unwrap(), 1);
         assert!(!full
+            .dag()
+            .unwrap()
+            .as_ref()
+            .unwrap()
             .dag_manager_runtime_ensure_proposal_period_mapping(100, 0)
             .unwrap());
 
@@ -696,7 +735,12 @@ mod tests {
                 assert!(!full.transaction_manager_runtime_pack_abort());
             });
             scope.spawn(|| {
-                full.dag_manager_runtime_restore_from_storage().unwrap();
+                full.dag()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .dag_manager_runtime_restore_from_storage()
+                    .unwrap();
             });
         });
 
@@ -1006,6 +1050,78 @@ mod tests {
         assert!(!service
             .dag_transaction_service_proposer_pack_abort(session_id)
             .unwrap());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn finalized_order_removes_private_sidecars_only_after_dag_commit() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_finalization_cleanup");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            1,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let tx_hash = H256::from([7u8; 32]);
+        {
+            let mut dag_guard = service.dag().unwrap();
+            let dag = dag_guard.as_mut().unwrap();
+            dag.dag_manager_runtime_add_block(DagManagerBlock {
+                hash: [3u8; 32],
+                pivot: [1u8; 32],
+                tips: Vec::new(),
+                level: 3,
+                difficulty: 90,
+            })
+            .unwrap();
+            dag.dag_manager_runtime_save_block(&[3u8; 32], 3, 0, dag_block_rlp(3, &[[7u8; 32]]))
+                .unwrap();
+            dag.dag_manager_runtime_save_block(&[8u8; 32], 5, 0, dag_block_rlp(5, &[]))
+                .unwrap();
+        }
+        storage.0.transaction().write(tx_hash, &[0xA7]).unwrap();
+        service
+            .transaction()
+            .sidecar
+            .insert_non_finalized(tx_hash, vec![0xA7])
+            .unwrap();
+
+        let failed = service.dag_manager_runtime_apply_finalized_order(
+            [8u8; 32],
+            2,
+            vec![DagHash { hash: [8u8; 32] }],
+        );
+        assert!(failed.is_err());
+        assert!(service
+            .transaction()
+            .sidecar
+            .contains_non_finalized(tx_hash));
+
+        let applied = service
+            .dag_manager_runtime_apply_finalized_order(
+                [8u8; 32],
+                1,
+                vec![DagHash { hash: [8u8; 32] }],
+            )
+            .expect("DAG commit should drive sidecar cleanup");
+        assert_eq!(applied.finalized_count, 1);
+        assert_eq!(applied.expired_hashes.len(), 1);
+        assert!(!service
+            .transaction()
+            .sidecar
+            .contains_non_finalized(tx_hash));
+        assert!(create_transaction_storage_queries(&storage)
+            .get_transaction(&tx_hash.0)
+            .unwrap()
+            .is_empty());
 
         drop(service);
         drop(storage);

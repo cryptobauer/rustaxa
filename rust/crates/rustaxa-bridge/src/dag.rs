@@ -100,6 +100,12 @@ struct DagManagerFinalizationCleanupPayload {
     remove_transaction_hashes: Vec<DagTransactionHash>,
 }
 
+/// Internal result transferred from committed DAG cleanup to the sibling transaction runtime.
+pub(crate) struct DagManagerFinalizationCommit {
+    pub payload: DagManagerFinalizationApplyPayload,
+    pub remove_transaction_hashes: Vec<DagTransactionHash>,
+}
+
 const DAG_VERIFY_SESSION_STATUS_ACTIVE: u8 = 0;
 const DAG_VERIFY_SESSION_STATUS_COMPLETE: u8 = 1;
 const DAG_VERIFY_SESSION_STATUS_INVALID_REPORT: u8 = 2;
@@ -565,12 +571,12 @@ impl DagRuntimeState {
     ///   expired non-finalized transaction payloads through `rustaxa-storage`
     /// - commits the candidate state only after the Rust-owned storage writes
     ///   complete
-    pub fn dag_manager_runtime_apply_finalized_order(
+    pub(crate) fn dag_manager_runtime_apply_finalized_order(
         &mut self,
         new_anchor: [u8; 32],
         new_period: u64,
         finalized_order: Vec<DagHash>,
-    ) -> Result<DagManagerFinalizationApplyPayload> {
+    ) -> Result<DagManagerFinalizationCommit> {
         let new_anchor = H256::from(new_anchor);
         let mut candidate_state = self.state.clone();
 
@@ -635,9 +641,11 @@ impl DagRuntimeState {
         self.state = candidate_state;
         let cleanup = to_bridge_finalization_cleanup_payload(cleanup);
 
-        Ok(DagManagerFinalizationApplyPayload {
-            finalized_count,
-            expired_hashes: cleanup.expired_hashes,
+        Ok(DagManagerFinalizationCommit {
+            payload: DagManagerFinalizationApplyPayload {
+                finalized_count,
+                expired_hashes: cleanup.expired_hashes,
+            },
             remove_transaction_hashes: cleanup.remove_transaction_hashes,
         })
     }
@@ -4749,10 +4757,10 @@ mod tests {
                 )
                 .expect("apply finalized order");
 
-            assert_eq!(payload.finalized_count, 1);
-            assert_eq!(payload.expired_hashes.len(), 2);
-            assert_eq!(payload.expired_hashes[0].hash, [3u8; 32]);
-            assert_eq!(payload.expired_hashes[1].hash, [4u8; 32]);
+            assert_eq!(payload.payload.finalized_count, 1);
+            assert_eq!(payload.payload.expired_hashes.len(), 2);
+            assert_eq!(payload.payload.expired_hashes[0].hash, [3u8; 32]);
+            assert_eq!(payload.payload.expired_hashes[1].hash, [4u8; 32]);
             assert_eq!(payload.remove_transaction_hashes.len(), 1);
             assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
             assert_eq!(

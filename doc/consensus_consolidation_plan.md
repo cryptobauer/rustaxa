@@ -2701,6 +2701,31 @@ preserving network throttling and EVM gas estimation as explicit C++ executor bo
   runner again stopped before collection because the host lacks Python 3.13 development headers for pinned `cytoolz`
   and `pyethash`, leaving `pytest` unavailable. These results match the previously classified harness/environment gaps.
 
+### CRW-04 Finalized-DAG Transaction Cleanup Composition
+
+This follow-up removes the live finalized-order DAG-to-C++-to-TransactionManager relay while preserving the public
+transaction-removal compatibility API.
+
+- `BridgeDagTransactionService::dag_manager_runtime_apply_finalized_order` now locks DAG before transaction, performs
+  the fallible DAG/storage finalization commit, and then infallibly removes matching private non-finalized transaction
+  sidecars. A failed DAG apply leaves transaction runtime state untouched, and no second storage delete can fail after
+  the DAG commit.
+- `DagManagerFinalizationApplyPayload::remove_transaction_hashes`, its C++ hash/set materialization, and
+  `DagManager::setDagBlockOrder`'s call to `TransactionManager::removeNonFinalizedTransactions` are deleted. C++ receives
+  only finalized count and expired DAG hashes for its retained public/cache shell.
+- The public TransactionManager removal route and its direct compatibility tests remain. The no-caller
+  `dag_manager_runtime_restore_from_storage` and `dag_manager_runtime_ensure_proposal_period_mapping` CXX exports are
+  also deleted; production construction and Rust tests call the private DAG methods directly.
+- Focused validation passed: `rustaxa-bridge` (299 tests), `dag_test` (6 tests),
+  `transaction_manager_shim_test` (35 tests), and `FullNodeTest.multiple_wallets_support` (1 test).
+  `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and `make rewrite-validate-smoke` also exited
+  successfully; the consensus target retained its already classified reward-cursor bootstrap and shared fixture-lock
+  diagnostics outside the changed DAG/transaction path. The authorized Tier 3 full CTest run passed 21 of 27 registered
+  suites. `pillar_chain_test`, `full_node_test`, `network_test`, `pbft_manager_test`, and `vote_test` reproduced the known
+  same-process `/tmp/taraxa0/db/db/LOCK` collision, while `go_test` reproduced the unrelated static Go/cgo host-link
+  failure. The Python integration runner stopped before collection because Python 3.13 development headers are absent,
+  so pinned `cytoolz` and `pyethash` could not build and `pytest` remained unavailable.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

@@ -12,7 +12,7 @@
 //! pointers or gas estimation.
 
 use crate::ffi::rustaxa_ffi::{
-    DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
+    DagTransactionHash, DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
     FinalizedTransactionStatusSidecarFact, GasPricerConfig, GasPricerGasPrice,
     TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
     TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
@@ -2105,6 +2105,16 @@ impl TransactionRuntimeState {
             }
         }
         Ok(removed)
+    }
+
+    /// Clears private non-finalized sidecars after DAG finalization has already deleted storage.
+    pub(crate) fn remove_non_finalized_sidecars_after_dag_commit(
+        &mut self,
+        hashes: &[DagTransactionHash],
+    ) -> u64 {
+        hashes.iter().fold(0, |removed, hash| {
+            removed + u64::from(self.sidecar.remove_non_finalized(H256::from(hash.hash)))
+        })
     }
 
     /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.

@@ -308,7 +308,11 @@ required EVM estimate candidates, and transfers selected canonical hash/RLP/gas 
 Composite transitions lock DAG before transaction and release both before C++ executes EVM estimates;
 `TransactionManager::pack_mutex_` serializes that unlocked interval against public compatibility packing. Network
 throttle observation, EVM execution, VDF, signing, and add-block execution remain explicit C++ boundaries. Continue
-`CRW-04` by selecting the next remaining DAG/transaction facade or carrier that this composed ownership makes deletable.
+`CRW-04` after the next cleanup internalized finalized-DAG transaction expiry: Rust now commits DAG/storage cleanup and
+then infallibly clears matching private transaction sidecars under the same DAG-then-transaction lock epoch. The expired
+transaction hash list, C++ conversion/set construction, and DagManager-to-TransactionManager call are deleted; C++ sees
+only finalized count and expired DAG hashes. Factory-only restore and initial proposal-mapping CXX exports are also
+retired. Continue by internalizing verify-block transaction availability without moving the retained EVM boundary.
 `CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim
 surface.
 

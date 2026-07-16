@@ -648,6 +648,9 @@ Completed closeout slices:
    The service also owns the DAG-proposer transaction-pack transition: proposal/shard limits stay private, an
    owner-bound transaction cursor returns only required EVM estimate candidates, and selected hash/RLP/gas payloads move
    directly into the DAG cursor. C++ retains only network-throttle observation and EVM estimate execution.
+   Finalized-DAG expiry cleanup is composed through the same service: Rust commits DAG/storage cleanup first and then
+   infallibly removes matching private transaction sidecars, so expired transaction hashes no longer cross CXX only to
+   re-enter the sibling transaction state.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
    construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,

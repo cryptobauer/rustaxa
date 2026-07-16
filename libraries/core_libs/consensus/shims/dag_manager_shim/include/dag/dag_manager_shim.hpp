@@ -119,6 +119,14 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
                                                     std::vector<dev::bytes> &&transaction_rlps, bool proposed = false,
                                                     bool save = true);
   vec_blk_t getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period);
+  /**
+   * Apply a finalized DAG order through the composed Rust DAG/transaction service.
+   *
+   * The service commits the DAG transition and removes expired transaction sidecars as one private cross-runtime
+   * operation. C++ receives only the finalized-block count and expired DAG hashes needed to maintain its public return
+   * value and compatibility block cache. Invalid periods return zero without mutation; bridge or storage failures
+   * propagate as exceptions.
+   */
   uint setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, vec_blk_t const &dag_order);
   /**
    * Apply finalized DAG ordering and return DAG-owned finalization facts.

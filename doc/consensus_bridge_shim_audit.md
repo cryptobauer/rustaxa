@@ -913,6 +913,12 @@ Current snapshot after DAG manager verify-result API cleanup:
   C++ observes network throttling and executes only requested EVM estimates while `TransactionManager::pack_mutex_`
   prevents compatibility packing from replacing the live proposer cursor. Composite Rust calls lock DAG before
   transaction and release both locks before returning to the EVM executor.
+- `DagManagerFinalizationApplyPayload::remove_transaction_hashes` and the finalized-order
+  `DagManager -> TransactionManager::removeNonFinalizedTransactions` relay are retired. The composed service now locks
+  DAG before transaction, performs the fallible DAG/storage commit, then infallibly removes matching private
+  transaction sidecars before returning only finalized count and expired DAG hashes to C++. The public transaction
+  removal API remains for direct compatibility callers. Factory-only DAG restore and initial proposal-mapping methods
+  are no longer exported through CXX.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.
