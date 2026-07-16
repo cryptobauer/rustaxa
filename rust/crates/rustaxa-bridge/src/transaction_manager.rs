@@ -33,7 +33,10 @@ use crate::ffi::rustaxa_ffi::{
     TransactionQueueProposableAccountFact, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
-use crate::ffi::{BridgeStorage, TransactionManagerRuntimePackSession, TransactionRuntimeState};
+use crate::ffi::{
+    BridgeStorage, TransactionManagerRuntimePackSession, TransactionPackSessionOwner,
+    TransactionRuntimeState,
+};
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
@@ -79,7 +82,7 @@ struct TransactionManagerRuntimeQueueCleanupPlan {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-struct TransactionManagerRuntimeQueueInsertOutcome {
+pub(crate) struct TransactionManagerRuntimeQueueInsertOutcome {
     status: u8,
     inserted_hash_found: bool,
     inserted_hash: [u8; 32],
@@ -607,11 +610,9 @@ fn runtime_pack_candidate_matches_shard(
 
 /// Returns the legacy DAG transaction-sharding sender prefix.
 ///
-/// C++ `DagBlockProposer::getShardedTrxs` parses
-/// `sender.toString().substr(0, 10)` as hexadecimal, which is the first five
-/// address bytes. The Rust runtime keeps that exact 40-bit prefix so
-/// multi-shard DAG proposal selects the same transactions as the compatibility
-/// proposer.
+/// Legacy proposer sharding parses the first ten hexadecimal sender characters,
+/// which are the first five address bytes. The Rust runtime keeps that exact
+/// 40-bit prefix so multi-shard DAG proposal remains wire-compatible.
 fn legacy_transaction_shard_sender_prefix(sender: H160) -> u64 {
     u64::from_be_bytes([
         0,
@@ -1474,6 +1475,7 @@ fn test_gas_pricer_config() -> DomainGasPricerConfig {
 impl TransactionRuntimeState {
     fn create_pack_session(
         &self,
+        owner: TransactionPackSessionOwner,
         weight_limit: u64,
         min_transaction_gas: u64,
         proposal_period: u64,
@@ -1499,6 +1501,7 @@ impl TransactionRuntimeState {
             .ordered_transactions(planner.max_candidate_count());
 
         Ok(TransactionManagerRuntimePackSession {
+            owner,
             planner,
             proposal_period,
             estimate_gas_limit,
@@ -1531,11 +1534,39 @@ impl TransactionRuntimeState {
         node_shard: u16,
         shard_period_interval: u64,
     ) -> Result<TransactionPackPreparedPlan> {
+        self.transaction_manager_runtime_pack_prepare_sharded_for_owner(
+            TransactionPackSessionOwner::Compatibility,
+            weight_limit,
+            min_transaction_gas,
+            proposal_period,
+            estimate_gas_limit,
+            last_block_number,
+            total_shards,
+            node_shard,
+            shard_period_interval,
+        )
+    }
+
+    /// Begins packing for a validated internal owner.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn transaction_manager_runtime_pack_prepare_sharded_for_owner(
+        &mut self,
+        owner: TransactionPackSessionOwner,
+        weight_limit: u64,
+        min_transaction_gas: u64,
+        proposal_period: u64,
+        estimate_gas_limit: u64,
+        last_block_number: u64,
+        total_shards: u16,
+        node_shard: u16,
+        shard_period_interval: u64,
+    ) -> Result<TransactionPackPreparedPlan> {
         ensure!(
             self.transaction_pack_session.is_none(),
             "TM_RUNTIME_PACK_SESSION_ALREADY_ACTIVE"
         );
         self.transaction_pack_session = Some(self.create_pack_session(
+            owner,
             weight_limit,
             min_transaction_gas,
             proposal_period,
@@ -1644,6 +1675,27 @@ impl TransactionRuntimeState {
         &mut self,
         inputs: Vec<TransactionPackSessionEstimateInput>,
     ) -> Result<TransactionPackSessionStep> {
+        self.transaction_manager_runtime_pack_finalize_with_estimates_for_owner(
+            TransactionPackSessionOwner::Compatibility,
+            inputs,
+        )
+    }
+
+    /// Completes packing only when the active cursor belongs to `owner`.
+    pub(crate) fn transaction_manager_runtime_pack_finalize_with_estimates_for_owner(
+        &mut self,
+        owner: TransactionPackSessionOwner,
+        inputs: Vec<TransactionPackSessionEstimateInput>,
+    ) -> Result<TransactionPackSessionStep> {
+        let active_owner = self
+            .transaction_pack_session
+            .as_ref()
+            .context("TM_RUNTIME_PACK_SESSION_NOT_ACTIVE")?
+            .owner;
+        ensure!(
+            active_owner == owner,
+            "TM_RUNTIME_PACK_SESSION_OWNER_MISMATCH"
+        );
         let mut session = self
             .transaction_pack_session
             .take()
@@ -1758,7 +1810,26 @@ impl TransactionRuntimeState {
 
     /// Aborts and clears the active runtime packing session.
     pub fn transaction_manager_runtime_pack_abort(&mut self) -> bool {
-        self.transaction_pack_session.take().is_some()
+        self.transaction_manager_runtime_pack_abort_for_owner(
+            TransactionPackSessionOwner::Compatibility,
+        )
+    }
+
+    /// Aborts only a packing cursor owned by `owner`.
+    pub(crate) fn transaction_manager_runtime_pack_abort_for_owner(
+        &mut self,
+        owner: TransactionPackSessionOwner,
+    ) -> bool {
+        if self
+            .transaction_pack_session
+            .as_ref()
+            .is_some_and(|session| session.owner == owner)
+        {
+            self.transaction_pack_session = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// Plans one public gas-estimation request using Rust-owned cache policy.
@@ -2065,7 +2136,7 @@ impl TransactionRuntimeState {
     }
 
     /// Inserts transaction metadata and canonical bytes into the Rust-owned queue.
-    fn transaction_manager_runtime_queue_insert(
+    pub(crate) fn transaction_manager_runtime_queue_insert(
         &mut self,
         input: TransactionQueueInsertInput,
     ) -> Result<TransactionManagerRuntimeQueueInsertOutcome> {
@@ -4105,6 +4176,51 @@ mod tests {
         assert_eq!(final_step.selected_transactions[0].hash, envelope.hash.0);
         assert_eq!(final_step.selected_transactions[0].gas_used, 42_000);
         assert!(!runtime.transaction_manager_runtime_pack_abort());
+    }
+
+    #[test]
+    fn bridge_transaction_manager_runtime_pack_enforces_owner_on_finalize_and_abort() {
+        let mut runtime =
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 8 });
+        let signing_key = SigningKey::from_slice(&[0x57u8; 32]).unwrap();
+        let sender = address_from_signing_key(&signing_key);
+        let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
+        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
+        runtime
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: envelope.hash.0,
+                sender: sender.0,
+                nonce: envelope.nonce.to_big_endian(),
+                gas_price: envelope.gas_price.to_big_endian(),
+                gas: envelope.gas,
+                data_size: envelope.data.len(),
+                tx_rlp,
+                proposable: true,
+                last_block_number: 0,
+            })
+            .expect("queue insert");
+
+        let owner = TransactionPackSessionOwner::DagProposer(42);
+        let plan = runtime
+            .transaction_manager_runtime_pack_prepare_sharded_for_owner(
+                owner, 63_000, 21_000, 7, 0, 10, 1, 0, 1,
+            )
+            .expect("owner pack prepare");
+        assert_eq!(plan.request_estimates.len(), 1);
+        let error = runtime
+            .transaction_manager_runtime_pack_finalize_with_estimates(vec![])
+            .err()
+            .expect("wrong owner must fail");
+        assert!(error
+            .to_string()
+            .contains("TM_RUNTIME_PACK_SESSION_OWNER_MISMATCH"));
+        assert!(!runtime.transaction_manager_runtime_pack_abort());
+        assert!(runtime.transaction_pack_session.is_some());
+        assert!(!runtime.transaction_manager_runtime_pack_abort_for_owner(
+            TransactionPackSessionOwner::DagProposer(41)
+        ));
+        assert!(runtime.transaction_manager_runtime_pack_abort_for_owner(owner));
+        assert!(runtime.transaction_pack_session.is_none());
     }
 
     #[test]

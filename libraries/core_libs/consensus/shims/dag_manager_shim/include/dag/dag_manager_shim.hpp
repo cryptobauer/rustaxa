@@ -203,14 +203,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   rustaxa::DagProposerSessionStep reportProposerExternalProposalFacts(
       uint64_t session_id, rustaxa::DagProposerExternalProposalFactsReport report);
   /**
-   * Reports transaction hashes and gas estimates produced by the live transaction-packing executor.
-   *
-   * Rust validates the report against the cursor and returns either a terminal result or the VDF request. The DAG lock
-   * is acquired only for report processing; transaction packing occurs before this call.
-   */
-  rustaxa::DagProposerSessionStep reportProposerTransactions(uint64_t session_id,
-                                                             rustaxa::DagProposerTransactionPackReport report);
-  /**
    * Polls whether the Rust DAG frontier invalidated an in-flight VDF proof.
    *
    * Returns a cancellation or continuation step without waiting while holding the DAG lock. Unknown or out-of-order

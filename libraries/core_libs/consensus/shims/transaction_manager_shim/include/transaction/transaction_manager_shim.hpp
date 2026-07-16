@@ -46,19 +46,6 @@ class DagBlock;
 class TransactionManager : public std::enable_shared_from_this<TransactionManager> {
  public:
   /**
-   * Rust-selected proposal transaction payloads.
-   *
-   * Rust returns the authoritative accepted ordering as hashes, canonical transaction RLP payloads, and gas estimates
-   * from one runtime packing session. Consumers should use these facts for deterministic proposal planning and only
-   * materialize live `Transaction` instances at temporary compatibility sidecars.
-   */
-  struct PackedProposalTransactions {
-    std::vector<trx_hash_t> transaction_hashes;
-    std::vector<dev::bytes> transaction_rlps;
-    std::vector<uint64_t> gas_estimations;
-  };
-
-  /**
    * Rust-mode pending-transaction event surface.
    *
    * The shim owns the public event instance used by Rust-mode subscribers and
@@ -124,15 +111,13 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
                                                                        uint64_t shard_period_interval);
 
   /**
-   * Select proposer transactions and preserve Rust-owned canonical payload facts.
+   * Executes the external EVM boundary for one Rust-owned DAG proposer pack.
    *
-   * The returned hashes, RLP payloads, and gas estimates come directly from the Rust packing session. The live
-   * transaction objects are a temporary compatibility sidecar for DAG insertion paths that have not yet moved to block
-   * intents over canonical payloads.
+   * Rust derives all proposal and shard parameters from `session_id`. C++ keeps
+   * the pack executor serialized across prepare, EVM estimation, and finalize,
+   * and aborts the matching pack if an external estimate throws.
    */
-  PackedProposalTransactions packShardedTransactionPayloads(PbftPeriod proposal_period, uint64_t weight_limit,
-                                                            uint16_t total_shards, uint16_t node_trx_shard,
-                                                            uint64_t shard_period_interval);
+  rustaxa::DagProposerSessionStep executeDagProposerTransactionPack(uint64_t session_id, bool network_throttled);
 
   /**
    * Return live transaction-pool groups under the transaction mutex.

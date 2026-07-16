@@ -207,21 +207,11 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     LOG(log_wr_) << "Trying to propose old block " << step.proposal_level;
   }
 
-  auto transaction_payloads =
-      getShardedTrxs(step.transaction_request.proposal_period, step.transaction_request.weight_limit,
-                     step.transaction_request.total_transaction_shards, step.transaction_request.node_transaction_shard,
-                     step.transaction_request.shard_period_interval);
-  rustaxa::DagProposerTransactionPackReport transaction_report;
-  transaction_report.network_throttled = transaction_payloads.network_throttled;
-  transaction_report.transaction_hashes.reserve(transaction_payloads.transaction_hashes.size());
-  transaction_report.transaction_gas_estimations.reserve(transaction_payloads.gas_estimations.size());
-  for (const auto& hash : transaction_payloads.transaction_hashes) {
-    transaction_report.transaction_hashes.push_back(to_bridge_dag_hash(hash));
+  auto network_throttled = false;
+  if (auto net = network_.lock()) {
+    network_throttled = net->pbft_syncing();
   }
-  for (const auto estimation : transaction_payloads.gas_estimations) {
-    transaction_report.transaction_gas_estimations.push_back(estimation);
-  }
-  step = dag_mgr_->reportProposerTransactions(proposer_session_id, std::move(transaction_report));
+  step = trx_mgr_->executeDagProposerTransactionPack(proposer_session_id, network_throttled);
   if (auto done = finish_if_complete(step)) {
     return *done;
   }
@@ -307,11 +297,18 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     throw std::runtime_error("Rust DAG proposer session did not request add-block execution");
   }
 
-  auto selected_transaction_hashes = from_bridge_dag_hashes(step.selected_transaction_hashes);
+  vec_trx_t selected_transaction_hashes;
+  std::vector<dev::bytes> selected_transaction_rlps;
+  selected_transaction_hashes.reserve(step.selected_transactions.size());
+  selected_transaction_rlps.reserve(step.selected_transactions.size());
+  for (const auto& selected : step.selected_transactions) {
+    selected_transaction_hashes.emplace_back(from_bridge_hash(selected.hash));
+    selected_transaction_rlps.emplace_back(to_bytes(selected.tx_rlp));
+  }
   const auto proposed_block_hash = from_bridge_hash(step.signed_block.block_hash);
   const auto proposed_transaction_count = selected_transaction_hashes.size();
   auto add_report = dag_mgr_->addDagBlockRlp(std::move(step.signed_block), selected_transaction_hashes,
-                                             std::move(transaction_payloads.transaction_rlps), true);
+                                             std::move(selected_transaction_rlps), true);
   step = dag_mgr_->reportProposerAddBlock(proposer_session_id, std::move(add_report));
   if (step.record_proposed_block) {
     LOG(log_nf_) << node_dag_proposer_data->wallet.node_addr << " proposed new DAG block " << proposed_block_hash
@@ -375,30 +372,6 @@ void DagBlockProposer::stop() {
   }
 
   LOG(log_nf_) << "DagBlockProposer stopped ...";
-}
-
-DagBlockProposer::ShardedProposalTransactions DagBlockProposer::getShardedTrxs(PbftPeriod proposal_period,
-                                                                               uint64_t weight_limit,
-                                                                               const uint16_t total_trx_shards,
-                                                                               const uint16_t node_trx_shard,
-                                                                               uint64_t shard_period_interval) const {
-  auto syncing = false;
-  if (auto net = network_.lock()) {
-    syncing = net->pbft_syncing();
-  }
-  if (syncing) {
-    ShardedProposalTransactions throttled;
-    throttled.network_throttled = true;
-    return throttled;
-  }
-
-  auto payloads = trx_mgr_->packShardedTransactionPayloads(proposal_period, weight_limit, total_trx_shards,
-                                                           node_trx_shard, shard_period_interval);
-  ShardedProposalTransactions transactions;
-  transactions.transaction_hashes = std::move(payloads.transaction_hashes);
-  transactions.transaction_rlps = std::move(payloads.transaction_rlps);
-  transactions.gas_estimations = std::move(payloads.gas_estimations);
-  return transactions;
 }
 
 vec_blk_t DagBlockProposer::selectDagBlockTips(const vec_blk_t& frontier_tips, uint64_t gas_limit) const {

@@ -640,9 +640,11 @@ class TransactionManagerRustShimAccess {
    * invalid-estimate demotion, and stop decisions; C++ owns transaction
    * materialization, EVM estimation execution, and logging.
    */
-  static TransactionManager::PackedProposalTransactions packTransactionPayloads(
-      TransactionManager& manager, PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards = 1,
-      uint16_t node_trx_shard = 0, uint64_t shard_period_interval = 1) {
+  static rustaxa::TransactionPackSessionStep packTransactionPayloads(TransactionManager& manager,
+                                                                     PbftPeriod proposal_period, uint64_t weight_limit,
+                                                                     uint16_t total_shards = 1,
+                                                                     uint16_t node_trx_shard = 0,
+                                                                     uint64_t shard_period_interval = 1) {
     std::lock_guard pack_lock(manager.pack_mutex_);
     bool session_active = false;
     try {
@@ -704,16 +706,7 @@ class TransactionManagerRustShimAccess {
       }();
       session_active = false;
 
-      TransactionManager::PackedProposalTransactions selected_payloads;
-      selected_payloads.transaction_hashes.reserve(step.selected_transactions.size());
-      selected_payloads.transaction_rlps.reserve(step.selected_transactions.size());
-      selected_payloads.gas_estimations.reserve(step.selected_transactions.size());
-      for (const auto& selected : step.selected_transactions) {
-        selected_payloads.transaction_hashes.push_back(fromBridgeHash(selected.hash));
-        selected_payloads.transaction_rlps.push_back(fromBridgeBytes(selected.tx_rlp));
-        selected_payloads.gas_estimations.push_back(selected.gas_used);
-      }
-      return selected_payloads;
+      return step;
     } catch (...) {
       if (session_active) {
         try {
@@ -726,22 +719,21 @@ class TransactionManagerRustShimAccess {
     }
   }
 
-  static SharedTransactions materializePackedTransactions(
-      const TransactionManager::PackedProposalTransactions& payloads) {
-    if (payloads.transaction_hashes.size() != payloads.transaction_rlps.size()) {
-      throw std::runtime_error("Rust transaction manager runtime returned inconsistent selected pack payload lengths");
-    }
-
+  static std::pair<SharedTransactions, std::vector<uint64_t>> materializePackedTransactions(
+      const rust::Vec<rustaxa::TransactionPackSelectedTransaction>& payloads) {
     SharedTransactions selected_transactions;
-    selected_transactions.reserve(payloads.transaction_rlps.size());
-    for (size_t idx = 0; idx < payloads.transaction_rlps.size(); ++idx) {
-      auto transaction = std::make_shared<Transaction>(payloads.transaction_rlps[idx]);
-      if (transaction->getHash() != payloads.transaction_hashes[idx]) {
+    std::vector<uint64_t> gas_estimations;
+    selected_transactions.reserve(payloads.size());
+    gas_estimations.reserve(payloads.size());
+    for (const auto& selected : payloads) {
+      auto transaction = std::make_shared<Transaction>(fromBridgeBytes(selected.tx_rlp));
+      if (transaction->getHash() != fromBridgeHash(selected.hash)) {
         throw std::runtime_error("Rust transaction manager runtime returned selected pack RLP with mismatched hash");
       }
       selected_transactions.push_back(std::move(transaction));
+      gas_estimations.push_back(selected.gas_used);
     }
-    return selected_transactions;
+    return {std::move(selected_transactions), std::move(gas_estimations)};
   }
 
   static std::pair<SharedTransactions, std::vector<uint64_t>> packTrxs(TransactionManager& manager,
@@ -749,10 +741,57 @@ class TransactionManagerRustShimAccess {
                                                                        uint64_t weight_limit, uint16_t total_shards = 1,
                                                                        uint16_t node_trx_shard = 0,
                                                                        uint64_t shard_period_interval = 1) {
-    auto selected_payloads = packTransactionPayloads(manager, proposal_period, weight_limit, total_shards,
-                                                     node_trx_shard, shard_period_interval);
-    auto selected_transactions = materializePackedTransactions(selected_payloads);
-    return {std::move(selected_transactions), std::move(selected_payloads.gas_estimations)};
+    auto pack_step = packTransactionPayloads(manager, proposal_period, weight_limit, total_shards, node_trx_shard,
+                                             shard_period_interval);
+    return materializePackedTransactions(pack_step.selected_transactions);
+  }
+
+  /**
+   * Runs the external EVM portion of one composed DAG proposer pack session.
+   *
+   * The C++ lock prevents public compatibility packing from replacing the
+   * Rust transaction pack while EVM execution occurs outside Rust locks.
+   */
+  static rustaxa::DagProposerSessionStep executeDagProposerTransactionPack(TransactionManager& manager,
+                                                                           uint64_t session_id,
+                                                                           bool network_throttled) {
+    std::lock_guard pack_lock(manager.pack_mutex_);
+    try {
+      const auto last_block_number = network_throttled ? 0 : rustFinalChainLastBlockNumber(manager);
+      auto step = manager.dag_transaction_service_->service().dag_transaction_service_proposer_pack_prepare(
+          session_id, network_throttled, kMinTxGas, manager.kEstimateGasLimit, last_block_number);
+      if (step.transaction_estimate_requests.empty()) {
+        return step;
+      }
+
+      rust::Vec<rustaxa::TransactionPackSessionEstimateInput> estimate_inputs;
+      estimate_inputs.reserve(step.transaction_estimate_requests.size());
+      for (const auto& candidate : step.transaction_estimate_requests) {
+        if (!candidate.found) {
+          throw std::runtime_error("Rust DAG proposer pack requested estimation for a missing transaction candidate");
+        }
+        const auto estimate = executePackCandidateGasEstimation(manager, candidate, step.proposal_period);
+        if (estimate.gas_used < kMinTxGas) {
+          LOG(manager.log_er_) << "Transaction " << fromBridgeHash(candidate.hash)
+                               << " has invalid estimation: " << estimate.gas_used;
+        }
+
+        rustaxa::TransactionPackSessionEstimateInput estimate_input;
+        estimate_input.hash = candidate.hash;
+        estimate_input.gas_used = estimate.gas_used;
+        estimate_input.last_block_number = rustFinalChainLastBlockNumber(manager);
+        estimate_input.result_rlp = executionResultToBridgeBytes(estimate);
+        estimate_inputs.push_back(std::move(estimate_input));
+      }
+      return manager.dag_transaction_service_->service().dag_transaction_service_proposer_pack_finalize(
+          session_id, std::move(estimate_inputs));
+    } catch (...) {
+      try {
+        manager.dag_transaction_service_->service().dag_transaction_service_proposer_pack_abort(session_id);
+      } catch (...) {
+      }
+      throw;
+    }
   }
 
   /**
@@ -1404,11 +1443,9 @@ std::pair<SharedTransactions, std::vector<uint64_t>> TransactionManager::packSha
                                                     shard_period_interval);
 }
 
-TransactionManager::PackedProposalTransactions TransactionManager::packShardedTransactionPayloads(
-    PbftPeriod proposal_period, uint64_t weight_limit, uint16_t total_shards, uint16_t node_trx_shard,
-    uint64_t shard_period_interval) {
-  return TransactionManagerRustShimAccess::packTransactionPayloads(*this, proposal_period, weight_limit, total_shards,
-                                                                   node_trx_shard, shard_period_interval);
+rustaxa::DagProposerSessionStep TransactionManager::executeDagProposerTransactionPack(uint64_t session_id,
+                                                                                      bool network_throttled) {
+  return TransactionManagerRustShimAccess::executeDagProposerTransactionPack(*this, session_id, network_throttled);
 }
 
 uint64_t TransactionManager::estimateTransactions(const SharedTransactions& trxs, PbftPeriod proposal_period) {

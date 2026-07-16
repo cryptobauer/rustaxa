@@ -837,21 +837,10 @@ pub struct DagProposerPostVdfAttemptInput {
     pub shard_period_interval: u64,
 }
 
-/// Transaction packing request emitted by the Rust DAG proposer attempt planner.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DagProposerTransactionPackRequest {
-    pub proposal_period: u64,
-    pub weight_limit: u64,
-    pub total_transaction_shards: u16,
-    pub node_transaction_shard: u16,
-    pub shard_period_interval: u64,
-}
-
 /// Rust-owned DAG proposer post-VDF attempt decision.
 ///
-/// `action == DAG_PROPOSER_ACTION_CONTINUE` means C++ may request live transaction packing with `transaction_request`.
-/// Retry state fields are authoritative when `retry_state_updated` is true and preserve legacy stale-difficulty retry
-/// behavior.
+/// Pack limits remain private planner facts consumed by the composed DAG/transaction runtime. Retry state fields are
+/// authoritative when `retry_state_updated` is true and preserve legacy stale-difficulty retry behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagProposerPostVdfAttemptPlan {
     pub action: u8,
@@ -861,7 +850,11 @@ pub struct DagProposerPostVdfAttemptPlan {
     pub retry_state_updated: bool,
     pub next_last_propose_level: u64,
     pub next_retry_count: u64,
-    pub transaction_request: DagProposerTransactionPackRequest,
+    pub proposal_period: u64,
+    pub proposal_weight_limit: u64,
+    pub total_transaction_shards: u16,
+    pub node_transaction_shard: u16,
+    pub shard_period_interval: u64,
 }
 
 /// Input facts for the storage/runtime-backed DAG proposal attempt planner.
@@ -898,9 +891,9 @@ pub struct DagProposerAttemptInput {
 
 /// Rust-owned DAG proposal attempt plan consumed by the C++ proposer shim.
 ///
-/// `action == DAG_PROPOSER_ACTION_CONTINUE` means C++ may call live transaction packing with `transaction_request`.
-/// Expected skips/retries are represented by `reason_code`; malformed crypto/sortition inputs are returned as errors by
-/// [`plan_dag_proposer_attempt`].
+/// `action == DAG_PROPOSER_ACTION_CONTINUE` means the composed runtime may start transaction packing using the retained
+/// private pack fields. Expected skips/retries are represented by `reason_code`; malformed crypto/sortition inputs are
+/// returned as errors by [`plan_dag_proposer_attempt`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DagProposerAttemptPlan {
     pub action: u8,
@@ -922,7 +915,10 @@ pub struct DagProposerAttemptPlan {
     pub update_retry_state: bool,
     pub next_last_propose_level: u64,
     pub next_retry_count: u64,
-    pub transaction_request: DagProposerTransactionPackRequest,
+    pub proposal_weight_limit: u64,
+    pub total_transaction_shards: u16,
+    pub node_transaction_shard: u16,
+    pub shard_period_interval: u64,
 }
 
 /// Input facts for the DAG proposer post-pack planner.
@@ -2290,13 +2286,10 @@ pub fn plan_dag_proposer_attempt(input: DagProposerAttemptInput) -> Result<DagPr
         update_retry_state: false,
         next_last_propose_level: input.last_propose_level,
         next_retry_count: input.retry_count,
-        transaction_request: DagProposerTransactionPackRequest {
-            proposal_period: input.proposal_period,
-            weight_limit: input.proposal_weight_limit,
-            total_transaction_shards: input.total_transaction_shards,
-            node_transaction_shard: input.node_transaction_shard,
-            shard_period_interval: input.shard_period_interval,
-        },
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
     };
     if pre_plan.action != DAG_PROPOSER_ACTION_CONTINUE {
         return Ok(plan);
@@ -2351,7 +2344,10 @@ pub fn plan_dag_proposer_attempt(input: DagProposerAttemptInput) -> Result<DagPr
     plan.update_retry_state = post_plan.retry_state_updated;
     plan.next_last_propose_level = post_plan.next_last_propose_level;
     plan.next_retry_count = post_plan.next_retry_count;
-    plan.transaction_request = post_plan.transaction_request;
+    plan.proposal_weight_limit = post_plan.proposal_weight_limit;
+    plan.total_transaction_shards = post_plan.total_transaction_shards;
+    plan.node_transaction_shard = post_plan.node_transaction_shard;
+    plan.shard_period_interval = post_plan.shard_period_interval;
     Ok(plan)
 }
 
@@ -2559,13 +2555,6 @@ pub fn plan_dag_proposer_pre_vdf_attempt(
 pub fn plan_dag_proposer_post_vdf_attempt(
     input: DagProposerPostVdfAttemptInput,
 ) -> DagProposerPostVdfAttemptPlan {
-    let transaction_request = DagProposerTransactionPackRequest {
-        proposal_period: input.proposal_period,
-        weight_limit: input.proposal_weight_limit,
-        total_transaction_shards: input.total_transaction_shards,
-        node_transaction_shard: input.node_transaction_shard,
-        shard_period_interval: input.shard_period_interval,
-    };
     let mut plan = DagProposerPostVdfAttemptPlan {
         action: DAG_PROPOSER_ACTION_SKIP,
         reason_code: DAG_PROPOSER_REASON_OK,
@@ -2574,7 +2563,11 @@ pub fn plan_dag_proposer_post_vdf_attempt(
         retry_state_updated: false,
         next_last_propose_level: input.last_propose_level,
         next_retry_count: input.retry_count,
-        transaction_request,
+        proposal_period: input.proposal_period,
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
     };
 
     if input.frontier.frontier.pivot != input.frontier.anchor {
@@ -5847,11 +5840,11 @@ mod tests {
         assert!(!plan.vrf_input.is_empty());
         assert_eq!(plan.vote_count, 10);
         assert_eq!(plan.max_vote_count, 20);
-        assert_eq!(plan.transaction_request.proposal_period, 3);
-        assert_eq!(plan.transaction_request.weight_limit, 1_000);
-        assert_eq!(plan.transaction_request.total_transaction_shards, 4);
-        assert_eq!(plan.transaction_request.node_transaction_shard, 2);
-        assert_eq!(plan.transaction_request.shard_period_interval, 10);
+        assert_eq!(plan.proposal_period, 3);
+        assert_eq!(plan.proposal_weight_limit, 1_000);
+        assert_eq!(plan.total_transaction_shards, 4);
+        assert_eq!(plan.node_transaction_shard, 2);
+        assert_eq!(plan.shard_period_interval, 10);
         assert!(!plan.update_retry_state);
     }
 

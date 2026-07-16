@@ -31,11 +31,11 @@ class FinalChain;
  * Rust-mode DAG block proposer facade.
  *
  * The class preserves the public `DagBlockProposer` API while moving deterministic proposal facts toward Rust. C++
- * still owns worker/network orchestration, live network-throttle and VDF execution, node-secret signature execution,
- * and compatibility transaction payload materialization. Rust owns canonical proposal VRF/VDF message bytes, proposer
- * tip-pruning, unsigned block planning, signing-hash derivation, signed-block RLP finalization, VDF wait/stale-proof
- * decisions, post-boundary retry-state resets, and DPoS/VDF authorization facts through the Rust-backed FinalChain
- * shim.
+ * still owns worker/network orchestration, the live network-throttle check, external EVM estimation, VDF execution,
+ * node-secret signature execution, and compatibility transaction payload materialization at add-block. Rust owns the
+ * composed proposer/transaction pack transition, canonical proposal VRF/VDF message bytes, proposer tip-pruning,
+ * unsigned block planning, signing-hash derivation, signed-block RLP finalization, VDF wait/stale-proof decisions,
+ * post-boundary retry-state resets, and DPoS/VDF authorization facts through the Rust-backed FinalChain shim.
  *
  * Edge behavior:
  * - proposal returns `false` when the transaction pool, DPoS facts, VRF key, or vote denominator are unavailable
@@ -85,9 +85,10 @@ class DagBlockProposer {
   /**
    * Attempts to propose one DAG block for `node_dag_proposer_data`.
    *
-   * Rust owns the runtime session and all deterministic block construction. C++ executes transaction packing, VDF,
-   * node-secret signing, and add-block side effects without holding the DAG runtime lock. Every successfully opened
-   * session is removed on normal completion or aborted during unwinding.
+   * Rust owns the runtime session, transaction selection, and all deterministic block construction. C++ supplies the
+   * live network-throttle fact and executes requested EVM estimates, VDF, node-secret signing, and add-block side
+   * effects without holding a Rust runtime lock. Every successfully opened session is removed on normal completion or
+   * aborted during unwinding.
    *
    * Returns `true` when the loop should immediately try another proposal, including the cancellation case where a stale
    * in-flight proof was cancelled. Returns `false` when no block was proposed and the caller should wait. Executor,
@@ -113,32 +114,6 @@ class DagBlockProposer {
    * enforcement; C++ materializes only the returned hash list.
    */
   vec_blk_t selectDagBlockTips(const vec_blk_t& frontier_tips, uint64_t gas_limit) const;
-
- private:
-  /**
-   * Transactions selected for one proposer attempt.
-   *
-   * `transaction_hashes` and `gas_estimations` come from the Rust transaction-packing session and are the deterministic
-   * proposal facts. Live C++ transaction objects are materialized only after VDF/block planning for the temporary DAG
-   * add-block sidecar. `network_throttled` reports a live executor throttle distinctly from an empty eligible pack.
-   */
-  struct ShardedProposalTransactions {
-    bool network_throttled{false};
-    vec_trx_t transaction_hashes;
-    std::vector<dev::bytes> transaction_rlps;
-    std::vector<uint64_t> gas_estimations;
-  };
-
-  /**
-   * Returns transactions, hashes, and gas estimates for the configured proposer shard.
-   *
-   * Rust owns the deterministic shard filter and transaction-packing planner. The selected hashes and gas estimates
-   * come directly from Rust; C++ keeps live transaction materialization and EVM gas estimation until those boundaries
-   * move.
-   */
-  ShardedProposalTransactions getShardedTrxs(PbftPeriod proposal_period, uint64_t weight_limit,
-                                             const uint16_t total_trx_shards, const uint16_t node_trx_shard,
-                                             uint64_t shard_period_interval) const;
 
  private:
   const uint16_t max_num_tries_{20};

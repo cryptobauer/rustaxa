@@ -302,8 +302,13 @@ App-owned `BridgeDagTransactionService`. Private sibling transaction and DAG sta
 `TransactionManager` and `DagManager` retain the same C++ RAII holder, and full construction restores both domains plus
 the initial proposal-period mapping before publication. Transaction-only compatibility services reject DAG calls with
 `DAG_SERVICE_UNAVAILABLE`; all service receivers are shared references, with mutation protected by the sibling mutexes.
-Continue by internalizing the transaction-pack request/report relay inside this service without widening into network,
-signing/VDF execution, or EVM execution.
+The follow-up pack slice deleted the proposer request/report carriers and C++ sharded-payload relay. The service now
+derives proposal/shard limits from the private DAG cursor, owner-binds the single transaction pack session, returns only
+required EVM estimate candidates, and transfers selected canonical hash/RLP/gas payloads directly into the DAG cursor.
+Composite transitions lock DAG before transaction and release both before C++ executes EVM estimates;
+`TransactionManager::pack_mutex_` serializes that unlocked interval against public compatibility packing. Network
+throttle observation, EVM execution, VDF, signing, and add-block execution remain explicit C++ boundaries. Continue
+`CRW-04` by selecting the next remaining DAG/transaction facade or carrier that this composed ownership makes deletable.
 `CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim
 surface.
 

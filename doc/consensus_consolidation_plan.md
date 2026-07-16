@@ -2674,6 +2674,33 @@ application-owned Rust service without yet changing the proposer transaction-pac
   dependencies (`cytoolz` and `pyethash`), after which `pytest` was unavailable. These are classified environment and
   harness gaps rather than failures of the changed route.
 
+### CRW-04 Proposer Pack Relay Contraction
+
+The follow-up slice composes the DAG proposer and transaction pack cursors inside `BridgeDagTransactionService` while
+preserving network throttling and EVM gas estimation as explicit C++ executor boundaries.
+
+- `DagProposerTransactionPackRequest`, `DagProposerTransactionPackReport`, the session-step request field,
+  `DagManager::reportProposerTransactions`, `DagBlockProposer::getShardedTrxs`, and the shim-only sharded payload carrier
+  are deleted. Proposal period, weight, and shard limits no longer cross CXX.
+- Composite prepare/finalize/abort calls validate the private DAG cursor, bind the transaction cursor to its proposer
+  session id, and transfer selected canonical hashes, RLP payloads, and gas estimates directly into DAG session state.
+  Wrong-owner, out-of-order, malformed-estimate, and external-executor failure paths clean up matching cursors.
+- Composite calls use one DAG-then-transaction lock order and return before C++ performs EVM work. The existing C++
+  `pack_mutex_` spans prepare, unlocked EVM estimates, and finalize so public `packTrxs` cannot replace the single live
+  transaction cursor. Transaction-only services reject composite calls before transaction mutation.
+- C++ now observes only `Network::pbft_syncing()`, executes requested EVM estimates, and later materializes selected
+  payloads at the existing add-block boundary. VDF, signing, network ownership, and add-block execution are unchanged.
+- Focused validation passed: the full `rustaxa-bridge` suite (298 tests), native DAG proposer tests (18 tests),
+  `transaction_manager_shim_test` (35 tests), `dag_test` (6 tests), and
+  `FullNodeTest.multiple_wallets_support` (1 test). `make rewrite-validate-fast`,
+  `make rewrite-validate-consensus`, and `make rewrite-validate-smoke` also passed.
+- The authorized Tier 3 full CTest run again passed 21 of 27 registered suites. `pillar_chain_test`, `full_node_test`,
+  `network_test`, `pbft_manager_test`, and `vote_test` failed on the existing shared `/tmp/taraxa0/db/db/LOCK`
+  collision after individual cases had already passed; `go_test` reproduced the existing static Go/cgo host-link
+  failure. The focused Rust-enabled full-node proposer/startup case above passed independently. The Python integration
+  runner again stopped before collection because the host lacks Python 3.13 development headers for pinned `cytoolz`
+  and `pyethash`, leaving `pytest` unavailable. These results match the previously classified harness/environment gaps.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

@@ -1,6 +1,8 @@
 use crate::dag::build_dag_state_from_storage;
 use crate::ffi::rustaxa_ffi::*;
-use crate::ffi::{BridgeStorage, DagRuntimeState, TransactionRuntimeState};
+use crate::ffi::{
+    BridgeStorage, DagRuntimeState, TransactionPackSessionOwner, TransactionRuntimeState,
+};
 use crate::transaction_manager::{
     build_transaction_state_for_gas_pricer, build_transaction_state_from_storage,
 };
@@ -41,6 +43,18 @@ impl BridgeDagTransactionService {
             return Err(anyhow!("DAG_SERVICE_UNAVAILABLE"));
         }
         Ok(guard)
+    }
+
+    /// Locks the composed runtimes in the universal DAG-then-transaction order.
+    fn dag_and_transaction(
+        &self,
+    ) -> Result<(
+        MutexGuard<'_, Option<DagRuntimeState>>,
+        MutexGuard<'_, TransactionRuntimeState>,
+    )> {
+        let dag = self.dag()?;
+        let transaction = self.try_transaction()?;
+        Ok((dag, transaction))
     }
 }
 
@@ -188,6 +202,36 @@ impl BridgeDagTransactionService {
     transaction_shared_result!(transaction_manager_runtime_lookup_transaction_views(requests: Vec<TransactionManagerTransactionViewRequest>, max_count: u64) -> TransactionManagerTransactionViewPlan);
     transaction_shared_result!(transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(proposal_period: u64, requests: Vec<TransactionManagerTransactionViewRequest>, account_nonce_facts: Vec<TransactionQueueAccountNonceFact>, max_count: u64) -> TransactionManagerTransactionViewPlan);
 
+    pub fn dag_transaction_service_proposer_pack_prepare(
+        &self,
+        session_id: u64,
+        network_throttled: bool,
+        min_transaction_gas: u64,
+        estimate_gas_limit: u64,
+        last_block_number: u64,
+    ) -> Result<DagProposerSessionStep> {
+        dag_transaction_service_proposer_pack_prepare(
+            self,
+            session_id,
+            network_throttled,
+            min_transaction_gas,
+            estimate_gas_limit,
+            last_block_number,
+        )
+    }
+
+    pub fn dag_transaction_service_proposer_pack_finalize(
+        &self,
+        session_id: u64,
+        estimates: Vec<TransactionPackSessionEstimateInput>,
+    ) -> Result<DagProposerSessionStep> {
+        dag_transaction_service_proposer_pack_finalize(self, session_id, estimates)
+    }
+
+    pub fn dag_transaction_service_proposer_pack_abort(&self, session_id: u64) -> Result<bool> {
+        dag_transaction_service_proposer_pack_abort(self, session_id)
+    }
+
     dag_mut_result!(dag_manager_runtime_restore_from_storage() -> ());
     dag_mut_result!(dag_manager_runtime_add_block(block: DagManagerBlock) -> ());
     dag_shared_result!(dag_manager_runtime_plan_add_block(input: DagAddBlockRuntimeInput) -> DagAddBlockEffectPlan);
@@ -274,6 +318,161 @@ pub fn service_transaction_manager_recover_nonfinalized_with_runtime(
     )
 }
 
+/// Prepares one DAG-owned transaction pack without exposing private pack configuration.
+///
+/// The service validates the DAG cursor before touching transaction state and locks DAG then transaction. A throttled
+/// request never opens a transaction cursor. Otherwise Rust returns either EVM-only estimate candidates while retaining
+/// both owner-bound cursors, or directly advances the DAG cursor when declared gas/cache facts complete packing. No lock
+/// guard survives this call, so C++ may perform EVM callbacks after it returns. Any failure aborts both matching cursors.
+pub fn dag_transaction_service_proposer_pack_prepare(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+    network_throttled: bool,
+    min_transaction_gas: u64,
+    estimate_gas_limit: u64,
+    last_block_number: u64,
+) -> Result<DagProposerSessionStep> {
+    if network_throttled {
+        let mut dag_guard = service.dag()?;
+        let dag = dag_guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        if let Err(error) =
+            crate::dag::dag_manager_runtime_proposer_pack_parameters(dag, session_id)
+        {
+            crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+            return Err(error);
+        }
+        return match crate::dag::dag_manager_runtime_apply_proposer_pack(
+            dag,
+            session_id,
+            true,
+            Vec::new(),
+        ) {
+            Ok(step) => Ok(step),
+            Err(error) => {
+                crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+                Err(error)
+            }
+        };
+    }
+
+    let owner = TransactionPackSessionOwner::DagProposer(session_id);
+    let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let params = match crate::dag::dag_manager_runtime_proposer_pack_parameters(dag, session_id) {
+        Ok(params) => params,
+        Err(error) => {
+            transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
+            crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+            return Err(error);
+        }
+    };
+    let plan = match transaction.transaction_manager_runtime_pack_prepare_sharded_for_owner(
+        owner,
+        params.weight_limit,
+        min_transaction_gas,
+        params.proposal_period,
+        estimate_gas_limit,
+        last_block_number,
+        params.total_transaction_shards,
+        params.node_transaction_shard,
+        params.shard_period_interval,
+    ) {
+        Ok(plan) => plan,
+        Err(error) => {
+            transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
+            crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+            return Err(error);
+        }
+    };
+
+    if plan.request_estimates.is_empty() {
+        return match crate::dag::dag_manager_runtime_apply_proposer_pack(
+            dag,
+            session_id,
+            false,
+            plan.selected_transactions,
+        ) {
+            Ok(step) => Ok(step),
+            Err(error) => {
+                transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
+                crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+                Err(error)
+            }
+        };
+    }
+
+    let mut step = crate::dag::dag_manager_runtime_proposer_session_next(dag, session_id);
+    step.transaction_estimate_requests = plan.request_estimates;
+    Ok(step)
+}
+
+/// Finalizes an owner-bound proposer pack after the unlocked EVM executor interval.
+///
+/// DAG state is validated before transaction mutation. Estimates must exactly match the retained transaction cursor and
+/// owner. Success transfers selected hash/RLP/gas payloads directly into the DAG cursor and returns its VDF or terminal
+/// step. Wrong owner, malformed estimates, or out-of-order DAG state abort both matching cursors before returning `Err`.
+pub fn dag_transaction_service_proposer_pack_finalize(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+    estimates: Vec<TransactionPackSessionEstimateInput>,
+) -> Result<DagProposerSessionStep> {
+    let owner = TransactionPackSessionOwner::DagProposer(session_id);
+    let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    if let Err(error) = crate::dag::dag_manager_runtime_proposer_pack_parameters(dag, session_id) {
+        transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
+        crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+        return Err(error);
+    }
+    let packed = match transaction
+        .transaction_manager_runtime_pack_finalize_with_estimates_for_owner(owner, estimates)
+    {
+        Ok(packed) => packed,
+        Err(error) => {
+            transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
+            crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+            return Err(error);
+        }
+    };
+    match crate::dag::dag_manager_runtime_apply_proposer_pack(
+        dag,
+        session_id,
+        false,
+        packed.selected_transactions,
+    ) {
+        Ok(step) => Ok(step),
+        Err(error) => {
+            transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
+            crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+            Err(error)
+        }
+    }
+}
+
+/// Idempotently aborts the matching transaction and DAG proposer cursors.
+///
+/// Transaction-only services return `DAG_SERVICE_UNAVAILABLE` before acquiring or mutating transaction state. The return
+/// value is true when either matching cursor was removed; wrong-owner transaction cursors are preserved.
+pub fn dag_transaction_service_proposer_pack_abort(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+) -> Result<bool> {
+    let owner = TransactionPackSessionOwner::DagProposer(session_id);
+    let (mut dag_guard, mut transaction) = service.dag_and_transaction()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let transaction_aborted = transaction.transaction_manager_runtime_pack_abort_for_owner(owner);
+    let dag_aborted = crate::dag::dag_manager_runtime_abort_proposer_session(dag, session_id);
+    Ok(transaction_aborted || dag_aborted)
+}
+
 macro_rules! dag_free_mut_result {
     ($outer:ident, $inner:ident ( $( $arg:ident : $ty:ty ),* $(,)? ) -> $ret:ty) => {
         pub fn $outer(service: &BridgeDagTransactionService, $( $arg: $ty ),*) -> Result<$ret> {
@@ -305,7 +504,6 @@ dag_free_mut_fallible!(service_dag_manager_runtime_begin_proposer_session, dag_m
 dag_free_mut_result!(service_dag_manager_runtime_abort_proposer_session, dag_manager_runtime_abort_proposer_session(session_id: u64) -> bool);
 dag_free_mut_result!(service_dag_manager_runtime_proposer_session_next, dag_manager_runtime_proposer_session_next(session_id: u64) -> DagProposerSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_external_facts, dag_manager_runtime_proposer_session_report_external_facts(session_id: u64, report: DagProposerExternalProposalFactsReport) -> DagProposerSessionStep);
-dag_free_mut_result!(service_dag_manager_runtime_proposer_session_report_transactions, dag_manager_runtime_proposer_session_report_transactions(session_id: u64, report: DagProposerTransactionPackReport) -> DagProposerSessionStep);
 dag_free_mut_result!(service_dag_manager_runtime_proposer_session_poll_vdf, dag_manager_runtime_proposer_session_poll_vdf(session_id: u64) -> DagProposerSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_vdf_proof, dag_manager_runtime_proposer_session_report_vdf_proof(session_id: u64, report: DagProposerVdfProofReport) -> DagProposerSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_resume_stale_proof, dag_manager_runtime_proposer_session_resume_stale_proof(session_id: u64) -> DagProposerSessionStep);
@@ -316,7 +514,21 @@ dag_free_mut_result!(service_dag_manager_runtime_proposer_session_report_add_blo
 mod tests {
     use super::*;
     use crate::storage::create_storage;
+    use ethereum_types::{H160, H256, U256};
+    use k256::ecdsa::SigningKey;
+    use rlp::RlpStream;
+    use rustaxa_types::LegacyTransactionEnvelope;
+    use rustaxa_vdf::vrf::public_key_from_secret;
     use std::fs;
+    use tiny_keccak::{Hasher, Keccak};
+
+    const SECRET_KEY: [u8; 64] = [
+        0x90, 0xf5, 0x9a, 0x7e, 0xe7, 0xa3, 0x92, 0xc8, 0x11, 0xc5, 0xd2, 0x99, 0xb5, 0x57, 0xa4,
+        0xe0, 0x9e, 0x61, 0x0d, 0xe7, 0xd1, 0x09, 0xd6, 0xb3, 0xfc, 0xb1, 0x9a, 0xb8, 0xd5, 0x1c,
+        0x9a, 0x0d, 0x93, 0x1f, 0x5e, 0x7d, 0xb0, 0x7c, 0x99, 0x69, 0xe4, 0x38, 0xdb, 0x7e, 0x28,
+        0x7e, 0xab, 0xba, 0xac, 0xa4, 0x9c, 0xa4, 0x14, 0xf5, 0xf3, 0xa4, 0x02, 0xea, 0x69, 0x97,
+        0xad, 0xe4, 0x00, 0x81,
+    ];
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
         let nonce = std::time::SystemTime::now()
@@ -337,6 +549,115 @@ mod tests {
             is_light_node: false,
             blocks_gas_pricer: false,
         }
+    }
+
+    fn keccak256(bytes: &[u8]) -> H256 {
+        let mut out = [0u8; 32];
+        let mut hasher = Keccak::v256();
+        hasher.update(bytes);
+        hasher.finalize(&mut out);
+        H256::from(out)
+    }
+
+    fn address_from_signing_key(signing_key: &SigningKey) -> [u8; 20] {
+        let point = signing_key.verifying_key().to_encoded_point(false);
+        let hash = keccak256(&point.as_bytes()[1..]);
+        hash.as_bytes()[12..].try_into().unwrap()
+    }
+
+    fn signed_legacy_transaction_rlp(signing_key: &SigningKey) -> Vec<u8> {
+        let chain_id = 2999u64;
+        let mut unsigned = RlpStream::new_list(9);
+        unsigned.append(&U256::from(1));
+        unsigned.append(&U256::from(2));
+        unsigned.append(&21_000u64);
+        unsigned.append(&H160::from([0x44; 20]));
+        unsigned.append(&U256::from(3));
+        unsigned.append(&Vec::<u8>::new());
+        unsigned.append(&U256::from(chain_id));
+        unsigned.append(&U256::zero());
+        unsigned.append(&U256::zero());
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(keccak256(&unsigned.out()).as_bytes())
+            .unwrap();
+        let signature = signature.to_bytes();
+        let mut stream = RlpStream::new_list(9);
+        stream.append(&U256::from(1));
+        stream.append(&U256::from(2));
+        stream.append(&21_000u64);
+        stream.append(&H160::from([0x44; 20]));
+        stream.append(&U256::from(3));
+        stream.append(&Vec::<u8>::new());
+        stream.append(&U256::from(
+            chain_id * 2 + 35 + u64::from(recovery_id.to_byte()),
+        ));
+        stream.append(&U256::from_big_endian(&signature[..32]));
+        stream.append(&U256::from_big_endian(&signature[32..]));
+        stream.out().to_vec()
+    }
+
+    fn sign_hash(hash: [u8; 32]) -> Vec<u8> {
+        let key = SigningKey::from_slice(&[0x44; 32]).unwrap();
+        let (signature, recovery_id) = key.sign_prehash_recoverable(&hash).unwrap();
+        let mut bytes = signature.to_bytes().to_vec();
+        bytes.push(recovery_id.to_byte());
+        bytes
+    }
+
+    fn proposer_begin_input() -> DagProposerSessionBeginInput {
+        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
+        DagProposerSessionBeginInput {
+            transaction_pool_size: 1,
+            non_finalized_transaction_count: 0,
+            max_non_finalized_transactions: 100,
+            dag_expiry_level_limit: 100,
+            wallet_vrf_public_key: vrf_key,
+            wallet_vrf_secret: SECRET_KEY,
+            proposer_address: address_from_signing_key(
+                &SigningKey::from_slice(&[0x44; 32]).unwrap(),
+            ),
+            max_non_finalized_dag_blocks: 100,
+            max_non_finalized_dag_blocks_low_difficulty: 50,
+            max_retry_count: 20,
+            proposal_weight_limit: 100_000,
+            total_transaction_shards: 1,
+            node_transaction_shard: 0,
+            shard_period_interval: 10,
+            pbft_gas_limit: 1_000_000,
+            dag_gas_limit: 100_000,
+            max_tips: 16,
+        }
+    }
+
+    fn open_proposer_pack(service: &BridgeDagTransactionService) -> u64 {
+        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
+        let session_id =
+            service_dag_manager_runtime_begin_proposer_session(service, proposer_begin_input())
+                .expect("proposer session");
+        let step = service_dag_manager_runtime_proposer_session_report_external_facts(
+            service,
+            session_id,
+            DagProposerExternalProposalFactsReport {
+                last_finalized_period: 0,
+                authorization_facts: DagDposAuthorizationFacts {
+                    vrf_key_found: true,
+                    vrf_key: vrf_key.to_vec(),
+                    sender_eligible_vote_count: 10,
+                    vdf_sortition_max_vote_count: 20,
+                    eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+                },
+                sortition_params: SortitionRuntimeParams {
+                    threshold_upper: u16::MAX,
+                    difficulty_min: 3,
+                    difficulty_max: 3,
+                    difficulty_stale: 9,
+                    lambda_bound: 128,
+                },
+            },
+        )
+        .expect("external facts");
+        assert_eq!(step.action, 1);
+        session_id
     }
 
     #[test]
@@ -416,6 +737,277 @@ mod tests {
         drop(compat);
         drop(restored);
         drop(full);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_pack_throttle_and_empty_pack_leave_no_transaction_cursor() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_pack_terminal");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+
+        let throttled_id = open_proposer_pack(&service);
+        let throttled = service
+            .dag_transaction_service_proposer_pack_prepare(throttled_id, true, 21_000, 0, 0)
+            .expect("throttle should terminate");
+        assert_eq!(throttled.status, 1);
+        assert_eq!(
+            throttled.reason_code,
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_TRANSACTION_PACK_THROTTLED
+        );
+        assert!(service.transaction().transaction_pack_session.is_none());
+
+        let empty_id = open_proposer_pack(&service);
+        let empty = service
+            .dag_transaction_service_proposer_pack_prepare(empty_id, false, 21_000, 0, 0)
+            .expect("empty pack should terminate");
+        assert_eq!(empty.status, 1);
+        assert_eq!(
+            empty.reason_code,
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_PACKED_TRANSACTIONS_EMPTY
+        );
+        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .dag_transaction_service_proposer_pack_abort(empty_id)
+            .unwrap());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn out_of_order_throttled_pack_removes_only_dag_cursor() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_pack_throttle_order");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let session_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .expect("session should begin in external-facts stage");
+        assert!(service.transaction().transaction_pack_session.is_none());
+
+        let error = service
+            .dag_transaction_service_proposer_pack_prepare(session_id, true, 21_000, 0, 0)
+            .err()
+            .expect("out-of-order throttle must fail");
+        assert!(error
+            .to_string()
+            .contains("DAG_PROPOSER_PACK_SESSION_WRONG_STAGE"));
+        assert!(service.transaction().transaction_pack_session.is_none());
+        let after = service_dag_manager_runtime_proposer_session_next(&service, session_id)
+            .expect("missing session should return invalid step");
+        assert_eq!(after.status, 2);
+        assert!(!service
+            .dag_transaction_service_proposer_pack_abort(session_id)
+            .unwrap());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_pack_estimate_finalize_retains_payload_and_cache_only_reuses_it() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_pack_estimate");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let key = SigningKey::from_slice(&[0x47; 32]).unwrap();
+        let tx_rlp = signed_legacy_transaction_rlp(&key);
+        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
+        service
+            .transaction()
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: envelope.hash.0,
+                sender: address_from_signing_key(&key),
+                nonce: envelope.nonce.to_big_endian(),
+                gas_price: envelope.gas_price.to_big_endian(),
+                gas: envelope.gas,
+                data_size: envelope.data.len(),
+                tx_rlp: tx_rlp.clone(),
+                proposable: true,
+                last_block_number: 0,
+            })
+            .unwrap();
+
+        let session_id = open_proposer_pack(&service);
+        let prepare = service
+            .dag_transaction_service_proposer_pack_prepare(session_id, false, 21_000, 0, 10)
+            .expect("estimate prepare");
+        assert_eq!(prepare.action, 1);
+        assert_eq!(prepare.transaction_estimate_requests.len(), 1);
+        assert!(prepare.selected_transactions.is_empty());
+        let estimate = &prepare.transaction_estimate_requests[0];
+        let start_vdf = service
+            .dag_transaction_service_proposer_pack_finalize(
+                session_id,
+                vec![TransactionPackSessionEstimateInput {
+                    hash: estimate.hash,
+                    gas_used: 21_000,
+                    last_block_number: 10,
+                    result_rlp: vec![0xC0],
+                }],
+            )
+            .expect("estimate finalize");
+        assert_eq!(start_vdf.action, 2);
+        assert!(start_vdf.transaction_estimate_requests.is_empty());
+        assert!(start_vdf.selected_transactions.is_empty());
+
+        let sign = service_dag_manager_runtime_proposer_session_report_vdf_proof(
+            &service,
+            session_id,
+            DagProposerVdfProofReport {
+                proof_ok: true,
+                vdf_rlp: vec![0xC0],
+            },
+        )
+        .expect("VDF proof");
+        let add = service_dag_manager_runtime_proposer_session_report_signing(
+            &service,
+            session_id,
+            DagProposerSigningReport {
+                signature: sign_hash(sign.signing_hash),
+            },
+        )
+        .expect("signing");
+        assert_eq!(add.action, 6);
+        assert_eq!(add.selected_transactions.len(), 1);
+        assert_eq!(add.selected_transactions[0].hash, envelope.hash.0);
+        assert_eq!(add.selected_transactions[0].gas_used, 21_000);
+        assert_eq!(add.selected_transactions[0].tx_rlp, tx_rlp);
+        service_dag_manager_runtime_proposer_session_report_add_block(
+            &service,
+            session_id,
+            DagProposerAddBlockReport {
+                accepted: true,
+                duplicate: false,
+                expired: false,
+                missing_references: Vec::new(),
+            },
+        )
+        .expect("add report");
+
+        let cache_id = open_proposer_pack(&service);
+        let cache_only = service
+            .dag_transaction_service_proposer_pack_prepare(cache_id, false, 21_000, 0, 10)
+            .expect("cache-only prepare");
+        assert_eq!(cache_only.action, 2);
+        assert!(cache_only.transaction_estimate_requests.is_empty());
+        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(service
+            .dag_transaction_service_proposer_pack_abort(cache_id)
+            .unwrap());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn transaction_only_proposer_pack_fails_before_transaction_mutation() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_pack_unavailable");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_for_transaction_manager(
+            &storage,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+
+        let error = service
+            .dag_transaction_service_proposer_pack_prepare(7, false, 21_000, 0, 0)
+            .err()
+            .expect("transaction-only service must reject proposer pack");
+        assert_eq!(error.to_string(), "DAG_SERVICE_UNAVAILABLE");
+        assert!(service.transaction().transaction_pack_session.is_none());
+        assert_eq!(
+            service
+                .dag_transaction_service_proposer_pack_abort(7)
+                .unwrap_err()
+                .to_string(),
+            "DAG_SERVICE_UNAVAILABLE"
+        );
+        assert!(service.transaction().transaction_pack_session.is_none());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_pack_finalize_failure_cleans_both_owned_cursors() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_pack_failure");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let key = SigningKey::from_slice(&[0x48; 32]).unwrap();
+        let tx_rlp = signed_legacy_transaction_rlp(&key);
+        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
+        service
+            .transaction()
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: envelope.hash.0,
+                sender: address_from_signing_key(&key),
+                nonce: envelope.nonce.to_big_endian(),
+                gas_price: envelope.gas_price.to_big_endian(),
+                gas: envelope.gas,
+                data_size: envelope.data.len(),
+                tx_rlp,
+                proposable: true,
+                last_block_number: 0,
+            })
+            .unwrap();
+        let session_id = open_proposer_pack(&service);
+        let prepare = service
+            .dag_transaction_service_proposer_pack_prepare(session_id, false, 21_000, 0, 10)
+            .unwrap();
+        assert_eq!(prepare.transaction_estimate_requests.len(), 1);
+
+        assert!(service
+            .dag_transaction_service_proposer_pack_finalize(session_id, Vec::new())
+            .is_err());
+        assert!(service.transaction().transaction_pack_session.is_none());
+        assert!(!service
+            .dag_transaction_service_proposer_pack_abort(session_id)
+            .unwrap());
+
+        drop(service);
         drop(storage);
         let _ = fs::remove_dir_all(dir);
     }

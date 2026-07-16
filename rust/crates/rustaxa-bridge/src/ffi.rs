@@ -393,6 +393,17 @@ pub(crate) struct TransactionRuntimeState {
     pub transaction_pack_session: Option<TransactionManagerRuntimePackSession>,
 }
 
+/// Internal owner binding for the single transaction packing cursor.
+///
+/// Compatibility callers retain the public `packTrxs` behavior. DAG proposer
+/// cursors bind by session id so a stale proposer cannot finalize or abort a
+/// sibling cursor during the unlocked EVM interval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransactionPackSessionOwner {
+    Compatibility,
+    DagProposer(u64),
+}
+
 /// Runtime-owned state for one TransactionManager proposal-packing pass.
 ///
 /// The session owns the ordered queue candidate snapshot, planner accounting,
@@ -400,6 +411,7 @@ pub(crate) struct TransactionRuntimeState {
 /// for materializing the current candidate and supplying FinalChain/EVM gas
 /// estimates back to the runtime.
 pub struct TransactionManagerRuntimePackSession {
+    pub(crate) owner: TransactionPackSessionOwner,
     pub planner: TransactionPackingPlanner,
     pub proposal_period: u64,
     pub estimate_gas_limit: u64,
@@ -4018,21 +4030,14 @@ pub mod rustaxa_ffi {
         sortition_params: SortitionRuntimeParams,
     }
 
-    /// Rust-planned transaction packing request for a DAG proposal attempt.
-    struct DagProposerTransactionPackRequest {
-        proposal_period: u64,
-        weight_limit: u64,
-        total_transaction_shards: u16,
-        node_transaction_shard: u16,
-        shard_period_interval: u64,
-    }
-
     /// Complete instruction/result snapshot returned by the Rust-owned DAG proposer cursor.
     ///
     /// `status` distinguishes active, complete, and invalid-report outcomes; `action` selects the one external boundary
     /// to execute. Retry fields are authoritative only when `update_retry_state` is true. Vectors may be empty when the
-    /// selected action does not consume them. Action 5 exposes only the Rust-owned intent's `signing_hash`; action 6
-    /// exposes the canonical `signed_block` executor payload. Terminal steps remove the cursor after construction.
+    /// selected action does not consume them. Action 1 exposes only EVM candidates in `transaction_estimate_requests`;
+    /// canonical selected RLP payloads remain private until action 6 exposes `selected_transactions` beside the signed
+    /// block. Action 5 exposes only the Rust-owned intent's `signing_hash`. Terminal steps remove the cursor after
+    /// construction.
     struct DagProposerSessionStep {
         status: u8,
         action: u8,
@@ -4053,20 +4058,14 @@ pub mod rustaxa_ffi {
         old_proposal: bool,
         vdf_message: Vec<u8>,
         selected_transaction_hashes: Vec<DagHash>,
-        transaction_request: DagProposerTransactionPackRequest,
+        transaction_estimate_requests: Vec<TransactionPackSessionCandidate>,
+        selected_transactions: Vec<TransactionPackSelectedTransaction>,
         signing_hash: [u8; 32],
         signed_block: DagProposerSignedBlockIntent,
         record_proposed_block: bool,
         vdf_poll_interval_ms: u64,
         stale_proof_sleep_ms: u64,
         error_code: String,
-    }
-
-    /// Report from the live transaction-packing executor boundary.
-    struct DagProposerTransactionPackReport {
-        network_throttled: bool,
-        transaction_hashes: Vec<DagHash>,
-        transaction_gas_estimations: Vec<u64>,
     }
 
     /// Result of the external VDF executor boundary.
@@ -4702,12 +4701,30 @@ pub mod rustaxa_ffi {
             session_id: u64,
             report: DagProposerExternalProposalFactsReport,
         ) -> Result<DagProposerSessionStep>;
-        #[rust_name = "service_dag_manager_runtime_proposer_session_report_transactions"]
-        pub fn dag_manager_runtime_proposer_session_report_transactions(
-            runtime: &BridgeDagTransactionService,
+        /// Prepares a DAG-owned transaction pack from private cursor configuration.
+        /// Estimate-needed results keep action 1 and expose only `transaction_estimate_requests`; declared/cache-only,
+        /// empty, and throttled results advance immediately. No Rust lock crosses the external EVM interval.
+        pub fn dag_transaction_service_proposer_pack_prepare(
+            self: &BridgeDagTransactionService,
             session_id: u64,
-            report: DagProposerTransactionPackReport,
+            network_throttled: bool,
+            min_transaction_gas: u64,
+            estimate_gas_limit: u64,
+            last_block_number: u64,
         ) -> Result<DagProposerSessionStep>;
+        /// Finalizes the matching owner-bound transaction cursor and transfers canonical selected payloads directly into
+        /// the DAG cursor. Wrong-owner or malformed estimates abort both matching cursors before returning an error.
+        pub fn dag_transaction_service_proposer_pack_finalize(
+            self: &BridgeDagTransactionService,
+            session_id: u64,
+            estimates: Vec<TransactionPackSessionEstimateInput>,
+        ) -> Result<DagProposerSessionStep>;
+        /// Idempotently aborts matching proposer/transaction cursors. Transaction-only services fail before transaction
+        /// mutation; a wrong-owner transaction cursor is never removed.
+        pub fn dag_transaction_service_proposer_pack_abort(
+            self: &BridgeDagTransactionService,
+            session_id: u64,
+        ) -> Result<bool>;
         /// Polls VDF cancellation using the current Rust-derived proposal frontier level.
         /// Missing/out-of-order ids return an invalid-report step; cancellation returns a terminal cancel action.
         #[rust_name = "service_dag_manager_runtime_proposer_session_poll_vdf"]

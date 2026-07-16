@@ -5,13 +5,12 @@ use crate::ffi::rustaxa_ffi::{
     DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
     DagProposerExternalProposalFactsReport, DagProposerSessionBeginInput, DagProposerSessionStep,
     DagProposerSignedBlockIntent, DagProposerSigningReport, DagProposerStorageTipSelectionInput,
-    DagProposerTipSelectionPlan, DagProposerTransactionPackReport,
-    DagProposerTransactionPackRequest, DagProposerVdfProofReport, DagProposerWorkerCommand,
+    DagProposerTipSelectionPlan, DagProposerVdfProofReport, DagProposerWorkerCommand,
     DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
     DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
     DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
     DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionResult, HashLookup,
-    SortitionRuntimeParams,
+    SortitionRuntimeParams, TransactionPackSelectedTransaction,
 };
 use crate::ffi::{BridgeStorage, DagRuntimeState};
 use anyhow::{ensure, Context, Result};
@@ -184,6 +183,7 @@ pub struct DagProposerSession {
     vdf_message: Vec<u8>,
     selected_transaction_hashes: Vec<H256>,
     transaction_gas_estimations: Vec<u64>,
+    selected_transactions: Vec<TransactionPackSelectedTransaction>,
     vdf_rlp: Vec<u8>,
     unsigned_intent: Option<DomainDagProposerUnsignedBlockIntent>,
     signed_intent: Option<rustaxa_consensus::dag::DagProposerSignedBlockIntent>,
@@ -198,6 +198,15 @@ struct DagProposerObservation {
     period_block_hash_found: bool,
     period_block_hash: H256,
     fingerprint: [u8; 32],
+}
+
+/// Private pack configuration derived from one live DAG proposer cursor.
+pub(crate) struct DagProposerPackParameters {
+    pub proposal_period: u64,
+    pub weight_limit: u64,
+    pub total_transaction_shards: u16,
+    pub node_transaction_shard: u16,
+    pub shard_period_interval: u64,
 }
 
 /// Rust-owned durable retry cursor for one configured DAG proposer wallet.
@@ -770,6 +779,7 @@ impl DagRuntimeState {
                 vdf_message: Vec::new(),
                 selected_transaction_hashes: Vec::new(),
                 transaction_gas_estimations: Vec::new(),
+                selected_transactions: Vec::new(),
                 vdf_rlp: Vec::new(),
                 unsigned_intent: None,
                 signed_intent: None,
@@ -1448,60 +1458,75 @@ pub fn dag_manager_runtime_proposer_session_report_external_facts(
     Ok(finish_dag_proposer_session_step(runtime, session_id, step))
 }
 
-/// Reports live transaction-packing results to the runtime-owned DAG proposal cursor.
-pub fn dag_manager_runtime_proposer_session_report_transactions(
+/// Returns private transaction-pack parameters for a live proposer cursor.
+pub(crate) fn dag_manager_runtime_proposer_pack_parameters(
+    runtime: &DagRuntimeState,
+    session_id: u64,
+) -> Result<DagProposerPackParameters> {
+    let session = runtime
+        .proposer_sessions
+        .get(&session_id)
+        .context("DAG_PROPOSER_PACK_SESSION_NOT_ACTIVE")?;
+    ensure!(
+        matches!(session.action, DagProposerSessionAction::PackTransactions),
+        "DAG_PROPOSER_PACK_SESSION_WRONG_STAGE"
+    );
+    Ok(DagProposerPackParameters {
+        proposal_period: session.attempt.proposal_period,
+        weight_limit: session.attempt.proposal_weight_limit,
+        total_transaction_shards: session.attempt.total_transaction_shards,
+        node_transaction_shard: session.attempt.node_transaction_shard,
+        shard_period_interval: session.attempt.shard_period_interval,
+    })
+}
+
+/// Applies Rust transaction-pack output directly to its owning DAG cursor.
+pub(crate) fn dag_manager_runtime_apply_proposer_pack(
     runtime: &mut DagRuntimeState,
     session_id: u64,
-    report: DagProposerTransactionPackReport,
-) -> DagProposerSessionStep {
-    let step = {
-        let Some(session) = runtime.proposer_sessions.get_mut(&session_id) else {
-            return dag_proposer_session_not_started_step();
-        };
-        if !matches!(session.action, DagProposerSessionAction::PackTransactions) {
-            invalid_dag_proposer_report(
-                session,
-                "DAG_PROPOSER_SESSION_UNEXPECTED_TRANSACTION_REPORT",
-            )
-        } else {
-            let post_pack =
-                plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
-                    proposal_level: session.attempt.proposal_level,
-                    network_throttled: report.network_throttled,
-                    packed_transaction_count: report.transaction_hashes.len() as u64,
-                });
-            session.reason_code = post_pack.reason_code;
-            session.update_retry_state = post_pack.update_retry_state;
-            session.next_last_propose_level = post_pack.next_last_propose_level;
-            session.next_retry_count = post_pack.next_retry_count;
+    network_throttled: bool,
+    selected_transactions: Vec<TransactionPackSelectedTransaction>,
+) -> Result<DagProposerSessionStep> {
+    let session = runtime
+        .proposer_sessions
+        .get_mut(&session_id)
+        .context("DAG_PROPOSER_PACK_SESSION_NOT_ACTIVE")?;
+    ensure!(
+        matches!(session.action, DagProposerSessionAction::PackTransactions),
+        "DAG_PROPOSER_PACK_SESSION_WRONG_STAGE"
+    );
+    let post_pack = plan_dag_proposer_post_pack(rustaxa_consensus::dag::DagProposerPostPackInput {
+        proposal_level: session.attempt.proposal_level,
+        network_throttled,
+        packed_transaction_count: selected_transactions.len() as u64,
+    });
+    session.reason_code = post_pack.reason_code;
+    session.update_retry_state = post_pack.update_retry_state;
+    session.next_last_propose_level = post_pack.next_last_propose_level;
+    session.next_retry_count = post_pack.next_retry_count;
 
-            if post_pack.action != rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
-                session.action = DagProposerSessionAction::Complete;
-                session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
-                session.return_value = false;
-                dag_proposer_session_step(session)
-            } else if report.transaction_hashes.len() != report.transaction_gas_estimations.len() {
-                invalid_dag_proposer_report(
-                    session,
-                    "DAG_PROPOSER_SESSION_TRANSACTION_REPORT_LENGTH_MISMATCH",
-                )
-            } else {
-                session.selected_transaction_hashes = report
-                    .transaction_hashes
-                    .into_iter()
-                    .map(|hash| H256::from(hash.hash))
-                    .collect();
-                session.transaction_gas_estimations = report.transaction_gas_estimations;
-                session.vdf_message = construct_dag_vdf_message(
-                    session.attempt.frontier.pivot,
-                    &session.selected_transaction_hashes,
-                );
-                session.action = DagProposerSessionAction::StartVdf;
-                dag_proposer_session_step(session)
-            }
-        }
-    };
-    finish_dag_proposer_session_step(runtime, session_id, step)
+    if post_pack.action != rustaxa_consensus::dag::DAG_PROPOSER_ACTION_CONTINUE {
+        session.action = DagProposerSessionAction::Complete;
+        session.status = DAG_PROPOSER_SESSION_STATUS_COMPLETE;
+        session.return_value = false;
+    } else {
+        session.selected_transaction_hashes = selected_transactions
+            .iter()
+            .map(|selected| H256::from(selected.hash))
+            .collect();
+        session.transaction_gas_estimations = selected_transactions
+            .iter()
+            .map(|selected| selected.gas_used)
+            .collect();
+        session.vdf_message = construct_dag_vdf_message(
+            session.attempt.frontier.pivot,
+            &session.selected_transaction_hashes,
+        );
+        session.selected_transactions = selected_transactions;
+        session.action = DagProposerSessionAction::StartVdf;
+    }
+    let step = dag_proposer_session_step(session);
+    Ok(finish_dag_proposer_session_step(runtime, session_id, step))
 }
 
 /// Polls whether the runtime-owned proposal cursor should cancel its in-flight VDF.
@@ -1996,13 +2021,10 @@ fn placeholder_attempt(
         update_retry_state: false,
         next_last_propose_level: 0,
         next_retry_count: 0,
-        transaction_request: rustaxa_consensus::dag::DagProposerTransactionPackRequest {
-            proposal_period: observation.proposal_period,
-            weight_limit: input.proposal_weight_limit,
-            total_transaction_shards: input.total_transaction_shards,
-            node_transaction_shard: input.node_transaction_shard,
-            shard_period_interval: input.shard_period_interval,
-        },
+        proposal_weight_limit: input.proposal_weight_limit,
+        total_transaction_shards: input.total_transaction_shards,
+        node_transaction_shard: input.node_transaction_shard,
+        shard_period_interval: input.shard_period_interval,
     }
 }
 
@@ -2081,12 +2103,19 @@ fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSession
         old_proposal: session.attempt.old_proposal,
         vdf_message: session.vdf_message.clone(),
         selected_transaction_hashes: to_dag_hashes(session.selected_transaction_hashes.clone()),
-        transaction_request: DagProposerTransactionPackRequest {
-            proposal_period: session.attempt.transaction_request.proposal_period,
-            weight_limit: session.attempt.transaction_request.weight_limit,
-            total_transaction_shards: session.attempt.transaction_request.total_transaction_shards,
-            node_transaction_shard: session.attempt.transaction_request.node_transaction_shard,
-            shard_period_interval: session.attempt.transaction_request.shard_period_interval,
+        transaction_estimate_requests: Vec::new(),
+        selected_transactions: if matches!(session.action, DagProposerSessionAction::AddBlock) {
+            session
+                .selected_transactions
+                .iter()
+                .map(|selected| TransactionPackSelectedTransaction {
+                    hash: selected.hash,
+                    gas_used: selected.gas_used,
+                    tx_rlp: selected.tx_rlp.clone(),
+                })
+                .collect()
+        } else {
+            Vec::new()
         },
         signing_hash: session
             .unsigned_intent
@@ -2166,13 +2195,8 @@ fn dag_proposer_session_not_started_step() -> DagProposerSessionStep {
         old_proposal: false,
         vdf_message: Vec::new(),
         selected_transaction_hashes: Vec::new(),
-        transaction_request: DagProposerTransactionPackRequest {
-            proposal_period: 0,
-            weight_limit: 0,
-            total_transaction_shards: 0,
-            node_transaction_shard: 0,
-            shard_period_interval: 0,
-        },
+        transaction_estimate_requests: Vec::new(),
+        selected_transactions: Vec::new(),
         signing_hash: [0; 32],
         signed_block: DagProposerSignedBlockIntent {
             block_rlp: Vec::new(),
@@ -2908,17 +2932,17 @@ mod tests {
             DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
         );
         assert_eq!(
-            dag_manager_runtime_proposer_session_report_transactions(
+            dag_manager_runtime_apply_proposer_pack(
                 runtime,
                 session_id,
-                DagProposerTransactionPackReport {
-                    network_throttled: false,
-                    transaction_hashes: vec![DagHash {
-                        hash: transaction_hash,
-                    }],
-                    transaction_gas_estimations: vec![100],
-                },
+                false,
+                vec![TransactionPackSelectedTransaction {
+                    hash: transaction_hash,
+                    gas_used: 100,
+                    tx_rlp: vec![transaction_hash[0]],
+                }],
             )
+            .expect("pack should apply")
             .action,
             DAG_PROPOSER_SESSION_ACTION_START_VDF
         );
@@ -3000,7 +3024,7 @@ mod tests {
                 first.action,
                 DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
             );
-            assert_eq!(first.transaction_request.proposal_period, 7);
+            assert_eq!(first.proposal_period, 7);
 
             let pack = dag_manager_runtime_proposer_session_report_external_facts(
                 &mut runtime,
@@ -3013,15 +3037,17 @@ mod tests {
             assert_eq!(first.stale_proof_sleep_ms, 1_000);
             assert!(!pack.vrf_input.is_empty());
 
-            let start_vdf = dag_manager_runtime_proposer_session_report_transactions(
+            let start_vdf = dag_manager_runtime_apply_proposer_pack(
                 &mut runtime,
                 session_id,
-                DagProposerTransactionPackReport {
-                    network_throttled: false,
-                    transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
-                    transaction_gas_estimations: vec![100],
-                },
-            );
+                false,
+                vec![TransactionPackSelectedTransaction {
+                    hash: [2u8; 32],
+                    gas_used: 100,
+                    tx_rlp: vec![0xC0],
+                }],
+            )
+            .expect("pack should apply");
             assert_eq!(start_vdf.action, DAG_PROPOSER_SESSION_ACTION_START_VDF);
             assert_eq!(start_vdf.selected_transaction_hashes.len(), 1);
             assert_eq!(
@@ -3169,15 +3195,17 @@ mod tests {
                 DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
             );
 
-            let second_start_vdf = dag_manager_runtime_proposer_session_report_transactions(
+            let second_start_vdf = dag_manager_runtime_apply_proposer_pack(
                 &mut runtime,
                 second_id,
-                DagProposerTransactionPackReport {
-                    network_throttled: false,
-                    transaction_hashes: vec![DagHash { hash: [4u8; 32] }],
-                    transaction_gas_estimations: vec![200],
-                },
-            );
+                false,
+                vec![TransactionPackSelectedTransaction {
+                    hash: [4u8; 32],
+                    gas_used: 200,
+                    tx_rlp: vec![4],
+                }],
+            )
+            .expect("second pack should apply");
             assert_eq!(
                 second_start_vdf.action,
                 DAG_PROPOSER_SESSION_ACTION_START_VDF
@@ -3207,15 +3235,17 @@ mod tests {
                 DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS
             );
 
-            let first_start_vdf = dag_manager_runtime_proposer_session_report_transactions(
+            let first_start_vdf = dag_manager_runtime_apply_proposer_pack(
                 &mut runtime,
                 first_id,
-                DagProposerTransactionPackReport {
-                    network_throttled: false,
-                    transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
-                    transaction_gas_estimations: vec![100],
-                },
-            );
+                false,
+                vec![TransactionPackSelectedTransaction {
+                    hash: [2u8; 32],
+                    gas_used: 100,
+                    tx_rlp: vec![2],
+                }],
+            )
+            .expect("first pack should apply");
             assert_eq!(
                 first_start_vdf.action,
                 DAG_PROPOSER_SESSION_ACTION_START_VDF
@@ -3300,20 +3330,21 @@ mod tests {
                 proposer_session_begin_input(vrf_key),
             )
             .expect("session should open");
-            let invalid = dag_manager_runtime_proposer_session_report_transactions(
+            let invalid = dag_manager_runtime_apply_proposer_pack(
                 &mut runtime,
                 invalid_id,
-                DagProposerTransactionPackReport {
-                    network_throttled: false,
-                    transaction_hashes: Vec::new(),
-                    transaction_gas_estimations: Vec::new(),
-                },
-            );
-            assert_eq!(invalid.status, DAG_PROPOSER_SESSION_STATUS_INVALID_REPORT);
-            assert_eq!(
-                invalid.error_code,
-                "DAG_PROPOSER_SESSION_UNEXPECTED_TRANSACTION_REPORT"
-            );
+                false,
+                Vec::new(),
+            )
+            .err()
+            .expect("out-of-order pack must fail");
+            assert!(invalid
+                .to_string()
+                .contains("DAG_PROPOSER_PACK_SESSION_WRONG_STAGE"));
+            assert!(dag_manager_runtime_abort_proposer_session(
+                &mut runtime,
+                invalid_id
+            ));
 
             let after_invalid = dag_manager_runtime_proposer_session_report_external_facts(
                 &mut runtime,
@@ -3804,15 +3835,17 @@ mod tests {
             )
             .expect("external facts should be accepted");
             assert_eq!(pack.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
-            let start = dag_manager_runtime_proposer_session_report_transactions(
+            let start = dag_manager_runtime_apply_proposer_pack(
                 &mut runtime,
                 session_id,
-                DagProposerTransactionPackReport {
-                    network_throttled: false,
-                    transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
-                    transaction_gas_estimations: vec![100],
-                },
-            );
+                false,
+                vec![TransactionPackSelectedTransaction {
+                    hash: [2u8; 32],
+                    gas_used: 100,
+                    tx_rlp: vec![2],
+                }],
+            )
+            .expect("pack should apply");
             assert_eq!(start.action, DAG_PROPOSER_SESSION_ACTION_START_VDF);
             runtime
                 .proposer_sessions
@@ -3877,15 +3910,17 @@ mod tests {
             assert!(pack.vdf_stale);
             assert_eq!(pack.action, DAG_PROPOSER_SESSION_ACTION_PACK_TRANSACTIONS);
             assert_eq!(
-                dag_manager_runtime_proposer_session_report_transactions(
+                dag_manager_runtime_apply_proposer_pack(
                     &mut runtime,
                     session_id,
-                    DagProposerTransactionPackReport {
-                        network_throttled: false,
-                        transaction_hashes: vec![DagHash { hash: [2u8; 32] }],
-                        transaction_gas_estimations: vec![100],
-                    },
+                    false,
+                    vec![TransactionPackSelectedTransaction {
+                        hash: [2u8; 32],
+                        gas_used: 100,
+                        tx_rlp: vec![2],
+                    }],
                 )
+                .expect("pack should apply")
                 .action,
                 DAG_PROPOSER_SESSION_ACTION_START_VDF
             );

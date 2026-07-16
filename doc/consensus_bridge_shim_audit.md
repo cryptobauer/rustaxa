@@ -906,6 +906,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   sibling mutexes, all service receivers are shared references, and full construction restores both state families plus
   the initial proposal-period mapping before publication. Transaction-only compatibility factories are limited to
   standalone facade tests and reject every DAG call with `DAG_SERVICE_UNAVAILABLE`.
+- `DagProposerTransactionPackRequest`, `DagProposerTransactionPackReport`, `DagManager::reportProposerTransactions`,
+  `DagBlockProposer::getShardedTrxs`, and the shim-only `packShardedTransactionPayloads` carrier path are retired.
+  `BridgeDagTransactionService` now validates the private DAG cursor, derives its proposal/shard limits, opens an
+  owner-bound transaction pack cursor, and transfers selected hash/RLP/gas payloads directly into the DAG session.
+  C++ observes network throttling and executes only requested EVM estimates while `TransactionManager::pack_mutex_`
+  prevents compatibility packing from replacing the live proposer cursor. Composite Rust calls lock DAG before
+  transaction and release both locks before returning to the EVM executor.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

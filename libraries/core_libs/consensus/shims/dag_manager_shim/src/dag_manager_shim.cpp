@@ -946,13 +946,6 @@ rustaxa::DagProposerSessionStep DagManager::reportProposerExternalProposalFacts(
                                                                              session_id, std::move(report));
 }
 
-rustaxa::DagProposerSessionStep DagManager::reportProposerTransactions(
-    uint64_t session_id, rustaxa::DagProposerTransactionPackReport report) {
-  std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_transactions(dag_transaction_service_->service(),
-                                                                           session_id, std::move(report));
-}
-
 rustaxa::DagProposerSessionStep DagManager::pollProposerVdfWait(uint64_t session_id) {
   std::unique_lock lock(rust_graphs_mutex_);
   return rustaxa::dag_manager_runtime_proposer_session_poll_vdf(dag_transaction_service_->service(), session_id);

@@ -645,6 +645,9 @@ Completed closeout slices:
    App bootstrap now owns one `BridgeDagTransactionService` that contains private DAG and transaction state behind
    sibling Rust mutexes. `TransactionManager` and `DagManager` share that service instead of owning or passing separate
    runtime handles; full construction restores both domains and the initial proposal-period mapping before publication.
+   The service also owns the DAG-proposer transaction-pack transition: proposal/shard limits stay private, an
+   owner-bound transaction cursor returns only required EVM estimate candidates, and selected hash/RLP/gas payloads move
+   directly into the DAG cursor. C++ retains only network-throttle observation and EVM estimate execution.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
    construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,
@@ -970,11 +973,13 @@ The current Rust consensus footprint is broad but still incomplete:
    coverage. The Rust-mode `TransactionManager` packing shim now routes proposal candidate
    snapshotting, candidate scan, Rust-inspected envelope facts for candidate EVM input, declared-gas fit checks,
    invalid-estimate demotion mutation, accepted output ordering, accepted gas accumulation, and stop rules through a
-   Rust runtime pack session. C++ drives packing through a narrow Rust step protocol that either asks for a required EVM
-   estimate or returns the final selected payloads and clears the session; declared-gas and gas-estimation-cache hits are
-   consumed inside Rust without a C++ callback. The stale standalone planner FFI and explicit pack-finalize surface are
-   removed in favor of this session contract. A shim-owned guard prevents concurrent C++ callers from racing the single
-   Rust runtime session while EVM execution is outside the transaction lock. Rust also owns `estimateTransactionGas` and
+   Rust runtime pack session. Compatibility `packTrxs` drives a narrow Rust step protocol, while DAG proposal packing is
+   composed inside `BridgeDagTransactionService`: Rust derives pack limits from the private DAG cursor, binds the
+   transaction cursor to that proposal session, and transfers selected canonical payloads directly back into DAG state.
+   C++ sees only required EVM estimate candidates. Declared-gas and gas-estimation-cache hits are consumed inside Rust
+   without a callback. The stale standalone planner FFI, proposer request/report carriers, and C++ sharded-pack payload
+   relay are removed. A shim-owned guard prevents compatibility and proposer callers from racing the single Rust pack
+   session while EVM execution is outside the transaction lock. Rust also owns `estimateTransactionGas` and
    `estimateTransactions` declared-gas shortcut decisions plus the bounded `(transaction hash, proposal period)` opaque
    `ExecutionResult` cache, while C++ keeps EVM execution, public transaction construction, final selected transaction
    materialization, and lifecycle/finalization orchestration. The shim-only `TransactionQueue::demoteToNonProposable`
