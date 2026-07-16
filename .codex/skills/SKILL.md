@@ -38,7 +38,6 @@ a profile, follow the fallback-emulation policy in `AGENTS.md`: reproduce the se
 `developer_instructions` verbatim, reproduce other settings wherever supported, state any gaps, and label the child
 `<name> fallback emulation`. Never claim that fallback emulation is verified profile use.
 
-- Use `task-distributor` once for a broad multi-slice goal that needs dependency-aware decomposition.
 - Use `code-mapper` when ownership, call paths, state flow, or remaining compatibility boundaries are unclear.
 - Ask `api-designer` to review Rust/C++ bridge shape, compatibility, and future API direction.
 - Ask `architect-reviewer` to review boundaries, shim strategy, fallback risk, and maintainability.
@@ -76,8 +75,8 @@ For every non-trivial implementation slice:
 6. Use `blockchain-engineer` in this sequence only when the task explicitly crosses an EVM, contract, signing, gas,
    slashing-transaction, or on-chain transaction-lifecycle boundary.
 
-Use `task-distributor` once at the beginning of a broad multi-slice goal to produce dependency-aware decomposition. The
-parent owns slice selection, integration, validation, commits, and goal state throughout the workflow.
+The parent owns multi-slice decomposition, slice selection, integration, validation, commits, and goal state throughout
+the workflow.
 
 Spawn every child with no inherited conversation turns, or the smallest supported context, and provide only its bounded
 assignment, required source paths, prior reports, invariants, and return format. A child must not create, update, complete,

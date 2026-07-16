@@ -11,7 +11,7 @@ required validation, documentation, and review have landed. Do not start a `bloc
 non-network/non-EVM consensus closeout. Update cross-cutting `CRW-07` in every slice that narrows or deletes bridge
 handles, CXX carriers, module flags, shims, or compatibility-only tests.
 
-Use RTK throughout. Use `task-distributor` once for dependency-aware decomposition, then follow the skill's required
+Use RTK throughout. Decompose the dependency-ordered queue in the parent thread, then follow the skill's required
 per-slice orchestration with the relevant configured custom agents. Use `blockchain-engineer` only for explicitly scoped
 EVM, contract, signing, gas, slashing-transaction, or on-chain lifecycle work. Follow the repository's verified-profile
 and fallback-emulation policy truthfully.

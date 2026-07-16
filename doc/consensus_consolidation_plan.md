@@ -506,8 +506,8 @@ Implementation notes:
   consumers, all 13 DAG-block and all 12 DAG consumers, the focused pillar-block construction consumer, Tier 1, Tier 2,
   and the startup smoke gate. Feature-on build metadata and the core archive contain neither the original manager object
   nor a `KeyManagerOld` symbol, and original-file diffs versus `upstream-main` are empty. Mapping, API, architecture,
-  C++ implementation, and independent review used the task-distributor, code-mapper, api-designer,
-  architect-reviewer, cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation agent was needed because
+  C++ implementation, and independent review used the code-mapper, api-designer, architect-reviewer, cpp-pro, and
+  reviewer agents. No Rust or blockchain/EVM implementation agent was needed because
   key lookup behavior, Rust bridge behavior, storage, and contract execution did not change.
 - `pillar_votes_shim` is retired. C++ now routes live pillar vote indexing and planning through
   `BridgePillarChainRuntime` inside `pillar_chain_manager_shim`. `RUSTAXA_ENABLE_PILLAR_VOTES` no longer wires
@@ -674,10 +674,10 @@ Implementation notes:
   was never called and no runtime behavior changed, this is recorded as an existing full-node FinalChain/slashing
   validation gap rather than a reason to retain dead scaffold. Feature-on metadata contains only the shim source and no
   `SlashingManagerOld` symbols, module-disabled/all-off metadata selects the untouched original source without a rename,
-  invalid dependency configurations still fail, and the upstream original files remain unchanged. Mapping,
-  decomposition, API design, architecture review, C++ implementation, and independent closeout review use the
-  task-distributor, code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation
-  or blockchain agent was needed for this detachment because the Rust planner and contract executor behavior did not
+  invalid dependency configurations still fail, and the upstream original files remain unchanged. Mapping, API design,
+  architecture review, C++ implementation, and independent closeout review use the code-mapper, api-designer,
+  architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation or blockchain agent was needed for this
+  detachment because the Rust planner and contract executor behavior did not
   change; the Magnolia parity follow-up is explicitly blockchain-facing.
 - The Magnolia slashing parity follow-up closes both defects exposed by that detachment validation. The shim now supplies
   the immutable Magnolia activation period when it constructs the Rust planner; Rust checks the legacy vote-A boundary
@@ -846,8 +846,8 @@ Implementation notes:
   whitespace validation, and the upstream-owned-file diff check. The pure-C++ tree configured successfully, selected
   and compiled the original `final_chain.cpp` without renamed symbols, then the broader `final_chain_test` target was
   blocked by the pre-existing unrelated pillar-vote packet-handler API mismatch. Slice selection, mapping, API and
-  architecture review, C++ implementation, and independent closeout review used the task-distributor, code-mapper,
-  api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation agent was needed because the
+  architecture review, C++ implementation, and independent closeout review used the code-mapper, api-designer,
+  architect-reviewer, cpp-pro, and reviewer agents. No Rust implementation agent was needed because the
   Rust bridge and runtime behavior did not change.
 - `dag_manager_shim` now moved `getShared()` and `getDagMutex()` off inherited `DagManagerOld` access and onto shim-owned
   state. `setDagBlockOrder()` no longer acquires an extra outer order lock before Rust-runtime lock flow, since runtime
