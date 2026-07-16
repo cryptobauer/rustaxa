@@ -3782,10 +3782,8 @@ pub enum PbftManagerAdvancePeriodAction {
     ResetPeriodTimer,
     /// Update wallet eligibility after reset/wait-for-finalization.
     UpdateWalletEligibility,
-    /// Clean up votes for the finalized chain size.
-    CleanupVotes,
-    /// Clean up stale proposed PBFT blocks for the new period.
-    CleanupProposedBlocks,
+    /// Atomically clean verified votes and proposed blocks for period advance.
+    CleanupPeriodState,
 }
 
 impl PbftManagerAdvancePeriodAction {
@@ -3798,8 +3796,7 @@ impl PbftManagerAdvancePeriodAction {
             Self::ResetRewardVoteCounters => 4,
             Self::ResetPeriodTimer => 5,
             Self::UpdateWalletEligibility => 6,
-            Self::CleanupVotes => 7,
-            Self::CleanupProposedBlocks => 8,
+            Self::CleanupPeriodState => 7,
         }
     }
 
@@ -3812,8 +3809,7 @@ impl PbftManagerAdvancePeriodAction {
             4 => Some(Self::ResetRewardVoteCounters),
             5 => Some(Self::ResetPeriodTimer),
             6 => Some(Self::UpdateWalletEligibility),
-            7 => Some(Self::CleanupVotes),
-            8 => Some(Self::CleanupProposedBlocks),
+            7 => Some(Self::CleanupPeriodState),
             _ => None,
         }
     }
@@ -4792,13 +4788,16 @@ pub fn plan_pbft_manager_advance_period_after_reset(
     actions.push(PbftManagerAdvancePeriodAction::ResetRewardVoteCounters);
     actions.push(PbftManagerAdvancePeriodAction::ResetPeriodTimer);
     actions.push(PbftManagerAdvancePeriodAction::UpdateWalletEligibility);
-    actions.push(PbftManagerAdvancePeriodAction::CleanupVotes);
-    actions.push(PbftManagerAdvancePeriodAction::CleanupProposedBlocks);
+    actions.push(PbftManagerAdvancePeriodAction::CleanupPeriodState);
+
+    let Some(new_period) = pbft_chain_size.checked_add(1) else {
+        return rejected_advance_period_plan("PBFT_MANAGER_ADVANCE_PERIOD_OVERFLOW");
+    };
 
     PbftManagerAdvancePeriodPlan {
         accepted: true,
         finalized_chain_size: pbft_chain_size,
-        new_period: pbft_chain_size.saturating_add(1),
+        new_period,
         actions,
         error_code: String::new(),
     }
@@ -7747,8 +7746,7 @@ mod tests {
                 PbftManagerAdvancePeriodAction::ResetRewardVoteCounters,
                 PbftManagerAdvancePeriodAction::ResetPeriodTimer,
                 PbftManagerAdvancePeriodAction::UpdateWalletEligibility,
-                PbftManagerAdvancePeriodAction::CleanupVotes,
-                PbftManagerAdvancePeriodAction::CleanupProposedBlocks,
+                PbftManagerAdvancePeriodAction::CleanupPeriodState,
             ]
         );
 
@@ -7843,13 +7841,27 @@ mod tests {
             &plan,
             PbftManagerAdvancePeriodActionReport {
                 action_index: plan.actions.len() as u64,
-                action: PbftManagerAdvancePeriodAction::CleanupProposedBlocks.as_u8(),
+                action: PbftManagerAdvancePeriodAction::CleanupPeriodState.as_u8(),
                 succeeded: true,
             },
         );
         assert_eq!(
             out_of_range.status,
             PbftManagerAdvancePeriodActionReportStatus::ActionIndexOutOfRange
+        );
+
+        assert!(PbftManagerAdvancePeriodAction::from_u8(8).is_none());
+        let removed_action = validate_pbft_manager_advance_period_action_report(
+            &plan,
+            PbftManagerAdvancePeriodActionReport {
+                action_index: (plan.actions.len() - 1) as u64,
+                action: 8,
+                succeeded: true,
+            },
+        );
+        assert_eq!(
+            removed_action.status,
+            PbftManagerAdvancePeriodActionReportStatus::UnknownAction
         );
     }
 

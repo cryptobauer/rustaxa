@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -33,6 +34,16 @@ constexpr std::chrono::milliseconds kPollingIntervalMs{100};
 constexpr PbftStep kMaxSteps{13};  // Need to be a odd number
 
 namespace {
+
+constexpr std::optional<PbftPeriod> checkedNextPbftPeriod(PbftPeriod finalized_chain_size) {
+  if (finalized_chain_size == std::numeric_limits<PbftPeriod>::max()) {
+    return std::nullopt;
+  }
+  return finalized_chain_size + 1;
+}
+
+static_assert(checkedNextPbftPeriod(1) == 2);
+static_assert(!checkedNextPbftPeriod(std::numeric_limits<PbftPeriod>::max()).has_value());
 
 constexpr uint8_t kPbftSyncFinalChainValid = 0;
 constexpr uint8_t kPbftSyncFinalChainMissing = 1;
@@ -154,8 +165,10 @@ struct PbftManagerFinalizationPillarPostProcessingReport {
 };
 
 constexpr uint8_t kPbftManagerAdvancePeriodActionUpdateWalletEligibility = 6;
-constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupVotes = 7;
-constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupProposedBlocks = 8;
+constexpr uint8_t kPbftManagerAdvancePeriodActionCleanupPeriodState = 7;
+constexpr uint8_t kPbftPeriodStateCleanupStatusNotRequired = 0;
+constexpr uint8_t kPbftPeriodStateCleanupStatusApplied = 1;
+constexpr uint8_t kPbftPeriodStateCleanupStatusRejected = 2;
 constexpr uint8_t kPbftManagerTransitionResetConsensus = 0;
 constexpr uint8_t kPbftManagerTransitionToFilter = 1;
 constexpr uint8_t kPbftManagerTransitionToCertify = 2;
@@ -1436,10 +1449,14 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(PbftPeriod finalized_chain_size
     LOG(log_er_) << "Rust PBFT manager advance-period rejected empty finalized chain before lifecycle reset";
     return false;
   }
-  const auto new_period = chain_size + 1;
+  const auto new_period = checkedNextPbftPeriod(chain_size);
+  if (!new_period.has_value()) {
+    LOG(log_er_) << "Rust PBFT manager advance-period rejected finalized-chain overflow before lifecycle reset";
+    return false;
+  }
   printVotingSummary();
   const auto transition_result =
-      applyLifecycleTransition_(kPbftManagerTransitionResetConsensus, new_period, 1 /* round */, false);
+      applyLifecycleTransition_(kPbftManagerTransitionResetConsensus, *new_period, 1 /* round */, false);
   return applyRustPlannedAdvancePeriod_(chain_size, transition_result);
 }
 
@@ -1499,13 +1516,41 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(
       case kPbftManagerAdvancePeriodActionUpdateWalletEligibility:
         eligible_wallets_.updateWalletsEligibility(advance_plan.finalized_chain_size, final_chain_);
         break;
-      case kPbftManagerAdvancePeriodActionCleanupVotes:
-        // !!!Important: we need previous period votes to get reward votes for current period block
-        vote_mgr_->cleanupVotesAfterRustPlannedPeriodAdvance(advance_plan.finalized_chain_size);
+      case kPbftManagerAdvancePeriodActionCleanupPeriodState: {
+        // The service atomically cleans verified-vote and proposed-block state after previous-period reward votes are
+        // no longer needed.
+        const auto cleanup = rustaxa::pbft_service_cleanup_period_state(
+            pbft_service_->service(), advance_plan.finalized_chain_size, advance_plan.new_period);
+        const auto typed_success = cleanup.status == kPbftPeriodStateCleanupStatusApplied ||
+                                   cleanup.status == kPbftPeriodStateCleanupStatusNotRequired;
+        const auto no_op_counts_valid =
+            cleanup.status != kPbftPeriodStateCleanupStatusNotRequired ||
+            (cleanup.verified_vote_periods_removed == 0 && cleanup.verified_votes_removed == 0 &&
+             cleanup.vote_payloads_removed == 0 && cleanup.proposed_block_periods_removed == 0 &&
+             cleanup.proposed_blocks_removed == 0 && !cleanup.persistence_required &&
+             cleanup.persistence_applied_deletes == 0);
+        const auto persistence_counts_valid =
+            cleanup.status != kPbftPeriodStateCleanupStatusApplied ||
+            (cleanup.persistence_required
+                 ? cleanup.proposed_blocks_removed != 0 &&
+                       cleanup.persistence_applied_deletes == cleanup.proposed_blocks_removed
+                 : cleanup.proposed_blocks_removed == 0 && cleanup.persistence_applied_deletes == 0);
+        if (cleanup.status == kPbftPeriodStateCleanupStatusRejected || !typed_success ||
+            !cleanup.transition_published || !no_op_counts_valid || !persistence_counts_valid ||
+            cleanup.finalized_chain_size != advance_plan.finalized_chain_size ||
+            cleanup.new_period != advance_plan.new_period) {
+          LOG(log_er_) << "Rust PBFT period-state cleanup rejected chain size " << advance_plan.finalized_chain_size
+                       << ", new period " << advance_plan.new_period << ", status "
+                       << static_cast<uint32_t>(cleanup.status) << ", published " << cleanup.transition_published
+                       << ", returned chain size " << cleanup.finalized_chain_size << ", returned new period "
+                       << cleanup.new_period << ", proposed blocks removed " << cleanup.proposed_blocks_removed
+                       << ", persistence required " << cleanup.persistence_required << ", applied deletes "
+                       << cleanup.persistence_applied_deletes << ", error "
+                       << static_cast<std::string>(cleanup.error_code);
+          return false;
+        }
         break;
-      case kPbftManagerAdvancePeriodActionCleanupProposedBlocks:
-        proposed_blocks_.cleanupProposedPbftBlocksByPeriod(advance_plan.new_period);
-        break;
+      }
       default:
         LOG(log_er_) << "Rust PBFT manager advance-period planner returned unknown action "
                      << static_cast<uint32_t>(action);

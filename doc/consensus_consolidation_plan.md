@@ -997,9 +997,27 @@ Go/cgo static-linker failure. The touched admission and PBFT broadcast cases pas
 Tier 3 command does not reach test collection because its Python 3.13 environment cannot build pinned `cytoolz` and
 `pyethash` without `Python.h`, leaving `pytest` unavailable.
 
-`CRW-03` remains active for the cross-domain consolidation that these ownership commits intentionally do not overclaim:
-manager period cleanup still emits separate vote/proposed-block actions. That follow-up must become one atomic service
-operation before the combined vote/proposal deletion condition is complete.
+The final CRW-03 sub-slice closes manager period cleanup. The advance-period planner now emits one
+`CleanupPeriodState` action instead of separate vote and proposed-block actions. Its single service call validates the
+finalized-chain/new-period successor relation, acquires verified-vote then proposed-block ownership, plans both removals
+without mutation, commits all proposed-block deletes in one Rust batch, and then directly removes stale verified-vote
+periods, retained payload sidecars, and proposed-block periods. Commit rejection leaves both memory owners and storage
+unchanged and permits retry; empty cleanup publishes a typed storage-free no-op. The old action code 8 and the
+manager-only VoteManager cleanup wrapper are deleted. CRW-03 is complete; the individual vote/proposal cleanup APIs are
+retained only for compatibility tests and non-manager callers. The live C++ executor also checks the finalized-chain
+successor before starting the reset transition, so maximum-period overflow cannot partially reset manager or sidecar
+state before Rust rejects the later cleanup plan.
+
+Focused validation passes all 642 `rustaxa-consensus` tests and all 286 `rustaxa-bridge` tests, including injected
+storage-commit rejection with exact no-mutation retry, durable proposed-row deletion, stale vote-payload pruning, typed
+no-op/invalid/chain-only results, the one-action planner contract, and rejection of retired action code 8. The affected
+C++ targets build; `verified_votes_shim_test` passes 3/3, `proposed_blocks_shim_test` passes 6/6, and isolated vote,
+proposal, and PBFT broadcast cases pass. `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and
+`make rewrite-validate-smoke` exit successfully. The direct `rust_consensus_tests` result remains 43/62 because the same
+19 PBFT-sync fixtures fail during unrelated ambiguous legacy reward-cursor bootstrap. The task-owner-preapproved Tier 3
+CTest result remains 22/28 (79%): five node-backed binaries retain the same-process `/tmp/taraxa0` lock failures and the
+unrelated Go/cgo binary retains its static-link failure. The Python Tier 3 command remains blocked before collection
+because Python 3.13 cannot build pinned `cytoolz` and `pyethash` without `Python.h`, leaving `pytest` unavailable.
 
 Implementation notes:
 

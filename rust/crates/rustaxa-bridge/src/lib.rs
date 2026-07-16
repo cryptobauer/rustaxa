@@ -5,6 +5,7 @@ mod gas_pricer;
 mod network;
 mod pbft_chain;
 mod pbft_manager;
+mod pbft_period_cleanup;
 mod pbft_sync;
 mod pbft_vote_generation;
 mod pbft_vote_ingress;

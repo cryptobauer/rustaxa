@@ -313,6 +313,38 @@ pub struct VerifiedVotes {
     votes: BTreeMap<u64, BTreeMap<u64, RoundVerifiedVotes>>,
 }
 
+/// Side-effect-free cleanup plan for verified-vote periods.
+///
+/// The plan owns exact stale period and vote-hash identities so a caller can
+/// finish all fallible durable work before applying direct in-memory removals.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct VerifiedVotesCleanupPlan {
+    first_period_to_keep: u64,
+    stale_periods: Vec<u64>,
+    stale_vote_hashes: Vec<H256>,
+}
+
+impl VerifiedVotesCleanupPlan {
+    /// First PBFT period retained by the cleanup.
+    pub const fn first_period_to_keep(&self) -> u64 {
+        self.first_period_to_keep
+    }
+
+    /// Number of complete period maps removed by the cleanup.
+    pub fn periods_removed(&self) -> u64 {
+        self.stale_periods.len() as u64
+    }
+
+    /// Number of distinct verified votes removed by the cleanup.
+    pub fn votes_removed(&self) -> u64 {
+        self.stale_vote_hashes.len() as u64
+    }
+
+    pub(crate) fn stale_vote_hashes(&self) -> &[H256] {
+        &self.stale_vote_hashes
+    }
+}
+
 impl VerifiedVotes {
     /// Creates an empty verified-votes index.
     pub fn new() -> Self {
@@ -936,18 +968,41 @@ impl VerifiedVotes {
             .unwrap_or_default()
     }
 
-    /// Removes all periods `< pbft_period`.
-    pub fn cleanup_votes_by_period(&mut self, pbft_period: u64) {
-        let stale_periods: Vec<u64> = self
+    /// Plans removal of all periods `< pbft_period` without mutating state.
+    pub fn plan_cleanup_votes_by_period(&self, pbft_period: u64) -> VerifiedVotesCleanupPlan {
+        let stale_periods = self
             .votes
             .keys()
             .copied()
             .take_while(|period| *period < pbft_period)
+            .collect::<Vec<_>>();
+        let stale_vote_hashes = stale_periods
+            .iter()
+            .flat_map(|period| self.votes[period].values())
+            .flat_map(|round| round.step_votes.values())
+            .flat_map(|step| step.votes.values())
+            .flat_map(|value| value.votes.keys().copied())
             .collect();
-
-        for period in stale_periods {
-            self.votes.remove(&period);
+        VerifiedVotesCleanupPlan {
+            first_period_to_keep: pbft_period,
+            stale_periods,
+            stale_vote_hashes,
         }
+    }
+
+    /// Applies an already captured cleanup plan using direct removals only.
+    ///
+    /// Callers must serialize planning and application against other mutation.
+    pub fn apply_cleanup_votes_by_period(&mut self, plan: &VerifiedVotesCleanupPlan) {
+        for period in &plan.stale_periods {
+            self.votes.remove(period);
+        }
+    }
+
+    /// Removes all periods `< pbft_period`.
+    pub fn cleanup_votes_by_period(&mut self, pbft_period: u64) {
+        let plan = self.plan_cleanup_votes_by_period(pbft_period);
+        self.apply_cleanup_votes_by_period(&plan);
     }
 
     /// Determines next round from next-vote 2t+1 mappings for `period`.

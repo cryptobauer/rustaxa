@@ -43,7 +43,7 @@ use crate::pbft_vote_validation::{
 };
 use crate::verified_votes::{
     AddVerifiedVoteOutcome, TwoTPlusOneVotedBlockType, VerifiedVote, VerifiedVotes,
-    VerifiedVotesRoundCheckpoint, VotesWithWeight,
+    VerifiedVotesCleanupPlan, VerifiedVotesRoundCheckpoint, VotesWithWeight,
 };
 
 /// Canonical and weighted PBFT vote payloads retained for one admitted vote.
@@ -317,6 +317,39 @@ struct PbftVoteAdmissionCheckpoint {
     round: VerifiedVotesRoundCheckpoint,
     vote_hash: H256,
     previous_payload: Option<PbftVoteRuntimePayload>,
+}
+
+/// Exact, side-effect-free cleanup plan for verified votes and payloads.
+///
+/// The plan is captured while the runtime is locked, then applied only after
+/// sibling proposed-block storage deletion commits. Application performs only
+/// direct map removals and cannot fail.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftVoteRuntimeCleanupPlan {
+    verified_votes: VerifiedVotesCleanupPlan,
+    stale_payload_hashes: Vec<H256>,
+}
+
+impl PbftVoteRuntimeCleanupPlan {
+    /// First period retained after cleanup.
+    pub const fn first_period_to_keep(&self) -> u64 {
+        self.verified_votes.first_period_to_keep()
+    }
+
+    /// Number of verified-vote period maps removed.
+    pub fn periods_removed(&self) -> u64 {
+        self.verified_votes.periods_removed()
+    }
+
+    /// Number of verified votes removed.
+    pub fn votes_removed(&self) -> u64 {
+        self.verified_votes.votes_removed()
+    }
+
+    /// Number of retained payload sidecars removed.
+    pub fn payloads_removed(&self) -> u64 {
+        self.stale_payload_hashes.len() as u64
+    }
 }
 
 /// Rust-owned PBFT vote admission state.
@@ -1027,21 +1060,39 @@ impl PbftVoteAdmissionRuntime {
         self.threshold_runtime.plan_threshold(fact)
     }
 
-    /// Removes votes and payloads for periods older than `pbft_period`.
+    /// Plans removal of votes and payloads older than `pbft_period`.
     ///
-    /// This mirrors the existing verified-vote cleanup semantics and prunes the
-    /// payload sidecar from the post-cleanup vote snapshot so payloads cannot
-    /// outlive their consensus metadata.
-    pub fn cleanup_votes_by_period(&mut self, pbft_period: u64) {
-        self.verified_votes.cleanup_votes_by_period(pbft_period);
-        let keep: std::collections::BTreeSet<_> = self
+    /// Planning does not mutate runtime state. Exact stale hashes let callers
+    /// finish fallible durable work before publishing cleanup.
+    pub fn plan_cleanup_votes_by_period(&self, pbft_period: u64) -> PbftVoteRuntimeCleanupPlan {
+        let verified_votes = self
             .verified_votes
-            .snapshot_votes()
-            .into_iter()
-            .map(|vote| vote.vote_hash)
+            .plan_cleanup_votes_by_period(pbft_period);
+        let stale_payload_hashes = verified_votes
+            .stale_vote_hashes()
+            .iter()
+            .copied()
+            .filter(|vote_hash| self.payloads.contains_key(vote_hash))
             .collect();
-        self.payloads
-            .retain(|vote_hash, _| keep.contains(vote_hash));
+        PbftVoteRuntimeCleanupPlan {
+            verified_votes,
+            stale_payload_hashes,
+        }
+    }
+
+    /// Applies a captured vote/payload cleanup using direct removals only.
+    pub fn apply_cleanup_votes_by_period(&mut self, plan: &PbftVoteRuntimeCleanupPlan) {
+        self.verified_votes
+            .apply_cleanup_votes_by_period(&plan.verified_votes);
+        for vote_hash in &plan.stale_payload_hashes {
+            self.payloads.remove(vote_hash);
+        }
+    }
+
+    /// Removes votes and payloads for periods older than `pbft_period`.
+    pub fn cleanup_votes_by_period(&mut self, pbft_period: u64) {
+        let plan = self.plan_cleanup_votes_by_period(pbft_period);
+        self.apply_cleanup_votes_by_period(&plan);
     }
 
     fn admission_checkpoint(
@@ -1828,6 +1879,45 @@ mod tests {
         let cached = runtime.plan_two_t_plus_one_threshold(threshold_fact(false));
         assert!(cached.cache_hit);
         assert_eq!(cached.threshold, plan.threshold);
+    }
+
+    #[test]
+    fn runtime_cleanup_plan_counts_and_directly_prunes_stale_payloads() {
+        let old = vote_rlp_for([0x41; 32], 11, 2, 3, NODE_SECRET);
+        let kept = vote_rlp_for([0x42; 32], 12, 2, 3, NODE_SECRET_TWO);
+        let old_validation = validation(&old);
+        let kept_validation = validation(&kept);
+        let mut runtime = PbftVoteAdmissionRuntime::new();
+
+        let mut old_context = context(Some(100));
+        old_context.current_period = 11;
+        runtime
+            .admit_validated_vote(&old, &old_validation, flags(), old_context)
+            .unwrap();
+        runtime
+            .admit_validated_vote(&kept, &kept_validation, flags(), context(Some(100)))
+            .unwrap();
+
+        let plan = runtime.plan_cleanup_votes_by_period(12);
+        assert_eq!(plan.first_period_to_keep(), 12);
+        assert_eq!(plan.periods_removed(), 1);
+        assert_eq!(plan.votes_removed(), 1);
+        assert_eq!(plan.payloads_removed(), 1);
+        assert!(runtime.weighted_payload(old_validation.vote_hash).is_some());
+        assert!(
+            runtime
+                .weighted_payload(kept_validation.vote_hash)
+                .is_some()
+        );
+
+        runtime.apply_cleanup_votes_by_period(&plan);
+        assert!(runtime.weighted_payload(old_validation.vote_hash).is_none());
+        assert!(
+            runtime
+                .weighted_payload(kept_validation.vote_hash)
+                .is_some()
+        );
+        assert_eq!(runtime.verified_votes().size(), 1);
     }
 
     #[test]

@@ -9,7 +9,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use ethereum_types::H256;
-use rustaxa_storage::{Column, Storage};
+use rustaxa_storage::{Column, Storage, StorageWriteBatch};
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
 use std::collections::{BTreeMap, btree_map::Entry};
@@ -387,16 +387,35 @@ pub fn cleanup_proposed_blocks_storage(
     }
 
     let mut batch = storage.create_write_batch();
-    for period_hashes in removed {
-        for hash in &period_hashes.block_hashes {
-            storage
-                .batch_delete_raw(&mut batch, Column::ProposedPbftBlocks, hash.as_bytes())
-                .context("PROPOSED_BLOCKS_CLEANUP_DELETE")?;
-        }
-    }
+    append_proposed_blocks_cleanup_to_batch(storage, &mut batch, removed)?;
     storage
         .commit_write_batch_with_sync(batch, false)
         .context("PROPOSED_BLOCKS_CLEANUP_COMMIT")
+}
+
+/// Appends stale proposed-block row deletions to a caller-owned batch.
+///
+/// The helper performs no commit and no in-memory mutation. It returns the
+/// exact number of proposed-block keys appended, allowing a service-level
+/// transaction to combine durable work and publish sibling state only after a
+/// single successful commit. Empty candidates append nothing and return zero.
+pub fn append_proposed_blocks_cleanup_to_batch(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    removed: &[ProposedBlockPeriodHashes],
+) -> Result<u64> {
+    let mut appended = 0_u64;
+    for period_hashes in removed {
+        for hash in &period_hashes.block_hashes {
+            storage
+                .batch_delete_raw(batch, Column::ProposedPbftBlocks, hash.as_bytes())
+                .context("PROPOSED_BLOCKS_CLEANUP_DELETE")?;
+            appended = appended
+                .checked_add(1)
+                .context("PROPOSED_BLOCKS_CLEANUP_COUNT_OVERFLOW")?;
+        }
+    }
+    Ok(appended)
 }
 
 #[cfg(test)]

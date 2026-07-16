@@ -828,22 +828,6 @@ class VoteManager {
    */
   void applyRustPlannedPeriodRound(PbftPeriod pbft_period, PbftRound pbft_round);
 
-  /**
-   * Applies Rust-planned VoteManager cleanup after PBFT period advancement.
-   *
-   * Purpose:
-   * - Names the remaining live verified-vote cleanup as a VoteManager executor
-   *   action rather than PBFT-manager-owned sidecar mutation.
-   *
-   * Inputs:
-   * - `finalized_chain_size` is the finalized PBFT period selected by the Rust
-   *   advance-period plan.
-   *
-   * Invariants:
-   * - Keeps previous-period votes available until Rust requests this cleanup,
-   *   preserving reward-vote collection semantics.
-   */
-  void cleanupVotesAfterRustPlannedPeriodAdvance(PbftPeriod finalized_chain_size);
   void setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound pbft_round);
   PbftStep getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const;
 

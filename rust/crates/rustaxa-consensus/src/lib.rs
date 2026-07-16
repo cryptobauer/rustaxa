@@ -247,8 +247,8 @@ pub use pbft_vote_progress::{
 pub use pbft_vote_runtime::{
     PbftRewardVotePayloadSelection, PbftVoteAdmissionPersistenceStatus, PbftVoteAdmissionRuntime,
     PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome, PbftVoteRuntimeBundle,
-    PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads, RewardVoteCursor,
-    RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus,
+    PbftVoteRuntimeCleanupPlan, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
+    RewardVoteCursor, RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus,
 };
 pub use pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,
@@ -285,8 +285,9 @@ pub use pillar_votes::{
     inspect_pillar_vote_from_rlp, plan_pillar_vote_relevance,
 };
 pub use proposed_blocks::{
-    ProposedBlockStorageEntry, ProposedBlocks, cleanup_proposed_blocks_storage,
-    restore_proposed_blocks_from_storage, save_proposed_block_storage,
+    ProposedBlockStorageEntry, ProposedBlocks, append_proposed_blocks_cleanup_to_batch,
+    cleanup_proposed_blocks_storage, restore_proposed_blocks_from_storage,
+    save_proposed_block_storage,
 };
 pub use rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -319,7 +320,7 @@ pub use transaction_storage::{
     StoredTransactionLookupRequest, load_non_finalized_recovery_entries, load_stored_transactions,
     save_non_finalized_transactions, save_transaction_count, transaction_finalized,
 };
-pub use verified_votes::VerifiedVotes;
+pub use verified_votes::{VerifiedVotes, VerifiedVotesCleanupPlan};
 
 pub use dag::dag_block_transaction_hashes;
 pub use dag::{

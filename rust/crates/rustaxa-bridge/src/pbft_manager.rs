@@ -3918,8 +3918,7 @@ mod tests {
     const ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS: u8 = 4;
     const ADVANCE_ACTION_RESET_PERIOD_TIMER: u8 = 5;
     const ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY: u8 = 6;
-    const ADVANCE_ACTION_CLEANUP_VOTES: u8 = 7;
-    const ADVANCE_ACTION_CLEANUP_PROPOSED_BLOCKS: u8 = 8;
+    const ADVANCE_ACTION_CLEANUP_PERIOD_STATE: u8 = 7;
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
@@ -7048,8 +7047,7 @@ mod tests {
                     ADVANCE_ACTION_RESET_REWARD_VOTE_COUNTERS,
                     ADVANCE_ACTION_RESET_PERIOD_TIMER,
                     ADVANCE_ACTION_UPDATE_WALLET_ELIGIBILITY,
-                    ADVANCE_ACTION_CLEANUP_VOTES,
-                    ADVANCE_ACTION_CLEANUP_PROPOSED_BLOCKS,
+                    ADVANCE_ACTION_CLEANUP_PERIOD_STATE,
                 ]
             );
 
