@@ -919,6 +919,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   transaction sidecars before returning only finalized count and expired DAG hashes to C++. The public transaction
   removal API remains for direct compatibility callers. Factory-only DAG restore and initial proposal-mapping methods
   are no longer exported through CXX.
+- `DagVerifyBlockSessionStep::query_hashes`, `DagVerifyBlockTransactionReport`, and the public transaction-report CXX
+  export are retired. The composed service privately reads the active DAG verification query and prepares ordered
+  transaction views without advancing. A private `DagManager`-friend TransactionManager adapter materializes and
+  hash-validates those views, reads every resolved sender at the exact proposal period, and returns a cursor-bound nonce
+  completion; Rust revalidates the cursor and lookup, applies finalized-transaction filtering, and only then advances.
+  Caller-supplied transactions retain precedence, block order and duplicate references are preserved, and the later EVM
+  gas estimator remains in C++.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

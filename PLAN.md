@@ -651,6 +651,11 @@ Completed closeout slices:
    Finalized-DAG expiry cleanup is composed through the same service: Rust commits DAG/storage cleanup first and then
    infallibly removes matching private transaction sidecars, so expired transaction hashes no longer cross CXX only to
    re-enter the sibling transaction state.
+   Verify-block transaction availability is also composed: query hashes remain private while Rust prepares
+   queue/sidecar/storage views without advancing the cursor. C++ materializes and hash-validates those payloads, reads
+   each resolved sender at the exact proposal period, and reports narrow nonce facts; Rust revalidates the cursor,
+   applies finalized-transaction filtering, and only then advances. The retained EVM gas-estimation boundary stays in
+   C++.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
    construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,

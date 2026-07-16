@@ -312,7 +312,13 @@ throttle observation, EVM execution, VDF, signing, and add-block execution remai
 then infallibly clears matching private transaction sidecars under the same DAG-then-transaction lock epoch. The expired
 transaction hash list, C++ conversion/set construction, and DagManager-to-TransactionManager call are deleted; C++ sees
 only finalized count and expired DAG hashes. Factory-only restore and initial proposal-mapping CXX exports are also
-retired. Continue by internalizing verify-block transaction availability without moving the retained EVM boundary.
+retired. The next composition step internalized verify-block transaction availability: query hashes remain private, Rust
+prepares queue/sidecar/storage views without advancing, and a private C++ adapter materializes them and reads each sender
+at the exact proposal period before a cursor-bound Rust completion applies finalized filtering and advances under
+DAG-then-transaction locking. The old query-hash carrier, transaction report, public `getTransactions` relay, and report
+export are deleted; a private friend adapter constructs cursor-bound, exact-proposal-period FinalChain account-nonce
+facts without widening TransactionManager's public API. Continue by internalizing proposer transaction-pool and
+non-finalized-count observations into the composed session start.
 `CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim
 surface.
 

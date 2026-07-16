@@ -162,6 +162,7 @@ pub(crate) struct DagRuntimeState {
     pub state: DagManagerState,
     pub storage: Arc<Storage>,
     pub next_proposer_session_id: u64,
+    pub next_verify_block_session_id: u64,
     pub proposer_sessions: std::collections::BTreeMap<u64, crate::dag::DagProposerSession>,
     pub proposer_retry_states:
         std::collections::BTreeMap<[u8; 32], crate::dag::DagProposerRetryState>,
@@ -3912,15 +3913,33 @@ pub mod rustaxa_ffi {
         complete: bool,
         reject_code: u32,
         proposal_period: u64,
-        query_hashes: Vec<DagTransactionHash>,
         vote_count: u64,
         max_vote_count: u64,
         error_code: String,
     }
 
-    /// Live transaction-materialization report for one `verifyBlock` session.
-    struct DagVerifyBlockTransactionReport {
-        resolved_transactions: u64,
+    /// Non-advancing Rust transaction preparation for one `verifyBlock` session.
+    ///
+    /// `transactions` preserves the private query's canonical order. C++ must
+    /// materialize and validate every found payload before completing this exact
+    /// cursor with proposal-period account facts.
+    struct DagVerifyBlockTransactionPreparation {
+        /// Identity of the active Rust verification cursor.
+        cursor_id: u64,
+        /// Proposal period used for FinalChain account lookup and completion.
+        proposal_period: u64,
+        /// Ordered TransactionManager views for C++ transaction materialization.
+        transactions: Vec<TransactionManagerTransactionView>,
+    }
+
+    /// Cursor-bound completion facts for prepared verify-block transactions.
+    struct DagVerifyBlockTransactionCompletionReport {
+        /// Cursor returned by the matching preparation.
+        cursor_id: u64,
+        /// Proposal period returned by the matching preparation.
+        proposal_period: u64,
+        /// Per-sender account facts read at `proposal_period` after materialization.
+        account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
     }
 
     /// Live DPoS/VRF authorization report for one `verifyBlock` session.
@@ -4653,10 +4672,21 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_verify_block_session_next(
             runtime: &BridgeDagTransactionService,
         ) -> Result<DagVerifyBlockSessionStep>;
-        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_transactions"]
-        pub fn dag_manager_runtime_verify_block_session_report_transactions(
+        /// Resolves the active private transaction query without advancing it.
+        ///
+        /// Rust reads query hashes and proposal period, locks DAG then
+        /// TransactionManager, preserves duplicate/caller-supplied semantics, and
+        /// returns ordered payload views plus cursor identity for completion.
+        #[rust_name = "service_dag_manager_runtime_verify_block_session_prepare_transactions"]
+        pub fn dag_manager_runtime_verify_block_session_prepare_transactions(
             runtime: &BridgeDagTransactionService,
-            report: DagVerifyBlockTransactionReport,
+        ) -> Result<DagVerifyBlockTransactionPreparation>;
+        /// Applies proposal-period account facts after successful C++ materialization.
+        /// Rejects stale cursor/period identities without advancing the active session.
+        #[rust_name = "service_dag_manager_runtime_verify_block_session_complete_transactions"]
+        pub fn dag_manager_runtime_verify_block_session_complete_transactions(
+            runtime: &BridgeDagTransactionService,
+            report: DagVerifyBlockTransactionCompletionReport,
         ) -> Result<DagVerifyBlockSessionStep>;
         #[rust_name = "service_dag_manager_runtime_verify_block_session_report_authorization"]
         pub fn dag_manager_runtime_verify_block_session_report_authorization(

@@ -35,6 +35,12 @@ addr_t fromBridgeAddress(const std::array<uint8_t, 20>& address) {
   return addr_t(address.data(), addr_t::ConstructFromPointer);
 }
 
+std::array<uint8_t, 20> toBridgeAddress(const addr_t& address) {
+  std::array<uint8_t, 20> bytes{};
+  std::memcpy(bytes.data(), address.data(), bytes.size());
+  return bytes;
+}
+
 dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
 
 rust::Vec<uint8_t> toBridgeBytes(const dev::bytes& bytes) {
@@ -1343,6 +1349,61 @@ class TransactionManagerRustShimAccess {
   }
 
   /**
+   * Resolves the active DAG verification transaction query through the composed service.
+   *
+   * Rust prepares ordered payload views without advancing the verification cursor. C++ validates every materialized
+   * payload, then reads each resolved sender's account nonce at the exact proposal period. Only after those operations
+   * succeed does Rust revalidate the cursor and lookup, apply nonce filtering, and advance. The retained C++ EVM
+   * boundary receives the materialized transactions only after completion succeeds.
+   */
+  static std::pair<rustaxa::DagVerifyBlockSessionStep, SharedTransactions> executeDagVerifyTransactionAvailability(
+      const TransactionManager& manager) {
+    std::shared_lock transactions_lock(TransactionManagerRustShimAccess::transactionsMutex(manager));
+    auto preparation = rustaxa::dag_manager_runtime_verify_block_session_prepare_transactions(
+        manager.dag_transaction_service_->service());
+
+    SharedTransactions transactions;
+    transactions.reserve(preparation.transactions.size());
+    std::vector<addr_t> senders;
+    senders.reserve(preparation.transactions.size());
+    std::unordered_set<addr_t> seen_senders;
+    seen_senders.reserve(preparation.transactions.size());
+    for (const auto& view : preparation.transactions) {
+      auto transaction = materializeTransactionView(view, "RUST_DAG_VERIFY_TRANSACTION_RESOLUTION_FAILED");
+      if (transaction) {
+        const auto sender = transaction->getSender();
+        if (seen_senders.emplace(sender).second) {
+          senders.emplace_back(sender);
+        }
+        transactions.emplace_back(std::move(transaction));
+      }
+    }
+
+    if (!senders.empty() && !manager.final_chain_) {
+      throw std::runtime_error("RUST_DAG_VERIFY_TRANSACTION_ACCOUNT_LOOKUP_FAILED: FinalChain is unavailable");
+    }
+
+    rust::Vec<rustaxa::TransactionQueueAccountNonceFact> account_nonce_facts;
+    account_nonce_facts.reserve(senders.size());
+    for (const auto& sender : senders) {
+      const auto account = manager.final_chain_->getAccount(sender, preparation.proposal_period);
+      rustaxa::TransactionQueueAccountNonceFact fact;
+      fact.sender = toBridgeAddress(sender);
+      fact.account_found = account.has_value();
+      fact.account_nonce = account.has_value() ? toBridgeU256(account->nonce) : std::array<uint8_t, 32>{};
+      account_nonce_facts.push_back(std::move(fact));
+    }
+
+    rustaxa::DagVerifyBlockTransactionCompletionReport report;
+    report.cursor_id = preparation.cursor_id;
+    report.proposal_period = preparation.proposal_period;
+    report.account_nonce_facts = std::move(account_nonce_facts);
+    auto step = rustaxa::dag_manager_runtime_verify_block_session_complete_transactions(
+        manager.dag_transaction_service_->service(), std::move(report));
+    return {std::move(step), std::move(transactions)};
+  }
+
+  /**
    * Rebuilds in-memory non-finalized transaction sidecars from Rust-backed storage.
    *
    * Rust loads the recovery payloads and removes stale finalized rows from
@@ -1567,6 +1628,11 @@ SharedTransactions TransactionManager::getBlockTransactions(const DagBlock& blk,
 
 SharedTransactions TransactionManager::getTransactions(const vec_trx_t& trxs_hashes, PbftPeriod proposal_period) {
   return TransactionManagerRustShimAccess::getTransactions(*this, trxs_hashes, proposal_period);
+}
+
+std::pair<rustaxa::DagVerifyBlockSessionStep, SharedTransactions>
+TransactionManager::executeDagVerifyTransactionAvailability() const {
+  return TransactionManagerRustShimAccess::executeDagVerifyTransactionAvailability(*this);
 }
 
 std::shared_ptr<Transaction> TransactionManager::getTransaction(const trx_hash_t& hash) const {

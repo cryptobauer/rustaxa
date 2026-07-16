@@ -28,6 +28,7 @@ enum class TransactionStatus { Inserted = 0, InsertedNonProposable, Known, Overf
 
 struct FullNodeConfig;
 class DagBlock;
+class DagManager;
 
 /**
  * Rust-mode TransactionManager facade.
@@ -353,7 +354,20 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   std::pair<bool, std::string> verifyTransaction(const std::shared_ptr<Transaction> &trx) const;
 
  private:
+  friend class DagManager;
   friend class TransactionManagerRustShimAccess;
+
+  /**
+   * Resolve the active DAG verification session's transaction query through the composed Rust service.
+   *
+   * Rust owns the pending query hashes, proposal period, queue/sidecar/storage precedence, nonce filtering, and verify
+   * cursor. This adapter first obtains non-advancing ordered views, validates and materializes every payload, then
+   * reads each materialized sender's FinalChain account at that exact proposal period. Rust advances only after
+   * revalidating the cursor and those narrow nonce facts. Missing views are omitted from the returned transactions;
+   * malformed views, account lookup failures, or bridge/storage failures throw without advancing the transaction-query
+   * step.
+   */
+  std::pair<rustaxa::DagVerifyBlockSessionStep, SharedTransactions> executeDagVerifyTransactionAvailability() const;
 
   /**
    * Emit the Rust-mode pending-transaction event.

@@ -79,9 +79,6 @@ blk_hash_t from_bridge_hash(const std::array<uint8_t, 32> &hash) {
 }
 
 blk_hash_t from_bridge_dag_hash(const rustaxa::DagHash &hash) { return from_bridge_hash(hash.hash); }
-trx_hash_t from_bridge_dag_transaction_hash(const rustaxa::DagTransactionHash &hash) {
-  return trx_hash_t(hash.hash.data(), trx_hash_t::ConstructFromPointer);
-}
 
 std::vector<blk_hash_t> from_bridge_dag_hashes(const rust::Vec<rustaxa::DagHash> &hashes) {
   std::vector<blk_hash_t> out;
@@ -466,17 +463,13 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
 
   const uint64_t proposal_period = step.proposal_period;
   const auto &all_block_trx_hashes = blk->getTrxs();
-  std::vector<trx_hash_t> planned_query_hashes;
-  planned_query_hashes.reserve(step.query_hashes.size());
-  for (const auto &hash : step.query_hashes) {
-    planned_query_hashes.emplace_back(from_bridge_dag_transaction_hash(hash));
-  }
+  auto [availability_step, resolved_transactions] = trx_mgr_->executeDagVerifyTransactionAvailability();
+  step = std::move(availability_step);
 
-  std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> queried_transactions;
-  queried_transactions.reserve(planned_query_hashes.size());
-
-  for (const auto &transaction : trx_mgr_->getTransactions(planned_query_hashes, proposal_period)) {
-    queried_transactions.emplace(transaction->getHash(), transaction);
+  std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> resolved_by_hash;
+  resolved_by_hash.reserve(resolved_transactions.size());
+  for (auto &transaction : resolved_transactions) {
+    resolved_by_hash.emplace(transaction->getHash(), std::move(transaction));
   }
 
   for (const auto &tx_hash : all_block_trx_hashes) {
@@ -485,20 +478,13 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
       continue;
     }
 
-    const auto it = queried_transactions.find(tx_hash);
-    if (it == queried_transactions.end()) {
+    const auto it = resolved_by_hash.find(tx_hash);
+    if (it == resolved_by_hash.end()) {
       break;
     }
     all_block_trxs.emplace_back(it->second);
   }
 
-  rustaxa::DagVerifyBlockTransactionReport transaction_report;
-  transaction_report.resolved_transactions = all_block_trxs.size();
-  {
-    std::unique_lock lock(rust_graphs_mutex_);
-    step = rustaxa::dag_manager_runtime_verify_block_session_report_transactions(dag_transaction_service_->service(),
-                                                                                 std::move(transaction_report));
-  }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }

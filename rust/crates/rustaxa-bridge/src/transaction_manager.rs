@@ -1074,6 +1074,7 @@ fn transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_
     _proposal_period: u64,
     account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
     requests: Vec<TransactionManagerStoredTransactionRequest>,
+    require_finalized_account_nonce_fact: bool,
 ) -> Result<Vec<TransactionManagerStoredTransactionLookup>> {
     let account_nonce_facts: HashMap<H160, (bool, U256)> = account_nonce_facts
         .into_iter()
@@ -1105,8 +1106,12 @@ fn transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_
                 .context("TM_PROPOSAL_TRANSACTION_IDENTITY_INSPECT_FAILED")?;
             let account_nonce = account_nonce_facts
                 .get(&H160::from(identity.sender))
-                .copied()
-                .unwrap_or((false, U256::zero()));
+                .copied();
+            ensure!(
+                account_nonce.is_some() || !require_finalized_account_nonce_fact,
+                "TM_PROPOSAL_FINALIZED_ACCOUNT_NONCE_FACT_MISSING"
+            );
+            let account_nonce = account_nonce.unwrap_or((false, U256::zero()));
 
             if account_nonce.0 && account_nonce.1 > identity.nonce {
                 lookup.found = false;
@@ -1982,6 +1987,37 @@ impl TransactionRuntimeState {
                     proposal_period,
                     account_nonce_facts,
                     stored_requests,
+                    false,
+                )
+            },
+        )
+    }
+
+    /// Resolves proposal transactions while requiring an explicit account fact
+    /// for every finalized-storage sender encountered by the lookup.
+    ///
+    /// This service-private completion path prevents absent C++ materialization
+    /// facts from implicitly accepting finalized transactions. Queue and live
+    /// sidecar payloads retain the public lookup's source precedence.
+    pub(crate) fn transaction_manager_runtime_lookup_proposal_transaction_views_requiring_account_nonce_facts(
+        &self,
+        proposal_period: u64,
+        requests: Vec<TransactionManagerTransactionViewRequest>,
+        account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
+        max_count: u64,
+    ) -> Result<TransactionManagerTransactionViewPlan> {
+        let storage = transaction_manager_runtime_storage(self)?;
+        transaction_manager_runtime_lookup_transaction_views_inner(
+            self,
+            requests,
+            max_count,
+            |stored_requests| {
+                transaction_manager_load_proposal_transactions_with_account_nonce_facts_from_storage(
+                    storage,
+                    proposal_period,
+                    account_nonce_facts,
+                    stored_requests,
+                    true,
                 )
             },
         )
@@ -3027,6 +3063,7 @@ mod tests {
                     input_index: 4,
                     hash: transaction_hash,
                 }],
+                false,
             )
             .expect("proposal lookup at genesis should keep transaction");
         assert!(before[0].found);
@@ -3046,6 +3083,7 @@ mod tests {
                     input_index: 4,
                     hash: transaction_hash,
                 }],
+                false,
             )
             .expect("proposal lookup at finalized period should filter old transaction");
         assert!(!after[0].found);

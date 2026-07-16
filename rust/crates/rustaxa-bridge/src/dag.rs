@@ -8,9 +8,9 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerTipSelectionPlan, DagProposerVdfProofReport, DagProposerWorkerCommand,
     DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
     DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep, DagVerifyBlockTransactionReport, DagVerifyBlockVdfReport,
-    DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionResult, HashLookup,
-    SortitionRuntimeParams, TransactionPackSelectedTransaction,
+    DagVerifyBlockSessionStep, DagVerifyBlockVdfReport, DagVerifyVdfSortitionFromBlockInput,
+    DagVerifyVdfSortitionResult, HashLookup, SortitionRuntimeParams,
+    TransactionPackSelectedTransaction,
 };
 use crate::ffi::{BridgeStorage, DagRuntimeState};
 use anyhow::{ensure, Context, Result};
@@ -111,7 +111,7 @@ const DAG_VERIFY_SESSION_STATUS_COMPLETE: u8 = 1;
 const DAG_VERIFY_SESSION_STATUS_INVALID_REPORT: u8 = 2;
 const DAG_VERIFY_SESSION_ACTION_NONE: u8 = 0;
 const DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY: u8 = 1;
-const DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS: u8 = 2;
+pub(crate) const DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS: u8 = 2;
 const DAG_VERIFY_SESSION_ACTION_VDF_SORTITION: u8 = 3;
 const DAG_VERIFY_SESSION_ACTION_GAS: u8 = 4;
 
@@ -142,10 +142,12 @@ enum DagVerifyBlockSessionAction {
 /// Ordered Rust-owned cursor for one `DagManager::verifyBlock` call.
 ///
 /// The session owns deterministic validation ordering and terminal reject
-/// selection. C++ supplies only requested live facts: transaction
-/// materialization counts, FinalChain DPoS/VRF authorization facts, VDF
-/// verifier status, and EVM-backed gas-estimation facts.
+/// selection. Transaction availability advances only after a cursor-bound
+/// prepare/materialize/complete exchange. C++ otherwise supplies requested
+/// FinalChain DPoS/VRF authorization facts, VDF verifier status, and EVM-backed
+/// gas-estimation facts.
 pub struct DagVerifyBlockSession {
+    cursor_id: u64,
     action: DagVerifyBlockSessionAction,
     proposal_period: u64,
     expected_transactions: u64,
@@ -247,6 +249,7 @@ pub(crate) fn build_dag_state_from_storage(
         state: DagManagerState::new(to_h256(genesis), dag_expiry_limit)?,
         storage: storage.0.clone(),
         next_proposer_session_id: 1,
+        next_verify_block_session_id: 1,
         proposer_sessions: BTreeMap::new(),
         proposer_retry_states: BTreeMap::new(),
         verify_block_session: None,
@@ -1085,6 +1088,9 @@ impl DagRuntimeState {
     /// Later advancement happens only through explicit live-fact reports from
     /// the C++ executor boundary.
     pub fn begin_verify_block_session(&mut self, input: DagVerifyBlockSessionInput) -> Result<()> {
+        let cursor_id = self.next_verify_block_session_id;
+        self.next_verify_block_session_id =
+            self.next_verify_block_session_id.wrapping_add(1).max(1);
         let tips = input
             .tips
             .into_iter()
@@ -1116,6 +1122,7 @@ impl DagRuntimeState {
         };
 
         self.verify_block_session = Some(DagVerifyBlockSession {
+            cursor_id,
             action,
             proposal_period: precheck.proposal_period,
             expected_transactions,
@@ -1137,8 +1144,9 @@ impl DagRuntimeState {
 /// - `input`: compact block facts and supplied transaction hashes for one `DagManager::verifyBlock` call.
 ///
 /// Outputs:
-/// - Replaces any previous runtime verification cursor. C++ drives the cursor with
-///   `dag_manager_runtime_verify_block_session_next` and report functions.
+/// - Replaces any previous runtime verification cursor and assigns a new cursor
+///   identity. C++ drives it with the composed transaction prepare/completion
+///   boundary, `dag_manager_runtime_verify_block_session_next`, and later reports.
 ///
 /// Invariants and edge behavior:
 /// - The verification cursor is DAG-manager implementation state and is not exported as a standalone CXX handle.
@@ -1161,10 +1169,10 @@ pub fn dag_manager_runtime_verify_block_session_next(
     verify_block_session_step(session)
 }
 
-/// Reports resolved transaction availability to the runtime-owned DAG verification cursor.
-pub fn dag_manager_runtime_verify_block_session_report_transactions(
+/// Applies resolved transaction availability to the runtime-owned DAG verification cursor.
+pub(crate) fn dag_manager_runtime_verify_block_session_apply_transaction_resolution(
     runtime: &mut DagRuntimeState,
-    report: DagVerifyBlockTransactionReport,
+    resolved_transactions: u64,
 ) -> DagVerifyBlockSessionStep {
     let Some(session) = runtime.verify_block_session.as_mut() else {
         return verify_block_session_not_started_step();
@@ -1182,7 +1190,7 @@ pub fn dag_manager_runtime_verify_block_session_report_transactions(
     let availability =
         validate_dag_verify_transaction_availability(DomainDagVerifyTransactionAvailabilityInput {
             expected_transactions: session.expected_transactions,
-            resolved_transactions: report.resolved_transactions,
+            resolved_transactions,
         });
     if !availability.continue_validation {
         return complete_verify_block_session(session, availability.reject_code);
@@ -1190,6 +1198,59 @@ pub fn dag_manager_runtime_verify_block_session_report_transactions(
 
     session.action = DagVerifyBlockSessionAction::AuthorizationFacts;
     verify_block_session_step(session)
+}
+
+/// Private transaction query owned by an active DAG verification session.
+///
+/// The composed DAG/transaction service consumes this value while holding both
+/// runtime locks; hashes are never exposed through CXX.
+pub(crate) struct DagVerifyBlockTransactionQuery {
+    pub cursor_id: u64,
+    pub proposal_period: u64,
+    pub hashes: Vec<H256>,
+    pub expected_transactions: u64,
+}
+
+/// Takes a snapshot of the active transaction query without advancing it.
+///
+/// Missing sessions and calls during another action return stable errors without
+/// advancing or invalidating the current session.
+pub(crate) fn dag_manager_runtime_verify_block_transaction_query(
+    runtime: &DagRuntimeState,
+) -> Result<DagVerifyBlockTransactionQuery> {
+    let Some(session) = runtime.verify_block_session.as_ref() else {
+        anyhow::bail!("DAG_VERIFY_SESSION_NOT_STARTED");
+    };
+    let DagVerifyBlockSessionAction::TransactionQuery(hashes) = &session.action else {
+        anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_COMPLETION");
+    };
+    Ok(DagVerifyBlockTransactionQuery {
+        cursor_id: session.cursor_id,
+        proposal_period: session.proposal_period,
+        hashes: hashes.clone(),
+        expected_transactions: session.expected_transactions,
+    })
+}
+
+/// Verifies that a completion targets the still-active prepared query.
+///
+/// Stale cursor or proposal-period identities and wrong actions return errors
+/// without changing the active verification session.
+pub(crate) fn dag_manager_runtime_validate_verify_block_transaction_completion(
+    runtime: &DagRuntimeState,
+    cursor_id: u64,
+    proposal_period: u64,
+) -> Result<DagVerifyBlockTransactionQuery> {
+    let query = dag_manager_runtime_verify_block_transaction_query(runtime)?;
+    anyhow::ensure!(
+        query.cursor_id == cursor_id,
+        "DAG_VERIFY_SESSION_TRANSACTION_CURSOR_MISMATCH"
+    );
+    anyhow::ensure!(
+        query.proposal_period == proposal_period,
+        "DAG_VERIFY_SESSION_TRANSACTION_PERIOD_MISMATCH"
+    );
+    Ok(query)
 }
 
 /// Reports FinalChain authorization facts to the runtime-owned DAG verification cursor.
@@ -2219,13 +2280,12 @@ fn dag_proposer_session_not_started_step() -> DagProposerSessionStep {
 
 fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockSessionStep {
     match &session.action {
-        DagVerifyBlockSessionAction::TransactionQuery(query_hashes) => DagVerifyBlockSessionStep {
+        DagVerifyBlockSessionAction::TransactionQuery(_) => DagVerifyBlockSessionStep {
             status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
             action: DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY,
             complete: false,
             reject_code: session.reject_code,
             proposal_period: session.proposal_period,
-            query_hashes: to_bridge_transaction_hashes(query_hashes.clone()),
             vote_count: 0,
             max_vote_count: 0,
             error_code: session.error_code.clone(),
@@ -2236,7 +2296,6 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             complete: false,
             reject_code: session.reject_code,
             proposal_period: session.proposal_period,
-            query_hashes: Vec::new(),
             vote_count: 0,
             max_vote_count: 0,
             error_code: session.error_code.clone(),
@@ -2250,7 +2309,6 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             complete: false,
             reject_code: session.reject_code,
             proposal_period: session.proposal_period,
-            query_hashes: Vec::new(),
             vote_count: *vote_count,
             max_vote_count: *max_vote_count,
             error_code: session.error_code.clone(),
@@ -2261,7 +2319,6 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             complete: false,
             reject_code: session.reject_code,
             proposal_period: session.proposal_period,
-            query_hashes: Vec::new(),
             vote_count: 0,
             max_vote_count: 0,
             error_code: session.error_code.clone(),
@@ -2272,7 +2329,6 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             complete: true,
             reject_code: session.reject_code,
             proposal_period: session.proposal_period,
-            query_hashes: Vec::new(),
             vote_count: 0,
             max_vote_count: 0,
             error_code: session.error_code.clone(),
@@ -2292,7 +2348,6 @@ fn invalid_verify_block_report(
         complete: true,
         reject_code: session.reject_code,
         proposal_period: session.proposal_period,
-        query_hashes: Vec::new(),
         vote_count: 0,
         max_vote_count: 0,
         error_code: session.error_code.clone(),
@@ -2306,7 +2361,6 @@ fn verify_block_session_not_started_step() -> DagVerifyBlockSessionStep {
         complete: true,
         reject_code: 0,
         proposal_period: 0,
-        query_hashes: Vec::new(),
         vote_count: 0,
         max_vote_count: 0,
         error_code: "DAG_VERIFY_SESSION_NOT_STARTED".to_string(),
@@ -4001,13 +4055,15 @@ mod tests {
             assert_eq!(first.status, DAG_VERIFY_SESSION_STATUS_ACTIVE);
             assert_eq!(first.action, DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY);
             assert_eq!(first.proposal_period, 7);
-            assert_eq!(first.query_hashes[0].hash, [2u8; 32]);
+            let query = match dag_manager_runtime_verify_block_transaction_query(&mut runtime) {
+                Ok(query) => query,
+                Err(_) => panic!("transaction query should remain Rust-private"),
+            };
+            assert_eq!(query.hashes, vec![H256::from([2u8; 32])]);
 
-            let auth = dag_manager_runtime_verify_block_session_report_transactions(
+            let auth = dag_manager_runtime_verify_block_session_apply_transaction_resolution(
                 &mut runtime,
-                DagVerifyBlockTransactionReport {
-                    resolved_transactions: 2,
-                },
+                2,
             );
             assert_eq!(auth.action, DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS);
 
@@ -4058,11 +4114,9 @@ mod tests {
             )
             .expect("missing session should initialize");
             let _ = dag_manager_runtime_verify_block_session_next(&mut runtime);
-            let missing = dag_manager_runtime_verify_block_session_report_transactions(
+            let missing = dag_manager_runtime_verify_block_session_apply_transaction_resolution(
                 &mut runtime,
-                DagVerifyBlockTransactionReport {
-                    resolved_transactions: 0,
-                },
+                0,
             );
             assert!(missing.complete);
             assert_eq!(

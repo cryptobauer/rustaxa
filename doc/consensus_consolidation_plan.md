@@ -2726,6 +2726,34 @@ transaction-removal compatibility API.
   failure. The Python integration runner stopped before collection because Python 3.13 development headers are absent,
   so pinned `cytoolz` and `pyethash` could not build and `pytest` remained unavailable.
 
+### CRW-04 Verify-Block Transaction Availability Composition
+
+This follow-up removes the live DAG-query-to-C++-to-TransactionManager-report relay without moving FinalChain account
+reads, public transaction construction, or EVM gas estimation into Rust.
+
+- The composed service locks DAG before transaction, privately reads the active verification cursor's query hashes and
+  proposal period, and prepares ordered transaction views through queue, sidecar, and storage precedence without
+  advancing. The private C++ adapter materializes and hash-validates every view, reads each resolved sender's FinalChain
+  account at the exact proposal period, and submits a cursor-bound nonce completion. Rust revalidates the cursor and
+  lookup, applies finalized-transaction filtering, and only then advances transaction availability.
+- `DagVerifyBlockSessionStep::query_hashes`, `DagVerifyBlockTransactionReport`, the transaction-report CXX export, C++
+  query-hash conversion/map construction, and the public `TransactionManager::getTransactions` call are deleted from
+  `DagManager::verifyBlock`. The public compatibility API and its tests remain unchanged.
+- A private `DagManager`-friend TransactionManager adapter materializes only Rust-returned transaction views, then
+  constructs cursor-bound account-nonce facts for every materialized sender from exact-proposal-period FinalChain
+  reads. Caller-supplied transactions retain precedence, original block order and duplicate references are reconstructed
+  exactly, and the later C++ EVM `estimateTransactions` boundary is unchanged. Missing and old-finalized transactions
+  terminate with the existing typed missing-transaction result.
+- Focused validation passed: `rustaxa-bridge` (304 tests), `dag_block_test` (13 tests), `dag_test` (6 tests),
+  `transaction_manager_shim_test` (35 tests), and `FullNodeTest.multiple_wallets_support` (1 test).
+- `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and `make rewrite-validate-smoke` completed. The
+  consensus gate retained the known unrelated 19-test PBFT reward-cursor bootstrap failure cluster and in-process
+  RocksDB lock collisions while all changed DAG/transaction targets passed. The preapproved Tier 3 CTest gate passed
+  21 of 27 binaries; `pillar_chain_test`, `full_node_test`, `network_test`, `pbft_manager_test`, and `vote_test` reproduced
+  the same `/tmp/taraxa0/db/db/LOCK` collision, while `go_test` reproduced the unrelated static Go/cgo host-link failure.
+  The Python integration runner stopped before collection because the host lacks Python 3.13 development headers for
+  pinned `cytoolz` and `pyethash`, leaving `pytest` unavailable.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

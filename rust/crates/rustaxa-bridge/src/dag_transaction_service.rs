@@ -515,7 +515,94 @@ macro_rules! dag_free_mut_fallible {
 use crate::dag::*;
 dag_free_mut_fallible!(service_dag_manager_runtime_begin_verify_block_session, dag_manager_runtime_begin_verify_block_session(input: DagVerifyBlockSessionInput) -> ());
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_next, dag_manager_runtime_verify_block_session_next() -> DagVerifyBlockSessionStep);
-dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_transactions, dag_manager_runtime_verify_block_session_report_transactions(report: DagVerifyBlockTransactionReport) -> DagVerifyBlockSessionStep);
+
+/// Prepares the active DAG verification transaction query without advancing it.
+///
+/// Locks are acquired DAG then transaction. Query hashes and proposal period
+/// remain Rust-private. The returned cursor identity and proposal period bind a
+/// later completion to this exact session after C++ has materialized and
+/// hash-validated every returned payload.
+pub fn service_dag_manager_runtime_verify_block_session_prepare_transactions(
+    service: &BridgeDagTransactionService,
+) -> Result<DagVerifyBlockTransactionPreparation> {
+    let (dag_guard, transaction) = service.dag_and_transaction()?;
+    let dag = dag_guard
+        .as_ref()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let query = dag_manager_runtime_verify_block_transaction_query(dag)?;
+    let requests = verify_block_transaction_view_requests(&query);
+    let plan = transaction.transaction_manager_runtime_lookup_transaction_views(
+        requests,
+        query.hashes.len() as u64,
+    )?;
+    Ok(DagVerifyBlockTransactionPreparation {
+        cursor_id: query.cursor_id,
+        proposal_period: query.proposal_period,
+        transactions: plan.views,
+    })
+}
+
+/// Completes prepared transaction availability after C++ materialization.
+///
+/// Cursor and proposal-period identity are checked before TransactionManager
+/// lookup. Finalized-storage senders require explicit account facts, and all
+/// proposal-period filtering completes before the DAG action advances. Any
+/// identity or lookup error leaves the session unchanged.
+pub fn service_dag_manager_runtime_verify_block_session_complete_transactions(
+    service: &BridgeDagTransactionService,
+    report: DagVerifyBlockTransactionCompletionReport,
+) -> Result<DagVerifyBlockSessionStep> {
+    let (mut dag_guard, transaction) = service.dag_and_transaction()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let query = dag_manager_runtime_validate_verify_block_transaction_completion(
+        dag,
+        report.cursor_id,
+        report.proposal_period,
+    )?;
+    let requests = verify_block_transaction_view_requests(&query);
+    let plan = transaction
+        .transaction_manager_runtime_lookup_proposal_transaction_views_requiring_account_nonce_facts(
+            query.proposal_period,
+            requests,
+            report.account_nonce_facts,
+            query.hashes.len() as u64,
+        )?;
+    let all_resolved = plan.complete
+        && plan.views.len() == query.hashes.len()
+        && plan
+            .views
+            .iter()
+            .all(|view| view.found && !view.old_finalized);
+    let resolved_transactions = if all_resolved {
+        query.expected_transactions
+    } else {
+        0
+    };
+    Ok(
+        dag_manager_runtime_verify_block_session_apply_transaction_resolution(
+            dag,
+            resolved_transactions,
+        ),
+    )
+}
+
+fn verify_block_transaction_view_requests(
+    query: &DagVerifyBlockTransactionQuery,
+) -> Vec<TransactionManagerTransactionViewRequest> {
+    query
+        .hashes
+        .iter()
+        .enumerate()
+        .map(
+            |(input_index, hash)| TransactionManagerTransactionViewRequest {
+                input_index: input_index as u64,
+                hash: hash.0,
+            },
+        )
+        .collect()
+}
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_authorization, dag_manager_runtime_verify_block_session_report_authorization(report: DagVerifyBlockAuthorizationReport) -> DagVerifyBlockSessionStep);
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_vdf, dag_manager_runtime_verify_block_session_report_vdf(report: DagVerifyBlockVdfReport) -> DagVerifyBlockSessionStep);
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
@@ -532,6 +619,7 @@ dag_free_mut_result!(service_dag_manager_runtime_proposer_session_report_add_blo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag::DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS;
     use crate::storage::{create_storage, create_transaction_storage_queries};
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
@@ -615,6 +703,42 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn append_pbft_block_fields(stream: &mut RlpStream, period: u64) {
+        stream.append(&H256::from_low_u64_be(10));
+        stream.append(&H256::from_low_u64_be(11));
+        stream.append(&H256::from_low_u64_be(12));
+        stream.append(&H256::from_low_u64_be(13));
+        stream.append(&period);
+        stream.append(&1_000u64);
+        stream.begin_list(0);
+    }
+
+    fn signed_pbft_block(signing_key: &SigningKey, period: u64) -> Vec<u8> {
+        let mut unsigned = RlpStream::new_list(7);
+        append_pbft_block_fields(&mut unsigned, period);
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(keccak256(&unsigned.out()).as_bytes())
+            .unwrap();
+        let mut signature_bytes = signature.to_bytes().to_vec();
+        signature_bytes.push(recovery_id.to_byte());
+        let mut signed = RlpStream::new_list(8);
+        append_pbft_block_fields(&mut signed, period);
+        signed.append(&signature_bytes);
+        signed.out().to_vec()
+    }
+
+    fn period_data_rlp(pbft_block: &[u8], transaction_rlp: &[u8]) -> Vec<u8> {
+        let mut transactions = RlpStream::new_list(1);
+        transactions.append_raw(transaction_rlp, 1);
+        let mut period_data = RlpStream::new_list(5);
+        period_data.append_raw(pbft_block, 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&transactions.out(), 1);
+        period_data.append_raw(&[0xC0], 1);
+        period_data.out().to_vec()
+    }
+
     fn dag_block_rlp(level: u64, transactions: &[[u8; 32]]) -> Vec<u8> {
         let mut block = RlpStream::new_list(8);
         block.append(&H256::from([1u8; 32]));
@@ -693,6 +817,360 @@ mod tests {
         .expect("external facts");
         assert_eq!(step.action, 1);
         session_id
+    }
+
+    fn begin_verify_block_session(
+        service: &BridgeDagTransactionService,
+        block_hashes: &[[u8; 32]],
+        supplied_hashes: &[[u8; 32]],
+    ) {
+        service_dag_manager_runtime_begin_verify_block_session(
+            service,
+            DagVerifyBlockSessionInput {
+                block_level: 1,
+                pivot: [1; 32],
+                tips: Vec::new(),
+                block_transaction_hashes: block_hashes
+                    .iter()
+                    .map(|hash| DagTransactionHash { hash: *hash })
+                    .collect(),
+                supplied_transaction_hashes: supplied_hashes
+                    .iter()
+                    .map(|hash| DagTransactionHash { hash: *hash })
+                    .collect(),
+            },
+        )
+        .expect("verify-block session should begin");
+    }
+
+    #[test]
+    fn verify_block_prepare_does_not_advance_and_completion_succeeds() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_verify_all_supplied");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let supplied = [7; 32];
+        begin_verify_block_session(&service, &[supplied, supplied], &[supplied]);
+
+        let preparation =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .unwrap();
+        assert!(preparation.transactions.is_empty());
+        let unadvanced = service_dag_manager_runtime_verify_block_session_next(&service).unwrap();
+        assert_eq!(unadvanced.action, 1);
+        let completed = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            completed.action,
+            DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_block_prepare_returns_runtime_views_in_canonical_query_order() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_verify_mixed");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let supplied = [8; 32];
+        let key = SigningKey::from_slice(&[0x49; 32]).unwrap();
+        let queued_rlp = signed_legacy_transaction_rlp(&key);
+        let queued = LegacyTransactionEnvelope::decode(&queued_rlp).unwrap();
+        service
+            .transaction()
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: queued.hash.0,
+                sender: address_from_signing_key(&key),
+                nonce: queued.nonce.to_big_endian(),
+                gas_price: queued.gas_price.to_big_endian(),
+                gas: queued.gas,
+                data_size: queued.data.len(),
+                tx_rlp: queued_rlp.clone(),
+                proposable: true,
+                last_block_number: 0,
+            })
+            .unwrap();
+        let sidecar_rlp =
+            signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x4C; 32]).unwrap());
+        let sidecar_hash = keccak256(&sidecar_rlp);
+        service
+            .transaction()
+            .sidecar
+            .insert_non_finalized(sidecar_hash, sidecar_rlp.clone())
+            .unwrap();
+        begin_verify_block_session(
+            &service,
+            &[supplied, queued.hash.0, sidecar_hash.0, queued.hash.0],
+            &[supplied],
+        );
+
+        let preparation =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .unwrap();
+        assert_eq!(preparation.transactions.len(), 2);
+        assert_eq!(preparation.transactions[0].input_index, 0);
+        assert_eq!(preparation.transactions[0].hash, queued.hash.0);
+        assert_eq!(preparation.transactions[0].tx_rlp, queued_rlp);
+        assert_eq!(preparation.transactions[1].input_index, 1);
+        assert_eq!(preparation.transactions[1].hash, sidecar_hash.0);
+        assert_eq!(preparation.transactions[1].tx_rlp, sidecar_rlp);
+        let completed = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            completed.action,
+            DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_block_resolution_rejects_missing_transactions() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_verify_missing");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        begin_verify_block_session(&service, &[[10; 32]], &[]);
+
+        let preparation =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .unwrap();
+        assert_eq!(preparation.transactions.len(), 1);
+        assert!(!preparation.transactions[0].found);
+        let completed = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(completed.complete);
+        assert_eq!(
+            completed.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_MISSING_TRANSACTION
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_block_completion_requires_nonce_facts_and_rejects_old_finalized_transactions() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_verify_old_finalized");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let key = SigningKey::from_slice(&[0x4A; 32]).unwrap();
+        let transaction_rlp = signed_legacy_transaction_rlp(&key);
+        let transaction_hash = keccak256(&transaction_rlp);
+        let pbft_block = signed_pbft_block(&SigningKey::from_slice(&[0x4B; 32]).unwrap(), 1);
+        storage
+            .0
+            .transaction()
+            .write_location(transaction_hash, 1, 0, false)
+            .unwrap();
+        storage
+            .0
+            .period()
+            .write(1, &period_data_rlp(&pbft_block, &transaction_rlp))
+            .unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        begin_verify_block_session(&service, &[transaction_hash.0], &[]);
+
+        let missing_fact_preparation =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .unwrap();
+        assert!(missing_fact_preparation.transactions[0].found);
+        let missing_fact = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: missing_fact_preparation.cursor_id,
+                proposal_period: missing_fact_preparation.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .err()
+        .expect("missing finalized sender fact must reject completion");
+        assert!(missing_fact
+            .to_string()
+            .contains("TM_PROPOSAL_FINALIZED_ACCOUNT_NONCE_FACT_MISSING"));
+        assert_eq!(
+            service_dag_manager_runtime_verify_block_session_next(&service)
+                .unwrap()
+                .action,
+            1
+        );
+
+        begin_verify_block_session(&service, &[transaction_hash.0], &[]);
+        let old_preparation =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .unwrap();
+        let old = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: old_preparation.cursor_id,
+                proposal_period: old_preparation.proposal_period,
+                account_nonce_facts: vec![TransactionQueueAccountNonceFact {
+                    sender: address_from_signing_key(&key),
+                    account_found: true,
+                    account_nonce: U256::from(2u64).to_big_endian(),
+                }],
+            },
+        )
+        .unwrap();
+        assert!(old.complete);
+        assert_eq!(
+            old.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_MISSING_TRANSACTION
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_block_completion_rejects_stale_period_and_action_misuse_without_advancing() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_verify_misuse");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+
+        let not_started =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .err()
+                .expect("missing session must reject preparation");
+        assert!(not_started
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_NOT_STARTED"));
+
+        begin_verify_block_session(&service, &[[12; 32]], &[[12; 32]]);
+        let stale = service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+            .unwrap();
+        begin_verify_block_session(&service, &[[11; 32]], &[[11; 32]]);
+        let current =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .unwrap();
+        let stale_error = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: stale.cursor_id,
+                proposal_period: stale.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .err()
+        .expect("stale cursor must reject completion");
+        assert!(stale_error
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_TRANSACTION_CURSOR_MISMATCH"));
+        assert_eq!(
+            service_dag_manager_runtime_verify_block_session_next(&service)
+                .unwrap()
+                .action,
+            1
+        );
+
+        let period_error = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: current.cursor_id,
+                proposal_period: current.proposal_period + 1,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .err()
+        .expect("wrong proposal period must reject completion");
+        assert!(period_error
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_TRANSACTION_PERIOD_MISMATCH"));
+
+        let completed = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            &service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: current.cursor_id,
+                proposal_period: current.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            completed.action,
+            DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+        );
+        let wrong_action =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(&service)
+                .err()
+                .expect("wrong action must reject preparation");
+        assert!(wrong_action
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_COMPLETION"));
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
