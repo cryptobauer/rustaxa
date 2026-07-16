@@ -88,6 +88,22 @@ constexpr uint8_t kTMQueueStatusOverflow = 3;
 constexpr uint8_t kTMAdmissionShellIntentLogInserted = 1;
 constexpr uint8_t kTMAdmissionShellIntentEmitTransactionAdded = 2;
 
+rustaxa::SortitionRuntimeConfig sortitionRuntimeConfigFromNodeConfig(const FullNodeConfig& config) {
+  const auto& sortition = config.genesis.sortition;
+  rustaxa::SortitionRuntimeConfig bridge_config;
+  bridge_config.threshold_upper = sortition.vrf.threshold_upper;
+  bridge_config.difficulty_min = sortition.vdf.difficulty_min;
+  bridge_config.difficulty_max = sortition.vdf.difficulty_max;
+  bridge_config.difficulty_stale = sortition.vdf.difficulty_stale;
+  bridge_config.lambda_bound = sortition.vdf.lambda_bound;
+  bridge_config.changes_count_for_average = sortition.changes_count_for_average;
+  bridge_config.dag_efficiency_target_low = sortition.dag_efficiency_targets.first;
+  bridge_config.dag_efficiency_target_high = sortition.dag_efficiency_targets.second;
+  bridge_config.changing_interval = sortition.changing_interval;
+  bridge_config.computation_interval = sortition.computation_interval;
+  return bridge_config;
+}
+
 constexpr uint8_t kTMTransactionViewSourceMissing = 0;
 constexpr uint8_t kTMTransactionViewSourceQueue = 1;
 constexpr uint8_t kTMTransactionViewSourceNonFinalizedSidecar = 2;
@@ -303,8 +319,9 @@ TransactionStatus transactionStatusFromBridge(uint8_t status) {
 SharedDagTransactionService createDagTransactionService(const FullNodeConfig& config, DbStorage& db) {
   return std::make_shared<DagTransactionService>(rustaxa::create_dag_transaction_service_from_storage(
       db.rustStorage(), config.genesis.dag_genesis_block.getHash().asArray(), config.dag_expiry_limit,
-      config.max_levels_per_period, rustaxa::TransactionQueueConfig{config.transactions_pool_size},
-      gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit));
+      config.max_levels_per_period, sortitionRuntimeConfigFromNodeConfig(config),
+      rustaxa::TransactionQueueConfig{config.transactions_pool_size}, gasPricerConfigFromNodeConfig(config),
+      config.propose_dag_gas_limit));
 }
 
 SharedDagTransactionService createTransactionManagerCompatibilityService(const FullNodeConfig& config, DbStorage& db) {

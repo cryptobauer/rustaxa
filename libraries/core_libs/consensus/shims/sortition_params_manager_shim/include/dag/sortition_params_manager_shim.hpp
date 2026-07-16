@@ -1,18 +1,19 @@
 #pragma once
 
+#include <libdevcore/RLP.h>
+
 #include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
 #include <optional>
 
-#include <libdevcore/RLP.h>
-
 #include "common/types.hpp"
 #include "config/config.hpp"
 #include "pbft/period_data.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
+#include "transaction/dag_transaction_service.hpp"
 #include "vdf/config.hpp"
 
 namespace taraxa {
@@ -74,14 +75,32 @@ struct SortitionFinalizationCommitReport {
  *
  * Invariants and edge behavior:
  * - Empty storage is initialized with the genesis VRF threshold at period 0.
- * - The Rust runtime owns interval counters and threshold-policy state.
+ * - The application-owned DAG/transaction service owns interval counters and
+ *   threshold-policy state behind its sortition lock domain.
  * - getParamsChanges returns the Rust-backed cache after each state transition.
- * - This class is standalone and has no legacy implementation dependency.
+ * - This facade has no legacy implementation dependency or independent Rust
+ *   sortition handle.
  */
 class SortitionParamsManager {
  public:
+  /**
+   * Creates a compatibility facade with a fully restored application service.
+   *
+   * This overload preserves the public construction API for standalone C++
+   * callers. Production DagManager wiring uses the shared-service overload so
+   * all DAG consumers observe one sortition runtime.
+   */
   SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
                          std::shared_ptr<DbStorage> db);
+  /**
+   * Creates a facade over the canonical DAG/transaction application service.
+   *
+   * The service must be non-null and expose sortition capability. Construction
+   * throws for transaction-only compatibility services; `db` remains in the
+   * signature for source compatibility but the service owns native storage.
+   */
+  SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
+                         std::shared_ptr<DbStorage> db, SharedDagTransactionService dag_transaction_service);
 
   /**
    * Returns current sortition parameters, or parameters adjusted with the last
@@ -174,7 +193,7 @@ class SortitionParamsManager {
   const FullNodeConfig kConfig;
   SortitionConfig sortition_config_;
   std::deque<SortitionParamsChange> params_changes_;
-  std::optional<::rust::Box<rustaxa::BridgeSortitionParamsManager>> rust_sortition_params_manager_;
+  SharedDagTransactionService dag_transaction_service_;
 
   /**
    * Unsupported in Rust shim mode because threshold changes are emitted by the

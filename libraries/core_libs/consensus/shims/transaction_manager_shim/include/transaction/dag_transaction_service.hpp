@@ -13,14 +13,15 @@ class DbStorage;
 /**
  * Shared C++ lifetime owner for the Rust DAG/transaction application service.
  *
- * One instance owns the composed Rust transaction and DAG runtimes. `App`
- * creates the fully restored production service and shares this holder with the
- * retained `TransactionManager` and `DagManager` facades. Rust owns sibling
- * runtime synchronization; this class only provides stable RAII ownership.
+ * One instance owns the composed Rust transaction, DAG, and sortition
+ * runtimes. `App` creates the fully restored production service and shares
+ * this holder with the retained `TransactionManager`, `DagManager`, and
+ * `SortitionParamsManager` facades. Rust owns sibling runtime synchronization;
+ * this class only provides stable RAII ownership.
  */
 class DagTransactionService final {
  public:
-  /** Takes exclusive ownership of a composed Rust DAG/transaction service. */
+  /** Takes exclusive ownership of a composed Rust DAG/transaction/sortition service. */
   explicit DagTransactionService(rust::Box<rustaxa::BridgeDagTransactionService> service)
       : service_(std::move(service)) {}
 

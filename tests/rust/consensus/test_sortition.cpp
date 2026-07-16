@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -27,13 +28,21 @@ SortitionRuntimeConfig runtime_config() {
   return config;
 }
 
-rust::Box<BridgeSortitionParamsManager> create_manager(std::string_view name) {
+rust::Box<BridgeDagTransactionService> create_manager(std::string_view name) {
   const auto test_dir = std::filesystem::temp_directory_path() / std::string(name);
   if (std::filesystem::exists(test_dir)) {
     std::filesystem::remove_all(test_dir);
   }
   auto storage = create_storage(test_dir.string());
-  auto manager = create_sortition_params_manager_from_storage(runtime_config(), *storage);
+  std::array<uint8_t, 32> genesis{};
+  genesis.fill(1);
+  TransactionQueueConfig queue_config;
+  queue_config.max_size = 1000;
+  GasPricerConfig gas_config;
+  gas_config.percentile = 50;
+  gas_config.history_blocks = 10;
+  auto manager = create_dag_transaction_service_from_storage(*storage, genesis, 32, 100, runtime_config(), queue_config,
+                                                             gas_config, UINT64_MAX);
   std::filesystem::remove_all(test_dir);
   return manager;
 }

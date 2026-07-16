@@ -38,21 +38,6 @@ struct PeriodEfficiencyCounts {
   uint64_t total_dag_transaction_refs = 0;
 };
 
-rustaxa::SortitionRuntimeConfig to_rust_config(const SortitionConfig& config) {
-  rustaxa::SortitionRuntimeConfig rust_config;
-  rust_config.threshold_upper = config.vrf.threshold_upper;
-  rust_config.difficulty_min = config.vdf.difficulty_min;
-  rust_config.difficulty_max = config.vdf.difficulty_max;
-  rust_config.difficulty_stale = config.vdf.difficulty_stale;
-  rust_config.lambda_bound = config.vdf.lambda_bound;
-  rust_config.changes_count_for_average = config.changes_count_for_average;
-  rust_config.dag_efficiency_target_low = config.dag_efficiency_targets.first;
-  rust_config.dag_efficiency_target_high = config.dag_efficiency_targets.second;
-  rust_config.changing_interval = config.changing_interval;
-  rust_config.computation_interval = config.computation_interval;
-  return rust_config;
-}
-
 rustaxa::SortitionParamsChangePayload to_rust_change(const SortitionParamsChange& change) {
   rustaxa::SortitionParamsChangePayload rust_change;
   rust_change.period = change.period;
@@ -123,29 +108,39 @@ SortitionFinalizationCommitReport makeSortitionFinalizationCommitReport(
 
 SortitionParamsManager::SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
                                                std::shared_ptr<DbStorage> db)
+    : SortitionParamsManager(node_addr, config, db, createDagTransactionService(config, *db)) {}
+
+SortitionParamsManager::SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
+                                               std::shared_ptr<DbStorage> db,
+                                               SharedDagTransactionService dag_transaction_service)
     : kConfig(config), sortition_config_(config.genesis.sortition) {
-  rust_sortition_params_manager_ =
-      rustaxa::create_sortition_params_manager_from_storage(to_rust_config(sortition_config_), db->rustStorage());
-  params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
-  apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
+  static_cast<void>(db);
+  dag_transaction_service_ = std::move(dag_transaction_service);
+  if (!dag_transaction_service_) {
+    throw std::invalid_argument("SortitionParamsManager requires a DAG/transaction service");
+  }
+  if (!dag_transaction_service_->service().dag_transaction_service_has_sortition()) {
+    throw std::invalid_argument("SortitionParamsManager requires a DAG/transaction service with sortition state");
+  }
+  params_changes_ = from_rust_changes(dag_transaction_service_->service().sortition_params_changes());
+  apply_rust_params(sortition_config_, dag_transaction_service_->service().sortition_current_params());
 }
 
 SortitionParams SortitionParamsManager::getSortitionParams(std::optional<PbftPeriod> for_period) const {
   if (!for_period.has_value()) {
-    return from_rust_params(rust_sortition_params_manager_.value()->sortition_current_params());
+    return from_rust_params(dag_transaction_service_->service().sortition_current_params());
   }
 
-  return from_rust_params(
-      rust_sortition_params_manager_.value()->sortition_params_for_period_from_storage(*for_period));
+  return from_rust_params(dag_transaction_service_->service().sortition_params_for_period_from_storage(*for_period));
 }
 
 rustaxa::SortitionRuntimeParams SortitionParamsManager::rustSortitionParamsForRust(PbftPeriod for_period) const {
-  return rust_sortition_params_manager_.value()->sortition_params_for_period_from_storage(for_period);
+  return dag_transaction_service_->service().sortition_params_for_period_from_storage(for_period);
 }
 
 uint16_t SortitionParamsManager::calculateDagEfficiency(const PeriodData& block) const {
   const auto counts = period_efficiency_counts(block);
-  const auto result = rust_sortition_params_manager_.value()->sortition_calculate_dag_efficiency(
+  const auto result = dag_transaction_service_->service().sortition_calculate_dag_efficiency(
       counts.unique_transactions, counts.total_dag_transaction_refs);
   if (!result.ok) {
     throw std::runtime_error(static_cast<std::string>(result.error));
@@ -158,18 +153,18 @@ void SortitionParamsManager::pbftBlockPushed(const PeriodData& block, Batch& bat
   (void)batch;
   const auto counts = period_efficiency_counts(block);
   const auto period = block.pbft_blk->getPeriod();
-  rust_sortition_params_manager_.value()->sortition_record_finalized_period_and_persist(
+  dag_transaction_service_->service().sortition_record_finalized_period_and_persist(
       period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
       non_empty_pbft_chain_size);
-  params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
-  apply_rust_params(sortition_config_, rust_sortition_params_manager_.value()->sortition_current_params());
+  params_changes_ = from_rust_changes(dag_transaction_service_->service().sortition_params_changes());
+  apply_rust_params(sortition_config_, dag_transaction_service_->service().sortition_current_params());
 }
 
 std::optional<SortitionParamsChange> SortitionParamsManager::prepareBlockForSortitionFinalization(
     const PeriodData& block, PbftPeriod non_empty_pbft_chain_size) {
   const auto counts = period_efficiency_counts(block);
   const auto period = block.pbft_blk->getPeriod();
-  auto outcome = rust_sortition_params_manager_.value()->sortition_preview_finalized_period(
+  auto outcome = dag_transaction_service_->service().sortition_preview_finalized_period(
       period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
       non_empty_pbft_chain_size);
   if (outcome.changed) {
@@ -187,17 +182,17 @@ SortitionFinalizationCommitReport SortitionParamsManager::commitPreparedBlockFor
   if (prepared_change.has_value()) {
     expected_change = to_rust_change(*prepared_change);
   }
-  auto outcome = rust_sortition_params_manager_.value()->sortition_commit_finalized_period(
+  auto outcome = dag_transaction_service_->service().sortition_commit_finalized_period(
       period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
       non_empty_pbft_chain_size, prepared_change.has_value(), expected_change);
-  params_changes_ = from_rust_changes(rust_sortition_params_manager_.value()->sortition_params_changes());
-  const auto current_params = rust_sortition_params_manager_.value()->sortition_current_params();
+  params_changes_ = from_rust_changes(dag_transaction_service_->service().sortition_params_changes());
+  const auto current_params = dag_transaction_service_->service().sortition_current_params();
   apply_rust_params(sortition_config_, current_params);
   return makeSortitionFinalizationCommitReport(outcome, current_params.threshold_upper, params_changes_.size());
 }
 
 uint16_t SortitionParamsManager::averageDagEfficiency() {
-  return rust_sortition_params_manager_.value()->sortition_average_dag_efficiency();
+  return dag_transaction_service_->service().sortition_average_dag_efficiency();
 }
 
 SortitionParamsChange SortitionParamsManager::calculateChange(PbftPeriod) {

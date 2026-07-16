@@ -2881,9 +2881,37 @@ application-owned PBFT service.
   a proposed test-only public VoteManager method, adding fail-fast slashing-capability validation, documenting the
   complete PBFT service lock domains, and proving shared service cache ownership.
 
-The next CRW-05 ownership candidates remain sortition behind the DAG/transaction application service, rewards behind
-FinalChain, and pillar planning behind the PBFT service. Select the next bounded slice from fresh code mapping after this
-slice closes.
+### CRW-05 DAG-Service Sortition Ownership
+
+The second bounded CRW-05/CRW-07 slice absorbs sortition runtime state into the application-owned DAG/transaction
+service.
+
+- `BridgeDagTransactionService` owns sortition as a private sibling of DAG and transaction state. Full construction
+  restores all three domains from one Rust storage owner before publication; transaction-manager and gas-pricer
+  compatibility services omit DAG and sortition state and return stable unavailable errors.
+- Current calls acquire only their domain lock. The documented order for future composed operations is DAG, then
+  sortition, then transaction, and no Rust guard crosses an external executor callback.
+- The standalone `BridgeSortitionParamsManager`, its factories, and the C++ facade-owned box are deleted. App-owned
+  `DagManager` injects its canonical service into the facade, while the stable three-argument compatibility constructor
+  creates a full service and injected construction rejects null or transaction-only services.
+- The PBFT preview/stage/commit contract and C++ `SortitionParamsChange` materialization remain typed compatibility
+  boundaries. DAG verification and proposer sortition-parameter relays remain follow-up work before this facade can be
+  retired.
+- Focused Rust coverage verifies full restore, compatibility rejection, and sortition behavior. Focused C++ coverage
+  verifies the facade, canonical sortition behavior, service capability rejection, DAG integration, and a PBFT
+  single-node production path.
+
+Validation passed the 318-test Rust bridge suite, the full pre-commit gate, sortition shim 4/4, sortition 13/13,
+Rust sortition 3/3, DAG 6/6, focused PBFT single-node coverage, the consensus Tier 2 gate, startup smoke, bridge inventory,
+formatting, and whitespace checks. The authorized Tier 3 CTest run passed 21 of 27 binaries; the five C++ failures were
+the classified same-process RocksDB-lock suites and `go_test` retained its unrelated static cgo link failure. Python
+Tier 3 did not reach collection because Python 3.13 development headers are absent, so `cytoolz` and `pyethash` could
+not build. The storage differential was not warranted because this slice changes sortition lifetime/routing, not
+storage behavior. Independent review found no ownership or lock-order defect and requested retained three-argument
+constructor coverage; the startup/default-state test now exercises that compatibility path and a representative read.
+
+The next CRW-05 ownership candidates remain rewards behind FinalChain and pillar planning behind the PBFT service.
+Select the next bounded slice from fresh code mapping after this slice closes.
 
 ## Historical Execution Order
 

@@ -56,18 +56,32 @@ TEST(SortitionParamsManagerShimTest, compatibilityChangeUsesCanonicalLegacyRlp) 
 
 TEST_F(SortitionParamsManagerShimDataTest, startupPersistsDefaultChangeThroughRustStorage) {
   auto db = std::make_shared<DbStorage>(data_dir);
-  SortitionParamsManager manager({}, sortitionShimConfig(), db);
+  const auto config = sortitionShimConfig();
+  SortitionParamsManager manager({}, config, db);
 
   const auto changes = db->getLastSortitionParams(10);
   ASSERT_EQ(changes.size(), 1);
   EXPECT_EQ(changes.front().period, 0);
   EXPECT_EQ(changes.front().vrf_params.threshold_upper, 10000);
   EXPECT_EQ(manager.getParamsChanges().size(), 1);
+  EXPECT_EQ(manager.getSortitionParams().vrf.threshold_upper, 10000);
+}
+
+TEST_F(SortitionParamsManagerShimDataTest, constructionRejectsMissingOrTransactionOnlyService) {
+  auto db = std::make_shared<DbStorage>(data_dir);
+  const auto config = sortitionShimConfig();
+
+  EXPECT_THROW((SortitionParamsManager({}, config, db, {})), std::invalid_argument);
+
+  auto transaction_only_service = createTransactionManagerCompatibilityService(config, *db);
+  EXPECT_THROW((SortitionParamsManager({}, config, db, transaction_only_service)), std::invalid_argument);
 }
 
 TEST_F(SortitionParamsManagerShimDataTest, finalizedPeriodPersistenceIgnoresCompatibilityBatch) {
   auto db = std::make_shared<DbStorage>(data_dir);
-  SortitionParamsManager manager({}, sortitionShimConfig(), db);
+  const auto config = sortitionShimConfig();
+  auto service = createDagTransactionService(config, *db);
+  SortitionParamsManager manager({}, config, db, service);
   auto ignored_batch = db->createWriteBatch();
 
   manager.pbftBlockPushed(makeSortitionPeriod(9), ignored_batch, 1);

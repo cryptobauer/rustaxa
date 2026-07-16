@@ -7,11 +7,12 @@
 
 use anyhow::{ensure, Context, Result};
 use rustaxa_consensus::sortition::{
-    calculate_dag_efficiency, SortitionConfig, SortitionParams, SortitionParamsChange,
-    SortitionParamsManager, VdfParams, VrfParams,
+    calculate_dag_efficiency, SortitionConfig, SortitionParams, SortitionParamsChange, VdfParams,
+    VrfParams,
 };
 
-use crate::ffi::{rustaxa_ffi, BridgeSortitionParamsManager, BridgeStorage};
+use crate::dag_transaction_service::BridgeDagTransactionService;
+use crate::ffi::rustaxa_ffi;
 
 impl From<rustaxa_ffi::SortitionRuntimeConfig> for SortitionConfig {
     fn from(config: rustaxa_ffi::SortitionRuntimeConfig) -> Self {
@@ -99,26 +100,10 @@ fn change_result(
     )
 }
 
-impl BridgeSortitionParamsManager {
-    /// Creates a Rust sortition manager from Rust storage.
-    ///
-    /// Startup behavior mirrors the legacy C++ manager while keeping storage
-    /// access in Rust:
-    /// - latest persisted changes are loaded in chronological order
-    /// - missing history creates and persists the period-zero default change
-    /// - finalized `PeriodData` after the latest change is replayed from
-    ///   canonical RLP to restore the efficiency window
-    pub fn create_from_storage(
-        config: rustaxa_ffi::SortitionRuntimeConfig,
-        storage: &BridgeStorage,
-    ) -> Result<Box<Self>> {
-        let manager = SortitionParamsManager::from_storage(config.into(), storage.0.clone())?;
-        Ok(Box::new(Self { manager }))
-    }
-
+impl BridgeDagTransactionService {
     /// Returns the manager's current runtime sortition parameters.
-    pub fn current_params(&self) -> rustaxa_ffi::SortitionRuntimeParams {
-        self.manager.current_params().into()
+    pub fn current_params(&self) -> Result<rustaxa_ffi::SortitionRuntimeParams> {
+        Ok(self.sortition()?.current_params().into())
     }
 
     /// Returns sortition parameters for `period` by reading the latest
@@ -127,7 +112,10 @@ impl BridgeSortitionParamsManager {
         &self,
         period: u64,
     ) -> Result<rustaxa_ffi::SortitionRuntimeParams> {
-        Ok(self.manager.params_for_period_from_storage(period)?.into())
+        Ok(self
+            .sortition()?
+            .params_for_period_from_storage(period)?
+            .into())
     }
 
     /// Records a finalized period and persists any emitted threshold change
@@ -138,20 +126,17 @@ impl BridgeSortitionParamsManager {
     /// The Rust manager writes the emitted sortition change before publishing
     /// the live threshold transition.
     pub fn record_finalized_period_and_persist(
-        &mut self,
+        &self,
         period: u64,
         has_pivot: bool,
         unique_transactions: u64,
         total_dag_transaction_refs: u64,
         non_empty_pbft_chain_size: u64,
     ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
-        let dag_efficiency = self.efficiency_from_counts(
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-        )?;
+        let dag_efficiency =
+            efficiency_from_counts(has_pivot, unique_transactions, total_dag_transaction_refs)?;
 
-        let Some(change) = self.manager.record_finalized_period_and_persist(
+        let Some(change) = self.sortition()?.record_finalized_period_and_persist(
             period,
             dag_efficiency,
             non_empty_pbft_chain_size,
@@ -176,12 +161,9 @@ impl BridgeSortitionParamsManager {
         total_dag_transaction_refs: u64,
         non_empty_pbft_chain_size: u64,
     ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
-        let dag_efficiency = self.efficiency_from_counts(
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-        )?;
-        let change = self.manager.preview_finalized_period(
+        let dag_efficiency =
+            efficiency_from_counts(has_pivot, unique_transactions, total_dag_transaction_refs)?;
+        let change = self.sortition()?.preview_finalized_period(
             period,
             dag_efficiency,
             non_empty_pbft_chain_size,
@@ -195,7 +177,7 @@ impl BridgeSortitionParamsManager {
     /// expected optional change. Any mismatch returns an error before C++ can
     /// report success to the PBFT finalization runtime cursor.
     pub fn commit_finalized_period(
-        &mut self,
+        &self,
         period: u64,
         has_pivot: bool,
         unique_transactions: u64,
@@ -205,12 +187,9 @@ impl BridgeSortitionParamsManager {
         expected_change: rustaxa_ffi::SortitionParamsChangePayload,
     ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
         let expected = expected_changed.then(|| SortitionParamsChange::from(expected_change));
-        let dag_efficiency = self.efficiency_from_counts(
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-        )?;
-        let actual = self.manager.record_finalized_period(
+        let dag_efficiency =
+            efficiency_from_counts(has_pivot, unique_transactions, total_dag_transaction_refs)?;
+        let actual = self.sortition()?.record_finalized_period(
             period,
             dag_efficiency,
             non_empty_pbft_chain_size,
@@ -224,17 +203,18 @@ impl BridgeSortitionParamsManager {
 
     /// Returns the average of currently collected DAG efficiency samples.
     pub fn average_dag_efficiency(&self) -> Result<u16> {
-        self.manager.average_dag_efficiency()
+        self.sortition()?.average_dag_efficiency()
     }
 
     /// Returns cached parameter changes in chronological order.
-    pub fn params_changes(&self) -> Vec<rustaxa_ffi::SortitionParamsChangePayload> {
-        self.manager
+    pub fn params_changes(&self) -> Result<Vec<rustaxa_ffi::SortitionParamsChangePayload>> {
+        Ok(self
+            .sortition()?
             .params_changes()
             .iter()
             .copied()
             .map(rustaxa_ffi::SortitionParamsChangePayload::from)
-            .collect()
+            .collect())
     }
 
     /// Calculates DAG efficiency from transaction counts.
@@ -250,22 +230,8 @@ impl BridgeSortitionParamsManager {
         calculate_dag_efficiency(unique_transactions, total_dag_transaction_refs)
     }
 
-    fn efficiency_from_counts(
-        &self,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-    ) -> Result<Option<u16>> {
-        if has_pivot {
-            self.calculate_dag_efficiency(unique_transactions, total_dag_transaction_refs)
-                .map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
     /// CXX-exported method returning current sortition parameters.
-    pub fn sortition_current_params(&self) -> rustaxa_ffi::SortitionRuntimeParams {
+    pub fn sortition_current_params(&self) -> Result<rustaxa_ffi::SortitionRuntimeParams> {
         self.current_params()
     }
 
@@ -280,7 +246,7 @@ impl BridgeSortitionParamsManager {
 
     /// CXX-exported method recording and persisting a finalized-period sortition update.
     pub fn sortition_record_finalized_period_and_persist(
-        &mut self,
+        &self,
         period: u64,
         has_pivot: bool,
         unique_transactions: u64,
@@ -316,7 +282,7 @@ impl BridgeSortitionParamsManager {
 
     /// CXX-exported method committing a previously previewed finalized period.
     pub fn sortition_commit_finalized_period(
-        &mut self,
+        &self,
         period: u64,
         has_pivot: bool,
         unique_transactions: u64,
@@ -342,7 +308,9 @@ impl BridgeSortitionParamsManager {
     }
 
     /// CXX-exported method returning cached parameter changes.
-    pub fn sortition_params_changes(&self) -> Vec<rustaxa_ffi::SortitionParamsChangePayload> {
+    pub fn sortition_params_changes(
+        &self,
+    ) -> Result<Vec<rustaxa_ffi::SortitionParamsChangePayload>> {
         self.params_changes()
     }
 
@@ -352,6 +320,13 @@ impl BridgeSortitionParamsManager {
         unique_transactions: u64,
         total_dag_transaction_refs: u64,
     ) -> rustaxa_ffi::SortitionEfficiencyResult {
+        if let Err(err) = self.sortition() {
+            return rustaxa_ffi::SortitionEfficiencyResult {
+                ok: false,
+                value: 0,
+                error: err.to_string(),
+            };
+        }
         match self.calculate_dag_efficiency(unique_transactions, total_dag_transaction_refs) {
             Ok(efficiency) => rustaxa_ffi::SortitionEfficiencyResult {
                 ok: true,
@@ -367,17 +342,27 @@ impl BridgeSortitionParamsManager {
     }
 }
 
-/// Constructs a Rust sortition manager by loading and replaying Rust storage.
-pub fn create_sortition_params_manager_from_storage(
-    config: rustaxa_ffi::SortitionRuntimeConfig,
-    storage: &BridgeStorage,
-) -> Result<Box<BridgeSortitionParamsManager>> {
-    BridgeSortitionParamsManager::create_from_storage(config, storage)
+fn efficiency_from_counts(
+    has_pivot: bool,
+    unique_transactions: u64,
+    total_dag_transaction_refs: u64,
+) -> Result<Option<u16>> {
+    if has_pivot {
+        let unique_transactions = usize::try_from(unique_transactions)
+            .context("unique transaction count does not fit usize")?;
+        let total_dag_transaction_refs = usize::try_from(total_dag_transaction_refs)
+            .context("total DAG transaction reference count does not fit usize")?;
+        calculate_dag_efficiency(unique_transactions, total_dag_transaction_refs).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag_transaction_service::create_dag_transaction_service_from_storage;
+    use crate::ffi::BridgeStorage;
     use crate::storage::create_storage;
     use ethereum_types::H256;
     use rlp::RlpStream;
@@ -409,6 +394,28 @@ mod tests {
             changing_interval: 1,
             computation_interval: 1,
         }
+    }
+
+    fn create_service(
+        config: rustaxa_ffi::SortitionRuntimeConfig,
+        storage: &BridgeStorage,
+    ) -> Result<Box<BridgeDagTransactionService>> {
+        create_dag_transaction_service_from_storage(
+            storage,
+            &[1; 32],
+            32,
+            100,
+            config,
+            rustaxa_ffi::TransactionQueueConfig { max_size: 100 },
+            rustaxa_ffi::GasPricerConfig {
+                percentile: 50,
+                minimum_price: [0; 32],
+                history_blocks: 10,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+            u64::MAX,
+        )
     }
 
     fn pbft_block_rlp(period: u64, pivot: H256) -> Vec<u8> {
@@ -485,10 +492,16 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let manager = create_sortition_params_manager_from_storage(runtime_config(), &storage)
-                .expect("manager should initialize");
+            let manager =
+                create_service(runtime_config(), &storage).expect("manager should initialize");
 
-            assert_eq!(manager.sortition_params_changes().len(), 1);
+            assert_eq!(
+                manager
+                    .sortition_params_changes()
+                    .expect("sortition changes should be available")
+                    .len(),
+                1
+            );
             let stored = storage
                 .0
                 .metadata()
@@ -519,8 +532,8 @@ mod tests {
                 .metadata()
                 .write_sortition_params_change(10, &change.to_rlp_bytes())
                 .expect("change should persist");
-            let manager = create_sortition_params_manager_from_storage(runtime_config(), &storage)
-                .expect("manager should initialize");
+            let manager =
+                create_service(runtime_config(), &storage).expect("manager should initialize");
 
             let params = manager
                 .sortition_params_for_period_from_storage(11)
@@ -545,8 +558,8 @@ mod tests {
                 )
                 .expect("period data should persist");
 
-            let manager = create_sortition_params_manager_from_storage(runtime_config(), &storage)
-                .expect("manager should initialize");
+            let manager =
+                create_service(runtime_config(), &storage).expect("manager should initialize");
             assert_eq!(
                 manager
                     .sortition_average_dag_efficiency()
@@ -563,9 +576,8 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut manager =
-                create_sortition_params_manager_from_storage(runtime_config(), &storage)
-                    .expect("manager should initialize");
+            let manager =
+                create_service(runtime_config(), &storage).expect("manager should initialize");
             let result = manager
                 .sortition_record_finalized_period_and_persist(9, true, 1, 2, 1)
                 .expect("change should persist");

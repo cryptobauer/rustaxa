@@ -365,7 +365,7 @@ DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shar
       final_chain_(std::move(final_chain)),
       db_(std::move(db)),
       key_manager_(std::move(key_manager)),
-      sortition_params_manager_(node_addr, config, db_),
+      sortition_params_manager_(node_addr, config, db_, dag_transaction_service),
       genesis_config_(config.genesis),
       genesis_block_(std::make_shared<DagBlock>(config.genesis.dag_genesis_block)),
       max_levels_per_period_(config.max_levels_per_period),

@@ -14,7 +14,6 @@ use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
 use crate::query::*;
 use crate::rewards_stats::*;
-use crate::sortition::*;
 use crate::storage::*;
 use crate::transaction::*;
 use crate::transaction_manager::*;
@@ -25,7 +24,6 @@ use rustaxa_consensus::gas_pricer::GasPriceOracle;
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::slashing::SlashingProofPlanner;
-use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
 };
@@ -367,16 +365,6 @@ pub struct PillarChainStateSnapshot {
     /// Canonical bytes for compatibility-only C++ materialization.
     pub latest_finalized_block_rlp: Vec<u8>,
     pub generation: u64,
-}
-
-/// Bridge wrapper for the Rust sortition parameter manager.
-///
-/// The manager owns deterministic threshold/runtime state. Production
-/// Rust-mode constructors attach native Rust storage inside
-/// `SortitionParamsManager`; compatibility constructors may remain storage-free
-/// and pass explicit facts for unit-level planner tests.
-pub struct BridgeSortitionParamsManager {
-    pub manager: SortitionParamsManager,
 }
 
 /// Private transaction state owned by the application-level DAG/transaction service.
@@ -4552,6 +4540,7 @@ pub mod rustaxa_ffi {
             genesis: &[u8; 32],
             dag_expiry_limit: u32,
             max_levels_per_period: u64,
+            sortition_config: SortitionRuntimeConfig,
             transaction_queue_config: TransactionQueueConfig,
             gas_pricer_config: GasPricerConfig,
             proposal_dag_gas_limit: u64,
@@ -5682,21 +5671,16 @@ pub mod rustaxa_ffi {
 
         // Consensus sortition
 
-        type BridgeSortitionParamsManager;
-
-        pub fn create_sortition_params_manager_from_storage(
-            config: SortitionRuntimeConfig,
-            storage: &BridgeStorage,
-        ) -> Result<Box<BridgeSortitionParamsManager>>;
+        pub fn dag_transaction_service_has_sortition(self: &BridgeDagTransactionService) -> bool;
         pub fn sortition_current_params(
-            self: &BridgeSortitionParamsManager,
-        ) -> SortitionRuntimeParams;
+            self: &BridgeDagTransactionService,
+        ) -> Result<SortitionRuntimeParams>;
         pub fn sortition_params_for_period_from_storage(
-            self: &BridgeSortitionParamsManager,
+            self: &BridgeDagTransactionService,
             period: u64,
         ) -> Result<SortitionRuntimeParams>;
         pub fn sortition_record_finalized_period_and_persist(
-            self: &mut BridgeSortitionParamsManager,
+            self: &BridgeDagTransactionService,
             period: u64,
             has_pivot: bool,
             unique_transactions: u64,
@@ -5704,7 +5688,7 @@ pub mod rustaxa_ffi {
             non_empty_pbft_chain_size: u64,
         ) -> Result<SortitionParamsChangeResult>;
         pub fn sortition_preview_finalized_period(
-            self: &BridgeSortitionParamsManager,
+            self: &BridgeDagTransactionService,
             period: u64,
             has_pivot: bool,
             unique_transactions: u64,
@@ -5712,7 +5696,7 @@ pub mod rustaxa_ffi {
             non_empty_pbft_chain_size: u64,
         ) -> Result<SortitionParamsChangeResult>;
         pub fn sortition_commit_finalized_period(
-            self: &mut BridgeSortitionParamsManager,
+            self: &BridgeDagTransactionService,
             period: u64,
             has_pivot: bool,
             unique_transactions: u64,
@@ -5721,13 +5705,12 @@ pub mod rustaxa_ffi {
             expected_changed: bool,
             expected_change: SortitionParamsChangePayload,
         ) -> Result<SortitionParamsChangeResult>;
-        pub fn sortition_average_dag_efficiency(self: &BridgeSortitionParamsManager)
-            -> Result<u16>;
+        pub fn sortition_average_dag_efficiency(self: &BridgeDagTransactionService) -> Result<u16>;
         pub fn sortition_params_changes(
-            self: &BridgeSortitionParamsManager,
-        ) -> Vec<SortitionParamsChangePayload>;
+            self: &BridgeDagTransactionService,
+        ) -> Result<Vec<SortitionParamsChangePayload>>;
         pub fn sortition_calculate_dag_efficiency(
-            self: &BridgeSortitionParamsManager,
+            self: &BridgeDagTransactionService,
             unique_transactions: u64,
             total_dag_transaction_refs: u64,
         ) -> SortitionEfficiencyResult;

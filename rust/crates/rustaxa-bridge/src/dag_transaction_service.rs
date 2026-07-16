@@ -13,19 +13,49 @@ use crate::transaction_manager::{
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::H256;
 use rustaxa_consensus::dag::dag_block_transaction_hashes;
+use rustaxa_consensus::sortition::SortitionParamsManager;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
-/// Application-owned consensus service containing the sibling DAG and transaction runtimes.
+/// Application-owned consensus service containing sibling DAG, sortition, and transaction runtimes.
 ///
-/// Full production construction initializes both domains from one shared Rust storage handle
-/// before publishing the service. Compatibility construction may omit the DAG runtime for
-/// standalone TransactionManager or GasPricer tests; DAG calls then fail with the stable
-/// `DAG_SERVICE_UNAVAILABLE` error. Each bridge call holds only its domain-specific mutex for
-/// the duration of the Rust operation, so no lock guard crosses a C++ executor callback.
+/// Full production construction initializes all three domains from one shared Rust storage
+/// handle before publishing the service. Compatibility construction omits DAG and sortition
+/// state for standalone TransactionManager or GasPricer tests; unavailable calls fail with
+/// stable domain-specific errors. Each current bridge call holds only its domain-specific
+/// mutex for the duration of the Rust operation, and no guard crosses an external executor
+/// callback. A future operation that genuinely needs multiple domains must acquire them in
+/// the universal DAG-then-sortition-then-transaction order.
 pub struct BridgeDagTransactionService {
     transaction: Mutex<TransactionRuntimeState>,
     dag: Mutex<Option<DagRuntimeState>>,
+    sortition: Mutex<Option<SortitionParamsManager>>,
+    /// Immutable mirror used only for lock-free construction-time capability checks.
+    has_sortition: bool,
+}
+
+/// Validated guard for the sortition domain of a fully composed service.
+///
+/// Construction fails with `SORTITION_SERVICE_UNAVAILABLE` before this guard
+/// is returned for transaction-only compatibility services.
+pub(crate) struct BridgeSortitionGuard<'a>(MutexGuard<'a, Option<SortitionParamsManager>>);
+
+impl std::ops::Deref for BridgeSortitionGuard<'_> {
+    type Target = SortitionParamsManager;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("sortition operation requires a production DAG service")
+    }
+}
+
+impl std::ops::DerefMut for BridgeSortitionGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_mut()
+            .expect("sortition operation requires a production DAG service")
+    }
 }
 
 impl BridgeDagTransactionService {
@@ -52,7 +82,30 @@ impl BridgeDagTransactionService {
         Ok(guard)
     }
 
-    /// Locks the composed runtimes in the universal DAG-then-transaction order.
+    pub(crate) fn sortition(&self) -> Result<BridgeSortitionGuard<'_>> {
+        let guard = self
+            .sortition
+            .lock()
+            .map_err(|_| anyhow!("DAG_TRANSACTION_SERVICE_SORTITION_LOCK_POISONED"))?;
+        if guard.is_none() {
+            return Err(anyhow!("SORTITION_SERVICE_UNAVAILABLE"));
+        }
+        Ok(BridgeSortitionGuard(guard))
+    }
+
+    /// Reports whether this service owns sortition runtime state.
+    ///
+    /// Full application services return `true`; transaction-only and gas-pricer
+    /// compatibility services return `false`. The value is immutable after
+    /// construction, so callers may fail fast without acquiring a service lock.
+    pub fn dag_transaction_service_has_sortition(&self) -> bool {
+        self.has_sortition
+    }
+
+    /// Locks the DAG and transaction subset in their universal relative order.
+    ///
+    /// Sortition is not needed by this operation. A future three-domain
+    /// operation must insert its sortition guard between these two guards.
     fn dag_and_transaction(
         &self,
     ) -> Result<(
@@ -71,6 +124,7 @@ pub fn create_dag_transaction_service_from_storage(
     genesis: &[u8; 32],
     dag_expiry_limit: u32,
     max_levels_per_period: u64,
+    sortition_config: SortitionRuntimeConfig,
     transaction_queue_config: TransactionQueueConfig,
     gas_pricer_config: GasPricerConfig,
     proposal_dag_gas_limit: u64,
@@ -84,9 +138,13 @@ pub fn create_dag_transaction_service_from_storage(
     let mut dag = *build_dag_state_from_storage(genesis, dag_expiry_limit, storage)?;
     dag.dag_manager_runtime_restore_from_storage()?;
     dag.dag_manager_runtime_ensure_proposal_period_mapping(max_levels_per_period, 0)?;
+    let sortition =
+        SortitionParamsManager::from_storage(sortition_config.into(), storage.0.clone())?;
     Ok(Box::new(BridgeDagTransactionService {
         transaction: Mutex::new(transaction),
         dag: Mutex::new(Some(dag)),
+        sortition: Mutex::new(Some(sortition)),
+        has_sortition: true,
     }))
 }
 
@@ -106,6 +164,8 @@ pub fn create_dag_transaction_service_for_transaction_manager(
     Ok(Box::new(BridgeDagTransactionService {
         transaction: Mutex::new(transaction),
         dag: Mutex::new(None),
+        sortition: Mutex::new(None),
+        has_sortition: false,
     }))
 }
 
@@ -117,6 +177,8 @@ pub fn create_dag_transaction_service_for_gas_pricer(
     Ok(Box::new(BridgeDagTransactionService {
         transaction: Mutex::new(transaction),
         dag: Mutex::new(None),
+        sortition: Mutex::new(None),
+        has_sortition: false,
     }))
 }
 
@@ -971,6 +1033,20 @@ mod tests {
     fn queue_config() -> TransactionQueueConfig {
         TransactionQueueConfig { max_size: 100 }
     }
+    fn sortition_config() -> SortitionRuntimeConfig {
+        SortitionRuntimeConfig {
+            threshold_upper: 1_000,
+            difficulty_min: 1,
+            difficulty_max: 10,
+            difficulty_stale: 3,
+            lambda_bound: 100,
+            changes_count_for_average: 4,
+            dag_efficiency_target_low: 4_800,
+            dag_efficiency_target_high: 5_200,
+            changing_interval: 1,
+            computation_interval: 1,
+        }
+    }
     fn gas_config() -> GasPricerConfig {
         GasPricerConfig {
             percentile: 50,
@@ -1053,10 +1129,16 @@ mod tests {
     fn period_data_rlp(pbft_block: &[u8], transaction_rlp: &[u8]) -> Vec<u8> {
         let mut transactions = RlpStream::new_list(1);
         transactions.append_raw(transaction_rlp, 1);
+        let mut finalized_dag_bundle = RlpStream::new_list(3);
+        finalized_dag_bundle.begin_list(0);
+        finalized_dag_bundle.begin_list(1);
+        finalized_dag_bundle.begin_list(1);
+        finalized_dag_bundle.append(&0usize);
+        finalized_dag_bundle.begin_list(0);
         let mut period_data = RlpStream::new_list(5);
         period_data.append_raw(pbft_block, 1);
         period_data.append_raw(&[0xC0], 1);
-        period_data.append_raw(&[0xC0], 1);
+        period_data.append_raw(&finalized_dag_bundle.out(), 1);
         period_data.append_raw(&transactions.out(), 1);
         period_data.append_raw(&[0xC0], 1);
         period_data.out().to_vec()
@@ -1240,6 +1322,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1302,6 +1385,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1391,6 +1475,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1427,6 +1512,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1497,6 +1583,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1565,6 +1652,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1613,6 +1701,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1728,6 +1817,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1790,6 +1880,7 @@ mod tests {
                 &[1; 32],
                 32,
                 100,
+                sortition_config(),
                 queue_config(),
                 gas_config(),
                 u64::MAX,
@@ -1846,6 +1937,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1888,6 +1980,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -1963,6 +2056,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -2018,6 +2112,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -2086,6 +2181,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -2168,7 +2264,7 @@ mod tests {
     }
 
     #[test]
-    fn full_service_restores_both_domains_and_transaction_only_rejects_dag() {
+    fn full_service_restores_all_domains_and_transaction_only_rejects_dag_and_sortition() {
         let dir = unique_temp_dir("rustaxa_dag_transaction_service");
         let storage = create_storage(dir.to_str().unwrap()).unwrap();
         let full = create_dag_transaction_service_from_storage(
@@ -2176,11 +2272,13 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
         )
         .unwrap();
+        assert!(full.dag_transaction_service_has_sortition());
         assert_eq!(full.transaction_manager_runtime_transaction_count(), 0);
         assert_eq!(full.dag_manager_runtime_vertex_count().unwrap(), 1);
         assert!(!full
@@ -2196,11 +2294,13 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
         )
         .unwrap();
+        assert!(restored.dag_transaction_service_has_sortition());
         assert_eq!(restored.dag_manager_runtime_latest_period().unwrap(), 0);
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -2223,6 +2323,7 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        assert!(!compat.dag_transaction_service_has_sortition());
         assert_eq!(compat.transaction_manager_runtime_transaction_count(), 0);
         let error = match compat.dag() {
             Ok(_) => panic!("transaction-only service unexpectedly exposed DAG state"),
@@ -2236,7 +2337,16 @@ mod tests {
                 .to_string(),
             "DAG_SERVICE_UNAVAILABLE"
         );
+        assert_eq!(
+            compat
+                .sortition_params_for_period_from_storage(0)
+                .err()
+                .expect("transaction-only service unexpectedly exposed sortition state")
+                .to_string(),
+            "SORTITION_SERVICE_UNAVAILABLE"
+        );
         let gas_pricer = create_dag_transaction_service_for_gas_pricer(gas_config()).unwrap();
+        assert!(!gas_pricer.dag_transaction_service_has_sortition());
         assert_eq!(
             gas_pricer.transaction_manager_runtime_transaction_count(),
             0
@@ -2266,6 +2376,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -2313,6 +2424,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -2352,6 +2464,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -2489,6 +2602,7 @@ mod tests {
             &[1; 32],
             32,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
@@ -2539,6 +2653,7 @@ mod tests {
             &[1; 32],
             1,
             100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
