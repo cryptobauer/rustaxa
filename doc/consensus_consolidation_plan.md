@@ -434,22 +434,18 @@ Implementation notes:
   symbol; original header and source diffs versus `upstream-main` are empty. Mapping, API, architecture, Rust/C++
   implementation, and independent review used the code-mapper, api-designer, architect-reviewer, rust-engineer, cpp-pro,
   and reviewer agents. No blockchain/EVM agent was needed because contract execution was outside this slice.
-- The standalone DAG graph facade is fully detached from `DagOld`/`PivotTreeOld`. Feature-on builds exclude the
-  untouched original `dag.cpp`, the overlay wrapper directly includes the self-contained hash-only facade, and the
-  compile rename plus Old-identity assertions are deleted. `BridgeDagGraph` remains authoritative for vertex presence,
-  insertion, ghost-path and ordering decisions, leaf selection, clear/reset behavior, and Graphviz output. C++ retains
-  only the stable `Dag`/`PivotTree` compatibility API and bridge holder until public callers move behind
-  `BridgeDagManagerRuntime` or a narrower external API. Rust-disabled pure-C++ builds continue to select the untouched
-  original Boost graph implementation.
-  Validation passed 87 focused Rust consensus DAG tests, 33 Rust bridge DAG tests, all three standalone facade tests,
-  three CXX graph tests, all 13 `dag_test` cases, all 13 `dag_block_test` cases, the focused single-node PBFT manager
-  consumer, the `taraxad` build, both boundary guards, `make rewrite-validate-fast`,
-  `make rewrite-validate-consensus`, and `make rewrite-validate-smoke`. Feature-on build metadata and the core archive
-  contain neither the original source object nor any `DagOld`/`PivotTreeOld` symbol; original header and source diffs
-  versus `upstream-main` are empty. An all-Rust-off configuration selected and compiled the untouched original source
-  without the shim or rename. Mapping, API, architecture, C++ implementation, and independent review used the
-  code-mapper, api-designer, architect-reviewer, cpp-pro, and reviewer agents. No Rust or blockchain/EVM implementation
-  agent was needed because runtime, bridge, storage, and contract behavior did not change.
+- The standalone DAG graph facade was first detached from `DagOld`/`PivotTreeOld` and is now retired entirely.
+  `BridgeDagGraph`, its CXX methods, `dag_shim`, and bridge-mechanics tests are deleted because Rust-enabled production
+  already owns total-DAG and pivot-tree state inside `BridgeDagManagerRuntime`. Rust-disabled pure-C++ builds continue
+  to select the untouched original Boost graph implementation, while Rust mode excludes `dag.cpp` and relies on native
+  `DagGraph` tests plus production `DagManager` coverage.
+  Retirement validation passed 87 focused Rust consensus DAG tests, 28 Rust bridge DAG-manager/proposer tests, all 286
+  bridge tests, all six Rust-mode `dag_test` manager cases, all 13 `dag_block_test` cases, the focused PBFT manager
+  consumer build, the `taraxad` startup smoke, both boundary guards, and `make rewrite-validate-fast`. The broader
+  consensus gate retained the known reward-cursor bootstrap fixture failures, and the Tier 3 CTest gate passed 21 of 27
+  binaries with the same five in-process `/tmp/taraxa0` RocksDB-lock failures plus the known Go/cgo static-link failure.
+  Feature-on build metadata and the core archive contain neither the original source object nor any
+  `DagOld`/`PivotTreeOld` symbol; original DAG and manager source/header diffs versus `upstream-main` remain empty.
 - The standalone DAG block proposer facade is fully detached from `DagBlockProposerOld`. Feature-on builds exclude the
   untouched original `dag_block_proposer.cpp`, the overlay wrapper directly includes the self-contained executor
   facade, and the compile rename is deleted. The facade now explicitly includes its configuration, thread-pool, and
@@ -1094,8 +1090,9 @@ Implementation notes:
   materialization and the broader public facade itself, not legacy DAG manager base or compile identity.
 - Follow-up DAG facade cleanup first removed the unused Boost graph alias re-exports, direct Boost includes, and
   protected Boost-vertex helper stubs from `dag_shim`, then detached the facade from the legacy implementation entirely.
-  The Rust-mode DAG facade is self-contained and hash-only; feature-on builds neither import the legacy header nor
-  compile the original source under `DagOld`/`PivotTreeOld` names.
+  At that stage the Rust-mode DAG facade was self-contained and hash-only, and feature-on builds neither imported the
+  legacy header nor compiled the original source under `DagOld`/`PivotTreeOld` names. The facade and its bridge handle
+  were later retired because production graph state already lived inside `BridgeDagManagerRuntime`.
 - `pbft_manager_shim` still routes through shim-owned lifecycle/finalization orchestration in multiple places.
   The `transaction_manager_shim` packing path now uses `pack_prepare_sharded` + `pack_finalize_with_estimates` and is already
   reduced to thin conversion plus one Rust service round-trip plus deterministic materialization.
@@ -2126,8 +2123,9 @@ Implementation status:
   keyed by wallet VRF public key, so `dag_block_proposer_shim` no longer snapshots or applies retry state through a
   standalone bridge handle.
 - `BridgeDagManagerState` is deleted. The unused storage-free DAG manager state handle and its CXX methods were removed;
-  live DAG manager state is owned by `BridgeDagManagerRuntime`, while standalone graph compatibility remains isolated in
-  `BridgeDagGraph`.
+  live DAG manager state and both native DAG graphs are owned by `BridgeDagManagerRuntime`. The later standalone graph
+  cleanup also deleted `BridgeDagGraph`; direct `Dag`/`PivotTree` compatibility now remains pure-C++ reference coverage
+  rather than a Rust-mode production surface.
 - No-caller CXX exports for standalone DAG helper planners (`dag_derive_frontier`,
   `dag_validate_pivot_tips_metadata`), PBFT-chain storage restore (`restore_pbft_chain_storage`), and the old
   fact-shaped transaction-manager runtime known check (`transaction_manager_runtime_is_transaction_known`) are deleted.

@@ -20,7 +20,7 @@ use crate::transaction::*;
 use crate::transaction_manager::*;
 use crate::vdf::*;
 use ethereum_types::H256;
-use rustaxa_consensus::dag::{DagGraph, DagManagerState};
+use rustaxa_consensus::dag::DagManagerState;
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
@@ -151,8 +151,6 @@ pub struct BridgeConsensusQueryApi(pub ConsensusQueryApi);
 pub struct BridgeConsensusNetworkApi {
     pub api: Mutex<ConsensusNetworkApi>,
 }
-
-pub struct BridgeDagGraph(pub DagGraph);
 
 /// DagManager runtime wrapper coupling deterministic in-memory state with the
 /// shared Rust storage handle used for direct DAG persistence and reads.
@@ -4562,28 +4560,6 @@ pub mod rustaxa_ffi {
         ) -> VdfSortitionVerifyResult;
 
         // Consensus DAG
-
-        type BridgeDagGraph;
-
-        pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph>;
-        pub fn dag_vertex_count(self: &BridgeDagGraph) -> usize;
-        pub fn dag_edge_count(self: &BridgeDagGraph) -> usize;
-        pub fn dag_has_vertex(self: &BridgeDagGraph, vertex: &[u8; 32]) -> bool;
-        pub fn dag_add_vertex_edges(
-            self: &mut BridgeDagGraph,
-            new_vertex: &[u8; 32],
-            pivot: &[u8; 32],
-            tips: Vec<DagHash>,
-        ) -> bool;
-        pub fn dag_leaves(self: &BridgeDagGraph) -> Vec<DagHash>;
-        pub fn dag_ghost_path(self: &BridgeDagGraph, root: &[u8; 32]) -> Vec<DagHash>;
-        pub fn dag_compute_order(
-            self: &BridgeDagGraph,
-            anchor: &[u8; 32],
-            non_finalized_blocks: Vec<DagLevelHashes>,
-        ) -> DagOrder;
-        pub fn dag_clear(self: &mut BridgeDagGraph);
-        pub fn dag_graphviz_dot(self: &BridgeDagGraph) -> String;
 
         type BridgeDagManagerRuntime;
 

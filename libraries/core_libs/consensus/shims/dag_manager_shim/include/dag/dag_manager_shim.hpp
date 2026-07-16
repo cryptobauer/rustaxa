@@ -13,7 +13,6 @@
 #include <vector>
 
 #include "common/thread_pool.hpp"
-#include "dag/dag.hpp"
 #include "dag/dag_block.hpp"
 #include "dag/sortition_params_manager.hpp"
 #include "pbft/pbft_chain.hpp"
@@ -22,6 +21,9 @@
 #include "transaction/transaction_manager.hpp"
 
 namespace taraxa {
+
+class KeyManager;
+class Network;
 
 /**
  * DAG-owned result after applying finalized DAG order for PBFT finalization.
@@ -178,14 +180,12 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   rustaxa::DagProposerSessionStep proposerSessionNext(uint64_t session_id);
   rustaxa::DagProposerSessionStep reportProposerTransactions(uint64_t session_id,
                                                              rustaxa::DagProposerTransactionPackReport report);
-  rustaxa::DagProposerSessionStep reportProposerVdfWait(uint64_t session_id,
-                                                        rustaxa::DagProposerVdfWaitReport report);
+  rustaxa::DagProposerSessionStep reportProposerVdfWait(uint64_t session_id, rustaxa::DagProposerVdfWaitReport report);
   rustaxa::DagProposerSessionStep reportProposerVdfProof(uint64_t session_id,
                                                          rustaxa::DagProposerVdfProofReport report);
   rustaxa::DagProposerSessionStep reportProposerStaleProof(uint64_t session_id,
                                                            rustaxa::DagProposerStaleProofReport report);
-  rustaxa::DagProposerSessionStep reportProposerSigning(uint64_t session_id,
-                                                        rustaxa::DagProposerSigningReport report);
+  rustaxa::DagProposerSessionStep reportProposerSigning(uint64_t session_id, rustaxa::DagProposerSigningReport report);
   rustaxa::DagProposerSessionStep reportProposerAddBlock(uint64_t session_id,
                                                          rustaxa::DagProposerAddBlockReport report);
   /**

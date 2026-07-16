@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
 
+#ifndef RUSTAXA_ENABLE
 #include <fstream>
-#include <stdexcept>
+#endif
 
 #include "common/init.hpp"
 #include "common/types.hpp"
+#ifndef RUSTAXA_ENABLE
+#include "dag/dag.hpp"
+#endif
 #include "dag/dag_manager.hpp"
 #include "logger/logger.hpp"
 #include "test_util/test_util.hpp"
@@ -13,6 +17,7 @@ namespace taraxa::core_tests {
 
 struct DagTest : NodesTest {};
 
+#ifndef RUSTAXA_ENABLE
 TEST_F(DagTest, build_dag) {
   const blk_hash_t GENESIS("0000000000000000000000000000000000000000000000000000000000000001");
   taraxa::Dag graph(GENESIS, addr_t());
@@ -153,16 +158,6 @@ TEST_F(DagTest, clear_and_draw_graph_use_current_graph) {
 
   std::string content((std::istreambuf_iterator<char>(dot)), std::istreambuf_iterator<char>());
   EXPECT_NE(content.find("digraph"), std::string::npos);
-}
-
-#ifdef RUSTAXA_ENABLE
-TEST_F(DagTest, rust_backed_dag_copy_throws) {
-  const blk_hash_t GENESIS("0000000000000000000000000000000000000000000000000000000000000001");
-  taraxa::Dag graph(GENESIS, addr_t());
-  taraxa::Dag other(GENESIS, addr_t());
-
-  EXPECT_THROW({ taraxa::Dag copy(graph); }, std::logic_error);
-  EXPECT_THROW({ other = graph; }, std::logic_error);
 }
 #endif
 

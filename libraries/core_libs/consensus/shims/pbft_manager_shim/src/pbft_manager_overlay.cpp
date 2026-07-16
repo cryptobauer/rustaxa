@@ -15,7 +15,6 @@
 
 #include "common/thread_pool.hpp"
 #include "config/version.hpp"
-#include "dag/dag.hpp"
 #include "dag/dag_manager.hpp"
 #include "final_chain/final_chain.hpp"
 #include "network/network.hpp"

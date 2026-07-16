@@ -16,7 +16,7 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyBlockVdfReport, DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionResult,
     HashLookup, PeriodLookup, SortitionRuntimeParams,
 };
-use crate::ffi::{BridgeDagGraph, BridgeDagManagerRuntime, BridgeStorage};
+use crate::ffi::{BridgeDagManagerRuntime, BridgeStorage};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 #[cfg(test)]
@@ -35,7 +35,7 @@ use rustaxa_consensus::dag::{
     plan_dag_verify_transaction_query, proposal_period_for_level_from_storage,
     save_dag_block_to_storage, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
-    verify_dag_vdf_sortition_from_block, verify_precheck_from_storage, DagGraph,
+    verify_dag_vdf_sortition_from_block, verify_precheck_from_storage,
     DagManagerBlock as DomainDagManagerBlock,
     DagManagerFinalizationCleanupStoragePayload as DomainDagManagerFinalizationCleanupStoragePayload,
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
@@ -58,7 +58,7 @@ use rustaxa_consensus::dag::{
 use rustaxa_consensus::pbft_chain::restore_pbft_chain_from_storage;
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 use rustaxa_storage::Storage;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Module-private deterministic plan for advancing DAG finalization state.
@@ -203,10 +203,6 @@ struct DagManagerRuntimeSyncSnapshot {
     selected_hashes: Vec<DagHash>,
 }
 
-pub fn create_dag_graph(genesis: &[u8; 32]) -> Box<BridgeDagGraph> {
-    Box::new(BridgeDagGraph(DagGraph::new(to_h256(genesis))))
-}
-
 /// Creates a Rust-owned DagManager runtime with direct storage access.
 ///
 /// The runtime owns deterministic graph/index state and a cloned Rust storage
@@ -226,81 +222,6 @@ pub fn create_dag_manager_runtime_from_storage(
         proposer_retry_states: BTreeMap::new(),
         verify_block_session: None,
     }))
-}
-
-impl BridgeDagGraph {
-    pub fn dag_vertex_count(&self) -> usize {
-        self.0.vertex_count()
-    }
-
-    pub fn dag_edge_count(&self) -> usize {
-        self.0.edge_count()
-    }
-
-    pub fn dag_has_vertex(&self, vertex: &[u8; 32]) -> bool {
-        self.0.has_vertex(to_h256(vertex))
-    }
-
-    pub fn dag_add_vertex_edges(
-        &mut self,
-        new_vertex: &[u8; 32],
-        pivot: &[u8; 32],
-        tips: Vec<DagHash>,
-    ) -> bool {
-        let tips = tips
-            .iter()
-            .map(|tip| H256::from(tip.hash))
-            .collect::<Vec<_>>();
-        self.0
-            .add_vertex_edges(to_h256(new_vertex), to_h256(pivot), &tips)
-    }
-
-    pub fn dag_leaves(&self) -> Vec<DagHash> {
-        to_dag_hashes(self.0.leaves())
-    }
-
-    pub fn dag_ghost_path(&self, root: &[u8; 32]) -> Vec<DagHash> {
-        to_dag_hashes(self.0.ghost_path(to_h256(root)))
-    }
-
-    pub fn dag_compute_order(
-        &self,
-        anchor: &[u8; 32],
-        non_finalized_blocks: Vec<DagLevelHashes>,
-    ) -> DagOrder {
-        let non_finalized_blocks = non_finalized_blocks
-            .into_iter()
-            .map(|level_hashes| {
-                (
-                    level_hashes.level,
-                    level_hashes
-                        .hashes
-                        .into_iter()
-                        .map(|hash| H256::from(hash.hash))
-                        .collect::<BTreeSet<_>>(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-
-        match self.0.compute_order(to_h256(anchor), &non_finalized_blocks) {
-            Some(hashes) => DagOrder {
-                found: true,
-                hashes: to_dag_hashes(hashes),
-            },
-            None => DagOrder {
-                found: false,
-                hashes: Vec::new(),
-            },
-        }
-    }
-
-    pub fn dag_clear(&mut self) {
-        self.0.clear();
-    }
-
-    pub fn dag_graphviz_dot(&self) -> String {
-        self.0.graphviz_dot()
-    }
 }
 
 impl BridgeDagManagerRuntime {

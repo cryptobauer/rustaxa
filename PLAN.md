@@ -802,8 +802,8 @@ The C++ consensus area includes:
 
 The current Rust consensus footprint is broad but still incomplete:
 
-- `rustaxa-consensus` contains early FinalChain read/index logic, Rust-backed DAG graph state exposed through a
-  standalone hash-only C++ facade with no feature-on legacy Boost graph scaffold, Rust-backed
+- `rustaxa-consensus` contains early FinalChain read/index logic, native DAG graph state owned by the Rust DAG manager
+  runtime with no standalone Rust-mode C++ graph facade or feature-on legacy Boost graph scaffold, Rust-backed
   sortition efficiency/threshold runtime state, Rust-backed PBFT chain head/validation state, and Rust-backed
   proposed PBFT block cache, period-data queue metadata state, and DagManager `verifyBlock` deterministic reject
   decisions for prechecks, transaction availability, DAG VDF payload/embedded-VRF/difficulty/proof verification,
@@ -913,8 +913,7 @@ The current Rust consensus footprint is broad but still incomplete:
    non-finalized sync selection, add-block planning, signed-RLP proposed-block fact decoding, proposed DAG transaction
    payload persistence, and proposal-attempt planning now route through Rust. Remaining C++ in this area is explicit
    executor/compatibility work: live transaction-pool reads, FinalChain/DPoS fact sourcing, EVM gas execution,
-   event/network/public object materialization, local cache cleanup, the remaining hash-only compatibility facade, and live
-   transaction-manager sidecar cleanup.
+   event/network/public object materialization, local cache cleanup, and live transaction-manager sidecar cleanup.
 6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
    `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and routes embedded VRF proof
    verification, DAG VDF payload decode, difficulty calculation, legacy-modulus Wesolowski proof check, status-coded

@@ -18,10 +18,10 @@ file(GLOB_RECURSE CONSENSUS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/consensus/*.cpp)
 list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
-    # The Rust-mode DAG graph, DAG manager, DAG block proposer, KeyManager,
-    # TransactionManager, its native queue runtime, and SortitionParamsManager
-    # overlays are fully standalone. Keep the untouched legacy implementations
-    # only in pure C++ reference builds.
+    # Rust mode no longer exposes the standalone DAG/PivotTree graph facade. Its
+    # DAG manager, DAG block proposer, KeyManager, TransactionManager, native
+    # queue runtime, and SortitionParamsManager overlays are fully standalone.
+    # Keep the untouched legacy implementations only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag_manager\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag_block_proposer\\.cpp$")
@@ -201,10 +201,6 @@ if(RUSTAXA_ENABLE)
     # SortitionParamsManager facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/src/sortition_params_manager_shim.cpp)
-
-    # In Rust mode, inject the standalone Rust-backed Dag/PivotTree facades.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/dag_shim/src/dag_shim.cpp)
 
     # In Rust mode, inject the standalone Rust-backed KeyManager facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/include)
