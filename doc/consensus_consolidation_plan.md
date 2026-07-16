@@ -2851,6 +2851,40 @@ fact collection, explicit EVM/network execution, and logging; standalone gas-pri
 are compatibility-test support only. `CRW-04` therefore satisfies its tracker completion condition. `CRW-05` is the next
 dependency-ready application-owner composition item, with `CRW-07` continuing alongside its bridge deletions.
 
+### CRW-05 PBFT-Service Slashing Ownership
+
+The first bounded CRW-05/CRW-07 slice absorbs deterministic slashing planning and duplicate-proof state into the
+application-owned PBFT service.
+
+- `BridgePbftService` owns the planner configuration and bounded duplicate cache behind an independent sibling mutex.
+  The standalone `BridgeSlashingProofPlanner` handle, its factory, and the facade-owned box are deleted.
+- App bootstrap copies reporting enablement and Magnolia activation into the canonical PBFT service. The Rust-mode
+  `SlashingManager` receives that same service and calls its plan/report operations, so verified-vote and direct
+  compatibility submission routes share duplicate protection.
+- C++ remains the explicit executor for FinalChain submitter facts, gas-price lookup, transaction construction/signing,
+  and TransactionManager insertion. No Rust guard crosses those calls. Chain-only compatibility services reject
+  slashing operations explicitly because they do not own planner state.
+- The production verified-vote admission path remains the slashing trigger. Conflicting accepted-slot evidence reaches
+  the application-owned slashing executor through the existing typed admission report; no test-only public manager API
+  or second planner lifetime is introduced.
+- Focused Rust bridge coverage verifies disabled reporting, the Magnolia boundary, byte-compatible proof output,
+  accepted duplicate-cache publication, and rejected-submission retry. `StateAPITest.slashing` exercises the canonical
+  node-owned path through pre-activation rejection, activation-period submission, and validator jailing.
+- Validation passed all 318 `rustaxa-bridge` tests, including ten focused slashing tests and a two-caller shared-cache
+  ownership case. The Rust pre-commit hook, bridge/storage guards, `git diff --check`, the consensus Tier 2 gate, and
+  startup smoke completed; the Tier 2 gate retained its classified legacy reward-cursor and shared RocksDB fixture
+  diagnostics. `StateAPITest.slashing` passed twice through real verified-vote admission. The authorized Tier 3 CTest
+  run passed 21 of 27 binaries; its five C++ failures were the known same-process RocksDB-lock suites and `go_test`
+  retained the unrelated static cgo link failure. The Python Tier 3 command did not reach collection because Python
+  3.13 development headers are absent, so pinned `cytoolz` and `pyethash` could not build. The storage differential was
+  not warranted because this slice changes no storage behavior. Independent review findings were resolved by removing
+  a proposed test-only public VoteManager method, adding fail-fast slashing-capability validation, documenting the
+  complete PBFT service lock domains, and proving shared service cache ownership.
+
+The next CRW-05 ownership candidates remain sortition behind the DAG/transaction application service, rewards behind
+FinalChain, and pillar planning behind the PBFT service. Select the next bounded slice from fresh code mapping after this
+slice closes.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

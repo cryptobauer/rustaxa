@@ -171,6 +171,8 @@ void App::init(const cli::Config &cli_conf) {
   pbft_manager_config.max_steps = 13;
   pbft_manager_config.deadline_ms = 4 * static_cast<uint64_t>(conf_.genesis.pbft.lambda_ms);
   pbft_manager_config.polling_interval_ms = 100;
+  pbft_manager_config.report_malicious_behaviour = conf_.report_malicious_behaviour;
+  pbft_manager_config.magnolia_activation_period = conf_.genesis.state.hardforks.magnolia_hf.block_num;
   pbft_service_ =
       std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db_->rustStorage(), pbft_manager_config));
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, pbft_service_);
@@ -183,7 +185,12 @@ void App::init(const cli::Config &cli_conf) {
 #else
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
+#ifdef RUSTAXA_ENABLE_SLASHING_MANAGER
+  auto slashing_manager =
+      std::make_shared<SlashingManager>(conf_, pbft_service_, final_chain_, trx_mgr_, gas_pricer_);
+#else
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
+#endif
 #ifdef RUSTAXA_ENABLE
   vote_mgr_ =
       std::make_shared<VoteManager>(conf_, pbft_service_, pbft_chain_, final_chain_, key_manager_, slashing_manager);

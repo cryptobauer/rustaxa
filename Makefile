@@ -162,12 +162,15 @@ rewrite-bridge-inventory-guard: ## Require bridge CXX handles to be documented i
 	scripts/rewrite_bridge_inventory_guard.sh
 
 .PHONY: rewrite-validate-storage
-rewrite-validate-storage: ## Run Rust storage bridge tests and C++ vs Rust storage conformance diff.
+rewrite-validate-storage: ## Run Tier 2 Rust storage bridge tests.
 	$(call require_cmake_build)
 	$(call warn_unless_rustaxa_enabled)
 	$(call require_cmake_target,rust_storage_tests)
 	cmake --build $(BUILD_OUTPUT_DIR) --target rust_storage_tests
 	$(BUILD_OUTPUT_DIR)/bin/rust_storage_tests
+
+.PHONY: rewrite-validate-storage-conformance
+rewrite-validate-storage-conformance: rewrite-validate-storage ## Run Tier 3 C++ vs Rust storage conformance validation.
 	scripts/storage_conformance_diff.sh
 
 .PHONY: rewrite-validate-consensus

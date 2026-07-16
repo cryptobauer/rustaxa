@@ -2199,6 +2199,7 @@ mod tests {
                 rustaxa_consensus::proposed_blocks::ProposedBlocks::new(),
             ),
             verified_votes: std::sync::Mutex::new(Some(runtime)),
+            slashing: None,
             storage: storage.map(|storage| storage.0.clone()),
             bootstrap_complete: std::sync::atomic::AtomicBool::new(true),
         }))

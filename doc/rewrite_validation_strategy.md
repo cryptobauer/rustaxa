@@ -45,8 +45,8 @@ Storage:
 make rewrite-validate-storage
 ```
 
-This builds and runs `rust_storage_tests`, then runs the C++ vs Rust storage conformance diff. The conformance diff is
-expensive, so coordinate before running it during large refactors.
+This builds and runs `rust_storage_tests`. Escalate larger or broad storage changes to the Tier 3 storage conformance
+target below.
 
 Consensus:
 
@@ -97,6 +97,18 @@ Use this tier for broad, shared, production-routing, or high-risk rewrite change
   ```bash
   cd tests/py && ./run.sh -s --tb=short
   ```
+
+- C++/Rust storage differential when storage behavior changes broadly or a larger storage refactor requires full
+  conformance coverage:
+
+  ```bash
+  make rewrite-validate-storage-conformance
+  ```
+
+  This target runs the Tier 2 storage bridge tests first, then `scripts/storage_conformance_diff.sh`. The differential is
+  a regular Tier 3 gate. A task owner's standing authorization to run warranted Tier 3 validation includes this script;
+  no separate script-specific approval is required. Without standing Tier 3 authorization, coordinate before running
+  it as required by the repository guidelines.
 
 - Pure C++ validation on `cpp-reference` for upstream sync work or C++ intersection changes.
 

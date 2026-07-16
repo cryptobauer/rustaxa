@@ -398,6 +398,8 @@ mod tests {
                 max_steps: 13,
                 deadline_ms: 400,
                 polling_interval_ms: 100,
+                report_malicious_behaviour: false,
+                magnolia_activation_period: 0,
             },
         )
         .expect("service should restore")
@@ -639,6 +641,8 @@ mod tests {
                     max_steps: 13,
                     deadline_ms: 400,
                     polling_interval_ms: 100,
+                    report_malicious_behaviour: false,
+                    magnolia_activation_period: 0,
                 },
             )
             .err()

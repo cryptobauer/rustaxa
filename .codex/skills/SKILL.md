@@ -134,7 +134,7 @@ make rewrite-validate-consensus
 # FinalChain, DPoS, StateAPI adapters, and CRW-08/CRW-09
 make rewrite-validate-final-chain
 
-# Storage behavior; coordinate first because this includes the expensive conformance diff
+# Tier 2 storage behavior
 make rewrite-validate-storage
 ```
 
@@ -157,11 +157,12 @@ cmake --build /build --target rust_storage_tests --parallel 12
 /build/bin/rust_storage_tests
 ```
 
-Run affected C++ tests. Coordinate with the task owner before the expensive storage conformance diff when required;
-recorded standing authorization in the active task or prompt satisfies this requirement:
+Run affected C++ tests. The storage conformance differential is a regular Tier 3 gate. Run its target when required by
+the validation strategy; standing Tier 3 authorization in the active task or prompt includes the underlying script
+without separate script-specific approval:
 
 ```bash
-scripts/storage_conformance_diff.sh
+make rewrite-validate-storage-conformance
 ```
 
 Prefer targeted C++ validation for routine changes. Run repo-wide `check-static` only when the change scope or repository

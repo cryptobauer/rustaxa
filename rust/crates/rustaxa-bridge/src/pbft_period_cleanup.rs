@@ -239,6 +239,7 @@ mod tests {
             })),
             proposed_blocks: RwLock::new(Default::default()),
             verified_votes: Mutex::new(runtime),
+            slashing: None,
             storage,
             bootstrap_complete: AtomicBool::new(true),
         }

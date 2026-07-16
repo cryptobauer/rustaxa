@@ -472,6 +472,10 @@ pub fn create_pbft_service_from_storage(
     storage: &BridgeStorage,
     config: FfiPbftServiceConfig,
 ) -> anyhow::Result<Box<BridgePbftService>> {
+    let slashing = crate::slashing::create_slashing_state(
+        config.report_malicious_behaviour,
+        config.magnolia_activation_period,
+    )?;
     let restored_chain = restore_pbft_chain_from_storage(storage.0.as_ref())?;
     let restored_proposed_blocks = restore_proposed_blocks_from_storage(storage.0.as_ref())?;
     let restored_verified_votes =
@@ -528,6 +532,7 @@ pub fn create_pbft_service_from_storage(
         chain,
         proposed_blocks: std::sync::RwLock::new(proposed_blocks),
         verified_votes: std::sync::Mutex::new(Some(restored_verified_votes)),
+        slashing: Some(slashing),
         storage: Some(storage.0.clone()),
         bootstrap_complete: std::sync::atomic::AtomicBool::new(false),
     }))
@@ -574,6 +579,8 @@ pub fn create_pbft_manager_runtime_from_storage(
             max_steps: fact.max_steps,
             deadline_ms: fact.deadline_ms,
             polling_interval_ms: fact.polling_interval_ms,
+            report_malicious_behaviour: false,
+            magnolia_activation_period: 0,
         },
     )?;
     let runtime = create_domain_pbft_manager_runtime_from_storage(
@@ -4297,6 +4304,8 @@ mod tests {
             max_steps: startup.max_steps,
             deadline_ms: startup.deadline_ms,
             polling_interval_ms: startup.polling_interval_ms,
+            report_malicious_behaviour: true,
+            magnolia_activation_period: 0,
         }
     }
 

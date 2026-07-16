@@ -14,7 +14,6 @@ use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
 use crate::query::*;
 use crate::rewards_stats::*;
-use crate::slashing::*;
 use crate::sortition::*;
 use crate::storage::*;
 use crate::transaction::*;
@@ -241,17 +240,19 @@ pub(crate) struct BridgePbftManagerRuntimeState {
 /// state, proposed-block state, and their common storage handle. Manager
 /// commands are serialized by `manager`; chain and proposed-block reads use
 /// independent sibling lock domains, and every verified-vote operation is
-/// serialized by `verified_votes`. Operations that need both manager and chain
-/// acquire `manager` before `chain`; no guard is retained across a C++ executor
-/// call. A chain-only compatibility instance has neither manager nor verified-
-/// vote state and is held privately by the C++ `PbftChain` adapter. Reaching
-/// either unavailable receiver through that adapter is a bridge-wiring bug and
-/// returns an explicit error.
+/// serialized by `verified_votes`. Slashing planning and its duplicate-proof
+/// cache use the independent `slashing` mutex. Operations that need both
+/// manager and chain acquire `manager` before `chain`; no guard is retained
+/// across a C++ executor call. A chain-only compatibility instance has neither
+/// manager, verified-vote, nor slashing state and is held privately by the C++
+/// `PbftChain` adapter. Reaching an unavailable receiver through that adapter
+/// is a bridge-wiring bug and returns an explicit error.
 pub struct BridgePbftService {
     pub(crate) manager: Mutex<Option<BridgePbftManagerRuntimeState>>,
     pub(crate) chain: Arc<RwLock<BridgePbftChainState>>,
     pub(crate) proposed_blocks: RwLock<rustaxa_consensus::proposed_blocks::ProposedBlocks>,
     pub(crate) verified_votes: Mutex<Option<PbftVoteAdmissionRuntime>>,
+    pub(crate) slashing: Option<Mutex<SlashingProofPlanner>>,
     pub(crate) storage: Option<Arc<Storage>>,
     pub(crate) bootstrap_complete: AtomicBool,
 }
@@ -285,8 +286,6 @@ impl BridgePbftService {
         self.bootstrap_complete.load(Ordering::Acquire)
     }
 }
-
-pub struct BridgeSlashingProofPlanner(pub Mutex<SlashingProofPlanner>);
 
 /// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
 ///
@@ -1559,6 +1558,8 @@ pub mod rustaxa_ffi {
     ///
     /// The restored chain head supplies the current period and determines
     /// whether Cacti is active; callers cannot inject either derived fact.
+    /// Slashing enablement and Magnolia activation are copied into the
+    /// service-owned planner and cannot change during the service lifetime.
     struct PbftServiceConfig {
         genesis_lambda_ms: u64,
         cacti_lambda_max_ms: u64,
@@ -1568,6 +1569,8 @@ pub mod rustaxa_ffi {
         max_steps: u64,
         deadline_ms: u64,
         polling_interval_ms: u64,
+        report_malicious_behaviour: bool,
+        magnolia_activation_period: u64,
     }
 
     /// Rust-owned storage facts for replaying one finalized period during PBFT
@@ -5210,20 +5213,15 @@ pub mod rustaxa_ffi {
             current_period: u64,
             sync: bool,
         ) -> Result<RewardsStatsApplyResult>;
-        // Consensus slashing proof planner
+        // Consensus slashing proof planner owned by the PBFT service
 
-        type BridgeSlashingProofPlanner;
-
-        pub fn create_slashing_proof_planner(
-            report_malicious_behaviour: bool,
-            magnolia_activation_period: u64,
-        ) -> Result<Box<BridgeSlashingProofPlanner>>;
+        pub fn pbft_service_has_slashing(self: &BridgePbftService) -> bool;
         pub fn slashing_plan_double_voting_proof(
-            self: &BridgeSlashingProofPlanner,
+            self: &BridgePbftService,
             input: DoubleVotingProofInput,
         ) -> Result<DoubleVotingProofPlan>;
         pub fn slashing_report_double_voting_proof_submission(
-            self: &BridgeSlashingProofPlanner,
+            self: &BridgePbftService,
             report: DoubleVotingProofSubmissionReport,
         ) -> Result<bool>;
 

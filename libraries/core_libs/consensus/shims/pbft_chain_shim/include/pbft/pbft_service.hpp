@@ -11,10 +11,11 @@ namespace taraxa {
  * Shared C++ lifetime owner for the Rust PBFT application service.
  *
  * One instance owns one `BridgePbftService` box. `App` shares this holder with
- * the retained manager, chain, and proposed-block facades so none borrows a
- * nested Rust reference or restores independent production state. Rust owns
- * synchronization of the sibling manager, proposed-block, and chain lock
- * domains; this holder only provides RAII lifetime sharing.
+ * the retained manager, chain, proposed-block, verified-vote, and slashing
+ * facades so none borrows a nested Rust reference or restores independent
+ * production state. Rust owns synchronization of the sibling manager, chain,
+ * proposed-block, verified-vote, and slashing lock domains; this holder only
+ * provides RAII lifetime sharing.
  */
 class PbftService final {
  public:

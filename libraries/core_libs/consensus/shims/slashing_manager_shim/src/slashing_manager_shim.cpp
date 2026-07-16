@@ -93,15 +93,22 @@ rust::Vec<rustaxa::SlashingSubmitterFact> submitter_facts(const FullNodeConfig& 
 
 }  // namespace
 
-SlashingManager::SlashingManager(const FullNodeConfig& config, std::shared_ptr<final_chain::FinalChain> final_chain,
+SlashingManager::SlashingManager(const FullNodeConfig& config, SharedPbftService pbft_service,
+                                 std::shared_ptr<final_chain::FinalChain> final_chain,
                                  std::shared_ptr<TransactionManager> trx_manager,
                                  std::shared_ptr<GasPricer> gas_pricer)
     : final_chain_(std::move(final_chain)),
       trx_manager_(std::move(trx_manager)),
       gas_pricer_(std::move(gas_pricer)),
-      planner_(rustaxa::create_slashing_proof_planner(config.report_malicious_behaviour,
-                                                      config.genesis.state.hardforks.magnolia_hf.block_num)),
-      kConfig(config) {}
+      pbft_service_(std::move(pbft_service)),
+      kConfig(config) {
+  if (!pbft_service_) {
+    throw std::invalid_argument("SlashingManager requires a PBFT service");
+  }
+  if (!pbft_service_->service().pbft_service_has_slashing()) {
+    throw std::invalid_argument("SlashingManager requires a PBFT service with slashing state");
+  }
+}
 
 bool SlashingManager::submitDoubleVotingProof(const std::shared_ptr<PbftVote>& vote_a,
                                               const std::shared_ptr<PbftVote>& vote_b) {
@@ -154,7 +161,7 @@ rustaxa::DoubleVotingProofInput SlashingManager::makeDoubleVotingProofInput(
 }
 
 bool SlashingManager::submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInput input) {
-  const auto plan = planner_->slashing_plan_double_voting_proof(std::move(input));
+  const auto plan = pbft_service_->service().slashing_plan_double_voting_proof(std::move(input));
   if (!plan.should_submit) {
     return false;
   }
@@ -171,7 +178,7 @@ bool SlashingManager::submitDoubleVotingProofInput(rustaxa::DoubleVotingProofInp
   rustaxa::DoubleVotingProofSubmissionReport report;
   report.proof_hash = plan.proof_hash;
   report.transaction_inserted = trx_manager_->insertTransaction(trx).first;
-  return planner_->slashing_report_double_voting_proof_submission(std::move(report));
+  return pbft_service_->service().slashing_report_double_voting_proof_submission(std::move(report));
 }
 
 }  // namespace taraxa
