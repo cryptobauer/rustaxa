@@ -1,6 +1,6 @@
 ---
 name: implement-rustaxa-consensus-slice
-description: Select, design, implement, validate, and close out a bounded Rustaxa consensus rewrite slice with boundary-appropriate analysis and independent review. Use for requests such as "implement the next consensus slice", "continue the consensus rewrite", audit a proposed slice, remove remaining C++ consensus authority, or advance Rust consensus ownership.
+description: Select, design, implement, validate, and close out a bounded Rustaxa consensus rewrite slice with scope-directed custom-agent routing, boundary-appropriate analysis, and independent review. Use for requests such as "implement the next consensus slice", "continue the consensus rewrite", audit a proposed slice, remove remaining C++ consensus authority, or advance Rust consensus ownership.
 ---
 
 # Implement Rustaxa Consensus Slice
@@ -28,9 +28,9 @@ inspection command fails, diagnose it and use an available safe alternative rath
 
 ## Agent Use
 
-Let Codex decide whether and when to route work to the configured custom agents based on their descriptions and the
-current slice. Do not require a fixed agent sequence merely because the skill triggered. Handle process reviews, status
-answers, and simple planning locally unless delegation adds concrete value.
+Route each material workstream to the configured custom agent named by the matching rule below. Use only the roles whose
+scope applies; do not invoke unrelated agents or impose one universal sequence on every slice. Handle process reviews,
+status answers, and simple planning locally when none of the specialist scopes apply.
 
 - Use `code-mapper` when ownership, call paths, state flow, or remaining compatibility boundaries are unclear.
 - Ask `api-designer` to review Rust/C++ bridge shape, compatibility, and future API direction.

@@ -27,8 +27,8 @@ document retains detailed slice design, implementation history, and compatibilit
 
 ## Agent Routing
 
-Implementation slices from this plan use `$implement-rustaxa-consensus-slice`. Let Codex decide whether and when to route
-work to configured custom agents based on their descriptions and the current slice:
+Implementation slices from this plan use `$implement-rustaxa-consensus-slice`. Route each material workstream to the
+configured custom agent named by the matching rule below, and use only the roles whose scope applies:
 
 - `api-designer`: review Rust/C++ facade shape, DTO minimality, bridge compatibility, and whether a proposed API keeps
   consensus-internal callers out of shim/bridge routes.

@@ -11,10 +11,10 @@ required validation, documentation, and review have landed. Do not start a `bloc
 non-network/non-EVM consensus closeout. Update cross-cutting `CRW-07` in every slice that narrows or deletes bridge
 handles, CXX carriers, module flags, shims, or compatibility-only tests.
 
-Use RTK throughout. Decompose the dependency-ordered queue in the parent thread and let Codex route work to the relevant
-configured custom agents from their descriptions; do not prescribe a fixed per-slice agent sequence. Use
-`blockchain-engineer` only for explicitly scoped EVM, contract, signing, gas, slashing-transaction, or on-chain lifecycle
-work.
+Use RTK throughout. Decompose the dependency-ordered queue in the parent thread and route each material workstream to the
+configured custom agent specified by the skill's matching role rule. Use only the roles whose scope applies rather than
+invoking every role in a fixed sequence. Use `blockchain-engineer` only for explicitly scoped EVM, contract, signing, gas,
+slashing-transaction, or on-chain lifecycle work.
 
 Keep the selected tracker item, consolidation plan, and bridge audit synchronized; update `PLAN.md` only when scope,
 architecture, or an accepted ownership boundary changes. Validate every slice at the required tier, obtain an
