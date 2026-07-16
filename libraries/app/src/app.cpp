@@ -141,7 +141,12 @@ void App::init(const cli::Config &cli_conf) {
 
   final_chain_ = std::make_shared<final_chain::FinalChain>(db_, conf_, node_addr);
   key_manager_ = std::make_shared<KeyManager>(final_chain_);
+#ifdef RUSTAXA_ENABLE
+  dag_transaction_service_ = createDagTransactionService(conf_, *db_);
+  trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr, dag_transaction_service_);
+#else
   trx_mgr_ = std::make_shared<TransactionManager>(conf_, db_, final_chain_, node_addr);
+#endif
   gas_pricer_ = std::make_shared<GasPricer>(conf_.genesis, conf_.is_light_node, conf_.blocks_gas_pricer, trx_mgr_, db_);
 
   auto genesis_hash = conf_.genesis.genesisHash();
@@ -172,7 +177,12 @@ void App::init(const cli::Config &cli_conf) {
 #else
   pbft_chain_ = std::make_shared<PbftChain>(node_addr, db_);
 #endif
+#ifdef RUSTAXA_ENABLE
+  dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_,
+                                          dag_transaction_service_);
+#else
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
+#endif
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
 #ifdef RUSTAXA_ENABLE
   vote_mgr_ =

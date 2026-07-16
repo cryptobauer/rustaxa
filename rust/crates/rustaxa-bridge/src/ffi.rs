@@ -1,4 +1,5 @@
 use crate::dag::*;
+use crate::dag_transaction_service::*;
 use crate::final_chain::*;
 use crate::network::*;
 use crate::pbft_chain::*;
@@ -152,9 +153,12 @@ pub struct BridgeConsensusNetworkApi {
     pub api: Mutex<ConsensusNetworkApi>,
 }
 
-/// DagManager runtime wrapper coupling deterministic in-memory state with the
-/// shared Rust storage handle used for direct DAG persistence and reads.
-pub struct BridgeDagManagerRuntime {
+/// Private DAG state owned by the application-level DAG/transaction service.
+///
+/// The state couples deterministic graphs and proposal/verification sessions
+/// with the service's shared Rust storage. It never crosses CXX independently;
+/// bridge callers reach it only through `BridgeDagTransactionService`.
+pub(crate) struct DagRuntimeState {
     pub state: DagManagerState,
     pub storage: Arc<Storage>,
     pub next_proposer_session_id: u64,
@@ -373,15 +377,13 @@ pub struct BridgeSortitionParamsManager {
     pub manager: SortitionParamsManager,
 }
 
-/// Bridge-owned TransactionManager runtime handle for Rust-enabled manager paths.
+/// Private transaction state owned by the application-level DAG/transaction service.
 ///
-/// The runtime combines the manager sidecar state with Rust queue state so the
-/// C++ TransactionManager shim can route live admission, lookup, and finalization
-/// queue effects through one Rust-owned authority while still materializing
-/// legacy `Transaction` objects at the C++ API boundary. Production instances
-/// also own a cloned Rust storage handle so C++ does not retain or pass the
-/// generic `BridgeStorage` facade for transaction-manager storage operations.
-pub struct BridgeTransactionManagerRuntime {
+/// The state combines sidecars, queue, gas oracle, packing sessions, and a
+/// shared Rust storage handle. It never crosses CXX independently; retained C++
+/// facades reach it only through `BridgeDagTransactionService` and materialize
+/// legacy `Transaction` objects at explicit public or EVM executor boundaries.
+pub(crate) struct TransactionRuntimeState {
     pub sidecar: TransactionManagerSidecar,
     pub queue: TransactionQueue,
     pub gas_price_oracle: GasPriceOracle,
@@ -3666,7 +3668,7 @@ pub mod rustaxa_ffi {
 
     /// Input transaction fact for runtime-owned DAG transaction persistence.
     ///
-    /// Rust computes sidecar membership from `BridgeTransactionManagerRuntime`
+    /// Rust computes sidecar membership from `TransactionRuntimeState`
     /// instead of accepting C++ membership booleans.
     struct DagTransactionSaveSidecarFact {
         input_index: u64,
@@ -4504,38 +4506,51 @@ pub mod rustaxa_ffi {
 
         // Consensus DAG
 
-        type BridgeDagManagerRuntime;
+        type BridgeDagTransactionService;
 
-        pub fn create_dag_manager_runtime_from_storage(
+        pub fn create_dag_transaction_service_from_storage(
+            storage: &BridgeStorage,
             genesis: &[u8; 32],
             dag_expiry_limit: u32,
+            max_levels_per_period: u64,
+            transaction_queue_config: TransactionQueueConfig,
+            gas_pricer_config: GasPricerConfig,
+            proposal_dag_gas_limit: u64,
+        ) -> Result<Box<BridgeDagTransactionService>>;
+        pub fn create_dag_transaction_service_for_transaction_manager(
             storage: &BridgeStorage,
-        ) -> Result<Box<BridgeDagManagerRuntime>>;
+            transaction_queue_config: TransactionQueueConfig,
+            gas_pricer_config: GasPricerConfig,
+            proposal_dag_gas_limit: u64,
+        ) -> Result<Box<BridgeDagTransactionService>>;
+        pub fn create_dag_transaction_service_for_gas_pricer(
+            gas_pricer_config: GasPricerConfig,
+        ) -> Result<Box<BridgeDagTransactionService>>;
         /// Rebuilds the DAG runtime snapshot from Rust PBFT/DAG storage without
         /// using the legacy C++ graph mirror.
         pub fn dag_manager_runtime_restore_from_storage(
-            self: &mut BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> Result<()>;
         pub fn dag_manager_runtime_add_block(
-            self: &mut BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             block: DagManagerBlock,
         ) -> Result<()>;
         /// Plans one add-block execution from Rust-owned runtime graph state.
         pub fn dag_manager_runtime_plan_add_block(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             input: DagAddBlockRuntimeInput,
         ) -> Result<DagAddBlockEffectPlan>;
         /// Validates candidate pivot/tip references from Rust runtime state and
         /// storage without C++ `DagBlock` materialization.
         pub fn dag_manager_runtime_validate_pivot_tips(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             block_level: u64,
             pivot: &[u8; 32],
             tips: Vec<DagHash>,
         ) -> Result<DagPivotTipsValidation>;
         /// Applies finalized DAG order using Rust state and Rust storage.
         pub fn dag_manager_runtime_apply_finalized_order(
-            self: &mut BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             new_anchor: [u8; 32],
             new_period: u64,
             finalized_order: Vec<DagHash>,
@@ -4543,168 +4558,195 @@ pub mod rustaxa_ffi {
         /// Returns non-finalized sync DAG block RLPs and referenced transaction
         /// RLPs through Rust-owned storage access.
         pub fn dag_manager_runtime_non_finalized_sync_payload(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             known_hashes: Vec<DagHash>,
         ) -> Result<DagManagerNonFinalizedSyncPayload>;
         pub fn dag_manager_runtime_compute_order(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             anchor: &[u8; 32],
-        ) -> DagOrder;
-        pub fn dag_manager_runtime_frontier(self: &BridgeDagManagerRuntime) -> DagFrontier;
+        ) -> Result<DagOrder>;
+        pub fn dag_manager_runtime_frontier(
+            self: &BridgeDagTransactionService,
+        ) -> Result<DagFrontier>;
         pub fn dag_manager_runtime_ghost_path(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             source: &[u8; 32],
-        ) -> Vec<DagHash>;
+        ) -> Result<Vec<DagHash>>;
         pub fn dag_manager_runtime_anchor_ghost_path(
-            self: &BridgeDagManagerRuntime,
-        ) -> Vec<DagHash>;
+            self: &BridgeDagTransactionService,
+        ) -> Result<Vec<DagHash>>;
         pub fn dag_manager_runtime_graphviz_dot(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             pivot_tree: bool,
-        ) -> String;
-        pub fn dag_manager_runtime_vertex_count(self: &BridgeDagManagerRuntime) -> usize;
-        pub fn dag_manager_runtime_edge_count(self: &BridgeDagManagerRuntime) -> usize;
-        pub fn dag_manager_runtime_max_level(self: &BridgeDagManagerRuntime) -> u64;
-        pub fn dag_manager_runtime_latest_period(self: &BridgeDagManagerRuntime) -> u64;
-        pub fn dag_manager_runtime_anchors(self: &BridgeDagManagerRuntime) -> DagManagerAnchors;
-        pub fn dag_manager_runtime_dag_expiry_limit(self: &BridgeDagManagerRuntime) -> u32;
-        pub fn dag_manager_runtime_dag_expiry_level(self: &BridgeDagManagerRuntime) -> u64;
+        ) -> Result<String>;
+        pub fn dag_manager_runtime_vertex_count(
+            self: &BridgeDagTransactionService,
+        ) -> Result<usize>;
+        pub fn dag_manager_runtime_edge_count(self: &BridgeDagTransactionService) -> Result<usize>;
+        pub fn dag_manager_runtime_max_level(self: &BridgeDagTransactionService) -> Result<u64>;
+        pub fn dag_manager_runtime_latest_period(self: &BridgeDagTransactionService)
+            -> Result<u64>;
+        pub fn dag_manager_runtime_anchors(
+            self: &BridgeDagTransactionService,
+        ) -> Result<DagManagerAnchors>;
+        pub fn dag_manager_runtime_dag_expiry_limit(
+            self: &BridgeDagTransactionService,
+        ) -> Result<u32>;
+        pub fn dag_manager_runtime_dag_expiry_level(
+            self: &BridgeDagTransactionService,
+        ) -> Result<u64>;
         pub fn dag_manager_runtime_non_finalized_blocks(
-            self: &BridgeDagManagerRuntime,
-        ) -> Vec<DagLevelHashes>;
+            self: &BridgeDagTransactionService,
+        ) -> Result<Vec<DagLevelHashes>>;
         pub fn dag_manager_runtime_non_finalized_blocks_size(
-            self: &BridgeDagManagerRuntime,
-        ) -> DagManagerNonFinalizedSize;
+            self: &BridgeDagTransactionService,
+        ) -> Result<DagManagerNonFinalizedSize>;
         pub fn dag_manager_runtime_non_finalized_min_difficulty(
-            self: &BridgeDagManagerRuntime,
-        ) -> u32;
+            self: &BridgeDagTransactionService,
+        ) -> Result<u32>;
         /// Returns DAG block membership from Rust graph state plus canonical
         /// Rust storage without consulting C++ compatibility caches.
         pub fn dag_manager_runtime_is_block_known(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             hash: &[u8; 32],
         ) -> Result<bool>;
         /// Loads per-tip gas facts from canonical Rust DAG storage for
         /// verification gas checks without C++ `DagBlock` materialization.
         pub fn dag_manager_runtime_tip_gas_estimations(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             tips: Vec<DagHash>,
         ) -> Result<Vec<DagTipGas>>;
         pub fn dag_manager_runtime_load_block(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             hash: &[u8; 32],
         ) -> Result<DagBlockLookup>;
         pub fn dag_manager_runtime_save_block(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             hash: &[u8; 32],
             level: u64,
             tips_count: u64,
             block_rlp: Vec<u8>,
         ) -> Result<()>;
         pub fn dag_manager_runtime_plan_proposal_tip_selection(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             input: DagProposerStorageTipSelectionInput,
         ) -> Result<DagProposerTipSelectionPlan>;
         /// Opens a runtime-owned proposer cursor from wallet/configuration and transaction-pressure inputs.
         /// Returns a unique cursor id or a storage/decode error; Rust derives all DAG observation facts, and callers
         /// must eventually consume a terminal step or call the idempotent abort function.
+        #[rust_name = "service_dag_manager_runtime_begin_proposer_session"]
         pub fn dag_manager_runtime_begin_proposer_session(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             input: DagProposerSessionBeginInput,
         ) -> Result<u64>;
         /// Idempotently removes a live proposer cursor without planner or retry effects.
         /// Returns true only when this call removed the cursor; missing or already-removed ids return false.
+        #[rust_name = "service_dag_manager_runtime_abort_proposer_session"]
         pub fn dag_manager_runtime_abort_proposer_session(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
-        ) -> bool;
+        ) -> Result<bool>;
         pub fn dag_manager_runtime_ensure_proposal_period_mapping(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             level: u64,
             period: u64,
         ) -> Result<bool>;
         pub fn dag_manager_runtime_period_block_hash(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
             period: u64,
         ) -> Result<HashLookup>;
         pub fn dag_manager_runtime_persistence_counters(
-            self: &BridgeDagManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> Result<DagPersistenceCounters>;
+        #[rust_name = "service_dag_manager_runtime_begin_verify_block_session"]
         pub fn dag_manager_runtime_begin_verify_block_session(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             input: DagVerifyBlockSessionInput,
         ) -> Result<()>;
+        #[rust_name = "service_dag_manager_runtime_verify_block_session_next"]
         pub fn dag_manager_runtime_verify_block_session_next(
-            runtime: &mut BridgeDagManagerRuntime,
-        ) -> DagVerifyBlockSessionStep;
+            runtime: &BridgeDagTransactionService,
+        ) -> Result<DagVerifyBlockSessionStep>;
+        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_transactions"]
         pub fn dag_manager_runtime_verify_block_session_report_transactions(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             report: DagVerifyBlockTransactionReport,
-        ) -> DagVerifyBlockSessionStep;
+        ) -> Result<DagVerifyBlockSessionStep>;
+        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_authorization"]
         pub fn dag_manager_runtime_verify_block_session_report_authorization(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             report: DagVerifyBlockAuthorizationReport,
-        ) -> DagVerifyBlockSessionStep;
+        ) -> Result<DagVerifyBlockSessionStep>;
+        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_vdf"]
         pub fn dag_manager_runtime_verify_block_session_report_vdf(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             report: DagVerifyBlockVdfReport,
-        ) -> DagVerifyBlockSessionStep;
+        ) -> Result<DagVerifyBlockSessionStep>;
+        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_gas"]
         pub fn dag_manager_runtime_verify_block_session_report_gas(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             report: DagVerifyBlockGasReport,
-        ) -> DagVerifyBlockSessionStep;
+        ) -> Result<DagVerifyBlockSessionStep>;
         /// Reads the cursor's current executor instruction; terminal reads remove it.
         /// Missing ids return an invalid-report step and do not mutate retry state.
+        #[rust_name = "service_dag_manager_runtime_proposer_session_next"]
         pub fn dag_manager_runtime_proposer_session_next(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
-        ) -> DagProposerSessionStep;
+        ) -> Result<DagProposerSessionStep>;
         /// Supplies the requested FinalChain/sortition facts after Rust revalidates its observation.
         /// Any returned error removes the cursor, so callers may also invoke abort safely during generic cleanup.
+        #[rust_name = "service_dag_manager_runtime_proposer_session_report_external_facts"]
         pub fn dag_manager_runtime_proposer_session_report_external_facts(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
             report: DagProposerExternalProposalFactsReport,
         ) -> Result<DagProposerSessionStep>;
+        #[rust_name = "service_dag_manager_runtime_proposer_session_report_transactions"]
         pub fn dag_manager_runtime_proposer_session_report_transactions(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
             report: DagProposerTransactionPackReport,
-        ) -> DagProposerSessionStep;
+        ) -> Result<DagProposerSessionStep>;
         /// Polls VDF cancellation using the current Rust-derived proposal frontier level.
         /// Missing/out-of-order ids return an invalid-report step; cancellation returns a terminal cancel action.
+        #[rust_name = "service_dag_manager_runtime_proposer_session_poll_vdf"]
         pub fn dag_manager_runtime_proposer_session_poll_vdf(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
-        ) -> DagProposerSessionStep;
+        ) -> Result<DagProposerSessionStep>;
         /// Supplies proof success and canonical VDF RLP, revalidates the observation, and constructs the unsigned intent.
         /// Success returns signing action 5; stale observations terminate without retry mutation, and construction
         /// errors remove the cursor before throwing across CXX.
+        #[rust_name = "service_dag_manager_runtime_proposer_session_report_vdf_proof"]
         pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
             report: DagProposerVdfProofReport,
         ) -> Result<DagProposerSessionStep>;
         /// Rechecks a stale proof after compatibility sleep and revalidates the complete Rust observation.
         /// An unchanged observation constructs the stored proof's unsigned intent and returns signing action 5; stale
         /// observations terminate without retry mutation, and construction errors remove the cursor.
+        #[rust_name = "service_dag_manager_runtime_proposer_session_resume_stale_proof"]
         pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
         ) -> Result<DagProposerSessionStep>;
         /// Finalizes the stored unsigned intent with a 65-byte recoverable signature.
         /// Success returns add-block action 6 with canonical RLP/hash; malformed signatures and finalization errors remove
         /// the cursor, while missing/out-of-order ids return an invalid terminal step.
+        #[rust_name = "service_dag_manager_runtime_proposer_session_report_signing"]
         pub fn dag_manager_runtime_proposer_session_report_signing(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
             report: DagProposerSigningReport,
         ) -> Result<DagProposerSessionStep>;
+        #[rust_name = "service_dag_manager_runtime_proposer_session_report_add_block"]
         pub fn dag_manager_runtime_proposer_session_report_add_block(
-            runtime: &mut BridgeDagManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             session_id: u64,
             report: DagProposerAddBlockReport,
-        ) -> DagProposerSessionStep;
+        ) -> Result<DagProposerSessionStep>;
         pub fn dag_plan_proposer_worker_command(
             input: DagProposerWorkerCommandInput,
         ) -> DagProposerWorkerCommand;
@@ -5139,26 +5181,15 @@ pub mod rustaxa_ffi {
 
         // Consensus transaction manager planning
 
-        type BridgeTransactionManagerRuntime;
-        pub fn create_transaction_manager_runtime_from_storage(
-            storage: &BridgeStorage,
-            config: TransactionQueueConfig,
-            gas_pricer_config: GasPricerConfig,
-            proposal_dag_gas_limit: u64,
-        ) -> Result<Box<BridgeTransactionManagerRuntime>>;
-        /// Compatibility-only storage-free runtime for standalone GasPricer tests.
-        pub fn create_transaction_manager_runtime_for_gas_pricer(
-            gas_pricer_config: GasPricerConfig,
-        ) -> Result<Box<BridgeTransactionManagerRuntime>>;
         pub fn transaction_manager_runtime_gas_price_bid(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> [u8; 32];
         pub fn transaction_manager_runtime_gas_price_update(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             gas_prices: Vec<GasPricerGasPrice>,
         );
         pub fn transaction_manager_runtime_pack_prepare_sharded(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             weight_limit: u64,
             min_transaction_gas: u64,
             proposal_period: u64,
@@ -5169,51 +5200,49 @@ pub mod rustaxa_ffi {
             shard_period_interval: u64,
         ) -> Result<TransactionPackPreparedPlan>;
         pub fn transaction_manager_runtime_pack_finalize_with_estimates(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             inputs: Vec<TransactionPackSessionEstimateInput>,
         ) -> Result<TransactionPackSessionStep>;
-        pub fn transaction_manager_runtime_pack_abort(
-            self: &mut BridgeTransactionManagerRuntime,
-        ) -> bool;
+        pub fn transaction_manager_runtime_pack_abort(self: &BridgeDagTransactionService) -> bool;
         pub fn transaction_manager_runtime_plan_gas_estimation(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             fact: TransactionManagerGasEstimationFact,
         ) -> Result<TransactionManagerGasEstimationPlan>;
         pub fn transaction_manager_runtime_store_gas_estimation(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             result: TransactionManagerGasEstimationResult,
         ) -> Result<bool>;
         pub fn transaction_manager_runtime_transaction_count(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> u64;
         /// Returns Rust's known-transaction decision from runtime-owned queue and sidecar state.
         pub fn transaction_manager_runtime_is_transaction_known_hash(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             hash: &[u8; 32],
         ) -> Result<bool>;
         /// Inserts payloads and moves them into recently-finalized sidecar state in one Rust command.
         pub fn transaction_manager_runtime_initialize_recently_finalized_payloads(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             period: u64,
             payloads: Vec<TransactionManagerSidecarInsertInput>,
         ) -> Result<()>;
         pub fn transaction_manager_runtime_non_finalized_size(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> usize;
         pub fn transaction_manager_runtime_remove_non_finalized(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<u64>;
         /// Executes admission with FinalChain facts supplied by the C++ external-EVM boundary.
         pub fn transaction_manager_runtime_execute_transaction_admission_with_final_chain_facts_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             fact: TransactionManagerValidatedInsertRuntimeFact,
             final_chain_fact: TransactionManagerFinalChainAdmissionFact,
             input: TransactionQueueInsertInput,
         ) -> Result<TransactionManagerAdmissionCommandReport>;
         /// Executes public insertTransaction verification and fact-backed admission as one Rust-owned command.
         pub fn transaction_manager_runtime_execute_public_transaction_admission_with_final_chain_facts_command_report(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             verify_fact: TransactionManagerVerifyTransactionFact,
             admission_fact: TransactionManagerValidatedInsertRuntimeFact,
             final_chain_fact: TransactionManagerFinalChainAdmissionFact,
@@ -5221,59 +5250,59 @@ pub mod rustaxa_ffi {
         ) -> Result<TransactionManagerPublicAdmissionCommandReport>;
         /// Resolves requested hashes against Rust-owned live queue payloads only.
         pub fn transaction_manager_runtime_queue_lookup_transaction_views(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             requests: Vec<TransactionManagerTransactionViewRequest>,
         ) -> Result<Vec<TransactionManagerTransactionView>>;
         pub fn transaction_manager_runtime_queue_all_transaction_groups(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> Vec<TransactionQueueTransactionGroup>;
-        pub fn transaction_manager_runtime_queue_size(
-            self: &BridgeTransactionManagerRuntime,
-        ) -> usize;
+        pub fn transaction_manager_runtime_queue_size(self: &BridgeDagTransactionService) -> usize;
         pub fn transaction_manager_runtime_queue_proposable_accounts(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> Vec<TransactionQueueProposableAccountFact>;
         pub fn transaction_manager_runtime_queue_block_finalized(
-            self: &mut BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             block_number: u64,
         ) -> Vec<TransactionQueueHash>;
         pub fn transaction_manager_runtime_queue_transactions_dropped(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> bool;
         pub fn transaction_manager_runtime_queue_non_proposable_over_limit(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
         ) -> bool;
         pub fn transaction_manager_runtime_queue_min_gas_price_for_block_inclusion(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             limit: u64,
         ) -> [u8; 32];
         /// Resolves requested hashes against non-finalized/recently-finalized sidecars.
         pub fn transaction_manager_runtime_lookup_non_finalized_transaction_views(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             requests: Vec<TransactionManagerTransactionViewRequest>,
         ) -> Result<Vec<TransactionManagerTransactionView>>;
         /// Resolves requested hashes through queue, sidecars, then Rust storage.
         pub fn transaction_manager_runtime_lookup_transaction_views(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             requests: Vec<TransactionManagerTransactionViewRequest>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
         /// Resolves requested hashes through queue, sidecars, then proposal-filtered Rust storage.
         pub fn transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
-            self: &BridgeTransactionManagerRuntime,
+            self: &BridgeDagTransactionService,
             proposal_period: u64,
             requests: Vec<TransactionManagerTransactionViewRequest>,
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
             max_count: u64,
         ) -> Result<TransactionManagerTransactionViewPlan>;
         /// Applies DAG transaction persistence and returns a typed command report.
+        #[rust_name = "service_save_transactions_from_dag_block_command_report_with_runtime"]
         pub fn save_transactions_from_dag_block_command_report_with_runtime(
-            runtime: &mut BridgeTransactionManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             facts: Vec<DagTransactionSaveSidecarFact>,
         ) -> Result<TransactionManagerDagSaveCommandReport>;
         /// Applies finalized status updates plus periodic purge and returns a typed command report.
+        #[rust_name = "service_update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts"]
         pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
-            runtime: &mut BridgeTransactionManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             period: u64,
             retention_window: u64,
             account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
@@ -5283,17 +5312,20 @@ pub mod rustaxa_ffi {
         pub fn transaction_manager_verify_transaction(
             fact: TransactionManagerVerifyTransactionFact,
         ) -> Result<TransactionManagerVerifyTransactionOutcome>;
+        #[rust_name = "service_transaction_manager_filter_non_finalized_with_runtime"]
         pub fn transaction_manager_filter_non_finalized_with_runtime(
-            runtime: &BridgeTransactionManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             requests: Vec<TransactionManagerSidecarLookupRequest>,
         ) -> Result<FinalizedTransactionFilterPlan>;
+        #[rust_name = "service_transaction_manager_verify_not_finalized_with_runtime"]
         pub fn transaction_manager_verify_not_finalized_with_runtime(
-            runtime: &BridgeTransactionManagerRuntime,
+            runtime: &BridgeDagTransactionService,
             facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
         ) -> Result<TransactionManagerVerifyNotFinalizedOutcome>;
         /// Rebuilds runtime recovery sidecars from Rust-backed storage.
+        #[rust_name = "service_transaction_manager_recover_nonfinalized_with_runtime"]
         pub fn transaction_manager_recover_nonfinalized_with_runtime(
-            runtime: &mut BridgeTransactionManagerRuntime,
+            runtime: &BridgeDagTransactionService,
         ) -> Result<()>;
 
         // Consensus verified votes

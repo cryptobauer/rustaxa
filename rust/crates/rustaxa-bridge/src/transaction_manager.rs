@@ -33,9 +33,7 @@ use crate::ffi::rustaxa_ffi::{
     TransactionQueueProposableAccountFact, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
-use crate::ffi::{
-    BridgeStorage, BridgeTransactionManagerRuntime, TransactionManagerRuntimePackSession,
-};
+use crate::ffi::{BridgeStorage, TransactionManagerRuntimePackSession, TransactionRuntimeState};
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
@@ -695,9 +693,7 @@ fn runtime_queue_account_nonce_facts_from_bridge(
         .collect()
 }
 
-fn transaction_manager_runtime_storage(
-    runtime: &BridgeTransactionManagerRuntime,
-) -> Result<&Storage> {
+fn transaction_manager_runtime_storage(runtime: &TransactionRuntimeState) -> Result<&Storage> {
     runtime
         .storage
         .as_deref()
@@ -706,7 +702,7 @@ fn transaction_manager_runtime_storage(
 
 /// Plans and persists accepted DAG-block transactions through the Rust manager runtime.
 fn save_transactions_from_dag_block_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
+    runtime: &mut TransactionRuntimeState,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<DagTransactionSaveOutcome> {
     let storage = transaction_manager_runtime_storage(runtime)?;
@@ -764,7 +760,7 @@ fn save_transactions_from_dag_block_with_runtime(
 
 /// Applies DAG transaction persistence and returns a typed command report.
 pub fn save_transactions_from_dag_block_command_report_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
+    runtime: &mut TransactionRuntimeState,
     facts: Vec<DagTransactionSaveSidecarFact>,
 ) -> Result<TransactionManagerDagSaveCommandReport> {
     let outcome = save_transactions_from_dag_block_with_runtime(runtime, facts)?;
@@ -778,7 +774,7 @@ pub fn save_transactions_from_dag_block_command_report_with_runtime(
 /// finalized payloads, marks queue-known membership, erases matching queued
 /// payloads, and advances the authoritative transaction count.
 fn update_finalized_transactions_status_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
+    runtime: &mut TransactionRuntimeState,
     period: u64,
     retention_window: u64,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
@@ -852,7 +848,7 @@ fn update_finalized_transactions_status_with_runtime(
 /// Applies finalized-transaction status changes and returns typed command actions.
 #[cfg(test)]
 pub fn update_finalized_transactions_status_command_report_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
+    runtime: &mut TransactionRuntimeState,
     period: u64,
     retention_window: u64,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
@@ -868,7 +864,7 @@ pub fn update_finalized_transactions_status_command_report_with_runtime(
 
 /// Applies finalized status changes plus queue purge and returns typed command actions.
 pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
-    runtime: &mut BridgeTransactionManagerRuntime,
+    runtime: &mut TransactionRuntimeState,
     period: u64,
     retention_window: u64,
     account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
@@ -965,7 +961,7 @@ fn transaction_manager_insert_transaction(
 
 /// Filters finalized transactions using Rust runtime sidecars plus storage.
 pub fn transaction_manager_filter_non_finalized_with_runtime(
-    runtime: &BridgeTransactionManagerRuntime,
+    runtime: &TransactionRuntimeState,
     requests: Vec<TransactionManagerSidecarLookupRequest>,
 ) -> Result<FinalizedTransactionFilterPlan> {
     let facts = requests
@@ -1147,7 +1143,7 @@ fn inspect_stored_transaction_identity(
 }
 
 fn transaction_manager_runtime_lookup_transaction_views_inner(
-    runtime: &BridgeTransactionManagerRuntime,
+    runtime: &TransactionRuntimeState,
     requests: Vec<TransactionManagerTransactionViewRequest>,
     max_count: u64,
     transaction_lookup: impl FnOnce(
@@ -1264,7 +1260,7 @@ fn keccak256(data: &[u8]) -> H256 {
 /// Verifies transaction hashes against Rust runtime sidecars with sender nonce
 /// facts supplied by the external-EVM compatibility boundary.
 pub fn transaction_manager_verify_not_finalized_with_runtime(
-    runtime: &BridgeTransactionManagerRuntime,
+    runtime: &TransactionRuntimeState,
     facts: Vec<TransactionManagerVerifyNotFinalizedSidecarFact>,
 ) -> Result<TransactionManagerVerifyNotFinalizedOutcome> {
     let storage = transaction_manager_runtime_storage(runtime)?;
@@ -1342,7 +1338,7 @@ fn transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
 
 /// Rebuilds runtime recovery sidecars from Rust-backed storage without exposing count mirrors.
 pub fn transaction_manager_recover_nonfinalized_with_runtime(
-    runtime: &mut BridgeTransactionManagerRuntime,
+    runtime: &mut TransactionRuntimeState,
 ) -> Result<()> {
     let entries = transaction_manager_load_nonfinalized_recovery_inputs_from_storage(
         transaction_manager_runtime_storage(runtime)?,
@@ -1359,11 +1355,11 @@ pub fn transaction_manager_recover_nonfinalized_with_runtime(
 /// and finalized-account queue purge can source account facts directly from
 /// Rust FinalChain through runtime APIs.
 #[cfg(test)]
-fn create_transaction_manager_runtime_for_test(
+fn build_transaction_state_for_test(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
-) -> Box<BridgeTransactionManagerRuntime> {
-    create_transaction_manager_runtime_inner(
+) -> Box<TransactionRuntimeState> {
+    build_transaction_state_inner(
         initial_transaction_count,
         config,
         GasPriceOracle::new(test_gas_pricer_config()).expect("test gas config is valid"),
@@ -1372,7 +1368,7 @@ fn create_transaction_manager_runtime_for_test(
     )
 }
 
-/// Creates the production Rust-owned TransactionManager runtime with durable storage attached.
+/// Builds the production transaction state with durable storage attached.
 ///
 /// The runtime clones the underlying `Arc<rustaxa_storage::Storage>` from the
 /// generic constructor facade and becomes the storage authority for migrated
@@ -1380,14 +1376,15 @@ fn create_transaction_manager_runtime_for_test(
 /// routes. Its initial live transaction count is restored directly from the
 /// durable `StatusField::TrxCount` value; a missing field has the storage
 /// layer's canonical zero value. Storage read failures abort construction so
-/// C++ cannot start with a divergent count mirror. C++ should keep only this
-/// runtime handle after construction.
-pub fn create_transaction_manager_runtime_from_storage(
+/// C++ cannot start with a divergent count mirror. The caller installs the
+/// returned state privately inside `BridgeDagTransactionService`; no standalone
+/// transaction runtime handle is published to C++.
+pub(crate) fn build_transaction_state_from_storage(
     storage: &BridgeStorage,
     config: TransactionQueueConfig,
     gas_pricer_config: GasPricerConfig,
     proposal_dag_gas_limit: u64,
-) -> Result<Box<BridgeTransactionManagerRuntime>> {
+) -> Result<Box<TransactionRuntimeState>> {
     let storage = storage.0.clone();
     let initial_transaction_count = storage
         .metadata()
@@ -1402,7 +1399,7 @@ pub fn create_transaction_manager_runtime_from_storage(
             .context("TM_RUNTIME_GAS_PRICE_HISTORY_RESTORE")?;
     }
 
-    Ok(create_transaction_manager_runtime_inner(
+    Ok(build_transaction_state_inner(
         initial_transaction_count,
         config,
         gas_price_oracle,
@@ -1415,12 +1412,12 @@ pub fn create_transaction_manager_runtime_from_storage(
 ///
 /// This compatibility constructor owns an empty one-entry queue and has no
 /// durable transaction authority. Production TransactionManager construction
-/// must use `create_transaction_manager_runtime_from_storage` so queue/count
+/// must use `build_transaction_state_from_storage` so queue/count
 /// and gas history restore from the same cloned storage handle.
-pub fn create_transaction_manager_runtime_for_gas_pricer(
+pub(crate) fn build_transaction_state_for_gas_pricer(
     gas_pricer_config: GasPricerConfig,
-) -> Result<Box<BridgeTransactionManagerRuntime>> {
-    Ok(create_transaction_manager_runtime_inner(
+) -> Result<Box<TransactionRuntimeState>> {
+    Ok(build_transaction_state_inner(
         0,
         TransactionQueueConfig { max_size: 1 },
         GasPriceOracle::new(domain_gas_pricer_config(gas_pricer_config))?,
@@ -1429,16 +1426,16 @@ pub fn create_transaction_manager_runtime_for_gas_pricer(
     ))
 }
 
-fn create_transaction_manager_runtime_inner(
+fn build_transaction_state_inner(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
     gas_price_oracle: GasPriceOracle,
     proposal_dag_gas_limit: u64,
     storage: Option<std::sync::Arc<Storage>>,
-) -> Box<BridgeTransactionManagerRuntime> {
+) -> Box<TransactionRuntimeState> {
     let gas_estimation_cache_size = config.max_size / 10;
     let gas_estimation_cache_delete_step = config.max_size / 100;
-    Box::new(BridgeTransactionManagerRuntime {
+    Box::new(TransactionRuntimeState {
         sidecar: TransactionManagerSidecar::new_with_gas_estimation_cache(
             initial_transaction_count,
             gas_estimation_cache_size,
@@ -1474,7 +1471,7 @@ fn test_gas_pricer_config() -> DomainGasPricerConfig {
     }
 }
 
-impl BridgeTransactionManagerRuntime {
+impl TransactionRuntimeState {
     fn create_pack_session(
         &self,
         weight_limit: u64,
@@ -2482,11 +2479,11 @@ mod tests {
         }
     }
 
-    fn create_transaction_manager_runtime_from_storage(
+    fn build_transaction_state_from_storage(
         storage: &BridgeStorage,
         config: TransactionQueueConfig,
-    ) -> Result<Box<BridgeTransactionManagerRuntime>> {
-        super::create_transaction_manager_runtime_from_storage(
+    ) -> Result<Box<TransactionRuntimeState>> {
+        super::build_transaction_state_from_storage(
             storage,
             config,
             bridge_gas_pricer_config(false),
@@ -2558,11 +2555,9 @@ mod tests {
         )
         .expect("storage should initialize");
 
-        let runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore the storage default");
+        let runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore the storage default");
 
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 0);
         let _ = fs::remove_dir_all(temp_dir);
@@ -2581,11 +2576,9 @@ mod tests {
             .write_status_field(StatusField::TrxCount as u8, 73)
             .expect("transaction count should persist");
 
-        let runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore the persisted count");
+        let runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore the persisted count");
 
         assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 73);
         let _ = fs::remove_dir_all(temp_dir);
@@ -2594,8 +2587,7 @@ mod tests {
     #[test]
     fn transaction_runtime_compatibility_oracle_updates_history_and_ignores_empty_blocks() {
         let mut runtime =
-            create_transaction_manager_runtime_for_gas_pricer(bridge_gas_pricer_config(true))
-                .unwrap();
+            build_transaction_state_for_gas_pricer(bridge_gas_pricer_config(true)).unwrap();
         runtime.transaction_manager_runtime_gas_price_update(Vec::new());
         assert_eq!(
             U256::from_big_endian(&runtime.transaction_manager_runtime_gas_price_bid()),
@@ -2624,7 +2616,7 @@ mod tests {
             blocks_gas_pricer: false,
         })
         .unwrap();
-        let mut runtime = create_transaction_manager_runtime_inner(
+        let mut runtime = build_transaction_state_inner(
             0,
             TransactionQueueConfig { max_size: 8 },
             oracle,
@@ -2669,7 +2661,7 @@ mod tests {
         seed_gas_price_history(&storage, &[(2, &[9, 5]), (1, &[8])], 2);
 
         for _ in 0..2 {
-            let runtime = super::create_transaction_manager_runtime_from_storage(
+            let runtime = super::build_transaction_state_from_storage(
                 &storage,
                 TransactionQueueConfig { max_size: 16 },
                 bridge_gas_pricer_config(true),
@@ -2693,7 +2685,7 @@ mod tests {
         let mut light_config = bridge_gas_pricer_config(true);
         light_config.minimum_price = U256::from(7_u64).to_big_endian();
         light_config.is_light_node = true;
-        let light = super::create_transaction_manager_runtime_from_storage(
+        let light = super::build_transaction_state_from_storage(
             &storage,
             TransactionQueueConfig { max_size: 16 },
             light_config,
@@ -2705,7 +2697,7 @@ mod tests {
             U256::from(7_u64)
         );
 
-        let error = match super::create_transaction_manager_runtime_from_storage(
+        let error = match super::build_transaction_state_from_storage(
             &storage,
             TransactionQueueConfig { max_size: 16 },
             bridge_gas_pricer_config(true),
@@ -3002,11 +2994,9 @@ mod tests {
         )
         .expect("storage should initialize");
 
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 32 },
-        )
-        .expect("runtime should restore from storage");
+        let mut runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 32 })
+                .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, [9u8; 20], 7, true,
@@ -3104,11 +3094,9 @@ mod tests {
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
         )
         .expect("storage should initialize");
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore from storage");
+        let mut runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore from storage");
 
         for (hash, trx_rlp) in [
             ([1u8; 32], vec![0x11]),
@@ -3232,11 +3220,9 @@ mod tests {
             },
         );
 
-        let runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 32 },
-        )
-        .expect("runtime should restore from storage");
+        let runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 32 })
+                .expect("runtime should restore from storage");
         let plan = runtime
             .transaction_manager_runtime_lookup_proposal_transaction_views_with_account_nonce_facts(
                 1,
@@ -3443,11 +3429,9 @@ mod tests {
             temp_dir.to_str().expect("temp path should be valid UTF-8"),
         )
         .expect("storage should initialize");
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore from storage");
+        let mut runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore from storage");
 
         storage
             .0
@@ -3509,11 +3493,9 @@ mod tests {
             .metadata()
             .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore from storage");
+        let mut runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
             .expect("queue seed should succeed");
@@ -3554,11 +3536,9 @@ mod tests {
             .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
 
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore from storage");
+        let mut runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_insert_non_finalized(
                 TransactionManagerSidecarInsertInput {
@@ -3637,11 +3617,9 @@ mod tests {
             .write_status_field(StatusField::TrxCount as u8, 7)
             .expect("status field seed should persist");
 
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore from storage");
+        let mut runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore from storage");
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, sender, 1, true,
@@ -3911,11 +3889,9 @@ mod tests {
             .write_status_field(StatusField::TrxCount as u8, 4)
             .expect("status field seed should persist");
 
-        let mut runtime = create_transaction_manager_runtime_from_storage(
-            &storage,
-            TransactionQueueConfig { max_size: 16 },
-        )
-        .expect("runtime should restore from storage");
+        let mut runtime =
+            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
+                .expect("runtime should restore from storage");
 
         transaction_manager_recover_nonfinalized_with_runtime(&mut runtime)
             .expect("runtime recovery should execute");
@@ -3933,10 +3909,8 @@ mod tests {
 
     #[test]
     fn bridge_transaction_manager_runtime_tracks_multi_account_overflow_drop_window() {
-        let mut runtime = create_transaction_manager_runtime_for_test(
-            0,
-            TransactionQueueConfig { max_size: 100 },
-        );
+        let mut runtime =
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 100 });
         assert!(!runtime.transaction_manager_runtime_queue_transactions_dropped());
 
         for hash in 1_u8..=101 {
@@ -3958,10 +3932,8 @@ mod tests {
 
     #[test]
     fn bridge_transaction_manager_runtime_replacement_retains_demoted_payload() {
-        let mut runtime = create_transaction_manager_runtime_for_test(
-            0,
-            TransactionQueueConfig { max_size: 100 },
-        );
+        let mut runtime =
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 100 });
         let original = runtime_queue_input(1, true);
         let original_hash = original.hash;
         let original_rlp = original.tx_rlp.clone();
@@ -4000,7 +3972,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_queue_block_finalized_returns_expired_hashes() {
         let mut runtime =
-            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 16 });
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 16 });
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input(1, false))
             .expect("non-proposable insert should succeed");
@@ -4052,7 +4024,7 @@ mod tests {
     ) {
         let sender = [7; 20];
         let mut runtime =
-            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 32 });
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 32 });
         runtime
             .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
                 1, sender, 0, true,
@@ -4092,7 +4064,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_finalize_single_candidate() {
         let mut runtime =
-            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 8 });
         let signing_key = SigningKey::from_slice(&[0x47u8; 32]).unwrap();
         let sender = address_from_signing_key(&signing_key);
         let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
@@ -4138,7 +4110,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_with_declared_gas_selected() {
         let mut runtime =
-            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 8 });
         let signing_key = SigningKey::from_slice(&[0x48u8; 32]).unwrap();
         let sender = address_from_signing_key(&signing_key);
         let tx_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
@@ -4199,7 +4171,7 @@ mod tests {
             .expect("test fixture should find a sender in a different shard");
 
         let mut runtime =
-            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 8 });
         let first_rlp = signed_legacy_transaction_rlp(&first_key, 1, 2999);
         let first_envelope = LegacyTransactionEnvelope::decode(&first_rlp).unwrap();
         let second_rlp = signed_legacy_transaction_rlp(&second_key, 1, 2999);
@@ -4278,7 +4250,7 @@ mod tests {
     #[test]
     fn bridge_transaction_manager_runtime_pack_prepare_consumes_declared_and_cached_gas() {
         let mut runtime =
-            create_transaction_manager_runtime_for_test(0, TransactionQueueConfig { max_size: 8 });
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 8 });
         let signing_key = SigningKey::from_slice(&[0x43u8; 32]).unwrap();
         let sender = address_from_signing_key(&signing_key);
         let first_rlp = signed_legacy_transaction_rlp(&signing_key, 1, 2999);
@@ -4327,10 +4299,8 @@ mod tests {
         assert_eq!(plan.selected_transactions[1].gas_used, 21_000);
         assert!(!runtime.transaction_manager_runtime_pack_abort());
 
-        let mut cached_runtime = create_transaction_manager_runtime_for_test(
-            0,
-            TransactionQueueConfig { max_size: 100 },
-        );
+        let mut cached_runtime =
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 100 });
         cached_runtime
             .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
                 hash: second_envelope.hash.0,
@@ -4369,10 +4339,8 @@ mod tests {
 
     #[test]
     fn bridge_transaction_manager_runtime_plans_and_caches_gas_estimation() {
-        let mut runtime = create_transaction_manager_runtime_for_test(
-            0,
-            TransactionQueueConfig { max_size: 100 },
-        );
+        let mut runtime =
+            build_transaction_state_for_test(0, TransactionQueueConfig { max_size: 100 });
 
         let small = runtime
             .transaction_manager_runtime_plan_gas_estimation(TransactionManagerGasEstimationFact {

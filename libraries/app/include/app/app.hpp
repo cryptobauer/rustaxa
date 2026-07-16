@@ -17,6 +17,7 @@ namespace taraxa {
 
 class Plugin;
 #ifdef RUSTAXA_ENABLE
+class DagTransactionService;
 class PbftService;
 #endif
 
@@ -97,6 +98,9 @@ class App : public std::enable_shared_from_this<App>, public AppBase {
   // components
   std::shared_ptr<DbStorage> db_;
   std::shared_ptr<DbStorage> old_db_;
+#ifdef RUSTAXA_ENABLE
+  std::shared_ptr<DagTransactionService> dag_transaction_service_;
+#endif
   std::shared_ptr<GasPricer> gas_pricer_;
   std::shared_ptr<DagManager> dag_mgr_;
   std::shared_ptr<TransactionManager> trx_mgr_;

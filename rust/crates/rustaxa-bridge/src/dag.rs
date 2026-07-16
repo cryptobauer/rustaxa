@@ -13,7 +13,7 @@ use crate::ffi::rustaxa_ffi::{
     DagVerifyVdfSortitionFromBlockInput, DagVerifyVdfSortitionResult, HashLookup,
     SortitionRuntimeParams,
 };
-use crate::ffi::{BridgeDagManagerRuntime, BridgeStorage};
+use crate::ffi::{BridgeStorage, DagRuntimeState};
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
 #[cfg(test)]
@@ -216,18 +216,19 @@ struct DagManagerRuntimeSyncSnapshot {
     selected_hashes: Vec<DagHash>,
 }
 
-/// Creates a Rust-owned DagManager runtime with direct storage access.
+/// Builds private DAG service state with direct storage access.
 ///
-/// The runtime owns deterministic graph/index state and a cloned Rust storage
-/// handle. C++ callers use it for DagManager persistence so the migration path
-/// is `DagManager shim -> Rust DagManager runtime -> rustaxa-storage`, without
-/// routing through legacy DagManager storage logic.
-pub fn create_dag_manager_runtime_from_storage(
+/// The returned state owns deterministic graph/index data and a cloned Rust
+/// storage handle. It remains private to `BridgeDagTransactionService`; callers
+/// cannot publish or pass it as a standalone bridge handle. Construction does
+/// not restore persisted state, so the service factory must restore both sibling
+/// domains before publishing the composed service.
+pub(crate) fn build_dag_state_from_storage(
     genesis: &[u8; 32],
     dag_expiry_limit: u32,
     storage: &BridgeStorage,
-) -> Result<Box<BridgeDagManagerRuntime>> {
-    Ok(Box::new(BridgeDagManagerRuntime {
+) -> Result<Box<DagRuntimeState>> {
+    Ok(Box::new(DagRuntimeState {
         state: DagManagerState::new(to_h256(genesis), dag_expiry_limit)?,
         storage: storage.0.clone(),
         next_proposer_session_id: 1,
@@ -237,7 +238,7 @@ pub fn create_dag_manager_runtime_from_storage(
     }))
 }
 
-impl BridgeDagManagerRuntime {
+impl DagRuntimeState {
     /// Rebuilds the in-memory DAG runtime from canonical Rust storage.
     ///
     /// Inputs:
@@ -248,9 +249,10 @@ impl BridgeDagManagerRuntime {
     /// - replaces the runtime state with a snapshot derived from Rust storage.
     ///
     /// Invariants and edge behavior:
-    /// - PBFT period and current anchor come from Rust PBFT-chain storage
-    ///   restore, including default-head initialization when the head row is
-    ///   absent.
+    /// - PBFT period and a nonzero current anchor come from Rust PBFT-chain
+    ///   storage restore. When fresh storage yields the default head's zero
+    ///   anchor, the configured genesis anchor already present in the runtime
+    ///   remains authoritative.
     /// - Non-finalized DAG block facts are decoded from canonical signed DAG
     ///   block RLP bytes in Rust storage; malformed rows are returned as
     ///   bridge errors.
@@ -260,8 +262,13 @@ impl BridgeDagManagerRuntime {
     pub fn dag_manager_runtime_restore_from_storage(&mut self) -> Result<()> {
         let pbft_restore = restore_pbft_chain_from_storage(self.storage.as_ref())
             .context("DAG_RUNTIME_RESTORE_PBFT_HEAD")?;
-        let anchor = pbft_restore.head.last_non_null_pbft_dag_anchor_hash;
-        let anchor_level = if anchor == H256::zero() {
+        let stored_anchor = pbft_restore.head.last_non_null_pbft_dag_anchor_hash;
+        let anchor = if stored_anchor == H256::zero() {
+            self.state.anchor()
+        } else {
+            stored_anchor
+        };
+        let anchor_level = if stored_anchor == H256::zero() {
             0
         } else {
             self.storage
@@ -289,7 +296,7 @@ impl BridgeDagManagerRuntime {
         let max_level = non_finalized_blocks
             .iter()
             .map(|block| block.level)
-            .chain((anchor != H256::zero()).then_some(anchor_level))
+            .chain((stored_anchor != H256::zero()).then_some(anchor_level))
             .max()
             .unwrap_or(0);
         let non_finalized_min_difficulty = non_finalized_blocks
@@ -1120,7 +1127,7 @@ impl BridgeDagManagerRuntime {
 /// - Starting a new verification replaces any incomplete previous cursor, matching the legacy per-call allocation
 ///   behavior.
 pub fn dag_manager_runtime_begin_verify_block_session(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     input: DagVerifyBlockSessionInput,
 ) -> Result<()> {
     runtime.begin_verify_block_session(input)
@@ -1128,7 +1135,7 @@ pub fn dag_manager_runtime_begin_verify_block_session(
 
 /// Returns the next requested action for the runtime-owned DAG verification cursor.
 pub fn dag_manager_runtime_verify_block_session_next(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
 ) -> DagVerifyBlockSessionStep {
     let Some(session) = runtime.verify_block_session.as_ref() else {
         return verify_block_session_not_started_step();
@@ -1138,7 +1145,7 @@ pub fn dag_manager_runtime_verify_block_session_next(
 
 /// Reports resolved transaction availability to the runtime-owned DAG verification cursor.
 pub fn dag_manager_runtime_verify_block_session_report_transactions(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     report: DagVerifyBlockTransactionReport,
 ) -> DagVerifyBlockSessionStep {
     let Some(session) = runtime.verify_block_session.as_mut() else {
@@ -1169,7 +1176,7 @@ pub fn dag_manager_runtime_verify_block_session_report_transactions(
 
 /// Reports FinalChain authorization facts to the runtime-owned DAG verification cursor.
 pub fn dag_manager_runtime_verify_block_session_report_authorization(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     report: DagVerifyBlockAuthorizationReport,
 ) -> DagVerifyBlockSessionStep {
     let Some(session) = runtime.verify_block_session.as_mut() else {
@@ -1216,7 +1223,7 @@ pub fn dag_manager_runtime_verify_block_session_report_authorization(
 
 /// Reports VDF verification status to the runtime-owned DAG verification cursor.
 pub fn dag_manager_runtime_verify_block_session_report_vdf(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     report: DagVerifyBlockVdfReport,
 ) -> DagVerifyBlockSessionStep {
     let Some(session) = runtime.verify_block_session.as_mut() else {
@@ -1264,7 +1271,7 @@ pub fn dag_manager_runtime_verify_block_session_report_vdf(
 
 /// Reports gas facts to the runtime-owned DAG verification cursor.
 pub fn dag_manager_runtime_verify_block_session_report_gas(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     report: DagVerifyBlockGasReport,
 ) -> DagVerifyBlockSessionStep {
     let Some(session) = runtime.verify_block_session.as_mut() else {
@@ -1308,7 +1315,7 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
 /// - A changed runtime observation terminates before planner or retry-state mutation.
 /// - Terminal cursors are removed after their terminal step is observed.
 pub fn dag_manager_runtime_begin_proposer_session(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     input: DagProposerSessionBeginInput,
 ) -> Result<u64> {
     runtime.begin_proposer_session(input)
@@ -1322,7 +1329,7 @@ pub fn dag_manager_runtime_begin_proposer_session(
 /// Invariants and edge behavior: abort never creates or updates retry state, never runs a planner, and never reports an
 /// error.
 pub fn dag_manager_runtime_abort_proposer_session(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
 ) -> bool {
     runtime.proposer_sessions.remove(&session_id).is_some()
@@ -1334,7 +1341,7 @@ pub fn dag_manager_runtime_abort_proposer_session(
 /// active calls do not advance the cursor. A terminal step removes the cursor, and a missing id returns an
 /// `INVALID_REPORT` step with no retry effects.
 pub fn dag_manager_runtime_proposer_session_next(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
 ) -> DagProposerSessionStep {
     let Some(session) = runtime.proposer_sessions.get(&session_id) else {
@@ -1352,7 +1359,7 @@ pub fn dag_manager_runtime_proposer_session_next(
 /// cursor without retry mutation; an out-of-order report returns an invalid terminal step. Storage/decode/planner errors
 /// return `Err` and remove the cursor before returning, so no fallible path leaves an unreachable live session.
 pub fn dag_manager_runtime_proposer_session_report_external_facts(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
     report: DagProposerExternalProposalFactsReport,
 ) -> Result<DagProposerSessionStep> {
@@ -1443,7 +1450,7 @@ pub fn dag_manager_runtime_proposer_session_report_external_facts(
 
 /// Reports live transaction-packing results to the runtime-owned DAG proposal cursor.
 pub fn dag_manager_runtime_proposer_session_report_transactions(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
     report: DagProposerTransactionPackReport,
 ) -> DagProposerSessionStep {
@@ -1503,7 +1510,7 @@ pub fn dag_manager_runtime_proposer_session_report_transactions(
 /// frontier advancement returns a terminal cancel step with retry-reset facts. Missing or out-of-order ids return an
 /// invalid-report step.
 pub fn dag_manager_runtime_proposer_session_poll_vdf(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
 ) -> DagProposerSessionStep {
     let latest_proposal_level = runtime.state.proposer_frontier_facts().propose_level;
@@ -1544,7 +1551,7 @@ pub fn dag_manager_runtime_proposer_session_poll_vdf(
 }
 
 fn revalidate_proposer_session_observation(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
 ) -> Result<Option<DagProposerSessionStep>> {
     let current = match runtime.proposer_observation() {
@@ -1575,7 +1582,7 @@ fn revalidate_proposer_session_observation(
 }
 
 fn prepare_proposer_session_signing(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
     vdf_rlp: Vec<u8>,
 ) -> Result<DagProposerSessionStep> {
@@ -1637,7 +1644,7 @@ fn prepare_proposer_session_signing(
 /// 5 with the canonical signing hash. Stale observations terminate without retry mutation. Storage, timestamp, and
 /// planning errors remove the cursor before returning `Err`; missing/out-of-order ids return invalid terminal steps.
 pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
     report: DagProposerVdfProofReport,
 ) -> Result<DagProposerSessionStep> {
@@ -1673,7 +1680,7 @@ pub fn dag_manager_runtime_proposer_session_report_vdf_proof(
 /// unsigned intent and returns signing action 5; a stale observation terminates without retry mutation. Construction
 /// errors remove the cursor before returning `Err`, and missing/out-of-order ids return invalid terminal steps.
 pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
 ) -> Result<DagProposerSessionStep> {
     let latest_proposal_level = runtime.state.proposer_frontier_facts().propose_level;
@@ -1717,7 +1724,7 @@ pub fn dag_manager_runtime_proposer_session_resume_stale_proof(
 /// returns add-block action 6. Malformed or wrong-key signatures and finalization errors remove the cursor before
 /// returning `Err`; missing/out-of-order reports return invalid terminal steps.
 pub fn dag_manager_runtime_proposer_session_report_signing(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
     report: DagProposerSigningReport,
 ) -> Result<DagProposerSessionStep> {
@@ -1767,7 +1774,7 @@ pub fn dag_manager_runtime_proposer_session_report_signing(
 
 /// Reports `DagManager::addDagBlock` execution to the runtime-owned DAG proposal cursor.
 pub fn dag_manager_runtime_proposer_session_report_add_block(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
     report: DagProposerAddBlockReport,
 ) -> DagProposerSessionStep {
@@ -2114,7 +2121,7 @@ fn invalid_dag_proposer_report(
 }
 
 fn finish_dag_proposer_session_step(
-    runtime: &mut BridgeDagManagerRuntime,
+    runtime: &mut DagRuntimeState,
     session_id: u64,
     step: DagProposerSessionStep,
 ) -> DagProposerSessionStep {
@@ -2569,7 +2576,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             let hash = [7u8; 32];
@@ -2606,7 +2613,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -2684,7 +2691,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -2733,7 +2740,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             assert!(runtime
@@ -2774,7 +2781,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             let missing = runtime
@@ -2881,7 +2888,7 @@ mod tests {
     }
 
     fn begin_proposer_vdf_session(
-        runtime: &mut BridgeDagManagerRuntime,
+        runtime: &mut DagRuntimeState,
         vrf_key: [u8; 32],
         transaction_hash: [u8; 32],
     ) -> u64 {
@@ -2966,7 +2973,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -3106,7 +3113,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -3268,7 +3275,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
@@ -3330,7 +3337,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3370,7 +3377,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 7)
@@ -3418,7 +3425,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3469,7 +3476,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3521,7 +3528,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3575,7 +3582,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3628,7 +3635,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             for block in [
                 DagManagerBlock {
@@ -3691,7 +3698,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3778,7 +3785,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3837,7 +3844,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
@@ -3926,7 +3933,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
@@ -4031,7 +4038,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -4102,7 +4109,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 2, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 2, &storage)
                 .expect("runtime should initialize");
 
             for block in [
@@ -4181,7 +4188,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -4240,7 +4247,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -4280,7 +4287,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -4345,7 +4352,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -4442,7 +4449,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("runtime should initialize");
 
             runtime
@@ -4519,7 +4526,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let seed_runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let seed_runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("seed runtime should initialize");
 
             let anchor_rlp = dag_block_with_pivot_level_and_difficulty(H256::from([1u8; 32]), 3, 3);
@@ -4573,7 +4580,7 @@ mod tests {
                 )
                 .expect("persist non-finalized block");
 
-            let mut restored = create_dag_manager_runtime_from_storage(&[1u8; 32], 32, &storage)
+            let mut restored = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
                 .expect("restored runtime should initialize");
             restored
                 .dag_manager_runtime_restore_from_storage()
@@ -4610,7 +4617,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 1, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 1, &storage)
                 .expect("runtime should initialize");
 
             for block in [
@@ -4770,7 +4777,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
                 .expect("storage should initialize");
-            let mut runtime = create_dag_manager_runtime_from_storage(&[1u8; 32], 1, &storage)
+            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 1, &storage)
                 .expect("runtime should initialize");
 
             let err = match runtime.dag_manager_runtime_apply_finalized_order(

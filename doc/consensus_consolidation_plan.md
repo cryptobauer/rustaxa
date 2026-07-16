@@ -2640,6 +2640,40 @@ Acceptance:
   - `cargo test --manifest-path rust/Cargo.toml -p rustaxa-consensus network_api`
   - `cmake --build /build --target rust_consensus_tests final_chain_test pbft_manager_test --parallel 12`
 
+## CRW-04 DAG/Transaction Application-Service Ownership Slice
+
+This slice composes the previously independent DAG-manager and transaction-manager runtimes behind one
+application-owned Rust service without yet changing the proposer transaction-pack protocol.
+
+- `BridgeDagTransactionService` owns private `DagRuntimeState` and `TransactionRuntimeState` behind sibling mutexes and
+  cloned handles to the same Rust storage owner. Normal calls lock exactly one sibling; all CXX receivers use shared
+  Rust references so concurrent DAG and transaction calls do not create aliased root mutable references.
+- `App` creates the fully initialized service before either retained facade and passes the same C++ RAII holder to
+  `TransactionManager` and `DagManager`. Full construction restores transaction count/gas history and DAG graphs,
+  counters, anchors, and the initial proposal-period mapping before publishing the service; ephemeral proposer and
+  verification sessions start empty.
+- Fresh storage reports a zero PBFT DAG anchor. The composed factory now preserves the configured genesis anchor only in
+  that case; persisted nonzero anchors remain authoritative. This fixed a fail-fast fresh-node startup regression found
+  by the focused DAG suite.
+- Standalone TransactionManager and GasPricer tests use explicitly transaction-only compatibility services. Their DAG
+  methods return `DAG_SERVICE_UNAVAILABLE`; production and DAG construction use the full service.
+- The old `BridgeDagManagerRuntime`, `BridgeTransactionManagerRuntime`, standalone CXX factories,
+  `DagManager::RustDagManagerGraphs`, facade-owned runtime boxes, and C++ restore/initial-mapping bootstrap calls are
+  deleted. The existing proposer pack request/report relay, EVM gas execution, VDF, signing, network effects, and public
+  materialization remain for the next bounded slice.
+- Focused validation passed: the full `rustaxa-bridge` suite (292 tests), `transaction_manager_shim_test` (36 tests),
+  `dag_test` (6 tests), `gas_pricer_test` (2 tests), and a freshly rebuilt
+  `FullNodeTest.save_period_lambda_cacti_hf` bootstrap case. `make rewrite-validate-fast`,
+  `make rewrite-validate-consensus`, `make rewrite-validate-smoke`, the bridge inventory guard, and
+  `git diff --check` also passed.
+- The authorized Tier 3 full CTest run passed 21 of 27 registered tests. Five suites (`pillar_chain_test`,
+  `full_node_test`, `network_test`, `pbft_manager_test`, and `vote_test`) hit the known shared
+  `/tmp/taraxa0/db/db/LOCK` test-harness collision, while `go_test` hit the existing static Go/cgo host-link failure.
+  The focused freshly rebuilt full-node case above passed when run in isolation. The Python integration runner could
+  not collect tests because this host lacks the Python 3.13 development headers needed to build pinned native
+  dependencies (`cytoolz` and `pyethash`), after which `pytest` was unavailable. These are classified environment and
+  harness gaps rather than failures of the changed route.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

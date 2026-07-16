@@ -18,6 +18,7 @@
 #include "logger/logger.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
+#include "transaction/dag_transaction_service.hpp"
 #include "transaction/transaction.hpp"
 #include "transaction/transaction_manager_bridge_types.hpp"
 
@@ -68,6 +69,17 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
 
   TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr);
+
+  /**
+   * Constructs the production facade over an application-owned composed service.
+   *
+   * `dag_transaction_service` must be the same holder passed to `DagManager`.
+   * The retained `db` argument preserves the public construction shape while
+   * storage restoration has already completed in the Rust service factory.
+   */
+  TransactionManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db,
+                     std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr,
+                     SharedDagTransactionService dag_transaction_service);
 
   TransactionManager(const TransactionManager &) = delete;
   TransactionManager(TransactionManager &&) = delete;
@@ -367,18 +379,18 @@ class TransactionManager : public std::enable_shared_from_this<TransactionManage
   void emitTransactionAddedForRust(const trx_hash_t &trx_hash) const { transaction_added_.emit(trx_hash); }
 
   /**
-   * Rust-owned live TransactionManager runtime state.
+   * Application-owned composed service containing live transaction runtime state.
    *
-   * The handle owns the authoritative Rust-mode transaction count, transaction queue
-   * metadata/payloads, known-admission cache, and non-finalized/recently-finalized
-   * sidecars, and gas-estimation cache policy. C++ keeps object materialization,
-   * event emission, logging, EVM estimation execution, historical/proposal-period
-   * account reads, and lifecycle orchestration.
+   * The shared service owns the authoritative Rust-mode transaction count,
+   * queue metadata/payloads, known-admission cache, non-finalized and
+   * recently-finalized sidecars, and gas-estimation cache policy. C++ keeps
+   * object materialization, event emission, logging, EVM estimation execution,
+   * historical/proposal-period account reads, and lifecycle orchestration.
    */
   const FullNodeConfig &kConf;
   static constexpr uint64_t kEstimateGasLimit = 200000;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
-  ::rust::Box<rustaxa::BridgeTransactionManagerRuntime> runtime_;
+  SharedDagTransactionService dag_transaction_service_;
   util::ThreadPool estimation_thread_pool_;
   mutable std::shared_mutex transactions_mutex_;
   mutable std::mutex pack_mutex_;

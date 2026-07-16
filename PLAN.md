@@ -642,6 +642,9 @@ Completed closeout slices:
    Rust finalization/add/sync plans own DAG consensus decisions. The Rust-mode public facade is detached from the dead
    legacy compile scaffold: it imports no original manager header or `DagManagerOld`, and feature-on builds exclude the
    original `dag_manager.cpp`; pure-C++ builds retain the untouched original implementation.
+   App bootstrap now owns one `BridgeDagTransactionService` that contains private DAG and transaction state behind
+   sibling Rust mutexes. `TransactionManager` and `DagManager` share that service instead of owning or passing separate
+   runtime handles; full construction restores both domains and the initial proposal-period mapping before publication.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
    construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,
@@ -958,8 +961,9 @@ The current Rust consensus footprint is broad but still incomplete:
    `proposeBlock_`, `identifyBlock_`, `certifyBlock_`, `firstFinish_`, and `secondFinish_` should collapse further into
    hash/object resolution plus vote/sign/gossip/storage effect execution.
 10. Port transaction queue behavior before transaction manager orchestration. The standalone Rust-mode
-   `TransactionQueue` compatibility overlay and CXX handle are retired. `BridgeTransactionManagerRuntime` is the sole
-   production owner of the native Rust queue, including deterministic metadata, per-account nonce ordering,
+   `TransactionQueue` compatibility overlay and CXX handle are retired. Private transaction state inside the
+   application-owned `BridgeDagTransactionService` is the sole production owner of the native Rust queue, including
+   deterministic metadata, per-account nonce ordering,
    same-nonce replacement, non-proposer expiry, limits, gas-price thresholds, canonical payload retention,
    known-transaction cache expiry, overflow/drop observation, and finalized-account purge planning. Rust-enabled
    production builds exclude the untouched legacy C++ queue source; direct legacy queue tests remain pure-C++ reference

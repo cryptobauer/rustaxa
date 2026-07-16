@@ -1,4 +1,5 @@
 mod dag;
+mod dag_transaction_service;
 mod ffi;
 mod final_chain;
 mod network;

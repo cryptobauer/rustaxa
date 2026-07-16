@@ -1,11 +1,11 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <shared_mutex>
 
 #include "config/genesis.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/dag_transaction_service.hpp"
 #include "transaction/transaction.hpp"
 
 namespace taraxa {
@@ -60,7 +60,7 @@ class GasPricer {
   std::shared_ptr<TransactionManager> trx_mgr_;
 
   mutable std::shared_mutex mutex_;
-  std::optional<::rust::Box<rustaxa::BridgeTransactionManagerRuntime>> compatibility_runtime_;
+  SharedDagTransactionService compatibility_service_;
 };
 
 }  // namespace taraxa

@@ -334,16 +334,16 @@ rustaxa::DagDposAuthorizationFacts rust_dag_authorization_facts(const final_chai
 
 }  // namespace
 
-struct DagManager::RustDagManagerGraphs {
-  RustDagManagerGraphs(const blk_hash_t &genesis, uint32_t dag_expiry_limit, rustaxa::BridgeStorage &storage)
-      : runtime(rustaxa::create_dag_manager_runtime_from_storage(to_bridge_hash(genesis), dag_expiry_limit, storage)) {}
-
-  rust::Box<rustaxa::BridgeDagManagerRuntime> runtime;
-};
-
 DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                        std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager)
+    : DagManager(config, node_addr, std::move(trx_mgr), std::move(pbft_chain), std::move(final_chain), db,
+                 std::move(key_manager), createDagTransactionService(config, *db)) {}
+
+DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
+                       std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
+                       std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager,
+                       SharedDagTransactionService dag_transaction_service)
     : trx_mgr_(std::move(trx_mgr)),
       pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),
@@ -354,32 +354,22 @@ DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shar
       genesis_block_(std::make_shared<DagBlock>(config.genesis.dag_genesis_block)),
       max_levels_per_period_(config.max_levels_per_period),
       seen_blocks_(cache_max_size_, cache_delete_step_),
-      rust_graphs_(std::make_unique<RustDagManagerGraphs>(config.genesis.dag_genesis_block.getHash(),
-                                                          config.dag_expiry_limit, db_->rustStorage())) {
-  rust_graphs_->runtime->dag_manager_runtime_ensure_proposal_period_mapping(max_levels_per_period_, 0);
-  rebuildRustGraphsFromStorage();
+      dag_transaction_service_(std::move(dag_transaction_service)) {
+  if (!dag_transaction_service_) {
+    throw std::invalid_argument("DagManager requires a DAG/transaction service");
+  }
 }
 
 DagManager::~DagManager() = default;
 
-void DagManager::rebuildRustGraphsFromStorage() {
-  try {
-    std::unique_lock lock(rust_graphs_mutex_);
-    rust_graphs_->runtime->dag_manager_runtime_restore_from_storage();
-    mirrorDagCountersFromRuntime();
-  } catch (const std::exception &e) {
-    std::cerr << "DagManager: failed to rebuild Rust state from storage: " << e.what() << std::endl;
-  }
-}
-
 void DagManager::mirrorDagCountersFromRuntime() const {
-  const auto counters = rust_graphs_->runtime->dag_manager_runtime_persistence_counters();
+  const auto counters = dag_transaction_service_->service().dag_manager_runtime_persistence_counters();
   db_->mirrorDagBlockCounters(counters.dag_blocks, counters.dag_edges);
 }
 
 bool DagManager::addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk) {
   try {
-    rust_graphs_->runtime->dag_manager_runtime_add_block(to_bridge_manager_block(blk));
+    dag_transaction_service_->service().dag_manager_runtime_add_block(to_bridge_manager_block(blk));
     return true;
   } catch (const std::exception &e) {
     std::cerr << "DagManager: failed to add block to Rust state mirror: " << e.what() << std::endl;
@@ -389,7 +379,7 @@ bool DagManager::addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk) {
 
 bool DagManager::addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk) {
   try {
-    rust_graphs_->runtime->dag_manager_runtime_add_block(clone_bridge_manager_block(blk));
+    dag_transaction_service_->service().dag_manager_runtime_add_block(clone_bridge_manager_block(blk));
     return true;
   } catch (const std::exception &e) {
     std::cerr << "DagManager: failed to add block facts to Rust state mirror: " << e.what() << std::endl;
@@ -399,7 +389,7 @@ bool DagManager::addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk) {
 
 std::pair<blk_hash_t, std::vector<blk_hash_t>> DagManager::getRustFrontier() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  const auto frontier = rust_graphs_->runtime->dag_manager_runtime_frontier();
+  const auto frontier = dag_transaction_service_->service().dag_manager_runtime_frontier();
   return {from_bridge_hash(frontier.pivot), from_bridge_dag_hashes(frontier.tips)};
 }
 
@@ -416,7 +406,7 @@ void DagManager::setNetwork(std::weak_ptr<Network> network) { network_ = network
 
 bool DagManager::isDagBlockKnown(const blk_hash_t &hash) const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_is_block_known(to_bridge_hash(hash));
+  return dag_transaction_service_->service().dag_manager_runtime_is_block_known(to_bridge_hash(hash));
 }
 
 std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const {
@@ -428,7 +418,7 @@ std::shared_ptr<DagBlock> DagManager::getDagBlock(const blk_hash_t &hash) const 
     return genesis_block_;
   }
   std::shared_lock lock(rust_graphs_mutex_);
-  auto block = rust_graphs_->runtime->dag_manager_runtime_load_block(to_bridge_hash(hash));
+  auto block = dag_transaction_service_->service().dag_manager_runtime_load_block(to_bridge_hash(hash));
   if (!block.found) {
     return nullptr;
   }
@@ -465,12 +455,12 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     // Rust bridge/storage failures intentionally propagate as exceptions: they
     // are infrastructure errors, while consensus-invalid blocks are returned as
     // explicit reject codes.
-    rustaxa::dag_manager_runtime_begin_verify_block_session(*rust_graphs_->runtime,
+    rustaxa::dag_manager_runtime_begin_verify_block_session(dag_transaction_service_->service(),
                                                             to_bridge_verify_block_session_input(blk, trxs));
   };
   auto next_verify_step = [&]() {
     std::unique_lock lock(rust_graphs_mutex_);
-    return rustaxa::dag_manager_runtime_verify_block_session_next(*rust_graphs_->runtime);
+    return rustaxa::dag_manager_runtime_verify_block_session_next(dag_transaction_service_->service());
   };
 
   begin_verify_session();
@@ -515,7 +505,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   transaction_report.resolved_transactions = all_block_trxs.size();
   {
     std::unique_lock lock(rust_graphs_mutex_);
-    step = rustaxa::dag_manager_runtime_verify_block_session_report_transactions(*rust_graphs_->runtime,
+    step = rustaxa::dag_manager_runtime_verify_block_session_report_transactions(dag_transaction_service_->service(),
                                                                                  std::move(transaction_report));
   }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
@@ -529,7 +519,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   {
     std::unique_lock lock(rust_graphs_mutex_);
     step = rustaxa::dag_manager_runtime_verify_block_session_report_authorization(
-        *rust_graphs_->runtime, to_bridge_verify_block_authorization_report(authorization_facts));
+        dag_transaction_service_->service(), to_bridge_verify_block_authorization_report(authorization_facts));
   }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
@@ -554,7 +544,8 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   vdf_report.vdf_status = vdf_status;
   {
     std::unique_lock lock(rust_graphs_mutex_);
-    step = rustaxa::dag_manager_runtime_verify_block_session_report_vdf(*rust_graphs_->runtime, std::move(vdf_report));
+    step = rustaxa::dag_manager_runtime_verify_block_session_report_vdf(dag_transaction_service_->service(),
+                                                                        std::move(vdf_report));
   }
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
@@ -571,14 +562,14 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
       dag_gas_limit == 0 || static_cast<uint64_t>(blk->getTips().size() + 1) > pbft_gas_limit / dag_gas_limit;
   if (needs_tip_gas) {
     std::shared_lock lock(rust_graphs_mutex_);
-    tip_gas_estimations =
-        rust_graphs_->runtime->dag_manager_runtime_tip_gas_estimations(to_bridge_dag_hashes(blk->getTips()));
+    tip_gas_estimations = dag_transaction_service_->service().dag_manager_runtime_tip_gas_estimations(
+        to_bridge_dag_hashes(blk->getTips()));
   }
 
   {
     std::unique_lock lock(rust_graphs_mutex_);
     step = rustaxa::dag_manager_runtime_verify_block_session_report_gas(
-        *rust_graphs_->runtime,
+        dag_transaction_service_->service(),
         to_bridge_verify_block_gas_report(blk->getGasEstimation(), estimated_transactions_weight, dag_gas_limit,
                                           pbft_gas_limit, std::move(tip_gas_estimations)));
   }
@@ -591,7 +582,7 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
 
 std::pair<bool, std::vector<blk_hash_t>> DagManager::pivotAndTipsAvailable(const std::shared_ptr<DagBlock> &blk) {
   std::shared_lock lock(rust_graphs_mutex_);
-  const auto validation = rust_graphs_->runtime->dag_manager_runtime_validate_pivot_tips(
+  const auto validation = dag_transaction_service_->service().dag_manager_runtime_validate_pivot_tips(
       blk->getLevel(), to_bridge_hash(blk->getPivot()), to_bridge_dag_hashes(blk->getTips()));
   return {validation.ok, from_bridge_dag_hashes(validation.missing_references)};
 }
@@ -620,7 +611,7 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
   rustaxa::DagAddBlockEffectPlan add_plan;
   {
     std::shared_lock lock(rust_graphs_mutex_);
-    add_plan = rust_graphs_->runtime->dag_manager_runtime_plan_add_block(
+    add_plan = dag_transaction_service_->service().dag_manager_runtime_plan_add_block(
         to_bridge_add_block_runtime_input(block_facts, save, proposed));
   }
   if (add_plan.duplicate) {
@@ -640,8 +631,8 @@ rustaxa::DagProposerAddBlockReport DagManager::addDagBlockRlp(rustaxa::DagPropos
   }
   if (add_plan.persist_block) {
     std::shared_lock lock(rust_graphs_mutex_);
-    rust_graphs_->runtime->dag_manager_runtime_save_block(block_facts.hash, block_facts.level, block_facts.tips.size(),
-                                                          to_rust_vec(block_rlp));
+    dag_transaction_service_->service().dag_manager_runtime_save_block(block_facts.hash, block_facts.level,
+                                                                       block_facts.tips.size(), to_rust_vec(block_rlp));
     mirrorDagCountersFromRuntime();
   }
 
@@ -686,7 +677,7 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
   rustaxa::DagAddBlockEffectPlan add_plan;
   {
     std::shared_lock lock(rust_graphs_mutex_);
-    add_plan = rust_graphs_->runtime->dag_manager_runtime_plan_add_block(
+    add_plan = dag_transaction_service_->service().dag_manager_runtime_plan_add_block(
         to_bridge_add_block_runtime_input(blk, save, proposed));
   }
   if (add_plan.duplicate) {
@@ -707,8 +698,8 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
   if (add_plan.persist_block) {
     auto block_rlp = to_rust_vec(blk->rlp(true));
     std::shared_lock lock(rust_graphs_mutex_);
-    rust_graphs_->runtime->dag_manager_runtime_save_block(to_bridge_hash(blk_hash), blk->getLevel(),
-                                                          blk->getTips().size(), std::move(block_rlp));
+    dag_transaction_service_->service().dag_manager_runtime_save_block(to_bridge_hash(blk_hash), blk->getLevel(),
+                                                                       blk->getTips().size(), std::move(block_rlp));
     mirrorDagCountersFromRuntime();
   }
 
@@ -742,13 +733,13 @@ std::pair<bool, std::vector<blk_hash_t>> DagManager::addDagBlock(const std::shar
 
 vec_blk_t DagManager::getDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period) {
   std::shared_lock lock(rust_graphs_mutex_);
-  if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
+  if (period != dag_transaction_service_->service().dag_manager_runtime_latest_period() + 1) {
     return {};
   }
-  if (from_bridge_hash(rust_graphs_->runtime->dag_manager_runtime_anchors().anchor) == anchor) {
+  if (from_bridge_hash(dag_transaction_service_->service().dag_manager_runtime_anchors().anchor) == anchor) {
     return {};
   }
-  const auto order = rust_graphs_->runtime->dag_manager_runtime_compute_order(to_bridge_hash(anchor));
+  const auto order = dag_transaction_service_->service().dag_manager_runtime_compute_order(to_bridge_hash(anchor));
   if (!order.found) {
     return {};
   }
@@ -759,7 +750,7 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
   try {
     {
       std::shared_lock graph_lock(rust_graphs_mutex_);
-      if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
+      if (period != dag_transaction_service_->service().dag_manager_runtime_latest_period() + 1) {
         return 0;
       }
     }
@@ -767,11 +758,11 @@ uint DagManager::setDagBlockOrder(blk_hash_t const &anchor, PbftPeriod period, v
     rustaxa::DagManagerFinalizationApplyPayload finalized;
     {
       std::unique_lock graph_lock(rust_graphs_mutex_);
-      if (period != rust_graphs_->runtime->dag_manager_runtime_latest_period() + 1) {
+      if (period != dag_transaction_service_->service().dag_manager_runtime_latest_period() + 1) {
         return 0;
       }
-      finalized = rust_graphs_->runtime->dag_manager_runtime_apply_finalized_order(to_bridge_hash(anchor), period,
-                                                                                   to_bridge_dag_hashes(dag_order));
+      finalized = dag_transaction_service_->service().dag_manager_runtime_apply_finalized_order(
+          to_bridge_hash(anchor), period, to_bridge_dag_hashes(dag_order));
       mirrorDagCountersFromRuntime();
     }
 
@@ -812,18 +803,19 @@ std::optional<std::pair<blk_hash_t, std::vector<blk_hash_t>>> DagManager::getLat
 
 std::vector<blk_hash_t> DagManager::getGhostPath(const blk_hash_t &source) const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return from_bridge_dag_hashes(rust_graphs_->runtime->dag_manager_runtime_ghost_path(to_bridge_hash(source)));
+  return from_bridge_dag_hashes(
+      dag_transaction_service_->service().dag_manager_runtime_ghost_path(to_bridge_hash(source)));
 }
 
 std::vector<blk_hash_t> DagManager::getGhostPath() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return from_bridge_dag_hashes(rust_graphs_->runtime->dag_manager_runtime_anchor_ghost_path());
+  return from_bridge_dag_hashes(dag_transaction_service_->service().dag_manager_runtime_anchor_ghost_path());
 }
 
 void DagManager::drawTotalGraph(std::string const &str) const {
   std::shared_lock lock(rust_graphs_mutex_);
   std::ofstream outfile(str.c_str());
-  outfile << std::string(rust_graphs_->runtime->dag_manager_runtime_graphviz_dot(false));
+  outfile << std::string(dag_transaction_service_->service().dag_manager_runtime_graphviz_dot(false));
   std::cout << "Dot file " << str << " generated!" << std::endl;
   std::cout << "Use \"dot -Tpdf <dot file> -o <pdf file>\" to generate pdf file" << std::endl;
 }
@@ -831,7 +823,7 @@ void DagManager::drawTotalGraph(std::string const &str) const {
 void DagManager::drawPivotGraph(std::string const &str) const {
   std::shared_lock lock(rust_graphs_mutex_);
   std::ofstream outfile(str.c_str());
-  outfile << std::string(rust_graphs_->runtime->dag_manager_runtime_graphviz_dot(true));
+  outfile << std::string(dag_transaction_service_->service().dag_manager_runtime_graphviz_dot(true));
   std::cout << "Dot file " << str << " generated!" << std::endl;
   std::cout << "Use \"dot -Tpdf <dot file> -o <pdf file>\" to generate pdf file" << std::endl;
 }
@@ -843,44 +835,44 @@ void DagManager::drawGraph(std::string const &dotfile) const {
 
 std::pair<uint64_t, uint64_t> DagManager::getNumVerticesInDag() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  const auto persisted_counts = rust_graphs_->runtime->dag_manager_runtime_persistence_counters();
+  const auto persisted_counts = dag_transaction_service_->service().dag_manager_runtime_persistence_counters();
   mirrorDagCountersFromRuntime();
-  return {persisted_counts.dag_blocks, rust_graphs_->runtime->dag_manager_runtime_vertex_count()};
+  return {persisted_counts.dag_blocks, dag_transaction_service_->service().dag_manager_runtime_vertex_count()};
 }
 
 std::pair<uint64_t, uint64_t> DagManager::getNumEdgesInDag() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  const auto persisted_counts = rust_graphs_->runtime->dag_manager_runtime_persistence_counters();
+  const auto persisted_counts = dag_transaction_service_->service().dag_manager_runtime_persistence_counters();
   mirrorDagCountersFromRuntime();
-  return {persisted_counts.dag_edges, rust_graphs_->runtime->dag_manager_runtime_edge_count()};
+  return {persisted_counts.dag_edges, dag_transaction_service_->service().dag_manager_runtime_edge_count()};
 }
 
 level_t DagManager::getMaxLevel() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_max_level();
+  return dag_transaction_service_->service().dag_manager_runtime_max_level();
 }
 
 PbftPeriod DagManager::getLatestPeriod() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_latest_period();
+  return dag_transaction_service_->service().dag_manager_runtime_latest_period();
 }
 
 std::pair<blk_hash_t, blk_hash_t> DagManager::getAnchors() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  const auto anchors = rust_graphs_->runtime->dag_manager_runtime_anchors();
+  const auto anchors = dag_transaction_service_->service().dag_manager_runtime_anchors();
   return std::make_pair(from_bridge_hash(anchors.old_anchor), from_bridge_hash(anchors.anchor));
 }
 
 uint32_t DagManager::getDagExpiryLimit() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_dag_expiry_limit();
+  return dag_transaction_service_->service().dag_manager_runtime_dag_expiry_limit();
 }
 
 const std::pair<PbftPeriod, std::map<uint64_t, std::unordered_set<blk_hash_t>>> DagManager::getNonFinalizedBlocks()
     const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return {rust_graphs_->runtime->dag_manager_runtime_latest_period(),
-          from_bridge_level_hashes(rust_graphs_->runtime->dag_manager_runtime_non_finalized_blocks())};
+  return {dag_transaction_service_->service().dag_manager_runtime_latest_period(),
+          from_bridge_level_hashes(dag_transaction_service_->service().dag_manager_runtime_non_finalized_blocks())};
 }
 
 const std::tuple<PbftPeriod, std::vector<std::shared_ptr<DagBlock>>, SharedTransactions>
@@ -888,7 +880,8 @@ DagManager::getNonFinalizedBlocksWithTransactions(const std::unordered_set<blk_h
   rustaxa::DagManagerNonFinalizedSyncPayload payload;
   {
     std::shared_lock lock(rust_graphs_mutex_);
-    payload = rust_graphs_->runtime->dag_manager_runtime_non_finalized_sync_payload(to_bridge_dag_hashes(known_hashes));
+    payload = dag_transaction_service_->service().dag_manager_runtime_non_finalized_sync_payload(
+        to_bridge_dag_hashes(known_hashes));
   }
 
   auto dag_blocks = from_bridge_dag_sync_blocks(payload.blocks);
@@ -903,13 +896,13 @@ DagFrontier DagManager::getDagFrontier() {
 
 std::pair<size_t, size_t> DagManager::getNonFinalizedBlocksSize() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  const auto size = rust_graphs_->runtime->dag_manager_runtime_non_finalized_blocks_size();
+  const auto size = dag_transaction_service_->service().dag_manager_runtime_non_finalized_blocks_size();
   return {size.levels, size.blocks};
 }
 
 uint32_t DagManager::getNonFinalizedBlocksMinDifficulty() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_non_finalized_min_difficulty();
+  return dag_transaction_service_->service().dag_manager_runtime_non_finalized_min_difficulty();
 }
 
 std::shared_mutex &DagManager::getDagMutex() { return dag_finalization_mutex_; }
@@ -920,7 +913,7 @@ const DagConfig &DagManager::getDagConfig() const { return genesis_config_.dag; 
 
 uint64_t DagManager::getDagExpiryLevel() const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_dag_expiry_level();
+  return dag_transaction_service_->service().dag_manager_runtime_dag_expiry_level();
 }
 
 uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_period_; }
@@ -928,72 +921,73 @@ uint64_t DagManager::getMaxLevelsPerPeriod() const { return max_levels_per_perio
 rustaxa::DagProposerTipSelectionPlan DagManager::planProposerTipSelection(
     rustaxa::DagProposerStorageTipSelectionInput input) const {
   std::shared_lock lock(rust_graphs_mutex_);
-  return rust_graphs_->runtime->dag_manager_runtime_plan_proposal_tip_selection(std::move(input));
+  return dag_transaction_service_->service().dag_manager_runtime_plan_proposal_tip_selection(std::move(input));
 }
 
 uint64_t DagManager::beginProposerSession(rustaxa::DagProposerSessionBeginInput input) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_begin_proposer_session(*rust_graphs_->runtime, std::move(input));
+  return rustaxa::dag_manager_runtime_begin_proposer_session(dag_transaction_service_->service(), std::move(input));
 }
 
 bool DagManager::abortProposerSession(uint64_t session_id) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_abort_proposer_session(*rust_graphs_->runtime, session_id);
+  return rustaxa::dag_manager_runtime_abort_proposer_session(dag_transaction_service_->service(), session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::proposerSessionNext(uint64_t session_id) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_next(*rust_graphs_->runtime, session_id);
+  return rustaxa::dag_manager_runtime_proposer_session_next(dag_transaction_service_->service(), session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerExternalProposalFacts(
     uint64_t session_id, rustaxa::DagProposerExternalProposalFactsReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_external_facts(*rust_graphs_->runtime, session_id,
-                                                                             std::move(report));
+  return rustaxa::dag_manager_runtime_proposer_session_report_external_facts(dag_transaction_service_->service(),
+                                                                             session_id, std::move(report));
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerTransactions(
     uint64_t session_id, rustaxa::DagProposerTransactionPackReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_transactions(*rust_graphs_->runtime, session_id,
-                                                                           std::move(report));
+  return rustaxa::dag_manager_runtime_proposer_session_report_transactions(dag_transaction_service_->service(),
+                                                                           session_id, std::move(report));
 }
 
 rustaxa::DagProposerSessionStep DagManager::pollProposerVdfWait(uint64_t session_id) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_poll_vdf(*rust_graphs_->runtime, session_id);
+  return rustaxa::dag_manager_runtime_proposer_session_poll_vdf(dag_transaction_service_->service(), session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerVdfProof(uint64_t session_id,
                                                                    rustaxa::DagProposerVdfProofReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_vdf_proof(*rust_graphs_->runtime, session_id,
+  return rustaxa::dag_manager_runtime_proposer_session_report_vdf_proof(dag_transaction_service_->service(), session_id,
                                                                         std::move(report));
 }
 
 rustaxa::DagProposerSessionStep DagManager::resumeProposerAfterStaleProofSleep(uint64_t session_id) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_resume_stale_proof(*rust_graphs_->runtime, session_id);
+  return rustaxa::dag_manager_runtime_proposer_session_resume_stale_proof(dag_transaction_service_->service(),
+                                                                          session_id);
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerSigning(uint64_t session_id,
                                                                   rustaxa::DagProposerSigningReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_signing(*rust_graphs_->runtime, session_id,
+  return rustaxa::dag_manager_runtime_proposer_session_report_signing(dag_transaction_service_->service(), session_id,
                                                                       std::move(report));
 }
 
 rustaxa::DagProposerSessionStep DagManager::reportProposerAddBlock(uint64_t session_id,
                                                                    rustaxa::DagProposerAddBlockReport report) {
   std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_add_block(*rust_graphs_->runtime, session_id,
+  return rustaxa::dag_manager_runtime_proposer_session_report_add_block(dag_transaction_service_->service(), session_id,
                                                                         std::move(report));
 }
 
 blk_hash_t DagManager::getPeriodBlockHashForDagProposal(PbftPeriod period) const {
   std::shared_lock lock(rust_graphs_mutex_);
-  const auto lookup = rust_graphs_->runtime->dag_manager_runtime_period_block_hash(period);
+  const auto lookup = dag_transaction_service_->service().dag_manager_runtime_period_block_hash(period);
   if (!lookup.found) {
     return {};
   }

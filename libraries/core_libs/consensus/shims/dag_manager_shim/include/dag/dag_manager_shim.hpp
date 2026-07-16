@@ -44,8 +44,6 @@ struct DagFinalizationOrderReport {
  * and does not import or delegate to the legacy DAG manager in Rust mode.
  */
 class DagManager : public std::enable_shared_from_this<DagManager> {
-  struct RustDagManagerGraphs;
-
  public:
   /**
    * Result of Rust-backed DAG block verification.
@@ -68,9 +66,21 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
     MissingTip
   };
 
+  /**
+   * Preserves standalone test construction by creating a private composed service.
+   *
+   * Production `App` uses the overload below so `TransactionManager` and
+   * `DagManager` share one application-owned service.
+   */
   explicit DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
                       std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                       std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager);
+
+  /** Constructs the production DAG facade over the application-owned service. */
+  DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
+             std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
+             std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager,
+             SharedDagTransactionService dag_transaction_service);
   ~DagManager();
 
   DagManager(const DagManager &) = delete;
@@ -252,7 +262,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   static dev::bytes getVdfMessage(blk_hash_t const &hash, std::vector<trx_hash_t> const &trx_hashes);
 
  private:
-  void rebuildRustGraphsFromStorage();
   void mirrorDagCountersFromRuntime() const;
   bool addBlockToRustGraphs(const std::shared_ptr<DagBlock> &blk);
   bool addBlockToRustGraphs(const rustaxa::DagManagerBlock &blk);
@@ -272,11 +281,11 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   const uint32_t cache_delete_step_ = 100;
   ExpirationCacheMap<blk_hash_t, std::shared_ptr<DagBlock>> seen_blocks_;
   // Serializes Rust DAG persistence/runtime mutation with compatibility-mirror
-  // updates and finalization-triggered Rust rebuilds.
+  // updates performed by this facade.
   mutable std::shared_mutex rust_order_dag_blocks_mutex_;
   mutable std::shared_mutex rust_graphs_mutex_;
   mutable std::shared_mutex dag_finalization_mutex_;
-  std::unique_ptr<RustDagManagerGraphs> rust_graphs_;
+  SharedDagTransactionService dag_transaction_service_;
 };
 
 }  // namespace taraxa
