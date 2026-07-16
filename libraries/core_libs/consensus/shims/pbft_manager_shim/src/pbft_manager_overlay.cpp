@@ -816,7 +816,7 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
       dynamic_lambda_(conf.genesis.state.hardforks.cacti_hf.lambda_max),
       dag_genesis_block_hash_(conf.genesis.dag_genesis_block.getHash()),
       kGenesisConfig(conf.genesis),
-      proposed_blocks_(db_),
+      proposed_blocks_(pbft_service_),
       eligible_wallets_(conf.wallets) {
   if (!pbft_service_) {
     throw std::invalid_argument("PBFT manager requires a shared PBFT service");
@@ -1652,8 +1652,6 @@ void PbftManager::initialState() {
   // index. This preserves canonical block bytes for later network/public
   // materialization without scanning `DbStorage` into live C++ `PbftBlock`
   // objects during PBFT manager startup.
-  proposed_blocks_.restoreFromStorage();
-
   // Process saved cert voted block from Rust storage through the PBFT runtime.
   const auto cert_voted_block_payload =
       rustaxa::pbft_manager_runtime_cert_voted_block_in_round(pbft_service_->service());
@@ -2284,7 +2282,7 @@ void PbftManager::identifyBlock_() {
       [&](const auto &effect) {
         if (effect.intent == kPbftManagerStateActionIntentIdentifyLeaderAndSoftVote) {
           const auto leader_block_data = vote_mgr_->identifyLeaderBlock(
-              proposed_blocks_, period, round,
+              *pbft_service_, period, round,
               [this](const auto &proposed_block_hash) {
                 return pbft_chain_->findPbftBlockInChain(proposed_block_hash);
               },
@@ -2554,8 +2552,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
   }
 
   try {
-    ProposedBlocks propose_blocks{db_};
-    std::vector<std::shared_ptr<PbftVote>> propose_votes;
+    std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> local_candidates;
 
     for (const auto &wallet : eligible_wallets) {
       auto block = std::make_shared<PbftBlock>(prev_blk_hash, anchor_hash, order_hash, final_chain_hash, propose_period,
@@ -2571,13 +2568,12 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
         continue;
       }
 
-      propose_blocks.pushProposedPbftBlock(block, false);
-      propose_votes.push_back(std::move(propose_vote_generation.vote));
+      local_candidates.emplace_back(std::move(block), std::move(propose_vote_generation.vote));
     }
 
     // Select leader block
     auto leader_block_data = vote_mgr_->identifyLeaderBlock(
-        propose_blocks, std::move(propose_votes),
+        std::move(local_candidates),
         [this](const auto &proposed_block_hash) { return pbft_chain_->findPbftBlockInChain(proposed_block_hash); },
         [this](const auto &proposed_block) { return validatePbftBlock(proposed_block); });
     if (!leader_block_data.has_value()) {

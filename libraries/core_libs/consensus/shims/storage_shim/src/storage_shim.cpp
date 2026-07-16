@@ -70,7 +70,6 @@ DbStorage::DbStorage(fs::path const& path, uint32_t db_snapshot_each_n_pbft_bloc
   try {
     rust_storage_ = rustaxa::create_storage(path.string());
     pillar_storage_ = rustaxa::create_pillar_chain_storage(*rust_storage_.value());
-    proposed_blocks_storage_ = rustaxa::create_proposed_blocks_index_from_storage(*rust_storage_.value());
     dag_queries_ = rustaxa::create_dag_storage_queries(*rust_storage_.value());
     metadata_queries_ = rustaxa::create_metadata_storage_queries(*rust_storage_.value());
     pbft_queries_ = rustaxa::create_pbft_storage_queries(*rust_storage_.value());
@@ -633,9 +632,9 @@ void DbStorage::saveProposedPbftBlock(const std::shared_ptr<PbftBlock>& block) {
   auto block_hash = block->getBlockHash();
   auto block_bytes = block->rlp(true);
   auto block_rlp = into_rust_vec(block_bytes);
-  proposed_blocks_storage_.value()->proposed_blocks_push_with_storage(block->getPeriod(), into_bytes_array(block_hash),
-                                                                      into_bytes_array(block->getPivotDagBlockHash()),
-                                                                      std::move(block_rlp));
+  (void)rustaxa::proposed_blocks_storage_push_with_storage(
+      *rust_storage_.value(), block->getPeriod(), into_bytes_array(block_hash),
+      into_bytes_array(block->getPivotDagBlockHash()), std::move(block_rlp));
 }
 
 void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& write_batch) {
@@ -645,7 +644,7 @@ void DbStorage::removeProposedPbftBlock(const blk_hash_t& block_hash, Batch& wri
 
 std::vector<std::shared_ptr<PbftBlock>> DbStorage::getProposedPbftBlocks() {
   std::vector<std::shared_ptr<PbftBlock>> res;
-  auto blocks = proposed_blocks_storage_.value()->proposed_blocks_storage_snapshot_entries();
+  auto blocks = rustaxa::proposed_blocks_storage_snapshot_entries(*rust_storage_.value());
   res.reserve(blocks.size());
   for (auto const& block : blocks) {
     res.emplace_back(std::make_shared<PbftBlock>(dev::bytes(block.block_rlp.begin(), block.block_rlp.end())));

@@ -10,7 +10,7 @@
 
 #include "common/constants.hpp"
 #include "pbft/pbft_manager.hpp"
-#include "pbft/proposed_blocks.hpp"
+#include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "slashing_manager/slashing_manager.hpp"
 #include "storage/storage.hpp"
@@ -842,25 +842,70 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getProposalVotes(PbftPeriod 
 }
 
 std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> VoteManager::identifyLeaderBlock(
-    ProposedBlocks& propose_blocks, PbftPeriod period, PbftRound round,
+    const PbftService& pbft_service, PbftPeriod period, PbftRound round,
     const std::function<bool(const blk_hash_t&)>& block_in_chain,
     const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const {
-  return identifyLeaderBlock(propose_blocks, getProposalVotes(period, round), block_in_chain, validate_block);
+  return identifyLeaderBlockFromSource(&pbft_service, {}, getProposalVotes(period, round), block_in_chain,
+                                       validate_block);
 }
 
 std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> VoteManager::identifyLeaderBlock(
-    ProposedBlocks& propose_blocks, std::vector<std::shared_ptr<PbftVote>>&& propose_votes,
+    std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,
+    const std::function<bool(const blk_hash_t&)>& block_in_chain,
+    const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const {
+  std::vector<std::shared_ptr<PbftVote>> propose_votes;
+  propose_votes.reserve(local_candidates.size());
+  for (const auto& candidate : local_candidates) {
+    propose_votes.push_back(candidate.second);
+  }
+  return identifyLeaderBlockFromSource(nullptr, std::move(local_candidates), std::move(propose_votes), block_in_chain,
+                                       validate_block);
+}
+
+std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>
+VoteManager::identifyLeaderBlockFromSource(
+    const PbftService* pbft_service,
+    std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,
+    std::vector<std::shared_ptr<PbftVote>>&& propose_votes,
     const std::function<bool(const blk_hash_t&)>& block_in_chain,
     const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const {
   if (propose_votes.empty()) {
     return {};
   }
+  if ((pbft_service == nullptr) == local_candidates.empty()) {
+    throw std::invalid_argument("PBFT leader selection requires exactly one proposed-block source");
+  }
 
   rust::Vec<rustaxa::PbftManagerLeaderCandidateInputFact> candidate_facts;
   candidate_facts.reserve(propose_votes.size());
   std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> materialized_candidates;
+  rust::Vec<rustaxa::ProposedBlockLookup> local_lookups;
+  if (pbft_service == nullptr) {
+    rust::Vec<rustaxa::ProposedBlockSnapshotEntry> candidate_entries;
+    candidate_entries.reserve(local_candidates.size());
+    for (const auto& candidate : local_candidates) {
+      rustaxa::ProposedBlockSnapshotEntry entry;
+      entry.period = candidate.first->getPeriod();
+      entry.block_hash = toBridgeHash(candidate.first->getBlockHash());
+      entry.pivot_hash = toBridgeHash(candidate.first->getPivotDagBlockHash());
+      entry.block_rlp = toBridgeBytes(candidate.first->rlp(true));
+      entry.is_valid = false;
+      candidate_entries.push_back(std::move(entry));
+    }
+    rust::Vec<rustaxa::ProposedBlockIdentity> identities;
+    identities.reserve(propose_votes.size());
+    for (const auto& vote : propose_votes) {
+      identities.push_back(rustaxa::ProposedBlockIdentity{vote->getPeriod(), toBridgeHash(vote->getBlockHash())});
+    }
+    local_lookups =
+        rustaxa::proposed_blocks_local_candidate_lookups(std::move(candidate_entries), std::move(identities));
+    if (local_lookups.size() != propose_votes.size()) {
+      throw std::runtime_error("Rust local proposed-block lookup returned a misaligned result set");
+    }
+  }
 
-  for (auto&& vote : propose_votes) {
+  for (size_t vote_index = 0; vote_index < propose_votes.size(); ++vote_index) {
+    auto&& vote = propose_votes[vote_index];
     rustaxa::PbftManagerLeaderCandidateInputFact fact;
     fact.vote_hash = toBridgeHash(vote->getHash());
     fact.block_hash = toBridgeHash(vote->getBlockHash());
@@ -895,33 +940,32 @@ std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> 
       continue;
     }
 
-    const auto block_metadata = propose_blocks.getPbftProposedBlockMetadata(vote->getPeriod(), proposed_block_hash);
-    if (!block_metadata.has_value()) {
+    rustaxa::ProposedBlockLookup proposed_block;
+    if (pbft_service != nullptr) {
+      proposed_block = pbft_service->service().pbft_service_proposed_blocks_get(
+          vote->getPeriod(), toBridgeHash(proposed_block_hash));
+    } else {
+      proposed_block = std::move(local_lookups[vote_index]);
+    }
+    if (!proposed_block.found) {
       LOG(log_er_) << "Unable to get proposed block " << proposed_block_hash;
       candidate_facts.push_back(fact);
       continue;
     }
     fact.proposed_block_found = true;
-    fact.pivot_hash = toBridgeHash(block_metadata->pivot_hash);
+    fact.pivot_hash = proposed_block.pivot_hash;
+    auto materialized_block = std::make_shared<PbftBlock>(fromBridgeBytes(proposed_block.block_rlp));
 
-    const auto proposed_block = propose_blocks.getPbftProposedBlock(vote->getPeriod(), proposed_block_hash);
-    if (!proposed_block.has_value()) {
-      LOG(log_er_) << "Unable to materialize proposed block " << proposed_block_hash;
-      fact.proposed_block_found = false;
-      candidate_facts.push_back(fact);
-      continue;
-    }
-
-    if (block_metadata->is_valid || proposed_block->second) {
+    if (proposed_block.is_valid) {
       fact.block_validation_status = kPbftManagerLeaderBlockAlreadyValid;
-    } else if (validate_block(proposed_block->first)) {
+    } else if (validate_block(materialized_block)) {
       fact.block_validation_status = kPbftManagerLeaderBlockValidated;
     } else {
       fact.block_validation_status = kPbftManagerLeaderBlockRejected;
     }
 
     if (fact.block_validation_status != kPbftManagerLeaderBlockRejected) {
-      materialized_candidates.emplace_back(proposed_block->first, std::move(vote));
+      materialized_candidates.emplace_back(std::move(materialized_block), std::move(vote));
     }
     candidate_facts.push_back(fact);
   }
@@ -935,8 +979,10 @@ std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> 
     return {};
   }
 
-  for (const auto& valid_block : plan.valid_blocks) {
-    propose_blocks.markBlockAsValid(valid_block.period, fromBridgeHash(valid_block.block_hash));
+  if (pbft_service != nullptr) {
+    for (const auto& valid_block : plan.valid_blocks) {
+      pbft_service->service().pbft_service_proposed_blocks_mark_valid(valid_block.period, valid_block.block_hash);
+    }
   }
 
   const auto selected_vote_hash = fromBridgeHash(plan.selected_vote_hash);

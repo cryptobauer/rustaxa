@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "pbft/pbft_block.hpp"
+#include "pbft/pbft_service.hpp"
 #include "pbft/proposed_blocks.hpp"
 #include "storage/storage.hpp"
 #include "test_util/test_util.hpp"
@@ -16,21 +17,33 @@ std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed) {
                                      dev::KeyPair::create().secret(), reward_votes_hashes);
 }
 
+SharedPbftService makeService(const std::shared_ptr<DbStorage>& db) {
+  rustaxa::PbftServiceConfig config{};
+  config.genesis_lambda_ms = 1000;
+  config.cacti_lambda_max_ms = 1000;
+  config.cacti_lambda_default_ms = 1000;
+  config.max_exponential_lambda_ms = 60000;
+  config.max_steps = 13;
+  config.deadline_ms = 4000;
+  config.polling_interval_ms = 100;
+  return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
+}
+
 }  // namespace
 
 struct ProposedBlocksShimDataTest : WithDataDir {};
 
-TEST_F(ProposedBlocksShimDataTest, nullDbConstructionIsUnsupportedInRustMode) {
+TEST_F(ProposedBlocksShimDataTest, nullServiceConstructionIsUnsupportedInRustMode) {
   EXPECT_THROW(ProposedBlocks(nullptr), std::runtime_error);
 }
 
-TEST_F(ProposedBlocksShimDataTest, inMemoryPushWorksWithStorageBackedIndex) {
+TEST_F(ProposedBlocksShimDataTest, servicePushPublishesAuthoritativeProposal) {
   auto db = std::make_shared<DbStorage>(data_dir);
-  ProposedBlocks proposed_blocks(db);
+  ProposedBlocks proposed_blocks(makeService(db));
   auto block = makeBlock(1, 10);
 
-  EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(block, false));
-  EXPECT_FALSE(proposed_blocks.pushProposedPbftBlock(block, false));
+  EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(block));
+  EXPECT_FALSE(proposed_blocks.pushProposedPbftBlock(block));
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(block->getPeriod(), block->getBlockHash()));
   auto metadata = proposed_blocks.getPbftProposedBlockMetadata(block->getPeriod(), block->getBlockHash());
   ASSERT_TRUE(metadata.has_value());
@@ -51,7 +64,7 @@ TEST_F(ProposedBlocksShimDataTest, inMemoryPushWorksWithStorageBackedIndex) {
   EXPECT_TRUE(found->second);
 
   auto identity_block = makeBlock(1, 11);
-  EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(identity_block, false));
+  EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(identity_block));
   proposed_blocks.markBlockAsValid(identity_block->getPeriod(), identity_block->getBlockHash());
   metadata = proposed_blocks.getPbftProposedBlockMetadata(identity_block->getPeriod(), identity_block->getBlockHash());
   ASSERT_TRUE(metadata.has_value());
@@ -63,7 +76,7 @@ TEST_F(ProposedBlocksShimDataTest, inMemoryPushWorksWithStorageBackedIndex) {
   EXPECT_TRUE(db->getProposedPbftBlocks().empty());
 }
 
-TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
+TEST_F(ProposedBlocksShimDataTest, serviceConstructionRestoresStorage) {
   auto db = std::make_shared<DbStorage>(data_dir);
   auto period_one_block = makeBlock(1, 101);
   auto period_two_block = makeBlock(2, 202);
@@ -71,11 +84,11 @@ TEST_F(ProposedBlocksShimDataTest, restoreFromStorageHydratesRustIndex) {
   db->saveProposedPbftBlock(period_one_block);
   db->saveProposedPbftBlock(period_two_block);
 
-  ProposedBlocks proposed_blocks(db);
-  EXPECT_FALSE(proposed_blocks.isInProposedBlocks(period_one_block->getPeriod(), period_one_block->getBlockHash()));
-  EXPECT_FALSE(proposed_blocks.isInProposedBlocks(period_two_block->getPeriod(), period_two_block->getBlockHash()));
+  ProposedBlocks proposed_blocks(makeService(db));
+  EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_one_block->getPeriod(), period_one_block->getBlockHash()));
+  EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_two_block->getPeriod(), period_two_block->getBlockHash()));
 
-  EXPECT_EQ(proposed_blocks.restoreFromStorage(), 2);
+  EXPECT_EQ(proposed_blocks.restoreFromStorage(), 0);
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_one_block->getPeriod(), period_one_block->getBlockHash()));
   EXPECT_TRUE(proposed_blocks.isInProposedBlocks(period_two_block->getPeriod(), period_two_block->getBlockHash()));
   auto metadata =
@@ -92,8 +105,8 @@ TEST_F(ProposedBlocksShimDataTest, persistenceAndCleanupUseRustIndexAndDb) {
   db->saveProposedPbftBlock(period_one_block);
   db->saveProposedPbftBlock(period_two_block);
 
-  ProposedBlocks proposed_blocks(db);
-  EXPECT_EQ(proposed_blocks.restoreFromStorage(), 2);
+  ProposedBlocks proposed_blocks(makeService(db));
+  EXPECT_EQ(proposed_blocks.restoreFromStorage(), 0);
   ASSERT_EQ(db->getProposedPbftBlocks().size(), 2);
 
   const auto snapshot = proposed_blocks.getProposedBlocks();
@@ -115,7 +128,7 @@ TEST_F(ProposedBlocksShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
 
   {
     auto db = std::make_shared<DbStorage>(data_dir);
-    ProposedBlocks proposed_blocks(db);
+    ProposedBlocks proposed_blocks(makeService(db));
     db.reset();
 
     EXPECT_TRUE(proposed_blocks.pushProposedPbftBlock(block, true));
@@ -124,10 +137,10 @@ TEST_F(ProposedBlocksShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
   {
     auto db = std::make_shared<DbStorage>(data_dir);
     ASSERT_EQ(db->getProposedPbftBlocks().size(), 1);
-    ProposedBlocks proposed_blocks(db);
+    ProposedBlocks proposed_blocks(makeService(db));
     db.reset();
 
-    EXPECT_EQ(proposed_blocks.restoreFromStorage(), 1);
+    EXPECT_EQ(proposed_blocks.restoreFromStorage(), 0);
     proposed_blocks.cleanupProposedPbftBlocksByPeriod(2);
   }
 
@@ -137,7 +150,7 @@ TEST_F(ProposedBlocksShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
 
 TEST_F(ProposedBlocksShimDataTest, missingMarkValidThrows) {
   auto db = std::make_shared<DbStorage>(data_dir);
-  ProposedBlocks proposed_blocks(db);
+  ProposedBlocks proposed_blocks(makeService(db));
   const auto block = makeBlock(7, 707);
   EXPECT_THROW(proposed_blocks.markBlockAsValid(block), std::runtime_error);
   EXPECT_THROW(proposed_blocks.markBlockAsValid(block->getPeriod(), block->getBlockHash()), std::runtime_error);

@@ -158,6 +158,7 @@ use rustaxa_consensus::pbft_sync::{
 };
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
+use rustaxa_consensus::proposed_blocks::{restore_proposed_blocks_from_storage, ProposedBlocks};
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
     for PbftFinalizationStorageWriteStage
@@ -471,6 +472,16 @@ pub fn create_pbft_service_from_storage(
     config: FfiPbftServiceConfig,
 ) -> anyhow::Result<Box<BridgePbftService>> {
     let restored_chain = restore_pbft_chain_from_storage(storage.0.as_ref())?;
+    let restored_proposed_blocks = restore_proposed_blocks_from_storage(storage.0.as_ref())?;
+    let mut proposed_blocks = ProposedBlocks::new();
+    for entry in restored_proposed_blocks {
+        proposed_blocks.push(
+            entry.period,
+            entry.block_hash,
+            entry.pivot_hash,
+            entry.block_rlp,
+        );
+    }
     let current_period = restored_chain.head.size.saturating_add(1);
     let cacti_active_at_chain_size = restored_chain.head.size >= config.cacti_block;
     let runtime = create_domain_pbft_manager_runtime_from_storage(
@@ -512,6 +523,7 @@ pub fn create_pbft_service_from_storage(
             chain: chain.clone(),
         })),
         chain,
+        proposed_blocks: std::sync::RwLock::new(proposed_blocks),
         storage: Some(storage.0.clone()),
         bootstrap_complete: std::sync::atomic::AtomicBool::new(false),
     }))

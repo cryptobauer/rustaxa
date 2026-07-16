@@ -16,6 +16,7 @@ use rustaxa_consensus::pbft_chain::{
     restore_pbft_chain_from_storage as domain_restore_pbft_chain_from_storage,
     PbftBlockStorageLookup, PbftBlockValidation, PbftChain, PbftChainHead,
 };
+use rustaxa_consensus::proposed_blocks::{restore_proposed_blocks_from_storage, ProposedBlocks};
 use rustaxa_storage::Storage;
 
 const PBFT_VALIDATION_VALID: u8 = 0;
@@ -32,12 +33,22 @@ pub fn create_pbft_chain_service_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePbftService>, anyhow::Error> {
     let restored = domain_restore_pbft_chain_from_storage(storage.0.as_ref())?;
+    let mut proposed_blocks = ProposedBlocks::new();
+    for entry in restore_proposed_blocks_from_storage(storage.0.as_ref())? {
+        proposed_blocks.push(
+            entry.period,
+            entry.block_hash,
+            entry.pivot_hash,
+            entry.block_rlp,
+        );
+    }
     Ok(Box::new(BridgePbftService {
         manager: std::sync::Mutex::new(None),
         chain: std::sync::Arc::new(std::sync::RwLock::new(BridgePbftChainState {
             state: PbftChain::new(restored.head)?,
             initialized_default: restored.initialized_default,
         })),
+        proposed_blocks: std::sync::RwLock::new(proposed_blocks),
         storage: Some(storage.0.clone()),
         bootstrap_complete: std::sync::atomic::AtomicBool::new(true),
     }))

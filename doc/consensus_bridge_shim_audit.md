@@ -28,7 +28,7 @@ removing each item.
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | Manager-owned PBFT sync admission, egress, and cert-vote validation functions | `pbft_manager_shim`, PBFT sync bridge tests | Internal Rust route | The standalone process-period planner and repeated-input fact DTO are retired. Keep narrowing live external checks/materialization until PBFT sync processing is fully composed inside the Rust PBFT manager service. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_*` | Vote validation/generation/progress/ingress/payload helpers | Vote manager shim, network API tests, PBFT/vote tests | Internal Rust route | CXX vote pipeline/admission/session/runtime handles are retired. Standalone planner/event free-function exports and bridge-only DTOs are deleted; live ingress uses `BridgeConsensusNetworkApi`, live validation/admission/reward materialization uses `BridgeVerifiedVotes`, and direct helper exports remain only for canonical inspection, vote generation, and payload conversion still called by C++ shims. |
 | `rust/crates/rustaxa-bridge/src/verified_votes.rs` | `BridgeVerifiedVotes`, storage-restoring constructor, startup snapshot | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Rust now requires native storage for every C++-reachable verified-vote runtime and restores authoritative vote state during construction; the empty runtime helper is private to Rust unit tests. Delete the handle after vote state is private to the Rust PBFT manager and C++ no longer needs vote sidecar materialization. |
-| `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | `BridgeProposedBlocks`, `create_proposed_blocks_index_from_storage` | `proposed_blocks_shim`, `dag_manager_shim`, `vote_manager_shim` | C++ public compatibility facade | Delete after proposed-block tracking is part of Rust PBFT/DAG runtime and C++ no longer asks for metadata/materialized proposed blocks. The no-storage constructor plus cleanup-candidate/remove-period CXX helpers are deleted; Rust-mode construction requires storage. |
+| `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | `BridgePbftService` proposed-block methods, stateless storage compatibility, local candidate lookup | `proposed_blocks_shim`, `storage_shim`, `vote_manager_shim` | Application-service state plus compatibility adapters | `BridgeProposedBlocks` and its factory are deleted. Keep service methods while the C++ PBFT/proposed-block facades need materialization; keep stateless storage functions only while `DbStorage` compatibility remains; move local candidate lookup behind a native vote/PBFT planner when the C++ proposal executor retires. |
 | `rust/crates/rustaxa-bridge/src/rewards_stats.rs` | `BridgeRewardsStatsRuntime`, `create_rewards_stats_runtime` | `rewards_stats_shim`, finalization/reward tests | C++ public compatibility facade | Delete C++ facade once rewards stats publication and storage writes are driven from Rust finalization. The direct runtime-owned storage apply method is no longer CXX API; live writes use the storage-shim batch appender or finalization publication commit paths. FinalChain-facing publication no longer carries the full `RewardsStatsProcessResult` back through C++; the shim retains the previewed plan internally and exposes only distribution stats plus the storage update needed by the execution API. |
 | `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | `BridgePillarChainStorage`, `BridgePillarChainRuntime`, `create_pillar_chain_storage`, `create_pillar_chain_runtime` | `storage_shim` (`BridgePillarChainStorage`), `pillar_chain_manager_shim` (`BridgePillarChainRuntime`) | C++ public compatibility facade | `BridgePillarChainRuntime` now owns pillar-manager startup recovery, live pillar-vote state, admission, synced bundle apply, and PBFT-facing finalization through one native storage handle. Keep `BridgePillarChainStorage` only for the separate storage-shim compatibility surface; delete it when that public storage facade is retired. |
 | `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | Standalone pillar-vote inspection APIs plus module-local test fixtures and runtime-owned pillar-chain methods | Live `pillar_chain_manager_shim` uses `BridgePillarChainRuntime`; C++ bridge tests use the runtime or standalone inspection APIs | Internal Rust route | The C++ `pillar_votes_shim` facade and standalone pillar-vote CXX handle are retired. The residual pillar-vote fixture is local to Rust bridge-module tests, not `ffi.rs`; production C++ callers must use `BridgePillarChainRuntime` or native Rust modules. |
@@ -63,7 +63,6 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `BridgeDagManagerRuntime` | `dag.rs` | `dag_manager_shim` | C++ public compatibility facade | C++ `DagManager` facade is retired or narrowed to an external API. |
 | `BridgePbftService` | `pbft_manager.rs`, `pbft_chain.rs`, `pbft_sync.rs` | App bootstrap, `pbft_manager_shim`, `pbft_chain_shim`, PBFT/storage bridge tests | Application/bootstrap handle and internal Rust route | Owns PBFT manager/session and chain state behind separate locks. Keep the chain-only constructor only for the stable public C++ compatibility adapter; absorb proposed-block and verified-vote state in `CRW-03`, then narrow remaining manager operations as external executors gain typed ports. |
 | `BridgeVerifiedVotes` | `verified_votes.rs` | `verified_votes_shim`, `vote_manager_shim` | C++ public compatibility facade | Verified vote state is private Rust vote-manager state. |
-| `BridgeProposedBlocks` | `proposed_blocks.rs` | `proposed_blocks_shim`, DAG/vote manager shims | C++ public compatibility facade | Proposed-block tracking is private Rust PBFT/DAG runtime state. |
 | `BridgeRewardsStatsRuntime` | `rewards_stats.rs` | `rewards_stats_shim`, storage shim batch append | C++ public compatibility facade | Rewards stats writes/reads are driven from Rust finalization without C++ facade/batch passing. |
 | `BridgePillarChainStorage` | `pillar_chain.rs` | `storage_shim` | C++ public compatibility facade | Pillar chain storage is native Rust-owned; the compatibility handle exposes only storage-shim operations with active C++ callers. |
 | `BridgePillarChainRuntime` | `pillar_chain.rs`, `pillar_votes.rs` | `pillar_chain_manager_shim` | Internal Rust route | Owns canonical current and latest-finalized pillar snapshots, validator vote-count history, pillar threshold/anchor/creation/linkage decisions, vote aggregation, generation-bound synced bundle apply, and PBFT-facing pillar finalization. Remove after the C++ PillarChainManager facade is retired or replaced by narrower external ports. |
@@ -86,7 +85,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | `pbft_manager_shim` | PBFT lifecycle/executor facade over the application-owned service; feature-on builds import and compile no legacy manager scaffold | App bootstrap and consensus loop | Internal Rust route | Manager and chain state now share the service and chain finalization drains internally. Continue with `CRW-03` private-state absorption, leaving only classified lifecycle/executor/materialization shell work. |
 | `pillar_chain_manager_shim` | Standalone pillar manager compatibility facade; current/latest-finalized state, creation/linkage decisions, threshold arithmetic, live vote aggregation, synced bundle apply, and PBFT-facing pillar finalization route through `BridgePillarChainRuntime` around external FinalChain facts | App/consensus pillar paths | C++ public compatibility facade | Pillar-votes builds import and compile neither `PillarChainManagerOld` nor the unused legacy `PillarVotes` implementation. Delete after signing/materialization, network/events, and FinalChain fact ports move behind native Rust application boundaries. |
 | `pillar_votes_shim` | Pillar vote index/admission facade | Retired after this slice | Obsolete scaffold | Removed. `pillar_chain_manager_shim` uses `BridgePillarChainRuntime` for live vote state; no C++ shim behavior remains. |
-| `proposed_blocks_shim` | Standalone Rust-backed proposed-block facade | DAG manager, vote manager, PBFT paths | C++ public compatibility facade | The facade no longer imports or compiles `ProposedBlocksOld`; Rust owns metadata, canonical RLP, persistence, restore, and cleanup through an internally retained storage handle. Delete after proposed-block tracking is folded into Rust PBFT/DAG runtime and no C++ caller requires `PbftBlock` materialization. |
+| `proposed_blocks_shim` | Service-backed proposed-block materialization facade | PBFT manager and sync/public compatibility paths | C++ public compatibility facade | The facade owns no lock, storage handle, or proposed-block state. Delete after remaining C++ callers no longer require `PbftBlock` materialization or the stable `ProposedBlocks` view. |
 | `rewards_stats_shim` | Standalone FinalChain-owned rewards statistics facade | FinalChain publication and rewards tests | C++ public compatibility facade | The facade no longer imports or compiles `StatsOld`, and its former module flag is retired because FinalChain unconditionally uses the shim-only publication API. Delete after Rust finalization owns rewards stats writes/reads directly and the external StateAPI edge no longer needs C++ `BlockStats`; until then the narrowed publication edge exposes only reward distribution stats and a storage-update DTO while the Rust process plan remains inside the shim until publication commit succeeds. |
 | `slashing_manager_shim` | Standalone slashing proof planner facade; Rust vote admission passes one `SlashingDoubleVoteEvidence` payload while the live `PbftVote` overload is only a compatibility adapter | Slashing manager users | C++ public compatibility facade | The facade no longer imports or compiles `SlashingManagerOld`; its module flag remains valid for partial configurations. Delete after slashing planning and transaction submission run inside Rust consensus/runtime ports. The shim supplies the immutable Magnolia activation period at planner construction; Rust rejects locally generated pre-Magnolia evidence while accepting the activation period itself. |
 | `sortition_params_manager_shim` | Standalone Rust-backed sortition facade with shim-owned compatibility carrier/codec | DAG/sortition, PBFT finalization, storage/query paths | C++ public compatibility facade | `SortitionParamsManagerOld` and the redundant module flag are retired; master Rust mode selects this facade directly. Delete after sortition parameters are exposed through Rust storage/query APIs only. |
@@ -107,6 +106,25 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
   inside the manager-owned finalization cursor before Rust returns another external effect.
 - The obsolete CXX `PbftManagerStartupFact` fixture carrier is deleted. Rust tests use a private type; C++ bridge/storage
   fixtures seed the durable chain head and call the production service constructor.
+
+### CRW-03 PBFT-private state absorption
+
+- The item is active as proposed-block and verified-vote sub-slices. Proposed blocks land first so leader selection can
+  stop passing a `ProposedBlocks&` across the vote-manager boundary before vote state joins the service.
+- The proposed-block closeout deletes `BridgeProposedBlocks` and its factory after the durable/live index moves behind
+  `BridgePbftService`, the retained `ProposedBlocks` facade becomes a service client, and storage-shim compatibility
+  methods use storage-only operations instead of a second live handle.
+- Tentative wallet candidates use a non-persisted Rust-local set. They are not inserted into service state or storage
+  before leader selection; only the chosen leader enters the authoritative proposed-block index.
+- The verified-vote follow-up deletes `BridgeVerifiedVotes` after `VoteManager` and retained materialization/network
+  facades use narrow service APIs. Until that commit lands, the verified-vote handle remains live compatibility debt.
+- Service-private manager, proposed-block, and chain state now use sibling Rust lock domains. No proposed-block guard
+  crosses a C++ validation, FinalChain/EVM, network, logging, or gossip callback. The verified-vote follow-up will add
+  its sibling lock and extend startup restoration before bootstrap publication; it is not implemented in this commit.
+- The proposed-block sub-slice is implemented: `BridgeProposedBlocks`, its factory, its explicit restore API, the
+  storage-shim-owned handle, the C++ facade mutex, and `ProposedBlocks&` leader-selection crossing are deleted.
+  Production service construction restores the index once; tentative wallet candidates use one ordered, stateless Rust
+  batch lookup and only the selected leader is persisted/published.
 
 ## Required Closeout Checks
 
@@ -206,11 +224,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   original header/source.
 - `proposed_blocks_shim` is detached from its dead legacy compile scaffold. The overlay directly includes the standalone
   Rust-backed facade, feature-on builds exclude the untouched original source, and the assertion-only inheritance test
-  is removed while storage-backed push/restore/cleanup/materialization behavior coverage remains. The bridge clones and
-  retains its own `Arc<Storage>`, so the facade no longer keeps a redundant C++ `DbStorage` lifetime sidecar. The feature
-  flag, `BridgeProposedBlocks`, and temporary C++ `PbftBlock` return materialization remain until PBFT/VoteManager/network
-  consumers move behind Rust runtime APIs. Module-disabled and pure-C++ configurations still select the untouched
-  original header/source.
+  is removed while storage-backed push/restore/cleanup/materialization behavior coverage remains. `CRW-03` subsequently
+  moved the live index and storage owner into `BridgePbftService`; the facade now holds only the shared service and
+  temporary C++ `PbftBlock` materialization. `BridgeProposedBlocks`, its factory, and the facade mutex are deleted.
+  Module-disabled and pure-C++ configurations still select the untouched original header/source.
 - `pbft_chain_shim` is detached from its dead legacy compile scaffold. The overlay directly includes the standalone
   Rust-backed facade, feature-on builds exclude the untouched original source, and the Old-only inheritance assertion is
   replaced by storage-lifetime behavior coverage. `BridgePbftChain` clones and retains its own `Arc<Storage>`, so the
@@ -409,12 +426,12 @@ Current snapshot after DAG manager verify-result API cleanup:
   `verify_legacy_vrf_sortition` CXX exports are deleted. Live C++ uses `make_cancellation_token_with_atomic` for
   cancellation and the operation-level legacy VDF/VRF sortition APIs; direct VRF verification remains native
   `rustaxa-vdf` coverage.
-- `BridgeProposedBlocks::proposed_blocks_snapshot` is deleted from the CXX surface. The live proposed-block shim uses
-  `proposed_blocks_snapshot_entries`, which carries the block payload and validation flag; grouped hash snapshots remain
-  Rust-only test coverage.
+- The former `BridgeProposedBlocks::proposed_blocks_snapshot` was deleted before the handle itself. The live facade now
+  uses `BridgePbftService::pbft_service_proposed_blocks_snapshot_entries`, which carries the block payload and validation
+  flag; grouped hash snapshots remain Rust-only test coverage.
 - The no-storage `create_proposed_blocks_index` CXX constructor plus the standalone cleanup-candidate/remove-period CXX
-  helpers are deleted. Rust-mode `ProposedBlocks` construction now requires `DbStorage`; the local proposal-generation
-  scratch index uses storage-backed construction with non-persisting `proposed_blocks_push`.
+  helpers are deleted. `CRW-03` also deleted the later storage-backed handle factory. Rust-mode `ProposedBlocks`
+  construction now requires the shared PBFT service; local proposal generation uses a non-persisted Rust batch lookup.
 - `BridgePbftChain::pbft_chain_project_update` is deleted from the CXX surface. Native `rustaxa-consensus` tests cover
   the non-mutating projection helper, and live C++ bridge callers use `pbft_chain_update`,
   `pbft_chain_update_for_finalization`, or `pbft_chain_project_legacy_json_head`.
@@ -579,13 +596,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   mutates live sidecar state, matching the legacy C++ behavior without exposing public `DbStorage` batch usage in
   Rust-mode.
 - `proposed_blocks_shim::cleanupProposedPbftBlocksByPeriod` is the active Rust-mode route for proposed-block cleanup.
-  It calls `BridgeProposedBlocks::proposed_blocks_cleanup_with_storage`, which plans stale period/hash groups, commits a
-  native Rust storage delete batch, and only then mutates the Rust proposed-block index. The public batch loop in
+  It calls `BridgePbftService::pbft_service_proposed_blocks_cleanup_with_storage`, which plans stale period/hash groups,
+  commits a native Rust storage delete batch, and only then mutates the service-owned index. The public batch loop in
   `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` is legacy/reference behavior when
   `RUSTAXA_ENABLE_PROPOSED_BLOCKS` enables the overlay, not remaining Rust-mode storage-shim debt.
-- The shim no longer constructs a separate no-storage proposed-block bridge. `pushProposedPbftBlock(..., false)` remains
-  supported on storage-backed indexes for already-durable candidate blocks, but null-DB Rust-mode construction fails
-  explicitly instead of preserving an in-memory compatibility facade.
+- The shim owns no separate proposed-block bridge or C++ lock. `pushProposedPbftBlock(..., false)` now rejects tentative
+  publication; local wallet candidates use the isolated batch lookup, while service pushes always persist before live
+  publication.
 - `sortition_params_manager_shim` is the active Rust-mode route for sortition startup and finalized-period persistence.
   It constructs `BridgeSortitionParamsManager` with `DbStorage::rustStorage()`, so the Rust runtime loads persisted
   changes, persists the missing period-zero default change, reads period-specific parameters, and persists emitted

@@ -295,10 +295,11 @@ Implementation notes:
   `libraries/core_libs/consensus/src/pbft/pbft_manager.cpp` remain legacy/reference behavior behind
   `RUSTAXA_ENABLE_PBFT_MANAGER`.
 - Proposed-block persistence is closed for the current Rust-mode route. The active `proposed_blocks_shim` overlay owns
-  save, startup restore, and stale-period cleanup through `BridgeProposedBlocks`; storage-backed cleanup plans stale
-  period/hash groups, commits one native Rust storage delete batch, and mutates the Rust index only after commit. The
-  public batch loop in `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` remains legacy/reference behavior
-  behind `RUSTAXA_ENABLE_PROPOSED_BLOCKS` and should not drive new storage-shim API expansion.
+  its compatibility surface while `BridgePbftService` owns save, startup restore, and stale-period cleanup. Cleanup
+  plans stale period/hash groups, commits one native Rust storage delete batch, and mutates the service-owned index only
+  after commit. `BridgeProposedBlocks` and its factory are deleted. The public batch loop in
+  `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` remains legacy/reference behavior behind
+  `RUSTAXA_ENABLE_PROPOSED_BLOCKS` and should not drive new storage-shim API expansion.
 - Sortition parameter persistence is closed for the current Rust-mode route. The active
   `sortition_params_manager_shim` overlay constructs `BridgeSortitionParamsManager` from Rust storage, persists the
   missing period-zero default change in Rust during startup, ignores the legacy `Batch&` argument in `pbftBlockPushed`,
@@ -398,12 +399,11 @@ Implementation notes:
   untouched original `proposed_blocks.cpp`, the overlay wrapper directly includes the Rust-backed facade, and the compile
   rename plus assertion-only inheritance test are deleted. No public compatibility carriers required extraction; the
   unused legacy-only `checkOldBlocksPresence` diagnostic remains intentionally retired from the facade.
-  `BridgeProposedBlocks` remains the authoritative owner of
-  metadata, canonical block RLP, persistence, startup restore, and atomic stale-period cleanup; it clones its own shared
-  Rust storage owner, allowing the facade to delete its redundant C++ `DbStorage` lifetime sidecar and unreachable null
-  restore branch. The feature flag, bridge handle, public facade API, and temporary `PbftBlock` return materialization
-  remain until PBFT, VoteManager, and network consumers move behind the Rust manager/runtime boundary. Module-disabled
-  and pure-C++ builds continue to select the untouched original implementation.
+  At that slice boundary, `BridgeProposedBlocks` remained the authoritative owner of metadata, canonical block RLP,
+  persistence, startup restore, and atomic stale-period cleanup. `CRW-03` subsequently moved that ownership into
+  `BridgePbftService` and deleted the standalone bridge handle, its factory, and the facade mutex. The feature flag,
+  public facade API, and temporary `PbftBlock` return materialization remain until compatibility consumers move behind
+  native Rust runtime APIs. Module-disabled and pure-C++ builds continue to select the untouched original implementation.
   Validation passed with eight focused Rust consensus tests, five Rust bridge tests, six standalone facade tests, two
   CXX proposed-block tests, the focused PBFT manager consumer test, all nine Rust storage bridge tests, the `taraxad`
   build, `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and `make rewrite-validate-smoke`. Feature-on
@@ -862,6 +862,56 @@ Snappy and existing Conan zlib archives allowed all state/contract packages to p
 failed only from the unconditional static-CGO libc link, then passed separately with `CGO_ENABLED=0` (`150 passed` across
 the two packages). These classified pre-existing harness/environment failures do not invalidate the passing CRW-02
 Rust/C++ parity, subsystem, startup, and integration evidence. Independent review approved the completed slice.
+
+### CRW-03 PBFT-private state absorption design
+
+`CRW-03` is one ownership objective delivered in two dependency-ordered commits: proposed blocks first, then verified
+votes. The proposed-block sub-slice moves the durable/live index behind a sibling `RwLock` in `BridgePbftService`,
+restores it during service construction, migrates the PBFT and vote-manager production callers, replaces the storage
+shim's independently owned handle with storage-only compatibility functions, and deletes `BridgeProposedBlocks` plus
+its factory. A lifetime-composition-only change is insufficient because it would retain duplicate authority and
+cross-shim state passing.
+
+Leader selection must also stop passing a `ProposedBlocks&` between C++ facades. The temporary wallet candidate
+collection used while proposing remains Rust-local and non-persisted; only the selected leader may be published to the
+authoritative index. Stable C++ materialization signatures such as `PbftManager::getProposedBlocks()` may remain as
+views over the shared service while direct compatibility callers still need them, but neither those facades nor
+`DbStorage` may own an independent live index.
+
+Verified votes follow after this crossing is removed. That sub-slice moves the restored admission runtime into the
+same service, converts retained `VerifiedVotes` and `VoteManager` facades into service clients, moves combined
+vote/proposal operations behind narrow Rust APIs, and deletes `BridgeVerifiedVotes`. Rust synchronization remains
+split into manager, verified-vote, proposed-block, and chain lock domains. Operations avoid nested locks by using
+snapshot, unlock, external validation, then relock/revalidate; no Rust guard crosses a C++ validation, FinalChain/EVM,
+network, logging, or gossip callback. Storage-family locks follow their owning runtime lock, and construction restores
+all private state before the one-way bootstrap publication.
+
+#### CRW-03 proposed-block absorption result
+
+The first sub-slice is implemented. `BridgePbftService` now restores and owns the proposed-block index behind its own
+`RwLock`; storage-backed construction rejects malformed or key/hash-mismatched persisted proposals before publishing
+the service. Push and cleanup hold that owning lock while Rust commits storage first and publishes memory second, so
+concurrent operations cannot split durable and live state. Pivot identity is decoded and checked before a write.
+
+The retained C++ `ProposedBlocks` facade holds only `SharedPbftService` and performs no synchronization. PBFT startup no
+longer invokes a second restore, `VoteManager` no longer accepts a `ProposedBlocks&`, and `DbStorage` no longer owns a
+live proposed-block handle. Its save/snapshot compatibility methods call stateless Rust storage functions. Local wallet
+proposals are converted once into an ordered Rust-local lookup batch; the carrier cannot assert a trusted validation
+flag, the temporary index is dropped after lookup, and only the selected leader is later persisted to service state.
+
+Cross-cutting `CRW-07` cleanup deleted `BridgeProposedBlocks`, its factory, explicit restore/non-persisted push exports,
+the storage-shim owner, and the C++ facade mutex. The stable facade remains only for current C++ `PbftBlock`
+materialization. No original upstream-owned C++ implementation path changed; all routing edits are in full overlays,
+storage compatibility shims, Rust crates, and tests.
+
+Validation passed for the moved boundary: seven focused bridge tests, eight native consensus proposed-block tests, all
+276 bridge-library tests, `rust_consensus_tests` 62/62, `proposed_blocks_shim_test` 6/6, all nine
+`rust_storage_tests`, isolated `PbftManagerWithDagCreation.proposed_blocks`, isolated
+`PbftManagerTest.propose_block_and_vote_broadcast`, both bridge/storage guards, formatting, clippy, the Rust workspace
+tests, and `git diff --check`. `make rewrite-validate-consensus` completed with status zero. Its non-fail-fast shell loop
+also exposed the previously classified same-process node-test lifecycle panic/RocksDB fixture-lock behavior; the two
+touched PBFT paths pass in fresh isolated processes, so this is retained as harness debt rather than hidden as a clean
+broad-suite signal.
 
 Implementation notes:
 
@@ -2100,13 +2150,13 @@ Implementation status:
   - `rg -n "vdf_sortition_payload_decode|vdf_sortition_payload_verify|vrf_verify_output|VdfSortitionPayloadVerifyResult|VrfVerifyOutput|VdfSortitionVerifyConfig" libraries tests rust/crates/rustaxa-bridge/src rust/crates/rustaxa-vdf/src -g'*.rs' -g'*.cpp' -g'*.hpp'`
     now returns only native `rustaxa-vdf` and `rustaxa-consensus` internals/tests, not removed CXX bridge exports.
   - `git diff --check`
-- `BridgeProposedBlocks::proposed_blocks_snapshot` is no longer a CXX export. Production C++ uses
-  `proposed_blocks_snapshot_entries`, which preserves validation flags and payloads needed by the shim facade; grouped
-  hash snapshots remain Rust test-only coverage.
+- The former `BridgeProposedBlocks::proposed_blocks_snapshot` was removed before the handle itself. Production C++ now
+  uses the PBFT service snapshot method, which preserves validation flags and payloads needed by the shim facade;
+  grouped hash snapshots remain Rust test-only coverage.
 - The no-storage `create_proposed_blocks_index` CXX constructor plus standalone
   `proposed_blocks_cleanup_candidates`/`proposed_blocks_remove_period` CXX helpers are deleted. Rust-mode
-  `ProposedBlocks` now requires `DbStorage`, and the PBFT local proposal scratch path uses the storage-backed index with
-  non-persisting `proposed_blocks_push` for temporary candidate admission.
+  `ProposedBlocks` now requires the shared PBFT service, and the PBFT local proposal path uses one isolated,
+  non-persisted Rust candidate lookup batch.
 - `BridgePbftChain::pbft_chain_project_update` is no longer a CXX export. The non-mutating append projection is covered
   by native `rustaxa-consensus` PBFT-chain tests, while live C++ bridge callers use `pbft_chain_update`,
   `pbft_chain_update_for_finalization`, or the retained legacy JSON projection facade.
@@ -2360,8 +2410,8 @@ Implementation status:
 - Proposed-block Rust-mode persistence and cleanup are also closed under the current overlay. The remaining public
   `DbStorage` batch block in `libraries/core_libs/consensus/src/pbft/proposed_blocks.cpp` is legacy-only when
   `RUSTAXA_ENABLE_PROPOSED_BLOCKS` is enabled; Rust-mode cleanup enters
-  `BridgeProposedBlocks::proposed_blocks_cleanup_with_storage`, which commits the delete batch in native Rust storage
-  before removing stale periods from the Rust index.
+  `BridgePbftService::pbft_service_proposed_blocks_cleanup_with_storage`, which commits the delete batch in native Rust
+  storage before removing stale periods from the service-owned index.
 - Sortition Rust-mode startup and finalized-period persistence are closed under the current overlay. Master
   `RUSTAXA_ENABLE` mode selects the standalone facade and excludes the untouched original implementation; the redundant
   sortition-specific feature flag and `SortitionParamsManagerOld` scaffold are retired. The shared

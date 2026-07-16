@@ -25,7 +25,6 @@ use rustaxa_consensus::dag::{DagGraph, DagManagerState};
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
 use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
-use rustaxa_consensus::proposed_blocks::ProposedBlocks;
 use rustaxa_consensus::slashing::SlashingProofPlanner;
 use rustaxa_consensus::sortition::SortitionParamsManager;
 use rustaxa_consensus::transaction_manager::{
@@ -178,11 +177,6 @@ pub(crate) struct BridgePbftChainState {
     pub initialized_default: bool,
 }
 
-pub struct BridgeProposedBlocks {
-    pub index: ProposedBlocks,
-    pub storage: Option<Arc<Storage>>,
-}
-
 /// Rewards-stat runtime wrapper coupling deterministic in-memory state with
 /// the shared Rust storage handle used for cache reload, write, and clear
 /// operations.
@@ -242,16 +236,18 @@ pub(crate) struct BridgePbftManagerRuntimeState {
 /// Application-owned PBFT service shared by the C++ manager and chain facades.
 ///
 /// The service is the sole Rust owner of PBFT manager/session state, PBFT chain
-/// state, and their common storage handle. Manager commands are serialized by
-/// `manager`; chain reads may proceed concurrently through `chain`. Operations
-/// that need both domains acquire `manager` before `chain` and never retain a
-/// guard across a C++ executor call. A chain-only compatibility instance has no
-/// manager state and is held privately by the C++ `PbftChain` adapter, which
-/// exposes only chain receiver calls. Reaching a manager receiver through that
+/// state, proposed-block state, and their common storage handle. Manager
+/// commands are serialized by `manager`; chain and proposed-block reads use
+/// independent sibling lock domains. Operations that need both manager and
+/// chain acquire `manager` before `chain`; proposed-block operations never
+/// acquire either lock and no guard is retained across a C++ executor call. A
+/// chain-only compatibility instance has no manager state and is held privately
+/// by the C++ `PbftChain` adapter. Reaching a manager receiver through that
 /// adapter is therefore a bridge-wiring bug, not a recoverable runtime input.
 pub struct BridgePbftService {
     pub(crate) manager: Mutex<Option<BridgePbftManagerRuntimeState>>,
     pub(crate) chain: Arc<RwLock<BridgePbftChainState>>,
+    pub(crate) proposed_blocks: RwLock<rustaxa_consensus::proposed_blocks::ProposedBlocks>,
     pub(crate) storage: Option<Arc<Storage>>,
     pub(crate) bootstrap_complete: AtomicBool,
 }
@@ -2109,6 +2105,17 @@ pub mod rustaxa_ffi {
         pivot_hash: [u8; 32],
         block_rlp: Vec<u8>,
         is_valid: bool,
+    }
+
+    /// Ordered identity queried against a temporary local candidate set.
+    ///
+    /// `period` and `block_hash` select one caller-supplied candidate. Rust
+    /// returns one lookup per input identity in the same order. The carrier
+    /// has no validation or persistence authority and is used only by the
+    /// non-persisted local PBFT leader-selection adapter.
+    struct ProposedBlockIdentity {
+        period: u64,
+        block_hash: [u8; 32],
     }
 
     /// Compact transaction identity retained by the Rust period-data queue for
@@ -4988,58 +4995,54 @@ pub mod rustaxa_ffi {
         pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService);
         // Consensus proposed PBFT blocks
 
-        type BridgeProposedBlocks;
-
-        pub fn create_proposed_blocks_index_from_storage(
-            storage: &BridgeStorage,
-        ) -> Box<BridgeProposedBlocks>;
-        pub fn proposed_blocks_push(
-            self: &mut BridgeProposedBlocks,
-            period: u64,
-            block_hash: &[u8; 32],
-            pivot_hash: &[u8; 32],
-            block_rlp: Vec<u8>,
-        ) -> bool;
-        pub fn proposed_blocks_push_with_storage(
-            self: &mut BridgeProposedBlocks,
+        pub fn pbft_service_proposed_blocks_push_with_storage(
+            self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
             pivot_hash: &[u8; 32],
             block_rlp: Vec<u8>,
         ) -> Result<bool>;
-        pub fn proposed_blocks_mark_valid(
-            self: &mut BridgeProposedBlocks,
+        pub fn pbft_service_proposed_blocks_mark_valid(
+            self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
         ) -> Result<()>;
-        pub fn proposed_blocks_get(
-            self: &BridgeProposedBlocks,
+        pub fn pbft_service_proposed_blocks_get(
+            self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
         ) -> ProposedBlockLookup;
-        pub fn proposed_blocks_metadata(
-            self: &BridgeProposedBlocks,
+        pub fn pbft_service_proposed_blocks_metadata(
+            self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
         ) -> ProposedBlockMetadataLookup;
-        pub fn proposed_blocks_contains(
-            self: &BridgeProposedBlocks,
+        pub fn pbft_service_proposed_blocks_contains(
+            self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
         ) -> bool;
-        pub fn proposed_blocks_restore_from_storage(
-            self: &mut BridgeProposedBlocks,
-        ) -> Result<usize>;
-        pub fn proposed_blocks_storage_snapshot_entries(
-            self: &BridgeProposedBlocks,
-        ) -> Result<Vec<ProposedBlockSnapshotEntry>>;
-        pub fn proposed_blocks_cleanup_with_storage(
-            self: &mut BridgeProposedBlocks,
+        pub fn pbft_service_proposed_blocks_cleanup_with_storage(
+            self: &BridgePbftService,
             period: u64,
         ) -> Result<Vec<ProposedBlockPeriodHashes>>;
-        pub fn proposed_blocks_snapshot_entries(
-            self: &BridgeProposedBlocks,
+        pub fn pbft_service_proposed_blocks_snapshot_entries(
+            self: &BridgePbftService,
         ) -> Vec<ProposedBlockSnapshotEntry>;
+        pub fn proposed_blocks_storage_push_with_storage(
+            storage: &BridgeStorage,
+            period: u64,
+            block_hash: &[u8; 32],
+            pivot_hash: &[u8; 32],
+            block_rlp: Vec<u8>,
+        ) -> Result<bool>;
+        pub fn proposed_blocks_storage_snapshot_entries(
+            storage: &BridgeStorage,
+        ) -> Result<Vec<ProposedBlockSnapshotEntry>>;
+        pub fn proposed_blocks_local_candidate_lookups(
+            candidates: Vec<ProposedBlockSnapshotEntry>,
+            identities: Vec<ProposedBlockIdentity>,
+        ) -> Vec<ProposedBlockLookup>;
 
         // Consensus rewards stats
 

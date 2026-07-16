@@ -682,7 +682,17 @@ TEST_F(PbftManagerWithDagCreation, produce_overweighted_block) {
 
 TEST_F(PbftManagerWithDagCreation, proposed_blocks) {
   auto db = std::make_shared<DbStorage>(data_dir);
-  ProposedBlocks proposed_blocks(db);
+  rustaxa::PbftServiceConfig service_config{};
+  service_config.genesis_lambda_ms = 1000;
+  service_config.cacti_lambda_max_ms = 1000;
+  service_config.cacti_lambda_default_ms = 1000;
+  service_config.max_exponential_lambda_ms = 60000;
+  service_config.max_steps = 13;
+  service_config.deadline_ms = 4000;
+  service_config.polling_interval_ms = 100;
+  auto service =
+      std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), service_config));
+  ProposedBlocks proposed_blocks(std::move(service));
 
   std::map<blk_hash_t, std::shared_ptr<PbftBlock>> blocks;
   // Create blocks

@@ -22,7 +22,7 @@ namespace taraxa {
 
 class Network;
 class PbftBlock;
-class ProposedBlocks;
+class PbftService;
 class SlashingManager;
 struct SlashingDoubleVoteEvidence;
 
@@ -264,9 +264,7 @@ class VoteManager {
    *   mark-valid commands, and deterministic ranking.
    *
    * Inputs:
-   * - `propose_blocks` supplies temporary live proposed-block materialization
-   *   and Rust-owned validation flags until proposed-block objects move fully
-   *   to Rust.
+   * - `pbft_service` supplies authoritative proposed-block materialization and Rust-owned validation flags.
    * - `block_in_chain` and `validate_block` are executor callbacks for PBFT
    *   chain lookup and live block validation, which remain outside VoteManager.
    *
@@ -281,7 +279,7 @@ class VoteManager {
    *   commands.
    */
   std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
-      ProposedBlocks& propose_blocks, PbftPeriod period, PbftRound round,
+      const PbftService& pbft_service, PbftPeriod period, PbftRound round,
       const std::function<bool(const blk_hash_t&)>& block_in_chain,
       const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
   /**
@@ -292,17 +290,17 @@ class VoteManager {
    *   proposal votes, so PBFT manager no longer owns a duplicate leader
    *   candidate fact builder.
    *
-   * Inputs and outputs match the period/round overload, except proposal votes
-   * are supplied by the caller instead of read from verified-vote state.
+   * Inputs and outputs match the period/round overload, except tentative block/vote pairs are supplied by the caller
+   * and normalized by a stateless Rust local-candidate API.
    *
    * Invariants:
    * - The caller remains responsible for local proposal vote generation and
    *   uniqueness checks.
-   * - Rust still owns candidate status derivation, mark-valid commands, and
-   *   deterministic leader ranking.
+   * - Tentative candidates never enter authoritative service or storage state.
+   * - Rust still owns candidate lookup, status derivation, and deterministic leader ranking.
    */
   std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlock(
-      ProposedBlocks& propose_blocks, std::vector<std::shared_ptr<PbftVote>>&& propose_votes,
+      std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,
       const std::function<bool(const blk_hash_t&)>& block_in_chain,
       const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
   /**
@@ -919,6 +917,21 @@ class VoteManager {
       const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation);
 
  private:
+  /**
+   * Selects a leader using either the authoritative service index or an isolated local candidate set.
+   *
+   * Exactly one source is active: `pbft_service` for received proposals, or `local_candidates` for tentative wallet
+   * proposals. Local candidates are passed through Rust's stateless lookup API and are never persisted or published to
+   * the shared service. Rust owns ranking and authoritative mark-valid synchronization; C++ only materializes the
+   * selected compatibility block and vote.
+   */
+  std::optional<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>> identifyLeaderBlockFromSource(
+      const PbftService* pbft_service,
+      std::vector<std::pair<std::shared_ptr<PbftBlock>, std::shared_ptr<PbftVote>>>&& local_candidates,
+      std::vector<std::shared_ptr<PbftVote>>&& propose_votes,
+      const std::function<bool(const blk_hash_t&)>& block_in_chain,
+      const std::function<bool(const std::shared_ptr<PbftBlock>&)>& validate_block) const;
+
   /**
    * Executes a Rust-planned double-vote slashing proof submission.
    *

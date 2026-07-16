@@ -307,6 +307,7 @@ pub fn restore_proposed_blocks_from_storage(
 /// - `storage`: native Rust storage handle.
 /// - `expected_period`: period observed by the live C++ sidecar.
 /// - `expected_hash`: block hash observed by the live C++ sidecar.
+/// - `expected_pivot_hash`: pivot hash observed by the live C++ sidecar.
 /// - `block_rlp`: canonical signed PBFT block bytes to persist.
 ///
 /// Outputs:
@@ -315,14 +316,15 @@ pub fn restore_proposed_blocks_from_storage(
 ///
 /// Invariants and edge behavior:
 /// - The RLP must decode as a signed PBFT block link.
-/// - Decoded period/hash must match the C++ sidecar facts supplied by the
-///   caller; mismatches are rejected before storage mutation.
+/// - Decoded period/hash/pivot must match the C++ sidecar facts supplied by
+///   the caller; mismatches are rejected before storage mutation.
 /// - Existing proposed-block rows are overwritten, matching the legacy
 ///   `DbStorage::saveProposedPbftBlock` put semantics.
 pub fn save_proposed_block_storage(
     storage: &Storage,
     expected_period: u64,
     expected_hash: H256,
+    expected_pivot_hash: H256,
     block_rlp: &[u8],
 ) -> Result<ProposedBlockStorageEntry> {
     let link = PbftBlockLink::try_from(SignedPbftBlockRlp::new(block_rlp))
@@ -339,6 +341,13 @@ pub fn save_proposed_block_storage(
             "PROPOSED_BLOCKS_SAVE_HASH_MISMATCH: expected {:?}, decoded {:?}",
             expected_hash,
             link.block_hash
+        ));
+    }
+    if link.pivot_dag_block_hash != expected_pivot_hash {
+        return Err(anyhow!(
+            "PROPOSED_BLOCKS_SAVE_PIVOT_MISMATCH: expected {:?}, decoded {:?}",
+            expected_pivot_hash,
+            link.pivot_dag_block_hash
         ));
     }
 
@@ -594,15 +603,36 @@ mod tests {
         let storage = temp_storage("rustaxa_consensus_proposed_blocks_save");
         let (rlp, link) = proposed_link_and_hash(9, 12_345);
 
-        let saved =
-            save_proposed_block_storage(&storage, link.period, link.block_hash, &rlp).unwrap();
-        let period_mismatch =
-            save_proposed_block_storage(&storage, link.period + 1, link.block_hash, &rlp)
+        let saved = save_proposed_block_storage(
+            &storage,
+            link.period,
+            link.block_hash,
+            link.pivot_dag_block_hash,
+            &rlp,
+        )
+        .unwrap();
+        let period_mismatch = save_proposed_block_storage(
+            &storage,
+            link.period + 1,
+            link.block_hash,
+            link.pivot_dag_block_hash,
+            &rlp,
+        )
+        .unwrap_err()
+        .to_string();
+        let hash_mismatch = save_proposed_block_storage(
+            &storage,
+            link.period,
+            hash(999),
+            link.pivot_dag_block_hash,
+            &rlp,
+        )
+        .unwrap_err()
+        .to_string();
+        let pivot_mismatch =
+            save_proposed_block_storage(&storage, link.period, link.block_hash, hash(998), &rlp)
                 .unwrap_err()
                 .to_string();
-        let hash_mismatch = save_proposed_block_storage(&storage, link.period, hash(999), &rlp)
-            .unwrap_err()
-            .to_string();
 
         assert_eq!(saved.period, link.period);
         assert_eq!(saved.block_hash, link.block_hash);
@@ -620,6 +650,7 @@ mod tests {
         );
         assert!(period_mismatch.contains("PROPOSED_BLOCKS_SAVE_PERIOD_MISMATCH"));
         assert!(hash_mismatch.contains("PROPOSED_BLOCKS_SAVE_HASH_MISMATCH"));
+        assert!(pivot_mismatch.contains("PROPOSED_BLOCKS_SAVE_PIVOT_MISMATCH"));
     }
 
     #[test]
