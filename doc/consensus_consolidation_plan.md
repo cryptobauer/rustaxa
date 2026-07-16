@@ -775,6 +775,44 @@ Acceptance:
   persistence. Remaining transaction-manager work is the classified FinalChain/EVM, public materialization, event,
   logging, and lifecycle shell rather than legacy base ownership.
 
+### CRW-01 PBFT application-service boundary decision
+
+The first remaining consolidation item selected a PBFT-cluster-only application service for the next implementation
+slice. `App` currently constructs `BridgePbftChain` and `BridgePbftManagerRuntime` independently from the same storage,
+derives manager startup period through the C++ chain facade, and passes both owners into separate compatibility shells.
+The manager then makes repeated C++ calls back through `PbftChain`; finalization even dispatches a Rust-planned chain
+mutation through C++ and reports the Rust chain result back to the Rust manager cursor. This is the smallest active
+composition seam with a direct ownership and consistency payoff.
+
+`CRW-02` will introduce one Rust PBFT application service that owns manager runtime/session state, chain state/lookups,
+and a shared native storage handle. Rust restores the chain first and derives the manager startup period and hardfork
+activation internally. `App` owns one safe shared C++ holder for the service and supplies it to the retained
+`PbftManager` and `PbftChain` facades; neither facade owns or restores nested Rust state. Manager and chain synchronization
+remain separate lock domains with a documented order rather than a service-wide mutex. Startup replay remains a typed
+bootstrap phase until its classified C++ executors move, and live commands reject use before bootstrap completion.
+
+The retained `PbftManager` facade owns only app-host lifecycle, threads, sleeps/timers, external effect execution, and
+compatibility materialization. The retained `PbftChain` facade is primarily a narrow read/JSON/block-materialization view
+for network, DAG, vote, RPC, stats, and tests. Its public `updatePbftChain(...)` method remains a compatibility/test
+mutation adapter that applies against service-owned state until direct callers migrate; the separate finalization
+mutation/report bounce moves fully inside the service. Existing manager and chain DTOs should first change receiver
+rather than being replaced wholesale, with operation generations preserving stale-report and retry behavior.
+
+The first deletions are the two production storage-backed construction routes, independent exported manager/chain handle
+ownership, app-side current-period activation derivation, facade fields that own those handles, and the chain
+finalization mutation/report bounce. The public `PbftChain(addr_t, std::shared_ptr<DbStorage>)` and
+`PbftChain::updatePbftChain(...)` signatures remain compatibility/test adapters until their direct callers intentionally
+migrate; `CRW-02` replaces `App`'s production construction path and the finalization-specific mutation route without
+breaking those APIs. Proposed blocks and verified votes are the next PBFT-private states for `CRW-03`: the former
+currently has separate storage-shim and manager instances, while the latter is independently owned by the vote facade.
+DAG, transaction, pillar, FinalChain, gas, and slashing remain sibling services or typed executor ports; their live
+non-PBFT consumers give no present justification for a wider root.
+
+This is a boundary decision, not a change to the accepted scope in `PLAN.md`. Network/tarcap, external EVM/StateAPI,
+public query, signing/VDF, and app lifecycle boundaries remain unchanged. The implementation must cover finalization and
+duplicate-resume ordering, atomic durable/live publication, storage failure and crash recovery, bootstrap rejection,
+concurrent compatibility reads, and shared-service teardown before deleting the standalone routes.
+
 Implementation notes:
 
 - VoteManager no longer mirrors locally generated own votes in `own_verified_votes_`. `BridgeVerifiedVotes` enumerates

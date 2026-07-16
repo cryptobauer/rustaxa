@@ -271,8 +271,8 @@ Activating an item still requires a bounded implementation slice with the valida
 
 | ID | Status | Work | Depends on | Complete when |
 | --- | --- | --- | --- | --- |
-| `CRW-01` | `ready` | Select the minimal Rust application-service composition boundary. Start with a PBFT-cluster-only root unless code mapping proves a shared DAG/transaction/pillar root removes more active compatibility surface without creating a service locator. | None | The selected ownership graph, retained external facades, constructor/bootstrap path, and first deletable handles are recorded in this tracker and the bridge audit. |
-| `CRW-02` | `blocked` | Compose `BridgePbftManagerRuntime` and `BridgePbftChain` behind one application-owned PBFT service; migrate app/bootstrap, `pbft_manager_shim`, and `pbft_chain_shim` callers. | `CRW-01` | One Rust service owns PBFT manager and chain lifetime/state, the standalone chain/runtime construction path is deleted, and C++ remains only an executor or public compatibility shell. |
+| `CRW-01` | `complete` | Select the minimal Rust application-service composition boundary. Start with a PBFT-cluster-only root unless code mapping proves a shared DAG/transaction/pillar root removes more active compatibility surface without creating a service locator. | None | The selected ownership graph, retained external facades, constructor/bootstrap path, and first deletable handles are recorded in this tracker and the bridge audit. |
+| `CRW-02` | `ready` | Compose `BridgePbftManagerRuntime` and `BridgePbftChain` behind one application-owned PBFT service; migrate app/bootstrap, `pbft_manager_shim`, and `pbft_chain_shim` production callers. | `CRW-01` | One Rust service owns PBFT manager and chain lifetime/state, the standalone production chain/runtime construction path is deleted, and C++ remains only an executor or public compatibility shell. |
 | `CRW-03` | `blocked` | Absorb PBFT-private state handles into the PBFT application service, starting with proposed blocks and verified votes, then rewards/sortition state used only by PBFT progress and finalization. | `CRW-02` | Chain-private state is no longer independently located or passed through CXX; obsolete `BridgeProposedBlocks`, `BridgeVerifiedVotes`, and PBFT-only rewards/sortition exports and shim mechanics are deleted after their callers migrate. |
 | `CRW-04` | `blocked` | Compose transaction/gas and DAG graph/manager/proposer runtimes behind application-owned Rust services with native FinalChain/storage ports. | `CRW-01`; coordinate shared dependencies with `CRW-02` | C++ shims no longer pass internal bridge handles between transaction, DAG, PBFT, FinalChain, or storage services; they perform input conversion, explicit EVM/network execution, and public materialization only. |
 | `CRW-05` | `blocked` | Compose pillar, slashing, sortition, and rewards planning/state behind their Rust application owner rather than standalone internal handles. | `CRW-01`; `CRW-02` where PBFT owns the lifetime | Remaining C++ code is limited to FinalChain/DPoS fact execution, signing, transaction insertion, tarcap/event execution, and public materialization; internal bridge handles and cross-shim lookup paths are deleted. |
@@ -282,9 +282,78 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09` | `ready` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | Select one type family or execution transcript per slice | Consensus-internal request, recovery, publication, and audit data remains Rust-owned; C++ `StateAPI` supplies only the external execution/committed-state operations allowed by `PLAN.md`, with byte-compatible codec and transcript coverage. |
 | `CRW-10` | `blocked` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-09`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 
-Recommended next selection: complete `CRW-01`, then implement `CRW-02` as the first structural bridge-handle reduction.
+Recommended next selection: implement `CRW-02` as the first structural bridge-handle reduction.
 `CRW-07` is cross-cutting and must be updated in the same commit whenever another item deletes or narrows bridge/shim
 surface.
+
+#### CRW-01 selected composition boundary
+
+`CRW-01` selected a PBFT-cluster-only Rust application service. Current code mapping did not find a wider DAG,
+transaction, pillar, FinalChain, gas, or slashing root that would delete more active compatibility surface in the same
+slice. Those runtimes have independent non-PBFT consumers and remain the separately ordered work in `CRW-04` and
+`CRW-05`; collecting them behind one root now would create a service locator without reducing ownership ambiguity.
+
+The `CRW-02` ownership graph is:
+
+```text
+C++ App bootstrap
+└─ one shared Rust PBFT application service
+   ├─ PBFT manager runtime, queue, and operation sessions
+   ├─ PBFT chain head/state and storage-backed block lookup
+   └─ one shared Arc<Storage>
+      ├─ proposed-block state follows in CRW-03
+      └─ verified-vote/admission state follows in CRW-03
+```
+
+The service is the only owner of manager and chain state. Its bridge handle must be held through one safe shared C++
+lifetime owned by `App` and passed to the `PbftManager` and `PbftChain` compatibility facades; neither facade may borrow
+an unowned nested Rust reference or independently restore state. Rust owns synchronization with separate manager and
+chain lock domains and a documented lock order. Do not put the complete service behind one coarse lock, expose raw
+manager/chain/storage handles, or add an arbitrary subsystem lookup API.
+
+Bootstrap becomes one fallible service construction path. Rust restores the PBFT chain first, derives the manager's
+current period and Cacti activation from the restored head plus immutable configuration, restores the manager runtime,
+and returns a coherent service. `App` supplies durable lambda, hardfork, step, deadline, and polling configuration; it
+no longer reads the C++ chain facade to populate `current_period` or `cacti_active_at_chain_size`. Startup replay remains
+an explicit service bootstrap phase while replay still needs classified C++ executors, and live manager commands must
+fail closed until that phase completes.
+
+Existing manager and chain operation DTOs should move onto the service receiver before being redesigned. Chain reads,
+legacy JSON projection facts, canonical block lookup, manager snapshots, lifecycle/proposal/sync/finalization commands,
+and typed executor reports all address the same owner. Operation identities or generations continue to reject stale or
+duplicate reports. PBFT-chain finalization mutation and manager-to-chain reads become native service operations: the
+current `UpdatePbftChain` C++ dispatch followed by a report back into the manager runtime is an internal round trip, not
+an accepted external executor boundary.
+
+The public C++ `PbftManager` facade remains for app-host threads, timers, sleeps, network wiring, signing/VDF execution,
+external effect execution, logging, and compatibility materialization. The public C++ `PbftChain` facade remains as a
+narrow read/materialization view for DAG, votes, network/tarcap, RPC, stats, and tests. Its existing
+`updatePbftChain(...)` method remains a public compatibility/test mutation adapter until direct callers migrate, but the
+mutation executes against the service-owned chain rather than an independently authoritative handle. It is distinct
+from the finalization-specific mutation/report bounce deleted below. `BridgeConsensusNetworkApi`,
+`BridgeConsensusExecutionApi`, and `BridgeConsensusQueryApi` remain separate external facades. DAG, transaction, pillar,
+FinalChain, gas, and slashing runtimes remain sibling services or typed executor ports and are never fetched from the
+PBFT service.
+
+The first `CRW-02` deletion/narrowing set is:
+
+- production `create_pbft_manager_runtime_from_storage` and `create_pbft_chain_from_storage` construction routes;
+- independent CXX ownership of `BridgePbftManagerRuntime` and `BridgePbftChain`, including
+  `PbftManager::pbft_manager_runtime_` and `PbftChain::rust_chain_`;
+- the standalone manager-runtime constructor parameter, `App`'s production use of the chain facade's direct `DbStorage`
+  construction path, and the app-side chain-size/Cacti startup derivation;
+- standalone `pbft_manager_runtime_*` and `pbft_chain_*` exports as their live callers move to the service;
+- `PbftChainFinalizationUpdateReport`, `PbftChain::updatePbftChainForPbftFinalization`, and
+  `pbft_manager_runtime_advance_finalization_pbft_chain` after finalization mutation is drained internally.
+
+The public `PbftChain(addr_t, std::shared_ptr<DbStorage>)` and `PbftChain::updatePbftChain(...)` signatures remain stable.
+Direct test and compatibility callers continue through explicitly classified construction and mutation adapters backed
+by the service-aware path rather than an independently authoritative `BridgePbftChain`; remove those adapters only after
+their callers are intentionally migrated. Lower native factories may remain Rust-private or `cfg(test)` when unit
+coverage still needs them. The C++ `PbftChain` class itself is not a `CRW-02` deletion target because its external
+compatibility consumers are still live. Normal finalization, duplicate resume, storage failure/crash recovery,
+concurrent chain reads, shared-handle teardown, and bootstrap rejection are required targeted coverage for the composed
+service.
 
 #### Scope-gated follow-up work
 
