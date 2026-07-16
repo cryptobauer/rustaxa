@@ -926,6 +926,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   completion; Rust revalidates the cursor and lookup, applies finalized-transaction filtering, and only then advances.
   Caller-supplied transactions retain precedence, block order and duplicate references are preserved, and the later EVM
   gas estimator remains in C++.
+- `DagProposerSessionBeginInput::transaction_pool_size` and `non_finalized_transaction_count` are retired. The composed
+  proposer-session start locks DAG before transaction and snapshots queue size plus non-finalized sidecar size directly
+  from the sibling Rust runtime. `DagBlockProposer` no longer relays those observations through public TransactionManager
+  getters; the cursor retains them for empty-pool, non-finalized-limit, and pack decisions.
 - `scripts/rewrite_bridge_inventory_guard.sh` now enforces that every exported CXX `Bridge*` handle in
   `rust/crates/rustaxa-bridge/src/ffi.rs` has an entry in the exported-handle audit table. It also warns when an audit
   row remains after a bridge handle is deleted.

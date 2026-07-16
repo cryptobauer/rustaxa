@@ -656,6 +656,10 @@ Completed closeout slices:
    each resolved sender at the exact proposal period, and reports narrow nonce facts; Rust revalidates the cursor,
    applies finalized-transaction filtering, and only then advances. The retained EVM gas-estimation boundary stays in
    C++.
+   Proposer session start now derives transaction-pool and non-finalized sidecar counts directly from the sibling Rust
+   TransactionManager while holding the same DAG-then-transaction lock order. Those observations no longer cross CXX
+   or route through public TransactionManager size getters; wallet identity, configured policy limits, FinalChain and
+   sortition facts, network throttling, VDF work, signing, and add-block execution remain explicit boundaries.
 4. DAG block proposer lifecycle shell reduction: Rust owns proposer lifecycle state, worker commands, retry cursor, VDF
    wait/cancel decisions, stale-proof policy, atomic frontier/proposal-period observation and revalidation, block
    construction planning, the timestamped unsigned intent, canonical signed-RLP assembly, signing boundary progression,
@@ -930,7 +934,7 @@ The current Rust consensus footprint is broad but still incomplete:
    ordering, counters, storage-facing queries, deterministic `verifyBlock` reject decisions, finalized-order apply,
    non-finalized sync selection, add-block planning, signed-RLP proposed-block fact decoding, proposed DAG transaction
    payload persistence, and proposal-attempt planning now route through Rust. Remaining C++ in this area is explicit
-   executor/compatibility work: live transaction-pool reads, FinalChain/DPoS fact sourcing, EVM gas execution,
+   executor/compatibility work: FinalChain/DPoS fact sourcing, EVM gas execution,
    event/network/public object materialization, local cache cleanup, and live transaction-manager sidecar cleanup.
 6. Define Rust ports for DPoS eligibility, eligible vote count, total vote count, and VRF key access. The current
    `DagManager` shim now gets those DPoS/VRF facts from a Rust FinalChain bridge bundle and routes embedded VRF proof

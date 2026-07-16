@@ -175,12 +175,12 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   /**
    * Opens a runtime-owned proposer cursor for one `DagBlockProposer::proposeDagBlock` attempt.
    *
-   * The input contains transaction pressure, the configured 20-byte proposer node address, wallet VRF identity,
-   * gas/tip limits, and other static proposal limits. Rust retains the configured address as the authoritative expected
-   * signer; it is not recovered from mutable external facts. Rust also observes its DAG frontier and proposal-period
-   * mapping atomically and retains all deterministic construction state. The returned identifier is unique among live
-   * sessions. Bridge or allocation failures propagate as exceptions; no identifier is returned unless the cursor was
-   * installed.
+   * The input contains the configured 20-byte proposer node address, wallet VRF identity, gas/tip limits, transaction
+   * shard settings, and other static proposal limits. Rust reads transaction pressure directly from the composed
+   * transaction runtime, retains the configured address as the authoritative expected signer, observes its DAG frontier
+   * and proposal-period mapping atomically, and retains all deterministic construction state. The returned identifier
+   * is unique among live sessions. Bridge or allocation failures propagate as exceptions; no identifier is returned
+   * unless the cursor was installed.
    */
   uint64_t beginProposerSession(rustaxa::DagProposerSessionBeginInput input);
   /**

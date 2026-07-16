@@ -606,7 +606,28 @@ fn verify_block_transaction_view_requests(
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_authorization, dag_manager_runtime_verify_block_session_report_authorization(report: DagVerifyBlockAuthorizationReport) -> DagVerifyBlockSessionStep);
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_vdf, dag_manager_runtime_verify_block_session_report_vdf(report: DagVerifyBlockVdfReport) -> DagVerifyBlockSessionStep);
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
-dag_free_mut_fallible!(service_dag_manager_runtime_begin_proposer_session, dag_manager_runtime_begin_proposer_session(input: DagProposerSessionBeginInput) -> u64);
+/// Opens a proposer session with transaction pressure derived from the sibling
+/// Rust TransactionManager while holding the universal DAG-then-transaction lock order.
+///
+/// CXX supplies wallet and configuration inputs only. Queue and non-finalized
+/// sidecar counts are captured with session creation and retained by the DAG
+/// cursor for threshold and skip decisions.
+pub fn service_dag_manager_runtime_begin_proposer_session(
+    service: &BridgeDagTransactionService,
+    input: DagProposerSessionBeginInput,
+) -> Result<u64> {
+    let (mut dag_guard, transaction) = service.dag_and_transaction()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let transaction_observation = DagProposerTransactionObservation {
+        transaction_pool_size: transaction.transaction_manager_runtime_queue_size() as u64,
+        non_finalized_transaction_count: transaction
+            .transaction_manager_runtime_non_finalized_size()
+            as u64,
+    };
+    dag_manager_runtime_begin_proposer_session(dag, input, transaction_observation)
+}
 dag_free_mut_result!(service_dag_manager_runtime_abort_proposer_session, dag_manager_runtime_abort_proposer_session(session_id: u64) -> bool);
 dag_free_mut_result!(service_dag_manager_runtime_proposer_session_next, dag_manager_runtime_proposer_session_next(session_id: u64) -> DagProposerSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_external_facts, dag_manager_runtime_proposer_session_report_external_facts(session_id: u64, report: DagProposerExternalProposalFactsReport) -> DagProposerSessionStep);
@@ -766,8 +787,6 @@ mod tests {
     fn proposer_begin_input() -> DagProposerSessionBeginInput {
         let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
         DagProposerSessionBeginInput {
-            transaction_pool_size: 1,
-            non_finalized_transaction_count: 0,
             max_non_finalized_transactions: 100,
             dag_expiry_level_limit: 100,
             wallet_vrf_public_key: vrf_key,
@@ -789,11 +808,20 @@ mod tests {
     }
 
     fn open_proposer_pack(service: &BridgeDagTransactionService) -> u64 {
-        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(service, proposer_begin_input())
                 .expect("proposer session");
-        let step = service_dag_manager_runtime_proposer_session_report_external_facts(
+        let step = report_proposer_external_facts(service, session_id);
+        assert_eq!(step.action, 1);
+        session_id
+    }
+
+    fn report_proposer_external_facts(
+        service: &BridgeDagTransactionService,
+        session_id: u64,
+    ) -> DagProposerSessionStep {
+        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
+        service_dag_manager_runtime_proposer_session_report_external_facts(
             service,
             session_id,
             DagProposerExternalProposalFactsReport {
@@ -814,9 +842,31 @@ mod tests {
                 },
             },
         )
-        .expect("external facts");
-        assert_eq!(step.action, 1);
-        session_id
+        .expect("external facts")
+    }
+
+    fn insert_test_queue_transaction(
+        service: &BridgeDagTransactionService,
+        secret: u8,
+    ) -> LegacyTransactionEnvelope {
+        let key = SigningKey::from_slice(&[secret; 32]).unwrap();
+        let tx_rlp = signed_legacy_transaction_rlp(&key);
+        let envelope = LegacyTransactionEnvelope::decode(&tx_rlp).unwrap();
+        service
+            .transaction()
+            .transaction_manager_runtime_queue_insert(TransactionQueueInsertInput {
+                hash: envelope.hash.0,
+                sender: address_from_signing_key(&key),
+                nonce: envelope.nonce.to_big_endian(),
+                gas_price: envelope.gas_price.to_big_endian(),
+                gas: envelope.gas,
+                data_size: envelope.data.len(),
+                tx_rlp,
+                proposable: true,
+                last_block_number: 0,
+            })
+            .unwrap();
+        envelope
     }
 
     fn begin_verify_block_session(
@@ -841,6 +891,68 @@ mod tests {
             },
         )
         .expect("verify-block session should begin");
+    }
+
+    #[test]
+    fn proposer_session_start_derives_queue_and_sidecar_pressure_for_skip_thresholds() {
+        let dir = unique_temp_dir("rustaxa_dag_transaction_service_proposer_pressure");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+
+        // The caller-shaped input contains configuration only; the empty sibling
+        // runtime drives the legacy empty-pool skip.
+        let empty_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let empty = report_proposer_external_facts(&service, empty_id);
+        assert_eq!(empty.status, 1);
+        assert_eq!(
+            empty.reason_code,
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_TRANSACTION_POOL_EMPTY
+        );
+
+        insert_test_queue_transaction(&service, 0x51);
+        let sidecar_rlp =
+            signed_legacy_transaction_rlp(&SigningKey::from_slice(&[0x52; 32]).unwrap());
+        service
+            .transaction()
+            .sidecar
+            .insert_non_finalized(keccak256(&sidecar_rlp), sidecar_rlp)
+            .unwrap();
+
+        let mut limited_input = proposer_begin_input();
+        limited_input.max_non_finalized_transactions = 0;
+        let limited_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, limited_input).unwrap();
+        let limited = report_proposer_external_facts(&service, limited_id);
+        assert_eq!(limited.status, 1);
+        assert_eq!(
+            limited.reason_code,
+            rustaxa_consensus::dag::DAG_PROPOSER_REASON_NON_FINALIZED_TRANSACTION_LIMIT
+        );
+
+        let ready_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let ready = report_proposer_external_facts(&service, ready_id);
+        assert_eq!(ready.status, 0);
+        assert_eq!(ready.action, 1);
+        assert!(service
+            .dag_transaction_service_proposer_pack_abort(ready_id)
+            .unwrap());
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1277,6 +1389,7 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        let queued = insert_test_queue_transaction(&service, 0x53);
 
         let throttled_id = open_proposer_pack(&service);
         let throttled = service
@@ -1290,6 +1403,7 @@ mod tests {
         assert!(service.transaction().transaction_pack_session.is_none());
 
         let empty_id = open_proposer_pack(&service);
+        assert!(service.transaction().queue.erase(queued.hash));
         let empty = service
             .dag_transaction_service_proposer_pack_prepare(empty_id, false, 21_000, 0, 0)
             .expect("empty pack should terminate");

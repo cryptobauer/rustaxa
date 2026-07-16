@@ -4013,14 +4013,12 @@ pub mod rustaxa_ffi {
 
     /// External/configured facts used to open one runtime-owned proposal session.
     ///
-    /// The caller supplies trusted wallet identity (VRF keys and proposer address), transaction pressure, packing
-    /// limits, and block-construction gas/tip limits. Rust derives the DAG frontier, proposal level/period/hash, and
-    /// observation fingerprint atomically from the runtime. Invalid storage state is returned as an error; a missing
-    /// proposal-period mapping produces a terminal session step instead. Identity and limits are retained by the cursor
-    /// and cannot be replaced at signing time.
+    /// The caller supplies trusted wallet identity (VRF keys and proposer address), packing limits, and
+    /// block-construction gas/tip limits. The composed Rust service derives transaction queue and non-finalized sidecar
+    /// counts from its sibling TransactionManager, while the DAG runtime derives frontier, proposal level/period/hash,
+    /// and observation fingerprint. Invalid storage state is returned as an error; a missing proposal-period mapping
+    /// produces a terminal session step instead. Identity, limits, and derived observations are retained by the cursor.
     struct DagProposerSessionBeginInput {
-        transaction_pool_size: u64,
-        non_finalized_transaction_count: u64,
         max_non_finalized_transactions: u64,
         dag_expiry_level_limit: u64,
         wallet_vrf_public_key: [u8; 32],
@@ -4641,9 +4639,9 @@ pub mod rustaxa_ffi {
             self: &BridgeDagTransactionService,
             input: DagProposerStorageTipSelectionInput,
         ) -> Result<DagProposerTipSelectionPlan>;
-        /// Opens a runtime-owned proposer cursor from wallet/configuration and transaction-pressure inputs.
-        /// Returns a unique cursor id or a storage/decode error; Rust derives all DAG observation facts, and callers
-        /// must eventually consume a terminal step or call the idempotent abort function.
+        /// Opens a runtime-owned proposer cursor from wallet/configuration input.
+        /// Returns a unique cursor id or a storage/decode error. Rust derives DAG observations plus queue and sidecar
+        /// pressure; callers must eventually consume a terminal step or call the idempotent abort function.
         #[rust_name = "service_dag_manager_runtime_begin_proposer_session"]
         pub fn dag_manager_runtime_begin_proposer_session(
             runtime: &BridgeDagTransactionService,

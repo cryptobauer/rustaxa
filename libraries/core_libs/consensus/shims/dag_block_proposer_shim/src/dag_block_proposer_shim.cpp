@@ -118,8 +118,6 @@ DagBlockProposer::DagBlockProposer(const FullNodeConfig& config, std::shared_ptr
 
 bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData>& node_dag_proposer_data) {
   rustaxa::DagProposerSessionBeginInput begin_input;
-  begin_input.transaction_pool_size = trx_mgr_->getTransactionPoolSize();
-  begin_input.non_finalized_transaction_count = trx_mgr_->getNonfinalizedTrxSize();
   begin_input.max_non_finalized_transactions = kMaxNonFinalizedTransactions;
   begin_input.dag_expiry_level_limit = kDagExpiryLevelLimit;
   begin_input.proposer_address = node_dag_proposer_data->wallet.node_addr.asArray();

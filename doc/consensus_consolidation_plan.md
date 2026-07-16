@@ -2754,6 +2754,27 @@ reads, public transaction construction, or EVM gas estimation into Rust.
   The Python integration runner stopped before collection because the host lacks Python 3.13 development headers for
   pinned `cytoolz` and `pyethash`, leaving `pytest` unavailable.
 
+### CRW-04 Proposer Transaction-Pressure Observation Composition
+
+This follow-up removes the two remaining TransactionManager size-getter relays from proposer-session start while keeping
+wallet identity, configured policy limits, and external executor facts explicit.
+
+- `DagProposerSessionBeginInput::transaction_pool_size` and `non_finalized_transaction_count` are deleted from CXX.
+  `BridgeDagTransactionService` now locks DAG before transaction, snapshots the Rust queue and non-finalized sidecar
+  sizes, and installs those observations with the proposer cursor in one composed start call.
+- The Rust cursor retains the snapshot for empty-pool, non-finalized-limit, and transaction-pack decisions.
+  `DagBlockProposer` no longer calls `getTransactionPoolSize()` or `getNonfinalizedTrxSize()` during session start; all
+  wallet, gas, tip, shard, retry, and proposal-limit inputs remain unchanged.
+- Focused validation passed: `rustaxa-bridge` (305 tests), `dag_block_test` (13 tests), and
+  `FullNodeTest.multiple_wallets_support` (1 test).
+- `make rewrite-validate-fast`, `make rewrite-validate-consensus`, and `make rewrite-validate-smoke` completed; changed
+  proposer/DAG targets passed while the consensus gate retained its known unrelated PBFT reward-cursor and in-process
+  RocksDB lock failures. The preapproved Tier 3 CTest gate passed 21 of 27 binaries;
+  `pillar_chain_test`, `full_node_test`, `network_test`, `pbft_manager_test`, and `vote_test` reproduced the same
+  `/tmp/taraxa0/db/db/LOCK` collision, while `go_test` reproduced the unrelated static Go/cgo host-link failure. The
+  Python integration runner stopped before collection because the host lacks Python 3.13 development headers for pinned
+  `cytoolz` and `pyethash`, leaving `pytest` unavailable.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

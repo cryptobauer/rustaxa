@@ -177,6 +177,7 @@ enum DagProposerSessionAction {
 pub struct DagProposerSession {
     action: DagProposerSessionAction,
     begin_input: DagProposerSessionBeginInput,
+    transaction_observation: DagProposerTransactionObservation,
     observation: DagProposerObservation,
     attempt: DomainDagProposerAttemptPlan,
     retry_key: [u8; 32],
@@ -196,6 +197,19 @@ pub struct DagProposerSession {
     unsigned_intent: Option<DomainDagProposerUnsignedBlockIntent>,
     signed_intent: Option<rustaxa_consensus::dag::DagProposerSignedBlockIntent>,
     error_code: String,
+}
+
+/// Transaction-pressure snapshot captured from the sibling Rust runtime when a
+/// DAG proposer session begins.
+///
+/// Both counts are immutable for the cursor lifetime and feed only the
+/// deterministic empty-pool and non-finalized-limit gates. They are expressed
+/// as `u64` to match domain planner inputs; the composed service derives them
+/// from sizes held under the TransactionManager lock.
+#[derive(Clone, Copy)]
+pub(crate) struct DagProposerTransactionObservation {
+    pub transaction_pool_size: u64,
+    pub non_finalized_transaction_count: u64,
 }
 
 #[derive(Clone)]
@@ -744,10 +758,15 @@ impl DagRuntimeState {
     /// Opens a runtime-owned DAG proposer cursor for one proposal attempt.
     ///
     /// The cursor atomically derives the frontier, proposal period, period hash, and an observation fingerprint from
-    /// Rust-owned runtime state. A valid observation first requests only FinalChain authorization and sortition facts;
-    /// the planner runs after those facts arrive and only if the observation still matches. Later stages advance through
-    /// explicit external reports or runtime-derived VDF frontier polls.
-    pub fn begin_proposer_session(&mut self, input: DagProposerSessionBeginInput) -> Result<u64> {
+    /// Rust-owned runtime state and retains the sibling transaction-pressure snapshot supplied by the composed service.
+    /// A valid observation first requests only FinalChain authorization and sortition facts; the planner runs after
+    /// those facts arrive and only if the observation still matches. Later stages advance through explicit external
+    /// reports or runtime-derived VDF frontier polls.
+    pub fn begin_proposer_session(
+        &mut self,
+        input: DagProposerSessionBeginInput,
+        transaction_observation: DagProposerTransactionObservation,
+    ) -> Result<u64> {
         let retry_key = input.wallet_vrf_public_key;
         let observation = self.proposer_observation()?;
         let attempt = placeholder_attempt(&observation, &input);
@@ -774,6 +793,7 @@ impl DagRuntimeState {
                 action,
                 status,
                 begin_input: input,
+                transaction_observation,
                 observation,
                 retry_key,
                 reason_code: if attempt.proposal_period_found {
@@ -1381,8 +1401,9 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
 ///
 /// Inputs:
 /// - `runtime`: the DAG manager runtime that owns graph state, storage, and proposal cursors.
-/// - `input`: wallet/configuration and live transaction-pressure facts for one attempt. Frontier and proposal-period
-///   facts are derived from the runtime and are never accepted from C++.
+/// - `input`: wallet/configuration facts for one attempt.
+/// - `transaction_observation`: queue and non-finalized sidecar counts captured by the composed sibling service.
+///   Frontier, proposal-period, and transaction-pressure facts are never accepted from C++.
 ///
 /// Outputs:
 /// - Returns the runtime-local cursor id that C++ must pass to `dag_manager_runtime_proposer_session_next` and report
@@ -1393,11 +1414,12 @@ pub fn dag_manager_runtime_verify_block_session_report_gas(
 /// - Multiple wallets may hold active proposal cursors concurrently; each cursor advances only through its returned id.
 /// - A changed runtime observation terminates before planner or retry-state mutation.
 /// - Terminal cursors are removed after their terminal step is observed.
-pub fn dag_manager_runtime_begin_proposer_session(
+pub(crate) fn dag_manager_runtime_begin_proposer_session(
     runtime: &mut DagRuntimeState,
     input: DagProposerSessionBeginInput,
+    transaction_observation: DagProposerTransactionObservation,
 ) -> Result<u64> {
-    runtime.begin_proposer_session(input)
+    runtime.begin_proposer_session(input, transaction_observation)
 }
 
 /// Removes a runtime-owned DAG proposal cursor without applying retry-state effects.
@@ -1483,6 +1505,7 @@ pub fn dag_manager_runtime_proposer_session_report_external_facts(
     let retry_count = retry.map_or(0, |state| state.retry_count);
     let input = domain_attempt_input(
         &session.begin_input,
+        session.transaction_observation,
         &session.observation,
         report,
         last_propose_level,
@@ -2022,14 +2045,15 @@ fn to_domain_sortition_params(params: SortitionRuntimeParams) -> SortitionParams
 
 fn domain_attempt_input(
     input: &DagProposerSessionBeginInput,
+    transaction_observation: DagProposerTransactionObservation,
     observation: &DagProposerObservation,
     report: DagProposerExternalProposalFactsReport,
     last_propose_level: u64,
     retry_count: u64,
 ) -> DomainDagProposerAttemptInput {
     DomainDagProposerAttemptInput {
-        transaction_pool_size: input.transaction_pool_size,
-        non_finalized_transaction_count: input.non_finalized_transaction_count,
+        transaction_pool_size: transaction_observation.transaction_pool_size,
+        non_finalized_transaction_count: transaction_observation.non_finalized_transaction_count,
         max_non_finalized_transactions: input.max_non_finalized_transactions,
         frontier: observation.frontier.clone(),
         proposal_period_found: observation.proposal_period_found,
@@ -2907,8 +2931,6 @@ mod tests {
 
     fn proposer_session_begin_input(vrf_key: [u8; 32]) -> DagProposerSessionBeginInput {
         DagProposerSessionBeginInput {
-            transaction_pool_size: 1,
-            non_finalized_transaction_count: 0,
             max_non_finalized_transactions: 100,
             dag_expiry_level_limit: 100,
             wallet_vrf_public_key: vrf_key,
@@ -2925,6 +2947,20 @@ mod tests {
             dag_gas_limit: 1_000,
             max_tips: 16,
         }
+    }
+
+    fn begin_test_proposer_session(
+        runtime: &mut DagRuntimeState,
+        input: DagProposerSessionBeginInput,
+    ) -> Result<u64> {
+        dag_manager_runtime_begin_proposer_session(
+            runtime,
+            input,
+            DagProposerTransactionObservation {
+                transaction_pool_size: 1,
+                non_finalized_transaction_count: 0,
+            },
+        )
     }
 
     fn proposer_external_facts(vrf_key: [u8; 32]) -> DagProposerExternalProposalFactsReport {
@@ -2978,11 +3014,9 @@ mod tests {
         vrf_key: [u8; 32],
         transaction_hash: [u8; 32],
     ) -> u64 {
-        let session_id = dag_manager_runtime_begin_proposer_session(
-            runtime,
-            proposer_session_begin_input(vrf_key),
-        )
-        .expect("session should open");
+        let session_id =
+            begin_test_proposer_session(runtime, proposer_session_begin_input(vrf_key))
+                .expect("session should open");
         assert_eq!(
             dag_manager_runtime_proposer_session_report_external_facts(
                 runtime,
@@ -3074,11 +3108,9 @@ mod tests {
 
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let session_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("session should open");
+            let session_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("session should open");
 
             let first = dag_manager_runtime_proposer_session_next(&mut runtime, session_id);
             assert_eq!(first.status, DAG_PROPOSER_SESSION_STATUS_ACTIVE);
@@ -3216,16 +3248,12 @@ mod tests {
 
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let first_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("first session should open");
-            let second_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("second session should open");
+            let first_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("first session should open");
+            let second_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("second session should open");
             assert_ne!(first_id, second_id);
 
             let second_first_step =
@@ -3372,11 +3400,9 @@ mod tests {
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
 
-            let missing_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("missing-period session should open");
+            let missing_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("missing-period session should open");
             let missing = dag_manager_runtime_proposer_session_next(&mut runtime, missing_id);
             assert_eq!(missing.status, DAG_PROPOSER_SESSION_STATUS_COMPLETE);
             assert_eq!(
@@ -3387,11 +3413,9 @@ mod tests {
             runtime
                 .dag_manager_runtime_ensure_proposal_period_mapping(1, 0)
                 .expect("bootstrap proposal-period mapping should save");
-            let invalid_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("session should open");
+            let invalid_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("session should open");
             let invalid = dag_manager_runtime_apply_proposer_pack(
                 &mut runtime,
                 invalid_id,
@@ -3437,11 +3461,9 @@ mod tests {
                 .expect("bootstrap proposal-period mapping should save");
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let session_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("session should open");
+            let session_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("session should open");
             assert!(runtime.proposer_sessions.contains_key(&session_id));
 
             assert!(dag_manager_runtime_abort_proposer_session(
@@ -3482,11 +3504,9 @@ mod tests {
                 .expect("valid period data should save");
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let session_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("session should open");
+            let session_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("session should open");
             assert!(runtime.proposer_sessions.contains_key(&session_id));
 
             storage
@@ -3525,11 +3545,9 @@ mod tests {
                 .expect("bootstrap proposal-period mapping should save");
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let session_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("session should open");
+            let session_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("session should open");
             assert_eq!(
                 dag_manager_runtime_proposer_session_next(&mut runtime, session_id).action,
                 DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS
@@ -3885,11 +3903,9 @@ mod tests {
                 .expect("bootstrap proposal-period mapping should save");
             let vrf_key =
                 public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-            let session_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("session should open");
+            let session_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("session should open");
             let pack = dag_manager_runtime_proposer_session_report_external_facts(
                 &mut runtime,
                 session_id,
@@ -3954,11 +3970,9 @@ mod tests {
                     max_retry_count: 20,
                 },
             );
-            let session_id = dag_manager_runtime_begin_proposer_session(
-                &mut runtime,
-                proposer_session_begin_input(vrf_key),
-            )
-            .expect("session should open");
+            let session_id =
+                begin_test_proposer_session(&mut runtime, proposer_session_begin_input(vrf_key))
+                    .expect("session should open");
             let mut facts = proposer_external_facts(vrf_key);
             facts.sortition_params.difficulty_min = 9;
             facts.sortition_params.difficulty_max = 9;
