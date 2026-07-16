@@ -167,7 +167,8 @@ Current snapshot after DAG manager verify-result API cleanup:
   from `DagManagerOld`: the overlay directly includes its standalone facade, and feature-on builds exclude the original
   manager source instead of compiling renamed symbols. It owns its public `VerifyBlockReturnType` enum and
   shared-pointer identity locally. The standalone Rust-mode `dag_shim` facade has now been retired; Rust-enabled builds
-  use the native graphs owned by `BridgeDagManagerRuntime` and continue to exclude the original Boost graph source.
+  use the native graphs in `BridgeDagTransactionService`'s private DAG state and continue to exclude the original Boost
+  graph source.
   Pure-C++ builds continue to select the untouched original header and source for direct `Dag`/`PivotTree` coverage.
 - `dag_block_proposer_shim` is likewise detached from its dead legacy compile scaffold. Rust-enabled builds exclude the
   original proposer source, the overlay directly includes the standalone executor facade, and no
@@ -216,8 +217,9 @@ Current snapshot after DAG manager verify-result API cleanup:
   `dag_manager_shim::getDagMutex` now returns a shim-owned mutex to avoid `DagManagerOld` forwarding.
 - `transaction_manager_shim` no longer inherits from, constructs, or compiles `TransactionManagerOld` in Rust mode. The
   standalone facade preserves the public API and shared-pointer identity while owning only its locks and classified
-  FinalChain/EVM, thread-pool, event, logging, and materialization shell. `BridgeTransactionManagerRuntime` is the sole
-  owner of queue, sidecar, gas-cache, transaction-count, and persistence state. Its storage-backed constructor now reads
+  FinalChain/EVM, thread-pool, event, logging, and materialization shell. `BridgeDagTransactionService`'s private
+  transaction state is the sole owner of queue, sidecar, gas-cache, transaction-count, and persistence state. Its
+  storage-backed constructor now reads
   `TrxCount` through native Rust storage and fails construction on storage errors instead of accepting a C++ bootstrap
   count. The original transaction-manager header/source are clean versus `upstream-main`. Focused Rust/C++ tests, the
   bridge inventory and storage-boundary guards, and the Tier 1/Tier 2 rewrite validation gates pass; the archive contains
@@ -351,8 +353,9 @@ Current snapshot after DAG manager verify-result API cleanup:
   malformed direct publication plans now call the native Rust `FinalChain::publish_external_evm_publication` helper
   without exporting that wrapper to C++.
 - `BridgeTransactionQueue`, `create_transaction_queue`, the standalone queue CXX methods, bridge module,
-  `transaction_queue_shim`, and its feature flag are deleted. `BridgeTransactionManagerRuntime` now exclusively owns
-  the native Rust queue in production. Rust-enabled `core_libs` excludes the untouched legacy queue source; direct C++
+  `transaction_queue_shim`, and its feature flag are deleted. The private transaction state in
+  `BridgeDagTransactionService` now exclusively owns the native Rust queue in production. Rust-enabled `core_libs`
+  excludes the untouched legacy queue source; direct C++
   queue tests remain pure-C++ reference coverage rather than being retargeted to legacy behavior in Rust mode.
 - `rewards_stats_shim` is detached from `StatsOld` and is selected as part of the FinalChain ownership bundle.
   `RUSTAXA_ENABLE_REWARDS_STATS` is deleted because it described no independently valid configuration: FinalChain
@@ -360,10 +363,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   `rewards_stats.cpp`; FinalChain-disabled and pure-C++ builds compile that original source without a rename. The live
   shim remains the classified C++ `BlockStats`/StateAPI publication adapter and does not delegate reward authority to
   the legacy implementation.
-- `BridgeTransactionManagerRuntime` no-caller compatibility exports have been trimmed after the transaction-manager shim
+- Former `BridgeTransactionManagerRuntime` no-caller compatibility exports were trimmed before that standalone handle
+  was retired, after the transaction-manager shim
   moved to runtime-owned command APIs. Deleted exports include old runtime sidecar lookup/finish/evict helpers, queue
   erase/get/order/known helpers, and sidecar size/remove helpers that had no C++ shim callers.
-- Additional no-caller `BridgeTransactionManagerRuntime` CXX exports are deleted:
+- Additional no-caller exports from the former `BridgeTransactionManagerRuntime` CXX surface are deleted:
   `transaction_manager_runtime_pack_begin`, `transaction_manager_runtime_gas_estimation_cache_size`, and
   `transaction_manager_runtime_insert_recovery_entries`. The live shim uses
   `transaction_manager_runtime_pack_prepare_sharded` plus
@@ -387,7 +391,7 @@ Current snapshot after DAG manager verify-result API cleanup:
   `transaction_manager_load_stored_transactions`, `transaction_manager_load_proposal_transactions_with_final_chain`,
   `TransactionManagerStoredTransactionRequest`, and `TransactionManagerStoredTransactionLookup`. C++ materialization
   remains behind `TransactionManager` facade methods backed by runtime-owned transaction view APIs.
-- Additional no-caller direct `BridgeTransactionManagerRuntime` queue/sidecar helpers are deleted:
+- Additional no-caller direct queue/sidecar helpers from the former `BridgeTransactionManagerRuntime` are deleted:
   `transaction_manager_runtime_insert_non_finalized`, `transaction_manager_runtime_contains_non_finalized`,
   `transaction_manager_runtime_contains_recently_finalized`, `transaction_manager_runtime_apply_finalized_transition`,
   `transaction_manager_runtime_queue_insert`, `transaction_manager_runtime_insert_transaction_precheck`, and
@@ -415,7 +419,8 @@ Current snapshot after DAG manager verify-result API cleanup:
   `dag_plan_non_finalized_transaction_query`, `dag_plan_expired_transaction_cleanup`, `dag_verify_vdf_prepare`,
   `dag_verify_authorization`, `dag_decide_vdf_dpos_authorization`, `dag_verify_vdf_sortition`,
   `dag_plan_add_block_effects`, and `dag_verify_gas`. The live DAG manager shim now reaches those decisions through
-  runtime-owned `BridgeDagManagerRuntime` methods, with only `dag_verify_vdf_sortition_from_block` retained as the
+  runtime-owned private DAG methods in `BridgeDagTransactionService`, with only
+  `dag_verify_vdf_sortition_from_block` retained as the
   temporary direct VDF verification boundary.
 - Additional DAG runtime bridge-test scaffolding is deleted from the CXX surface:
   `dag_manager_runtime_rebuild`, `dag_manager_runtime_block_exists`, `dag_manager_runtime_verify_precheck`,
@@ -463,8 +468,8 @@ Current snapshot after DAG manager verify-result API cleanup:
   explicit `FinalChainRewardsConfig` through `create_final_chain_with_rewards_config`, which is the constructor shape
   used by the live `final_chain_shim`; the default wrapper is Rust test-only fixture code.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
-  constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to
-  `BridgeTransactionManagerRuntime`, whose command APIs own those paths.
+  constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
+  state in `BridgeDagTransactionService`, whose command APIs own those paths.
 - `BridgeTransactionManagerAdmissionExecution` is retired as a CXX handle. No C++ shim callers remained for the explicit
   execute/commit DAG-save script; the retained `save_transactions_from_dag_block_command_report_with_runtime` boundary
   now keeps the storage-first write and live queue/sidecar mutation ordering inside one runtime-owned bridge method.
@@ -664,7 +669,8 @@ Current snapshot after DAG manager verify-result API cleanup:
   `ApplyResetConsensusTransition` action and embedded transition plan are removed. FinalChain wait,
   VoteManager/timer/wallet/proposed-block compatibility effects remain explicit.
 - `BridgeGasPricer`, its bridge module, both constructors, and all bid/update exports are retired. The native
-  `GasPriceOracle` is composed into `BridgeTransactionManagerRuntime`; its production constructor restores gas history
+  `GasPriceOracle` is composed into `BridgeDagTransactionService`'s private transaction state; its production
+  constructor restores gas history
   through the same native storage owner that restores transaction state. Pool bids inspect the runtime-owned queue and
   proposal gas limit directly. The C++ `GasPricer` remains only as a public compatibility facade and delegates production
   work to `TransactionManager`; its storage-free combined runtime is limited to standalone facade tests.

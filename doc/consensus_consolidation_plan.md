@@ -2842,6 +2842,15 @@ EVM gas estimation as an explicit C++ executor boundary.
   classified shared-fixture lock diagnostics. C++ formatting, bridge inventory, upstream-shape, and whitespace checks
   also passed. Independent review returned `APPROVED` after the validation record was completed.
 
+### CRW-04 Completion Audit
+
+The final production-boundary audit at `113020d53` found no remaining internal DAG/transaction bridge handle or state
+relay. The application-owned `BridgeDagTransactionService` is the sole production lifetime owner for private DAG and
+transaction state. Remaining cross-facade calls are limited to public transaction materialization, narrow FinalChain
+fact collection, explicit EVM/network execution, and logging; standalone gas-pricer and transaction-service factories
+are compatibility-test support only. `CRW-04` therefore satisfies its tracker completion condition. `CRW-05` is the next
+dependency-ready application-owner composition item, with `CRW-07` continuing alongside its bridge deletions.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
