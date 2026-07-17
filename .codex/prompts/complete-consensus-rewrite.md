@@ -28,4 +28,6 @@ unrelated changes. Continue until no required `ready` items remain or progress i
 dependency; report blockers precisely and do not count scope-gated follow-ups as blockers. Tier 3 test gates are
 explicitly pre-approved whenever the agent judges them warranted; this standing authorization includes the expensive
 `scripts/storage_conformance_diff.sh` storage differential whenever it is required or warranted. Run those gates without
-requesting additional task-owner confirmation.
+requesting additional task-owner confirmation. For CRW-08 method/receipt-family parity, this authorization explicitly
+includes `make rewrite-validate-final-chain-parity` and its underlying
+`scripts/final_chain_pure_cpp_parity.sh`; run the composite gate without requesting additional approval.

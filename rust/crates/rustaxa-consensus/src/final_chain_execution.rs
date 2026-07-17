@@ -2834,9 +2834,14 @@ mod tests {
 
     #[test]
     fn native_supported_transactions_commit_in_rust() {
+        let mut dpos_delegate_data = Vec::with_capacity(36);
+        dpos_delegate_data.extend_from_slice(&[0x5c, 0x19, 0xa9, 0x5c]);
+        dpos_delegate_data.extend_from_slice(&[0u8; 12]);
+        dpos_delegate_data.extend_from_slice(&[7u8; 20]);
+
         let transactions = vec![
             transaction(1, Some([9; 20]), Vec::new()),
-            transaction(2, Some(DPOS_CONTRACT_ADDRESS), vec![1, 2, 3]),
+            transaction(2, Some(DPOS_CONTRACT_ADDRESS), dpos_delegate_data),
             transaction(3, Some(SLASHING_CONTRACT_ADDRESS), vec![4, 5, 6]),
         ];
         let mut session = create_final_chain_execution_session(valid_request(
@@ -2848,6 +2853,7 @@ mod tests {
 
         assert_eq!(step.status, FINAL_CHAIN_EXECUTION_STATUS_READY);
         assert_eq!(step.action, FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE);
+        assert_eq!(step.period, 7);
         assert_eq!(step.external_evm_transaction_count, 0);
     }
 

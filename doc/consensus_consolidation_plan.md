@@ -3064,6 +3064,38 @@ validation passed. Independent configured review returned `APPROVED` after corre
 distinguishing C++ compatibility append sequencing from Rust-owned atomic commit. CRW-06 is complete; CRW-07 remains
 active alongside the next dependency-ordered parity item.
 
+### CRW-08 Native DPoS Delegate Receipt/State Parity
+
+This bounded CRW-08 slice makes the existing native Rust delegate path byte- and state-compatible with the legacy
+FinalChain transaction boundary and adds a repeatable Tier 3 pure-C++ comparison gate.
+
+- The first isolated pure-C++ run exposed three real divergences: Rust charged only the 40,000 delegate action gas
+  instead of 22,680 intrinsic plus 40,000 action gas; its fee/balance result therefore differed; and its genesis DPoS
+  account omitted the validator stake escrow and legacy nonce one.
+- Rust now adds calldata-dependent transaction intrinsic gas exactly once around every Rust-native DPoS and slashing
+  action. Native value transfers remain intrinsic-only. If the gas limit covers intrinsic gas but not action gas, the
+  receipt fails after consuming intrinsic gas and advancing the sender nonce without transferring value, publishing
+  logs, or scheduling contract mutation.
+- Genesis construction sums validator `total_stake`, credits that escrow once to any explicitly configured DPoS
+  precompile balance, initializes its nonce to one, and includes the result in the fallback genesis balance sum.
+  Persisted account snapshots replace the derived genesis map during restart, preventing a second credit.
+- `FinalChainTest.native_dpos_delegate_persists_receipt_and_state` runs unchanged expectations in Rust and pure-C++
+  modes and checks exact receipt RLP/status, 62,680 gas, cumulative/header gas, log topics/data, bloom, delegator and
+  precompile balances/nonces, validator stake/votes, and restart state.
+- `make rewrite-validate-final-chain-parity` first runs the normal FinalChain Tier 2 gate, then configures a guarded,
+  reusable out-of-tree Release build with every `RUSTAXA_ENABLE*` option disabled, builds with 12 jobs, and runs the
+  focused delegate fixture followed by the complete pure-C++ `final_chain_test`. The script rejects unsafe or
+  source-tree build roots, validates the CMake option inventory/cache, serializes cache access, and verifies that the
+  source fingerprint did not change.
+
+Focused Rust tests and all 650 `rustaxa-consensus` tests passed. The Rust-enabled C++ delegate fixture passed. The full
+Tier 3 target passed once from a new empty cache and again from the retained warm cache, including the full Rust rewrite
+gate and complete Rust-enabled and pure-C++ FinalChain suites. The pre-existing Clippy warnings remained warnings.
+Configured `blockchain-engineer`, `rust-engineer`, `cpp-pro`, and `architect-reviewer` agents supplied the legacy gas and
+genesis-state audit, implementation/test work, and gate design review. Existing databases containing pre-fix Rust DPoS
+account snapshots require an explicit migration-or-rebuild decision; no silent persisted-state correction is included.
+CRW-08 remains active for the next bounded method or failed-receipt family.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

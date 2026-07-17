@@ -19,6 +19,7 @@ CPP_INTERSECTION_PATCH?=$(BUILD_OUTPUT_DIR)/cpp-reference-intersection.patch
 RUST_MANIFEST?=rust/Cargo.toml
 REWRITE_CONSENSUS_TESTS?=rust_consensus_tests dag_test dag_block_test pbft_chain_test pbft_chain_shim_test proposed_blocks_shim_test pbft_manager_test vote_test pillar_chain_test rewards_stats_test
 REWRITE_FINAL_CHAIN_TESTS?=final_chain_test state_api_test rpc_test
+FINAL_CHAIN_CPP_BUILD_ROOT?=/tmp/rustaxa-final-chain-pure-cpp
 
 define require_cmake_build
 	@if [ ! -f "$(BUILD_OUTPUT_DIR)/CMakeCache.txt" ]; then \
@@ -211,6 +212,10 @@ rewrite-validate-final-chain: rewrite-validate-fast ## Run Rust validation, targ
 		fi; \
 	done
 	$(MAKE) rewrite-validate-smoke
+
+.PHONY: rewrite-validate-final-chain-parity
+rewrite-validate-final-chain-parity: rewrite-validate-final-chain ## Run Tier 3 Rust vs pure-C++ FinalChain parity validation.
+	scripts/final_chain_pure_cpp_parity.sh "$(FINAL_CHAIN_CPP_BUILD_ROOT)"
 
 .PHONY: rewrite-validate-smoke
 rewrite-validate-smoke: ## Build taraxad and run a non-destructive Rust-enabled startup smoke check.

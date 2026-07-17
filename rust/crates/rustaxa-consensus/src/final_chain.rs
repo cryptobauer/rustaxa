@@ -42,6 +42,7 @@ use rustaxa_types::codec::rlp::final_chain::{
     StoredBlockHeaderRlpOwned,
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
+use rustaxa_types::transaction::intrinsic_gas;
 use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
     FinalChainCallOutcome, FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock,
@@ -402,6 +403,15 @@ impl FinalChain {
         self.genesis_timestamp
     }
 
+    /// Constructs the Rust FinalChain state from effective genesis accounts and validators.
+    ///
+    /// `genesis_accounts` must already reflect the balances left after genesis
+    /// delegations were debited by the caller. The constructor credits each
+    /// validator's `total_stake` once to the DPoS precompile account, preserves
+    /// any explicitly configured precompile balance, and initializes its nonce
+    /// to the legacy genesis value of one. Arithmetic overflow is rejected.
+    /// Persisted account snapshots replace this derived map during restart, so
+    /// the genesis escrow is not credited a second time.
     pub fn new_with_rewards_config(
         storage: Arc<Storage>,
         block_gas_limit: u64,
@@ -411,23 +421,7 @@ impl FinalChain {
         genesis_dpos_config: GenesisDposConfig,
         rewards_config: FinalChainRewardsConfig,
     ) -> Result<Self> {
-        let genesis_account_balance_sum = genesis_accounts
-            .iter()
-            .try_fold(U256::zero(), |total, account| {
-                total.checked_add(u256_from_big_endian(&account.balance))
-            });
         let mut rewards_config = rewards_config;
-        if rewards_config.genesis_balance_sum.is_empty() {
-            if let Some(genesis_account_balance_sum) = genesis_account_balance_sum {
-                rewards_config.genesis_balance_sum =
-                    u256_to_big_endian(genesis_account_balance_sum);
-            } else {
-                anyhow::ensure!(
-                    rewards_config.aspen_part_two_period == 0,
-                    "genesis account balance sum overflow"
-                );
-            }
-        }
         let genesis_accounts: HashMap<[u8; 20], Account> = genesis_accounts
             .into_iter()
             .map(|account| {
@@ -443,6 +437,7 @@ impl FinalChain {
                 )
             })
             .collect();
+        let mut genesis_accounts = genesis_accounts;
         let genesis_validator_order = genesis_validators
             .iter()
             .map(|validator| validator.address)
@@ -519,6 +514,48 @@ impl FinalChain {
             .into_iter()
             .map(|(address, vrf_key, _, _, _, _)| (address, vrf_key))
             .collect();
+
+        let genesis_dpos_delegated_stakes_sum =
+            genesis_dpos_total_stakes
+                .iter()
+                .try_fold(U256::zero(), |total, (_, stake)| {
+                    total
+                        .checked_add(u256_from_big_endian(stake))
+                        .ok_or_else(|| anyhow::anyhow!("genesis DPoS contract balance overflow"))
+                })?;
+        let dpos_contract_balance = genesis_accounts
+            .remove(&DPOS_CONTRACT_ADDRESS)
+            .map(|account| u256_from_big_endian(&account.balance))
+            .unwrap_or_default()
+            .checked_add(genesis_dpos_delegated_stakes_sum)
+            .ok_or_else(|| anyhow::anyhow!("genesis DPoS contract balance overflow"))?;
+        genesis_accounts.insert(
+            DPOS_CONTRACT_ADDRESS,
+            Account {
+                nonce: 1,
+                balance: u256_to_big_endian(dpos_contract_balance),
+                storage_root_hash: [0; 32],
+                code_hash: [0; 32],
+                code_size: 0,
+            },
+        );
+
+        let genesis_account_balance_sum = genesis_accounts
+            .values()
+            .try_fold(U256::zero(), |total, account| {
+                total.checked_add(u256_from_big_endian(&account.balance))
+            });
+        if rewards_config.genesis_balance_sum.is_empty() {
+            if let Some(genesis_account_balance_sum) = genesis_account_balance_sum {
+                rewards_config.genesis_balance_sum =
+                    u256_to_big_endian(genesis_account_balance_sum);
+            } else {
+                anyhow::ensure!(
+                    rewards_config.aspen_part_two_period == 0,
+                    "genesis account balance sum overflow"
+                );
+            }
+        }
 
         let dag_vdf_sortition_max_vote_count =
             dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
@@ -2753,6 +2790,7 @@ impl FinalChain {
                             )
                         )
                 });
+            let intrinsic_gas = intrinsic_gas(&transaction.data, false)?;
             let required_gas = if let Some(contract_transaction) = contract_transaction.as_ref() {
                 match contract_transaction {
                     NativeContractTransaction::Dpos(dpos_transaction) => match dpos_transaction {
@@ -2796,10 +2834,14 @@ impl FinalChain {
                     }
                 }
             } else {
-                VALUE_TRANSFER_GAS
+                0
             };
+            let required_gas = intrinsic_gas
+                .checked_add(required_gas)
+                .ok_or_else(|| anyhow::anyhow!("required gas overflow"))?;
 
-            let mut status_code = 1u8;
+            let mut status_code;
+            let mut advance_nonce = false;
             let gas_used;
             let gas_cost;
             {
@@ -2814,17 +2856,25 @@ impl FinalChain {
                     status_code = 0;
                     gas_used = affordable_gas(sender, gas_price, transaction.gas_limit);
                 } else {
-                    gas_used = required_gas.min(transaction.gas_limit);
-                    if transaction.gas_limit < required_gas {
+                    if transaction.gas_limit < intrinsic_gas {
                         status_code = 0;
+                        gas_used = transaction.gas_limit;
+                    } else if transaction.gas_limit < required_gas {
+                        status_code = 0;
+                        gas_used = intrinsic_gas;
+                        advance_nonce = true;
+                    } else {
+                        gas_used = required_gas;
+                        status_code = 1;
+                        advance_nonce = true;
                     }
                 }
 
                 gas_cost = gas_price
                     .checked_mul(U256::from(gas_used))
                     .ok_or_else(|| anyhow::anyhow!("transaction gas cost overflow"))?;
-                if status_code == 1 {
-                    let charged_value = if contract_nonpayable_value_failure {
+                if status_code == 1 || advance_nonce {
+                    let charged_value = if status_code == 0 || contract_nonpayable_value_failure {
                         U256::zero()
                     } else {
                         value
@@ -7727,6 +7777,66 @@ mod tests {
         )
     }
 
+    fn expected_native_contract_tx_gas(
+        final_chain: &FinalChain,
+        block_number: u64,
+        tx: &FinalizationTransaction,
+    ) -> u64 {
+        let intrinsic = intrinsic_gas(&tx.data, false).unwrap();
+        let action_gas = match tx.receiver {
+            Some(DPOS_CONTRACT_ADDRESS) => {
+                let dpos_tx = decode_dpos_transaction(
+                    &tx.data,
+                    tx.sender,
+                    block_number,
+                    final_chain.rewards_config.fix_claim_all_block_num,
+                    final_chain.dpos_cornus_period,
+                )
+                .unwrap();
+                match dpos_tx {
+                    DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
+                    DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
+                    DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
+                    DposTransaction::UndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
+                    DposTransaction::ConfirmUndelegateV2 { .. } => DPOS_DEFAULT_METHOD_GAS,
+                    DposTransaction::CancelUndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
+                    DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
+                    DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
+                    DposTransaction::ClaimCommissionRewards { .. } => {
+                        DPOS_CLAIM_COMMISSION_REWARDS_GAS
+                    }
+                    DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
+                    DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
+                    DposTransaction::ClaimAllRewards { delegator, batch } => {
+                        let snapshot = final_chain.dpos_snapshot(block_number).unwrap();
+                        let claim_items =
+                            dpos_claim_all_rewards_item_count(&snapshot, delegator, batch).unwrap();
+                        claim_items
+                            .checked_mul(
+                                DPOS_CLAIM_REWARDS_GAS
+                                    .checked_add(DPOS_BATCH_GET_REWARDS_GAS)
+                                    .unwrap(),
+                            )
+                            .unwrap()
+                    }
+                    DposTransaction::MethodNotSupported => 0,
+                }
+            }
+            Some(SLASHING_CONTRACT_ADDRESS) => {
+                match decode_slashing_transaction(&tx.data).unwrap() {
+                    SlashingTransaction::CommitDoubleVotingProof(_) => {
+                        SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+                    }
+                    SlashingTransaction::MethodNotSupported => 0,
+                }
+            }
+            _ => 0,
+        };
+        intrinsic
+            .checked_add(action_gas)
+            .expect("native contract gas calculation overflow")
+    }
+
     fn receipt_logs(receipt_rlp: &[u8]) -> Vec<ReceiptLog> {
         let receipt = Rlp::new(receipt_rlp);
         let logs_rlp = receipt.at(3).unwrap();
@@ -8437,6 +8547,79 @@ mod tests {
     }
 
     #[test]
+    fn genesis_dpos_escrow_uses_total_stake_and_preserves_contract_balance() {
+        let path = temp_db_path("genesis-dpos-escrow");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut first_validator = genesis_validator([0x31; 20], U256::from(12u64));
+        first_validator.delegations = vec![([0x41; 20], u256_to_big_endian(U256::from(5u64)))];
+        let mut second_validator = genesis_validator([0x32; 20], U256::from(8u64));
+        second_validator.delegations.clear();
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(1_000u64)),
+            ..Default::default()
+        };
+
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(3u64))],
+            vec![first_validator, second_validator],
+            dpos_config,
+            FinalChainRewardsConfig::default(),
+        )
+        .unwrap();
+
+        let dpos_account = final_chain.account(DPOS_CONTRACT_ADDRESS).unwrap().unwrap();
+        assert_eq!(dpos_account.nonce, 1);
+        assert_eq!(
+            u256_from_big_endian(&dpos_account.balance),
+            U256::from(23u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&final_chain.rewards_config.genesis_balance_sum),
+            U256::from(23u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn genesis_dpos_escrow_rejects_balance_overflow() {
+        let path = temp_db_path("genesis-dpos-escrow-overflow");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let error = FinalChain::new(
+            storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::one())],
+            vec![genesis_validator([0x33; 20], U256::MAX)],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::MAX),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::MAX),
+                validator_maximum_stake: u256_to_big_endian(U256::MAX),
+                ..Default::default()
+            },
+        )
+        .err()
+        .expect("DPoS escrow overflow must reject genesis");
+
+        assert!(
+            error
+                .to_string()
+                .contains("genesis DPoS contract balance overflow"),
+            "unexpected genesis error: {error:#}"
+        );
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn hardfork_activation_period_zero_is_active_from_genesis() {
         let zero_path = temp_db_path("hardfork-activation-zero");
         let zero_storage = Arc::new(Storage::new(Config::new(zero_path.clone())).unwrap());
@@ -8959,7 +9142,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::zero()
+            U256::from(10_000u64)
         );
 
         drop(final_chain);
@@ -9180,24 +9363,18 @@ mod tests {
         .unwrap();
 
         let (_header, receipts) = final_chain
-            .finalize_block(pbft, vec![first_tx, duplicate_tx], vec![])
+            .finalize_block(pbft, vec![first_tx.clone(), duplicate_tx.clone()], vec![])
             .unwrap();
+        let first_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &first_tx);
+        let duplicate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &duplicate_tx);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (
-                1,
-                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS,
-                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
-            )
+            (1, first_tx_gas, first_tx_gas)
         );
         assert_eq!(
             receipt_fields(&receipts[1]),
-            (
-                0,
-                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS,
-                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS * 2
-            )
+            (0, duplicate_tx_gas, first_tx_gas + duplicate_tx_gas)
         );
         let logs = receipt_logs(&receipts[0]);
         assert_eq!(logs.len(), 1);
@@ -9773,7 +9950,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::from(VALUE_TRANSFER_GAS * 2)
+            U256::from(10_000u64 + VALUE_TRANSFER_GAS * 2)
         );
         assert_eq!(
             final_chain
@@ -9875,7 +10052,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::from(VALUE_TRANSFER_GAS * 2)
+            U256::from(10_000u64 + VALUE_TRANSFER_GAS * 2)
         );
         assert!(
             final_chain
@@ -9975,7 +10152,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::from(200u64)
+            U256::from(10_200u64)
         );
         let validator_info = final_chain
             .call(dpos_call_request(period, get_validator_input(dag_author)))
@@ -10091,7 +10268,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            commission_reward
+            U256::from(10_000u64) + commission_reward
         );
 
         let second_pbft = signed_pbft_block(&signing_key, second_period, 222);
@@ -10114,15 +10291,12 @@ mod tests {
         );
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(second_pbft, vec![claim_tx], vec![])
+            .finalize_block(second_pbft, vec![claim_tx.clone()], vec![])
             .unwrap();
+        let claim_tx_gas = expected_native_contract_tx_gas(&final_chain, second_period, &claim_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (
-                1,
-                DPOS_CLAIM_COMMISSION_REWARDS_GAS,
-                DPOS_CLAIM_COMMISSION_REWARDS_GAS,
-            )
+            (1, claim_tx_gas, claim_tx_gas)
         );
         let logs = receipt_logs(&receipts[0]);
         assert_eq!(logs.len(), 1);
@@ -10134,7 +10308,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::zero()
+            U256::from(10_000u64)
         );
         assert_eq!(balance_of(&final_chain, owner), commission_reward);
         let validator_info = final_chain
@@ -10146,6 +10320,72 @@ mod tests {
         assert_eq!(
             u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::zero()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_dpos_action_insufficient_gas_advances_nonce() {
+        let path = temp_db_path("finalize-dpos-action-insufficient-gas");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0xB0; 20];
+        let validator = [0xB1; 20];
+        let signing_key = SigningKey::from_slice(&[29u8; 32]).unwrap();
+        let pbft = signed_pbft_block(&signing_key, period, 223);
+        let mut action_tx = test_transaction(
+            0xB3,
+            sender,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::from(2u64),
+            100_000,
+            set_validator_info_input(validator, "bad action", "insufficient gas"),
+            vec![0xc1, 0xB3],
+        );
+        let tx_intrinsic_gas = intrinsic_gas(&action_tx.data, false).unwrap();
+        let action_insufficient_tx_gas_limit = tx_intrinsic_gas;
+        action_tx.gas_limit = action_insufficient_tx_gas_limit;
+
+        write_period_data(
+            &storage,
+            period,
+            &pbft,
+            std::slice::from_ref(&action_tx.rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![],
+            GenesisDposConfig::default(),
+        )
+        .unwrap();
+
+        let required_gas = expected_native_contract_tx_gas(&final_chain, period, &action_tx);
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft, vec![action_tx], vec![])
+            .unwrap();
+        assert!(required_gas > action_insufficient_tx_gas_limit);
+
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (
+                0,
+                action_insufficient_tx_gas_limit,
+                action_insufficient_tx_gas_limit
+            )
+        );
+        let sender_account = final_chain.account(sender).unwrap().unwrap();
+        assert_eq!(sender_account.nonce, 1);
+        assert_eq!(
+            u256_from_big_endian(&sender_account.balance),
+            U256::from(1_000_000u64) - U256::from(action_insufficient_tx_gas_limit * 2u64)
         );
 
         drop(final_chain);
@@ -10238,31 +10478,38 @@ mod tests {
         .unwrap();
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(pbft, vec![failed_info_tx, info_tx, commission_tx], vec![])
+            .finalize_block(
+                pbft,
+                vec![
+                    failed_info_tx.clone(),
+                    info_tx.clone(),
+                    commission_tx.clone(),
+                ],
+                vec![],
+            )
             .unwrap();
+        let failed_info_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &failed_info_tx);
+        let info_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &info_tx);
+        let commission_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &commission_tx);
+        let info_tx_cumulative_gas = failed_info_tx_gas + info_tx_gas;
+        let commission_tx_cumulative_gas = info_tx_cumulative_gas + commission_tx_gas;
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (0, DPOS_SET_VALIDATOR_INFO_GAS, DPOS_SET_VALIDATOR_INFO_GAS)
+            (0, failed_info_tx_gas, failed_info_tx_gas)
         );
         assert!(receipt_logs(&receipts[0]).is_empty());
         assert_eq!(
             receipt_fields(&receipts[1]),
-            (
-                1,
-                DPOS_SET_VALIDATOR_INFO_GAS,
-                DPOS_SET_VALIDATOR_INFO_GAS * 2,
-            )
+            (1, info_tx_gas, info_tx_cumulative_gas)
         );
         let info_logs = receipt_logs(&receipts[1]);
         assert_eq!(info_logs.len(), 1);
         assert_eq!(info_logs[0], dpos_validator_info_set_log(validator));
         assert_eq!(
             receipt_fields(&receipts[2]),
-            (
-                1,
-                DPOS_SET_COMMISSION_GAS,
-                DPOS_SET_VALIDATOR_INFO_GAS * 2 + DPOS_SET_COMMISSION_GAS,
-            )
+            (1, commission_tx_gas, commission_tx_cumulative_gas)
         );
         let commission_logs = receipt_logs(&receipts[2]);
         assert_eq!(commission_logs.len(), 1);
@@ -10569,9 +10816,9 @@ mod tests {
         );
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(second_pbft, vec![claim_tx], vec![])
+            .finalize_block(second_pbft, vec![claim_tx.clone()], vec![])
             .unwrap();
-        let claim_all_gas = DPOS_CLAIM_REWARDS_GAS + DPOS_BATCH_GET_REWARDS_GAS;
+        let claim_all_gas = expected_native_contract_tx_gas(&final_chain, second_period, &claim_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, claim_all_gas, claim_all_gas)
@@ -10706,9 +10953,9 @@ mod tests {
         );
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(second_pbft, vec![claim_tx], vec![])
+            .finalize_block(second_pbft, vec![claim_tx.clone()], vec![])
             .unwrap();
-        let claim_all_gas = DPOS_CLAIM_REWARDS_GAS + DPOS_BATCH_GET_REWARDS_GAS;
+        let claim_all_gas = expected_native_contract_tx_gas(&final_chain, second_period, &claim_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, claim_all_gas, claim_all_gas)
@@ -11028,7 +11275,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::from(1_000u64)
+            U256::from(11_000u64)
         );
         assert_eq!(
             final_chain.dpos_total_amount_delegated(period).unwrap(),
@@ -11163,7 +11410,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::zero()
+            U256::from(10_000u64)
         );
         drop(final_chain);
 
@@ -11228,7 +11475,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::from(VALUE_TRANSFER_GAS * 4)
+            U256::from(10_000u64 + VALUE_TRANSFER_GAS * 4)
         );
 
         drop(final_chain);
@@ -11271,7 +11518,7 @@ mod tests {
             0,
             vec![
                 genesis_account(sender, U256::from(1_000_000u64)),
-                genesis_account(DPOS_CONTRACT_ADDRESS, U256::MAX),
+                genesis_account(DPOS_CONTRACT_ADDRESS, U256::MAX - U256::from(10_000u64)),
             ],
             vec![genesis_validator],
             GenesisDposConfig {
@@ -11509,7 +11756,7 @@ mod tests {
             0,
             stake,
             U256::from(2u64),
-            100_000,
+            150_000,
             input,
             transaction_rlp.clone(),
         );
@@ -11530,12 +11777,13 @@ mod tests {
         .unwrap();
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(pbft_block, vec![transaction], vec![])
+            .finalize_block(pbft_block, vec![transaction.clone()], vec![])
             .unwrap();
+        let transaction_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (1, DPOS_REGISTER_VALIDATOR_GAS, DPOS_REGISTER_VALIDATOR_GAS)
+            (1, transaction_gas, transaction_gas)
         );
         let logs = receipt_logs(&receipts[0]);
         assert_eq!(logs.len(), 2);
@@ -11688,7 +11936,7 @@ mod tests {
             0,
             U256::from(5_000u64),
             U256::from(2u64),
-            100_000,
+            150_000,
             register_input,
             vec![0xc1, 0x90],
         );
@@ -11713,7 +11961,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            300_000,
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -11722,21 +11970,24 @@ mod tests {
         .unwrap();
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(pbft_block, vec![register_tx, delegate_tx], vec![])
+            .finalize_block(
+                pbft_block,
+                vec![register_tx.clone(), delegate_tx.clone()],
+                vec![],
+            )
             .unwrap();
+        let register_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &register_tx);
+        let delegate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+        let delegate_tx_cumulative_gas = register_tx_gas + delegate_tx_gas;
 
         assert_eq!(receipts.len(), 2);
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (1, DPOS_REGISTER_VALIDATOR_GAS, DPOS_REGISTER_VALIDATOR_GAS)
+            (1, register_tx_gas, register_tx_gas)
         );
         assert_eq!(
             receipt_fields(&receipts[1]),
-            (
-                1,
-                DPOS_DELEGATE_GAS,
-                DPOS_REGISTER_VALIDATOR_GAS + DPOS_DELEGATE_GAS
-            )
+            (1, delegate_tx_gas, delegate_tx_cumulative_gas)
         );
         let delegate_logs = receipt_logs(&receipts[1]);
         assert_eq!(delegate_logs.len(), 1);
@@ -11813,12 +12064,14 @@ mod tests {
         .unwrap();
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(pbft_block, vec![undelegate_tx], vec![])
+            .finalize_block(pbft_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
+        let undelegate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &undelegate_tx);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (1, DPOS_UNDELEGATE_GAS, DPOS_UNDELEGATE_GAS)
+            (1, undelegate_tx_gas, undelegate_tx_gas)
         );
         assert_eq!(
             final_chain
@@ -11891,12 +12144,14 @@ mod tests {
         .unwrap();
 
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(period_one_block, vec![undelegate_tx], vec![])
+            .finalize_block(period_one_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
+        let undelegate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period_one, &undelegate_tx);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (1, DPOS_UNDELEGATE_GAS, DPOS_UNDELEGATE_GAS)
+            (1, undelegate_tx_gas, undelegate_tx_gas)
         );
         let logs = receipt_logs(&receipts[0]);
         assert_eq!(logs.len(), 1);
@@ -11996,11 +12251,13 @@ mod tests {
             &[locked_confirm_tx.rlp.clone()],
         );
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(period_two_block, vec![locked_confirm_tx], vec![])
+            .finalize_block(period_two_block, vec![locked_confirm_tx.clone()], vec![])
             .unwrap();
+        let locked_confirm_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period_two, &locked_confirm_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (0, DPOS_DEFAULT_METHOD_GAS, DPOS_DEFAULT_METHOD_GAS)
+            (0, locked_confirm_tx_gas, locked_confirm_tx_gas)
         );
         assert!(receipt_logs(&receipts[0]).is_empty());
 
@@ -12024,11 +12281,13 @@ mod tests {
             &[confirm_tx.rlp.clone()],
         );
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(period_three_block, vec![confirm_tx], vec![])
+            .finalize_block(period_three_block, vec![confirm_tx.clone()], vec![])
             .unwrap();
+        let confirm_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period_three, &confirm_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (1, DPOS_DEFAULT_METHOD_GAS, DPOS_DEFAULT_METHOD_GAS)
+            (1, confirm_tx_gas, confirm_tx_gas)
         );
         let logs = receipt_logs(&receipts[0]);
         assert_eq!(logs.len(), 1);
@@ -12044,7 +12303,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
-            U256::from(7_000u64)
+            U256::from(17_000u64)
         );
         assert_eq!(
             balance_of(&final_chain, validator),
@@ -12151,11 +12410,12 @@ mod tests {
             &[cancel_tx.rlp.clone()],
         );
         let (_header_rlp, receipts) = final_chain
-            .finalize_block(period_two_block, vec![cancel_tx], vec![])
+            .finalize_block(period_two_block, vec![cancel_tx.clone()], vec![])
             .unwrap();
+        let cancel_tx_gas = expected_native_contract_tx_gas(&final_chain, period_two, &cancel_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
-            (1, DPOS_UNDELEGATE_GAS, DPOS_UNDELEGATE_GAS)
+            (1, cancel_tx_gas, cancel_tx_gas)
         );
         let logs = receipt_logs(&receipts[0]);
         assert_eq!(logs.len(), 1);
@@ -12234,7 +12494,7 @@ mod tests {
             0,
             U256::from(10_000u64),
             U256::from(2u64),
-            100_000,
+            150_000,
             register_input,
             tx_rlps[0].clone(),
         ));
@@ -12245,7 +12505,7 @@ mod tests {
             1,
             U256::from(2_000u64),
             U256::from(2u64),
-            100_000,
+            150_000,
             register_validator_input(
                 second_validator,
                 &[0xDD; 65],
@@ -12263,7 +12523,7 @@ mod tests {
             2,
             U256::zero(),
             U256::from(2u64),
-            100_000,
+            150_000,
             redelegate_input(first_validator, second_validator, U256::from(3_000u64)),
             tx_rlps[2].clone(),
         ));
@@ -12276,7 +12536,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            400_000,
             0,
             vec![genesis_account(owner, U256::from(2_000_000u64))],
             vec![],

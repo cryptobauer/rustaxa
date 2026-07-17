@@ -146,6 +146,17 @@ make rewrite-validate-storage
 Run every applicable subsystem gate when a slice crosses boundaries. Escalate to Tier 3 when the validation strategy
 classifies the change as broad, shared, production-routing, upstream-sync, or otherwise high risk.
 
+For a CRW-08 DPoS, slashing, receipt, or persisted-state method family that claims legacy-vs-Rust parity, run the
+composite Tier 3 gate after focused validation:
+
+```bash
+make rewrite-validate-final-chain-parity
+```
+
+This target runs the Tier 2 FinalChain gate before the isolated all-Rustaxa-disabled pure-C++ focused and full
+`final_chain_test` runs. Standing Tier 3 authorization in the active task or prompt includes its underlying script; do
+not request separate approval when the parity gate is required.
+
 Before production-routing deterministic behavior, require Rust unit coverage plus C++/Rust parity through a fixture,
 transcript, conformance check, or focused bridge/shim test. For startup, sync, consensus, or finalization paths, also
 require Rust-enabled subsystem or smoke coverage.

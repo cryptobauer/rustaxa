@@ -886,6 +886,120 @@ TEST_F(FinalChainTest, remove_jailed_validator_votes_from_total) {
   EXPECT_EQ(total_votes_before - votes_per_address, total_votes);
 }
 
+TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kDelegation = 1'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kExpectedGas = 62'680;
+  constexpr uint64_t kOwnerInitialBalance = 11'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair delegator{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  ASSERT_NE(owner.address(), validator.address());
+  ASSERT_NE(owner.address(), delegator.address());
+  ASSERT_NE(validator.address(), delegator.address());
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_dpos_account = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(initial_dpos_account);
+  EXPECT_EQ(initial_dpos_account->nonce, 1);
+  EXPECT_EQ(initial_dpos_account->balance, u256(kInitialStake));
+
+  const auto calldata = dev::fromHex("5c19a95c000000000000000000000000" + validator.address().toString());
+  ASSERT_EQ(calldata.size(), 36);
+  EXPECT_EQ(bytes(calldata.begin(), calldata.begin() + 4), dev::fromHex("5c19a95c"));
+  EXPECT_EQ(bytes(calldata.begin() + 4, calldata.end()),
+            dev::fromHex("000000000000000000000000" + validator.address().toString()));
+
+  auto transaction = std::make_shared<Transaction>(0, kDelegation, kGasPrice, TEST_TX_GAS_LIMIT, calldata,
+                                                   delegator.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto result = advance({transaction}, {.dont_assume_no_logs = true});
+  ASSERT_EQ(result->trx_receipts.size(), 1);
+
+  bytes delegated_amount(32, 0);
+  delegated_amount[30] = 0x03;
+  delegated_amount[31] = 0xe8;
+  const LogEntry delegated_log{
+      kDposContract,
+      {dev::sha3(dev::asBytes("Delegated(address,address,uint256)")), h256(delegator.address(), h256::AlignRight),
+       h256(validator.address(), h256::AlignRight)},
+      delegated_amount};
+  TransactionReceipt expected_receipt;
+  expected_receipt.status_code = 1;
+  expected_receipt.gas_used = kExpectedGas;
+  expected_receipt.cumulative_gas_used = kExpectedGas;
+  expected_receipt.logs = {delegated_log};
+
+  auto assert_persisted_delegate = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto receipt = chain->transactionReceipt(1, 0);
+    ASSERT_TRUE(receipt);
+    EXPECT_EQ(receipt->status_code, 1);
+    EXPECT_EQ(receipt->gas_used, kExpectedGas);
+    EXPECT_EQ(receipt->cumulative_gas_used, kExpectedGas);
+    ASSERT_EQ(receipt->logs.size(), 1);
+    EXPECT_EQ(receipt->logs[0].address, delegated_log.address);
+    EXPECT_EQ(receipt->logs[0].topics, delegated_log.topics);
+    EXPECT_EQ(receipt->logs[0].data, delegated_log.data);
+    EXPECT_EQ(util::rlp_enc(*receipt), util::rlp_enc(expected_receipt));
+    EXPECT_EQ(receipt->bloom(), expected_receipt.bloom());
+
+    const auto header = chain->blockHeader(1);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(header->gas_used, kExpectedGas);
+    EXPECT_EQ(header->log_bloom, expected_receipt.bloom());
+
+    const auto delegator_account = chain->getAccount(delegator.address());
+    ASSERT_TRUE(delegator_account);
+    EXPECT_EQ(delegator_account->nonce, 1);
+    EXPECT_EQ(delegator_account->balance, u256(kDelegatorInitialBalance - kDelegation - kExpectedGas * kGasPrice));
+    const auto dpos_account = chain->getAccount(kDposContract);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, u256(kInitialStake + kDelegation));
+    EXPECT_EQ(chain->dposTotalAmountDelegated(1), u256(kInitialStake + kDelegation));
+
+    const auto stakes = chain->dposValidatorsTotalStakes(1);
+    ASSERT_EQ(stakes.size(), 1);
+    EXPECT_EQ(stakes[0].addr, validator.address());
+    EXPECT_EQ(stakes[0].stake, u256(kInitialStake + kDelegation));
+    EXPECT_EQ(chain->dposEligibleVoteCount(1, validator.address()), 11);
+    EXPECT_EQ(chain->dposEligibleTotalVoteCount(1), 11);
+  };
+
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[0]), util::rlp_enc(expected_receipt));
+  EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
+  assert_persisted_delegate(SUT);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+  assert_persisted_delegate(SUT);
+}
+
 // This test should be last as state_api isn't destructed correctly because of exception
 TEST_F(FinalChainTest, initial_validator_exceed_maximum_stake) {
   const dev::KeyPair key = dev::KeyPair::create();

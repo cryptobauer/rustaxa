@@ -110,6 +110,19 @@ Use this tier for broad, shared, production-routing, or high-risk rewrite change
   no separate script-specific approval is required. Without standing Tier 3 authorization, coordinate before running
   it as required by the repository guidelines.
 
+- Current-source FinalChain C++/Rust parity for a CRW-08 DPoS, slashing, receipt, or persisted-state method family:
+
+  ```bash
+  make rewrite-validate-final-chain-parity
+  ```
+
+  This composite gate runs the Tier 2 FinalChain target first, then configures the same source tree in an isolated
+  all-Rustaxa-disabled pure-C++ build, builds `final_chain_test` with 12 jobs, and runs both the focused native DPoS
+  delegate fixture and the complete suite. The reusable pure-C++ build defaults to
+  `/tmp/rustaxa-final-chain-pure-cpp`; override `FINAL_CHAIN_CPP_BUILD_ROOT` only with another isolated absolute path.
+  This is the regular Tier 3 differential for CRW-08 method/receipt-family parity claims. Standing Tier 3 authorization
+  includes the underlying script, so do not request separate approval when this gate is required.
+
 - Pure C++ validation on `cpp-reference` for upstream sync work or C++ intersection changes.
 
 ## Correctness Rules
