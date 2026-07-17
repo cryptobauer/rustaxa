@@ -47,6 +47,11 @@ implementation scope to multiple agents unless they are intentionally providing 
 path local: inspect enough code yourself to integrate the work, resolve conflicts, review every change, and verify
 behavior.
 
+Count a workstream as routed to a configured custom agent only when the spawned thread identifies that agent role. A
+generic thread or similarly named task path does not prove role or model selection. If the active runtime cannot select
+or confirm the required role, stop before delegated implementation or review, report the limitation precisely, and do
+not substitute a generic worker or claim that the configured model ran.
+
 For a non-trivial slice, obtain an independent review of the complete intended diff after targeted validation and before
 commit. Address evidence-backed findings, rerun affected validation, and repeat review until it is approved. The parent
 retains slice selection, integration, validation, commits, and goal state regardless of agent routing.

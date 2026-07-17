@@ -16,6 +16,11 @@ configured custom agent specified by the skill's matching role rule. Use only th
 invoking every role in a fixed sequence. Use `blockchain-engineer` only for explicitly scoped EVM, contract, signing, gas,
 slashing-transaction, or on-chain lifecycle work.
 
+Treat custom-agent routing as satisfied only when the spawned thread identifies the configured agent role. A generic
+thread or similarly named task path is not evidence that the role or its configured model was selected. If the active
+runtime cannot select or confirm the required role, stop before delegated implementation or review, report the runtime
+limitation precisely, and do not substitute a generic worker or claim that the configured model ran.
+
 Keep the selected tracker item, consolidation plan, and bridge audit synchronized; update `PLAN.md` only when scope,
 architecture, or an accepted ownership boundary changes. Validate every slice at the required tier, obtain an
 independent review approval before committing, and commit each coherent slice separately. Preserve
