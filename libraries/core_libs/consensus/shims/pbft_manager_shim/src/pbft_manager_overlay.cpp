@@ -59,7 +59,6 @@ constexpr uint8_t kLegacyTransactionSourceRegular = 0;
 
 constexpr uint8_t kPbftFinalizationStatusAccepted = 0;
 constexpr uint8_t kPbftFinalizationStorageStagePrimary = 0;
-constexpr uint8_t kPbftFinalizationStorageStageSortition = 3;
 constexpr uint8_t kPbftFinalizationRuntimeStatusActive = 0;
 constexpr uint8_t kPbftFinalizationRuntimeStatusComplete = 1;
 constexpr uint8_t kPbftFinalizationRuntimeActionCommitRewardVotesReset = 3;
@@ -548,15 +547,6 @@ rustaxa::PbftFinalizationStorageWriteStage makeFinalizationStorageStage(uint8_t 
   return write_stage;
 }
 
-rustaxa::PbftFinalizationStorageWriteStage makeSortitionFinalizationStorageStage(const SortitionParamsChange &change) {
-  auto write_stage = makeFinalizationStorageStage(kPbftFinalizationStorageStageSortition);
-  write_stage.has_sortition_params_change = true;
-  write_stage.sortition_params_change_period = change.period;
-  write_stage.sortition_params_change_interval_efficiency = change.interval_efficiency;
-  write_stage.sortition_params_change_threshold_upper = change.vrf_params.threshold_upper;
-  return write_stage;
-}
-
 std::vector<trx_hash_t> fromBridgeTransactionHashes(const rust::Vec<rustaxa::PbftSyncTransactionHash> &hashes) {
   std::vector<trx_hash_t> out;
   out.reserve(hashes.size());
@@ -824,12 +814,14 @@ rustaxa::PbftDynamicLambdaFact makePbftDynamicLambdaFact(const HardforksConfig &
 }  // namespace
 
 PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db, SharedPbftService pbft_service,
-                         std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
-                         std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
+                         SharedDagTransactionService dag_transaction_service, std::shared_ptr<PbftChain> pbft_chain,
+                         std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
+                         std::shared_ptr<TransactionManager> trx_mgr,
                          std::shared_ptr<final_chain::FinalChain> final_chain,
                          std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr)
     : db_(std::move(db)),
       pbft_service_(std::move(pbft_service)),
+      dag_transaction_service_(std::move(dag_transaction_service)),
       pbft_chain_(std::move(pbft_chain)),
       vote_mgr_(std::move(vote_mgr)),
       dag_mgr_(std::move(dag_mgr)),
@@ -846,6 +838,12 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
       eligible_wallets_(conf.wallets) {
   if (!pbft_service_) {
     throw std::invalid_argument("PBFT manager requires a shared PBFT service");
+  }
+  if (!dag_transaction_service_) {
+    throw std::invalid_argument("PBFT manager requires a shared DAG/transaction service");
+  }
+  if (!dag_transaction_service_->service().dag_transaction_service_has_sortition()) {
+    throw std::invalid_argument("PBFT manager requires a DAG/transaction service with sortition state");
   }
   // Use first wallet as default node_addr
   const auto &node_addr = dev::toAddress(conf.getFirstWallet().node_secret);
@@ -3474,8 +3472,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  const auto non_empty_pbft_chain_size = pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1;
-
   auto report_dag_order = [&](uint64_t finalized_count, rustaxa::PbftManagerFinalizationExecutorState &boundary) {
     try {
       boundary = rustaxa::pbft_manager_runtime_advance_finalization_dag_order(pbft_service_->service(), boundary.cursor,
@@ -3492,17 +3488,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return true;
   };
   auto advance_sortition_finalization = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    const auto &dag_transaction_service = dag_mgr_->sortitionParamsManager().getDagTransactionService();
-    rustaxa::PbftManagerFinalizationSortitionCommitRequest bridge_request{};
-    bridge_request.unique_transactions = period_data.transactions.size();
-    bridge_request.total_dag_transaction_refs = 0;
-    for (const auto &dag_block : period_data.dag_blocks) {
-      bridge_request.total_dag_transaction_refs += dag_block->getTrxs().size();
-    }
-    bridge_request.non_empty_pbft_chain_size = non_empty_pbft_chain_size;
     try {
       boundary = rustaxa::pbft_manager_runtime_advance_finalization_sortition_commit(
-          pbft_service_->service(), dag_transaction_service->service(), boundary.cursor, bridge_request);
+          pbft_service_->service(), dag_transaction_service_->service(), boundary.cursor);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Fatal Rust PBFT finalization sortition invariant for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ": " << e.what();
@@ -3577,8 +3565,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     return report;
   };
 
-  std::optional<SortitionParamsChange> prepared_sortition_params_change;
-  bool sortition_commit_prepared = false;
   bool reward_votes_reset_prepared = false;
   bool dag_order_payload_available = true;
   bool transaction_status_payload_available = true;
@@ -3606,14 +3592,9 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
           if (!protected_locks_held) {
             return fail_action("sortition runtime commit", "PBFT_FINALIZE_PROTECTED_ACTION_OUTSIDE_LOCKS");
           }
-          if (!sortition_commit_prepared) {
-            return fail_action("sortition runtime commit", "PBFT_FINALIZE_SORTITION_PAYLOAD_UNAVAILABLE");
-          }
-          sortition_commit_prepared = false;
           if (!advance_sortition_finalization(boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
-          prepared_sortition_params_change.reset();
           break;
         }
         case kPbftFinalizationRuntimeActionCommitRewardVotesReset: {
@@ -3759,8 +3740,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
         start_request.mode = kPbftFinalizationExecutorModeResume;
         start_request.plan = finalization_plan;
         start_request.final_chain_last_block = rustFinalChainLastBlockNumber(final_chain_);
-        resume_boundary =
-            rustaxa::pbft_manager_runtime_start_finalization_executor(pbft_service_->service(), start_request);
+        resume_boundary = rustaxa::pbft_manager_runtime_start_finalization_executor(
+            pbft_service_->service(), dag_transaction_service_->service(), start_request);
       } catch (const std::exception &e) {
         LOG(log_er_) << "Rust PBFT finalization resume boundary begin threw for block " << pbft_block_hash
                      << ", period " << block_pbft_period << ": " << e.what();
@@ -3820,16 +3801,6 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
   }
 
-  // pass pbft with dag blocks and transactions to adjust difficulty
-  if (finalization_plan.storage_write_intent.update_sortition_params) {
-    prepared_sortition_params_change = dag_mgr_->sortitionParamsManager().prepareBlockForSortitionFinalization(
-        period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1);
-    sortition_commit_prepared = true;
-    if (prepared_sortition_params_change.has_value()) {
-      first_persistence_stages.push_back(makeSortitionFinalizationStorageStage(*prepared_sortition_params_change));
-    }
-  }
-
   rustaxa::PbftManagerFinalizationExecutorState boundary{};
   bool dispatch_complete = false;
   FinalizationDispatchResult protected_dispatch = FinalizationDispatchResult::kReleaseProtectedLocks;
@@ -3845,7 +3816,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
       start_request.plan = finalization_plan;
       start_request.primary_stages = std::move(first_persistence_stages);
       start_request.sync = false;
-      boundary = rustaxa::pbft_manager_runtime_start_finalization_executor(pbft_service_->service(), start_request);
+      boundary = rustaxa::pbft_manager_runtime_start_finalization_executor(
+          pbft_service_->service(), dag_transaction_service_->service(), start_request);
     } catch (const std::exception &e) {
       LOG(log_er_) << "Rust PBFT finalization boundary begin failed for block " << pbft_block_hash << ", period "
                    << block_pbft_period << ": " << e.what();

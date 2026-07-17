@@ -223,8 +223,8 @@ pub(crate) struct BridgePbftManagerRuntimeState {
     pub finalization_runtime_session:
         Option<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState>,
     pub finalization_runtime_plan: Option<rustaxa_consensus::pbft_finalize::PbftFinalizationPlan>,
-    pub finalization_expected_sortition_change:
-        Option<rustaxa_consensus::sortition::SortitionParamsChange>,
+    pub finalization_sortition_preparation:
+        Option<crate::pbft_manager::PbftFinalizationSortitionPreparation>,
     /// Process-local reset proof bound to the active finalization session.
     ///
     /// It is cleared when the session terminates. A same-process resume may
@@ -2104,16 +2104,6 @@ pub mod rustaxa_ffi {
         last_storage_status: u8,
         reward_votes_reset_generation: u64,
         error_code: String,
-    }
-
-    /// Sortition finalization commit facts reported to the PBFT manager executor.
-    ///
-    /// C++ forwards only the observed finalized-period statistics needed for DAG
-    /// sortition pre-checks.
-    struct PbftManagerFinalizationSortitionCommitRequest {
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-        non_empty_pbft_chain_size: u64,
     }
 
     /// Reward-vote reset finalization facts reported to the PBFT manager executor.
@@ -5012,6 +5002,7 @@ pub mod rustaxa_ffi {
         ) -> PbftFinalizationIntentPlan;
         pub fn pbft_manager_runtime_start_finalization_executor(
             runtime: &BridgePbftService,
+            dag_transaction_service: &BridgeDagTransactionService,
             request: PbftFinalizationExecutorStartRequest,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_fail_finalization_external_effect(
@@ -5034,7 +5025,6 @@ pub mod rustaxa_ffi {
             runtime: &BridgePbftService,
             dag_transaction_service: &BridgeDagTransactionService,
             cursor: u32,
-            report: PbftManagerFinalizationSortitionCommitRequest,
         ) -> Result<PbftManagerFinalizationExecutorState>;
         pub fn pbft_manager_runtime_advance_finalization_reward_votes_reset(
             runtime: &BridgePbftService,
@@ -5691,24 +5681,6 @@ pub mod rustaxa_ffi {
             unique_transactions: u64,
             total_dag_transaction_refs: u64,
             non_empty_pbft_chain_size: u64,
-        ) -> Result<SortitionParamsChangeResult>;
-        pub fn sortition_preview_finalized_period(
-            self: &BridgeDagTransactionService,
-            period: u64,
-            has_pivot: bool,
-            unique_transactions: u64,
-            total_dag_transaction_refs: u64,
-            non_empty_pbft_chain_size: u64,
-        ) -> Result<SortitionParamsChangeResult>;
-        pub fn sortition_commit_finalized_period(
-            self: &BridgeDagTransactionService,
-            period: u64,
-            has_pivot: bool,
-            unique_transactions: u64,
-            total_dag_transaction_refs: u64,
-            non_empty_pbft_chain_size: u64,
-            expected_changed: bool,
-            expected_change: SortitionParamsChangePayload,
         ) -> Result<SortitionParamsChangeResult>;
         pub fn sortition_average_dag_efficiency(self: &BridgeDagTransactionService) -> Result<u16>;
         pub fn sortition_params_changes(

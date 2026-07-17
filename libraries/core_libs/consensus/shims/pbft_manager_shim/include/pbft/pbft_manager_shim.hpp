@@ -29,6 +29,7 @@
 #include "pbft/period_data.hpp"
 #include "pbft/proposed_blocks.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
+#include "transaction/dag_transaction_service.hpp"
 #include "transaction/transaction_manager_bridge_types.hpp"
 #include "vote/vrf_sortition.hpp"
 
@@ -153,10 +154,18 @@ class PbftManager {
   using time_point = std::chrono::system_clock::time_point;
 
  public:
+  /**
+   * Constructs the Rust-mode PBFT manager over application-owned PBFT and DAG/transaction services.
+   *
+   * The PBFT service owns manager protocol state, while `dag_transaction_service` supplies the composed DAG/sortition
+   * capability used by finalization start and commit. Both services must be non-null, and the DAG service must expose
+   * sortition state; otherwise construction throws `std::invalid_argument`. Remaining manager dependencies provide
+   * external execution and compatibility materialization boundaries. Startup replay and storage failures propagate.
+   */
   PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> db, SharedPbftService pbft_service,
-              std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<VoteManager> vote_mgr,
-              std::shared_ptr<DagManager> dag_mgr, std::shared_ptr<TransactionManager> trx_mgr,
-              std::shared_ptr<final_chain::FinalChain> final_chain,
+              SharedDagTransactionService dag_transaction_service, std::shared_ptr<PbftChain> pbft_chain,
+              std::shared_ptr<VoteManager> vote_mgr, std::shared_ptr<DagManager> dag_mgr,
+              std::shared_ptr<TransactionManager> trx_mgr, std::shared_ptr<final_chain::FinalChain> final_chain,
               std::shared_ptr<pillar_chain::PillarChainManager> pillar_chain_mgr);
   ~PbftManager();
   PbftManager(const PbftManager &) = delete;
@@ -738,6 +747,8 @@ class PbftManager {
   // Application-owned Rust PBFT service shared with the chain facade. Remaining C++ fields below are compatibility
   // mirrors or executor/public API materialization caches; they must not be used as Rust-mode protocol authority.
   SharedPbftService pbft_service_;
+  // Application-owned composed DAG/transaction service used directly by Rust PBFT/sortition finalization operations.
+  SharedDagTransactionService dag_transaction_service_;
   std::shared_ptr<PbftChain> pbft_chain_;
   std::shared_ptr<VoteManager> vote_mgr_;
   std::shared_ptr<DagManager> dag_mgr_;

@@ -690,8 +690,9 @@ Implementation notes:
 - The standalone sortition facade is now fully detached from the legacy implementation. Master Rust mode excludes the
   untouched original source, the overlay owns the exact shared `SortitionParamsChange` carrier and canonical RLP codec,
   and the redundant module flag, compile rename, header import, and scaffold-only inheritance test are retired. The live
-  facade, bridge handle, PBFT preview/commit route, historical query surface, and ignored `Batch&` compatibility signature
-  remain because they still serve DAG, PBFT finalization, storage, and public C++ callers. Focused Rust sortition tests,
+  facade, historical query surface, and ignored `Batch&` compatibility signature remain for stable public C++ callers;
+  the production PBFT preview/stage/commit path now stays inside the two application-owned Rust services. Focused Rust
+  sortition tests,
   the Rust consensus bridge sortition and PBFT-finalization tests, the C++ shim/public sortition suites, Rust storage
   bridge tests, Tier 1, Tier 2, and startup smoke validation passed. Rust-enabled build metadata and archives contain
   only the shim source/codec symbols and no legacy manager symbols; pure-C++ configuration selects the untouched original
@@ -2991,8 +2992,8 @@ DAG proposal planning while preserving asynchronous VDF execution as an explicit
   `StartVdf` executor command. C++ passes that typed command to the existing asynchronous Rust VDF proof helper; polling,
   cancellation, proof materialization, signing, add-block, network, and cleanup behavior remain outside this slice.
 - The proposer-side `rustSortitionParamsForRust` lookup, inbound `SortitionRuntimeParams`, conversion helper, and old
-  external-facts report/export/wrapper names are deleted. The sortition facade now remains only for public compatibility
-  and the separately audited PBFT accessor/preview path.
+  external-facts report/export/wrapper names are deleted. The following closeout slice retires the separately audited
+  PBFT accessor/preview path; the sortition facade remains only for public compatibility.
 
 Validation passed all 331 `rustaxa-bridge` tests, including five focused composed proposer-final-chain cases; the Rust
 CXX bridge and focused DAG/sortition targets rebuilt; and the DAG, DAG-block, and sortition-shim suites passed 6/6,
@@ -3000,6 +3001,44 @@ CXX bridge and focused DAG/sortition targets rebuilt; and the DAG, DAG-block, an
 upstream-shape check, formatting, Clippy, obsolete-symbol scan, and whitespace validation also passed. Independent
 configured review returned `APPROVED` with no blocking correctness, concurrency, cleanup, boundary, deletion,
 documentation, or coverage finding.
+
+### CRW-05 PBFT Sortition Preparation Composition and Closeout
+
+The final CRW-05/CRW-07 slice removes the remaining live PBFT-to-sortition-facade lookup, preview, count relay, and
+caller-built storage stage.
+
+- App injects its one `SharedDagTransactionService` directly into `PbftManager`; construction rejects null or
+  transaction-only services. PBFT no longer recovers an internal Rust handle through `DagManager` or
+  `SortitionParamsManager`.
+- Fresh Rust finalization validates the pre-finalization PBFT head period, derives the next non-empty size from the
+  service-owned chain, and decodes pivot, unique-transaction count, and total DAG references directly from canonical
+  retained `PeriodData` RLP. It rejects every caller-supplied sortition stage or payload, previews sortition under the
+  private service lock, appends the optional native storage stage itself, and retains the exact inputs and expected
+  change across primary storage.
+- The post-storage commit takes only the PBFT service, DAG service, and Rust cursor. It requires the retained
+  preparation, clones and validates the next sortition state, publishes it atomically, then consumes the preparation.
+  Missing or divergent preparation remains a fatal post-storage invariant and never publishes a second state.
+- Resume bypasses decoding, preview, and staging because durable duplicate-finalization inspection never replays
+  sortition publication. Malformed RLP, head mismatch/overflow, capability failure, storage rejection, stale cursor, and
+  every terminal/error path clear the cursor and retained preparation.
+- The shim-only `getDagTransactionService`, `prepareBlockForSortitionFinalization`, and `rustSortitionParamsForRust`
+  methods; C++ count loops, optional-change/stage builder, and preparation flags; the commit request carrier; direct CXX
+  preview/commit exports; and their bridge-mechanics test file are deleted. Public parameter materialization,
+  efficiency, canonical change codec, and storage-owning compatibility APIs remain classified.
+
+This closes CRW-05: pillar, slashing, rewards, and sortition production planning/state now live behind their Rust
+application owners, and the remaining C++ surfaces are the classified FinalChain/DPoS, signing, transaction insertion,
+tarcap/event, lifecycle/executor, and public-materialization boundaries.
+
+Validation passed all 338 `rustaxa-bridge` tests, 31 focused PBFT-manager runtime tests, 28 focused native sortition
+tests, all 56 `rust_consensus_tests` cases, and all four `sortition_params_manager_shim_test` cases. The Rust pre-commit
+checks, Tier 1 and Tier 2 consensus rewrite gates, startup smoke, bridge inventory, upstream-shape check, obsolete-symbol
+scan, and whitespace validation also passed. A full same-process `pbft_manager_test` run passed its first full-node case;
+the remaining fixtures were blocked before their assertions by the existing `/tmp/taraxa0/db/db/LOCK` reuse in that
+test harness, so this slice does not claim the broad suite as passing. Configured `code-mapper`, `architect-reviewer`,
+`rust-engineer`, and `cpp-pro` agents mapped, approved, and implemented the boundary. Independent configured review
+returned `APPROVED` with no blocking correctness, security, regression, documentation, or coverage finding; residual
+risk is limited to the documented broad-suite harness gap.
 
 ## Historical Execution Order
 

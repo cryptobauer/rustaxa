@@ -152,7 +152,8 @@ impl BridgeDagTransactionService {
     ///
     /// The returned change, when present, is suitable for inclusion in the PBFT
     /// primary finalization storage batch. Callers must later commit the same
-    /// transition through `commit_finalized_period` after storage succeeds.
+    /// transition through `commit_finalized_period_with_live_snapshot` after
+    /// storage succeeds.
     pub fn preview_finalized_period(
         &self,
         period: u64,
@@ -169,36 +170,6 @@ impl BridgeDagTransactionService {
             non_empty_pbft_chain_size,
         )?;
         Ok(change_result(change))
-    }
-
-    /// Commits a finalized-period sortition transition and verifies it matches the preview.
-    ///
-    /// Inputs are the same period facts used by the preview phase plus the
-    /// expected optional change. Any mismatch returns an error before C++ can
-    /// report success to the PBFT finalization runtime cursor.
-    pub fn commit_finalized_period(
-        &self,
-        period: u64,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-        non_empty_pbft_chain_size: u64,
-        expected_changed: bool,
-        expected_change: rustaxa_ffi::SortitionParamsChangePayload,
-    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
-        let expected = expected_changed.then(|| SortitionParamsChange::from(expected_change));
-        let mut sortition = self.sortition()?;
-        let mut updated = sortition.clone();
-        let dag_efficiency =
-            efficiency_from_counts(has_pivot, unique_transactions, total_dag_transaction_refs)?;
-        let actual =
-            updated.record_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?;
-        ensure!(
-            actual == expected,
-            "PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH"
-        );
-        *sortition = updated;
-        Ok(change_result(actual))
     }
 
     /// Commits a finalized period and returns live-report snapshot values captured
@@ -293,46 +264,6 @@ impl BridgeDagTransactionService {
             unique_transactions,
             total_dag_transaction_refs,
             non_empty_pbft_chain_size,
-        )
-    }
-
-    /// CXX-exported method previewing a finalized period without mutating sortition state.
-    pub fn sortition_preview_finalized_period(
-        &self,
-        period: u64,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-        non_empty_pbft_chain_size: u64,
-    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
-        self.preview_finalized_period(
-            period,
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-            non_empty_pbft_chain_size,
-        )
-    }
-
-    /// CXX-exported method committing a previously previewed finalized period.
-    pub fn sortition_commit_finalized_period(
-        &self,
-        period: u64,
-        has_pivot: bool,
-        unique_transactions: u64,
-        total_dag_transaction_refs: u64,
-        non_empty_pbft_chain_size: u64,
-        expected_changed: bool,
-        expected_change: rustaxa_ffi::SortitionParamsChangePayload,
-    ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
-        self.commit_finalized_period(
-            period,
-            has_pivot,
-            unique_transactions,
-            total_dag_transaction_refs,
-            non_empty_pbft_chain_size,
-            expected_changed,
-            expected_change,
         )
     }
 

@@ -92,24 +92,6 @@ class SortitionParamsManager {
   SortitionParams getSortitionParams(std::optional<PbftPeriod> for_period = {}) const;
 
   /**
-   * Returns Rust-native sortition runtime parameters for a proposal period.
-   *
-   * Inputs:
-   * - for_period selects the historical sortition parameters active for DAG
-   *   proposal and VDF proof planning.
-   *
-   * Outputs:
-   * - The Rust bridge DTO containing VRF threshold and VDF difficulty bounds.
-   *
-   * Invariants and edge behavior:
-   * - Reads directly through the Rust sortition runtime's rustaxa-storage
-   *   handle.
-   * - Does not materialize or mutate the C++ SortitionParams compatibility DTO.
-   * - Propagates Rust runtime storage/decoding failures as bridge exceptions.
-   */
-  rustaxa::SortitionRuntimeParams rustSortitionParamsForRust(PbftPeriod for_period) const;
-
-  /**
    * Calculates DAG efficiency for finalized PeriodData using the Rust fixed-point policy.
    *
    * The input is reduced to unique transaction count and total DAG transaction references before crossing the bridge.
@@ -126,23 +108,6 @@ class SortitionParamsManager {
   void pbftBlockPushed(const PeriodData& block, Batch& batch, PbftPeriod non_empty_pbft_chain_size);
 
   /**
-   * Preview a PBFT-finalization sortition update without mutating live Rust state.
-   *
-   * Inputs:
-   * - Finalized period data and the post-finalization non-empty PBFT-chain size.
-   *
-   * Outputs:
-   * - Optional sortition parameter change that must be persisted in the primary
-   *   PBFT finalization batch before the live sortition runtime is committed.
-   *
-   * Invariants and edge behavior:
-   * - Does not publish threshold/counter changes to live callers.
-   * - Throws on malformed efficiency facts before storage stages are built.
-   */
-  std::optional<SortitionParamsChange> prepareBlockForSortitionFinalization(const PeriodData& block,
-                                                                            PbftPeriod non_empty_pbft_chain_size);
-
-  /**
    * Returns the current interval average DAG efficiency.
    */
   uint16_t averageDagEfficiency();
@@ -151,11 +116,6 @@ class SortitionParamsManager {
    * Returns the Rust-backed in-memory parameter-change cache.
    */
   const std::deque<SortitionParamsChange>& getParamsChanges() const { return params_changes_; }
-
-  /**
-   * Returns the shared runtime service used by all Rust-owned sortition transitions.
-   */
-  const SharedDagTransactionService& getDagTransactionService() const { return dag_transaction_service_; }
 
  protected:
   const FullNodeConfig kConfig;

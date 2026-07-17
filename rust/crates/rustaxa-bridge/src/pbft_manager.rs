@@ -36,7 +36,6 @@ use crate::ffi::rustaxa_ffi::{
     PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport,
     PbftManagerFinalizationPillarPostProcessingReport as FfiPbftManagerFinalizationPillarPostProcessingReport,
     PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport,
-    PbftManagerFinalizationSortitionCommitRequest as FfiPbftManagerFinalizationSortitionCommitRequest,
     PbftManagerFinalizationWaitFact as FfiPbftManagerFinalizationWaitFact,
     PbftManagerFinalizationWaitPlan as FfiPbftManagerFinalizationWaitPlan,
     PbftManagerLeaderCandidateInputFact as FfiPbftManagerLeaderCandidateInputFact,
@@ -78,7 +77,23 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::{
     BridgePbftChainState, BridgePbftManagerRuntimeState, BridgePbftService, BridgeStorage,
 };
-use anyhow::anyhow;
+
+/// Exact sortition preview retained across primary storage and live commit.
+///
+/// The preparation is created only for a fresh finalization that requests a
+/// sortition update. It binds the canonical period-data counts, pivot fact,
+/// pre-finalization-derived non-empty chain size, and expected optional change
+/// to the active manager cursor. Resume mode never creates it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PbftFinalizationSortitionPreparation {
+    period: u64,
+    has_pivot: bool,
+    unique_transactions: u64,
+    total_dag_transaction_refs: u64,
+    non_empty_pbft_chain_size: u64,
+    expected_change: Option<SortitionParamsChange>,
+}
+use anyhow::{anyhow, Context};
 use rustaxa_consensus::dag::dag_block_period_from_storage;
 use rustaxa_consensus::pbft_chain::{
     pbft_block_exists_in_storage, restore_pbft_chain_from_storage, PbftChain,
@@ -529,7 +544,7 @@ pub fn create_pbft_service_from_storage(
             finalization_runtime_session: None,
             finalization_runtime_plan: None,
             finalization_reward_votes_reset_generation: 0,
-            finalization_expected_sortition_change: None,
+            finalization_sortition_preparation: None,
             chain: chain.clone(),
         })),
         chain,
@@ -1972,6 +1987,7 @@ fn pbft_finalization_session_missing_step() -> FinalizationRuntimeSessionStep {
 
 const FINALIZATION_STAGE_DYNAMIC_LAMBDA: u8 = 1;
 const FINALIZATION_STAGE_EXECUTED_STATUS: u8 = 2;
+const FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
 #[cfg(test)]
 const FINALIZATION_STAGE_REWARD_VOTES_RESET: u8 = 4;
 const FINALIZATION_EXECUTOR_MODE_FRESH: u8 = 0;
@@ -2160,7 +2176,7 @@ fn clear_finalization_runtime(runtime: &mut BridgePbftManagerRuntimeState) {
     runtime.finalization_runtime_session = None;
     runtime.finalization_runtime_plan = None;
     runtime.finalization_reward_votes_reset_generation = 0;
-    runtime.finalization_expected_sortition_change = None;
+    runtime.finalization_sortition_preparation = None;
 }
 
 fn finalization_executor_state_is_terminal(
@@ -2247,25 +2263,11 @@ fn pbft_manager_runtime_begin_finalization_session(
     plan: &FfiPbftFinalizationIntentPlan,
 ) {
     runtime.finalization_reward_votes_reset_generation = 0;
-    runtime.finalization_expected_sortition_change = None;
+    runtime.finalization_sortition_preparation = None;
     let domain_plan = PbftFinalizationPlan::from(plan);
     let runtime_plan = plan_domain_pbft_finalization_runtime(&domain_plan);
     runtime.finalization_runtime_session = Some(start_pbft_finalization_runtime(&runtime_plan));
     runtime.finalization_runtime_plan = Some(domain_plan);
-}
-
-fn sortition_change_from_primary_stages(
-    stages: &[PbftFinalizationStorageWriteStage],
-) -> Option<SortitionParamsChange> {
-    stages
-        .iter()
-        .rev()
-        .find(|stage| stage.has_sortition_params_change)
-        .map(|stage| SortitionParamsChange {
-            period: stage.sortition_params_change_period,
-            interval_efficiency: stage.sortition_params_change_interval_efficiency,
-            threshold_upper: stage.sortition_params_change_threshold_upper,
-        })
 }
 
 /// Starts a durable duplicate-finalization resume cursor inside the PBFT manager runtime.
@@ -2422,6 +2424,8 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 /// Inputs:
 /// - `runtime`: long-lived PBFT manager runtime that owns storage and the
 ///   finalization cursor.
+/// - `dag_transaction_service`: Rust DAG/sortition service used to preview
+///   canonical sortition facts before fresh primary storage.
 /// - `request`: accepted finalization intent plus either fresh primary-storage
 ///   stages or the FinalChain height needed to inspect duplicate-finalization
 ///   resume from runtime-owned storage.
@@ -2443,6 +2447,7 @@ fn pbft_manager_runtime_report_finalization_live_mutation(
 ///   external action.
 pub fn pbft_manager_runtime_start_finalization_executor(
     runtime: &BridgePbftService,
+    dag_transaction_service: &BridgeDagTransactionService,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let mut runtime = runtime.manager_state();
@@ -2456,12 +2461,17 @@ pub fn pbft_manager_runtime_start_finalization_executor(
     if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
         runtime.finalization_reward_votes_reset_generation = resume_generation;
     }
-    let result = pbft_manager_runtime_start_finalization_executor_inner(&mut runtime, request);
+    let result = pbft_manager_runtime_start_finalization_executor_inner(
+        &mut runtime,
+        dag_transaction_service,
+        request,
+    );
     finish_finalization_executor_boundary(&mut runtime, result)
 }
 
 fn pbft_manager_runtime_start_finalization_executor_inner(
     runtime: &mut BridgePbftManagerRuntimeState,
+    dag_transaction_service: &BridgeDagTransactionService,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     if request.mode == FINALIZATION_EXECUTOR_MODE_RESUME {
@@ -2494,9 +2504,31 @@ fn pbft_manager_runtime_start_finalization_executor_inner(
     }
 
     let write_set = PbftFinalizationStorageWriteIntent::from(&request.plan.storage_write_intent);
-    let stages: Vec<PbftFinalizationStorageWriteStage> =
+    let mut stages: Vec<PbftFinalizationStorageWriteStage> =
         request.primary_stages.into_iter().map(Into::into).collect();
-    runtime.finalization_expected_sortition_change = sortition_change_from_primary_stages(&stages);
+    anyhow::ensure!(
+        stages.iter().all(|stage| {
+            stage.stage != FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE
+                && !stage.has_sortition_params_change
+                && stage.sortition_params_change_period == 0
+                && stage.sortition_params_change_interval_efficiency == 0
+                && stage.sortition_params_change_threshold_upper == 0
+        }),
+        "PBFT_FINALIZE_SORTITION_STAGE_CALLER_OWNED"
+    );
+    if write_set.update_sortition_params {
+        let preparation =
+            prepare_finalization_sortition(runtime, dag_transaction_service, &write_set)?;
+        if let Some(change) = preparation.expected_change {
+            let mut stage = empty_finalization_stage(FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE);
+            stage.has_sortition_params_change = true;
+            stage.sortition_params_change_period = change.period;
+            stage.sortition_params_change_interval_efficiency = change.interval_efficiency;
+            stage.sortition_params_change_threshold_upper = change.threshold_upper;
+            stages.push(stage);
+        }
+        runtime.finalization_sortition_preparation = Some(preparation);
+    }
     let apply_result = apply_domain_pbft_finalization_storage_writes(
         runtime.storage.as_ref(),
         &write_set,
@@ -2524,6 +2556,56 @@ fn pbft_manager_runtime_start_finalization_executor_inner(
     }
 
     drain_finalization_executor_state(runtime)
+}
+
+fn prepare_finalization_sortition(
+    runtime: &BridgePbftManagerRuntimeState,
+    dag_transaction_service: &BridgeDagTransactionService,
+    write_set: &PbftFinalizationStorageWriteIntent,
+) -> anyhow::Result<PbftFinalizationSortitionPreparation> {
+    let non_empty_pbft_chain_size = {
+        let chain = runtime.chain.read().expect("PBFT chain lock poisoned");
+        let head = chain.state.head();
+        let expected_period = head
+            .size
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_SORTITION_CHAIN_SIZE_OVERFLOW"))?;
+        anyhow::ensure!(
+            expected_period == write_set.block_period,
+            "PBFT_FINALIZE_SORTITION_CHAIN_HEAD_PERIOD_MISMATCH"
+        );
+        head.non_empty_size
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("PBFT_FINALIZE_SORTITION_NON_EMPTY_SIZE_OVERFLOW"))?
+    };
+
+    let counts =
+        rustaxa_consensus::sortition::decode_period_efficiency_counts(&write_set.period_data_rlp)
+            .context("PBFT_FINALIZE_SORTITION_PERIOD_DATA")?;
+    anyhow::ensure!(
+        counts.has_pivot == !write_set.null_anchor,
+        "PBFT_FINALIZE_SORTITION_PIVOT_MISMATCH"
+    );
+    let preview = dag_transaction_service.preview_finalized_period(
+        write_set.block_period,
+        counts.has_pivot,
+        counts.unique_transactions,
+        counts.total_dag_transaction_refs,
+        non_empty_pbft_chain_size,
+    )?;
+    let expected_change = preview.changed.then_some(SortitionParamsChange {
+        period: preview.period,
+        interval_efficiency: preview.interval_efficiency,
+        threshold_upper: preview.threshold_upper,
+    });
+    Ok(PbftFinalizationSortitionPreparation {
+        period: write_set.block_period,
+        has_pivot: counts.has_pivot,
+        unique_transactions: counts.unique_transactions,
+        total_dag_transaction_refs: counts.total_dag_transaction_refs,
+        non_empty_pbft_chain_size,
+        expected_change,
+    })
 }
 
 /// Advances one successful external finalization action with native live-mutation facts.
@@ -2814,8 +2896,8 @@ pub fn pbft_manager_runtime_advance_finalization_dag_order(
 /// Inputs:
 /// - `runtime`: PBFT manager runtime that owns the current finalization cursor.
 /// - `cursor`: executor cursor previously returned to C++.
-/// - `report`: sortition post-commit facts after the sortition manager applies
-///   the finalized-period runtime update.
+/// - Retained preparation: canonical facts and expected optional change captured
+///   before primary storage; C++ supplies no sortition facts.
 ///
 /// Outputs:
 /// - The next PBFT finalization executor state.
@@ -2832,14 +2914,12 @@ pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
     runtime: &BridgePbftService,
     dag_transaction_service: &BridgeDagTransactionService,
     cursor: u32,
-    request: FfiPbftManagerFinalizationSortitionCommitRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let mut runtime = runtime.manager_state();
     let result = pbft_manager_runtime_advance_finalization_sortition_commit_inner(
         &mut runtime,
         dag_transaction_service,
         cursor,
-        request,
     );
     finish_finalization_executor_boundary(&mut runtime, result)
 }
@@ -2848,7 +2928,6 @@ fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
     runtime: &mut BridgePbftManagerRuntimeState,
     dag_transaction_service: &BridgeDagTransactionService,
     cursor: u32,
-    request: FfiPbftManagerFinalizationSortitionCommitRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
     if current_step.status != PbftFinalizationRuntimeStatus::Active.as_u8()
@@ -2914,9 +2993,19 @@ fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
     }
 
     let plan = stored_finalization_plan(runtime)?;
-    let expected_change = runtime.finalization_expected_sortition_change;
-    let expected_changed = expected_change.is_some();
-    let expected_change = expected_change
+    let preparation = runtime.finalization_sortition_preparation.ok_or_else(|| {
+        anyhow!("PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:MISSING_PREPARATION")
+    })?;
+    if preparation.period != plan.storage_write_intent.block_period
+        || preparation.has_pivot != !plan.storage_write_intent.null_anchor
+    {
+        return Err(anyhow!(
+            "PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:PREPARATION_PLAN_MISMATCH"
+        ));
+    }
+    let expected_changed = preparation.expected_change.is_some();
+    let expected_change = preparation
+        .expected_change
         .map(
             |change| crate::ffi::rustaxa_ffi::SortitionParamsChangePayload {
                 period: change.period,
@@ -2933,10 +3022,10 @@ fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
     let (change, sortition_current_threshold_upper, params_changes_count) =
         match dag_transaction_service.commit_finalized_period_with_live_snapshot(
             plan.storage_write_intent.block_period,
-            !plan.storage_write_intent.null_anchor,
-            request.unique_transactions,
-            request.total_dag_transaction_refs,
-            request.non_empty_pbft_chain_size,
+            preparation.has_pivot,
+            preparation.unique_transactions,
+            preparation.total_dag_transaction_refs,
+            preparation.non_empty_pbft_chain_size,
             expected_changed,
             expected_change,
         ) {
@@ -2947,6 +3036,7 @@ fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
                 ));
             }
         };
+    runtime.finalization_sortition_preparation = None;
 
     let live_report = {
         let mut live_report = base_finalization_live_report(action, &plan.storage_write_intent);
@@ -3992,7 +4082,6 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationAdvancePeriodReport as FfiPbftManagerFinalizationAdvancePeriodReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationFinalChainDispatchReport as FfiPbftManagerFinalizationFinalChainDispatchReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport;
-    use crate::ffi::rustaxa_ffi::PbftManagerFinalizationSortitionCommitRequest as FfiPbftManagerFinalizationSortitionCommitRequest;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
     use crate::pillar_chain::create_pillar_capable_pbft_service_for_compatibility;
     use crate::storage::{
@@ -4027,7 +4116,6 @@ mod tests {
     const ACTION_RUN_FIRST_FINISH: u8 = 12;
     const RESULT_CONTINUE: u8 = 0;
     const RESULT_PROGRESS_RESTART: u8 = 1;
-    const FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE: u8 = 3;
     const LEADER_STATUS_SELECTED: u8 = 0;
     const LEADER_BLOCK_VALIDATION_ALREADY_VALID: u8 = 0;
     const LEADER_BLOCK_VALIDATION_VALIDATED: u8 = 1;
@@ -4706,7 +4794,7 @@ mod tests {
             dynamic_lambda: 1_490,
             dpos_blocks_per_year: 500,
             pbft_head_payload: br#"{"last":true}"#.to_vec(),
-            period_data_rlp: vec![0xc0],
+            period_data_rlp: finalized_dag_period_data_rlp(H256::from([4; 32])),
             ordered_dag_block_hashes: vec![
                 FfiPbftFinalizationHash { hash: [1; 32] },
                 FfiPbftFinalizationHash { hash: [2; 32] },
@@ -4814,9 +4902,29 @@ mod tests {
         )
     }
 
-    fn empty_finalized_dag_period_data_rlp() -> Vec<u8> {
+    fn finalized_dag_period_data_rlp_with_counts(
+        pivot: H256,
+        unique_transactions: usize,
+        dag_transaction_ref_counts: &[usize],
+    ) -> Vec<u8> {
+        let mut pbft_block = rlp::RlpStream::new_list(8);
+        pbft_block.append(&H256::from_low_u64_be(1));
+        pbft_block.append(&pivot);
+        pbft_block.append(&H256::from_low_u64_be(2));
+        pbft_block.append(&H256::from_low_u64_be(3));
+        pbft_block.append(&10_u64);
+        pbft_block.append(&123_u64);
+        pbft_block.begin_list(0);
+        pbft_block.append(&vec![0_u8; 65]);
+
         let ordered_transaction_hashes = rlp::RlpStream::new_list(0);
-        let transaction_indexes = rlp::RlpStream::new_list(0);
+        let mut transaction_indexes = rlp::RlpStream::new_list(dag_transaction_ref_counts.len());
+        for count in dag_transaction_ref_counts {
+            transaction_indexes.begin_list(*count);
+            for index in 0..*count {
+                transaction_indexes.append(&index);
+            }
+        }
         let compact_blocks = rlp::RlpStream::new_list(0);
         let mut bundle = rlp::RlpStream::new_list(3);
         bundle.append_raw(&ordered_transaction_hashes.out(), 1);
@@ -4824,11 +4932,39 @@ mod tests {
         bundle.append_raw(&compact_blocks.out(), 1);
 
         let mut period_data = rlp::RlpStream::new_list(4);
-        period_data.append_empty_data();
+        period_data.append_raw(&pbft_block.out(), 1);
         period_data.append_empty_data();
         period_data.append_raw(&bundle.out(), 1);
-        period_data.begin_list(0);
+        period_data.begin_list(unique_transactions);
+        for _ in 0..unique_transactions {
+            period_data.append_empty_data();
+        }
         period_data.out().to_vec()
+    }
+
+    fn finalized_dag_period_data_rlp(pivot: H256) -> Vec<u8> {
+        finalized_dag_period_data_rlp_with_counts(pivot, 0, &[])
+    }
+
+    fn empty_finalized_dag_period_data_rlp() -> Vec<u8> {
+        finalized_dag_period_data_rlp(H256::zero())
+    }
+
+    fn ffi_primary_finalization_stage() -> rustaxa_ffi::PbftFinalizationStorageWriteStage {
+        rustaxa_ffi::PbftFinalizationStorageWriteStage {
+            stage: 0,
+            rounds_count_dynamic_lambda: 0,
+            dynamic_lambda: 0,
+            has_sortition_params_change: false,
+            sortition_params_change_period: 0,
+            sortition_params_change_interval_efficiency: 0,
+            sortition_params_change_threshold_upper: 0,
+            has_reward_votes_reset: false,
+            reward_votes_bundle_rlp: Vec::new(),
+            has_prepared_pillar_block: false,
+            prepared_pillar_block_period: 0,
+            prepared_pillar_block_rlp: Vec::new(),
+        }
     }
 
     fn finalization_live_report(
@@ -5101,19 +5237,15 @@ mod tests {
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_changed_commit");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
-        let expected = dag_service
-            .sortition_preview_finalized_period(10, true, 0, 0, 1)
-            .expect("changed sortition preview should succeed");
-        assert!(expected.changed);
         let ffi_stage = |stage, has_sortition_params_change, has_reward_votes_reset| {
             crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage {
                 stage,
                 rounds_count_dynamic_lambda: 0,
                 dynamic_lambda: 0,
                 has_sortition_params_change,
-                sortition_params_change_period: expected.period,
-                sortition_params_change_interval_efficiency: expected.interval_efficiency,
-                sortition_params_change_threshold_upper: expected.threshold_upper,
+                sortition_params_change_period: 0,
+                sortition_params_change_interval_efficiency: 0,
+                sortition_params_change_threshold_upper: 0,
                 has_reward_votes_reset,
                 reward_votes_bundle_rlp: has_reward_votes_reset
                     .then(|| vec![0xc1, 0x01])
@@ -5125,13 +5257,13 @@ mod tests {
         };
         let step = pbft_manager_runtime_start_finalization_executor(
             &mut runtime,
+            &dag_service,
             FfiPbftFinalizationExecutorStartRequest {
                 mode: FINALIZATION_EXECUTOR_MODE_FRESH,
                 plan,
                 primary_stages: vec![
                     ffi_stage(0, false, false),
                     ffi_stage(FINALIZATION_STAGE_REWARD_VOTES_RESET, false, true),
-                    ffi_stage(FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE, true, false),
                 ],
                 sync: false,
                 final_chain_last_block: 9,
@@ -5146,11 +5278,6 @@ mod tests {
             &mut runtime,
             &dag_service,
             step.cursor,
-            FfiPbftManagerFinalizationSortitionCommitRequest {
-                unique_transactions: 0,
-                total_dag_transaction_refs: 0,
-                non_empty_pbft_chain_size: 1,
-            },
         )
         .expect("service-owned changed sortition commit should advance finalization");
 
@@ -5166,23 +5293,36 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_no_change");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut *runtime.manager_state(), &plan);
-        advance_finalization_cursor_to_action(
-            &mut runtime,
-            PbftFinalizationRuntimeAction::CommitSortitionRuntime,
-        );
-
-        let step = pbft_manager_runtime_finalization_session_next(&mut *runtime.manager_state());
         let dag_service = dag_service_from_runtime(&runtime);
+        let step = pbft_manager_runtime_start_finalization_executor(
+            &mut runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![rustaxa_ffi::PbftFinalizationStorageWriteStage {
+                    stage: 0,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: false,
+                    reward_votes_bundle_rlp: Vec::new(),
+                    has_prepared_pillar_block: false,
+                    prepared_pillar_block_period: 0,
+                    prepared_pillar_block_rlp: Vec::new(),
+                }],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        )
+        .expect("fresh finalization should retain unchanged sortition preparation");
         let state = pbft_manager_runtime_advance_finalization_sortition_commit(
             &mut runtime,
             &dag_service,
             step.cursor,
-            FfiPbftManagerFinalizationSortitionCommitRequest {
-                unique_transactions: 0,
-                total_dag_transaction_refs: 0,
-                non_empty_pbft_chain_size: 0,
-            },
         )
         .expect("service-owned unchanged sortition commit should advance finalization");
 
@@ -5191,6 +5331,315 @@ mod tests {
             state.action,
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime.as_u8()
         );
+    }
+
+    #[test]
+    fn manager_runtime_retains_canonical_sortition_preparation_counts() {
+        let (_temp_dir, runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_counts");
+        let mut fact = finalization_fact();
+        fact.period_data_rlp =
+            finalized_dag_period_data_rlp_with_counts(H256::from([4; 32]), 3, &[2, 4]);
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, fact);
+        let dag_service = dag_service_from_runtime(&runtime);
+
+        pbft_manager_runtime_start_finalization_executor(
+            &runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![ffi_primary_finalization_stage()],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        )
+        .expect("canonical period facts should prepare sortition");
+
+        let preparation = runtime
+            .manager_state()
+            .finalization_sortition_preparation
+            .expect("fresh start should retain sortition preparation");
+        assert!(preparation.has_pivot);
+        assert_eq!(preparation.unique_transactions, 3);
+        assert_eq!(preparation.total_dag_transaction_refs, 6);
+        assert_eq!(preparation.non_empty_pbft_chain_size, 6);
+    }
+
+    #[test]
+    fn manager_runtime_rejects_malformed_sortition_period_data_and_clears_preparation() {
+        let (_temp_dir, runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_malformed");
+        let mut fact = finalization_fact();
+        fact.period_data_rlp = vec![0xc0];
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, fact);
+        let dag_service = dag_service_from_runtime(&runtime);
+        let snapshot_before = sortition_snapshot(&dag_service);
+
+        let error = match pbft_manager_runtime_start_finalization_executor(
+            &runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![ffi_primary_finalization_stage()],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        ) {
+            Ok(_) => panic!("malformed period data must reject before primary storage"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .contains("PBFT_FINALIZE_SORTITION_PERIOD_DATA"));
+        assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
+        assert!(runtime
+            .manager_state()
+            .finalization_sortition_preparation
+            .is_none());
+    }
+
+    #[test]
+    fn manager_runtime_rejects_sortition_chain_head_mismatch_before_publication() {
+        let (_temp_dir, runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_head_mismatch");
+        runtime
+            .chain
+            .write()
+            .expect("PBFT chain lock should remain healthy")
+            .state = PbftChain::new(rustaxa_consensus::pbft_chain::PbftChainHead {
+            head_hash: H256::from([8; 32]),
+            size: 8,
+            non_empty_size: 5,
+            last_pbft_block_hash: H256::from([3; 32]),
+            last_non_null_pbft_dag_anchor_hash: H256::from([2; 32]),
+        })
+        .expect("mismatched test head should remain structurally valid");
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        let dag_service = dag_service_from_runtime(&runtime);
+        let snapshot_before = sortition_snapshot(&dag_service);
+
+        let error = match pbft_manager_runtime_start_finalization_executor(
+            &runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![ffi_primary_finalization_stage()],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        ) {
+            Ok(_) => panic!("chain head mismatch must reject sortition preparation"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "PBFT_FINALIZE_SORTITION_CHAIN_HEAD_PERIOD_MISMATCH"
+        );
+        assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
+        assert!(runtime
+            .manager_state()
+            .finalization_sortition_preparation
+            .is_none());
+    }
+
+    #[test]
+    fn manager_runtime_rejects_sortition_chain_size_overflow_before_publication() {
+        let (_temp_dir, runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_head_overflow");
+        runtime
+            .chain
+            .write()
+            .expect("PBFT chain lock should remain healthy")
+            .state = PbftChain::new(rustaxa_consensus::pbft_chain::PbftChainHead {
+            head_hash: H256::from([8; 32]),
+            size: u64::MAX,
+            non_empty_size: u64::MAX,
+            last_pbft_block_hash: H256::from([3; 32]),
+            last_non_null_pbft_dag_anchor_hash: H256::from([2; 32]),
+        })
+        .expect("maximum test head should remain structurally valid");
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        let dag_service = dag_service_from_runtime(&runtime);
+        let snapshot_before = sortition_snapshot(&dag_service);
+
+        let error = match pbft_manager_runtime_start_finalization_executor(
+            &runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![ffi_primary_finalization_stage()],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        ) {
+            Ok(_) => panic!("chain size overflow must reject sortition preparation"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "PBFT_FINALIZE_SORTITION_CHAIN_SIZE_OVERFLOW"
+        );
+        assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
+        assert!(runtime
+            .manager_state()
+            .finalization_sortition_preparation
+            .is_none());
+    }
+
+    #[test]
+    fn manager_runtime_primary_storage_error_does_not_publish_sortition() {
+        let (_temp_dir, runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_storage_error");
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
+        let snapshot_before = sortition_snapshot(&dag_service);
+        let mut invalid_stage = ffi_primary_finalization_stage();
+        invalid_stage.stage = u8::MAX;
+
+        let result = pbft_manager_runtime_start_finalization_executor(
+            &runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![invalid_stage],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        );
+
+        assert!(result.is_err() || !result.expect("checked above").can_continue);
+        assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
+        assert!(runtime
+            .manager_state()
+            .finalization_sortition_preparation
+            .is_none());
+    }
+
+    #[test]
+    fn manager_runtime_rejects_caller_owned_sortition_stages_before_persistence() {
+        for (case, mut injected_stage) in [
+            (
+                "changed_stage",
+                rustaxa_ffi::PbftFinalizationStorageWriteStage {
+                    stage: FINALIZATION_STAGE_SORTITION_PARAMS_CHANGE,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: true,
+                    sortition_params_change_period: 10,
+                    sortition_params_change_interval_efficiency: 5_000,
+                    sortition_params_change_threshold_upper: 1_100,
+                    has_reward_votes_reset: false,
+                    reward_votes_bundle_rlp: Vec::new(),
+                    has_prepared_pillar_block: false,
+                    prepared_pillar_block_period: 0,
+                    prepared_pillar_block_rlp: Vec::new(),
+                },
+            ),
+            ("payload_on_primary_stage", ffi_primary_finalization_stage()),
+        ] {
+            if case == "payload_on_primary_stage" {
+                injected_stage.sortition_params_change_period = 10;
+            }
+            let (_temp_dir, runtime) = runtime_for_finalization_test(&format!(
+                "rustaxa_bridge_pbft_manager_caller_sortition_{case}"
+            ));
+            let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+            let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
+            let snapshot_before = sortition_snapshot(&dag_service);
+
+            let error = match pbft_manager_runtime_start_finalization_executor(
+                &runtime,
+                &dag_service,
+                FfiPbftFinalizationExecutorStartRequest {
+                    mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                    plan,
+                    primary_stages: vec![injected_stage],
+                    sync: false,
+                    final_chain_last_block: 9,
+                },
+            ) {
+                Ok(_) => panic!("caller-owned sortition stage must reject before persistence"),
+                Err(error) => error,
+            };
+
+            assert_eq!(
+                error.to_string(),
+                "PBFT_FINALIZE_SORTITION_STAGE_CALLER_OWNED"
+            );
+            assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
+            let restored_service = dag_service_from_runtime_with_interval(&runtime, 1);
+            assert_eq!(sortition_snapshot(&restored_service), snapshot_before);
+            assert!(runtime
+                .manager_state()
+                .finalization_sortition_preparation
+                .is_none());
+            assert_finalization_session_cleared(&runtime);
+        }
+    }
+
+    #[test]
+    fn manager_runtime_detects_sortition_preview_commit_drift_without_second_publication() {
+        let (_temp_dir, runtime) =
+            runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_drift");
+        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
+        let step = pbft_manager_runtime_start_finalization_executor(
+            &runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![ffi_primary_finalization_stage()],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        )
+        .expect("fresh start should retain the changed preview");
+        let preview = dag_service
+            .preview_finalized_period(10, true, 0, 0, 6)
+            .expect("drift setup preview should succeed");
+        dag_service
+            .commit_finalized_period_with_live_snapshot(
+                10,
+                true,
+                0,
+                0,
+                6,
+                preview.changed,
+                rustaxa_ffi::SortitionParamsChangePayload {
+                    period: preview.period,
+                    interval_efficiency: preview.interval_efficiency,
+                    threshold_upper: preview.threshold_upper,
+                },
+            )
+            .expect("drift setup should publish the retained preview first");
+        let snapshot_after_drift = sortition_snapshot(&dag_service);
+
+        let error = match pbft_manager_runtime_advance_finalization_sortition_commit(
+            &runtime,
+            &dag_service,
+            step.cursor,
+        ) {
+            Ok(_) => panic!("changed live sortition state must trip the fatal invariant"),
+            Err(error) => error,
+        };
+
+        assert!(error
+            .to_string()
+            .starts_with("PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT"));
+        assert_eq!(sortition_snapshot(&dag_service), snapshot_after_drift);
+        assert!(runtime
+            .manager_state()
+            .finalization_sortition_preparation
+            .is_none());
     }
 
     #[test]
@@ -5225,24 +5674,37 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_stale_cursor");
         let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
-        pbft_manager_runtime_begin_finalization_session(&mut runtime.manager_state(), &plan);
-        advance_finalization_cursor_to_action(
-            &mut runtime,
-            PbftFinalizationRuntimeAction::CommitSortitionRuntime,
-        );
-
-        let step = pbft_manager_runtime_finalization_session_next(&mut runtime.manager_state());
         let dag_service = dag_service_from_runtime_with_interval(&runtime, 1);
+        let step = pbft_manager_runtime_start_finalization_executor(
+            &mut runtime,
+            &dag_service,
+            FfiPbftFinalizationExecutorStartRequest {
+                mode: FINALIZATION_EXECUTOR_MODE_FRESH,
+                plan,
+                primary_stages: vec![rustaxa_ffi::PbftFinalizationStorageWriteStage {
+                    stage: 0,
+                    rounds_count_dynamic_lambda: 0,
+                    dynamic_lambda: 0,
+                    has_sortition_params_change: false,
+                    sortition_params_change_period: 0,
+                    sortition_params_change_interval_efficiency: 0,
+                    sortition_params_change_threshold_upper: 0,
+                    has_reward_votes_reset: false,
+                    reward_votes_bundle_rlp: Vec::new(),
+                    has_prepared_pillar_block: false,
+                    prepared_pillar_block_period: 0,
+                    prepared_pillar_block_rlp: Vec::new(),
+                }],
+                sync: false,
+                final_chain_last_block: 9,
+            },
+        )
+        .expect("fresh finalization should retain sortition preparation");
         let snapshot_before = sortition_snapshot(&dag_service);
         let state = pbft_manager_runtime_advance_finalization_sortition_commit(
             &mut runtime,
             &dag_service,
             step.cursor + 1,
-            FfiPbftManagerFinalizationSortitionCommitRequest {
-                unique_transactions: 0,
-                total_dag_transaction_refs: 0,
-                non_empty_pbft_chain_size: 1,
-            },
         )
         .expect("stale sortition cursor should return a failed executor state");
 
@@ -5252,6 +5714,10 @@ mod tests {
         );
         assert_eq!(state.error_code, "PBFT_FINALIZE_RUNTIME_CURSOR_MISMATCH");
         assert_eq!(sortition_snapshot(&dag_service), snapshot_before);
+        assert!(runtime
+            .manager_state()
+            .finalization_sortition_preparation
+            .is_none());
     }
 
     #[test]
@@ -5872,7 +6338,8 @@ mod tests {
     fn manager_runtime_start_resume_executor_classifies_complete_duplicate() {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_start_resume_complete");
-        let plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        let mut plan = pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
+        plan.storage_write_intent.period_data_rlp = vec![0xc0];
         let write_set = PbftFinalizationStorageWriteIntent::from(&plan.storage_write_intent);
         let mut dynamic = empty_finalization_stage(FINALIZATION_STAGE_DYNAMIC_LAMBDA);
         dynamic.rounds_count_dynamic_lambda = plan.storage_write_intent.rounds_count_dynamic_lambda;
@@ -5888,9 +6355,10 @@ mod tests {
             false,
         )
         .expect("complete duplicate storage state should seed");
-
+        let dag_service = dag_service_from_runtime(&runtime);
         let state = pbft_manager_runtime_start_finalization_executor(
             &mut runtime,
+            &dag_service,
             FfiPbftFinalizationExecutorStartRequest {
                 mode: FINALIZATION_EXECUTOR_MODE_RESUME,
                 plan,
@@ -5916,6 +6384,7 @@ mod tests {
         let (_temp_dir, mut runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_executor_reset_generation");
 
+        let dag_service = dag_service_from_runtime(&runtime);
         let start_fresh = |runtime: &BridgePbftService| {
             let plan = pbft_manager_runtime_plan_finalization_intent(runtime, finalization_fact());
             let ffi_stage = |stage, reward_votes_bundle_rlp: Vec<u8>| {
@@ -5936,6 +6405,7 @@ mod tests {
             };
             pbft_manager_runtime_start_finalization_executor(
                 runtime,
+                &dag_service,
                 FfiPbftFinalizationExecutorStartRequest {
                     mode: FINALIZATION_EXECUTOR_MODE_FRESH,
                     plan,
@@ -5957,16 +6427,10 @@ mod tests {
             first.action,
             PbftFinalizationRuntimeAction::CommitSortitionRuntime.as_u8()
         );
-        let dag_service = dag_service_from_runtime(&runtime);
         let reward_boundary = pbft_manager_runtime_advance_finalization_sortition_commit(
             &mut runtime,
             &dag_service,
             first.cursor,
-            FfiPbftManagerFinalizationSortitionCommitRequest {
-                unique_transactions: 0,
-                total_dag_transaction_refs: 0,
-                non_empty_pbft_chain_size: 0,
-            },
         )
         .unwrap();
         assert_eq!(
@@ -5989,6 +6453,7 @@ mod tests {
             pbft_manager_runtime_plan_finalization_intent(&runtime, finalization_fact());
         let resumed = pbft_manager_runtime_start_finalization_executor(
             &mut runtime,
+            &dag_service,
             FfiPbftFinalizationExecutorStartRequest {
                 mode: FINALIZATION_EXECUTOR_MODE_RESUME,
                 plan: resume_plan,

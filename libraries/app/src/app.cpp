@@ -186,8 +186,7 @@ void App::init(const cli::Config &cli_conf) {
   dag_mgr_ = std::make_shared<DagManager>(conf_, node_addr, trx_mgr_, pbft_chain_, final_chain_, db_, key_manager_);
 #endif
 #ifdef RUSTAXA_ENABLE_SLASHING_MANAGER
-  auto slashing_manager =
-      std::make_shared<SlashingManager>(conf_, pbft_service_, final_chain_, trx_mgr_, gas_pricer_);
+  auto slashing_manager = std::make_shared<SlashingManager>(conf_, pbft_service_, final_chain_, trx_mgr_, gas_pricer_);
 #else
   auto slashing_manager = std::make_shared<SlashingManager>(conf_, final_chain_, trx_mgr_, gas_pricer_);
 #endif
@@ -205,8 +204,8 @@ void App::init(const cli::Config &cli_conf) {
                                                                          final_chain_, key_manager_, node_addr);
 #endif
 #ifdef RUSTAXA_ENABLE
-  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_service_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_,
-                                            final_chain_, pillar_chain_mgr_);
+  pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_service_, dag_transaction_service_, pbft_chain_, vote_mgr_,
+                                            dag_mgr_, trx_mgr_, final_chain_, pillar_chain_mgr_);
 #else
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_, final_chain_,
                                             pillar_chain_mgr_);

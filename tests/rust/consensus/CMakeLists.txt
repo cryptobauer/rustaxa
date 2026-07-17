@@ -8,7 +8,6 @@ add_executable(rust_consensus_tests
     test_pillar_vote_bundle.cpp
     test_proposed_blocks.cpp
     test_rewards_stats.cpp
-    test_sortition.cpp
 )
 
 target_link_libraries(rust_consensus_tests

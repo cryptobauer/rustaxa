@@ -202,14 +202,22 @@ pub fn calculate_dag_efficiency(
     Ok(((unique_transactions * HUNDRED_PERCENT as usize) / total_dag_transaction_refs) as u16)
 }
 
+/// Canonical finalized-period facts consumed by sortition updates.
+///
+/// The values are decoded directly from period-data RLP: `has_pivot` reflects
+/// the PBFT block's pivot hash, `unique_transactions` is the canonical period
+/// transaction-list length, and `total_dag_transaction_refs` is the sum of all
+/// finalized DAG transaction-index list lengths. Malformed or overflowing RLP
+/// is rejected before any runtime mutation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct PeriodEfficiencyCounts {
-    has_pivot: bool,
-    unique_transactions: u64,
-    total_dag_transaction_refs: u64,
+pub struct PeriodEfficiencyCounts {
+    pub has_pivot: bool,
+    pub unique_transactions: u64,
+    pub total_dag_transaction_refs: u64,
 }
 
-fn decode_period_efficiency_counts(period_data_rlp: &[u8]) -> Result<PeriodEfficiencyCounts> {
+/// Decodes the narrow sortition fact view from canonical period-data RLP.
+pub fn decode_period_efficiency_counts(period_data_rlp: &[u8]) -> Result<PeriodEfficiencyCounts> {
     let period = Rlp::new(period_data_rlp);
     let pbft_block = period
         .at(PBFT_BLOCK_POS_IN_PERIOD_DATA)

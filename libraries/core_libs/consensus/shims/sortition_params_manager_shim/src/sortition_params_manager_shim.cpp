@@ -42,10 +42,6 @@ SortitionParamsChange from_rust_change(const rustaxa::SortitionParamsChangePaylo
   return SortitionParamsChange{change.period, change.interval_efficiency, VrfParams{change.threshold_upper}};
 }
 
-SortitionParamsChange from_rust_change(const rustaxa::SortitionParamsChangeResult& change) {
-  return SortitionParamsChange{change.period, change.interval_efficiency, VrfParams{change.threshold_upper}};
-}
-
 SortitionParams from_rust_params(const rustaxa::SortitionRuntimeParams& params) {
   return SortitionParams{
       VrfParams{params.threshold_upper},
@@ -113,10 +109,6 @@ SortitionParams SortitionParamsManager::getSortitionParams(std::optional<PbftPer
   return from_rust_params(dag_transaction_service_->service().sortition_params_for_period_from_storage(*for_period));
 }
 
-rustaxa::SortitionRuntimeParams SortitionParamsManager::rustSortitionParamsForRust(PbftPeriod for_period) const {
-  return dag_transaction_service_->service().sortition_params_for_period_from_storage(for_period);
-}
-
 uint16_t SortitionParamsManager::calculateDagEfficiency(const PeriodData& block) const {
   const auto counts = period_efficiency_counts(block);
   const auto result = dag_transaction_service_->service().sortition_calculate_dag_efficiency(
@@ -137,19 +129,6 @@ void SortitionParamsManager::pbftBlockPushed(const PeriodData& block, Batch& bat
       non_empty_pbft_chain_size);
   params_changes_ = from_rust_changes(dag_transaction_service_->service().sortition_params_changes());
   apply_rust_params(sortition_config_, dag_transaction_service_->service().sortition_current_params());
-}
-
-std::optional<SortitionParamsChange> SortitionParamsManager::prepareBlockForSortitionFinalization(
-    const PeriodData& block, PbftPeriod non_empty_pbft_chain_size) {
-  const auto counts = period_efficiency_counts(block);
-  const auto period = block.pbft_blk->getPeriod();
-  auto outcome = dag_transaction_service_->service().sortition_preview_finalized_period(
-      period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
-      non_empty_pbft_chain_size);
-  if (outcome.changed) {
-    return from_rust_change(outcome);
-  }
-  return std::nullopt;
 }
 
 uint16_t SortitionParamsManager::averageDagEfficiency() {
