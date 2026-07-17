@@ -1998,10 +1998,10 @@ impl FinalChain {
 
         let NativeExecution {
             accounts: mut account_snapshot,
-            mut receipts,
+            receipts,
             gas_used,
             transaction_fees,
-            contract_transactions,
+            mut dpos_snapshot,
         } = self.execute_native_transactions(pbft.period, &transactions)?;
         let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(pbft.period);
         let rewards_stats_plan = self.native_rewards_stats_plan(
@@ -2017,12 +2017,6 @@ impl FinalChain {
         } else {
             rewards_stats_plan.fee_rewards_by_validator.clone()
         };
-        let mut dpos_snapshot = self.plan_dpos_snapshot(
-            pbft.period,
-            contract_transactions,
-            &mut account_snapshot,
-            &mut receipts,
-        )?;
         let minted_reward_plan = self.plan_minted_rewards(
             pbft.period,
             &rewards_stats_plan.distribution_stats,
@@ -2733,11 +2727,24 @@ impl FinalChain {
         let mut accounts = self.current_account_snapshot()?;
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
-        let mut contract_transactions = Vec::new();
         let mut cumulative_gas_used = 0u64;
-        let mut dpos_gas_snapshot = self.dpos_snapshot(self.last_block_number()?)?;
+        let head_block_number = self.last_block_number()?;
+        let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head_block_number)?;
+        let mut dpos_gas_snapshot = self.dpos_snapshot(head_block_number)?;
+        let delayed_snapshot_block = block_number.saturating_sub(self.dpos_delegation_delay);
+        let slashing_validator_snapshot = {
+            let snapshots = self
+                .dpos_snapshots
+                .lock()
+                .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
+            if delayed_snapshot_block == block_number {
+                None
+            } else {
+                snapshots.get(&delayed_snapshot_block).cloned()
+            }
+        };
 
-        for (position, transaction) in transactions.iter().enumerate() {
+        for transaction in transactions.iter() {
             let mut contract_transaction = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
                 Some(NativeContractTransaction::Dpos(decode_dpos_transaction(
                     &transaction.data,
@@ -2842,6 +2849,7 @@ impl FinalChain {
 
             let mut status_code;
             let mut advance_nonce = false;
+            let mut contract_outcome = None;
             let gas_used;
             let gas_cost;
             {
@@ -2874,7 +2882,16 @@ impl FinalChain {
                     .checked_mul(U256::from(gas_used))
                     .ok_or_else(|| anyhow::anyhow!("transaction gas cost overflow"))?;
                 if status_code == 1 || advance_nonce {
-                    let charged_value = if status_code == 0 || contract_nonpayable_value_failure {
+                    let deferred_dpos_value = matches!(
+                        contract_transaction.as_ref(),
+                        Some(NativeContractTransaction::Dpos(
+                            DposTransaction::Register(_) | DposTransaction::Delegate { .. }
+                        ))
+                    );
+                    let charged_value = if status_code == 0
+                        || contract_nonpayable_value_failure
+                        || deferred_dpos_value
+                    {
                         U256::zero()
                     } else {
                         value
@@ -2904,31 +2921,203 @@ impl FinalChain {
                 if contract_nonpayable_value_failure {
                     status_code = 0;
                 } else if let Some(contract_tx) = contract_transaction {
-                    if let NativeContractTransaction::Dpos(dpos_tx) = &contract_tx {
-                        if matches!(
-                            dpos_tx,
+                    let contract_tx_for_gas = contract_tx.clone();
+                    let payable_dpos_call = matches!(
+                        &contract_tx,
+                        NativeContractTransaction::Dpos(
                             DposTransaction::Register(_) | DposTransaction::Delegate { .. }
-                        ) && !value.is_zero()
-                        {
-                            let dpos_account = accounts
-                                .entry(DPOS_CONTRACT_ADDRESS)
-                                .or_insert_with(empty_account);
-                            let current_contract_balance =
-                                u256_from_big_endian(&dpos_account.balance);
-                            dpos_account.balance = u256_to_big_endian(
-                                current_contract_balance.checked_add(value).ok_or_else(|| {
-                                    anyhow::anyhow!("DPoS contract balance overflow")
-                                })?,
+                        )
+                    );
+                    let slashing_call =
+                        matches!(&contract_tx, NativeContractTransaction::Slashing(_));
+                    if payable_dpos_call && !value.is_zero() {
+                        let sender_balance = accounts
+                            .get(&transaction.sender)
+                            .map(|sender| u256_from_big_endian(&sender.balance))
+                            .unwrap_or_default();
+                        if sender_balance < value {
+                            anyhow::bail!(
+                                "Rust FinalChain::finalize cannot apply underfunded native transfer"
                             );
                         }
-                        update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, dpos_tx)?;
                     }
-                    if matches!(contract_tx, NativeContractTransaction::Slashing(_)) {
-                        accounts
-                            .entry(SLASHING_CONTRACT_ADDRESS)
-                            .or_insert_with(empty_account);
+
+                    contract_outcome = Some(match contract_tx {
+                        NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
+                            DposTransaction::Register(registration) => {
+                                DposApplyOutcome::success(self.apply_dpos_registration(
+                                    &mut dpos_snapshot,
+                                    registration,
+                                    block_number,
+                                )?)
+                            }
+                            DposTransaction::Delegate {
+                                delegator,
+                                validator,
+                                amount,
+                            } => self.apply_dpos_delegate(
+                                &mut dpos_snapshot,
+                                &mut accounts,
+                                delegator,
+                                validator,
+                                amount,
+                            )?,
+                            DposTransaction::Undelegate {
+                                delegator,
+                                validator,
+                                amount,
+                            } => DposApplyOutcome::success(self.apply_dpos_undelegate(
+                                &mut dpos_snapshot,
+                                &mut accounts,
+                                delegator,
+                                validator,
+                                amount,
+                            )?),
+                            DposTransaction::UndelegateV2 {
+                                delegator,
+                                validator,
+                                amount,
+                            } => self.apply_dpos_undelegate_v2(
+                                &mut dpos_snapshot,
+                                &mut accounts,
+                                delegator,
+                                validator,
+                                amount,
+                                block_number,
+                            )?,
+                            DposTransaction::ConfirmUndelegateV2 {
+                                delegator,
+                                validator,
+                                id,
+                            } => self.apply_dpos_confirm_undelegate_v2(
+                                &mut dpos_snapshot,
+                                &mut accounts,
+                                delegator,
+                                validator,
+                                id,
+                                block_number,
+                            )?,
+                            DposTransaction::CancelUndelegateV2 {
+                                delegator,
+                                validator,
+                                id,
+                            } => self.apply_dpos_cancel_undelegate_v2(
+                                &mut dpos_snapshot,
+                                &mut accounts,
+                                delegator,
+                                validator,
+                                id,
+                            )?,
+                            DposTransaction::Redelegate {
+                                delegator,
+                                from,
+                                to,
+                                amount,
+                            } => self.apply_dpos_redelegate(
+                                &mut dpos_snapshot,
+                                &mut accounts,
+                                delegator,
+                                from,
+                                to,
+                                amount,
+                            )?,
+                            DposTransaction::ClaimRewards {
+                                delegator,
+                                validator,
+                            } => {
+                                DposApplyOutcome::success(self.apply_dpos_delegator_reward_claim(
+                                    &mut dpos_snapshot,
+                                    &mut accounts,
+                                    validator,
+                                    delegator,
+                                )?)
+                            }
+                            DposTransaction::ClaimCommissionRewards { owner, validator } => self
+                                .apply_dpos_commission_reward_claim(
+                                    &mut dpos_snapshot,
+                                    &mut accounts,
+                                    owner,
+                                    validator,
+                                )?,
+                            DposTransaction::SetValidatorInfo {
+                                owner,
+                                validator,
+                                description,
+                                endpoint,
+                            } => self.apply_dpos_validator_info_update(
+                                &mut dpos_snapshot,
+                                owner,
+                                validator,
+                                description,
+                                endpoint,
+                            )?,
+                            DposTransaction::SetCommission {
+                                owner,
+                                validator,
+                                commission,
+                            } => self.apply_dpos_commission_update(
+                                &mut dpos_snapshot,
+                                owner,
+                                validator,
+                                commission,
+                                block_number,
+                            )?,
+                            DposTransaction::ClaimAllRewards { delegator, batch } => {
+                                DposApplyOutcome::success(self.apply_dpos_claim_all_rewards(
+                                    &mut dpos_snapshot,
+                                    &mut accounts,
+                                    delegator,
+                                    batch,
+                                )?)
+                            }
+                            DposTransaction::MethodNotSupported => {
+                                DposApplyOutcome::contract_failure()
+                            }
+                        },
+                        NativeContractTransaction::Slashing(slashing_tx) => self
+                            .apply_slashing_transaction(
+                                &mut dpos_snapshot,
+                                slashing_validator_snapshot.as_ref(),
+                                block_number,
+                                slashing_tx,
+                            )?,
+                    });
+                    if let Some(outcome) = contract_outcome.as_mut() {
+                        if outcome.status_code == 1 {
+                            if let NativeContractTransaction::Dpos(dpos_tx) = &contract_tx_for_gas {
+                                update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, dpos_tx)?;
+                            }
+                            if payable_dpos_call && !value.is_zero() {
+                                let sender = accounts
+                                    .entry(transaction.sender)
+                                    .or_insert_with(empty_account);
+                                let sender_balance = u256_from_big_endian(&sender.balance);
+                                sender.balance = u256_to_big_endian(
+                                    sender_balance.checked_sub(value).ok_or_else(|| {
+                                        anyhow::anyhow!(
+                                            "Rust FinalChain::finalize DPoS contract payment underflow"
+                                        )
+                                    })?,
+                                );
+                                let dpos_account = accounts
+                                    .entry(DPOS_CONTRACT_ADDRESS)
+                                    .or_insert_with(empty_account);
+                                let current_contract_balance =
+                                    u256_from_big_endian(&dpos_account.balance);
+                                dpos_account.balance = u256_to_big_endian(
+                                    current_contract_balance.checked_add(value).ok_or_else(
+                                        || anyhow::anyhow!("DPoS contract balance overflow"),
+                                    )?,
+                                );
+                            }
+                            if slashing_call {
+                                accounts
+                                    .entry(SLASHING_CONTRACT_ADDRESS)
+                                    .or_insert_with(empty_account);
+                            }
+                        }
+                        status_code = outcome.status_code;
                     }
-                    contract_transactions.push((position, contract_tx));
                 } else {
                     let receiver_address = transaction.receiver.ok_or_else(|| {
                         anyhow::anyhow!("native value transfer missing receiver after validation")
@@ -2951,22 +3140,33 @@ impl FinalChain {
                     );
                 }
             }
-            receipts.push(NativeReceipt {
-                status_code,
-                gas_used,
-                cumulative_gas_used,
-                logs: Vec::new(),
-                new_contract_address: None,
-            });
+            if let Some(contract_outcome) = contract_outcome {
+                receipts.push(NativeReceipt {
+                    status_code: contract_outcome.status_code,
+                    gas_used,
+                    cumulative_gas_used,
+                    logs: contract_outcome.logs,
+                    new_contract_address: None,
+                });
+            } else {
+                receipts.push(NativeReceipt {
+                    status_code,
+                    gas_used,
+                    cumulative_gas_used,
+                    logs: Vec::new(),
+                    new_contract_address: None,
+                });
+            }
             transaction_fees.push((transaction.hash, gas_cost));
         }
+        cleanup_slashing_jailed_validators(&mut dpos_snapshot, block_number);
 
         Ok(NativeExecution {
             accounts,
             receipts,
             gas_used: cumulative_gas_used,
             transaction_fees,
-            contract_transactions,
+            dpos_snapshot,
         })
     }
 
@@ -4007,179 +4207,6 @@ impl FinalChain {
         )?]))
     }
 
-    /// Plans the DPoS snapshot for a newly finalized block.
-    ///
-    /// The new snapshot clones the previous block state and applies finalized
-    /// DPoS transactions. Reward deltas are applied separately after native
-    /// reward planning has completed so overflow can abort before persistence.
-    fn plan_dpos_snapshot(
-        &self,
-        block_number: u64,
-        contract_transactions: Vec<(usize, NativeContractTransaction)>,
-        accounts: &mut HashMap<[u8; 20], Account>,
-        receipts: &mut [NativeReceipt],
-    ) -> Result<DposSnapshot, anyhow::Error> {
-        let snapshots = self
-            .dpos_snapshots
-            .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
-        let previous_block = block_number.checked_sub(1).ok_or_else(|| {
-            anyhow::anyhow!("cannot append non-genesis DPoS snapshot for block 0")
-        })?;
-        let mut snapshot = snapshots.get(&previous_block).cloned().ok_or_else(|| {
-            anyhow::anyhow!("missing previous DPoS snapshot for block {previous_block}")
-        })?;
-        let delayed_snapshot_block = block_number.saturating_sub(self.dpos_delegation_delay);
-        let slashing_validator_snapshot = if delayed_snapshot_block == block_number {
-            None
-        } else {
-            snapshots.get(&delayed_snapshot_block).cloned()
-        };
-        for (position, contract_tx) in contract_transactions {
-            let outcome = match contract_tx {
-                NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
-                    DposTransaction::Register(registration) => DposApplyOutcome::success(
-                        self.apply_dpos_registration(&mut snapshot, registration, block_number)?,
-                    ),
-                    DposTransaction::Delegate {
-                        delegator,
-                        validator,
-                        amount,
-                    } => DposApplyOutcome::success(self.apply_dpos_delegate(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        validator,
-                        amount,
-                    )?),
-                    DposTransaction::Undelegate {
-                        delegator,
-                        validator,
-                        amount,
-                    } => DposApplyOutcome::success(self.apply_dpos_undelegate(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        validator,
-                        amount,
-                    )?),
-                    DposTransaction::UndelegateV2 {
-                        delegator,
-                        validator,
-                        amount,
-                    } => self.apply_dpos_undelegate_v2(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        validator,
-                        amount,
-                        block_number,
-                    )?,
-                    DposTransaction::ConfirmUndelegateV2 {
-                        delegator,
-                        validator,
-                        id,
-                    } => self.apply_dpos_confirm_undelegate_v2(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        validator,
-                        id,
-                        block_number,
-                    )?,
-                    DposTransaction::CancelUndelegateV2 {
-                        delegator,
-                        validator,
-                        id,
-                    } => self.apply_dpos_cancel_undelegate_v2(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        validator,
-                        id,
-                    )?,
-                    DposTransaction::Redelegate {
-                        delegator,
-                        from,
-                        to,
-                        amount,
-                    } => DposApplyOutcome::success(self.apply_dpos_redelegate(
-                        &mut snapshot,
-                        accounts,
-                        delegator,
-                        from,
-                        to,
-                        amount,
-                    )?),
-                    DposTransaction::ClaimRewards {
-                        delegator,
-                        validator,
-                    } => DposApplyOutcome::success(self.apply_dpos_delegator_reward_claim(
-                        &mut snapshot,
-                        accounts,
-                        validator,
-                        delegator,
-                    )?),
-                    DposTransaction::ClaimCommissionRewards { owner, validator } => self
-                        .apply_dpos_commission_reward_claim(
-                            &mut snapshot,
-                            accounts,
-                            owner,
-                            validator,
-                        )?,
-                    DposTransaction::SetValidatorInfo {
-                        owner,
-                        validator,
-                        description,
-                        endpoint,
-                    } => self.apply_dpos_validator_info_update(
-                        &mut snapshot,
-                        owner,
-                        validator,
-                        description,
-                        endpoint,
-                    )?,
-                    DposTransaction::SetCommission {
-                        owner,
-                        validator,
-                        commission,
-                    } => self.apply_dpos_commission_update(
-                        &mut snapshot,
-                        owner,
-                        validator,
-                        commission,
-                        block_number,
-                    )?,
-                    DposTransaction::ClaimAllRewards { delegator, batch } => {
-                        DposApplyOutcome::success(self.apply_dpos_claim_all_rewards(
-                            &mut snapshot,
-                            accounts,
-                            delegator,
-                            batch,
-                        )?)
-                    }
-                    DposTransaction::MethodNotSupported => DposApplyOutcome::contract_failure(),
-                },
-                NativeContractTransaction::Slashing(slashing_tx) => self
-                    .apply_slashing_transaction(
-                        &mut snapshot,
-                        slashing_validator_snapshot.as_ref(),
-                        block_number,
-                        slashing_tx,
-                    )?,
-            };
-            let receipt = receipts.get_mut(position).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "native contract receipt position {position} is outside finalized transaction list"
-                )
-            })?;
-            receipt.status_code = outcome.status_code;
-            receipt.logs = outcome.logs;
-        }
-        cleanup_slashing_jailed_validators(&mut snapshot, block_number);
-        Ok(snapshot)
-    }
-
     fn apply_slashing_transaction(
         &self,
         snapshot: &mut DposSnapshot,
@@ -4329,26 +4356,29 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
-    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
-            anyhow::bail!("Rust FinalChain::finalize DPoS validator does not exist for delegate")
+            return Ok(DposApplyOutcome::contract_failure());
         };
         let current_stake = u256_from_big_endian(stake);
         let add_amount = u256_from_big_endian(&amount);
-        if add_amount < u256_from_big_endian(&self.dpos_minimum_deposit) {
-            anyhow::bail!("Rust FinalChain::finalize DPoS delegation is below minimum deposit");
+        let current_delegation = snapshot
+            .delegations
+            .get(&validator)
+            .and_then(|delegations| delegations.get(&delegator))
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        if current_delegation.is_zero()
+            && add_amount < u256_from_big_endian(&self.dpos_minimum_deposit)
+        {
+            return Ok(DposApplyOutcome::contract_failure());
         }
         let new_stake = current_stake
             .checked_add(add_amount)
             .ok_or_else(|| anyhow::anyhow!("DPoS delegate stake addition overflow"))?;
         if new_stake > u256_from_big_endian(&self.dpos_validator_maximum_stake) {
-            anyhow::bail!("Rust FinalChain::finalize DPoS validator stake exceeds maximum");
+            return Ok(DposApplyOutcome::contract_failure());
         }
-        let delegations = snapshot.delegations.entry(validator).or_default();
-        let current_delegation = delegations
-            .get(&delegator)
-            .map(|bytes| u256_from_big_endian(bytes))
-            .unwrap_or_default();
         let mut logs = if current_delegation.is_zero() {
             Vec::new()
         } else {
@@ -4378,7 +4408,7 @@ impl FinalChain {
         );
         self.set_validator_stake(snapshot, validator, new_stake)?;
         logs.push(dpos_delegated_log(delegator, validator, add_amount)?);
-        Ok(logs)
+        Ok(DposApplyOutcome::success(logs))
     }
 
     fn set_validator_stake(
@@ -4673,7 +4703,7 @@ impl FinalChain {
         from: [u8; 20],
         to: [u8; 20],
         amount: Vec<u8>,
-    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
         let amount = u256_from_big_endian(&amount);
         let from_stake = snapshot
             .total_stakes
@@ -4687,14 +4717,56 @@ impl FinalChain {
         if from_stake < amount {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on redelegate")
         }
+        let Some(to_stake) = snapshot.total_stakes.get(&to) else {
+            return Ok(DposApplyOutcome::contract_failure());
+        };
+        let to_stake_after_removal = if from == to {
+            u256_from_big_endian(to_stake)
+                .checked_sub(amount)
+                .ok_or_else(|| anyhow::anyhow!("DPoS redelegate stake subtraction underflow"))?
+        } else {
+            u256_from_big_endian(to_stake)
+        };
+        let to_delegation = snapshot
+            .delegations
+            .get(&to)
+            .and_then(|delegations| delegations.get(&delegator))
+            .map(|bytes| u256_from_big_endian(bytes))
+            .unwrap_or_default();
+        let to_delegation_after_removal = if from == to {
+            to_delegation.checked_sub(amount).ok_or_else(|| {
+                anyhow::anyhow!("DPoS redelegate delegation subtraction underflow")
+            })?
+        } else {
+            to_delegation
+        };
+        if to_delegation_after_removal.is_zero()
+            && amount < u256_from_big_endian(&self.dpos_minimum_deposit)
+        {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if to_stake_after_removal
+            .checked_add(amount)
+            .ok_or_else(|| anyhow::anyhow!("DPoS redelegate stake addition overflow"))?
+            > u256_from_big_endian(&self.dpos_validator_maximum_stake)
+        {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
         let amount = u256_to_big_endian(amount);
         let mut logs = self
             .apply_dpos_undelegate(snapshot, accounts, delegator, from, amount.clone())?
             .into_iter()
             .filter(is_dpos_rewards_claimed_log)
             .collect::<Vec<_>>();
+        let delegate_outcome =
+            self.apply_dpos_delegate(snapshot, accounts, delegator, to, amount.clone())?;
+        anyhow::ensure!(
+            delegate_outcome.status_code == 1,
+            "prevalidated DPoS redelegation destination failed after source mutation"
+        );
         logs.extend(
-            self.apply_dpos_delegate(snapshot, accounts, delegator, to, amount.clone())?
+            delegate_outcome
+                .logs
                 .into_iter()
                 .filter(is_dpos_rewards_claimed_log),
         );
@@ -4704,7 +4776,7 @@ impl FinalChain {
             to,
             u256_from_big_endian(&amount),
         )?);
-        Ok(logs)
+        Ok(DposApplyOutcome::success(logs))
     }
 
     fn insert_dpos_snapshot(
@@ -7411,7 +7483,7 @@ struct NativeExecution {
     receipts: Vec<NativeReceipt>,
     gas_used: u64,
     transaction_fees: Vec<([u8; 32], U256)>,
-    contract_transactions: Vec<(usize, NativeContractTransaction)>,
+    dpos_snapshot: DposSnapshot,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -7452,6 +7524,7 @@ impl DposApplyOutcome {
     }
 }
 
+#[derive(Clone)]
 enum DposTransaction {
     Register(DposRegistration),
     Delegate {
@@ -7511,11 +7584,13 @@ enum DposTransaction {
     MethodNotSupported,
 }
 
+#[derive(Clone)]
 enum NativeContractTransaction {
     Dpos(DposTransaction),
     Slashing(SlashingTransaction),
 }
 
+#[derive(Clone)]
 enum SlashingTransaction {
     CommitDoubleVotingProof(Box<std::result::Result<VerifiedLegacyDoubleVotingProof, String>>),
     MethodNotSupported,
@@ -7525,6 +7600,7 @@ enum SlashingTransaction {
 ///
 /// This carries only the deterministic state mutation needed by FinalChain:
 /// validator identity, owner metadata, VRF key, and initial self-delegated stake.
+#[derive(Clone)]
 struct DposRegistration {
     validator: [u8; 20],
     stake: Vec<u8>,
@@ -9875,6 +9951,173 @@ mod tests {
     }
 
     #[test]
+    fn finalize_block_credits_pre_magnolia_fee_to_pbft_beneficiary_for_successful_contract_tx() {
+        let path = temp_db_path("finalize-pre-magnolia-contract-success-fee");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let validator = [0x40; 20];
+        let sender = [0x41; 20];
+        let signing_key = SigningKey::from_slice(&[12u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 90);
+        let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let gas_price = U256::from(2u64);
+        let transaction_rlp = vec![0xc1, 0x82];
+        let transaction = test_transaction(
+            0xF8,
+            sender,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            gas_price,
+            100_000,
+            set_validator_info_input(validator, "pre magnolia", "contract fee success"),
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                sender,
+                0,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 10,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: u64::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction.clone()], vec![])
+            .unwrap();
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+        let tx_fee = U256::from(tx_gas) * gas_price;
+
+        assert_eq!(receipt_fields(&receipts[0]), (1, tx_gas, tx_gas));
+        assert_eq!(balance_of(&final_chain, beneficiary), tx_fee);
+        assert_eq!(
+            u256_from_big_endian(&final_chain.account(sender).unwrap().unwrap().balance),
+            U256::from(1_000_000u64) - tx_fee
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::from(10_000u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_credits_pre_magnolia_fee_to_pbft_beneficiary_for_failed_contract_tx() {
+        let path = temp_db_path("finalize-pre-magnolia-contract-failure-fee");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let validator = [0x43; 20];
+        let owner = [0x44; 20];
+        let sender = [0x45; 20];
+        let signing_key = SigningKey::from_slice(&[13u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 91);
+        let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let gas_price = U256::from(3u64);
+        let transaction_rlp = vec![0xc1, 0x83];
+        let transaction = test_transaction(
+            0xF9,
+            sender,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            gas_price,
+            100_000,
+            set_validator_info_input(validator, "pre magnolia", "contract fee failure"),
+            transaction_rlp.clone(),
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction_rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                0,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 10,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: u64::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction.clone()], vec![])
+            .unwrap();
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+        let tx_fee = U256::from(tx_gas) * gas_price;
+
+        assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
+        assert_eq!(balance_of(&final_chain, beneficiary), tx_fee);
+        assert_eq!(
+            u256_from_big_endian(&final_chain.account(sender).unwrap().unwrap().balance),
+            U256::from(1_000_000u64) - tx_fee
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::from(10_000u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_records_dpos_fee_rewards_by_dag_author() {
         let path = temp_db_path("finalize-dpos-fee-rewards");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -11720,6 +11963,185 @@ mod tests {
     }
 
     #[test]
+    fn dpos_snapshot_with_delegation_delay_persists_through_restart() {
+        let path = temp_db_path("dpos-delegation-delay-restart");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period_one = 1u64;
+        let period_two = 2u64;
+        let period_three = 3u64;
+        let owner = [0x01; 20];
+        let validator = [0x02; 20];
+        let signing_key = SigningKey::from_slice(&[0x77; 32]).unwrap();
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 2,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+
+        let block_one = signed_pbft_block(&signing_key, period_one, 101);
+        let block_two = signed_pbft_block(&signing_key, period_two, 102);
+        let block_three = signed_pbft_block(&signing_key, period_three, 103);
+
+        let register_input = register_validator_input(
+            validator,
+            &[0xCC; 65],
+            [0xA5; 32],
+            10,
+            "delegation delay validator",
+            "delegation delay endpoint",
+        );
+        let register_tx = test_transaction(
+            0xE1,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_input,
+            vec![0xc1, 0xe1],
+        );
+        let delegate_tx = test_transaction(
+            0xE2,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(1_000u64),
+            U256::from(2u64),
+            100_000,
+            delegate_input(validator),
+            vec![0xc1, 0xe2],
+        );
+
+        write_period_data(
+            &storage,
+            period_one,
+            &block_one,
+            std::slice::from_ref(&register_tx.rlp),
+        );
+        write_period_data(
+            &storage,
+            period_two,
+            &block_two,
+            std::slice::from_ref(&delegate_tx.rlp),
+        );
+        write_period_data(&storage, period_three, &block_three, &[]);
+
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config.clone(),
+        )
+        .unwrap();
+
+        let _ = final_chain
+            .finalize_block(block_one, vec![register_tx], vec![])
+            .unwrap();
+        let _ = final_chain
+            .finalize_block(block_two, vec![delegate_tx], vec![])
+            .unwrap();
+
+        let period_one_final_snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(period_one)
+            .unwrap();
+        let period_two_final_snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(period_two)
+            .unwrap();
+        let delayed_period_two_snapshot = final_chain.dpos_snapshot(period_two).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                period_one_final_snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in block-one finalized snapshot"),
+            ),
+            U256::from(5_000u64)
+        );
+        assert_eq!(period_one_final_snapshot.total_vote_count, 5);
+        assert_eq!(
+            u256_from_big_endian(
+                period_two_final_snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in block-two finalized snapshot"),
+            ),
+            U256::from(6_000u64),
+        );
+        assert_eq!(period_two_final_snapshot.total_vote_count, 6);
+        assert_eq!(delayed_period_two_snapshot.total_stakes.len(), 0);
+
+        drop(final_chain);
+        drop(storage);
+
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+
+        assert_eq!(final_chain.last_block_number().unwrap(), period_two);
+        let reloaded_period_two_snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(period_two)
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                reloaded_period_two_snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in reloaded block-two snapshot"),
+            ),
+            U256::from(6_000u64),
+        );
+        assert_eq!(reloaded_period_two_snapshot.total_vote_count, 6);
+
+        let (_, _receipts) = final_chain
+            .finalize_block(block_three, vec![], vec![])
+            .unwrap();
+
+        let persisted_period_three_snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(period_three)
+            .unwrap();
+        let delayed_period_three_snapshot = final_chain.dpos_snapshot(period_three).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                persisted_period_three_snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in persisted block-three snapshot"),
+            ),
+            U256::from(6_000u64),
+        );
+        assert_eq!(persisted_period_three_snapshot.total_vote_count, 6);
+        assert_eq!(
+            u256_from_big_endian(
+                delayed_period_three_snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in delayed block-three snapshot"),
+            ),
+            U256::from(5_000u64),
+        );
+        assert_eq!(delayed_period_three_snapshot.total_vote_count, 5);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_registers_dpos_validator_snapshot() {
         let path = temp_db_path("finalize-dpos-register-validator");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -11908,6 +12330,7 @@ mod tests {
         let period = 1u64;
         let owner = [0x41; 20];
         let validator = [0x42; 20];
+        let owner_balance_before = U256::from(1_000_000u64);
         let genesis_dpos_config = GenesisDposConfig {
             eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
@@ -11963,11 +12386,12 @@ mod tests {
             storage.clone(),
             300_000,
             0,
-            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![genesis_account(owner, owner_balance_before)],
             vec![],
             genesis_dpos_config,
         )
         .unwrap();
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
 
         let (_header_rlp, receipts) = final_chain
             .finalize_block(
@@ -12016,6 +12440,494 @@ mod tests {
             ),
             U256::from(9_000u64)
         );
+        let owner_balance_after = balance_of(&final_chain, owner);
+        assert_eq!(
+            owner_balance_after,
+            owner_balance_before
+                - (U256::from(2) * U256::from(register_tx_gas + delegate_tx_gas)
+                    + U256::from(9_000u64))
+        );
+        let dpos_contract_balance_after = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+        assert_eq!(
+            dpos_contract_balance_after - dpos_contract_balance_before,
+            U256::from(9_000u64)
+        );
+        assert_eq!(final_chain.account(owner).unwrap().unwrap().nonce, 2);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_delegate_to_missing_validator_is_contract_failure_and_rolls_back() {
+        let path = temp_db_path("finalize-dpos-delegate-missing-validator");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x43; 20];
+        let missing_validator = [0x50; 20];
+        let owner_balance_before = U256::from(1_000_000u64);
+        let gas_price = U256::from(3u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 153);
+
+        let delegate_tx = test_transaction(
+            0xAA,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(4_000u64),
+            gas_price,
+            100_000,
+            delegate_input(missing_validator),
+            vec![0xc1, 0xaa],
+        );
+        write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, owner_balance_before)],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![delegate_tx.clone()], vec![])
+            .unwrap();
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
+        assert!(receipt_logs(&receipts[0]).is_empty());
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
+        );
+        let owner_account = final_chain.account(owner).unwrap().unwrap();
+        assert_eq!(owner_account.nonce, 1);
+        assert_eq!(
+            u256_from_big_endian(&owner_account.balance),
+            owner_balance_before - U256::from(tx_gas) * gas_price
+        );
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert!(snapshot.total_stakes.is_empty());
+        assert!(snapshot.delegations.is_empty());
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, missing_validator)
+                .unwrap(),
+            0
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_fails_delegate_does_not_block_later_tx_from_same_sender() {
+        let path = temp_db_path("finalize-dpos-delegate-failed-contract-value-refund");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x44; 20];
+        let recipient = [0x77; 20];
+        let missing_validator = [0x99; 20];
+        let delegate_value = 1_500u64;
+        let gas_price = U256::from(1u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[23u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 167);
+
+        let delegate_tx = test_transaction(
+            0xD1,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(delegate_value),
+            gas_price,
+            100_000,
+            delegate_input(missing_validator),
+            vec![0xc1, 0xd1],
+        );
+        let transfer_gas = intrinsic_gas(&[], false).unwrap();
+        let transfer_tx = test_transaction(
+            0xD2,
+            owner,
+            Some(recipient),
+            1,
+            U256::zero(),
+            gas_price,
+            transfer_gas,
+            vec![],
+            vec![0xc1, 0xd2],
+        );
+
+        let delegate_tx_gas = DPOS_DELEGATE_GAS + intrinsic_gas(&delegate_tx.data, false).unwrap();
+        let owner_balance_before =
+            U256::from(delegate_tx_gas + transfer_gas + 100_000u64 + delegate_value - 1);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[delegate_tx.rlp.clone(), transfer_tx.rlp.clone()],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, owner_balance_before)],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![delegate_tx.clone(), transfer_tx.clone()],
+                vec![],
+            )
+            .unwrap();
+
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, delegate_tx_gas, delegate_tx_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, transfer_gas, delegate_tx_gas + transfer_gas)
+        );
+        let owner_account = final_chain.account(owner).unwrap().unwrap();
+        assert_eq!(owner_account.nonce, 2);
+        assert_eq!(
+            u256_from_big_endian(&owner_account.balance),
+            owner_balance_before - U256::from(delegate_tx_gas + transfer_gas)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_fails_first_delegate_below_minimum_deposit() {
+        let path = temp_db_path("finalize-dpos-delegate-below-minimum");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x45; 20];
+        let validator = [0x46; 20];
+        let minimum_deposit = U256::from(1_000u64);
+        let delegate_value = U256::from(500u64);
+        let gas_price = U256::from(1u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: u256_to_big_endian(minimum_deposit),
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[24u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 168);
+
+        let delegate_tx = test_transaction(
+            0xD3,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            delegate_value,
+            gas_price,
+            100_000,
+            delegate_input(validator),
+            vec![0xc1, 0xd3],
+        );
+        let owner_balance_before = U256::from(5_000_000u64);
+        write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, owner_balance_before)],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+        let delegate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![delegate_tx.clone()], vec![])
+            .unwrap();
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, delegate_tx_gas, delegate_tx_gas)
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
+        );
+        let owner_account = final_chain.account(owner).unwrap().unwrap();
+        assert_eq!(owner_account.nonce, 1);
+        assert_eq!(
+            u256_from_big_endian(&owner_account.balance),
+            owner_balance_before - U256::from(delegate_tx_gas)
+        );
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in snapshot")
+            ),
+            U256::from(10_000u64)
+        );
+        assert_eq!(snapshot.total_vote_count, 10);
+        assert!(
+            snapshot
+                .delegations
+                .get(&validator)
+                .and_then(|delegations| delegations.get(&owner))
+                .is_none()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_fails_delegate_to_exceed_maximum_stake() {
+        let path = temp_db_path("finalize-dpos-delegate-exceeds-max-stake");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x47; 20];
+        let validator = [0x48; 20];
+        let delegate_value = U256::from(600u64);
+        let gas_price = U256::from(2u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[25u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 169);
+
+        let delegate_tx = test_transaction(
+            0xD4,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            delegate_value,
+            gas_price,
+            100_000,
+            delegate_input(validator),
+            vec![0xc1, 0xd4],
+        );
+        let owner_balance_before = U256::from(5_000_000u64);
+        write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, owner_balance_before)],
+            vec![genesis_validator(validator, U256::from(29_500u64))],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+
+        let delegate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![delegate_tx.clone()], vec![])
+            .unwrap();
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, delegate_tx_gas, delegate_tx_gas)
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
+        );
+        let owner_account = final_chain.account(owner).unwrap().unwrap();
+        assert_eq!(owner_account.nonce, 1);
+        assert_eq!(
+            u256_from_big_endian(&owner_account.balance),
+            owner_balance_before - U256::from(delegate_tx_gas) * gas_price
+        );
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in snapshot")
+            ),
+            U256::from(29_500u64)
+        );
+        assert_eq!(snapshot.total_vote_count, 29);
+        assert!(
+            snapshot
+                .delegations
+                .get(&validator)
+                .and_then(|delegations| delegations.get(&owner))
+                .is_none()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_delegate_below_minimum_top_up_if_delegate_exists() {
+        let path = temp_db_path("finalize-dpos-delegate-below-minimum-top-up");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x49; 20];
+        let validator = [0x4a; 20];
+        let minimum_deposit = U256::from(1_000u64);
+        let gas_price = U256::from(1u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: u256_to_big_endian(minimum_deposit),
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[26u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 170);
+
+        let initial_delegate_tx = test_transaction(
+            0xD5,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(2_000u64),
+            gas_price,
+            100_000,
+            delegate_input(validator),
+            vec![0xc1, 0xd5],
+        );
+        let topup_tx = test_transaction(
+            0xD6,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(100u64),
+            gas_price,
+            100_000,
+            delegate_input(validator),
+            vec![0xc1, 0xd6],
+        );
+        let owner_balance_before = U256::from(5_000_000u64);
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[initial_delegate_tx.rlp.clone(), topup_tx.rlp.clone()],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, owner_balance_before)],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+
+        let initial_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &initial_delegate_tx);
+        let topup_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &topup_tx);
+        let expected_total_gas = initial_tx_gas + topup_tx_gas;
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![initial_delegate_tx.clone(), topup_tx.clone()],
+                vec![],
+            )
+            .unwrap();
+
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, initial_tx_gas, initial_tx_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, topup_tx_gas, expected_total_gas)
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS) - dpos_contract_balance_before,
+            U256::from(2_100u64)
+        );
+        let owner_account = final_chain.account(owner).unwrap().unwrap();
+        assert_eq!(owner_account.nonce, 2);
+        assert_eq!(
+            u256_from_big_endian(&owner_account.balance),
+            owner_balance_before - U256::from(2_100u64 + expected_total_gas)
+        );
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .delegations
+                    .get(&validator)
+                    .expect("missing delegation collection")
+                    .get(&owner)
+                    .expect("missing owner delegation"),
+            ),
+            U256::from(2_100u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("missing validator stake in snapshot")
+            ),
+            U256::from(12_100u64)
+        );
+        assert_eq!(snapshot.total_vote_count, 12);
 
         drop(final_chain);
         drop(storage);
@@ -12563,6 +13475,230 @@ mod tests {
             final_chain.dpos_eligible_total_vote_count(period).unwrap(),
             12
         );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_redelegate_to_maxed_destination_rolls_back_without_state_mutation() {
+        let path = temp_db_path("finalize-dpos-redelegate-maxed-destination-failure");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let first_validator = [0x44; 20];
+        let second_validator = [0x45; 20];
+        let transfer_receiver = [0x46; 20];
+        let owner = first_validator;
+        let gas_price = U256::from(2u64);
+        let owner_balance_before = U256::from(1_000_000u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 152);
+
+        let register_first_tx = test_transaction(
+            0xB0,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(10_000u64),
+            gas_price,
+            150_000,
+            register_validator_input(
+                first_validator,
+                &[0xCC; 65],
+                [0xA5; 32],
+                10,
+                "first",
+                "endpoint",
+            ),
+            vec![0xc1, 0xa1],
+        );
+        let register_second_tx = test_transaction(
+            0xB1,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(30_000u64),
+            gas_price,
+            150_000,
+            register_validator_input(
+                second_validator,
+                &[0xDD; 65],
+                [0xA6; 32],
+                10,
+                "second",
+                "endpoint",
+            ),
+            vec![0xc1, 0xa2],
+        );
+        let redelegate_tx = test_transaction(
+            0xB2,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            2,
+            U256::zero(),
+            gas_price,
+            150_000,
+            redelegate_input(first_validator, second_validator, U256::from(1_000u64)),
+            vec![0xc1, 0xa3],
+        );
+        let transfer_tx = test_transaction(
+            0xB3,
+            owner,
+            Some(transfer_receiver),
+            3,
+            U256::from(25_000u64),
+            gas_price,
+            100_000,
+            vec![],
+            vec![0xc1, 0xb3],
+        );
+
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[
+                register_first_tx.rlp.clone(),
+                register_second_tx.rlp.clone(),
+                redelegate_tx.rlp.clone(),
+                transfer_tx.rlp.clone(),
+            ],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            400_000,
+            0,
+            vec![genesis_account(owner, owner_balance_before)],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+
+        let register_first_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &register_first_tx);
+        let register_second_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &register_second_tx);
+        let redelegate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &redelegate_tx);
+        let transfer_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transfer_tx);
+        let total_gas_cost =
+            register_first_tx_gas + register_second_tx_gas + redelegate_tx_gas + transfer_tx_gas;
+
+        let expected_snapshot_first_stake = U256::from(10_000u64);
+        let expected_snapshot_second_stake = U256::from(30_000u64);
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![
+                    register_first_tx,
+                    register_second_tx,
+                    redelegate_tx,
+                    transfer_tx,
+                ],
+                vec![],
+            )
+            .unwrap();
+
+        assert_eq!(receipts.len(), 4);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, register_first_tx_gas, register_first_tx_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (
+                1,
+                register_second_tx_gas,
+                register_first_tx_gas + register_second_tx_gas
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[2]),
+            (
+                0,
+                redelegate_tx_gas,
+                register_first_tx_gas + register_second_tx_gas + redelegate_tx_gas
+            )
+        );
+        assert!(
+            receipt_logs(&receipts[2]).is_empty(),
+            "failed redelegation must emit no logs"
+        );
+        assert_eq!(
+            receipt_fields(&receipts[3]),
+            (
+                1,
+                transfer_tx_gas,
+                register_first_tx_gas
+                    + register_second_tx_gas
+                    + redelegate_tx_gas
+                    + transfer_tx_gas
+            )
+        );
+
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .total_stakes
+                    .get(&first_validator)
+                    .expect("missing first validator stake"),
+            ),
+            expected_snapshot_first_stake
+        );
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .total_stakes
+                    .get(&second_validator)
+                    .expect("missing second validator stake"),
+            ),
+            expected_snapshot_second_stake
+        );
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .delegations
+                    .get(&first_validator)
+                    .expect("missing first validator delegations")
+                    .get(&first_validator)
+                    .expect("missing first validator self delegation"),
+            ),
+            expected_snapshot_first_stake
+        );
+        assert!(
+            snapshot
+                .delegations
+                .get(&second_validator)
+                .and_then(|delegations| delegations.get(&first_validator))
+                .is_none(),
+            "redelegation must not record source delegation when destination path rejects"
+        );
+        assert_eq!(snapshot.total_vote_count, 40);
+
+        let expected_sender_balance = owner_balance_before
+            - U256::from(10_000u64)
+            - U256::from(30_000u64)
+            - U256::from(total_gas_cost) * gas_price
+            - U256::from(25_000u64);
+        assert_eq!(balance_of(&final_chain, owner), expected_sender_balance);
+        assert_eq!(
+            balance_of(&final_chain, transfer_receiver),
+            U256::from(25_000u64)
+        );
+        assert_eq!(final_chain.account(owner).unwrap().unwrap().nonce, 4);
 
         drop(final_chain);
         drop(storage);

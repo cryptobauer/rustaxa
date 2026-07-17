@@ -3096,6 +3096,44 @@ genesis-state audit, implementation/test work, and gate design review. Existing 
 account snapshots require an explicit migration-or-rebuild decision; no silent persisted-state correction is included.
 CRW-08 remains active for the next bounded method or failed-receipt family.
 
+### CRW-08 Native DPoS Delegate Contract-Failure Parity
+
+This bounded follow-up closes the legacy `delegate(address)` business-failure family without widening the accepted
+external-EVM boundary.
+
+- Current-source legacy mapping showed that missing validators, first delegations below the minimum, and delegations
+  above the validator maximum are contract reverts: FinalChain charges intrinsic plus 40,000 action gas, advances the
+  sender nonce, records a status-zero receipt, reverts value and DPoS mutation, and continues block execution.
+- Rust previously debited the sender and credited the DPoS account before applying the contract, then propagated
+  expected delegate rejection through `anyhow`. The corrected missing-validator fixture passed in pure C++ with 61,464
+  gas but initially aborted Rust finalization, proving the divergence.
+- Native execution now applies each DPoS/slashing call directly to the block-local working state in transaction order.
+  Expected contract failures are classified before mutation, payable value and claim-gas updates commit only after a
+  successful outcome, and gas plus nonce effects remain on failure. This avoids both a post-hoc refund and complete
+  account/DPoS snapshot clones per native call while keeping reverted value available to a later same-sender
+  transaction in the same block.
+- Mutable DPoS execution starts from the immediately preceding finalized snapshot, independent of the delayed snapshot
+  used for historical delegation reads and claim-all gas facts. A nonzero-delay multi-block test proves that recent
+  registration/delegation state survives subsequent finalization and restart. Native contract transactions also pass
+  through the common fee-reward accounting path; focused pre-Magnolia tests cover both status-one and status-zero calls.
+- `apply_dpos_delegate` returns typed contract failure for the three business rejections while keeping invariant and
+  overflow errors hard. Minimum-deposit enforcement applies only to a first delegation; an existing delegation may
+  receive a smaller top-up, matching the legacy contract.
+- Rust tests cover all three rejection reasons, the allowed small top-up, successful payable publication, and a failed
+  delegate followed by a same-sender transaction that depends on immediate value rollback. The unchanged dual-mode C++
+  fixture checks exact receipt RLP/status/gas, empty logs and bloom, header gas/bloom, balances, nonce, escrow, stake,
+  votes, and restart state. The reusable pure-C++ parity script now runs both successful and failed delegate fixtures
+  before the complete suite.
+
+Tier 1, the FinalChain Tier 2 gate, and `make rewrite-validate-final-chain-parity` passed. The Tier 3 gate covered the
+complete Rust-enabled and isolated all-Rustaxa-disabled pure-C++ `final_chain_test` suites as well as both focused
+delegate fixtures. Pre-existing Clippy and dependency-build warnings remain warnings; no new warning is introduced by
+this slice. Configured `blockchain-engineer`, `architect-reviewer`, `rust-engineer`, and `cpp-pro` agents supplied the
+legacy contract audit, transaction-boundary review, implementation, and dual-mode fixture/gate update. No bridge handle,
+CXX carrier, shim, module flag, or compatibility-only test was removed, so the bridge audit and `CRW-07` inventory do
+not change. Remaining registration, undelegation, redelegation, reward, and other DPoS failed-receipt families stay
+explicit follow-up work under active `CRW-08`.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

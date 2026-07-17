@@ -297,6 +297,22 @@ fresh and retained pure-C++ build cache. Existing Rust databases created before 
 DPoS account snapshots; migration versus rebuild remains an explicit deployment decision and this slice does not
 silently top up persisted state. `CRW-08` remains active for the next bounded method/failed-receipt family.
 
+The next bounded `CRW-08` slice closes the native `delegate(address)` contract-failure family. Missing validators,
+first delegations below `minimum_deposit`, and delegations that would exceed the validator maximum now produce legacy
+status-zero receipts instead of aborting FinalChain. Native contract execution applies each transaction against
+the block-local account and DPoS state in order. Expected status-zero outcomes are validated before mutation; payable
+value and claim-gas state commit only after success, while gas and nonce remain charged on failure. This preserves
+same-block ordering without cloning the complete account and DPoS state per contract call. Mutable DPoS execution now
+starts from the immediately preceding finalized snapshot even when delegation reads use a nonzero historical delay, and
+native contract fees flow through the common reward-accounting path for successful and failed receipts. Existing
+delegators may still make a below-minimum top-up, matching the legacy contract rule. The dual-mode missing-validator
+fixture proves exact 61,464 gas, receipt RLP, empty logs/bloom, gas-only balance charge, nonce, unchanged
+escrow/stake/votes, and restart state. Focused Rust coverage also proves nonzero-delay multi-block persistence through
+restart, pre-Magnolia fee rewards for both receipt statuses, and failed-delegate same-sender continuation. The Tier 1,
+FinalChain Tier 2, and current-source `make rewrite-validate-final-chain-parity` Tier 3 gates passed with both focused
+delegate fixtures and the complete Rust-enabled and pure-C++ FinalChain suites. No bridge/export surface changed, so
+`CRW-07` has no inventory delta. `CRW-08` remains active for the next bounded method or failed-receipt family.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,
