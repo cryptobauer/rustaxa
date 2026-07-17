@@ -368,6 +368,16 @@ receivers use sibling service locking without crossing C++ FinalChain, signing, 
 effects. PBFT's four pure current-anchor decisions now call the shared service directly; the public manager wrappers
 remain compatibility adapters. `BridgePillarChainStorage` remains separately classified for `CRW-06`.
 
+The next bounded `CRW-05`/`CRW-07` slice internalizes the PBFT-finalization sortition commit across the two
+application-owned services. C++ still derives the finalized DAG/transaction counts needed by the Rust operation and
+keeps the previewed optional change in the primary Rust storage batch, but it no longer commits sortition through the
+compatibility facade or returns a six-field live-state report to PBFT. `BridgePbftService` validates the active cursor
+and retained storage-stage change before `BridgeDagTransactionService` atomically publishes a cloned next sortition
+state; stale cursors and preview mismatches leave sortition unchanged. The CXX report carrier and the rewrite-only C++
+commit helper are deleted. A post-primary preview/stage divergence is fatal rather than retryable because duplicate
+resume does not replay protected sortition mutation. DAG verification and proposer sortition-fact relays remain the next
+narrowing work for this owner.
+
 #### CRW-01 selected composition boundary
 
 `CRW-01` selected a PBFT-cluster-only Rust application service. Current code mapping did not find a wider DAG,

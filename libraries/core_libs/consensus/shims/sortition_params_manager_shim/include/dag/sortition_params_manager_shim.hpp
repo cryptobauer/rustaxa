@@ -41,23 +41,6 @@ struct SortitionParamsChange {
 };
 
 /**
- * Sortition-owned result after committing a PBFT-finalization threshold update.
- *
- * Inputs are produced by the Rust sortition runtime after live state is committed. Outputs carry only sortition facts:
- * whether the finalized period emitted a threshold change, the emitted change payload, the current threshold after the
- * commit, and the number of cached parameter changes. PBFT manager code forwards these facts through its typed
- * finalization helper at the manager boundary.
- */
-struct SortitionFinalizationCommitReport {
-  bool changed = false;
-  PbftPeriod change_period = 0;
-  uint16_t change_interval_efficiency = 0;
-  uint16_t change_threshold_upper = 0;
-  uint16_t current_threshold_upper = 0;
-  uint64_t params_changes_count = 0;
-};
-
-/**
  * Rust-mode sortition parameter manager facade.
  *
  * The facade preserves the public C++ API while routing deterministic
@@ -160,26 +143,6 @@ class SortitionParamsManager {
                                                                             PbftPeriod non_empty_pbft_chain_size);
 
   /**
-   * Commit a previously previewed PBFT-finalization sortition update.
-   *
-   * Inputs:
-   * - The same finalized period data and post-finalization non-empty PBFT-chain
-   *   size used for the preview.
-   * - The optional previewed change that was included in the committed primary
-   *   finalization storage batch.
-   * Outputs:
-   * - Sortition-owned live threshold facts for manager-runtime validation.
-   *
-   * Invariants and edge behavior:
-   * - Mutates live sortition state only after the caller has committed primary
-   *   finalization storage.
-   * - Throws if the live Rust transition diverges from the previewed change.
-   */
-  SortitionFinalizationCommitReport commitPreparedBlockForSortitionFinalization(
-      const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
-      const std::optional<SortitionParamsChange>& prepared_change);
-
-  /**
    * Returns the current interval average DAG efficiency.
    */
   uint16_t averageDagEfficiency();
@@ -188,6 +151,11 @@ class SortitionParamsManager {
    * Returns the Rust-backed in-memory parameter-change cache.
    */
   const std::deque<SortitionParamsChange>& getParamsChanges() const { return params_changes_; }
+
+  /**
+   * Returns the shared runtime service used by all Rust-owned sortition transitions.
+   */
+  const SharedDagTransactionService& getDagTransactionService() const { return dag_transaction_service_; }
 
  protected:
   const FullNodeConfig kConfig;

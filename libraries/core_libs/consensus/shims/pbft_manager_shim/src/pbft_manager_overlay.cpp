@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -3473,6 +3474,8 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
+  const auto non_empty_pbft_chain_size = pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1;
+
   auto report_dag_order = [&](uint64_t finalized_count, rustaxa::PbftManagerFinalizationExecutorState &boundary) {
     try {
       boundary = rustaxa::pbft_manager_runtime_advance_finalization_dag_order(pbft_service_->service(), boundary.cursor,
@@ -3488,22 +3491,22 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
     }
     return true;
   };
-  auto report_sortition_commit = [&](const SortitionFinalizationCommitReport &report,
-                                     rustaxa::PbftManagerFinalizationExecutorState &boundary) {
-    rustaxa::PbftManagerFinalizationSortitionCommitReport bridge_report{};
-    bridge_report.changed = report.changed;
-    bridge_report.change_period = report.change_period;
-    bridge_report.change_interval_efficiency = report.change_interval_efficiency;
-    bridge_report.change_threshold_upper = report.change_threshold_upper;
-    bridge_report.current_threshold_upper = report.current_threshold_upper;
-    bridge_report.params_changes_count = report.params_changes_count;
+  auto advance_sortition_finalization = [&](rustaxa::PbftManagerFinalizationExecutorState &boundary) {
+    const auto &dag_transaction_service = dag_mgr_->sortitionParamsManager().getDagTransactionService();
+    rustaxa::PbftManagerFinalizationSortitionCommitRequest bridge_request{};
+    bridge_request.unique_transactions = period_data.transactions.size();
+    bridge_request.total_dag_transaction_refs = 0;
+    for (const auto &dag_block : period_data.dag_blocks) {
+      bridge_request.total_dag_transaction_refs += dag_block->getTrxs().size();
+    }
+    bridge_request.non_empty_pbft_chain_size = non_empty_pbft_chain_size;
     try {
-      boundary = rustaxa::pbft_manager_runtime_advance_finalization_sortition_commit(pbft_service_->service(),
-                                                                                     boundary.cursor, bridge_report);
+      boundary = rustaxa::pbft_manager_runtime_advance_finalization_sortition_commit(
+          pbft_service_->service(), dag_transaction_service->service(), boundary.cursor, bridge_request);
     } catch (const std::exception &e) {
-      LOG(log_er_) << "Rust PBFT finalization boundary report threw for block " << pbft_block_hash << ", period "
-                   << block_pbft_period << ", context sortition runtime commit: " << e.what();
-      return false;
+      LOG(log_er_) << "Fatal Rust PBFT finalization sortition invariant for block " << pbft_block_hash << ", period "
+                   << block_pbft_period << ": " << e.what();
+      std::terminate();
     }
     apply_boundary_snapshot(boundary);
     if (!boundary.can_continue) {
@@ -3607,13 +3610,10 @@ bool PbftManager::pushPbftBlock_(PeriodData &&period_data, std::vector<std::shar
             return fail_action("sortition runtime commit", "PBFT_FINALIZE_SORTITION_PAYLOAD_UNAVAILABLE");
           }
           sortition_commit_prepared = false;
-          const auto report = dag_mgr_->sortitionParamsManager().commitPreparedBlockForSortitionFinalization(
-              period_data, pbft_chain_->getPbftChainSizeExcludingEmptyPbftBlocks() + 1,
-              prepared_sortition_params_change);
-          prepared_sortition_params_change.reset();
-          if (!report_sortition_commit(report, boundary)) {
+          if (!advance_sortition_finalization(boundary)) {
             return FinalizationDispatchResult::kFailed;
           }
+          prepared_sortition_params_change.reset();
           break;
         }
         case kPbftFinalizationRuntimeActionCommitRewardVotesReset: {

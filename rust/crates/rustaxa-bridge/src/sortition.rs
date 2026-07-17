@@ -187,18 +187,52 @@ impl BridgeDagTransactionService {
         expected_change: rustaxa_ffi::SortitionParamsChangePayload,
     ) -> Result<rustaxa_ffi::SortitionParamsChangeResult> {
         let expected = expected_changed.then(|| SortitionParamsChange::from(expected_change));
+        let mut sortition = self.sortition()?;
+        let mut updated = sortition.clone();
         let dag_efficiency =
             efficiency_from_counts(has_pivot, unique_transactions, total_dag_transaction_refs)?;
-        let actual = self.sortition()?.record_finalized_period(
-            period,
-            dag_efficiency,
-            non_empty_pbft_chain_size,
-        )?;
+        let actual =
+            updated.record_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?;
         ensure!(
             actual == expected,
             "PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH"
         );
+        *sortition = updated;
         Ok(change_result(actual))
+    }
+
+    /// Commits a finalized period and returns live-report snapshot values captured
+    /// from the same sortition mutex guard used for the mutation.
+    pub fn commit_finalized_period_with_live_snapshot(
+        &self,
+        period: u64,
+        has_pivot: bool,
+        unique_transactions: u64,
+        total_dag_transaction_refs: u64,
+        non_empty_pbft_chain_size: u64,
+        expected_changed: bool,
+        expected_change: rustaxa_ffi::SortitionParamsChangePayload,
+    ) -> Result<(rustaxa_ffi::SortitionParamsChangeResult, u16, u64)> {
+        let mut sortition = self.sortition()?;
+        let expected = expected_changed.then(|| SortitionParamsChange::from(expected_change));
+        let dag_efficiency =
+            efficiency_from_counts(has_pivot, unique_transactions, total_dag_transaction_refs)?;
+        let mut updated = sortition.clone();
+        let actual =
+            updated.record_finalized_period(period, dag_efficiency, non_empty_pbft_chain_size)?;
+        ensure!(
+            actual == expected,
+            "PBFT_FINALIZE_SORTITION_CHANGE_MISMATCH"
+        );
+
+        let params = updated.current_params();
+        let params_changes_count = updated.params_changes().len() as u64;
+        *sortition = updated;
+        Ok((
+            change_result(actual),
+            params.vrf.threshold_upper,
+            params_changes_count,
+        ))
     }
 
     /// Returns the average of currently collected DAG efficiency samples.

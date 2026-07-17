@@ -38,14 +38,6 @@ struct PeriodEfficiencyCounts {
   uint64_t total_dag_transaction_refs = 0;
 };
 
-rustaxa::SortitionParamsChangePayload to_rust_change(const SortitionParamsChange& change) {
-  rustaxa::SortitionParamsChangePayload rust_change;
-  rust_change.period = change.period;
-  rust_change.interval_efficiency = change.interval_efficiency;
-  rust_change.threshold_upper = change.vrf_params.threshold_upper;
-  return rust_change;
-}
-
 SortitionParamsChange from_rust_change(const rustaxa::SortitionParamsChangePayload& change) {
   return SortitionParamsChange{change.period, change.interval_efficiency, VrfParams{change.threshold_upper}};
 }
@@ -85,19 +77,6 @@ PeriodEfficiencyCounts period_efficiency_counts(const PeriodData& block) {
     counts.total_dag_transaction_refs += dag_block->getTrxs().size();
   }
   return counts;
-}
-
-SortitionFinalizationCommitReport makeSortitionFinalizationCommitReport(
-    const rustaxa::SortitionParamsChangeResult& outcome, uint16_t current_threshold_upper,
-    uint64_t params_changes_count) {
-  SortitionFinalizationCommitReport report{};
-  report.changed = outcome.changed;
-  report.change_period = outcome.period;
-  report.change_interval_efficiency = outcome.interval_efficiency;
-  report.change_threshold_upper = outcome.threshold_upper;
-  report.current_threshold_upper = current_threshold_upper;
-  report.params_changes_count = params_changes_count;
-  return report;
 }
 
 [[noreturn]] void throw_unimplemented_sortition_api(const char* api_name) {
@@ -171,24 +150,6 @@ std::optional<SortitionParamsChange> SortitionParamsManager::prepareBlockForSort
     return from_rust_change(outcome);
   }
   return std::nullopt;
-}
-
-SortitionFinalizationCommitReport SortitionParamsManager::commitPreparedBlockForSortitionFinalization(
-    const PeriodData& block, PbftPeriod non_empty_pbft_chain_size,
-    const std::optional<SortitionParamsChange>& prepared_change) {
-  const auto counts = period_efficiency_counts(block);
-  const auto period = block.pbft_blk->getPeriod();
-  rustaxa::SortitionParamsChangePayload expected_change{};
-  if (prepared_change.has_value()) {
-    expected_change = to_rust_change(*prepared_change);
-  }
-  auto outcome = dag_transaction_service_->service().sortition_commit_finalized_period(
-      period, counts.has_pivot, counts.unique_transactions, counts.total_dag_transaction_refs,
-      non_empty_pbft_chain_size, prepared_change.has_value(), expected_change);
-  params_changes_ = from_rust_changes(dag_transaction_service_->service().sortition_params_changes());
-  const auto current_params = dag_transaction_service_->service().sortition_current_params();
-  apply_rust_params(sortition_config_, current_params);
-  return makeSortitionFinalizationCommitReport(outcome, current_params.threshold_upper, params_changes_.size());
 }
 
 uint16_t SortitionParamsManager::averageDagEfficiency() {

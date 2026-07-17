@@ -299,6 +299,34 @@ rust::Box<BridgePbftService> managerRuntimeForFinalizationSession() {
   return create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
 }
 
+SortitionRuntimeConfig runtimeSortitionConfig() {
+  SortitionRuntimeConfig config;
+  config.threshold_upper = 2000;
+  config.difficulty_min = 1;
+  config.difficulty_max = 2;
+  config.difficulty_stale = 3;
+  config.lambda_bound = 1500;
+  config.changes_count_for_average = 3;
+  config.dag_efficiency_target_low = 48 * 100;
+  config.dag_efficiency_target_high = 52 * 100;
+  config.changing_interval = 2;
+  config.computation_interval = 2;
+  return config;
+}
+
+rust::Box<BridgeDagTransactionService> createDagTransactionServiceForFinalizationTest(
+    const rust::Box<BridgeStorage>& storage) {
+  std::array<uint8_t, 32> genesis{};
+  genesis.fill(1);
+  TransactionQueueConfig queue_config;
+  queue_config.max_size = 1000;
+  GasPricerConfig gas_config;
+  gas_config.percentile = 50;
+  gas_config.history_blocks = 10;
+  return create_dag_transaction_service_from_storage(*storage, genesis, 32, 100, runtimeSortitionConfig(), queue_config,
+                                                     gas_config, UINT64_MAX);
+}
+
 PbftFinalizationIntentPlan finalizationIntentPlan(PbftFinalizationIntentFact fact) {
   auto runtime = managerRuntimeForFinalizationSession();
   return pbft_manager_runtime_plan_finalization_intent(*runtime, std::move(fact));
@@ -628,25 +656,28 @@ TEST(RustPbftSyncTest, FinalizationIntentAcceptsAnchoredBlockAndMapsCleanup) {
   EXPECT_EQ(plan.storage_write_intent.transaction_location_writes[0].position, 0);
 }
 
-TEST(RustPbftSyncTest, FinalizationBoundaryReportsExternalActionFailure) {
-  const auto plan = finalizationIntentPlan(makeFinalizationFact());
-  auto runtime = managerRuntimeForFinalizationSession();
+TEST(RustPbftSyncTest, FinalizationBoundaryRejectsPostStorageSortitionInvariant) {
+  const auto test_dir = uniqueTempDir("rustaxa_pbft_manager_finalization_sortition_invariant");
+  auto storage = create_storage(test_dir.string());
+  seedPbftChainPeriod(storage);
+  auto runtime = create_pbft_service_from_storage(*storage, makePbftServiceConfig(false));
+  const auto plan = pbft_manager_runtime_plan_finalization_intent(*runtime, makeFinalizationFact());
+  auto dag_transaction_service = createDagTransactionServiceForFinalizationTest(storage);
   auto boundary = startFreshFinalizationExecutor(
       *runtime, plan, storageStages({finalizationStorageStage(kPbftFinalizationStorageStagePrimary)}));
 
-  PbftManagerFinalizationSortitionCommitReport report{};
-  report.changed = true;
-  report.change_period = 999;
-  report.change_interval_efficiency = 2500;
-  report.change_threshold_upper = 1300;
-  report.current_threshold_upper = 1300;
-  report.params_changes_count = 1;
+  PbftManagerFinalizationSortitionCommitRequest request{};
+  request.unique_transactions = 5;
+  request.total_dag_transaction_refs = 1;
+  request.non_empty_pbft_chain_size = 1;
 
-  boundary = pbft_manager_runtime_advance_finalization_sortition_commit(*runtime, boundary.cursor, report);
-  EXPECT_EQ(boundary.status, kPbftFinalizationRuntimeStatusActionFailed);
-  EXPECT_FALSE(boundary.has_action);
-  EXPECT_FALSE(boundary.can_continue);
-  EXPECT_FALSE(std::string(boundary.error_code).empty());
+  try {
+    (void)pbft_manager_runtime_advance_finalization_sortition_commit(*runtime, *dag_transaction_service,
+                                                                     boundary.cursor, request);
+    FAIL() << "post-storage sortition divergence must raise a fatal invariant error";
+  } catch (const std::exception& error) {
+    EXPECT_NE(std::string(error.what()).find("PBFT_FINALIZE_POST_STORAGE_SORTITION_INVARIANT:"), std::string::npos);
+  }
 }
 
 TEST(RustPbftSyncTest, FinalizationBoundaryBeginsAtFirstExternalAction) {

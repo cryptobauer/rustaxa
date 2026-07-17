@@ -2925,6 +2925,27 @@ constructor coverage; the startup/default-state test now exercises that compatib
 The next CRW-05 ownership candidates remain rewards behind FinalChain and pillar planning behind the PBFT service.
 Select the next bounded slice from fresh code mapping after this slice closes.
 
+### CRW-05 PBFT Finalization Sortition Commit Composition
+
+The follow-up CRW-05/CRW-07 slice removes the remaining PBFT-finalization commit/report bounce through the C++
+sortition facade.
+
+- The primary finalization batch still receives the optional Rust-previewed `SortitionParamsChange` before any live
+  mutation. `BridgePbftService` now retains that committed-stage identity for the active finalization session.
+- The commit action calls one Rust operation over `BridgePbftService` and `BridgeDagTransactionService`. Rust validates
+  the manager cursor and action first, derives period/pivot and the expected change from the manager-owned plan/session,
+  then clones, validates, and publishes the next sortition state under the sortition guard before advancing the cursor.
+- C++ supplies only finalized unique-transaction count, total DAG transaction references, and the post-finalization
+  non-empty PBFT chain size. It no longer commits the live sortition runtime, reconstructs live threshold/cache facts,
+  or echoes those facts back to Rust.
+- `PbftManagerFinalizationSortitionCommitReport`, `SortitionFinalizationCommitReport`, and the rewrite-only
+  `commitPreparedBlockForSortitionFinalization` helper are deleted. The public storage-owning `pbftBlockPushed` adapter,
+  preview method, canonical compatibility carrier/codec, DAG verification, and proposer crossings remain classified.
+- The cross-service lock order is PBFT manager then DAG-service sortition. No Rust guard crosses C++ callbacks; stale
+  cursors fail before live sortition publication. Preview/stage divergence cannot safely enter normal duplicate resume
+  after the primary batch commits, so the boundary raises a fatal post-storage invariant instead of returning a
+  retryable action failure; the lower-level cloned-state helper proves mismatches do not publish live state.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
