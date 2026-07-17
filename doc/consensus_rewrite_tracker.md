@@ -223,8 +223,9 @@ Two compatibility layers remain intentionally visible:
   Remaining references must stay classified as storage-shim internals, marked query/network compatibility, FinalChain/EVM
   boundary work, sidecar materialization, or app/admin lifecycle behavior.
 
-The next shrink phase is compatibility deletion rather than storage migration. Remove `BridgeStorage`, storage-shim, and
-`DbStorage` code only when the caller has moved to a Rust-owned runtime, read API, fixture, or executor boundary. Re-plan
+CRW-06 closes the production-authority audit; future shrink work is caller-owned compatibility retirement rather than
+storage migration. Remove `BridgeStorage`, storage-shim, and `DbStorage` code only when the caller has moved to a
+Rust-owned runtime, read API, fixture, or executor boundary. Re-plan
 before moving network/tarcap transport, packet wrapping, gossip fanout, arbitrary EVM execution, receipt/contract
 execution, or public API materialization into the consensus storage cleanup.
 
@@ -278,7 +279,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-03` | `complete` | Absorb PBFT-private state handles into the PBFT application service, starting with proposed blocks and verified votes, then close their combined leader, admission/persistence, and period-cleanup crossings. | `CRW-02` | Proposed-block and verified-vote state is service-owned; obsolete independent handles are deleted; leader selection revalidates one coherent snapshot; vote admission persists before publication; and period advance cleans both owners through one atomic service action. |
 | `CRW-04` | `complete` | Compose transaction/gas and DAG graph/manager/proposer runtimes behind application-owned Rust services with native FinalChain/storage ports. | `CRW-01`; coordinate shared dependencies with `CRW-02` | C++ shims no longer pass internal bridge handles between transaction, DAG, PBFT, FinalChain, or storage services; they perform input conversion, explicit EVM/network execution, and public materialization only. |
 | `CRW-05` | `complete` | Compose pillar, slashing, sortition, and rewards planning/state behind their Rust application owner rather than standalone internal handles. | `CRW-01`; `CRW-02` where PBFT owns the lifetime | Remaining C++ code is limited to FinalChain/DPoS fact execution, signing, transaction insertion, tarcap/event execution, lifecycle/executor work, and public materialization; internal bridge handles and cross-shim lookup paths are deleted. |
-| `CRW-06` | `ready` | Delete storage compatibility scaffolding after runtime consumers move: `BridgeStorage`, `BridgeStorageBatch`, storage query-family handles, broad storage-shim calls, and related `DbStorage` compatibility access. | Relevant consumer migrations in `CRW-02` through `CRW-05` | No production consensus route uses broad storage handles or C++/bridge batch authority. Retained admin, migration, test, network, and public-query behavior is narrow, explicitly classified, or explicitly unsupported in Rust mode. |
+| `CRW-06` | `complete` | Delete storage compatibility scaffolding after runtime consumers move: `BridgeStorage`, `BridgeStorageBatch`, storage query-family handles, broad storage-shim calls, and related `DbStorage` compatibility access. | Relevant consumer migrations in `CRW-02` through `CRW-05` | No production consensus route uses broad storage handles or C++/bridge batch authority. Retained admin, migration, test, network, and public-query behavior is narrow, explicitly classified, or explicitly unsupported in Rust mode. |
 | `CRW-07` | `active` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, `BridgeConsensusExecutionApi`, application/bootstrap handles, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
 | `CRW-08` | `ready` | Close remaining FinalChain/DPoS behavior parity: required contract methods outside the currently supported mutation subset and full failed-contract receipt parity for older supported paths. | A bounded method/receipt family and expected legacy behavior must be selected per slice | All required current-ABI DPoS/slashing behaviors in the selected family execute through Rust account/DPoS state with byte-compatible receipts, logs, blooms, persistence, restart behavior, and targeted legacy-vs-Rust parity coverage. |
 | `CRW-09` | `ready` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | Select one type family or execution transcript per slice | Consensus-internal request, recovery, publication, and audit data remains Rust-owned; C++ `StateAPI` supplies only the external execution/committed-state operations allowed by `PLAN.md`, with byte-compatible codec and transcript coverage. |
@@ -366,7 +367,8 @@ same state and completes a pillar-specific readiness transition before live call
 tests. Production App injects its existing service, `BridgePillarChainRuntime` and its factory are deleted, and all pillar
 receivers use sibling service locking without crossing C++ FinalChain, signing, network, event, or materialization
 effects. PBFT's four pure current-anchor decisions now call the shared service directly; the public manager wrappers
-remain compatibility adapters. `BridgePillarChainStorage` remains separately classified for `CRW-06`.
+remain compatibility adapters. `BridgePillarChainStorage` remains separately classified as a stable `DbStorage`
+compatibility implementation and is not production pillar storage authority.
 
 The next bounded `CRW-05`/`CRW-07` slice internalizes the PBFT-finalization sortition commit across the two
 application-owned services. C++ still derives the finalized DAG/transaction counts needed by the Rust operation and
@@ -406,7 +408,20 @@ commit. The later cursor-only composed operation publishes the cloned sortition 
 post-storage invariant without publication; resume never replays preview or commit. The facade accessor/preview methods,
 C++ fact and stage relays, commit request carrier, direct preview/commit exports, and bridge-mechanics tests are deleted.
 Only classified public compatibility methods remain on the C++ sortition facade. With CRW-02 through CRW-05 consumer
-migrations complete, CRW-06 is now the next dependency-ready queue item; CRW-07 continues alongside it.
+migrations complete, the final CRW-06 storage-authority audit became dependency-ready; CRW-07 continues alongside it.
+
+The bounded CRW-06 closeout found no remaining unclassified production consensus storage route. Native consensus and
+storage crates contain no bridge-shaped storage handles, `rustBatchId` has no code call sites, and remaining
+`BridgeStorage`, `BridgeStorageBatch`, storage-query-family, `BridgePillarChainStorage`, and `DbStorage` references are
+limited to typed application/bootstrap construction, stable public compatibility, network/query, external FinalChain/EVM,
+admin/migration, conformance, and test boundaries. `BridgeStorageBatch` is an opaque carrier inside the stable
+`DbStorage::Batch` lifecycle; C++ compatibility callers still sequence typed append operations, while Rust owns
+validation, key/column selection, batch storage, and atomic commit.
+Standalone `rewards::Stats::processStats(..., Batch&)` remains public/test compatibility because replacing its append
+semantics would break caller atomicity without reducing production authority. Further deletion belongs to the owning
+caller migrations, not CRW-06. The storage-boundary and bridge-inventory guards, targeted symbol searches, skill/prompt
+drift checks, and whitespace validation passed; configured `code-mapper` and `architect-reviewer` agents independently
+confirmed the classification-only closeout. CRW-06 is complete.
 
 #### CRW-01 selected composition boundary
 

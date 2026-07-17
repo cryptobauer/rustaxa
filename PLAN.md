@@ -312,24 +312,14 @@ Goal: Rust-mode consensus should depend directly on `rustaxa-storage` or subsyst
 C++ APIs, tests, and lifecycle/query surfaces, but it must not be the storage API used by migrated Rust consensus
 managers, planners, and runtimes.
 
-Status: migrated production consensus storage ownership is complete for the audited storage families. The next cleanup
-phase is compatibility deletion, not storage migration. Measure it by removing classified compatibility call sites and
-sidecar materialization boundaries after their callers move, while preserving the storage-boundary guard so new
-production consensus routes cannot re-enter `DbStorage` or bridge batch ownership.
+Status: migrated production consensus storage ownership and the CRW-06 classification closeout are complete for the
+audited storage families. Future cleanup is caller-owned compatibility retirement, not storage migration. Remove
+classified compatibility call sites and sidecar materialization boundaries only after their owners move, while
+preserving the storage-boundary guard so new production consensus routes cannot re-enter `DbStorage` or bridge batch
+ownership.
 
-Compatibility cleanup tracking is now folded into `doc/consensus_rewrite_tracker.md` (Storage Boundary Status). The five
-completion slices are:
-
-- Slice 1 (Inventory and classification): completed. Remaining `DbStorage`, `storage_shim`, and `BridgeStorage`
-  compatibility call sites have been classified.
-- Slice 2 (Runtime handle collapse): completed. Rust storage handles and compatibility adapters now preserve
-  `Arc<rustaxa_storage::Storage>` ownership without routing production consensus writes through legacy batch ownership.
-- Slice 3 (Batch registry cleanup): completed. Generic batch appender and bridge-batch registration paths no longer act as
-  storage authority.
-- Slice 4 (Query/materialization split): completed. Broad compatibility reads were moved to typed read/query handles by
-  storage family (`Dag`, `Transaction`, `PBFT`, `Pillar`, final-chain/period lookup, metadata/rewards).
-- Slice 5 (Header and FFI pruning): completed. Obsolete `BridgeStorage`, `storage_shim`, and CXX compatibility
-  declarations were removed where no longer required by active callers.
+Compatibility cleanup tracking is folded into `doc/consensus_rewrite_tracker.md` under **Storage Boundary Status**; that
+tracker is the sole source for the numbered cleanup slices and their current status.
 
 Future cleanup should:
 

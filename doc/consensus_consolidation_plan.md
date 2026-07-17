@@ -3040,6 +3040,30 @@ test harness, so this slice does not claim the broad suite as passing. Configure
 returned `APPROVED` with no blocking correctness, security, regression, documentation, or coverage finding; residual
 risk is limited to the documented broad-suite harness gap.
 
+### CRW-06 Storage Compatibility Classification Closeout
+
+The bounded CRW-06 audit found no remaining unclassified Rust-mode production consensus route through `BridgeStorage`,
+`BridgeStorageBatch`, bridge query-family handles, broad `DbStorage` calls, direct `getDB()`, or `rustBatchId` authority.
+Native consensus and storage crates do not depend on bridge-shaped storage handles, and `rustBatchId` has no code call
+sites.
+
+Remaining storage surfaces are classified rather than silently treated as rewrite authority: typed app/service
+bootstrap construction; stable `DbStorage` public compatibility; RPC, GraphQL, light, and network query views; external
+FinalChain/EVM boundaries; admin, migration, and lifecycle behavior; storage conformance; and tests.
+`BridgeStorageBatch` is an opaque carrier inside the stable `DbStorage::Batch` lifecycle. C++ compatibility callers
+still sequence typed append operations, while Rust owns validation, key and column selection, batch storage, and atomic
+commit. `BridgePillarChainStorage` remains only as the narrow public storage-shim implementation. The standalone
+`rewards::Stats::processStats(..., Batch&)` surface also remains public/test
+compatibility: its append semantics preserve atomic ordering in the caller's batch, and removing it would require an API
+and transaction-boundary redesign without reducing production consensus authority.
+
+Further deletions therefore belong to the owning public, network/query, admin, conformance, or test migrations rather
+than CRW-06. Configured `code-mapper` and `architect-reviewer` agents independently confirmed this boundary. The
+storage-boundary and bridge-inventory guards, targeted symbol searches, reusable skill/prompt drift check, and whitespace
+validation passed. Independent configured review returned `APPROVED` after correcting duplicated slice-status wording and
+distinguishing C++ compatibility append sequencing from Rust-owned atomic commit. CRW-06 is complete; CRW-07 remains
+active alongside the next dependency-ordered parity item.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
