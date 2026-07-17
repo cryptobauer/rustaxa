@@ -17,7 +17,7 @@ use crate::{
     final_chain_execution_session_plan_external_evm_publication,
     final_chain_execution_session_prepare_external_evm_state_commit,
     final_chain_execution_session_publish_external_evm_publication,
-    final_chain_execution_session_report_evm,
+    final_chain_execution_session_report_evm_with_final_chain,
     final_chain_execution_session_report_external_evm_state_commit_result,
     final_chain_execution_session_report_system_transactions,
     final_chain_execution_session_request_external_evm_state_commit,
@@ -94,10 +94,11 @@ impl ConsensusExecutionApi {
     /// mutate state DB, publish FinalChain storage, or inspect `StateAPI`.
     pub fn report_execution_result(
         &self,
+        final_chain: &FinalChain,
         session: &mut FinalChainExecutionSession,
         report: FinalChainEvmExecutionReport,
     ) -> FinalChainExecutionStep {
-        final_chain_execution_session_report_evm(session, report)
+        final_chain_execution_session_report_evm_with_final_chain(final_chain, session, report)
     }
 
     /// Reports Rust-planned system transaction bytes materialized by the executor boundary.
@@ -149,13 +150,11 @@ impl ConsensusExecutionApi {
         &self,
         final_chain: &FinalChain,
         session: &mut FinalChainExecutionSession,
-        rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
         proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
     ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
         final_chain_execution_session_prepare_external_evm_state_commit(
             final_chain,
             session,
-            rewards_stats_update,
             proposal_period_update,
         )
     }

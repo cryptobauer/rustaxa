@@ -3455,6 +3455,7 @@ pub mod rustaxa_ffi {
         transaction_gas_used: Vec<u64>,
         transaction_fees: Vec<ReceiptRlp>,
         finalized_dag_block_count: u64,
+        distribution_stats: Vec<PeriodRlp>,
     }
 
     struct FinalChainEvmRewardsReport {
@@ -3474,13 +3475,6 @@ pub mod rustaxa_ffi {
         request_id: [u8; 32],
         period: u64,
         error_code: String,
-    }
-
-    struct FinalChainExternalEvmRewardsStatsUpdate {
-        current_period: u64,
-        cache_current_period: bool,
-        clear_cached_stats: bool,
-        current_block_stats_rlp: Vec<u8>,
     }
 
     struct FinalChainProposalPeriodDagLevelUpdate {
@@ -6157,6 +6151,7 @@ pub mod rustaxa_ffi {
         ) -> Result<FinalChainExecutionStep>;
         pub fn consensus_execution_report_execution_result(
             self: &BridgeConsensusExecutionApi,
+            final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
             report: FinalChainEvmExecutionReport,
         ) -> Result<FinalChainExecutionStep>;
@@ -6174,7 +6169,6 @@ pub mod rustaxa_ffi {
             self: &BridgeConsensusExecutionApi,
             final_chain: &BridgeFinalChain,
             session: &mut BridgeFinalChainExecutionSession,
-            rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
             proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
         ) -> Result<FinalChainExternalEvmStateCommitIntent>;
         pub fn consensus_execution_report_state_commit_result(

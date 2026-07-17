@@ -1,10 +1,9 @@
-#include "rewards/rewards_stats.hpp"
-
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
 
 #include "common/encoding_rlp.hpp"
+#include "rewards/rewards_stats.hpp"
 #include "transaction/transaction.hpp"
 
 namespace taraxa::rewards {
@@ -64,7 +63,8 @@ Stats::Stats(uint32_t committee_size, const HardforksConfig& hardforks, std::sha
       kHardforksConfig(hardforks),
       db_(std::move(db)),
       dpos_eligible_total_vote_count_(std::move(dpos_eligible_total_vote_count)),
-      rust_stats_(rustaxa::create_rewards_stats_runtime(db_->rustStorage(), makeRewardsConfig(kCommitteeSize, hardforks),
+      rust_stats_(rustaxa::create_rewards_stats_runtime(db_->rustStorage(),
+                                                        makeRewardsConfig(kCommitteeSize, hardforks),
                                                         makeFrequencyRules(hardforks), last_blk_num)) {
   recoverFromDb(last_blk_num);
 }
@@ -95,45 +95,6 @@ std::vector<BlockStats> Stats::processStats(const PeriodData& current_blk, uint3
   return decodeDistributionStats(plan.distribution_stats);
 }
 
-FinalChainPublicationRewardsStats Stats::processStatsForFinalChainPublication(
-    const PeriodData& current_blk, uint32_t blocks_per_year, const std::vector<gas_t>& trxs_gas_used) {
-  auto fact = makeProcessFact(current_blk, blocks_per_year, trxs_gas_used);
-  auto plan = rust_stats_->preview_finalized_period_rewards_stats(std::move(fact));
-  if (plan.status != kRewardsStatsApplied) {
-    throw rewardsStatsError("planner rejected period " + std::to_string(plan.current_period) + ": " +
-                            std::string(plan.error_code));
-  }
-
-  FinalChainPublicationRewardsStats result;
-  result.distribution_stats = decodeDistributionStats(plan.distribution_stats);
-  result.storage_update.current_period = plan.current_period;
-  result.storage_update.cache_current_period = plan.cache_current_period;
-  result.storage_update.clear_cached_stats = plan.clear_cached_stats;
-  if (plan.cache_current_period) {
-    result.storage_update.current_block_stats_rlp = plan.current_block_stats_rlp;
-  }
-  pending_publication_plan_.emplace(std::move(plan));
-  return result;
-}
-
-void Stats::commitStatsAfterFinalChainPublication() {
-  if (!pending_publication_plan_) {
-    throw rewardsStatsError("cannot commit publication rewards stats without a pending plan");
-  }
-  const auto& plan = *pending_publication_plan_;
-  auto result = rust_stats_->rewards_stats_runtime_commit_process_result(plan);
-  if (result.status != kRewardsStatsApplied) {
-    throw rewardsStatsError("runtime commit rejected period " + std::to_string(result.current_period) + ": " +
-                            std::string(result.error_code));
-  }
-  if (plan.cache_current_period) {
-    cacheStatsView(plan.current_period, plan.current_block_stats_rlp);
-  } else if (plan.clear_cached_stats) {
-    replaceCacheView(plan.distribution_stats);
-  }
-  pending_publication_plan_.reset();
-}
-
 void Stats::clear(uint64_t current_period) {
   const auto frequency = kHardforksConfig.getRewardsDistributionFrequency(current_period);
   if (frequency > 1 && current_period % frequency == 0) {
@@ -144,14 +105,6 @@ void Stats::clear(uint64_t current_period) {
     }
     blocks_stats_.clear();
     return;
-  }
-  rust_stats_->rewards_stats_runtime_clear_committed(current_period);
-}
-
-void Stats::clearCommittedAfterFinalChainPublication(uint64_t current_period) {
-  const auto frequency = kHardforksConfig.getRewardsDistributionFrequency(current_period);
-  if (frequency > 1 && current_period % frequency == 0) {
-    blocks_stats_.clear();
   }
   rust_stats_->rewards_stats_runtime_clear_committed(current_period);
 }

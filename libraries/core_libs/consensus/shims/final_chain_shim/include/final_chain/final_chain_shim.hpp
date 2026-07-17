@@ -16,7 +16,6 @@
 #include "config/config.hpp"
 #include "final_chain/data.hpp"
 #include "final_chain/state_api.hpp"
-#include "rewards/rewards_stats.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 
@@ -140,18 +139,18 @@ class FinalChain {
   /**
    * Thin adapter for the external EVM `StateAPI` client used by Rust-enabled FinalChain publication.
    *
-   * Inputs are Rust bridge request DTOs plus the legacy C++ transaction/reward material that the external executor
-   * still requires. Outputs are Rust bridge report DTOs and temporary C++ receipts needed to preserve the public
-   * `FinalizationResult` surface. The adapter is the only Rust-mode finalization helper that may execute arbitrary EVM
-   * work, query bridge-contract state, distribute rewards in `StateAPI`, or commit `state_db/`; it does not publish
-   * Rust FinalChain storage or decide consensus session state.
+   * Inputs are Rust bridge request DTOs plus the legacy C++ transaction material that the external executor still
+   * requires. Reward statistics arrive as Rust-produced canonical RLP and are decoded only inside the rewards call.
+   * Outputs are Rust bridge report DTOs and temporary C++ receipts needed to preserve the public `FinalizationResult`
+   * surface. The adapter is the only Rust-mode finalization helper that may execute arbitrary EVM work, query
+   * bridge-contract state, distribute rewards in `StateAPI`, or commit `state_db/`; it does not publish Rust FinalChain
+   * storage or decide consensus session state.
    */
   class ExternalEvmStateApiClient {
    public:
     struct ExecutionOutcome {
       rustaxa::FinalChainEvmExecutionReport report;
       TransactionReceipts receipts;
-      std::vector<gas_t> transaction_gas_used;
     };
 
     struct RewardsOutcome {
@@ -168,8 +167,15 @@ class FinalChain {
                                          const std::vector<SharedTransaction>& transactions, const addr_t& beneficiary,
                                          uint64_t block_gas_limit, uint64_t timestamp);
 
-    RewardsOutcome distributeRewards(const rustaxa::FinalChainEvmRewardsRequest& request,
-                                     const std::vector<rewards::BlockStats>& rewards_stats);
+    /**
+     * Executes only the external `StateAPI` rewards-distribution effect requested by Rust.
+     *
+     * Rust supplies canonical RLP for the complete ordered distribution-stat set. This adapter decodes those values
+     * into temporary legacy `BlockStats` objects only for the duration of `StateAPI::distribute_rewards`, then returns
+     * the resulting state root and total reward correlated to the request. Malformed RLP and StateAPI failures
+     * propagate as exceptions; no Rust FinalChain storage or rewards-cache state is mutated here.
+     */
+    RewardsOutcome distributeRewards(const rustaxa::FinalChainEvmRewardsRequest& request);
 
     rustaxa::FinalChainExternalEvmStateCommitResult commitState();
 
@@ -203,23 +209,22 @@ class FinalChain {
    * Complete any Rust-owned external-EVM FinalChain publication left pending by
    * a crash after `StateAPI::transition_state_commit()`.
    *
-   * The Rust recovery path owns marker validation and storage publication. This
-   * shim supplies only the committed `StateAPI` descriptor and returns its block
-   * number so rewards-stat startup can load cache state after recovery.
+   * The Rust recovery path owns marker validation, rewards-cache recovery, and storage publication. This shim supplies
+   * only the committed `StateAPI` descriptor and returns after Rust accepts or rejects that descriptor.
    */
-  EthBlockNumber recoverExternalEvmPendingPublication();
+  void recoverExternalEvmPendingPublication();
 
   /**
    * Execute and publish an external-EVM FinalChain session.
    *
    * Rust owns request identity, report validation, publication planning, and FinalChain storage writes. This shim
    * method owns only the temporary C++ executor side: bridge-contract state fact collection, `StateAPI` transaction
-   * execution, rewards distribution, and staged `StateAPI` lifecycle commit.
+   * execution, local RLP-to-`BlockStats` rewards materialization, rewards distribution, and staged `StateAPI` lifecycle
+   * commit. Rust owns rewards-stat planning, cache mutation, persistence, and publication recovery.
    */
   std::shared_ptr<const FinalizationResult> finalizeExternalEvm(
       rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, rustaxa::FinalChainExecutionStep initial_step,
-      PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t blocks_per_year,
-      std::shared_ptr<DagBlock>&& anchor);
+      PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, std::shared_ptr<DagBlock>&& anchor);
 
   std::shared_ptr<DbStorage> db_;
   std::optional<::rust::Box<rustaxa::BridgeFinalChain>> rust_final_chain_;
@@ -230,7 +235,6 @@ class FinalChain {
   mutable std::mutex state_api_mutex_;
   StateAPI state_api_;
   ExternalEvmStateApiClient external_evm_state_api_;
-  rewards::Stats rewards_;
   std::atomic<uint64_t> num_executed_dag_blk_ = 0;
   std::atomic<uint64_t> num_executed_trx_ = 0;
   const taraxa::FullNodeConfig& config_;

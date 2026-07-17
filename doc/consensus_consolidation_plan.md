@@ -619,12 +619,14 @@ Implementation notes:
   `make rewrite-validate-smoke`. Build metadata and archive audits found no legacy queue source or symbols in Rust mode.
   The all-Rust-off build compiled the untouched `transaction_queue.cpp`, but an unrelated pre-existing missing
   PillarChainManager API in `get_pillar_votes_bundle_packet_handler.cpp` blocked linking the pure-C++ transaction tests.
-- `rewards_stats_shim` is a standalone FinalChain-owned overlay and no longer needs a separate feature boundary or
-  legacy `StatsOld` scaffold. `RUSTAXA_ENABLE_REWARDS_STATS` is retired because RewardsStats has no independent caller
-  and Rust FinalChain unconditionally uses its publication API. FinalChain-enabled builds exclude the untouched legacy
-  `rewards_stats.cpp` and compile only the Rust-backed facade; FinalChain-disabled and pure-C++ reference builds retain
-  the original header/source. The live facade remains until the external `StateAPI::distribute_rewards` boundary no
-  longer requires C++ `BlockStats` materialization and FinalChain publication sequencing.
+- `rewards_stats_shim` is a standalone compatibility overlay and no longer needs a separate feature boundary or legacy
+  `StatsOld` scaffold. `RUSTAXA_ENABLE_REWARDS_STATS` remains retired. Production FinalChain no longer constructs the
+  facade: Rust plans external-EVM rewards from the validated execution report, binds the plan to the session/head/runtime
+  generation, publishes its cache mutation atomically, audits matching durable publications, and installs only
+  head-stable monotonic runtime snapshots after live or recovered publication. Planning fails closed if durable and
+  runtime heads differ. C++ decodes only Rust-supplied distribution RLP for `StateAPI::distribute_rewards`; no rewards
+  storage-update DTO or commit/clear acknowledgement crosses that boundary. The facade and
+  `BridgeRewardsStatsRuntime` remain only for stable public compatibility tests.
   Validation passed 12 focused Rust consensus rewards tests, seven Rust bridge rewards tests, two C++/Rust rewards
   bridge parity tests, all nine storage bridge tests, all seven `rewards_stats_test` cases, all 17 `final_chain_test`
   cases, all 50 RPC cases, `make rewrite-validate-final-chain`, `make rewrite-validate-consensus`, and startup smoke.
@@ -2548,11 +2550,11 @@ Implementation status:
   bridge wrapper are also deleted. Rewards-stat storage writes now enter through the dedicated storage-shim batch
   appender for staged compatibility writes, while direct owned-storage apply coverage calls the native consensus helper
   from bridge-module tests instead of preserving a bridge-shaped wrapper.
-- FinalChain rewards-stat publication no longer exposes the full `RewardsStatsProcessResult` through
-  `FinalChainPublicationRewardsStats`. The rewards shim keeps the previewed process plan as internal pending state and
-  FinalChain receives only decoded distribution stats plus the storage-update DTO that `BridgeConsensusExecutionApi`
-  needs for the atomic publication batch. The C++ commit call is now a zero-argument acknowledgement after Rust
-  FinalChain publication succeeds.
+- FinalChain rewards-stat publication is fully session-owned in Rust. The validated execution report prepares the
+  distribution and cache plan against the exact request, period, prior head, and runtime generation; the publication
+  identity covers the cache mutation. C++ receives only distribution-stat RLP for temporary `BlockStats`
+  materialization at `StateAPI`, while Rust attaches, publishes, audits, and reloads the durable cache. The former
+  `FinalChainExternalEvmRewardsStatsUpdate` carrier and C++ commit/clear acknowledgements are deleted.
 - Transaction-manager Rust-mode expired non-finalized cleanup now deletes pending transaction storage rows through a
   native `rustaxa-consensus` batch helper before mutating the live sidecar. This closes the Rust shim gap where
   `removeNonFinalizedTransactions` previously cleared only sidecar state while the legacy C++ implementation also

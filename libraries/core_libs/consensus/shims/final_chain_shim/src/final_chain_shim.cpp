@@ -11,6 +11,7 @@
 #include "common/encoding_solidity.hpp"
 #include "final_chain/final_chain.hpp"
 #include "libdevcore/CommonData.h"
+#include "rewards/block_stats.hpp"
 #include "transaction/receipt.hpp"
 #include "transaction/system_transaction.hpp"
 
@@ -377,10 +378,8 @@ FinalChain::FinalChain(const std::shared_ptr<DbStorage>& db, const taraxa::FullN
       state_api_([this](auto n) { return blockHash(n).value_or(ZeroHash()); }, config.genesis.state,
                  config.opts_final_chain, {db->stateDbStoragePath().string()}),
       external_evm_state_api_(state_api_, state_api_mutex_),
-      rewards_(
-          config.genesis.pbft.committee_size, config.genesis.state.hardforks, db_,
-          [this](EthBlockNumber n) { return dposEligibleTotalVoteCount(n); }, recoverExternalEvmPendingPublication()),
       config_(config) {
+  recoverExternalEvmPendingPublication();
   delegation_delay_ = config.genesis.state.dpos.delegation_delay;
   block_gas_limit_ = config.genesis.pbft.gas_limit;
   max_levels_per_period_ = config.max_levels_per_period;
@@ -458,14 +457,12 @@ FinalChain::ExternalEvmStateApiClient::ExecutionOutcome FinalChain::ExternalEvmS
 
   ExecutionOutcome outcome;
   outcome.receipts.reserve(exec_results.size());
-  outcome.transaction_gas_used.reserve(exec_results.size());
   gas_t cumulative_gas_used = 0;
   for (const auto& r : exec_results) {
     LogEntries logs;
     logs.reserve(r.logs.size());
     std::transform(r.logs.cbegin(), r.logs.cend(), std::back_inserter(logs),
                    [](const auto& l) { return LogEntry{l.address, l.topics, l.data}; });
-    outcome.transaction_gas_used.push_back(r.gas_used);
     outcome.receipts.emplace_back(TransactionReceipt{
         static_cast<uint8_t>(r.code_err.empty() && r.consensus_err.empty()),
         r.gas_used,
@@ -479,7 +476,14 @@ FinalChain::ExternalEvmStateApiClient::ExecutionOutcome FinalChain::ExternalEvmS
 }
 
 FinalChain::ExternalEvmStateApiClient::RewardsOutcome FinalChain::ExternalEvmStateApiClient::distributeRewards(
-    const rustaxa::FinalChainEvmRewardsRequest& request, const std::vector<rewards::BlockStats>& rewards_stats) {
+    const rustaxa::FinalChainEvmRewardsRequest& request) {
+  std::vector<rewards::BlockStats> rewards_stats;
+  rewards_stats.reserve(request.distribution_stats.size());
+  for (const auto& encoded_stats : request.distribution_stats) {
+    const auto encoded_bytes = into_bytes(encoded_stats.data);
+    rewards_stats.push_back(util::rlp_dec<rewards::BlockStats>(dev::RLP(encoded_bytes)));
+  }
+
   h256 state_root;
   u256 total_reward;
   {
@@ -584,7 +588,7 @@ bool FinalChain::ExternalEvmStateApiClient::accountHasCode(EthBlockNumber block_
   return account && account->code_size;
 }
 
-EthBlockNumber FinalChain::recoverExternalEvmPendingPublication() {
+void FinalChain::recoverExternalEvmPendingPublication() {
   const auto state_descriptor = external_evm_state_api_.lastCommittedStateDescriptor();
   auto recovery_report = rust_final_chain_.value()->recover_external_evm_pending_publication(
       state_descriptor.blk_num, into_bytes_array(state_descriptor.state_root));
@@ -592,7 +596,6 @@ EthBlockNumber FinalChain::recoverExternalEvmPendingPublication() {
     throw DbException("FinalChain startup rejected Rust external EVM publication recovery: " +
                       std::string(recovery_report.error_code));
   }
-  return state_descriptor.blk_num;
 }
 
 void FinalChain::stop() {}
@@ -608,7 +611,7 @@ std::future<std::shared_ptr<const FinalizationResult>> FinalChain::finalize(
   if (step.action == kFinalChainExecutionActionProvideSystemTransactions ||
       step.action == kFinalChainExecutionActionExecuteExternalEvm) {
     auto result = finalizeExternalEvm(std::move(session), std::move(step), std::move(period_data),
-                                      std::move(finalized_dag_blk_hashes), blocks_per_year, std::move(anchor));
+                                      std::move(finalized_dag_blk_hashes), std::move(anchor));
     return ready_finalization_result(std::move(result));
   }
   if (step.action == kFinalChainExecutionActionReject) {
@@ -654,7 +657,7 @@ std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
       config_.genesis.state.hardforks.ficus_hf.isPillarBlockPeriod(request.period + delegationDelay());
   auto plan = rust_execution_api_.value()->consensus_execution_plan_system_transactions(
       external_evm_state_api_.collectSystemTransactionFacts(request, is_pillar_block_period, block_gas_limit_,
-                                                           bridge_contract_address));
+                                                            bridge_contract_address));
   if (plan.request_id != request.request_id || plan.period != request.period) {
     throw DbException("FinalChain::makeSystemTransactions Rust plan identity mismatch");
   }
@@ -669,8 +672,7 @@ std::vector<SharedTransaction> FinalChain::makeSystemTransactions(
 
 std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     rust::Box<rustaxa::BridgeFinalChainExecutionSession> session, rustaxa::FinalChainExecutionStep step,
-    PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, uint32_t blocks_per_year,
-    std::shared_ptr<DagBlock>&& anchor) {
+    PeriodData&& period_data, std::vector<h256>&& finalized_dag_blk_hashes, std::shared_ptr<DagBlock>&& anchor) {
   block_applying_emitter_.emit(lastBlockNumber() + 1);
 
   auto all_transactions = period_data.transactions;
@@ -701,17 +703,14 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
   auto execution = external_evm_state_api_.executeTransactions(step.evm_request, all_transactions,
                                                                period_data.pbft_blk->getBeneficiary(), block_gas_limit_,
                                                                period_data.pbft_blk->getTimestamp());
-  step =
-      rust_execution_api_.value()->consensus_execution_report_execution_result(*session, std::move(execution.report));
+  step = rust_execution_api_.value()->consensus_execution_report_execution_result(*rust_final_chain_.value(), *session,
+                                                                                  std::move(execution.report));
   if (step.action != kFinalChainExecutionActionDistributeExternalEvmRewards) {
     throw DbException("FinalChain::finalize expected external EVM rewards action, got " + std::to_string(step.action) +
                       ": " + std::string(step.error_code));
   }
 
-  auto rewards_stats =
-      rewards_.processStatsForFinalChainPublication(period_data, blocks_per_year, execution.transaction_gas_used);
-  auto rewards_execution =
-      external_evm_state_api_.distributeRewards(step.evm_rewards_request, rewards_stats.distribution_stats);
+  auto rewards_execution = external_evm_state_api_.distributeRewards(step.evm_rewards_request);
   auto commit_plan = rust_execution_api_.value()->consensus_execution_report_rewards_result(
       *session, std::move(rewards_execution.report));
   if (!commit_plan.error_code.empty()) {
@@ -719,12 +718,9 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
                       std::string(commit_plan.error_code));
   }
   auto state_commit_intent = rust_execution_api_.value()->consensus_execution_prepare_external_evm_state_commit(
-      *rust_final_chain_.value(),
-      *session,
-      std::move(rewards_stats.storage_update),
+      *rust_final_chain_.value(), *session,
       rustaxa::FinalChainProposalPeriodDagLevelUpdate{
-          .has_update = !!anchor,
-          .level = anchor ? anchor->getLevel() + max_levels_per_period_ : 0});
+          .has_update = !!anchor, .level = anchor ? anchor->getLevel() + max_levels_per_period_ : 0});
   if (state_commit_intent.status != kFinalChainEvmStateCommitIntentReadyToCommit ||
       !state_commit_intent.error_code.empty()) {
     throw DbException("FinalChain::finalize Rust external EVM state commit intent failed: " +
@@ -759,15 +755,12 @@ std::shared_ptr<const FinalizationResult> FinalChain::finalizeExternalEvm(
     throw DbException("FinalChain::finalize Rust external EVM publication rejected: " +
                       std::string(publication_report.error_code));
   }
-  rewards_.commitStatsAfterFinalChainPublication();
   auto publication_complete_step = rust_execution_api_.value()->consensus_execution_next_execution_request(*session);
   if (publication_complete_step.action != kFinalChainExecutionActionComplete) {
     throw DbException("FinalChain::finalize expected completed external EVM publication session, got " +
                       std::to_string(publication_complete_step.action) + ": " +
                       std::string(publication_complete_step.error_code));
   }
-  rewards_.clearCommittedAfterFinalChainPublication(period_data.pbft_blk->getPeriod());
-
   num_executed_dag_blk_ = publication_report.executed_dag_block_count;
   num_executed_trx_ = publication_report.executed_transaction_count;
 

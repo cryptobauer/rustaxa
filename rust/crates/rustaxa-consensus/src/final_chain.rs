@@ -15,7 +15,8 @@ use crate::final_chain_execution::{
     FinalChainExternalEvmCommittedStateDescriptor, FinalChainExternalEvmPublicationAuditReport,
     FinalChainExternalEvmPublicationPlan, FinalChainExternalEvmPublicationReport,
     FinalChainExternalEvmRewardsStatsUpdate, FinalChainExternalEvmStateCommitIntent,
-    final_chain_external_evm_commit_decision_id, final_chain_external_evm_publication_plan_id,
+    FinalChainPreparedExternalEvmRewardsStatsPlan, final_chain_external_evm_commit_decision_id,
+    final_chain_external_evm_publication_plan_id,
 };
 use crate::rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
@@ -223,7 +224,7 @@ pub struct FinalChain {
     /// The runtime is loaded from persisted `BlockRewardsStats` rows on startup
     /// and replaced only after a finalized block and its rewards-cache mutation
     /// have committed successfully.
-    rewards_stats_runtime: Mutex<RewardsStatsRuntime>,
+    rewards_stats_runtime: Mutex<FinalChainRewardsStatsRuntimeState>,
     /// Account snapshots keyed by finalized block number for proposal-period
     /// account reads. Missing accounts remain absent from each snapshot.
     account_snapshots: Mutex<HashMap<u64, HashMap<[u8; 20], Account>>>,
@@ -299,6 +300,15 @@ struct NativeRewardsStatsPlan {
     distribution_stats: Vec<RewardsBlockDistribution>,
     storage_update: Option<OwnedRewardsStatsUpdate>,
     runtime_after_commit: RewardsStatsRuntime,
+    expected_prior_head: u64,
+    expected_runtime_generation: u64,
+}
+
+#[derive(Clone, Debug)]
+struct FinalChainRewardsStatsRuntimeState {
+    durable_head: u64,
+    generation: u64,
+    runtime: RewardsStatsRuntime,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -512,7 +522,8 @@ impl FinalChain {
 
         let dag_vdf_sortition_max_vote_count =
             dpos_vdf_sortition_max_vote_count(&genesis_dpos_config)?;
-        let rewards_stats_runtime = rewards_stats_runtime_from_storage(&storage, &rewards_config)?;
+        let (rewards_stats_runtime_head, rewards_stats_runtime) =
+            rewards_stats_runtime_from_storage(&storage, &rewards_config, true)?;
         let dpos_delegation_locking_period = rewards_config.dpos_delegation_locking_period;
         let dpos_cornus_period = rewards_config.cornus_period;
         let dpos_cornus_delegation_locking_period = rewards_config.cornus_delegation_locking_period;
@@ -544,7 +555,11 @@ impl FinalChain {
             dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
                 .dag_vdf_sortition_total_vote_count_until_period,
             rewards_config,
-            rewards_stats_runtime: Mutex::new(rewards_stats_runtime),
+            rewards_stats_runtime: Mutex::new(FinalChainRewardsStatsRuntimeState {
+                durable_head: rewards_stats_runtime_head,
+                generation: 0,
+                runtime: rewards_stats_runtime,
+            }),
             account_snapshots: Mutex::new(HashMap::from([(0, genesis_accounts.clone())])),
             latest_account_snapshot_block: Mutex::new(0),
             dpos_snapshots: Mutex::new(HashMap::from([(
@@ -1411,10 +1426,19 @@ impl FinalChain {
             if existing_hash == H256::from(marker.plan.block_hash)
                 && self.block_number(marker.plan.block_hash)? == Some(marker.plan.period)
             {
+                if !self
+                    .verify_external_evm_rewards_stats_update(&marker.plan.rewards_stats_update)?
+                {
+                    return Ok(rejected_external_evm_publication_report(
+                        &marker.plan,
+                        "FINAL_CHAIN_EVM_PENDING_PUBLICATION_REWARDS_STATS_MISMATCH",
+                    ));
+                }
                 let execution_status = self.execution_status()?;
                 self.storage
                     .final_chain()
                     .delete_external_evm_pending_publication()?;
+                self.reload_rewards_stats_runtime_after_publication()?;
                 return Ok(FinalChainExternalEvmPublicationReport {
                     request_id: marker.plan.request_id,
                     plan_id: marker.plan.plan_id,
@@ -1580,7 +1604,14 @@ impl FinalChain {
             let existing_hash =
                 h256_from_slice(&existing_hash, "external EVM existing block hash")?;
             if existing_hash == plan_hash && indexed_period_for_hash == Some(plan.period) {
+                if !self.verify_external_evm_rewards_stats_update(&plan.rewards_stats_update)? {
+                    return Ok(rejected_external_evm_publication_report(
+                        &plan,
+                        "FINAL_CHAIN_EVM_PUBLICATION_REWARDS_STATS_MISMATCH",
+                    ));
+                }
                 let execution_status = self.execution_status()?;
+                self.reload_rewards_stats_runtime_after_publication()?;
                 return Ok(FinalChainExternalEvmPublicationReport {
                     request_id: plan.request_id,
                     plan_id: plan.plan_id,
@@ -1666,6 +1697,7 @@ impl FinalChain {
                 true,
             )?;
         self.insert_dpos_snapshot(plan.period, dpos_snapshot)?;
+        self.reload_rewards_stats_runtime_after_publication()?;
 
         Ok(FinalChainExternalEvmPublicationReport {
             request_id: plan.request_id,
@@ -1818,6 +1850,10 @@ impl FinalChain {
                 "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PROPOSAL_PERIOD_MAPPING_MISMATCH",
             );
         }
+        ensure_audit!(
+            self.verify_external_evm_rewards_stats_update(&plan.rewards_stats_update)?,
+            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_REWARDS_STATS_MISMATCH",
+        );
         ensure_audit!(
             self.storage
                 .final_chain()
@@ -2056,7 +2092,12 @@ impl FinalChain {
             )?;
         self.insert_account_snapshot(pbft.period, account_snapshot)?;
         self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
-        self.commit_rewards_stats_runtime(rewards_stats_plan.runtime_after_commit)?;
+        self.commit_rewards_stats_runtime(
+            pbft.period,
+            rewards_stats_plan.runtime_after_commit,
+            rewards_stats_plan.expected_prior_head,
+            rewards_stats_plan.expected_runtime_generation,
+        )?;
 
         Ok((full_header.into_vec(), encoded_receipts))
     }
@@ -4660,6 +4701,137 @@ impl FinalChain {
         Ok(())
     }
 
+    /// Plans the rewards-stat mutation for one validated external-EVM report.
+    ///
+    /// The live runtime is cloned while its mutex is held briefly. DPoS and
+    /// storage reads, deterministic planning, and all executor work happen
+    /// outside that lock. The returned plan is bound to the observed head and
+    /// runtime generation and remains owned by the execution session.
+    pub(crate) fn plan_external_evm_rewards_stats(
+        &self,
+        request_id: [u8; 32],
+        mut fact: FinalizedRewardsPeriodFact,
+    ) -> Result<FinalChainPreparedExternalEvmRewardsStatsPlan, anyhow::Error> {
+        let expected_prior_head = self.last_block_number()?;
+        if fact.period != expected_prior_head.saturating_add(1) {
+            anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_HEAD_MISMATCH");
+        }
+        fact.dpos_eligible_total_vote_count = if let Some(vote) = fact.cert_votes.first() {
+            self.dpos_eligible_total_vote_count(vote.period.saturating_sub(1))?
+        } else {
+            u64::from(self.rewards_config.committee_size)
+        };
+        let (expected_runtime_generation, mut runtime) = {
+            let state = self
+                .rewards_stats_runtime
+                .lock()
+                .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?;
+            if state.durable_head != expected_prior_head {
+                anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_RUNTIME_HEAD_MISMATCH");
+            }
+            (state.generation, state.runtime.clone())
+        };
+        let plan = runtime.process_period(fact);
+        if plan.status != RewardsStatsStatus::Applied {
+            anyhow::bail!("{}", plan.error_code);
+        }
+        if self.last_block_number()? != expected_prior_head {
+            anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_HEAD_CHANGED");
+        }
+        let state = self
+            .rewards_stats_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?;
+        if state.durable_head != expected_prior_head {
+            anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_RUNTIME_HEAD_CHANGED");
+        }
+        if state.generation != expected_runtime_generation {
+            anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_RUNTIME_CHANGED");
+        }
+        Ok(FinalChainPreparedExternalEvmRewardsStatsPlan {
+            request_id,
+            period: plan.current_period,
+            expected_prior_head,
+            expected_runtime_generation,
+            distribution_stats: plan.distribution_stats,
+            storage_update: FinalChainExternalEvmRewardsStatsUpdate {
+                current_period: plan.current_period,
+                cache_current_period: plan.cache_current_period,
+                clear_cached_stats: plan.clear_cached_stats,
+                current_block_stats_rlp: if plan.cache_current_period {
+                    plan.current_block_stats_rlp
+                } else {
+                    Vec::new()
+                },
+            },
+        })
+    }
+
+    /// Revalidates a session-owned rewards plan immediately before publication
+    /// preparation and returns its Rust-owned storage mutation.
+    pub(crate) fn validate_external_evm_rewards_stats_plan(
+        &self,
+        plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
+    ) -> Result<FinalChainExternalEvmRewardsStatsUpdate, anyhow::Error> {
+        if plan.period != plan.expected_prior_head.saturating_add(1)
+            || self.last_block_number()? != plan.expected_prior_head
+        {
+            anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_HEAD_MISMATCH");
+        }
+        let state = self
+            .rewards_stats_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?;
+        if state.durable_head != plan.expected_prior_head {
+            anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_RUNTIME_HEAD_MISMATCH");
+        }
+        if state.generation != plan.expected_runtime_generation {
+            anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_RUNTIME_GENERATION_MISMATCH");
+        }
+        Ok(plan.storage_update.clone())
+    }
+
+    fn verify_external_evm_rewards_stats_update(
+        &self,
+        update: &FinalChainExternalEvmRewardsStatsUpdate,
+    ) -> Result<bool, anyhow::Error> {
+        let rows = self.storage.metadata().block_rewards_stats_rlp()?;
+        if update.clear_cached_stats {
+            return Ok(rows.is_empty());
+        }
+        if update.cache_current_period {
+            return Ok(rows.iter().any(|(period, data)| {
+                *period == update.current_period && *data == update.current_block_stats_rlp
+            }));
+        }
+        Ok(true)
+    }
+
+    fn reload_rewards_stats_runtime_after_publication(&self) -> Result<(), anyhow::Error> {
+        let (durable_head, runtime) =
+            rewards_stats_runtime_from_storage(&self.storage, &self.rewards_config, false)?;
+        self.install_rewards_stats_runtime_snapshot(durable_head, runtime)?;
+        Ok(())
+    }
+
+    fn install_rewards_stats_runtime_snapshot(
+        &self,
+        durable_head: u64,
+        runtime: RewardsStatsRuntime,
+    ) -> Result<bool, anyhow::Error> {
+        let mut state = self
+            .rewards_stats_runtime
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?;
+        if durable_head < state.durable_head {
+            return Ok(false);
+        }
+        state.durable_head = durable_head;
+        state.runtime = runtime;
+        state.generation = state.generation.wrapping_add(1);
+        Ok(true)
+    }
+
     /// Plans rewards-stat lifecycle work for one native finalized period.
     ///
     /// The returned plan contains DPoS commission rewards extracted from the
@@ -4675,6 +4847,10 @@ impl FinalChain {
         blocks_per_year: u32,
         cert_votes: Vec<RewardCertVoteFact>,
     ) -> Result<NativeRewardsStatsPlan, anyhow::Error> {
+        let expected_prior_head = self.last_block_number()?;
+        if pbft.period != expected_prior_head.saturating_add(1) {
+            anyhow::bail!("FINAL_CHAIN_NATIVE_REWARDS_HEAD_MISMATCH");
+        }
         let gas_used_by_hash = transaction_fees
             .iter()
             .map(|(hash, fee)| {
@@ -4721,11 +4897,16 @@ impl FinalChain {
                 .collect(),
             cert_votes,
         };
-        let mut runtime = self
-            .rewards_stats_runtime
-            .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?
-            .clone();
+        let (expected_runtime_generation, mut runtime) = {
+            let state = self
+                .rewards_stats_runtime
+                .lock()
+                .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?;
+            if state.durable_head != expected_prior_head {
+                anyhow::bail!("FINAL_CHAIN_NATIVE_REWARDS_RUNTIME_HEAD_MISMATCH");
+            }
+            (state.generation, state.runtime.clone())
+        };
         let plan = runtime.process_period(fact);
         if plan.status != RewardsStatsStatus::Applied {
             anyhow::bail!(
@@ -4752,19 +4933,37 @@ impl FinalChain {
             distribution_stats,
             storage_update,
             runtime_after_commit: runtime,
+            expected_prior_head,
+            expected_runtime_generation,
         })
     }
 
     fn commit_rewards_stats_runtime(
         &self,
+        committed_head: u64,
         runtime_after_commit: RewardsStatsRuntime,
-    ) -> Result<(), anyhow::Error> {
-        *self
+        expected_prior_head: u64,
+        expected_runtime_generation: u64,
+    ) -> Result<bool, anyhow::Error> {
+        if self.last_block_number()? != committed_head {
+            anyhow::bail!("FINAL_CHAIN_NATIVE_REWARDS_COMMITTED_HEAD_MISMATCH");
+        }
+        let mut state = self
             .rewards_stats_runtime
             .lock()
-            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))? =
-            runtime_after_commit;
-        Ok(())
+            .map_err(|_| anyhow::anyhow!("final-chain rewards stats runtime lock poisoned"))?;
+        if state.durable_head > committed_head {
+            return Ok(false);
+        }
+        if state.durable_head != expected_prior_head
+            || state.generation != expected_runtime_generation
+        {
+            anyhow::bail!("FINAL_CHAIN_NATIVE_REWARDS_RUNTIME_CHANGED");
+        }
+        state.durable_head = committed_head;
+        state.runtime = runtime_after_commit;
+        state.generation = state.generation.wrapping_add(1);
+        Ok(true)
     }
 }
 
@@ -5171,33 +5370,54 @@ fn decode_u64_le(raw: &[u8], field: &str) -> Result<u64, anyhow::Error> {
 fn rewards_stats_runtime_from_storage(
     storage: &Arc<Storage>,
     rewards_config: &FinalChainRewardsConfig,
-) -> Result<RewardsStatsRuntime, anyhow::Error> {
-    let last_block_number = storage
-        .final_chain()
-        .meta_value(FinalChain::DB_META_LAST_NUMBER)?
-        .map(|raw| decode_u64_le(&raw, "final_chain_meta/LAST_NUMBER"))
-        .transpose()?
-        .unwrap_or_default();
+    cleanup_stale_boundary_rows: bool,
+) -> Result<(u64, RewardsStatsRuntime), anyhow::Error> {
+    let (last_block_number, mut persisted_rows) = loop {
+        let head_before = storage
+            .final_chain()
+            .meta_value(FinalChain::DB_META_LAST_NUMBER)?
+            .map(|raw| decode_u64_le(&raw, "final_chain_meta/LAST_NUMBER"))
+            .transpose()?
+            .unwrap_or_default();
+        let rows = storage.metadata().block_rewards_stats_rlp()?;
+        let head_after = storage
+            .final_chain()
+            .meta_value(FinalChain::DB_META_LAST_NUMBER)?
+            .map(|raw| decode_u64_le(&raw, "final_chain_meta/LAST_NUMBER"))
+            .transpose()?
+            .unwrap_or_default();
+        if head_before == head_after {
+            break (head_before, rows);
+        }
+    };
     let frequency = rewards_distribution_frequency(
         &rewards_config.rewards_distribution_frequency,
         last_block_number,
     );
-    let persisted_stats = if last_block_number != 0
+    if last_block_number != 0
         && frequency > 1
         && last_block_number.is_multiple_of(u64::from(frequency))
     {
-        storage.metadata().clear_block_rewards_stats()?;
-        Vec::new()
-    } else {
-        storage
-            .metadata()
-            .block_rewards_stats_rlp()?
-            .into_iter()
-            .map(|(period, data)| RewardsStatsPeriodRlp { period, data })
-            .collect()
-    };
+        if cleanup_stale_boundary_rows && !persisted_rows.is_empty() {
+            storage.metadata().clear_block_rewards_stats()?;
+            let head_after_clear = storage
+                .final_chain()
+                .meta_value(FinalChain::DB_META_LAST_NUMBER)?
+                .map(|raw| decode_u64_le(&raw, "final_chain_meta/LAST_NUMBER"))
+                .transpose()?
+                .unwrap_or_default();
+            if head_after_clear != last_block_number {
+                anyhow::bail!("FINAL_CHAIN_REWARDS_RUNTIME_STARTUP_HEAD_CHANGED");
+            }
+        }
+        persisted_rows.clear();
+    }
+    let persisted_stats = persisted_rows
+        .into_iter()
+        .map(|(period, data)| RewardsStatsPeriodRlp { period, data })
+        .collect();
 
-    RewardsStatsRuntime::new(
+    let runtime = RewardsStatsRuntime::new(
         RewardsStatsConfig {
             committee_size: rewards_config.committee_size,
             magnolia_period: rewards_config.magnolia_period,
@@ -5205,7 +5425,8 @@ fn rewards_stats_runtime_from_storage(
         },
         rewards_frequency_rules(rewards_config),
         persisted_stats,
-    )
+    )?;
+    Ok((last_block_number, runtime))
 }
 
 fn rewards_frequency_rules(rewards_config: &FinalChainRewardsConfig) -> Vec<RewardsFrequencyRule> {
@@ -8013,6 +8234,146 @@ mod tests {
             GenesisDposConfig::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn external_evm_rewards_plan_is_head_and_generation_bound_without_live_mutation() {
+        let path = temp_db_path("external-evm-rewards-plan-binding");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain(storage, 1_000_000, 0, Vec::new(), Vec::new());
+        let fact = FinalizedRewardsPeriodFact {
+            period: 1,
+            block_author: H160::from_low_u64_be(7),
+            blocks_per_year: 1,
+            dpos_eligible_total_vote_count: 0,
+            transactions: Vec::new(),
+            dag_blocks: Vec::new(),
+            cert_votes: Vec::new(),
+        };
+
+        let plan = final_chain
+            .plan_external_evm_rewards_stats([0x44; 32], fact.clone())
+            .unwrap();
+        assert_eq!(plan.request_id, [0x44; 32]);
+        assert_eq!(plan.period, 1);
+        assert!(!plan.distribution_stats.is_empty());
+        assert_eq!(
+            final_chain.rewards_stats_runtime.lock().unwrap().generation,
+            0,
+            "planning must not mutate the live runtime"
+        );
+        final_chain
+            .validate_external_evm_rewards_stats_plan(&plan)
+            .unwrap();
+
+        final_chain.rewards_stats_runtime.lock().unwrap().generation += 1;
+        assert!(
+            final_chain
+                .validate_external_evm_rewards_stats_plan(&plan)
+                .unwrap_err()
+                .to_string()
+                .contains("RUNTIME_GENERATION_MISMATCH")
+        );
+        let generation = final_chain.rewards_stats_runtime.lock().unwrap().generation;
+        assert!(
+            final_chain
+                .plan_external_evm_rewards_stats(
+                    [0x55; 32],
+                    FinalizedRewardsPeriodFact { period: 2, ..fact },
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("HEAD_MISMATCH")
+        );
+        assert_eq!(
+            final_chain.rewards_stats_runtime.lock().unwrap().generation,
+            generation,
+            "failed planning must leave the live runtime unchanged"
+        );
+        drop(final_chain);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn rewards_runtime_rejects_stale_reload_and_durable_head_planning_window() {
+        let path = temp_db_path("rewards-runtime-stale-reload");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain(storage.clone(), 1_000_000, 0, Vec::new(), Vec::new());
+        let runtime = final_chain
+            .rewards_stats_runtime
+            .lock()
+            .unwrap()
+            .runtime
+            .clone();
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainMeta,
+                &FinalChain::DB_META_LAST_NUMBER.to_le_bytes(),
+                &2u64.to_le_bytes(),
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        assert!(
+            final_chain
+                .install_rewards_stats_runtime_snapshot(2, runtime.clone())
+                .unwrap()
+        );
+        assert!(
+            !final_chain
+                .install_rewards_stats_runtime_snapshot(1, runtime)
+                .unwrap(),
+            "an older reload snapshot must not overwrite a newer runtime"
+        );
+        assert_eq!(
+            final_chain
+                .rewards_stats_runtime
+                .lock()
+                .unwrap()
+                .durable_head,
+            2
+        );
+
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainMeta,
+                &FinalChain::DB_META_LAST_NUMBER.to_le_bytes(),
+                &3u64.to_le_bytes(),
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let error = final_chain
+            .plan_external_evm_rewards_stats(
+                [0x77; 32],
+                FinalizedRewardsPeriodFact {
+                    period: 4,
+                    block_author: H160::from_low_u64_be(7),
+                    blocks_per_year: 1,
+                    dpos_eligible_total_vote_count: 0,
+                    transactions: Vec::new(),
+                    dag_blocks: Vec::new(),
+                    cert_votes: Vec::new(),
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("RUNTIME_HEAD_MISMATCH"));
+        assert_eq!(
+            final_chain
+                .rewards_stats_runtime
+                .lock()
+                .unwrap()
+                .durable_head,
+            2,
+            "planning must not advance a lagging runtime"
+        );
+
+        drop(final_chain);
+        drop(storage);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     fn new_final_chain_with_dpos(

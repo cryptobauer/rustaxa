@@ -2,7 +2,10 @@ use crate::final_chain::{
     DPOS_CONTRACT_ADDRESS, FinalChain, SLASHING_CONTRACT_ADDRESS,
     external_evm_pending_publication_marker,
 };
-use crate::rewards_stats::RewardCertVoteFact;
+use crate::rewards_stats::{
+    FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
+    RewardsStatsPeriodRlp,
+};
 use anyhow::Context;
 use ethereum_types::{H160, H256, U256};
 use keccak_hasher::KeccakHasher;
@@ -317,6 +320,24 @@ pub struct FinalChainEvmRewardsRequest {
     pub transaction_gas_used: Vec<u64>,
     pub transaction_fees: Vec<Vec<u8>>,
     pub finalized_dag_block_count: u64,
+    /// Legacy-compatible per-period `BlockStats` RLP selected by the
+    /// FinalChain-owned rewards runtime for this distribution boundary.
+    pub distribution_stats: Vec<RewardsStatsPeriodRlp>,
+}
+
+/// Rewards-stat plan prepared by FinalChain for one exact external-EVM session.
+///
+/// The expected head and runtime generation prevent a plan from being reused
+/// after another finalization advances either durable storage or the live
+/// rewards cache. The storage mutation remains session-owned until publication.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FinalChainPreparedExternalEvmRewardsStatsPlan {
+    pub(crate) request_id: [u8; 32],
+    pub(crate) period: u64,
+    pub(crate) expected_prior_head: u64,
+    pub(crate) expected_runtime_generation: u64,
+    pub(crate) distribution_stats: Vec<RewardsStatsPeriodRlp>,
+    pub(crate) storage_update: FinalChainExternalEvmRewardsStatsUpdate,
 }
 
 /// Rewards/state-root facts returned by the external EVM executor boundary.
@@ -619,6 +640,7 @@ pub struct FinalChainExecutionSession {
     system_transactions: Vec<FinalChainEvmTransactionInput>,
     report: Option<FinalChainEvmExecutionReport>,
     rewards_request: Option<FinalChainEvmRewardsRequest>,
+    pub(crate) prepared_rewards_stats_plan: Option<FinalChainPreparedExternalEvmRewardsStatsPlan>,
     external_evm_commit_plan: Option<FinalChainExternalEvmCommitPlan>,
     external_evm_publication_plan: Option<FinalChainExternalEvmPublicationPlan>,
     external_evm_state_commit_intent: Option<FinalChainExternalEvmStateCommitIntent>,
@@ -913,6 +935,24 @@ pub fn final_chain_execution_session_report_evm(
     session: &mut FinalChainExecutionSession,
     report: FinalChainEvmExecutionReport,
 ) -> FinalChainExecutionStep {
+    final_chain_execution_session_report_evm_inner(None, session, report)
+}
+
+/// Validates an EVM report and prepares the FinalChain-owned rewards plan used
+/// by the production external-execution facade.
+pub fn final_chain_execution_session_report_evm_with_final_chain(
+    final_chain: &FinalChain,
+    session: &mut FinalChainExecutionSession,
+    report: FinalChainEvmExecutionReport,
+) -> FinalChainExecutionStep {
+    final_chain_execution_session_report_evm_inner(Some(final_chain), session, report)
+}
+
+fn final_chain_execution_session_report_evm_inner(
+    final_chain: Option<&FinalChain>,
+    session: &mut FinalChainExecutionSession,
+    report: FinalChainEvmExecutionReport,
+) -> FinalChainExecutionStep {
     let Some(request) = session.evm_request.as_ref() else {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REPORT_WITHOUT_REQUEST".to_string();
@@ -977,6 +1017,27 @@ pub fn final_chain_execution_session_report_evm(
         session.error_code = "FINAL_CHAIN_EVM_REPORT_TOTAL_GAS_MISMATCH".to_string();
         return final_chain_execution_session_next(session);
     }
+    let prepared_plan = if let Some(final_chain) = final_chain {
+        let rewards_fact = match build_external_evm_rewards_fact(&session.request, request, &report)
+        {
+            Ok(fact) => fact,
+            Err(error) => {
+                session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+                session.error_code = format!("FINAL_CHAIN_EVM_REWARDS_FACT_INVALID: {error:#}");
+                return final_chain_execution_session_next(session);
+            }
+        };
+        match final_chain.plan_external_evm_rewards_stats(request.request_id, rewards_fact) {
+            Ok(plan) => Some(plan),
+            Err(error) => {
+                session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+                session.error_code = format!("FINAL_CHAIN_EVM_REWARDS_PLAN_INVALID: {error:#}");
+                return final_chain_execution_session_next(session);
+            }
+        }
+    } else {
+        None
+    };
     let rewards_request =
         match build_external_evm_rewards_request(&session.request, request, &report) {
             Ok(request) => request,
@@ -986,8 +1047,13 @@ pub fn final_chain_execution_session_report_evm(
                 return final_chain_execution_session_next(session);
             }
         };
+    let mut rewards_request = rewards_request;
+    if let Some(plan) = prepared_plan.as_ref() {
+        rewards_request.distribution_stats = plan.distribution_stats.clone();
+    }
     session.report = Some(report);
     session.rewards_request = Some(rewards_request);
+    session.prepared_rewards_stats_plan = prepared_plan;
     session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS;
     session.error_code.clear();
     final_chain_execution_session_next(session)
@@ -1168,9 +1234,12 @@ pub fn final_chain_execution_session_request_external_evm_state_commit(
 pub fn final_chain_execution_session_prepare_external_evm_state_commit(
     final_chain: &FinalChain,
     session: &mut FinalChainExecutionSession,
-    rewards_stats_update: FinalChainExternalEvmRewardsStatsUpdate,
     proposal_period_update: FinalChainProposalPeriodDagLevelUpdate,
 ) -> Result<FinalChainExternalEvmStateCommitIntent, anyhow::Error> {
+    let prepared_rewards_stats_plan = session_external_evm_rewards_stats_plan(session)?;
+    let rewards_stats_update = final_chain
+        .validate_external_evm_rewards_stats_plan(prepared_rewards_stats_plan)
+        .map_err(|error| anyhow::anyhow!("FINAL_CHAIN_EVM_REWARDS_STATS_STALE: {error:#}"))?;
     let publication_plan =
         final_chain_execution_session_plan_external_evm_publication(final_chain, session);
     if !publication_plan.error_code.is_empty() {
@@ -1250,6 +1319,26 @@ pub fn final_chain_execution_session_prepare_external_evm_state_commit(
     }
 
     Ok(intent)
+}
+
+fn session_external_evm_rewards_stats_plan(
+    session: &FinalChainExecutionSession,
+) -> Result<&FinalChainPreparedExternalEvmRewardsStatsPlan, anyhow::Error> {
+    let plan = session
+        .prepared_rewards_stats_plan
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_EVM_REWARDS_STATS_PLAN_MISSING"))?;
+    let evm_request = session
+        .evm_request
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_EVM_REWARDS_STATS_REQUEST_MISSING"))?;
+    if plan.request_id != evm_request.request_id
+        || plan.period != evm_request.period
+        || plan.period != session.metadata.period
+    {
+        anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_STATS_SESSION_MISMATCH");
+    }
+    Ok(plan)
 }
 
 /// Validates external EVM staged-state lifecycle facts and returns the final
@@ -1745,6 +1834,7 @@ impl FinalChainExecutionSession {
                 system_transactions: Vec::new(),
                 report: None,
                 rewards_request: None,
+                prepared_rewards_stats_plan: None,
                 external_evm_commit_plan: None,
                 external_evm_publication_plan: None,
                 external_evm_state_commit_intent: None,
@@ -1777,6 +1867,7 @@ impl FinalChainExecutionSession {
             system_transactions: Vec::new(),
             report: None,
             rewards_request: None,
+            prepared_rewards_stats_plan: None,
             external_evm_commit_plan: None,
             external_evm_publication_plan: None,
             external_evm_state_commit_intent: None,
@@ -1799,6 +1890,7 @@ impl FinalChainExecutionSession {
             system_transactions: Vec::new(),
             report: None,
             rewards_request: None,
+            prepared_rewards_stats_plan: None,
             external_evm_commit_plan: None,
             external_evm_publication_plan: None,
             external_evm_state_commit_intent: None,
@@ -1894,6 +1986,51 @@ fn build_external_evm_rewards_request(
         transaction_gas_used,
         transaction_fees,
         finalized_dag_block_count: finalization_request.finalized_dag_blocks.len() as u64,
+        distribution_stats: Vec::new(),
+    })
+}
+
+fn build_external_evm_rewards_fact(
+    finalization_request: &FinalChainExecutionRequest,
+    request: &FinalChainEvmExecutionRequest,
+    report: &FinalChainEvmExecutionReport,
+) -> Result<FinalizedRewardsPeriodFact, anyhow::Error> {
+    let dpos_eligible_total_vote_count = finalization_request
+        .cert_votes
+        .first()
+        .map(|vote| vote.period.saturating_sub(1));
+    Ok(FinalizedRewardsPeriodFact {
+        period: request.period,
+        block_author: H160::from(request.block_author),
+        blocks_per_year: finalization_request.blocks_per_year,
+        // FinalChain replaces this placeholder from its period-keyed DPoS
+        // snapshot before invoking the storage-free planner.
+        dpos_eligible_total_vote_count: dpos_eligible_total_vote_count.unwrap_or_default(),
+        transactions: request
+            .transactions
+            .iter()
+            .zip(&report.results)
+            .map(|(transaction, result)| RewardTransactionFact {
+                hash: H256::from(transaction.hash),
+                gas_price: u256_from_big_endian(&transaction.gas_price),
+                gas_used: result.gas_used,
+            })
+            .collect(),
+        dag_blocks: finalization_request
+            .finalized_dag_blocks
+            .iter()
+            .map(|block| RewardDagBlockFact {
+                author: H160::from(block.author),
+                difficulty: block.difficulty,
+                transaction_hashes: block
+                    .transaction_hashes
+                    .iter()
+                    .copied()
+                    .map(H256::from)
+                    .collect(),
+            })
+            .collect(),
+        cert_votes: finalization_request.cert_votes.clone(),
     })
 }
 
@@ -2892,6 +3029,42 @@ mod tests {
         assert_eq!(rewards.evm_rewards_request.block_gas_used, 1);
         assert_eq!(rewards.evm_rewards_request.transaction_gas_used, vec![1]);
         assert_eq!(rewards.evm_rewards_request.transaction_fees, vec![vec![0]]);
+    }
+
+    #[test]
+    fn external_evm_rewards_plan_rejects_cross_session_identity() {
+        let transactions = vec![transaction(2, Some([8; 20]), vec![0xaa])];
+        let mut session = create_final_chain_execution_session(valid_request(
+            transactions,
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        ));
+        let step = provide_system_transactions(&mut session, Vec::new());
+        let tx = step.evm_request.transactions[0].clone();
+        let _ = final_chain_execution_session_report_evm(
+            &mut session,
+            FinalChainEvmExecutionReport {
+                request_id: step.evm_request.request_id,
+                status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
+                state_root: [0x11; 32],
+                cumulative_gas_used: 1,
+                results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
+            },
+        );
+        session.prepared_rewards_stats_plan = Some(FinalChainPreparedExternalEvmRewardsStatsPlan {
+            request_id: [0xff; 32],
+            period: step.evm_request.period,
+            expected_prior_head: step.evm_request.period - 1,
+            expected_runtime_generation: 0,
+            distribution_stats: Vec::new(),
+            storage_update: FinalChainExternalEvmRewardsStatsUpdate::default(),
+        });
+
+        assert_eq!(
+            session_external_evm_rewards_stats_plan(&session)
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_EVM_REWARDS_STATS_SESSION_MISMATCH"
+        );
     }
 
     #[test]
