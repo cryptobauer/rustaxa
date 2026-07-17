@@ -253,6 +253,12 @@ pub struct BridgePbftService {
     pub(crate) slashing: Option<Mutex<SlashingProofPlanner>>,
     pub(crate) storage: Option<Arc<Storage>>,
     pub(crate) bootstrap_complete: AtomicBool,
+    /// Service-owned pillar state. The pillar mutex is never acquired while a
+    /// PBFT manager guard is held and is released before returning any plan to
+    /// C++ for FinalChain, network, or executor effects.
+    pub(crate) pillar: Option<Mutex<PillarChainState>>,
+    /// Pillar replay readiness is independent from PBFT manager bootstrap.
+    pub(crate) pillar_ready: AtomicBool,
 }
 
 pub(crate) struct BridgePbftManagerGuard<'a>(MutexGuard<'a, Option<BridgePbftManagerRuntimeState>>);
@@ -283,6 +289,20 @@ impl BridgePbftService {
     pub(crate) fn accepts_live_commands(&self) -> bool {
         self.bootstrap_complete.load(Ordering::Acquire)
     }
+
+    pub(crate) fn pillar_state(
+        &self,
+        require_ready: bool,
+    ) -> anyhow::Result<MutexGuard<'_, PillarChainState>> {
+        if require_ready && !self.pillar_ready.load(Ordering::Acquire) {
+            anyhow::bail!("PBFT_SERVICE_PILLAR_UNAVAILABLE");
+        }
+        self.pillar
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_PILLAR_UNAVAILABLE"))?
+            .lock()
+            .map_err(|_| anyhow::anyhow!("PBFT service pillar lock poisoned"))
+    }
 }
 
 /// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
@@ -290,7 +310,7 @@ impl BridgePbftService {
 /// The runtime keeps pillar-vote aggregation and typed pillar-chain storage
 /// together for operations that need both, avoiding ad hoc bridge-handle
 /// composition in live consensus routes.
-pub struct BridgePillarChainRuntime {
+pub(crate) struct PillarChainState {
     pub storage: Arc<Storage>,
     pub votes: PillarVotes,
     /// Lock-protected canonical current-pillar snapshot restored at startup.
@@ -5548,28 +5568,30 @@ pub mod rustaxa_ffi {
         // Consensus pillar votes
 
         pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
-        pub fn pillar_chain_runtime_plan_block_creation(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_plan_block_creation(
+            self: &BridgePbftService,
             request: PillarBlockCreationRequest,
             current_vote_counts: Vec<PillarValidatorVoteCount>,
         ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
-        pub fn pillar_chain_runtime_plan_block_linkage(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_plan_block_linkage(
+            self: &BridgePbftService,
             request: PillarBlockLinkageRequest,
         ) -> Result<PillarBlockLinkagePlan>;
-        pub fn pillar_chain_runtime_latest_finalized_block_rlp(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_latest_finalized_block_rlp(
+            self: &BridgePbftService,
         ) -> Result<Vec<u8>>;
 
         type BridgePillarChainStorage;
-        type BridgePillarChainRuntime;
 
         pub fn create_pillar_chain_storage(
             storage: &BridgeStorage,
         ) -> Box<BridgePillarChainStorage>;
-        pub fn create_pillar_chain_runtime(
+        pub fn create_pillar_capable_pbft_service_for_compatibility(
             storage: &BridgeStorage,
-        ) -> Result<Box<BridgePillarChainRuntime>>;
+        ) -> Result<Box<BridgePbftService>>;
+        pub fn pbft_service_has_pillar(self: &BridgePbftService) -> bool;
+        pub fn pbft_service_pillar_ready(self: &BridgePbftService) -> bool;
+        pub fn pbft_service_complete_pillar_bootstrap(self: &BridgePbftService) -> Result<()>;
         pub fn pillar_chain_storage_apply_current_block_data(
             self: &BridgePillarChainStorage,
             data_rlp: Vec<u8>,
@@ -5596,70 +5618,70 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn pillar_chain_runtime_apply_current_block_data(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_apply_current_block_data(
+            self: &BridgePbftService,
             data_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn pillar_chain_runtime_apply_own_vote(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_apply_own_vote(
+            self: &BridgePbftService,
             vote_rlp: Vec<u8>,
         ) -> Result<()>;
-        pub fn pillar_chain_runtime_load_startup_bootstrap(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_load_startup_bootstrap(
+            self: &BridgePbftService,
         ) -> Result<PillarChainStartupBootstrap>;
-        pub fn pillar_chain_runtime_plan_current_anchor_decision(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_plan_current_anchor_decision(
+            self: &BridgePbftService,
             request: PillarCurrentAnchorDecisionRequest,
         ) -> Result<PillarCurrentAnchorDecisionResult>;
-        pub fn pillar_chain_runtime_consensus_threshold(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_consensus_threshold(
+            self: &BridgePbftService,
             total_vote_count: u64,
-        ) -> u64;
-        pub fn pillar_chain_runtime_prepare_single_vote_admission(
-            self: &BridgePillarChainRuntime,
+        ) -> Result<u64>;
+        pub fn pbft_service_pillar_prepare_single_vote_admission(
+            self: &BridgePbftService,
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
         ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
-        pub fn pillar_chain_runtime_prepare_trusted_single_vote_admission(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_prepare_trusted_single_vote_admission(
+            self: &BridgePbftService,
             vote_rlp: Vec<u8>,
         ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
-        pub fn pillar_chain_runtime_plan_vote_relevance(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_plan_vote_relevance(
+            self: &BridgePbftService,
             vote_rlp: Vec<u8>,
             context: PillarVoteRuntimeRelevanceContext,
         ) -> Result<PillarVoteRelevancePlan>;
-        pub fn pillar_chain_runtime_apply_prepared_single_vote_admission(
-            self: &mut BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_apply_prepared_single_vote_admission(
+            self: &BridgePbftService,
             input: PillarVoteSingleAdmissionApplyInput,
         ) -> Result<PillarVoteSingleAdmissionApplyPlan>;
-        pub fn pillar_chain_runtime_prepare_weighted_rlp_bundle(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_prepare_weighted_rlp_bundle(
+            self: &BridgePbftService,
             vote_rlps: Vec<PillarVoteRlpPayload>,
             required_votes_period: u64,
         ) -> Result<PillarVoteWeightedBundlePreparePlan>;
-        pub fn pillar_chain_runtime_apply_weighted_rlp_bundle(
-            self: &mut BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_apply_weighted_rlp_bundle(
+            self: &BridgePbftService,
             input: PillarVoteWeightedBundleApplyInput,
         ) -> Result<PillarVoteBundleApplyPlan>;
-        pub fn pillar_chain_runtime_get_verified_vote_payloads(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_get_verified_vote_payloads(
+            self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
             above_threshold: bool,
         ) -> Result<PillarVotesPayloadLookup>;
-        pub fn pillar_chain_runtime_build_verified_vote_network_bundles(
-            self: &BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_build_verified_vote_network_bundles(
+            self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
             max_votes_per_bundle: usize,
         ) -> Result<PillarVoteNetworkBundleLookup>;
-        pub fn pillar_chain_runtime_prepare_finalized_block_for_pbft(
-            self: &mut BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(
+            self: &BridgePbftService,
             request: PillarBlockFinalizationRequest,
         ) -> Result<PillarBlockFinalizationPrepareResult>;
-        pub fn pillar_chain_runtime_ack_finalize_block_for_pbft(
-            self: &mut BridgePillarChainRuntime,
+        pub fn pbft_service_pillar_ack_finalize_block_for_pbft(
+            self: &BridgePbftService,
             request: PillarBlockFinalizationAcknowledgeRequest,
         ) -> Result<PillarBlockFinalizationAcknowledgeResult>;
 

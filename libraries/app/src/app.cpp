@@ -197,8 +197,13 @@ void App::init(const cli::Config &cli_conf) {
 #else
   vote_mgr_ = std::make_shared<VoteManager>(conf_, db_, pbft_chain_, final_chain_, key_manager_, slashing_manager);
 #endif
+#ifdef RUSTAXA_ENABLE
+  pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(
+      conf_.genesis.state.hardforks.ficus_hf, db_, pbft_service_, final_chain_, key_manager_, node_addr);
+#else
   pillar_chain_mgr_ = std::make_shared<pillar_chain::PillarChainManager>(conf_.genesis.state.hardforks.ficus_hf, db_,
                                                                          final_chain_, key_manager_, node_addr);
+#endif
 #ifdef RUSTAXA_ENABLE
   pbft_mgr_ = std::make_shared<PbftManager>(conf_, db_, pbft_service_, pbft_chain_, vote_mgr_, dag_mgr_, trx_mgr_,
                                             final_chain_, pillar_chain_mgr_);

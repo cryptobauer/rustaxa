@@ -545,6 +545,15 @@ Implementation notes:
   passed 10 of 13 cases but its later node-owning cases encountered the known same-process `/tmp/taraxa0` RocksDB lock;
   this source-selection-only slice does not change manager runtime behavior, and the independently run single-node PBFT
   consumer passed.
+
+- The pillar runtime lifetime is now absorbed by the App-owned `BridgePbftService`. Full service construction restores
+  one private pillar state, `PillarChainManager` replays startup data on that same owner, and an independent readiness
+  transition prevents PBFT startup or live pillar calls from observing partial state. Production App injects its shared
+  service; `BridgePillarChainRuntime`, its factory, and all old runtime receiver exports are deleted. Chain-only services
+  fail explicitly, while the narrowly named pillar-capable partial factory is limited to compatibility construction and
+  tests. PBFT's four pure current-anchor decisions call the shared service directly; public manager methods remain
+  compatibility wrappers. `BridgePillarChainStorage`, FinalChain/DPoS facts, signing, network/events, and C++ object
+  materialization remain classified boundaries.
 - The standalone `BridgePeriodDataQueue` CXX handle, `create_period_data_queue` constructor, `period_data_queue_shim`
   overlay, `RUSTAXA_ENABLE_PERIOD_DATA_QUEUE` CMake/Makefile flag, and bridge/shim tests for the retired facade were
   deleted.
@@ -800,10 +809,11 @@ Acceptance:
   `BridgePbftManagerRuntime` in normal finalization and duplicate-resume paths. Slice 6 remains incomplete because
   `pbft_manager_shim` still coordinates external finalization effects and lifecycle paths. `pillar_chain_manager_shim`
   now routes current-anchor decisions, threshold arithmetic, live vote state, and PBFT-facing pillar finalization through
-  `BridgePillarChainRuntime`, but still owns external FinalChain DPoS reads, temporary `PillarBlock` materialization,
+  the App-owned `BridgePbftService` pillar state behind its independent readiness gate and sibling mutex, but still owns
+  external FinalChain DPoS reads, temporary `PillarBlock` materialization,
   PBFT `PeriodData` vote materialization, the current-block compatibility mirror, network vote-bundle requests, and event
-  emission. Latest-finalized identity and validator vote-count history are Rust-runtime-owned and no longer mirrored as
-  C++ decision state.
+  emission. Latest-finalized identity and validator vote-count history are service-owned in Rust and no longer mirrored
+  as C++ decision state; the standalone `BridgePillarChainRuntime` handle and factory are deleted.
   `vote_manager_shim` is no longer a legacy-derived runtime: it is a standalone public facade whose authoritative
   verified-vote restart state is restored inside Rust. Its locally generated own-vote collection is now also
   storage-authoritative: the facade materializes votes only for the public getter/network boundary instead of maintaining

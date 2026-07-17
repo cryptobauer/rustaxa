@@ -242,6 +242,8 @@ mod tests {
             slashing: None,
             storage,
             bootstrap_complete: AtomicBool::new(true),
+            pillar: None,
+            pillar_ready: AtomicBool::new(false),
         }
     }
 

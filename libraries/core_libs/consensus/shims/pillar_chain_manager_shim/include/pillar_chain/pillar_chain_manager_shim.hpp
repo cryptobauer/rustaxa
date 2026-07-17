@@ -12,13 +12,10 @@
 #include "common/types.hpp"
 #include "final_chain/data.hpp"
 #include "logger/logger.hpp"
+#include "pbft/pbft_service.hpp"
 #include "pillar_chain/pillar_block.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pillar_vote.hpp"
-
-namespace rustaxa {
-struct BridgePillarChainRuntime;
-}
 
 namespace taraxa {
 class DbStorage;
@@ -79,7 +76,7 @@ struct PillarVoteRelevancePlan {
  */
 PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
                                                 const std::shared_ptr<PillarVote>& vote,
-                                                const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
+                                                const rustaxa::BridgePbftService& service);
 
 /**
  * Stable logging helper for explicit reason reporting.
@@ -152,7 +149,7 @@ struct PillarVoteValidationPlan {
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const std::shared_ptr<final_chain::FinalChain>& final_chain,
-                                                    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
+                                                    const rustaxa::BridgePbftService& service);
 
 /**
  * Prepared insertion facts for one Rust-inspected pillar vote.
@@ -195,7 +192,7 @@ struct AddVerifiedPillarVoteWithRustPlan {
  */
 AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
     const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain,
-    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime);
+    const rustaxa::BridgePbftService& service);
 
 /**
  * Inspects one vote RLP in Rust and returns decoded identity plus signature status.
@@ -331,6 +328,8 @@ const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPi
  * Invariants:
  * - Rust pillar-vote builds compile this standalone production surface without
  *   importing or linking the legacy PillarChainManager implementation.
+ * - Production pillar and PBFT operations share one application-owned Rust
+ *   service lifetime; the manager never creates an independent pillar runtime.
  * - Existing C++ storage, networking, and block lifecycle calls remain stable
  *   while deterministic vote identity logic is moved behind Rust bridge helpers.
  */
@@ -349,12 +348,32 @@ class PillarChainManager {
    *
    * Inputs:
    * - `ficus_hf_config` supplies pillar period configuration.
-   * - `db` supplies persisted pillar blocks and votes.
+   * - `db` preserves the public construction contract; persisted pillar state
+   *   is loaded through the storage-backed shared service.
+   * - `pbft_service` is the application-owned PBFT service with pillar
+   *   capability; it remains shared with the PBFT manager.
    * - `final_chain` supplies DPoS vote counts and eligibility.
    * - `key_manager` and `node_addr` preserve the legacy construction contract.
    *
+   * Outputs:
+   * - Completes pillar bootstrap on the injected service after replaying the
+   *   persisted pillar state.
+   *
    * Edge behavior:
    * - Persisted votes are reinserted through the Rust-mode verified-vote path.
+   * - A null service, missing pillar capability, incomplete bootstrap, or
+   *   bridge failure is reported as an exception; no legacy fallback occurs.
+   */
+  PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
+                     SharedPbftService pbft_service, std::shared_ptr<final_chain::FinalChain> final_chain,
+                     std::shared_ptr<KeyManager> key_manager, addr_t node_addr);
+
+  /**
+   * Compatibility constructor for direct C++ callers that do not own the application PBFT service.
+   *
+   * This overload creates the narrowly scoped pillar-capable compatibility service from `db`. Production `App`
+   * wiring must use the injected-service overload so pillar and PBFT state share one Rust lifetime. Missing pillar
+   * capability or incomplete bootstrap is reported as an exception; no independent production runtime is restored.
    */
   PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
                      std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
@@ -705,7 +724,7 @@ class PillarChainManager {
  private:
   const FicusHardforkConfig& kFicusHfConfig;
 
-  ::rust::Box<rustaxa::BridgePillarChainRuntime> pillar_runtime_;
+  SharedPbftService pbft_service_;
   std::weak_ptr<Network> network_;
   std::shared_ptr<final_chain::FinalChain> final_chain_;
   std::shared_ptr<KeyManager> key_manager_;

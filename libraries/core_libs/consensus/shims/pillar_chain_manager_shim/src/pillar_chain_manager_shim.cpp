@@ -301,7 +301,7 @@ std::vector<std::shared_ptr<PillarVote>> materializePillarVotes(
 }
 
 rustaxa::PillarBlockLinkageRequest toBridgeLinkageRequest(const FicusHardforkConfig& ficus_hf_config,
-                                                         const std::shared_ptr<PillarBlock>& pillar_block) {
+                                                          const std::shared_ptr<PillarBlock>& pillar_block) {
   rustaxa::PillarBlockLinkageRequest request{};
   request.pillar_block_period = pillar_block->getPeriod();
   request.pillar_block_previous_hash = toBridgeHash(pillar_block->getPreviousBlockHash());
@@ -410,7 +410,7 @@ const char* validatePbftBlockPillarVotesWithRustStatusString(ValidatePbftBlockPi
 
 PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus_hf_config,
                                                 const std::shared_ptr<PillarVote>& vote,
-                                                const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime) {
+                                                const rustaxa::BridgePbftService& service) {
   if (!vote) {
     return {PillarVoteRelevancePlanStatus::kUnknown, false};
   }
@@ -420,7 +420,7 @@ PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus
   context.pillar_blocks_interval = ficus_hf_config.pillar_blocks_interval;
 
   try {
-    const auto plan = runtime->pillar_chain_runtime_plan_vote_relevance(toRustBytes(vote->rlp()), context);
+    const auto plan = service.pbft_service_pillar_plan_vote_relevance(toRustBytes(vote->rlp()), context);
     return {fromStatusCode(plan.status), plan.is_relevant};
   } catch (const std::exception&) {
     return {PillarVoteRelevancePlanStatus::kUnknown, false};
@@ -430,15 +430,15 @@ PillarVoteRelevancePlan planPillarVoteRelevance(const FicusHardforkConfig& ficus
 PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& ficus_hf_config,
                                                     const std::shared_ptr<PillarVote>& vote,
                                                     const std::shared_ptr<final_chain::FinalChain>& final_chain,
-                                                    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime) {
+                                                    const rustaxa::BridgePbftService& service) {
   if (!vote || !final_chain) {
     return {PillarVoteValidationPlanStatus::kInspectionFailure, false, 0, {}, {}};
   }
 
   rustaxa::PillarVoteSingleAdmissionPreparePlan prepared{};
   try {
-    prepared = runtime->pillar_chain_runtime_prepare_single_vote_admission(
-        toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(ficus_hf_config));
+    prepared = service.pbft_service_pillar_prepare_single_vote_admission(toRustBytes(vote->rlp()),
+                                                                         toSingleVoteAdmissionContext(ficus_hf_config));
     if (!prepared.can_query_dpos) {
       return {toPillarVoteValidationStatus(prepared.status), false, prepared.period, fromBridgeHash(prepared.vote_hash),
               fromBridgeAddress(prepared.voter)};
@@ -469,8 +469,7 @@ PillarVoteValidationPlan validatePillarVoteWithRust(const FicusHardforkConfig& f
 
 AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
     const std::shared_ptr<PillarVote>& vote, const std::shared_ptr<final_chain::FinalChain>& final_chain,
-    const FicusHardforkConfig& ficus_hf_config, bool externally_validated,
-    const ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime) {
+    const FicusHardforkConfig& ficus_hf_config, bool externally_validated, const rustaxa::BridgePbftService& service) {
   if (!vote || !final_chain) {
     return {PillarVoteValidationPlanStatus::kInspectionFailure, false, false, 0, {}, {}, {}, 0};
   }
@@ -480,12 +479,12 @@ AddVerifiedPillarVoteWithRustPlan planAddVerifiedPillarVoteWithRust(
     if (externally_validated) {
       // Revalidate against the current anchor. This remains checked even when
       // the earlier one-time token was evicted or belonged to an old generation.
-      prepared = runtime->pillar_chain_runtime_prepare_single_vote_admission(
+      prepared = service.pbft_service_pillar_prepare_single_vote_admission(
           toRustBytes(vote->rlp()), toSingleVoteAdmissionContext(ficus_hf_config));
     } else {
       // Direct calls are reserved for locally generated or restart-restored
       // votes that did not traverse the external validate-then-add route.
-      prepared = runtime->pillar_chain_runtime_prepare_trusted_single_vote_admission(toRustBytes(vote->rlp()));
+      prepared = service.pbft_service_pillar_prepare_trusted_single_vote_admission(toRustBytes(vote->rlp()));
     }
   } catch (...) {
     return {PillarVoteValidationPlanStatus::kUnknown,
@@ -574,8 +573,7 @@ PillarVoteValidationPlan inspectPillarVoteWithRust(const std::shared_ptr<PillarV
 
 ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBundleDeterministically(
     const std::vector<bytes>& pillar_vote_rlps, PbftPeriod required_votes_period,
-    const std::shared_ptr<final_chain::FinalChain>& final_chain,
-    ::rust::Box<rustaxa::BridgePillarChainRuntime>& runtime) {
+    const std::shared_ptr<final_chain::FinalChain>& final_chain, const rustaxa::BridgePbftService& service) {
   ValidateSyncPillarVotesBundleDeterministicallyResult result;
   if (!final_chain || required_votes_period == 0) {
     return result;
@@ -591,7 +589,7 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
 
   try {
     const auto prepared =
-        runtime->pillar_chain_runtime_prepare_weighted_rlp_bundle(std::move(rlp_payloads), required_votes_period);
+        service.pbft_service_pillar_prepare_weighted_rlp_bundle(std::move(rlp_payloads), required_votes_period);
     result.prepare_status = prepared.status;
     result.first_bad_vote_hash = fromBridgeHash(prepared.first_bad_vote_hash);
     if (!prepared.can_query_dpos) {
@@ -638,9 +636,9 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
     rustaxa::PillarVoteWeightedBundleApplyInput input;
     input.votes = std::move(weighted_payloads);
     input.required_votes_period = required_votes_period;
-    input.threshold = runtime->pillar_chain_runtime_consensus_threshold(dpos_facts.total_vote_count);
+    input.threshold = service.pbft_service_pillar_consensus_threshold(dpos_facts.total_vote_count);
     input.anchor_generation = prepared.anchor_generation;
-    const auto plan = runtime->pillar_chain_runtime_apply_weighted_rlp_bundle(std::move(input));
+    const auto plan = service.pbft_service_pillar_apply_weighted_rlp_bundle(std::move(input));
 
     const auto plan_status = toSyncPillarVotesBundlePlanStatus(plan.status);
     result.plan_status = plan_status;
@@ -661,11 +659,12 @@ ValidateSyncPillarVotesBundleDeterministicallyResult validateSyncPillarVotesBund
   }
 }
 
-PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
+PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> /*db*/,
+                                       SharedPbftService pbft_service,
                                        std::shared_ptr<final_chain::FinalChain> final_chain,
                                        std::shared_ptr<KeyManager> key_manager, addr_t node_addr)
     : kFicusHfConfig(ficus_hf_config),
-      pillar_runtime_(rustaxa::create_pillar_chain_runtime(db->rustStorage())),
+      pbft_service_(std::move(pbft_service)),
       network_{},
       final_chain_{std::move(final_chain)},
       key_manager_(std::move(key_manager)),
@@ -673,8 +672,11 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
       current_pillar_block_{},
       mutex_{} {
   LOG_OBJECTS_CREATE("PILLAR_CHAIN");
+  if (!pbft_service_ || !pbft_service_->service().pbft_service_has_pillar()) {
+    throw pillarVotesError("PBFT_SERVICE_PILLAR_UNAVAILABLE");
+  }
 
-  const auto bootstrap = pillar_runtime_->pillar_chain_runtime_load_startup_bootstrap();
+  const auto bootstrap = pbft_service_->service().pbft_service_pillar_load_startup_bootstrap();
 
   if (const auto vote = decodePillarVoteFromRustBytes(bootstrap.own_vote_rlp); vote) {
     addVerifiedPillarVote(vote);
@@ -694,7 +696,20 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
       addVerifiedPillarVote(pillar_vote);
     }
   }
+
+  pbft_service_->service().pbft_service_complete_pillar_bootstrap();
+  if (!pbft_service_->service().pbft_service_pillar_ready()) {
+    throw pillarVotesError("PBFT_SERVICE_PILLAR_UNAVAILABLE");
+  }
 }
+
+PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
+                                       std::shared_ptr<final_chain::FinalChain> final_chain,
+                                       std::shared_ptr<KeyManager> key_manager, addr_t node_addr)
+    : PillarChainManager(ficus_hf_config, db,
+                         std::make_shared<PbftService>(
+                             rustaxa::create_pillar_capable_pbft_service_for_compatibility(db->rustStorage())),
+                         std::move(final_chain), std::move(key_manager), node_addr) {}
 
 std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     PbftPeriod period, const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
@@ -703,7 +718,7 @@ std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
 
   rustaxa::PillarBlockCreationWithVoteCountsPlan creation_plan{};
   try {
-    creation_plan = pillar_runtime_->pillar_chain_runtime_plan_block_creation(
+    creation_plan = pbft_service_->service().pbft_service_pillar_plan_block_creation(
         toBridgeCreationRequest(kFicusHfConfig, period, block_header, bridge_root, bridge_epoch),
         toBridgeVoteCounts(new_vote_counts));
   } catch (const std::exception& e) {
@@ -742,7 +757,7 @@ void PillarChainManager::saveNewPillarBlock(const std::shared_ptr<PillarBlock>& 
   // compatibility mutex before entering the Rust runtime. Finalization uses
   // the same order and releases this mutex before invoking external effects.
   std::scoped_lock<std::shared_mutex> lock(mutex_);
-  pillar_runtime_->pillar_chain_runtime_apply_current_block_data(
+  pbft_service_->service().pbft_service_pillar_apply_current_block_data(
       toRustBytes(util::rlp_enc(CurrentPillarBlockDataDb{pillar_block, new_vote_counts})));
   current_pillar_block_ = pillar_block;
 }
@@ -759,7 +774,7 @@ std::shared_ptr<PillarVote> PillarChainManager::genAndPlacePillarVote(PbftPeriod
                  << vote->getHash();
     return nullptr;
   }
-  pillar_runtime_->pillar_chain_runtime_apply_own_vote(toRustBytes(util::rlp_enc(vote)));
+  pbft_service_->service().pbft_service_pillar_apply_own_vote(toRustBytes(util::rlp_enc(vote)));
 
   if (auto net = network_.lock(); net && broadcast_vote) {
     net->gossipPillarBlockVote(vote);
@@ -789,7 +804,7 @@ PillarChainManager::FinalizePillarBlockPreflightResult PillarChainManager::final
   std::unique_lock<std::shared_mutex> compatibility_lock(mutex_);
   try {
     preflight_result =
-        pillar_runtime_->pillar_chain_runtime_prepare_finalized_block_for_pbft(std::move(finalization_request));
+        pbft_service_->service().pbft_service_pillar_prepare_finalized_block_for_pbft(std::move(finalization_request));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to prepare pillar block finalization in Rust for " << pillar_block_hash << ": " << e.what();
     return result;
@@ -827,8 +842,8 @@ PillarChainManager::FinalizePillarBlockPreflightResult PillarChainManager::final
                    << ". Empty current pillar block";
       return result;
     case kPillarFinalizationCurrentBlockHashMismatch:
-      LOG(log_er_) << "Cannot prepare pillar finalization for block " << pillar_block_hash
-                   << ". Requested block hash " << pillar_block_hash << " != current pillar block hash "
+      LOG(log_er_) << "Cannot prepare pillar finalization for block " << pillar_block_hash << ". Requested block hash "
+                   << pillar_block_hash << " != current pillar block hash "
                    << fromBridgeBlockHash(preflight_result.current_hash);
       return result;
     case kPillarFinalizationMissingVotes:
@@ -850,8 +865,8 @@ PillarChainManager::FinalizePillarBlockPreflightResult PillarChainManager::final
       LOG(log_nf_) << "Pillar block already " << pillar_block_hash << " already finalized";
       return result;
     default:
-      LOG(log_er_) << "Unable to prepare pillar finalization for block " << pillar_block_hash << ". Unknown Rust status "
-                   << static_cast<uint64_t>(preflight_result.status);
+      LOG(log_er_) << "Unable to prepare pillar finalization for block " << pillar_block_hash
+                   << ". Unknown Rust status " << static_cast<uint64_t>(preflight_result.status);
       result.success = false;
       return result;
   }
@@ -864,9 +879,8 @@ PillarChainManager::FinalizePillarBlockPreflightResult PillarChainManager::final
   return result;
 }
 
-bool PillarChainManager::acknowledgePillarBlockForPbft(
-    uint64_t anchor_generation, uint64_t preparation_token,
-    const std::vector<std::shared_ptr<PillarVote>>& pillar_votes) {
+bool PillarChainManager::acknowledgePillarBlockForPbft(uint64_t anchor_generation, uint64_t preparation_token,
+                                                       const std::vector<std::shared_ptr<PillarVote>>& pillar_votes) {
   // Serialize acknowledgment with current/latest compatibility reads. Keep
   // the lock through materialization and identity verification, but never
   // invoke the compatibility emitter while holding it.
@@ -877,10 +891,10 @@ bool PillarChainManager::acknowledgePillarBlockForPbft(
 
   rustaxa::PillarBlockFinalizationAcknowledgeResult ack_result{};
   try {
-    ack_result = pillar_runtime_->pillar_chain_runtime_ack_finalize_block_for_pbft(std::move(request));
+    ack_result = pbft_service_->service().pbft_service_pillar_ack_finalize_block_for_pbft(std::move(request));
   } catch (const std::exception& e) {
-    LOG(log_er_) << "Unable to acknowledge pillar finalization for anchor generation " << anchor_generation << ", token "
-                 << preparation_token << ": " << e.what();
+    LOG(log_er_) << "Unable to acknowledge pillar finalization for anchor generation " << anchor_generation
+                 << ", token " << preparation_token << ": " << e.what();
     return false;
   }
 
@@ -893,7 +907,7 @@ bool PillarChainManager::acknowledgePillarBlockForPbft(
   std::shared_ptr<PillarBlock> latest_pillar_block;
   try {
     latest_pillar_block =
-        decodePillarBlockFromRustBytes(pillar_runtime_->pillar_chain_runtime_latest_finalized_block_rlp());
+        decodePillarBlockFromRustBytes(pbft_service_->service().pbft_service_pillar_latest_finalized_block_rlp());
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to materialize latest finalized pillar block from Rust runtime: " << e.what();
     return false;
@@ -927,7 +941,7 @@ std::shared_ptr<PillarBlock> PillarChainManager::getLastFinalizedPillarBlock() c
   // mutex until the Rust snapshot and the C++ current-block mirror agree.
   std::shared_lock<std::shared_mutex> lock(mutex_);
   try {
-    return decodePillarBlockFromRustBytes(pillar_runtime_->pillar_chain_runtime_latest_finalized_block_rlp());
+    return decodePillarBlockFromRustBytes(pbft_service_->service().pbft_service_pillar_latest_finalized_block_rlp());
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to materialize latest finalized pillar block from Rust runtime: " << e.what();
     return nullptr;
@@ -951,7 +965,7 @@ PillarChainManager::PbftBlockPillarAnchorValidation PillarChainManager::validate
   }
 
   try {
-    const auto plan = pillar_runtime_->pillar_chain_runtime_plan_current_anchor_decision(request);
+    const auto plan = pbft_service_->service().pbft_service_pillar_plan_current_anchor_decision(request);
     result.valid = plan.selected;
     result.missing_current_anchor =
         plan.status == static_cast<uint8_t>(CurrentAnchorDecisionStatus::kMissingCurrentAnchor);
@@ -983,7 +997,7 @@ PillarChainManager::PbftExtraDataPillarAnchor PillarChainManager::pbftExtraDataP
   request.operation = static_cast<uint8_t>(CurrentAnchorDecisionOperation::kSelectPreviousPeriod);
   request.pbft_period = pbft_period;
   try {
-    const auto plan = pillar_runtime_->pillar_chain_runtime_plan_current_anchor_decision(request);
+    const auto plan = pbft_service_->service().pbft_service_pillar_plan_current_anchor_decision(request);
     result.available = plan.selected;
     if (plan.has_current_anchor) {
       result.current_pillar_period = plan.current_period;
@@ -1007,7 +1021,7 @@ PillarChainManager::LocalPillarVoteAnchor PillarChainManager::localPillarVoteAnc
   request.operation = static_cast<uint8_t>(CurrentAnchorDecisionOperation::kSelectPreviousPeriod);
   request.pbft_period = pbft_period;
   try {
-    const auto plan = pillar_runtime_->pillar_chain_runtime_plan_current_anchor_decision(request);
+    const auto plan = pbft_service_->service().pbft_service_pillar_plan_current_anchor_decision(request);
     result.should_vote = plan.selected;
     if (plan.has_current_anchor) {
       result.current_pillar_period = plan.current_period;
@@ -1028,7 +1042,7 @@ PillarChainManager::RestartPillarPostProcessingDecision PillarChainManager::rest
   request.pbft_period = pbft_period;
   request.pillar_blocks_interval = kFicusHfConfig.pillar_blocks_interval;
   try {
-    const auto plan = pillar_runtime_->pillar_chain_runtime_plan_current_anchor_decision(request);
+    const auto plan = pbft_service_->service().pbft_service_pillar_plan_current_anchor_decision(request);
     decision.should_process = plan.selected;
     if (plan.has_current_anchor) {
       decision.current_pillar_period = plan.current_period;
@@ -1046,7 +1060,7 @@ PillarChainManager::RestartPillarPostProcessingDecision PillarChainManager::rest
 }
 
 bool PillarChainManager::isRelevantPillarVote(const std::shared_ptr<PillarVote> vote) const {
-  const auto relevance_plan = planPillarVoteRelevance(kFicusHfConfig, vote, pillar_runtime_);
+  const auto relevance_plan = planPillarVoteRelevance(kFicusHfConfig, vote, pbft_service_->service());
 
   if (!relevance_plan.is_relevant) {
     switch (relevance_plan.status) {
@@ -1084,7 +1098,7 @@ bool PillarChainManager::validatePillarVote(const std::shared_ptr<PillarVote> vo
     return false;
   }
 
-  const auto validation_plan = validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_, pillar_runtime_);
+  const auto validation_plan = validatePillarVoteWithRust(kFicusHfConfig, vote, final_chain_, pbft_service_->service());
   const auto vote_period = validation_plan.period;
 
   if (!validation_plan.is_valid) {
@@ -1156,8 +1170,8 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
     std::shared_lock lock(mutex_);
     externally_validated = externally_validated_vote_receipts_.contains(vote->getHash());
   }
-  const auto add_plan =
-      planAddVerifiedPillarVoteWithRust(vote, final_chain_, kFicusHfConfig, externally_validated, pillar_runtime_);
+  const auto add_plan = planAddVerifiedPillarVoteWithRust(vote, final_chain_, kFicusHfConfig, externally_validated,
+                                                          pbft_service_->service());
   if (!add_plan.can_insert) {
     LOG(log_er_) << "Unable to add pillar vote in Rust production path: "
                  << pillarVoteValidationPlanStatusString(add_plan.status);
@@ -1180,7 +1194,8 @@ uint64_t PillarChainManager::addVerifiedPillarVote(const std::shared_ptr<PillarV
 
   rustaxa::PillarVoteSingleAdmissionApplyPlan insert_outcome;
   try {
-    insert_outcome = pillar_runtime_->pillar_chain_runtime_apply_prepared_single_vote_admission(std::move(apply_input));
+    insert_outcome =
+        pbft_service_->service().pbft_service_pillar_apply_prepared_single_vote_admission(std::move(apply_input));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to insert pillar vote " << add_plan.vote_hash << ", period " << add_plan.period
                  << ", validator " << add_plan.recovered_voter << ": " << e.what();
@@ -1224,7 +1239,7 @@ ValidatePbftBlockPillarVotesWithRustResult PillarChainManager::validatePbftBlock
   }
 
   const auto sync_plan = validateSyncPillarVotesBundleDeterministically(pillar_vote_rlps, required_votes_period,
-                                                                        final_chain_, pillar_runtime_);
+                                                                        final_chain_, pbft_service_->service());
   if (!sync_plan.valid) {
     auto status = ValidatePbftBlockPillarVotesWithRustStatus::kPlanRejected;
     if (sync_plan.prepare_status == static_cast<uint8_t>(WeightedBundlePrepareStatus::kMissingCurrentAnchor)) {
@@ -1255,7 +1270,7 @@ std::vector<std::shared_ptr<PillarVote>> PillarChainManager::getVerifiedPillarVo
                                                                                     const blk_hash_t pillar_block_hash,
                                                                                     bool above_threshold) const {
   try {
-    return materializePillarVotes(pillar_runtime_->pillar_chain_runtime_get_verified_vote_payloads(
+    return materializePillarVotes(pbft_service_->service().pbft_service_pillar_get_verified_vote_payloads(
         period, toBridgeHash(pillar_block_hash), above_threshold));
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to load verified pillar votes for period " << period << ", block " << pillar_block_hash
@@ -1269,7 +1284,7 @@ std::vector<PillarChainManager::PillarVoteNetworkBundleChunk> PillarChainManager
     PbftPeriod period, const blk_hash_t& pillar_block_hash, size_t max_votes_per_bundle) const {
   std::vector<PillarVoteNetworkBundleChunk> chunks;
   try {
-    const auto lookup = pillar_runtime_->pillar_chain_runtime_build_verified_vote_network_bundles(
+    const auto lookup = pbft_service_->service().pbft_service_pillar_build_verified_vote_network_bundles(
         period, toBridgeHash(pillar_block_hash), max_votes_per_bundle);
     chunks.reserve(lookup.chunks.size());
     for (const auto& bridge_chunk : lookup.chunks) {
@@ -1295,7 +1310,7 @@ bool PillarChainManager::isValidPillarBlock(const std::shared_ptr<PillarBlock>& 
   }
 
   try {
-    const auto plan = pillar_runtime_->pillar_chain_runtime_plan_block_linkage(
+    const auto plan = pbft_service_->service().pbft_service_pillar_plan_block_linkage(
         toBridgeLinkageRequest(kFicusHfConfig, pillar_block));
     if (plan.valid) {
       return true;
@@ -1332,7 +1347,7 @@ std::optional<uint64_t> PillarChainManager::getPillarConsensusThreshold(PbftPeri
       return threshold;
     }
 
-    threshold = pillar_runtime_->pillar_chain_runtime_consensus_threshold(dpos_facts.total_vote_count);
+    threshold = pbft_service_->service().pbft_service_pillar_consensus_threshold(dpos_facts.total_vote_count);
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to get dpos total votes count for period " << period
                  << " to calculate pillar consensus threshold: " << e.what();

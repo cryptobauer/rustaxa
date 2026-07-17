@@ -19,8 +19,8 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
 use crate::ffi::{
-    BridgePillarChainRuntime, BridgePillarChainStorage, BridgeStorage, PillarChainStateSnapshot,
-    SingleVotePreparationRegistry,
+    BridgePbftService, BridgePillarChainStorage, BridgeStorage, PillarChainState,
+    PillarChainStateSnapshot, SingleVotePreparationRegistry,
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use ethereum_types::{H160, H256};
@@ -70,16 +70,14 @@ pub fn create_pillar_chain_storage(storage: &BridgeStorage) -> Box<BridgePillarC
 /// is a valid process-local baseline, and each successful apply increments it.
 /// Malformed persisted current data makes construction fail before a runtime is
 /// published.
-pub fn create_pillar_chain_runtime(
-    storage: &BridgeStorage,
-) -> Result<Box<BridgePillarChainRuntime>> {
+pub(crate) fn restore_pillar_chain_state(storage: &BridgeStorage) -> Result<PillarChainState> {
     let current_data_rlp = consensus_load_current_pillar_block_data_storage(storage.0.as_ref())?;
     let latest_finalized_block_rlp =
         consensus_load_latest_pillar_block_storage(storage.0.as_ref())?;
     let current_anchor =
         decode_current_anchor_snapshot(current_data_rlp, latest_finalized_block_rlp, 0)
             .context("restore current pillar anchor snapshot")?;
-    let mut runtime = BridgePillarChainRuntime {
+    let mut runtime = PillarChainState {
         storage: storage.0.clone(),
         votes: rustaxa_consensus::PillarVotes::new(),
         current_anchor: RwLock::new(current_anchor),
@@ -100,7 +98,21 @@ pub fn create_pillar_chain_runtime(
             runtime.votes.erase_votes(latest.period.saturating_add(1));
         }
     }
-    Ok(Box::new(runtime))
+    Ok(runtime)
+}
+
+/// Creates a pillar-capable partial PBFT service for compatibility tests and
+/// transitional callers that do not own the production PBFT manager runtime.
+/// Production App construction must use `create_pbft_service_from_storage`.
+pub fn create_pillar_capable_pbft_service_for_compatibility(
+    storage: &BridgeStorage,
+) -> Result<Box<BridgePbftService>> {
+    let mut service = crate::pbft_chain::create_pbft_chain_service_from_storage(storage)?;
+    service.pillar = Some(std::sync::Mutex::new(restore_pillar_chain_state(storage)?));
+    service
+        .pillar_ready
+        .store(true, std::sync::atomic::Ordering::Release);
+    Ok(service)
 }
 
 impl BridgePillarChainStorage {
@@ -150,7 +162,7 @@ impl BridgePillarChainStorage {
     }
 }
 
-impl BridgePillarChainRuntime {
+impl PillarChainState {
     /// Persists current pillar-block sidecar data through the runtime-owned
     /// native Rust storage handle.
     ///
@@ -166,7 +178,7 @@ impl BridgePillarChainRuntime {
     /// - This method does not mutate runtime vote state or C++ live mirrors; the
     ///   caller remains responsible for installing temporary C++ sidecars until
     ///   the pillar manager facade is retired.
-    pub fn pillar_chain_runtime_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
+    pub fn pillar_state_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
         ensure!(
             !data_rlp.is_empty(),
             "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
@@ -221,7 +233,7 @@ impl BridgePillarChainRuntime {
     /// - Vote admission into the live runtime index remains a separate operation;
     ///   this API only owns the persistence write that used to route through the
     ///   storage-only bridge handle.
-    pub fn pillar_chain_runtime_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
+    pub fn pillar_state_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
         save_own_pillar_block_vote_storage(self.storage.as_ref(), &vote_rlp)
     }
 
@@ -243,9 +255,7 @@ impl BridgePillarChainRuntime {
     ///   preventing startup from silently reconstructing inconsistent state.
     /// - When no latest block exists, no period-data lookup is needed and the
     ///   corresponding output is empty.
-    pub fn pillar_chain_runtime_load_startup_bootstrap(
-        &self,
-    ) -> Result<FfiPillarChainStartupBootstrap> {
+    pub fn pillar_state_load_startup_bootstrap(&self) -> Result<FfiPillarChainStartupBootstrap> {
         let own_vote_rlp = consensus_load_own_pillar_block_vote_storage(self.storage.as_ref())?;
         let current_block_data_rlp = self
             .current_anchor
@@ -280,7 +290,7 @@ impl BridgePillarChainRuntime {
     /// The operation tag selects candidate validation, previous-period anchor
     /// selection, or restart-due selection. Unknown tags return an error. The
     /// result includes the exact anchor generation used for the decision.
-    pub fn pillar_chain_runtime_plan_current_anchor_decision(
+    pub fn pillar_state_plan_current_anchor_decision(
         &self,
         request: FfiPillarCurrentAnchorDecisionRequest,
     ) -> Result<FfiPillarCurrentAnchorDecisionResult> {
@@ -320,13 +330,13 @@ impl BridgePillarChainRuntime {
     }
 
     /// Computes the strict-majority threshold from an external total-vote fact.
-    pub fn pillar_chain_runtime_consensus_threshold(&self, total_vote_count: u64) -> u64 {
+    pub fn pillar_state_consensus_threshold(&self, total_vote_count: u64) -> u64 {
         consensus_plan_pillar_consensus_threshold(total_vote_count)
     }
 
     /// Plans pillar-block construction from external FinalChain facts and the
     /// runtime-owned current/latest pillar snapshots.
-    pub fn pillar_chain_runtime_plan_block_creation(
+    pub fn pillar_state_plan_block_creation(
         &self,
         request: FfiPillarBlockCreationRequest,
         current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
@@ -389,7 +399,7 @@ impl BridgePillarChainRuntime {
 
     /// Validates candidate linkage against the runtime-owned latest finalized
     /// pillar block.
-    pub fn pillar_chain_runtime_plan_block_linkage(
+    pub fn pillar_state_plan_block_linkage(
         &self,
         request: FfiPillarBlockLinkageRequest,
     ) -> Result<FfiPillarBlockLinkagePlan> {
@@ -416,13 +426,82 @@ impl BridgePillarChainRuntime {
 
     /// Returns canonical latest-finalized pillar bytes solely for the public
     /// C++ compatibility getter.
-    pub fn pillar_chain_runtime_latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
+    pub fn pillar_state_latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
         Ok(self
             .current_anchor
             .read()
             .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
             .latest_finalized_block_rlp
             .clone())
+    }
+}
+
+impl BridgePbftService {
+    pub fn pbft_service_has_pillar(&self) -> bool {
+        self.pillar.is_some()
+    }
+
+    pub fn pbft_service_pillar_ready(&self) -> bool {
+        self.pillar.is_some() && self.pillar_ready.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn pbft_service_complete_pillar_bootstrap(&self) -> Result<()> {
+        drop(self.pillar_state(false)?);
+        self.pillar_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    pub fn pbft_service_pillar_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
+        self.pillar_state(true)?
+            .pillar_state_apply_current_block_data(data_rlp)
+    }
+
+    pub fn pbft_service_pillar_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
+        self.pillar_state(true)?
+            .pillar_state_apply_own_vote(vote_rlp)
+    }
+
+    pub fn pbft_service_pillar_load_startup_bootstrap(
+        &self,
+    ) -> Result<FfiPillarChainStartupBootstrap> {
+        self.pillar_state(false)?
+            .pillar_state_load_startup_bootstrap()
+    }
+
+    pub fn pbft_service_pillar_plan_current_anchor_decision(
+        &self,
+        request: FfiPillarCurrentAnchorDecisionRequest,
+    ) -> Result<FfiPillarCurrentAnchorDecisionResult> {
+        self.pillar_state(true)?
+            .pillar_state_plan_current_anchor_decision(request)
+    }
+
+    pub fn pbft_service_pillar_consensus_threshold(&self, total_vote_count: u64) -> Result<u64> {
+        let state = self.pillar_state(true)?;
+        Ok(state.pillar_state_consensus_threshold(total_vote_count))
+    }
+
+    pub fn pbft_service_pillar_plan_block_creation(
+        &self,
+        request: FfiPillarBlockCreationRequest,
+        current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
+    ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
+        self.pillar_state(true)?
+            .pillar_state_plan_block_creation(request, current_vote_counts)
+    }
+
+    pub fn pbft_service_pillar_plan_block_linkage(
+        &self,
+        request: FfiPillarBlockLinkageRequest,
+    ) -> Result<FfiPillarBlockLinkagePlan> {
+        self.pillar_state(true)?
+            .pillar_state_plan_block_linkage(request)
+    }
+
+    pub fn pbft_service_pillar_latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
+        self.pillar_state(true)?
+            .pillar_state_latest_finalized_block_rlp()
     }
 }
 
@@ -622,6 +701,45 @@ mod tests {
         .encode_rlp()
     }
 
+    #[test]
+    fn chain_only_service_rejects_pillar_reads_mutations_and_threshold() {
+        let temp_dir = unique_temp_dir("pillar_chain_only_capability");
+        let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+        let service = crate::pbft_chain::create_pbft_chain_service_from_storage(&storage).unwrap();
+        assert!(!service.pbft_service_has_pillar());
+        assert!(!service.pbft_service_pillar_ready());
+        for error in [
+            service
+                .pbft_service_pillar_latest_finalized_block_rlp()
+                .unwrap_err(),
+            service
+                .pbft_service_pillar_apply_own_vote(vec![0xc0])
+                .unwrap_err(),
+            service
+                .pbft_service_pillar_consensus_threshold(10)
+                .unwrap_err(),
+        ] {
+            assert_eq!(error.to_string(), "PBFT_SERVICE_PILLAR_UNAVAILABLE");
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn compatibility_service_has_only_pillar_partial_capability() {
+        let temp_dir = unique_temp_dir("pillar_compatibility_capability");
+        let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+        let service = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+        assert!(service.pbft_service_has_pillar());
+        assert!(service.pbft_service_pillar_ready());
+        assert!(service.manager.lock().unwrap().is_none());
+        assert!(service.verified_votes.lock().unwrap().is_none());
+        assert_eq!(
+            service.pbft_service_pillar_consensus_threshold(10).unwrap(),
+            6
+        );
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
     fn decode_current_anchor_snapshot_for_test(
         current_data_rlp: Vec<u8>,
         latest_finalized_block_rlp: Vec<u8>,
@@ -758,9 +876,9 @@ mod tests {
             )
             .unwrap();
 
-            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let creation = runtime
-                .pillar_chain_runtime_plan_block_creation(
+                .pbft_service_pillar_plan_block_creation(
                     FfiPillarBlockCreationRequest {
                         pillar_block_period: 20,
                         state_root: H256::from_low_u64_be(0xA1).into(),
@@ -805,7 +923,7 @@ mod tests {
             assert_eq!(creation.vote_count_changes[2].vote_count_change, 4);
 
             let linkage = runtime
-                .pillar_chain_runtime_plan_block_linkage(FfiPillarBlockLinkageRequest {
+                .pbft_service_pillar_plan_block_linkage(FfiPillarBlockLinkageRequest {
                     pillar_block_period: 20,
                     pillar_block_previous_hash: latest.hash().0,
                     first_pillar_block_period: 10,
@@ -814,7 +932,7 @@ mod tests {
                 .unwrap();
             assert!(linkage.valid);
             let wrong_linkage = runtime
-                .pillar_chain_runtime_plan_block_linkage(FfiPillarBlockLinkageRequest {
+                .pbft_service_pillar_plan_block_linkage(FfiPillarBlockLinkageRequest {
                     pillar_block_period: 20,
                     pillar_block_previous_hash: H256::from_low_u64_be(999).0,
                     first_pillar_block_period: 10,
@@ -895,15 +1013,15 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let pillar_storage = create_pillar_chain_storage(&storage);
-            let pillar_runtime =
-                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+            let pillar_runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+                .expect("pillar runtime should initialize");
             let current_data = canonical_current_data(41);
 
             pillar_runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
+                .pbft_service_pillar_apply_current_block_data(current_data.clone())
                 .expect("runtime current pillar data should persist");
             pillar_runtime
-                .pillar_chain_runtime_apply_own_vote(vec![0xC2, 0x02])
+                .pbft_service_pillar_apply_own_vote(vec![0xC2, 0x02])
                 .expect("runtime own pillar vote should persist");
 
             assert_eq!(
@@ -941,13 +1059,13 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime =
-                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+                .expect("pillar runtime should initialize");
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
+                .pbft_service_pillar_apply_current_block_data(current_data.clone())
                 .expect("current pillar data should persist");
             runtime
-                .pillar_chain_runtime_apply_own_vote(vec![0xC3, 0x02])
+                .pbft_service_pillar_apply_own_vote(vec![0xC3, 0x02])
                 .expect("own vote should persist");
             save_finalized_pillar_block_storage(storage.0.as_ref(), 42, &latest_block)
                 .expect("latest pillar block should persist");
@@ -962,17 +1080,17 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should reopen");
-            let runtime =
-                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+                .expect("pillar runtime should initialize");
             let bootstrap = runtime
-                .pillar_chain_runtime_load_startup_bootstrap()
+                .pbft_service_pillar_load_startup_bootstrap()
                 .expect("runtime should load restart bootstrap");
 
             assert_eq!(bootstrap.own_vote_rlp, vec![0xC3, 0x02]);
             assert_eq!(bootstrap.current_block_data_rlp, current_data);
             assert_eq!(
                 runtime
-                    .pillar_chain_runtime_latest_finalized_block_rlp()
+                    .pbft_service_pillar_latest_finalized_block_rlp()
                     .expect("latest finalized block should load from runtime"),
                 latest_block
             );
@@ -992,16 +1110,16 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime =
-                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+                .expect("pillar runtime should initialize");
             let bootstrap = runtime
-                .pillar_chain_runtime_load_startup_bootstrap()
+                .pbft_service_pillar_load_startup_bootstrap()
                 .expect("empty bootstrap should load");
 
             assert!(bootstrap.own_vote_rlp.is_empty());
             assert!(bootstrap.current_block_data_rlp.is_empty());
             assert!(runtime
-                .pillar_chain_runtime_latest_finalized_block_rlp()
+                .pbft_service_pillar_latest_finalized_block_rlp()
                 .expect("empty latest finalized block should load")
                 .is_empty());
             assert!(bootstrap.latest_pillar_votes_period_data_rlp.is_empty());
@@ -1017,12 +1135,12 @@ mod tests {
         let before;
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
+                .pbft_service_pillar_apply_current_block_data(current_data.clone())
                 .unwrap();
             before = runtime
-                .pillar_chain_runtime_plan_current_anchor_decision(
+                .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
                         operation: 1,
                         has_candidate_hash: false,
@@ -1037,9 +1155,9 @@ mod tests {
         }
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let after = runtime
-                .pillar_chain_runtime_plan_current_anchor_decision(
+                .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
                         operation: 1,
                         has_candidate_hash: false,
@@ -1056,7 +1174,7 @@ mod tests {
             assert_eq!(after.anchor_generation, 0);
             assert_eq!(
                 runtime
-                    .pillar_chain_runtime_load_startup_bootstrap()
+                    .pbft_service_pillar_load_startup_bootstrap()
                     .unwrap()
                     .current_block_data_rlp,
                 current_data
@@ -1071,7 +1189,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
             save_current_pillar_block_data_storage(storage.0.as_ref(), &[0xC1, 0x01]).unwrap();
-            let error = match create_pillar_chain_runtime(&storage) {
+            let error = match create_pillar_capable_pbft_service_for_compatibility(&storage) {
                 Ok(_) => panic!("malformed current data must reject construction"),
                 Err(error) => error,
             };
@@ -1087,13 +1205,13 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_malformed_current_apply");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let current_data = canonical_current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data.clone())
+                .pbft_service_pillar_apply_current_block_data(current_data.clone())
                 .unwrap();
             let before = runtime
-                .pillar_chain_runtime_plan_current_anchor_decision(
+                .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
                         operation: 1,
                         has_candidate_hash: false,
@@ -1105,10 +1223,10 @@ mod tests {
                 .unwrap();
 
             assert!(runtime
-                .pillar_chain_runtime_apply_current_block_data(vec![0xC1, 0x01])
+                .pbft_service_pillar_apply_current_block_data(vec![0xC1, 0x01])
                 .is_err());
             let after = runtime
-                .pillar_chain_runtime_plan_current_anchor_decision(
+                .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
                         operation: 1,
                         has_candidate_hash: false,
@@ -1133,9 +1251,9 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_anchor_tags");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let missing = runtime
-                .pillar_chain_runtime_plan_current_anchor_decision(
+                .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
                         operation: 0,
                         has_candidate_hash: false,
@@ -1148,7 +1266,7 @@ mod tests {
             assert_eq!(missing.status, 1);
             assert!(!missing.has_current_anchor);
             assert!(runtime
-                .pillar_chain_runtime_plan_current_anchor_decision(
+                .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
                         operation: 99,
                         has_candidate_hash: false,
@@ -1158,9 +1276,14 @@ mod tests {
                     },
                 )
                 .is_err());
-            assert_eq!(runtime.pillar_chain_runtime_consensus_threshold(0), 1);
             assert_eq!(
-                runtime.pillar_chain_runtime_consensus_threshold(u64::MAX),
+                runtime.pbft_service_pillar_consensus_threshold(0).unwrap(),
+                1
+            );
+            assert_eq!(
+                runtime
+                    .pbft_service_pillar_consensus_threshold(u64::MAX)
+                    .unwrap(),
                 (u64::MAX / 2) + 1
             );
         }
@@ -1176,7 +1299,7 @@ mod tests {
                     .expect("storage should initialize");
             save_finalized_pillar_block_storage(storage.0.as_ref(), 42, &[0xC1, 0x01])
                 .expect("malformed latest bytes should persist opaquely");
-            let error = match create_pillar_chain_runtime(&storage) {
+            let error = match create_pillar_capable_pbft_service_for_compatibility(&storage) {
                 Ok(_) => panic!("malformed latest block should reject runtime construction"),
                 Err(error) => error,
             };
@@ -1235,15 +1358,15 @@ mod tests {
                 .expect_err("empty own vote should reject")
                 .to_string()
                 .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD"));
-            let pillar_runtime =
-                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+            let pillar_runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+                .expect("pillar runtime should initialize");
             assert!(pillar_runtime
-                .pillar_chain_runtime_apply_current_block_data(Vec::new())
+                .pbft_service_pillar_apply_current_block_data(Vec::new())
                 .expect_err("empty runtime current data should reject")
                 .to_string()
                 .contains("PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"));
             assert!(pillar_runtime
-                .pillar_chain_runtime_apply_own_vote(Vec::new())
+                .pbft_service_pillar_apply_own_vote(Vec::new())
                 .expect_err("empty runtime own vote should reject")
                 .to_string()
                 .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD"));

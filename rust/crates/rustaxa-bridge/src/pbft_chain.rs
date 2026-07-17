@@ -53,6 +53,8 @@ pub fn create_pbft_chain_service_from_storage(
         slashing: None,
         storage: Some(storage.0.clone()),
         bootstrap_complete: std::sync::atomic::AtomicBool::new(true),
+        pillar: None,
+        pillar_ready: std::sync::atomic::AtomicBool::new(false),
     }))
 }
 

@@ -23,7 +23,7 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteSingleAdmissionPreparePlan, PillarVoteWeightedBundleApplyInput,
     PillarVoteWeightedBundlePreparePlan, PillarVoteWeightedRlpPayload, PillarVotesPayloadLookup,
 };
-use crate::ffi::{BridgePillarChainRuntime, SingleVotePreparation};
+use crate::ffi::{BridgePbftService, PillarChainState, SingleVotePreparation};
 use anyhow::{anyhow, ensure, Result};
 use ethereum_types::H256;
 use rlp::Rlp;
@@ -87,7 +87,7 @@ struct WeightedRlpBundlePlan {
 /// Internal batch-inspection result used by generation-bound bundle prepare.
 ///
 /// This is intentionally not a standalone CXX API: callers must prepare
-/// through `BridgePillarChainRuntime` so inspection is bound to an anchor
+/// through the PBFT-service-owned pillar state so inspection is bound to an anchor
 /// generation.
 struct PillarVoteBundleInspectionPlan {
     status: u8,
@@ -212,10 +212,10 @@ impl PillarVotesTestFixture {
     }
 }
 
-impl BridgePillarChainRuntime {
+impl PillarChainState {
     /// Prepares one pillar vote for admission through the runtime-owned
     /// pillar-vote index.
-    pub fn pillar_chain_runtime_prepare_single_vote_admission(
+    pub fn pbft_service_pillar_prepare_single_vote_admission(
         &self,
         vote_rlp: Vec<u8>,
         context: PillarVoteSingleAdmissionContext,
@@ -258,8 +258,8 @@ impl BridgePillarChainRuntime {
     /// one-time preparation to the current anchor generation. It intentionally
     /// skips network relevance and identity uniqueness because those votes were
     /// created locally or already accepted before persistence. External network
-    /// admission must use `pillar_chain_runtime_prepare_single_vote_admission`.
-    pub fn pillar_chain_runtime_prepare_trusted_single_vote_admission(
+    /// admission must use `pbft_service_pillar_prepare_single_vote_admission`.
+    pub fn pbft_service_pillar_prepare_trusted_single_vote_admission(
         &self,
         vote_rlp: Vec<u8>,
     ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
@@ -319,7 +319,7 @@ impl BridgePillarChainRuntime {
     /// - This method does not call FinalChain, request network data, emit events,
     ///   or materialize C++ `PillarVote` objects.
     /// - Malformed vote bytes map to the existing unknown relevance status.
-    pub fn pillar_chain_runtime_plan_vote_relevance(
+    pub fn pbft_service_pillar_plan_vote_relevance(
         &self,
         vote_rlp: Vec<u8>,
         context: PillarVoteRuntimeRelevanceContext,
@@ -337,7 +337,7 @@ impl BridgePillarChainRuntime {
     /// checked external preparation reruns relevance and identity validation
     /// under the same anchor read lock used for mutation. Trusted local/restart
     /// preparations skip only those two already-established checks.
-    pub fn pillar_chain_runtime_apply_prepared_single_vote_admission(
+    pub fn pbft_service_pillar_apply_prepared_single_vote_admission(
         &mut self,
         input: PillarVoteSingleAdmissionApplyInput,
     ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
@@ -407,7 +407,7 @@ impl BridgePillarChainRuntime {
     /// Rust inspects all canonical vote bytes and binds the returned expected
     /// hash to the current anchor generation. C++ supplies only external DPoS
     /// weights after this method reports `can_query_dpos`.
-    pub fn pillar_chain_runtime_prepare_weighted_rlp_bundle(
+    pub fn pbft_service_pillar_prepare_weighted_rlp_bundle(
         &self,
         vote_rlps: Vec<PillarVoteRlpPayload>,
         required_votes_period: u64,
@@ -428,7 +428,7 @@ impl BridgePillarChainRuntime {
     ///
     /// The current anchor generation, required period, and expected hash are
     /// revalidated before any period initialization or vote insertion.
-    pub fn pillar_chain_runtime_apply_weighted_rlp_bundle(
+    pub fn pbft_service_pillar_apply_weighted_rlp_bundle(
         &mut self,
         input: PillarVoteWeightedBundleApplyInput,
     ) -> Result<PillarVoteBundleApplyPlan> {
@@ -478,7 +478,7 @@ impl BridgePillarChainRuntime {
     /// - Stored period data does not preserve the original vote weights at this
     ///   boundary; fallback records therefore carry zero weight while preserving
     ///   canonical vote bytes and hashes for temporary C++ materialization.
-    pub fn pillar_chain_runtime_get_verified_vote_payloads(
+    pub fn pbft_service_pillar_get_verified_vote_payloads(
         &self,
         period: u64,
         block_hash: &[u8; 32],
@@ -520,7 +520,7 @@ impl BridgePillarChainRuntime {
     /// - Storage fallback verifies the embedded period and block hash before
     ///   returning chunks, so network serving cannot answer a request with a
     ///   different finalized pillar-vote bundle.
-    pub fn pillar_chain_runtime_build_verified_vote_network_bundles(
+    pub fn pbft_service_pillar_build_verified_vote_network_bundles(
         &self,
         period: u64,
         block_hash: &[u8; 32],
@@ -573,7 +573,7 @@ impl BridgePillarChainRuntime {
     /// - No storage is mutated in this call.
     /// - C++ still owns network requests, legacy `PillarVote` materialization,
     ///   event emission, and PBFT `PeriodData` payload assembly.
-    pub fn pillar_chain_runtime_prepare_finalized_block_for_pbft(
+    pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(
         &mut self,
         request: PillarBlockFinalizationRequest,
     ) -> Result<PillarBlockFinalizationPrepareResult> {
@@ -748,7 +748,7 @@ impl BridgePillarChainRuntime {
     /// - Mirrors the latest finalized pillar identity into the runtime snapshot.
     /// - Cleans matching in-memory vote state.
     /// - Returns whether compatibility event emission should run.
-    pub fn pillar_chain_runtime_ack_finalize_block_for_pbft(
+    pub fn pbft_service_pillar_ack_finalize_block_for_pbft(
         &mut self,
         request: PillarBlockFinalizationAcknowledgeRequest,
     ) -> Result<PillarBlockFinalizationAcknowledgeResult> {
@@ -839,6 +839,99 @@ impl BridgePillarChainRuntime {
             latest_finalized_period: prepared_pillar_block_period,
             latest_finalized_hash: finalized_hash.0,
         })
+    }
+}
+
+impl BridgePbftService {
+    pub fn pbft_service_pillar_prepare_single_vote_admission(
+        &self,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteSingleAdmissionContext,
+    ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_prepare_single_vote_admission(vote_rlp, context)
+    }
+
+    pub fn pbft_service_pillar_prepare_trusted_single_vote_admission(
+        &self,
+        vote_rlp: Vec<u8>,
+    ) -> Result<PillarVoteSingleAdmissionPreparePlan> {
+        self.pillar_state(false)?
+            .pbft_service_pillar_prepare_trusted_single_vote_admission(vote_rlp)
+    }
+
+    pub fn pbft_service_pillar_plan_vote_relevance(
+        &self,
+        vote_rlp: Vec<u8>,
+        context: PillarVoteRuntimeRelevanceContext,
+    ) -> Result<FfiPillarVoteRelevancePlan> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_plan_vote_relevance(vote_rlp, context)
+    }
+
+    pub fn pbft_service_pillar_apply_prepared_single_vote_admission(
+        &self,
+        input: PillarVoteSingleAdmissionApplyInput,
+    ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
+        self.pillar_state(false)?
+            .pbft_service_pillar_apply_prepared_single_vote_admission(input)
+    }
+
+    pub fn pbft_service_pillar_prepare_weighted_rlp_bundle(
+        &self,
+        vote_rlps: Vec<PillarVoteRlpPayload>,
+        required_votes_period: u64,
+    ) -> Result<PillarVoteWeightedBundlePreparePlan> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_prepare_weighted_rlp_bundle(vote_rlps, required_votes_period)
+    }
+
+    pub fn pbft_service_pillar_apply_weighted_rlp_bundle(
+        &self,
+        input: PillarVoteWeightedBundleApplyInput,
+    ) -> Result<PillarVoteBundleApplyPlan> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_apply_weighted_rlp_bundle(input)
+    }
+
+    pub fn pbft_service_pillar_get_verified_vote_payloads(
+        &self,
+        period: u64,
+        block_hash: &[u8; 32],
+        above_threshold: bool,
+    ) -> Result<PillarVotesPayloadLookup> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_get_verified_vote_payloads(period, block_hash, above_threshold)
+    }
+
+    pub fn pbft_service_pillar_build_verified_vote_network_bundles(
+        &self,
+        period: u64,
+        block_hash: &[u8; 32],
+        max_votes_per_bundle: usize,
+    ) -> Result<PillarVoteNetworkBundleLookup> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_build_verified_vote_network_bundles(
+                period,
+                block_hash,
+                max_votes_per_bundle,
+            )
+    }
+
+    pub fn pbft_service_pillar_prepare_finalized_block_for_pbft(
+        &self,
+        request: PillarBlockFinalizationRequest,
+    ) -> Result<PillarBlockFinalizationPrepareResult> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_prepare_finalized_block_for_pbft(request)
+    }
+
+    pub fn pbft_service_pillar_ack_finalize_block_for_pbft(
+        &self,
+        request: PillarBlockFinalizationAcknowledgeRequest,
+    ) -> Result<PillarBlockFinalizationAcknowledgeResult> {
+        self.pillar_state(true)?
+            .pbft_service_pillar_ack_finalize_block_for_pbft(request)
     }
 }
 
@@ -1691,7 +1784,9 @@ impl From<ConsensusPillarVoteInspection> for PillarVoteInspection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pillar_chain::{create_pillar_chain_runtime, create_pillar_chain_storage};
+    use crate::pillar_chain::{
+        create_pillar_capable_pbft_service_for_compatibility, create_pillar_chain_storage,
+    };
     use crate::storage::create_storage;
     use ethereum_types::H160;
     use k256::ecdsa::SigningKey;
@@ -1917,28 +2012,28 @@ mod tests {
     }
 
     #[test]
-    fn pillar_chain_runtime_prepares_and_acknowledges_block_for_pbft_with_owned_storage() {
+    fn pbft_service_pillar_prepares_and_acknowledges_block_for_pbft_with_owned_storage() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_runtime_finalization");
         {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let mut runtime =
-                create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+                .expect("pillar runtime should initialize");
             let pillar_storage = create_pillar_chain_storage(&storage);
             let (block, current_data_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data_rlp)
+                .pbft_service_pillar_apply_current_block_data(current_data_rlp)
                 .expect("current block should apply");
             let signing_key = SigningKey::from_slice(&[0x24; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
             let block_rlp = block.encode_rlp();
             runtime
-                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .expect("trusted vote should prepare");
 
             let applied = runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -1951,7 +2046,7 @@ mod tests {
             assert!(applied.accepted);
 
             let prepared = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
@@ -1975,7 +2070,7 @@ mod tests {
                 .pillar_chain_storage_apply_finalized_block(41, block_rlp.clone())
                 .expect("PBFT primary batch fixture should persist the prepared row");
             let acknowledged = runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(
                     PillarBlockFinalizationAcknowledgeRequest {
                         anchor_generation: prepared.preparation_anchor_generation,
                         preparation_token: prepared.preparation_token,
@@ -1997,7 +2092,7 @@ mod tests {
             );
             assert_eq!(
                 runtime
-                    .pillar_chain_runtime_latest_finalized_block_rlp()
+                    .pbft_service_pillar_latest_finalized_block_rlp()
                     .expect("runtime latest-finalized snapshot should update"),
                 block_rlp,
             );
@@ -2010,10 +2105,10 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_stale_single");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (vote, _) = signed_vote(0x25, 42, 77);
             let prepared = runtime
-                .pillar_chain_runtime_prepare_single_vote_admission(
+                .pbft_service_pillar_prepare_single_vote_admission(
                     vote.encode_rlp(),
                     PillarVoteSingleAdmissionContext {
                         first_pillar_block_period: 41,
@@ -2024,10 +2119,10 @@ mod tests {
             assert_eq!(prepared.anchor_generation, 0);
 
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data(41).1)
+                .pbft_service_pillar_apply_current_block_data(current_data(41).1)
                 .unwrap();
             let rejected = runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2038,7 +2133,11 @@ mod tests {
                 .unwrap();
             assert_eq!(rejected.status, PILLAR_VOTE_STATUS_STALE_ANCHOR);
             assert!(!rejected.accepted);
-            assert!(!runtime.votes.period_data_initialized(vote.period));
+            assert!(!runtime
+                .pillar_state(false)
+                .unwrap()
+                .votes
+                .period_data_initialized(vote.period));
         }
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -2048,15 +2147,15 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_checked_token_reuse");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .pbft_service_pillar_apply_current_block_data(current_rlp)
                 .unwrap();
             let key = SigningKey::from_slice(&[0x27; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
             let checked = runtime
-                .pillar_chain_runtime_prepare_single_vote_admission(
+                .pbft_service_pillar_prepare_single_vote_admission(
                     vote.encode_rlp(),
                     PillarVoteSingleAdmissionContext {
                         first_pillar_block_period: 41,
@@ -2067,17 +2166,17 @@ mod tests {
             assert_eq!(checked.anchor_generation, 1);
 
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data(51).1)
+                .pbft_service_pillar_apply_current_block_data(current_data(51).1)
                 .unwrap();
             let reused = runtime
-                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .unwrap();
             assert_eq!(reused.anchor_generation, checked.anchor_generation);
             assert_eq!(reused.current_period, checked.current_period);
             assert_eq!(reused.current_hash, checked.current_hash);
 
             let rejected = runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2096,15 +2195,15 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_checked_reprepare");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (old_block, old_current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(old_current_rlp)
+                .pbft_service_pillar_apply_current_block_data(old_current_rlp)
                 .unwrap();
             let key = SigningKey::from_slice(&[0x2A; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&key, 42, old_block.hash());
             let checked = runtime
-                .pillar_chain_runtime_prepare_single_vote_admission(
+                .pbft_service_pillar_prepare_single_vote_admission(
                     vote.encode_rlp(),
                     PillarVoteSingleAdmissionContext {
                         first_pillar_block_period: 41,
@@ -2124,7 +2223,7 @@ mod tests {
                 validator_vote_count_changes: Vec::new(),
             };
             runtime
-                .pillar_chain_runtime_apply_current_block_data(
+                .pbft_service_pillar_apply_current_block_data(
                     CurrentPillarBlockDataDb {
                         pillar_block: replacement_block,
                         vote_counts: Vec::new(),
@@ -2134,7 +2233,7 @@ mod tests {
                 .unwrap();
 
             let rechecked = runtime
-                .pillar_chain_runtime_prepare_single_vote_admission(
+                .pbft_service_pillar_prepare_single_vote_admission(
                     vote.encode_rlp(),
                     PillarVoteSingleAdmissionContext {
                         first_pillar_block_period: 41,
@@ -2144,14 +2243,16 @@ mod tests {
                 .unwrap();
             assert_eq!(rechecked.status, 4);
             assert!(!rechecked.can_query_dpos);
-            let registry = runtime.single_vote_preparations.lock().unwrap();
+            let state = runtime.pillar_state(false).unwrap();
+            let registry = state.single_vote_preparations.lock().unwrap();
             let retained = registry.entries.get(&vote.hash(true)).unwrap();
             assert_eq!(retained.anchor_generation, checked.anchor_generation);
             assert!(!retained.trusted_local_or_restore);
             drop(registry);
+            drop(state);
 
             let rejected = runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2170,15 +2271,15 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_identity_race");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .pbft_service_pillar_apply_current_block_data(current_rlp)
                 .unwrap();
             let key = SigningKey::from_slice(&[0x28; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
             let prepared = runtime
-                .pillar_chain_runtime_prepare_single_vote_admission(
+                .pbft_service_pillar_prepare_single_vote_admission(
                     vote.encode_rlp(),
                     PillarVoteSingleAdmissionContext {
                         first_pillar_block_period: 41,
@@ -2192,11 +2293,23 @@ mod tests {
             let (conflict, _) = signed_rlp_to_verified_vote(conflict.encode_rlp(), 4)
                 .unwrap()
                 .unwrap();
-            runtime.votes.initialize_period_data(42, 5);
-            assert!(runtime.votes.add_verified_vote(conflict).unwrap().accepted);
+            runtime
+                .pillar_state(false)
+                .unwrap()
+                .votes
+                .initialize_period_data(42, 5);
+            assert!(
+                runtime
+                    .pillar_state(false)
+                    .unwrap()
+                    .votes
+                    .add_verified_vote(conflict)
+                    .unwrap()
+                    .accepted
+            );
 
             let rejected = runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2216,15 +2329,15 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_relevance_race");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .pbft_service_pillar_apply_current_block_data(current_rlp)
                 .unwrap();
             let key = SigningKey::from_slice(&[0x29; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
             let prepared = runtime
-                .pillar_chain_runtime_prepare_single_vote_admission(
+                .pbft_service_pillar_prepare_single_vote_admission(
                     vote.encode_rlp(),
                     PillarVoteSingleAdmissionContext {
                         first_pillar_block_period: 41,
@@ -2237,11 +2350,23 @@ mod tests {
             let (inserted, _) = signed_rlp_to_verified_vote(vote.encode_rlp(), 4)
                 .unwrap()
                 .unwrap();
-            runtime.votes.initialize_period_data(42, 5);
-            assert!(runtime.votes.add_verified_vote(inserted).unwrap().accepted);
+            runtime
+                .pillar_state(false)
+                .unwrap()
+                .votes
+                .initialize_period_data(42, 5);
+            assert!(
+                runtime
+                    .pillar_state(false)
+                    .unwrap()
+                    .votes
+                    .add_verified_vote(inserted)
+                    .unwrap()
+                    .accepted
+            );
 
             let rejected = runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2261,38 +2386,36 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_preparation_bound");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
-            for value in 0..=MAX_SINGLE_VOTE_PREPARATIONS {
-                let vote_hash = H256::from_low_u64_be(value as u64);
-                runtime
-                    .retain_single_vote_preparation(
-                        vote_hash,
-                        SingleVotePreparation {
-                            vote_rlp: vec![0x80],
-                            anchor_generation: 0,
-                            period: 1,
-                            block_hash: H256::zero(),
-                            voter: ethereum_types::H160::zero(),
-                            needs_threshold: false,
-                            current_anchor: None,
-                            first_pillar_block_period: 0,
-                            pillar_blocks_interval: 1,
-                            trusted_local_or_restore: true,
-                        },
-                    )
-                    .unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            {
+                let state = runtime.pillar_state(false).unwrap();
+                for value in 0..=MAX_SINGLE_VOTE_PREPARATIONS {
+                    let vote_hash = H256::from_low_u64_be(value as u64);
+                    state
+                        .retain_single_vote_preparation(
+                            vote_hash,
+                            SingleVotePreparation {
+                                vote_rlp: vec![0x80],
+                                anchor_generation: 0,
+                                period: 1,
+                                block_hash: H256::zero(),
+                                voter: ethereum_types::H160::zero(),
+                                needs_threshold: false,
+                                current_anchor: None,
+                                first_pillar_block_period: 0,
+                                pillar_blocks_interval: 1,
+                                trusted_local_or_restore: true,
+                            },
+                        )
+                        .unwrap();
+                }
+                assert_eq!(
+                    state.single_vote_preparations.lock().unwrap().entries.len(),
+                    MAX_SINGLE_VOTE_PREPARATIONS
+                );
             }
-            assert_eq!(
-                runtime
-                    .single_vote_preparations
-                    .lock()
-                    .unwrap()
-                    .entries
-                    .len(),
-                MAX_SINGLE_VOTE_PREPARATIONS
-            );
             let missing = runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: H256::zero().into(),
                         validator_vote_count: 1,
@@ -2311,15 +2434,15 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_stale_bundle");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .pbft_service_pillar_apply_current_block_data(current_rlp)
                 .unwrap();
             let key = SigningKey::from_slice(&[0x26; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&key, 42, block.hash());
             let prepared = runtime
-                .pillar_chain_runtime_prepare_weighted_rlp_bundle(
+                .pbft_service_pillar_prepare_weighted_rlp_bundle(
                     vec![PillarVoteRlpPayload {
                         vote_rlp: vote.encode_rlp(),
                     }],
@@ -2336,24 +2459,26 @@ mod tests {
             assert_eq!(prepared.anchor_generation, 1);
 
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data(51).1)
+                .pbft_service_pillar_apply_current_block_data(current_data(51).1)
                 .unwrap();
             let rejected = runtime
-                .pillar_chain_runtime_apply_weighted_rlp_bundle(
-                    PillarVoteWeightedBundleApplyInput {
-                        votes: vec![PillarVoteWeightedRlpPayload {
-                            vote_rlp: vote.encode_rlp(),
-                            weight: 6,
-                        }],
-                        required_votes_period: 42,
-                        threshold: 5,
-                        anchor_generation: prepared.anchor_generation,
-                    },
-                )
+                .pbft_service_pillar_apply_weighted_rlp_bundle(PillarVoteWeightedBundleApplyInput {
+                    votes: vec![PillarVoteWeightedRlpPayload {
+                        vote_rlp: vote.encode_rlp(),
+                        weight: 6,
+                    }],
+                    required_votes_period: 42,
+                    threshold: 5,
+                    anchor_generation: prepared.anchor_generation,
+                })
                 .unwrap();
             assert_eq!(rejected.status, PILLAR_VOTE_BUNDLE_STATUS_STALE_ANCHOR);
             assert_eq!(rejected.applied_votes, 0);
-            assert!(!runtime.votes.period_data_initialized(42));
+            assert!(!runtime
+                .pillar_state(false)
+                .unwrap()
+                .votes
+                .period_data_initialized(42));
         }
         let _ = fs::remove_dir_all(temp_dir);
     }
@@ -2363,13 +2488,13 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_finalize_overflow");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(u64::MAX);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .pbft_service_pillar_apply_current_block_data(current_rlp)
                 .unwrap();
             let result = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: block.hash().into(),
                     },
@@ -2391,19 +2516,19 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             let pillar_storage = create_pillar_chain_storage(&storage);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .pbft_service_pillar_apply_current_block_data(current_rlp.clone())
                 .unwrap();
             let signing_key = SigningKey::from_slice(&[0x30; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
             runtime
-                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .unwrap();
             runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2413,7 +2538,7 @@ mod tests {
                 )
                 .unwrap();
             let prepared = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
@@ -2423,7 +2548,7 @@ mod tests {
                 .pillar_chain_storage_apply_finalized_block(41, block.encode_rlp())
                 .unwrap();
             runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(
                     PillarBlockFinalizationAcknowledgeRequest {
                         anchor_generation: prepared.preparation_anchor_generation,
                         preparation_token: prepared.preparation_token,
@@ -2432,7 +2557,7 @@ mod tests {
                 .unwrap();
 
             let replayed = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
@@ -2453,18 +2578,18 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .pbft_service_pillar_apply_current_block_data(current_rlp.clone())
                 .unwrap();
             let signing_key = SigningKey::from_slice(&[0x20; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
             runtime
-                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .unwrap();
             runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2475,14 +2600,14 @@ mod tests {
                 .unwrap();
 
             let first = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
                 )
                 .expect("first finalization prepare should succeed");
             let second = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
@@ -2494,6 +2619,8 @@ mod tests {
             assert_eq!(first.preparation_token, second.preparation_token);
             assert_eq!(
                 runtime
+                    .pillar_state(false)
+                    .unwrap()
                     .pillar_block_finalization_preparations
                     .lock()
                     .unwrap()
@@ -2509,19 +2636,19 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_finalization_ack_retry");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).expect("storage should open");
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let pillar_storage = create_pillar_chain_storage(&storage);
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp)
+                .pbft_service_pillar_apply_current_block_data(current_rlp)
                 .unwrap();
             let signing_key = SigningKey::from_slice(&[0x50; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
             runtime
-                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .unwrap();
             runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2532,7 +2659,7 @@ mod tests {
                 .unwrap();
 
             let prepared = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
@@ -2545,7 +2672,7 @@ mod tests {
                 };
 
             let missing = runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(ack_request(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(ack_request(
                     prepared.preparation_anchor_generation,
                     prepared.preparation_token,
                 ))
@@ -2568,7 +2695,7 @@ mod tests {
                 .unwrap();
 
             let stale = runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(ack_request(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(ack_request(
                     prepared.preparation_anchor_generation,
                     prepared.preparation_token,
                 ))
@@ -2581,7 +2708,7 @@ mod tests {
                 .pillar_chain_storage_apply_finalized_block(41, block.encode_rlp())
                 .unwrap();
             let acknowledged = runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(ack_request(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(ack_request(
                     prepared.preparation_anchor_generation,
                     prepared.preparation_token,
                 ))
@@ -2597,25 +2724,25 @@ mod tests {
     }
 
     #[test]
-    fn pillar_chain_runtime_finalization_ack_rejects_reused_token() {
+    fn pbft_service_pillar_finalization_ack_rejects_reused_token() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_prep_token_reuse");
         {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let pillar_storage = create_pillar_chain_storage(&storage);
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .pbft_service_pillar_apply_current_block_data(current_rlp.clone())
                 .unwrap();
             let signing_key = SigningKey::from_slice(&[0x31; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
             runtime
-                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .unwrap();
             runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         validator_vote_count: 6,
@@ -2625,7 +2752,7 @@ mod tests {
                 )
                 .unwrap();
             let prepared = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
@@ -2635,7 +2762,7 @@ mod tests {
                 .pillar_chain_storage_apply_finalized_block(41, block.encode_rlp())
                 .unwrap();
             runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(
                     PillarBlockFinalizationAcknowledgeRequest {
                         anchor_generation: prepared.preparation_anchor_generation,
                         preparation_token: prepared.preparation_token,
@@ -2644,7 +2771,7 @@ mod tests {
                 .unwrap();
 
             let repeated = runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(
                     PillarBlockFinalizationAcknowledgeRequest {
                         anchor_generation: prepared.preparation_anchor_generation,
                         preparation_token: prepared.preparation_token,
@@ -2659,22 +2786,22 @@ mod tests {
     }
 
     #[test]
-    fn pillar_chain_runtime_finalization_ack_rejects_stale_generation() {
+    fn pbft_service_pillar_finalization_ack_rejects_stale_generation() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_prep_token_stale_generation");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let mut runtime = create_pillar_chain_runtime(&storage).unwrap();
+            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_rlp.clone())
+                .pbft_service_pillar_apply_current_block_data(current_rlp.clone())
                 .unwrap();
             let signing_key = SigningKey::from_slice(&[0x32; 32]).unwrap();
             let (vote, _) = signed_vote_with_key_and_hash(&signing_key, 42, block.hash());
             runtime
-                .pillar_chain_runtime_prepare_trusted_single_vote_admission(vote.encode_rlp())
+                .pbft_service_pillar_prepare_trusted_single_vote_admission(vote.encode_rlp())
                 .unwrap();
             runtime
-                .pillar_chain_runtime_apply_prepared_single_vote_admission(
+                .pbft_service_pillar_apply_prepared_single_vote_admission(
                     PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),
                         has_threshold: true,
@@ -2684,7 +2811,7 @@ mod tests {
                 )
                 .unwrap();
             let prepared = runtime
-                .pillar_chain_runtime_prepare_finalized_block_for_pbft(
+                .pbft_service_pillar_prepare_finalized_block_for_pbft(
                     PillarBlockFinalizationRequest {
                         requested_pillar_block_hash: vote.block_hash.into(),
                     },
@@ -2692,10 +2819,10 @@ mod tests {
                 .unwrap();
 
             runtime
-                .pillar_chain_runtime_apply_current_block_data(current_data(42).1)
+                .pbft_service_pillar_apply_current_block_data(current_data(42).1)
                 .unwrap();
             let stale = runtime
-                .pillar_chain_runtime_ack_finalize_block_for_pbft(
+                .pbft_service_pillar_ack_finalize_block_for_pbft(
                     PillarBlockFinalizationAcknowledgeRequest {
                         anchor_generation: prepared.preparation_anchor_generation,
                         preparation_token: prepared.preparation_token,
@@ -3021,12 +3148,12 @@ mod tests {
     fn network_bundle_chunks_use_runtime_votes_without_materializing_cpp_votes() {
         let dir = unique_temp_dir("pillar_network_runtime_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let mut runtime =
-            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            .expect("pillar runtime should initialize");
         let period = 92;
         let (current_block, current_data_rlp) = current_data(period - 1);
         runtime
-            .pillar_chain_runtime_apply_current_block_data(current_data_rlp)
+            .pbft_service_pillar_apply_current_block_data(current_data_rlp)
             .expect("current block should apply");
         let block = current_block.hash();
         let first_key = SigningKey::from_slice(&[0x61; 32]).unwrap();
@@ -3045,7 +3172,7 @@ mod tests {
         ];
 
         runtime
-            .pillar_chain_runtime_apply_weighted_rlp_bundle(PillarVoteWeightedBundleApplyInput {
+            .pbft_service_pillar_apply_weighted_rlp_bundle(PillarVoteWeightedBundleApplyInput {
                 votes,
                 required_votes_period: period,
                 threshold: 1,
@@ -3053,7 +3180,7 @@ mod tests {
             })
             .unwrap();
         let lookup = runtime
-            .pillar_chain_runtime_build_verified_vote_network_bundles(
+            .pbft_service_pillar_build_verified_vote_network_bundles(
                 period,
                 block.as_fixed_bytes(),
                 1,
@@ -3087,8 +3214,8 @@ mod tests {
     fn network_bundle_chunks_fall_back_to_matching_stored_period_data() {
         let dir = unique_temp_dir("pillar_network_storage_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime =
-            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            .expect("pillar runtime should initialize");
         let period = 93;
         let block = H256::from_low_u64_be(9300);
         let (first, _) = signed_vote(0x63, period, 9300);
@@ -3103,7 +3230,7 @@ mod tests {
             .unwrap();
 
         let lookup = runtime
-            .pillar_chain_runtime_build_verified_vote_network_bundles(
+            .pbft_service_pillar_build_verified_vote_network_bundles(
                 period,
                 block.as_fixed_bytes(),
                 250,
@@ -3117,7 +3244,7 @@ mod tests {
             decode_optimized_pillar_votes_bundle_rlp(&lookup.chunks[0].votes_bundle_rlp).unwrap();
         assert_eq!(decoded, vec![first, second]);
 
-        let mismatched = match runtime.pillar_chain_runtime_build_verified_vote_network_bundles(
+        let mismatched = match runtime.pbft_service_pillar_build_verified_vote_network_bundles(
             period,
             H256::from_low_u64_be(9301).as_fixed_bytes(),
             250,
@@ -3135,8 +3262,8 @@ mod tests {
     fn verified_vote_payload_lookup_falls_back_to_matching_stored_period_data() {
         let dir = unique_temp_dir("pillar_payload_lookup_storage_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime =
-            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            .expect("pillar runtime should initialize");
         let period = 94;
         let block = H256::from_low_u64_be(9400);
         let (vote, _) = signed_vote(0x65, period, 9400);
@@ -3150,7 +3277,7 @@ mod tests {
             .unwrap();
 
         let lookup = runtime
-            .pillar_chain_runtime_get_verified_vote_payloads(period, block.as_fixed_bytes(), true)
+            .pbft_service_pillar_get_verified_vote_payloads(period, block.as_fixed_bytes(), true)
             .unwrap();
 
         assert!(lookup.threshold_met);
@@ -3161,7 +3288,7 @@ mod tests {
         assert_eq!(lookup.votes[0].weight, 0);
         assert_eq!(lookup.votes[0].vote_rlp, vote.encode_rlp());
 
-        let mismatched = match runtime.pillar_chain_runtime_get_verified_vote_payloads(
+        let mismatched = match runtime.pbft_service_pillar_get_verified_vote_payloads(
             period,
             H256::from_low_u64_be(9401).as_fixed_bytes(),
             true,
@@ -3179,8 +3306,8 @@ mod tests {
     fn verified_vote_payload_lookup_keeps_live_below_threshold_state() {
         let dir = unique_temp_dir("pillar_payload_lookup_live_below_threshold");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let mut runtime =
-            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            .expect("pillar runtime should initialize");
         let period = 95;
         let block = H256::from_low_u64_be(9500);
         let (live_vote, _) = signed_vote(0x66, period, 9500);
@@ -3196,14 +3323,17 @@ mod tests {
         let (verified_live_vote, _) = signed_rlp_to_verified_vote(live_vote.encode_rlp(), 2)
             .unwrap()
             .expect("signed live vote should verify");
-        assert!(runtime.votes.initialize_period_data(period, 10));
-        runtime
-            .votes
-            .add_verified_vote(verified_live_vote)
-            .expect("live below-threshold vote should be retained");
+        {
+            let mut state = runtime.pillar_state(false).unwrap();
+            assert!(state.votes.initialize_period_data(period, 10));
+            state
+                .votes
+                .add_verified_vote(verified_live_vote)
+                .expect("live below-threshold vote should be retained");
+        }
 
         let lookup = runtime
-            .pillar_chain_runtime_get_verified_vote_payloads(period, block.as_fixed_bytes(), true)
+            .pbft_service_pillar_get_verified_vote_payloads(period, block.as_fixed_bytes(), true)
             .unwrap();
 
         assert!(!lookup.threshold_met);
@@ -3315,17 +3445,20 @@ mod tests {
     fn runtime_relevance_derives_known_vote_from_owned_index() {
         let storage_dir = unique_temp_dir("pillar_runtime_relevance");
         let storage = create_storage(storage_dir.to_str().unwrap()).expect("storage should open");
-        let mut runtime =
-            create_pillar_chain_runtime(&storage).expect("pillar runtime should initialize");
+        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            .expect("pillar runtime should initialize");
         let vote = vote(31, 888, 1, 0xD4, 6);
-        runtime.votes.initialize_period_data(31, 1);
-        runtime
-            .votes
-            .add_verified_vote(payload_to_vote(clone_payload(&vote)).unwrap())
-            .unwrap();
+        {
+            let mut state = runtime.pillar_state(false).unwrap();
+            state.votes.initialize_period_data(31, 1);
+            state
+                .votes
+                .add_verified_vote(payload_to_vote(clone_payload(&vote)).unwrap())
+                .unwrap();
+        }
 
         let plan = runtime
-            .pillar_chain_runtime_plan_vote_relevance(
+            .pbft_service_pillar_plan_vote_relevance(
                 vote.vote_rlp,
                 PillarVoteRuntimeRelevanceContext {
                     first_pillar_block_period: 10,

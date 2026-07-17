@@ -71,6 +71,12 @@ std::filesystem::path tempStoragePath(const std::string& name) {
   return path;
 }
 
+rust::Box<rustaxa::BridgePbftService> createReadyPillarService(const rustaxa::BridgeStorage& storage) {
+  auto service = rustaxa::create_pillar_capable_pbft_service_for_compatibility(storage);
+  service->pbft_service_complete_pillar_bootstrap();
+  return service;
+}
+
 }  // namespace
 
 TEST(PillarVoteBundleBridgeTest, preparePillarVoteBundleReturnsRecoveredVotersAndGeneration) {
@@ -92,9 +98,9 @@ TEST(PillarVoteBundleBridgeTest, preparePillarVoteBundleReturnsRecoveredVotersAn
 
   const auto test_dir = tempStoragePath("rustaxa_pillar_vote_bundle_prepare");
   auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_runtime = rustaxa::create_pillar_chain_runtime(*storage);
-  pillar_runtime->pillar_chain_runtime_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
-  const auto plan = pillar_runtime->pillar_chain_runtime_prepare_weighted_rlp_bundle(std::move(votes), period);
+  auto pillar_service = createReadyPillarService(*storage);
+  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
+  const auto plan = pillar_service->pbft_service_pillar_prepare_weighted_rlp_bundle(std::move(votes), period);
 
   EXPECT_EQ(plan.status, 0);
   EXPECT_TRUE(plan.can_query_dpos);
@@ -113,19 +119,19 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
   const auto current_anchor = makeCurrentPillarAnchor(current_period);
   const auto test_dir = tempStoragePath("rustaxa_pillar_current_anchor_decisions");
   auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_runtime = rustaxa::create_pillar_chain_runtime(*storage);
+  auto pillar_service = createReadyPillarService(*storage);
 
   rustaxa::PillarCurrentAnchorDecisionRequest request{};
   request.operation = 0;
   request.has_candidate_hash = true;
   request.candidate_hash = current_anchor.hash.asArray();
-  auto decision = pillar_runtime->pillar_chain_runtime_plan_current_anchor_decision(request);
+  auto decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
   EXPECT_EQ(decision.status, 1);
   EXPECT_FALSE(decision.selected);
   EXPECT_FALSE(decision.has_current_anchor);
 
-  pillar_runtime->pillar_chain_runtime_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
-  decision = pillar_runtime->pillar_chain_runtime_plan_current_anchor_decision(request);
+  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
+  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
   EXPECT_EQ(decision.status, 0);
   EXPECT_TRUE(decision.selected);
   EXPECT_TRUE(decision.has_current_anchor);
@@ -136,12 +142,12 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
   request = {};
   request.operation = 1;
   request.pbft_period = current_period + 1;
-  decision = pillar_runtime->pillar_chain_runtime_plan_current_anchor_decision(request);
+  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
   EXPECT_EQ(decision.status, 0);
   EXPECT_TRUE(decision.selected);
 
   request.pbft_period = 0;
-  decision = pillar_runtime->pillar_chain_runtime_plan_current_anchor_decision(request);
+  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
   EXPECT_EQ(decision.status, 4);
   EXPECT_FALSE(decision.selected);
 
@@ -149,13 +155,13 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
   request.operation = 2;
   request.pbft_period = current_period + 10;
   request.pillar_blocks_interval = 10;
-  decision = pillar_runtime->pillar_chain_runtime_plan_current_anchor_decision(request);
+  decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
   EXPECT_EQ(decision.status, 0);
   EXPECT_TRUE(decision.selected);
 
-  EXPECT_EQ(pillar_runtime->pillar_chain_runtime_consensus_threshold(0), 1);
-  EXPECT_EQ(pillar_runtime->pillar_chain_runtime_consensus_threshold(10), 6);
-  EXPECT_EQ(pillar_runtime->pillar_chain_runtime_consensus_threshold(std::numeric_limits<uint64_t>::max()),
+  EXPECT_EQ(pillar_service->pbft_service_pillar_consensus_threshold(0), 1);
+  EXPECT_EQ(pillar_service->pbft_service_pillar_consensus_threshold(10), 6);
+  EXPECT_EQ(pillar_service->pbft_service_pillar_consensus_threshold(std::numeric_limits<uint64_t>::max()),
             std::numeric_limits<uint64_t>::max() / 2 + 1);
   std::filesystem::remove_all(test_dir);
 }
@@ -163,12 +169,12 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
 TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationReturnsMissingCurrentBlock) {
   const auto test_dir = tempStoragePath("rustaxa_pillar_finalize_prepare_missing_current");
   auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_runtime = rustaxa::create_pillar_chain_runtime(*storage);
+  auto pillar_service = createReadyPillarService(*storage);
 
   rustaxa::PillarBlockFinalizationRequest request{};
   request.requested_pillar_block_hash = {};
 
-  const auto prepare = pillar_runtime->pillar_chain_runtime_prepare_finalized_block_for_pbft(request);
+  const auto prepare = pillar_service->pbft_service_pillar_prepare_finalized_block_for_pbft(request);
   EXPECT_EQ(prepare.status, 1);
   EXPECT_FALSE(prepare.success);
   EXPECT_FALSE(prepare.should_emit);
@@ -185,13 +191,13 @@ TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationWithCurrentBlockCanRea
   const auto current_anchor = makeCurrentPillarAnchor(100);
   const auto test_dir = tempStoragePath("rustaxa_pillar_finalize_prepare_hash_mismatch");
   auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_runtime = rustaxa::create_pillar_chain_runtime(*storage);
-  pillar_runtime->pillar_chain_runtime_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
+  auto pillar_service = createReadyPillarService(*storage);
+  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
 
   rustaxa::PillarBlockFinalizationRequest request{};
   request.requested_pillar_block_hash = current_anchor.hash.asArray();
   request.requested_pillar_block_hash[0] ^= 0xFF;
-  const auto prepare = pillar_runtime->pillar_chain_runtime_prepare_finalized_block_for_pbft(request);
+  const auto prepare = pillar_service->pbft_service_pillar_prepare_finalized_block_for_pbft(request);
 
   EXPECT_EQ(prepare.status, 2);
   EXPECT_FALSE(prepare.success);
@@ -222,8 +228,8 @@ TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcc
 
   const auto test_dir = tempStoragePath("rustaxa_pillar_vote_bundle_runtime");
   auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_runtime = rustaxa::create_pillar_chain_runtime(*storage);
-  pillar_runtime->pillar_chain_runtime_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
+  auto pillar_service = createReadyPillarService(*storage);
+  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
 
   rust::Vec<rustaxa::PillarVoteRlpPayload> vote_rlps;
   rustaxa::PillarVoteRlpPayload first_rlp;
@@ -232,7 +238,7 @@ TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcc
   rustaxa::PillarVoteRlpPayload second_rlp;
   second_rlp.vote_rlp = makeBytes(second_vote.rlp());
   vote_rlps.push_back(std::move(second_rlp));
-  const auto prepared = pillar_runtime->pillar_chain_runtime_prepare_weighted_rlp_bundle(std::move(vote_rlps), period);
+  const auto prepared = pillar_service->pbft_service_pillar_prepare_weighted_rlp_bundle(std::move(vote_rlps), period);
   ASSERT_TRUE(prepared.can_query_dpos);
 
   rustaxa::PillarVoteWeightedBundleApplyInput input;
@@ -240,7 +246,7 @@ TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcc
   input.required_votes_period = period;
   input.threshold = 7;
   input.anchor_generation = prepared.anchor_generation;
-  const auto plan = pillar_runtime->pillar_chain_runtime_apply_weighted_rlp_bundle(std::move(input));
+  const auto plan = pillar_service->pbft_service_pillar_apply_weighted_rlp_bundle(std::move(input));
 
   EXPECT_EQ(plan.status, 0);
   EXPECT_EQ(plan.block_weight, 7);
@@ -249,7 +255,7 @@ TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcc
   EXPECT_EQ(plan.applied_votes, 2);
 
   const auto lookup =
-      pillar_runtime->pillar_chain_runtime_get_verified_vote_payloads(period, block_hash.asArray(), true);
+      pillar_service->pbft_service_pillar_get_verified_vote_payloads(period, block_hash.asArray(), true);
   EXPECT_TRUE(lookup.threshold_met);
   EXPECT_EQ(lookup.selected_weight, 7);
   ASSERT_EQ(lookup.votes.size(), 2);

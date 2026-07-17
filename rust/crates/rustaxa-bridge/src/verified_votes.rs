@@ -2202,6 +2202,8 @@ mod tests {
             slashing: None,
             storage: storage.map(|storage| storage.0.clone()),
             bootstrap_complete: std::sync::atomic::AtomicBool::new(true),
+            pillar: None,
+            pillar_ready: std::sync::atomic::AtomicBool::new(false),
         }))
     }
 

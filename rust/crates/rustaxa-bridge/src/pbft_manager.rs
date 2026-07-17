@@ -535,6 +535,10 @@ pub fn create_pbft_service_from_storage(
         slashing: Some(slashing),
         storage: Some(storage.0.clone()),
         bootstrap_complete: std::sync::atomic::AtomicBool::new(false),
+        pillar: Some(std::sync::Mutex::new(
+            crate::pillar_chain::restore_pillar_chain_state(storage)?,
+        )),
+        pillar_ready: std::sync::atomic::AtomicBool::new(false),
     }))
 }
 
@@ -3846,18 +3850,19 @@ mod tests {
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationRewardVotesResetReport as FfiPbftManagerFinalizationRewardVotesResetReport;
     use crate::ffi::rustaxa_ffi::PbftManagerFinalizationSortitionCommitReport as FfiPbftManagerFinalizationSortitionCommitReport;
     use crate::ffi::{BridgeMetadataStorageQueries, BridgePbftStorageQueries, BridgeStorage};
-    use crate::pillar_chain::create_pillar_chain_runtime;
+    use crate::pillar_chain::create_pillar_capable_pbft_service_for_compatibility;
     use crate::storage::{
         create_metadata_storage_queries, create_pbft_storage_queries,
         create_pbft_vote_storage_queries, create_storage,
     };
-    use ethereum_types::H256;
+    use ethereum_types::{H160, H256};
     use rustaxa_consensus::pbft_finalize::{PbftFinalizationResumeStatus, PbftFinalizationStatus};
     use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
     use rustaxa_consensus::{
         persist_pbft_vote_progress, save_own_verified_vote, PbftVoteProgressPersistenceWrite,
         PbftVoteStorageRecord,
     };
+    use rustaxa_types::pillar::{CurrentPillarBlockDataDb, PillarBlock};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -4323,6 +4328,91 @@ mod tests {
         let inactive_snapshot = pbft_manager_runtime_snapshot(&inactive);
         assert_eq!(inactive_snapshot.period, 1);
         assert_eq!(inactive_snapshot.current_round_lambda_ms, 100);
+    }
+
+    #[test]
+    fn full_pbft_service_owns_one_pillar_state_and_separate_readiness() {
+        let path = unique_temp_dir("rustaxa_bridge_pbft_service_pillar_readiness");
+        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
+        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
+        assert!(service.pbft_service_has_pillar());
+        assert!(!service.pbft_service_pillar_ready());
+        assert_eq!(
+            service
+                .pbft_service_pillar_consensus_threshold(10)
+                .unwrap_err()
+                .to_string(),
+            "PBFT_SERVICE_PILLAR_UNAVAILABLE"
+        );
+        let identity_before = {
+            let state = service.pillar_state(false).unwrap();
+            let generation = state.current_anchor.read().unwrap().generation;
+            (
+                &*state as *const crate::ffi::PillarChainState as usize,
+                generation,
+                state.next_pillar_block_finalization_preparation_token,
+            )
+        };
+        service
+            .pbft_service_pillar_load_startup_bootstrap()
+            .unwrap();
+        service.pbft_service_complete_pillar_bootstrap().unwrap();
+        assert!(service.pbft_service_pillar_ready());
+        assert_eq!(
+            service.pbft_service_pillar_consensus_threshold(10).unwrap(),
+            6
+        );
+        let identity_after = {
+            let state = service.pillar_state(true).unwrap();
+            let generation = state.current_anchor.read().unwrap().generation;
+            (
+                &*state as *const crate::ffi::PillarChainState as usize,
+                generation,
+                state.next_pillar_block_finalization_preparation_token,
+            )
+        };
+        assert_eq!(identity_before, identity_after);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn full_pbft_service_pillar_persistence_restarts_through_same_owner() {
+        let path = unique_temp_dir("rustaxa_bridge_pbft_service_pillar_restart");
+        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
+        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
+        service.pbft_service_complete_pillar_bootstrap().unwrap();
+        let data = CurrentPillarBlockDataDb {
+            pillar_block: PillarBlock {
+                period: 1,
+                state_root: H256::from_low_u64_be(1),
+                previous_pillar_block_hash: H256::zero(),
+                bridge_root: H256::from_low_u64_be(2),
+                epoch: 3,
+                validator_vote_count_changes: Vec::new(),
+            },
+            vote_counts: vec![rustaxa_types::pillar::ValidatorVoteCount {
+                address: H160::from_low_u64_be(4),
+                vote_count: 5,
+            }],
+        }
+        .encode_rlp();
+        service
+            .pbft_service_pillar_apply_current_block_data(data.clone())
+            .unwrap();
+        drop(service);
+
+        let restarted = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
+        assert!(!restarted.pbft_service_pillar_ready());
+        assert_eq!(
+            restarted
+                .pbft_service_pillar_load_startup_bootstrap()
+                .unwrap()
+                .current_block_data_rlp,
+            data
+        );
+        restarted.pbft_service_complete_pillar_bootstrap().unwrap();
+        assert!(restarted.pbft_service_pillar_ready());
+        let _ = fs::remove_dir_all(path);
     }
 
     #[test]
@@ -6921,9 +7011,9 @@ mod tests {
                 .pbft()
                 .write_manager_field(2, 1_500)
                 .expect("lambda seed should persist");
-            create_pillar_chain_runtime(&storage)
+            create_pillar_capable_pbft_service_for_compatibility(&storage)
                 .expect("pillar runtime should initialize")
-                .pillar_chain_runtime_apply_own_vote(vec![0xC0])
+                .pbft_service_pillar_apply_own_vote(vec![0xC0])
                 .expect("own pillar vote should persist");
             let runtime = create_pbft_manager_runtime_from_storage(&storage, startup_fact())
                 .expect("runtime should restore");

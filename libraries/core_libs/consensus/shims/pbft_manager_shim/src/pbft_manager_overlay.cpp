@@ -202,6 +202,19 @@ constexpr uint8_t kPbftManagerBlockValidationCheckExtraData = 3;
 constexpr uint8_t kPbftManagerBlockValidationCheckPillarBlock = 4;
 constexpr uint8_t kPbftManagerBlockValidationCheckDagOrder = 5;
 constexpr uint8_t kPbftManagerBlockValidationCheckDagWeight = 6;
+constexpr uint8_t kPillarAnchorDecisionValidateCandidate = 0;
+constexpr uint8_t kPillarAnchorDecisionSelectPreviousPeriod = 1;
+constexpr uint8_t kPillarAnchorDecisionRestartPostProcessing = 2;
+
+// Returns the shared pillar-capable service only after its independent pillar
+// bootstrap has completed. Production decision paths fail explicitly instead
+// of constructing or falling back to a separate runtime.
+const rustaxa::BridgePbftService &requireReadyPillarService(const SharedPbftService &service) {
+  if (!service || !service->service().pbft_service_has_pillar() || !service->service().pbft_service_pillar_ready()) {
+    throw std::runtime_error("PBFT_SERVICE_PILLAR_UNAVAILABLE");
+  }
+  return service->service();
+}
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
@@ -927,8 +940,15 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   // Note: processPillarBlock must be called after eligible_wallets_.updateWalletsEligibility
   auto current_pbft_period = pbft_chain_->getPbftChainSize();
   if (kGenesisConfig.state.hardforks.ficus_hf.isPillarBlockPeriod(current_pbft_period)) {
-    const auto pillar_restart = pillar_chain_mgr_->restartPillarPostProcessingDecision(current_pbft_period);
-    if (pillar_restart.should_process) {
+    rustaxa::PillarCurrentAnchorDecisionRequest request{};
+    request.operation = kPillarAnchorDecisionRestartPostProcessing;
+    request.pbft_period = current_pbft_period;
+    request.pillar_blocks_interval = kGenesisConfig.state.hardforks.ficus_hf.pillar_blocks_interval;
+    const auto pillar_restart =
+        requireReadyPillarService(pbft_service_).pbft_service_pillar_plan_current_anchor_decision(request);
+    if (pillar_restart.selected) {
+      LOG(log_er_) << "Pillar block was not processed before restart, current period: " << current_pbft_period
+                   << ", current pillar block period: " << pillar_restart.current_period;
       processPillarBlock(current_pbft_period);
     }
   }
@@ -2068,9 +2088,13 @@ bool PbftManager::genAndPlaceVote(PbftVoteTypes vote_type, PbftPeriod period, Pb
       // No need to check presence of extra data and pillar block hash - this was already validated in validatePbftBlock
       place_pillar_vote_for_block = pbft_block->getExtraData()->getPillarBlockHash();
     } else {
-      const auto local_pillar_vote_anchor = pillar_chain_mgr_->localPillarVoteAnchorForPbftPeriod(period);
-      if (local_pillar_vote_anchor.should_vote) {
-        place_pillar_vote_for_block = local_pillar_vote_anchor.pillar_block_hash;
+      rustaxa::PillarCurrentAnchorDecisionRequest request{};
+      request.operation = kPillarAnchorDecisionSelectPreviousPeriod;
+      request.pbft_period = period;
+      const auto local_pillar_vote_anchor =
+          requireReadyPillarService(pbft_service_).pbft_service_pillar_plan_current_anchor_decision(request);
+      if (local_pillar_vote_anchor.selected && local_pillar_vote_anchor.has_current_anchor) {
+        place_pillar_vote_for_block = fromBridgeHash(local_pillar_vote_anchor.current_hash);
       }
     }
   }
@@ -2806,12 +2830,16 @@ std::optional<PbftBlockExtraData> PbftManager::createPbftBlockExtraData(PbftPeri
   std::optional<blk_hash_t> pillar_block_hash;
   if (kGenesisConfig.state.hardforks.ficus_hf.isPbftWithPillarBlockPeriod(pbft_period)) {
     // Anchor pillar block hash into the pbft block
-    const auto pillar_anchor = pillar_chain_mgr_->pbftExtraDataPillarAnchor(pbft_period);
-    if (!pillar_anchor.available) {
+    rustaxa::PillarCurrentAnchorDecisionRequest request{};
+    request.operation = kPillarAnchorDecisionSelectPreviousPeriod;
+    request.pbft_period = pbft_period;
+    const auto pillar_anchor =
+        requireReadyPillarService(pbft_service_).pbft_service_pillar_plan_current_anchor_decision(request);
+    if (!pillar_anchor.selected || !pillar_anchor.has_current_anchor) {
       return {};
     }
 
-    pillar_block_hash = pillar_anchor.pillar_block_hash;
+    pillar_block_hash = fromBridgeHash(pillar_anchor.current_hash);
   }
 
   return PbftBlockExtraData{TARAXA_MAJOR_VERSION, TARAXA_MINOR_VERSION, TARAXA_PATCH_VERSION, TARAXA_NET_VERSION, "T",
@@ -2981,10 +3009,16 @@ bool PbftManager::validatePbftBlock(const std::shared_ptr<PbftBlock> &pbft_block
     if (plan.next_check == kPbftManagerBlockValidationCheckPillarBlock) {
       const auto pillar_hash =
           pbft_block->getExtraData().has_value() ? pbft_block->getExtraData()->getPillarBlockHash() : std::nullopt;
+      rustaxa::PillarCurrentAnchorDecisionRequest request{};
+      request.operation = kPillarAnchorDecisionValidateCandidate;
+      request.has_candidate_hash = pillar_hash.has_value();
+      if (pillar_hash) {
+        request.candidate_hash = toBridgeHash(*pillar_hash);
+      }
       const auto pillar_anchor_validation =
-          pillar_chain_mgr_->validatePbftBlockPillarAnchor(pbft_block_hash, block_period, pillar_hash);
-      fact.pillar_block_status = pillar_anchor_validation.valid ? kPbftManagerBlockValidationFactValid
-                                                                : kPbftManagerBlockValidationFactInvalid;
+          requireReadyPillarService(pbft_service_).pbft_service_pillar_plan_current_anchor_decision(request);
+      fact.pillar_block_status = pillar_anchor_validation.selected ? kPbftManagerBlockValidationFactValid
+                                                                   : kPbftManagerBlockValidationFactInvalid;
       plan = rustaxa::plan_pbft_manager_block_validation(fact);
       continue;
     }
