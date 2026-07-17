@@ -205,13 +205,15 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
    */
   rustaxa::DagProposerSessionStep proposerSessionNext(uint64_t session_id);
   /**
-   * Reports FinalChain and sortition facts requested by a proposer session.
+   * Reports FinalChain facts requested by a proposer session.
    *
-   * The caller collects these facts without holding the DAG runtime lock. Rust reacquires the lock, revalidates its
-   * stored DAG observation, and either advances to transaction packing or terminates a stale attempt.
+   * The caller supplies only the last finalized period and proposer authorization facts without holding the DAG runtime
+   * lock. Rust revalidates its stored DAG observation, selects the cursor period's historical sortition parameters from
+   * the composed service, and either advances to transaction packing or terminates a stale attempt. Storage, decode, or
+   * bridge failures propagate as exceptions after Rust cleans up the owned cursor.
    */
-  rustaxa::DagProposerSessionStep reportProposerExternalProposalFacts(
-      uint64_t session_id, rustaxa::DagProposerExternalProposalFactsReport report);
+  rustaxa::DagProposerSessionStep reportProposerFinalChainFacts(uint64_t session_id,
+                                                                rustaxa::DagProposerFinalChainFactsReport report);
   /**
    * Polls whether the Rust DAG frontier invalidated an in-flight VDF proof.
    *

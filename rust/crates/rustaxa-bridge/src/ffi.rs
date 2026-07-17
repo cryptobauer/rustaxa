@@ -4026,15 +4026,14 @@ pub mod rustaxa_ffi {
         max_tips: u16,
     }
 
-    /// FinalChain and sortition facts collected for the runtime-derived proposal period.
+    /// FinalChain facts collected for the runtime-derived proposal period.
     ///
     /// These facts answer the session's collect action and must correspond to the `proposal_period` in that step. Rust
     /// revalidates its observation before consuming them; stale observations terminate without retry mutation, while
     /// storage/decode/planner failures return an error and remove the session.
-    struct DagProposerExternalProposalFactsReport {
+    struct DagProposerFinalChainFactsReport {
         last_finalized_period: u64,
         authorization_facts: DagDposAuthorizationFacts,
-        sortition_params: SortitionRuntimeParams,
     }
 
     /// Complete instruction/result snapshot returned by the Rust-owned DAG proposer cursor.
@@ -4061,6 +4060,8 @@ pub mod rustaxa_ffi {
         vote_count: u64,
         max_vote_count: u64,
         vdf_difficulty: u16,
+        /// Exact historical parameters for StartVdf; zeroed for every other action.
+        vdf_sortition_params: LegacySortitionParams,
         vdf_stale: bool,
         old_proposal: bool,
         vdf_message: Vec<u8>,
@@ -4720,13 +4721,14 @@ pub mod rustaxa_ffi {
             runtime: &BridgeDagTransactionService,
             session_id: u64,
         ) -> Result<DagProposerSessionStep>;
-        /// Supplies the requested FinalChain/sortition facts after Rust revalidates its observation.
+        /// Supplies requested FinalChain facts; Rust loads and revalidates exact
+        /// historical sortition parameters inside the composed service.
         /// Any returned error removes the cursor, so callers may also invoke abort safely during generic cleanup.
-        #[rust_name = "service_dag_manager_runtime_proposer_session_report_external_facts"]
-        pub fn dag_manager_runtime_proposer_session_report_external_facts(
+        #[rust_name = "service_dag_manager_runtime_proposer_session_report_final_chain_facts"]
+        pub fn dag_manager_runtime_proposer_session_report_final_chain_facts(
             runtime: &BridgeDagTransactionService,
             session_id: u64,
-            report: DagProposerExternalProposalFactsReport,
+            report: DagProposerFinalChainFactsReport,
         ) -> Result<DagProposerSessionStep>;
         /// Prepares a DAG-owned transaction pack from private cursor configuration.
         /// Estimate-needed results keep action 1 and expose only `transaction_estimate_requests`; declared/cache-only,

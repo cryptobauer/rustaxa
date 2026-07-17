@@ -31,7 +31,7 @@ constexpr uint8_t kDagProposerSessionActionCancelVdf = 3;
 constexpr uint8_t kDagProposerSessionActionStaleProofSleep = 4;
 constexpr uint8_t kDagProposerSessionActionSignBlock = 5;
 constexpr uint8_t kDagProposerSessionActionAddBlock = 6;
-constexpr uint8_t kDagProposerSessionActionCollectExternalProposalFacts = 7;
+constexpr uint8_t kDagProposerSessionActionCollectFinalChainFacts = 7;
 constexpr uint32_t kDagProposerReasonMissingProposalPeriod = 1;
 constexpr uint32_t kDagProposerReasonVrfKeyMismatch = 3;
 constexpr uint32_t kDagProposerReasonZeroDenominator = 6;
@@ -66,16 +66,6 @@ rust::Vec<uint8_t> to_rust_vec(const dev::bytes& bytes) {
   for (const auto byte : bytes) {
     out.push_back(static_cast<uint8_t>(byte));
   }
-  return out;
-}
-
-rustaxa::LegacySortitionParams to_legacy_sortition_params(const rustaxa::SortitionRuntimeParams& params) {
-  rustaxa::LegacySortitionParams out;
-  out.vrf_threshold_upper = params.threshold_upper;
-  out.vdf_difficulty_min = params.difficulty_min;
-  out.vdf_difficulty_max = params.difficulty_max;
-  out.vdf_difficulty_stale = params.difficulty_stale;
-  out.vdf_lambda_bound = params.lambda_bound;
   return out;
 }
 
@@ -178,19 +168,17 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   if (auto done = finish_if_complete(step)) {
     return *done;
   }
-  if (step.action != kDagProposerSessionActionCollectExternalProposalFacts) {
-    throw std::runtime_error("Rust DAG proposer session did not request external proposal facts");
+  if (step.action != kDagProposerSessionActionCollectFinalChainFacts) {
+    throw std::runtime_error("Rust DAG proposer session did not request FinalChain facts");
   }
 
   const auto proposal_period = std::optional<PbftPeriod>{step.proposal_period};
   const auto final_chain_facts =
       final_chain_->dagProposerFinalChainFacts(proposal_period, node_dag_proposer_data->wallet.node_addr);
-  auto sortition_params = dag_mgr_->sortitionParamsManager().rustSortitionParamsForRust(step.proposal_period);
-  rustaxa::DagProposerExternalProposalFactsReport external_facts_report;
-  external_facts_report.last_finalized_period = final_chain_facts.last_finalized_period;
-  external_facts_report.authorization_facts = final_chain_facts.authorization_facts;
-  external_facts_report.sortition_params = sortition_params;
-  step = dag_mgr_->reportProposerExternalProposalFacts(proposer_session_id, std::move(external_facts_report));
+  rustaxa::DagProposerFinalChainFactsReport final_chain_facts_report;
+  final_chain_facts_report.last_finalized_period = final_chain_facts.last_finalized_period;
+  final_chain_facts_report.authorization_facts = final_chain_facts.authorization_facts;
+  step = dag_mgr_->reportProposerFinalChainFacts(proposer_session_id, std::move(final_chain_facts_report));
   if (auto done = finish_if_complete(step)) {
     return *done;
   }
@@ -227,9 +215,9 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
   auto rust_cancellation_token =
       rustaxa::make_cancellation_token_with_atomic(reinterpret_cast<const bool*>(&cancellation_token));
   std::optional<rustaxa::VdfSortitionProofResult> proof_result;
-  executor_.post([params = to_legacy_sortition_params(sortition_params),
-                  secret = node_dag_proposer_data->wallet.vrf_secret.asArray(), &vrf_input, &vdf_msg,
-                  &rust_cancellation_token, &proof_result, &sync, vote_count, max_vote_count]() mutable {
+  executor_.post([params = step.vdf_sortition_params, secret = node_dag_proposer_data->wallet.vrf_secret.asArray(),
+                  &vrf_input, &vdf_msg, &rust_cancellation_token, &proof_result, &sync, vote_count,
+                  max_vote_count]() mutable {
     rust::Slice<const uint8_t> vrf_input_slice{vrf_input.data(), vrf_input.size()};
     rust::Slice<const uint8_t> vdf_input_slice{vdf_msg.data(), vdf_msg.size()};
     proof_result.emplace(rustaxa::prove_legacy_vdf_sortition(params, secret, vrf_input_slice, vdf_input_slice,

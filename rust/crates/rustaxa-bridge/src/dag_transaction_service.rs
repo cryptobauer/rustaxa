@@ -1059,7 +1059,92 @@ pub fn service_dag_manager_runtime_begin_proposer_session(
 }
 dag_free_mut_result!(service_dag_manager_runtime_abort_proposer_session, dag_manager_runtime_abort_proposer_session(session_id: u64) -> bool);
 dag_free_mut_result!(service_dag_manager_runtime_proposer_session_next, dag_manager_runtime_proposer_session_next(session_id: u64) -> DagProposerSessionStep);
-dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_external_facts, dag_manager_runtime_proposer_session_report_external_facts(session_id: u64, report: DagProposerExternalProposalFactsReport) -> DagProposerSessionStep);
+/// Composes FinalChain facts with exact historical sortition parameters.
+///
+/// The first DAG lock validates and snapshots the keyed proposer cursor. The
+/// first indexed sortition lookup runs under the sortition lock alone. Rust
+/// then reacquires DAG followed by sortition, revalidates the exact cursor,
+/// repeats the indexed lookup, compares every parameter field, and privately
+/// plans/advances while both values remain protected. Parameter drift returns
+/// `DAG_PROPOSER_SESSION_SORTITION_PARAMS_STALE_RETRY` without advancement;
+/// operational lookup failures remove only the exact snapshotted session.
+pub fn service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+    report: DagProposerFinalChainFactsReport,
+) -> Result<DagProposerSessionStep> {
+    service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
+        service,
+        session_id,
+        report,
+        || {},
+    )
+}
+
+fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
+    service: &BridgeDagTransactionService,
+    session_id: u64,
+    report: DagProposerFinalChainFactsReport,
+    between_lookups: impl FnOnce(),
+) -> Result<DagProposerSessionStep> {
+    let preparation = {
+        let mut dag_guard = service.dag()?;
+        let dag = dag_guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        dag_manager_runtime_prepare_proposer_final_chain_facts(dag, session_id)
+    };
+    let snapshot = match preparation {
+        DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
+        DagProposerFinalChainFactsPreparation::Step(step) => return Ok(*step),
+    };
+
+    let initially_loaded_params = match service.sortition().and_then(|sortition| {
+        sortition
+            .params_for_period_from_storage(snapshot.proposal_period)
+            .context("DAG_PROPOSER_SESSION_SORTITION_PARAMS_INITIAL_LOOKUP")
+    }) {
+        Ok(params) => params,
+        Err(error) => {
+            let mut dag_guard = service.dag()?;
+            let dag = dag_guard
+                .as_mut()
+                .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+            dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
+            return Err(error);
+        }
+    };
+    between_lookups();
+
+    let mut dag_guard = service.dag()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    let sortition = match service.sortition() {
+        Ok(sortition) => sortition,
+        Err(error) => {
+            dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
+            return Err(error);
+        }
+    };
+    let revalidated_params = match sortition
+        .params_for_period_from_storage(snapshot.proposal_period)
+        .context("DAG_PROPOSER_SESSION_SORTITION_PARAMS_REVALIDATION_LOOKUP")
+    {
+        Ok(params) => params,
+        Err(error) => {
+            dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
+            return Err(error);
+        }
+    };
+    dag_manager_runtime_apply_proposer_final_chain_facts(
+        dag,
+        &snapshot,
+        report,
+        revalidated_params,
+        initially_loaded_params,
+    )
+}
 dag_free_mut_result!(service_dag_manager_runtime_proposer_session_poll_vdf, dag_manager_runtime_proposer_session_poll_vdf(session_id: u64) -> DagProposerSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_vdf_proof, dag_manager_runtime_proposer_session_report_vdf_proof(session_id: u64, report: DagProposerVdfProofReport) -> DagProposerSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_resume_stale_proof, dag_manager_runtime_proposer_session_resume_stale_proof(session_id: u64) -> DagProposerSessionStep);
@@ -1303,38 +1388,45 @@ mod tests {
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(service, proposer_begin_input())
                 .expect("proposer session");
-        let step = report_proposer_external_facts(service, session_id);
+        let step = report_proposer_final_chain_facts(service, session_id);
         assert_eq!(step.action, 1);
         session_id
     }
 
-    fn report_proposer_external_facts(
+    fn report_proposer_final_chain_facts(
         service: &BridgeDagTransactionService,
         session_id: u64,
     ) -> DagProposerSessionStep {
-        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
-        service_dag_manager_runtime_proposer_session_report_external_facts(
+        service_dag_manager_runtime_proposer_session_report_final_chain_facts(
             service,
             session_id,
-            DagProposerExternalProposalFactsReport {
-                last_finalized_period: 0,
-                authorization_facts: DagDposAuthorizationFacts {
-                    vrf_key_found: true,
-                    vrf_key: vrf_key.to_vec(),
-                    sender_eligible_vote_count: 10,
-                    vdf_sortition_max_vote_count: 20,
-                    eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-                },
-                sortition_params: SortitionRuntimeParams {
-                    threshold_upper: u16::MAX,
-                    difficulty_min: 3,
-                    difficulty_max: 3,
-                    difficulty_stale: 9,
-                    lambda_bound: 128,
-                },
-            },
+            proposer_final_chain_report(),
         )
-        .expect("external facts")
+        .expect("final-chain facts")
+    }
+
+    fn proposer_final_chain_report() -> DagProposerFinalChainFactsReport {
+        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
+        DagProposerFinalChainFactsReport {
+            last_finalized_period: 0,
+            authorization_facts: DagDposAuthorizationFacts {
+                vrf_key_found: true,
+                vrf_key: vrf_key.to_vec(),
+                sender_eligible_vote_count: 10,
+                vdf_sortition_max_vote_count: 20,
+                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+        }
+    }
+
+    fn assert_zero_legacy_sortition_params(
+        params: &crate::ffi::rustaxa_ffi::LegacySortitionParams,
+    ) {
+        assert_eq!(params.vrf_threshold_upper, 0);
+        assert_eq!(params.vdf_difficulty_min, 0);
+        assert_eq!(params.vdf_difficulty_max, 0);
+        assert_eq!(params.vdf_difficulty_stale, 0);
+        assert_eq!(params.vdf_lambda_bound, 0);
     }
 
     fn insert_test_queue_transaction(
@@ -1481,6 +1573,313 @@ mod tests {
             },
         )
         .expect("authorization should advance to VDF")
+    }
+
+    #[test]
+    fn proposer_final_chain_facts_use_period_params_and_expose_them_only_for_start_vdf() {
+        let dir = unique_temp_dir("rustaxa_dag_proposer_period_sortition");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        insert_test_queue_transaction(&service, 0x71);
+        let session_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let collect =
+            service_dag_manager_runtime_proposer_session_next(&service, session_id).unwrap();
+        storage
+            .0
+            .metadata()
+            .write_sortition_params_change(
+                collect.proposal_period,
+                &SortitionParamsChange {
+                    period: collect.proposal_period,
+                    interval_efficiency: 5_000,
+                    threshold_upper: u16::MAX,
+                }
+                .to_rlp_bytes(),
+            )
+            .unwrap();
+
+        let pack = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+            &service,
+            session_id,
+            proposer_final_chain_report(),
+        )
+        .unwrap();
+        assert_eq!(pack.action, 1);
+        assert_zero_legacy_sortition_params(&pack.vdf_sortition_params);
+        let start_vdf = {
+            let mut dag = service.dag().unwrap();
+            dag_manager_runtime_apply_proposer_pack(
+                dag.as_mut().unwrap(),
+                session_id,
+                false,
+                vec![TransactionPackSelectedTransaction {
+                    hash: [0x72; 32],
+                    gas_used: 21_000,
+                    tx_rlp: vec![0xC0],
+                }],
+            )
+            .unwrap()
+        };
+        assert_eq!(start_vdf.action, 2);
+        assert_eq!(start_vdf.vdf_sortition_params.vrf_threshold_upper, u16::MAX);
+        assert_eq!(start_vdf.vdf_sortition_params.vdf_difficulty_min, 1);
+        assert_eq!(start_vdf.vdf_sortition_params.vdf_difficulty_max, 10);
+        assert_eq!(start_vdf.vdf_sortition_params.vdf_difficulty_stale, 3);
+        assert_eq!(start_vdf.vdf_sortition_params.vdf_lambda_bound, 100);
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_final_chain_facts_no_vdf_branch_keeps_params_private() {
+        let dir = unique_temp_dir("rustaxa_dag_proposer_no_vdf_params");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let session_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let terminal = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+            &service,
+            session_id,
+            proposer_final_chain_report(),
+        )
+        .unwrap();
+        assert_ne!(terminal.action, 2);
+        assert_zero_legacy_sortition_params(&terminal.vdf_sortition_params);
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_final_chain_facts_reject_wrong_action_and_full_stale_cursor() {
+        let dir = unique_temp_dir("rustaxa_dag_proposer_stale_facts");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        insert_test_queue_transaction(&service, 0x73);
+        let session_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let _ = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+            &service,
+            session_id,
+            proposer_final_chain_report(),
+        )
+        .unwrap();
+        let wrong_action = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+            &service,
+            session_id,
+            proposer_final_chain_report(),
+        )
+        .unwrap();
+        assert_eq!(wrong_action.status, 2);
+        assert!(wrong_action
+            .error_code
+            .contains("UNEXPECTED_FINAL_CHAIN_FACTS_REPORT"));
+
+        let stale_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let stale =
+            service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
+                &service,
+                stale_id,
+                proposer_final_chain_report(),
+                || {
+                    let mut dag = service.dag().unwrap();
+                    assert!(dag_manager_runtime_abort_proposer_session(
+                        dag.as_mut().unwrap(),
+                        stale_id
+                    ));
+                },
+            )
+            .err()
+            .expect("removed cursor must fail revalidation");
+        assert!(stale
+            .to_string()
+            .contains("DAG_PROPOSER_SESSION_STALE_CURSOR"));
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_final_chain_facts_detect_param_drift_without_advancing() {
+        let dir = unique_temp_dir("rustaxa_dag_proposer_sortition_drift");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        insert_test_queue_transaction(&service, 0x74);
+        let session_id =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let period = service_dag_manager_runtime_proposer_session_next(&service, session_id)
+            .unwrap()
+            .proposal_period;
+        let stale =
+            service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
+                &service,
+                session_id,
+                proposer_final_chain_report(),
+                || {
+                    storage
+                        .0
+                        .metadata()
+                        .write_sortition_params_change(
+                            period,
+                            &SortitionParamsChange {
+                                period,
+                                interval_efficiency: 5_000,
+                                threshold_upper: 1_234,
+                            }
+                            .to_rlp_bytes(),
+                        )
+                        .unwrap();
+                },
+            )
+            .err()
+            .expect("changed exact params must request retry");
+        assert!(stale
+            .to_string()
+            .contains("DAG_PROPOSER_SESSION_SORTITION_PARAMS_STALE_RETRY"));
+        assert_eq!(
+            service_dag_manager_runtime_proposer_session_next(&service, session_id)
+                .unwrap()
+                .action,
+            7
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_final_chain_lookup_failures_clean_only_the_owned_session() {
+        let dir = unique_temp_dir("rustaxa_dag_proposer_sortition_failure_cleanup");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let first =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let second =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        *service.sortition.lock().unwrap() = None;
+        let unavailable = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+            &service,
+            first,
+            proposer_final_chain_report(),
+        )
+        .err()
+        .expect("missing capability should fail");
+        assert_eq!(unavailable.to_string(), "SORTITION_SERVICE_UNAVAILABLE");
+        let dag = service.dag().unwrap();
+        assert!(!dag.as_ref().unwrap().proposer_sessions.contains_key(&first));
+        assert!(dag
+            .as_ref()
+            .unwrap()
+            .proposer_sessions
+            .contains_key(&second));
+        drop(dag);
+
+        drop(service);
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let corrupt =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let period = service_dag_manager_runtime_proposer_session_next(&service, corrupt)
+            .unwrap()
+            .proposal_period;
+        storage
+            .0
+            .metadata()
+            .write_sortition_params_change(period, &[0x80])
+            .unwrap();
+        assert!(
+            service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+                &service,
+                corrupt,
+                proposer_final_chain_report(),
+            )
+            .is_err()
+        );
+        assert!(!service
+            .dag()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .proposer_sessions
+            .contains_key(&corrupt));
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1709,7 +2108,7 @@ mod tests {
         let empty_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .unwrap();
-        let empty = report_proposer_external_facts(&service, empty_id);
+        let empty = report_proposer_final_chain_facts(&service, empty_id);
         assert_eq!(empty.status, 1);
         assert_eq!(
             empty.reason_code,
@@ -1729,7 +2128,7 @@ mod tests {
         limited_input.max_non_finalized_transactions = 0;
         let limited_id =
             service_dag_manager_runtime_begin_proposer_session(&service, limited_input).unwrap();
-        let limited = report_proposer_external_facts(&service, limited_id);
+        let limited = report_proposer_final_chain_facts(&service, limited_id);
         assert_eq!(limited.status, 1);
         assert_eq!(
             limited.reason_code,
@@ -1739,7 +2138,7 @@ mod tests {
         let ready_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .unwrap();
-        let ready = report_proposer_external_facts(&service, ready_id);
+        let ready = report_proposer_final_chain_facts(&service, ready_id);
         assert_eq!(ready.status, 0);
         assert_eq!(ready.action, 1);
         assert!(service

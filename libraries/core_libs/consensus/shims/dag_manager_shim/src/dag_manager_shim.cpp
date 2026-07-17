@@ -886,11 +886,10 @@ rustaxa::DagProposerSessionStep DagManager::proposerSessionNext(uint64_t session
   return rustaxa::dag_manager_runtime_proposer_session_next(dag_transaction_service_->service(), session_id);
 }
 
-rustaxa::DagProposerSessionStep DagManager::reportProposerExternalProposalFacts(
-    uint64_t session_id, rustaxa::DagProposerExternalProposalFactsReport report) {
-  std::unique_lock lock(rust_graphs_mutex_);
-  return rustaxa::dag_manager_runtime_proposer_session_report_external_facts(dag_transaction_service_->service(),
-                                                                             session_id, std::move(report));
+rustaxa::DagProposerSessionStep DagManager::reportProposerFinalChainFacts(
+    uint64_t session_id, rustaxa::DagProposerFinalChainFactsReport report) {
+  return rustaxa::dag_manager_runtime_proposer_session_report_final_chain_facts(dag_transaction_service_->service(),
+                                                                                session_id, std::move(report));
 }
 
 rustaxa::DagProposerSessionStep DagManager::pollProposerVdfWait(uint64_t session_id) {

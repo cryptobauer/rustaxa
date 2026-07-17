@@ -2907,8 +2907,9 @@ service.
   `DagManager` injects its canonical service into the facade, while the stable three-argument compatibility constructor
   creates a full service and injected construction rejects null or transaction-only services.
 - The PBFT preview/stage/commit contract and C++ `SortitionParamsChange` materialization remain typed compatibility
-  boundaries. The later composition slices internalized PBFT finalization commit and DAG verification; proposer
-  sortition-parameter relays remain follow-up work before this facade can be retired.
+  boundaries. The later composition slices internalized PBFT finalization commit, DAG verification, and proposer
+  historical-parameter selection. The PBFT accessor/preview and public compatibility surfaces require a separate
+  retirement audit before this facade can be retired.
 - Focused Rust coverage verifies full restore, compatibility rejection, and sortition behavior. Focused C++ coverage
   verifies the facade, canonical sortition behavior, service capability rejection, DAG integration, and a PBFT
   single-node production path.
@@ -2964,14 +2965,41 @@ verification.
   FinalChain VRF key. It no longer materializes historical sortition parameters, relays cursor-owned vote counts, calls a
   free verifier, converts its result, or reports VDF status through a second bridge operation.
 - `DagVerifyVdfSortitionFromBlockInput`, `DagVerifyVdfSortitionResult`, `DagVerifyBlockVdfReport`, the direct verifier
-  export, and the standalone VDF-report export are deleted. Proposer sortition-parameter crossings remain the next
-  bounded CRW-05 ownership target.
+  export, and the standalone VDF-report export are deleted. Proposer sortition-parameter selection is internalized by
+  the following bounded CRW-05 ownership slice.
 
 Validation passed all 326 `rustaxa-bridge` tests, including four focused cursor-bound VDF cases; the Rust CXX bridge and
 focused DAG/sortition targets rebuilt; and the DAG, DAG-block, and sortition-shim suites passed 6/6, 13/13, and 4/4.
 The Rust pre-commit hook, Tier 1 and Tier 2 rewrite gates, startup smoke, bridge inventory, upstream-shape check,
 formatting, and whitespace validation also passed. Independent configured review returned `APPROVED` with no blocking
 correctness, concurrency, error-classification, deletion, documentation, or coverage finding.
+
+### CRW-05 DAG Proposer Sortition Composition
+
+This CRW-05/CRW-07 follow-up removes the remaining historical-sortition lookup and inbound parameter relay from live
+DAG proposal planning while preserving asynchronous VDF execution as an explicit C++ executor boundary.
+
+- `DagProposerFinalChainFactsReport` carries only the last finalized period and proposer authorization facts requested
+  from external FinalChain. The cursor-owned proposal period is never echoed through C++.
+- `BridgeDagTransactionService` snapshots the keyed cursor/action/observation/period under the DAG lock, reads the
+  historical parameters under the sortition lock alone, then reacquires `DAG -> sortition`, revalidates the exact cursor,
+  repeats the indexed lookup, and compares the complete parameter value before privately planning and advancing.
+- Lookup, decode, capability, and planner failures clean only the matching session. A changed exact parameter value
+  returns `DAG_PROPOSER_SESSION_SORTITION_PARAMS_STALE_RETRY` without advancing, and missing/wrong-action reports retain
+  their existing typed session semantics.
+- The selected parameters remain private during planning and are exposed as `LegacySortitionParams` only on the
+  `StartVdf` executor command. C++ passes that typed command to the existing asynchronous Rust VDF proof helper; polling,
+  cancellation, proof materialization, signing, add-block, network, and cleanup behavior remain outside this slice.
+- The proposer-side `rustSortitionParamsForRust` lookup, inbound `SortitionRuntimeParams`, conversion helper, and old
+  external-facts report/export/wrapper names are deleted. The sortition facade now remains only for public compatibility
+  and the separately audited PBFT accessor/preview path.
+
+Validation passed all 331 `rustaxa-bridge` tests, including five focused composed proposer-final-chain cases; the Rust
+CXX bridge and focused DAG/sortition targets rebuilt; and the DAG, DAG-block, and sortition-shim suites passed 6/6,
+13/13, and 4/4. The Rust pre-commit hook, Tier 1 and Tier 2 rewrite gates, startup smoke, bridge inventory,
+upstream-shape check, formatting, Clippy, obsolete-symbol scan, and whitespace validation also passed. Independent
+configured review returned `APPROVED` with no blocking correctness, concurrency, cleanup, boundary, deletion,
+documentation, or coverage finding.
 
 ## Historical Execution Order
 
