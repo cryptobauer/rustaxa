@@ -378,6 +378,15 @@ commit helper are deleted. A post-primary preview/stage divergence is fatal rath
 resume does not replay protected sortition mutation. DAG verification and proposer sortition-fact relays remain the next
 narrowing work for this owner.
 
+The latest `CRW-05`/`CRW-07` slice internalizes DAG VDF verification across the private DAG and sortition siblings of
+`BridgeDagTransactionService`. The DAG cursor retains its full signed-block hash, cursor identity, action generation,
+proposal period, and normalized vote counts. The composed operation snapshots those facts under the DAG lock, loads
+historical sortition parameters under the sortition lock alone, verifies the proof without either lock, and advances
+only after revalidating the unchanged cursor. C++ now supplies only the signed block payload/level and the external PBFT
+period-hash and FinalChain VRF-key facts. The direct verifier DTO/export, VDF report carrier/export, explicit sortition
+parameter lookup, and vote-count relays are deleted. Proposer sortition-fact relays remain the next narrowing work for
+this owner.
+
 #### CRW-01 selected composition boundary
 
 `CRW-01` selected a PBFT-cluster-only Rust application service. Current code mapping did not find a wider DAG,

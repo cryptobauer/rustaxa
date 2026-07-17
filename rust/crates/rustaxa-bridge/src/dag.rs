@@ -8,8 +8,7 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerVdfProofReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
     DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
     DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
-    DagVerifyBlockSessionStep, DagVerifyBlockVdfReport, DagVerifyVdfSortitionFromBlockInput,
-    DagVerifyVdfSortitionResult, HashLookup, SortitionRuntimeParams,
+    DagVerifyBlockSessionStep, HashLookup, SortitionRuntimeParams,
     TransactionPackSelectedTransaction,
 };
 use crate::ffi::{BridgeStorage, DagRuntimeState};
@@ -31,8 +30,7 @@ use rustaxa_consensus::dag::{
     plan_dag_verify_transaction_query, proposal_period_for_level_from_storage,
     save_dag_block_to_storage, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
-    verify_dag_vdf_sortition_from_block, verify_precheck_from_storage,
-    DagManagerBlock as DomainDagManagerBlock,
+    verify_precheck_from_storage, DagManagerBlock as DomainDagManagerBlock,
     DagManagerFinalizationCleanupStoragePayload as DomainDagManagerFinalizationCleanupStoragePayload,
     DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan,
     DagManagerSnapshot as DomainDagManagerSnapshot, DagManagerState,
@@ -46,7 +44,6 @@ use rustaxa_consensus::dag::{
     DagProposerUnsignedBlockIntent as DomainDagProposerUnsignedBlockIntent,
     DagProposerWorkerCommandInput as DomainDagProposerWorkerCommandInput,
     DagReferenceMetadata as ReferenceMetadata, DagTipGas,
-    DagVdfSortitionBlockInput as DomainDagVdfSortitionBlockInput,
     DagVerifyGasInput as DomainDagVerifyGasInput,
     DagVerifyPrecheckStorageInput as DomainDagVerifyPrecheckStorageInput,
     DagVerifyTransactionAvailabilityInput as DomainDagVerifyTransactionAvailabilityInput,
@@ -112,8 +109,8 @@ const DAG_VERIFY_SESSION_STATUS_INVALID_REPORT: u8 = 2;
 const DAG_VERIFY_SESSION_ACTION_NONE: u8 = 0;
 const DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY: u8 = 1;
 pub(crate) const DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS: u8 = 2;
-const DAG_VERIFY_SESSION_ACTION_VDF_SORTITION: u8 = 3;
-const DAG_VERIFY_SESSION_ACTION_GAS: u8 = 4;
+pub(crate) const DAG_VERIFY_SESSION_ACTION_VDF_SORTITION: u8 = 3;
+pub(crate) const DAG_VERIFY_SESSION_ACTION_GAS: u8 = 4;
 
 /// Private compact input for one runtime-owned add-block plan.
 pub(crate) struct DagAddBlockRuntimeInput {
@@ -182,6 +179,8 @@ enum DagVerifyBlockSessionAction {
 /// gas-estimation facts.
 pub struct DagVerifyBlockSession {
     cursor_id: u64,
+    fingerprint: [u8; 32],
+    generation: u64,
     action: DagVerifyBlockSessionAction,
     /// Canonical candidate tips retained for private gas lookup after VDF validation.
     tips: Vec<H256>,
@@ -192,6 +191,20 @@ pub struct DagVerifyBlockSession {
     vdf_sortition_max_vote_count: u64,
     eligibility_status: u8,
     error_code: String,
+}
+
+/// Private identity and verifier inputs captured from one active VDF action.
+///
+/// No runtime guard survives the snapshot. Cursor identity, immutable candidate
+/// fingerprint, action generation, and normalized counts must match again
+/// before the verifier result may advance the session.
+pub(crate) struct DagVerifyBlockVdfSnapshot {
+    pub cursor_id: u64,
+    pub fingerprint: [u8; 32],
+    pub generation: u64,
+    pub proposal_period: u64,
+    pub vote_count: u64,
+    pub max_vote_count: u64,
 }
 
 enum DagProposerSessionAction {
@@ -1177,6 +1190,7 @@ impl DagRuntimeState {
     /// Later advancement happens only through explicit live-fact reports from
     /// the C++ executor boundary.
     pub fn begin_verify_block_session(&mut self, input: DagVerifyBlockSessionInput) -> Result<()> {
+        let fingerprint = input.block_hash;
         let cursor_id = self.next_verify_block_session_id;
         self.next_verify_block_session_id =
             self.next_verify_block_session_id.wrapping_add(1).max(1);
@@ -1212,6 +1226,8 @@ impl DagRuntimeState {
 
         self.verify_block_session = Some(DagVerifyBlockSession {
             cursor_id,
+            fingerprint,
+            generation: 1,
             action,
             tips,
             proposal_period: precheck.proposal_period,
@@ -1287,6 +1303,7 @@ pub(crate) fn dag_manager_runtime_verify_block_session_apply_transaction_resolut
     }
 
     session.action = DagVerifyBlockSessionAction::AuthorizationFacts;
+    session.generation = session.generation.wrapping_add(1).max(1);
     verify_block_session_step(session)
 }
 
@@ -1387,13 +1404,89 @@ pub fn dag_manager_runtime_verify_block_session_report_authorization(
         vote_count: decision.vote_count,
         max_vote_count: decision.max_vote_count,
     };
+    session.generation = session.generation.wrapping_add(1).max(1);
     verify_block_session_step(session)
 }
 
-/// Reports VDF verification status to the runtime-owned DAG verification cursor.
-pub fn dag_manager_runtime_verify_block_session_report_vdf(
+/// Snapshots the active VDF action before historical lookup and proof work.
+///
+/// Missing sessions and wrong actions are operational errors and leave the
+/// cursor unchanged. The returned identity must be revalidated after the
+/// lock-free interval.
+pub(crate) fn dag_manager_runtime_snapshot_verify_block_vdf(
+    runtime: &DagRuntimeState,
+    cursor_id: u64,
+) -> Result<DagVerifyBlockVdfSnapshot> {
+    let session = runtime
+        .verify_block_session
+        .as_ref()
+        .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
+    ensure!(
+        session.cursor_id == cursor_id,
+        "DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH"
+    );
+    let DagVerifyBlockSessionAction::VdfSortition {
+        vote_count,
+        max_vote_count,
+    } = session.action
+    else {
+        anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION");
+    };
+    Ok(DagVerifyBlockVdfSnapshot {
+        cursor_id: session.cursor_id,
+        fingerprint: session.fingerprint,
+        generation: session.generation,
+        proposal_period: session.proposal_period,
+        vote_count,
+        max_vote_count,
+    })
+}
+
+/// Revalidates an unlocked VDF snapshot and advances it exactly once.
+///
+/// A replacement cursor, changed candidate, advanced action, or changed
+/// generation returns an error without mutating the live session.
+pub(crate) fn dag_manager_runtime_complete_verify_block_vdf(
     runtime: &mut DagRuntimeState,
-    report: DagVerifyBlockVdfReport,
+    snapshot: &DagVerifyBlockVdfSnapshot,
+    vdf_status: u8,
+) -> Result<DagVerifyBlockSessionStep> {
+    {
+        let session = runtime
+            .verify_block_session
+            .as_ref()
+            .context("DAG_VERIFY_SESSION_NOT_STARTED")?;
+        ensure!(
+            session.cursor_id == snapshot.cursor_id,
+            "DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH"
+        );
+        ensure!(
+            session.fingerprint == snapshot.fingerprint,
+            "DAG_VERIFY_SESSION_VDF_FINGERPRINT_MISMATCH"
+        );
+        ensure!(
+            session.generation == snapshot.generation,
+            "DAG_VERIFY_SESSION_VDF_GENERATION_MISMATCH"
+        );
+        let DagVerifyBlockSessionAction::VdfSortition {
+            vote_count,
+            max_vote_count,
+        } = session.action
+        else {
+            anyhow::bail!("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION");
+        };
+        ensure!(
+            vote_count == snapshot.vote_count && max_vote_count == snapshot.max_vote_count,
+            "DAG_VERIFY_SESSION_VDF_ACTION_MISMATCH"
+        );
+    }
+    Ok(apply_verify_block_vdf_status(runtime, vdf_status))
+}
+
+/// Applies a verified status to the currently validated VDF cursor.
+fn apply_verify_block_vdf_status(
+    runtime: &mut DagRuntimeState,
+    vdf_status: u8,
 ) -> DagVerifyBlockSessionStep {
     let Some(session) = runtime.verify_block_session.as_mut() else {
         return verify_block_session_not_started_step();
@@ -1416,7 +1509,7 @@ pub fn dag_manager_runtime_verify_block_session_report_vdf(
         vrf_key_found: true,
         sender_eligible_vote_count: session.sender_eligible_vote_count,
         vdf_sortition_max_vote_count: session.vdf_sortition_max_vote_count,
-        vdf_status: report.vdf_status,
+        vdf_status,
         dpos_status,
     });
     if !vdf_decision.continue_validation {
@@ -1435,6 +1528,7 @@ pub fn dag_manager_runtime_verify_block_session_report_vdf(
     }
 
     session.action = DagVerifyBlockSessionAction::Gas;
+    session.generation = session.generation.wrapping_add(1).max(1);
     verify_block_session_step(session)
 }
 
@@ -2039,33 +2133,6 @@ pub fn dag_plan_proposer_worker_command(
     }
 }
 
-/// Verifies DAG VDF sortition after building canonical legacy messages in Rust.
-///
-/// C++ passes only the block payload and sortition context; Rust rebuilds:
-/// - `vrf_input`: sequential RLP items `block_level`, `proposal_period_hash`
-/// - `vdf_input`: sequential RLP items `pivot`, then each transaction hash
-///
-/// It then verifies the embedded proof using `vrf_public_key`.
-pub fn dag_verify_vdf_sortition_from_block(
-    input: DagVerifyVdfSortitionFromBlockInput,
-) -> Result<DagVerifyVdfSortitionResult> {
-    let result = verify_dag_vdf_sortition_from_block(DomainDagVdfSortitionBlockInput {
-        block_rlp: input.block_rlp,
-        block_level: input.block_level,
-        proposal_period_hash: H256::from(input.proposal_period_hash),
-        vrf_public_key: input.vrf_public_key,
-        sortition_params: to_domain_sortition_params(input.sortition_params),
-        sender_eligible_vote_count: input.sender_eligible_vote_count,
-        vdf_sortition_max_vote_count: input.vdf_sortition_max_vote_count,
-    })?;
-
-    Ok(DagVerifyVdfSortitionResult {
-        vdf_status: result.vdf_status,
-        difficulty: result.difficulty,
-        expected_difficulty: result.expected_difficulty,
-    })
-}
-
 /// Builds the legacy DAG VDF message for a pivot and ordered transaction hashes.
 ///
 /// This bridge is used by the C++ DagManager shim to preserve the public
@@ -2393,6 +2460,7 @@ fn dag_proposer_session_not_started_step() -> DagProposerSessionStep {
 fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockSessionStep {
     match &session.action {
         DagVerifyBlockSessionAction::TransactionQuery(_) => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
             status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
             action: DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY,
             complete: false,
@@ -2403,6 +2471,7 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             error_code: session.error_code.clone(),
         },
         DagVerifyBlockSessionAction::AuthorizationFacts => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
             status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
             action: DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS,
             complete: false,
@@ -2416,6 +2485,7 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             vote_count,
             max_vote_count,
         } => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
             status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
             action: DAG_VERIFY_SESSION_ACTION_VDF_SORTITION,
             complete: false,
@@ -2426,6 +2496,7 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             error_code: session.error_code.clone(),
         },
         DagVerifyBlockSessionAction::Gas => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
             status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
             action: DAG_VERIFY_SESSION_ACTION_GAS,
             complete: false,
@@ -2436,6 +2507,7 @@ fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockS
             error_code: session.error_code.clone(),
         },
         DagVerifyBlockSessionAction::Complete => DagVerifyBlockSessionStep {
+            cursor_id: session.cursor_id,
             status: DAG_VERIFY_SESSION_STATUS_COMPLETE,
             action: DAG_VERIFY_SESSION_ACTION_NONE,
             complete: true,
@@ -2453,8 +2525,10 @@ fn invalid_verify_block_report(
     error_code: &str,
 ) -> DagVerifyBlockSessionStep {
     session.action = DagVerifyBlockSessionAction::Complete;
+    session.generation = session.generation.wrapping_add(1).max(1);
     session.error_code = error_code.to_string();
     DagVerifyBlockSessionStep {
+        cursor_id: session.cursor_id,
         status: DAG_VERIFY_SESSION_STATUS_INVALID_REPORT,
         action: DAG_VERIFY_SESSION_ACTION_NONE,
         complete: true,
@@ -2468,6 +2542,7 @@ fn invalid_verify_block_report(
 
 fn verify_block_session_not_started_step() -> DagVerifyBlockSessionStep {
     DagVerifyBlockSessionStep {
+        cursor_id: 0,
         status: DAG_VERIFY_SESSION_STATUS_INVALID_REPORT,
         action: DAG_VERIFY_SESSION_ACTION_NONE,
         complete: true,
@@ -2485,6 +2560,7 @@ fn complete_verify_block_session(
 ) -> DagVerifyBlockSessionStep {
     session.reject_code = reject_code;
     session.action = DagVerifyBlockSessionAction::Complete;
+    session.generation = session.generation.wrapping_add(1).max(1);
     verify_block_session_step(session)
 }
 
@@ -2611,8 +2687,6 @@ mod tests {
     use rustaxa_consensus::dag;
     use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
     use rustaxa_types::pbft::PbftBlockLink;
-    use rustaxa_vdf::prover::CancellationToken;
-    use rustaxa_vdf::sortition::{self, LegacySortitionParams};
     use rustaxa_vdf::vrf::public_key_from_secret;
     use std::fs;
     use std::path::PathBuf;
@@ -2684,6 +2758,7 @@ mod tests {
         dag_manager_runtime_begin_verify_block_session(
             runtime,
             DagVerifyBlockSessionInput {
+                block_hash: [0u8; 32],
                 block_level: 5,
                 pivot: [1u8; 32],
                 tips: vec![DagHash { hash: tip.0 }],
@@ -2708,11 +2783,9 @@ mod tests {
             },
         );
         assert_eq!(vdf.action, DAG_VERIFY_SESSION_ACTION_VDF_SORTITION);
-        let gas = dag_manager_runtime_verify_block_session_report_vdf(
+        let gas = apply_verify_block_vdf_status(
             runtime,
-            DagVerifyBlockVdfReport {
-                vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
-            },
+            rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
         );
         assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
     }
@@ -4179,6 +4252,7 @@ mod tests {
             dag_manager_runtime_begin_verify_block_session(
                 &mut runtime,
                 DagVerifyBlockSessionInput {
+                    block_hash: [0u8; 32],
                     block_level: 5,
                     pivot: [1u8; 32],
                     tips: vec![],
@@ -4220,11 +4294,9 @@ mod tests {
             assert_eq!(vdf.vote_count, 11);
             assert_eq!(vdf.max_vote_count, 33);
 
-            let gas = dag_manager_runtime_verify_block_session_report_vdf(
+            let gas = apply_verify_block_vdf_status(
                 &mut runtime,
-                DagVerifyBlockVdfReport {
-                    vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
-                },
+                rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
             );
             assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
 
@@ -4245,6 +4317,7 @@ mod tests {
             dag_manager_runtime_begin_verify_block_session(
                 &mut runtime,
                 DagVerifyBlockSessionInput {
+                    block_hash: [0u8; 32],
                     block_level: 5,
                     pivot: [1u8; 32],
                     tips: vec![],
@@ -4389,6 +4462,7 @@ mod tests {
         dag_manager_runtime_begin_verify_block_session(
             &mut runtime,
             DagVerifyBlockSessionInput {
+                block_hash: [0u8; 32],
                 block_level: 5,
                 pivot: [1u8; 32],
                 tips: vec![DagHash { hash: tip.0 }],
@@ -5190,64 +5264,6 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_verify_vdf_sortition_from_block_constructs_and_verifies_embedded_inputs() {
-        let sortition_input = LegacySortitionParams {
-            vrf_threshold_upper: 0x5ff,
-            vdf_difficulty_min: 5,
-            vdf_difficulty_max: 10,
-            vdf_difficulty_stale: 9,
-            vdf_lambda_bound: 64,
-        };
-        let proposal_period_hash = [9u8; 32];
-        let block_level = 1;
-        let vrf_input = dag::construct_dag_vrf_input(block_level, H256::from(proposal_period_hash));
-        let block_rlp = dag_block_with_vdf_payload(vec![0; 0]);
-        let vdf_input = dag::construct_dag_vdf_message_from_block_rlp(&block_rlp)
-            .expect("VDF input should build");
-
-        let proof = sortition::prove_legacy_vdf_sortition(
-            sortition_input,
-            &SECRET_KEY,
-            &vrf_input,
-            &vdf_input,
-            1,
-            1,
-            &CancellationToken::new(),
-        )
-        .expect("proof generation should succeed");
-
-        let mut vdf_payload = RlpStream::new_list(4);
-        vdf_payload.append(&&proof.vrf_proof[..]);
-        vdf_payload.append(&proof.vdf_proof);
-        vdf_payload.append(&proof.vdf_output);
-        vdf_payload.append(&proof.difficulty);
-
-        let block_rlp = dag_block_with_vdf_payload(vdf_payload.out().to_vec());
-        let vrf_public_key =
-            public_key_from_secret(&SECRET_KEY).expect("VRF public key should derive");
-
-        let result = dag_verify_vdf_sortition_from_block(DagVerifyVdfSortitionFromBlockInput {
-            block_rlp,
-            block_level,
-            proposal_period_hash,
-            sortition_params: SortitionRuntimeParams {
-                threshold_upper: 0x5ff,
-                difficulty_min: 5,
-                difficulty_max: 10,
-                difficulty_stale: 9,
-                lambda_bound: 64,
-            },
-            vrf_public_key,
-            sender_eligible_vote_count: 1,
-            vdf_sortition_max_vote_count: 1,
-        })
-        .expect("embedded bridge verification should succeed");
-
-        assert_eq!(result.vdf_status, dag::DAG_VERIFY_VDF_STATUS_VALID);
-        assert_eq!(result.difficulty, result.expected_difficulty);
     }
 
     #[test]

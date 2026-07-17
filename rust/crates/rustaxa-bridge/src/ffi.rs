@@ -3908,6 +3908,8 @@ pub mod rustaxa_ffi {
     /// Compact block and caller-supplied transaction facts used to open one
     /// Rust-owned `DagManager::verifyBlock` runtime session.
     struct DagVerifyBlockSessionInput {
+        /// Canonical Keccak-256 hash of the complete signed block RLP.
+        block_hash: [u8; 32],
         block_level: u64,
         pivot: [u8; 32],
         tips: Vec<DagHash>,
@@ -3917,6 +3919,8 @@ pub mod rustaxa_ffi {
 
     /// One requested Rust-owned `verifyBlock` session step.
     struct DagVerifyBlockSessionStep {
+        /// Identity of the active cursor; zero only when no cursor exists.
+        cursor_id: u64,
         status: u8,
         action: u8,
         complete: bool,
@@ -3959,9 +3963,16 @@ pub mod rustaxa_ffi {
         eligibility_status: u8,
     }
 
-    /// Live VDF verifier report for one `verifyBlock` session.
-    struct DagVerifyBlockVdfReport {
-        vdf_status: u8,
+    /// Proof-bearing facts needed to verify the active Rust-owned DAG cursor.
+    /// Session identity, proposal period, normalized vote counts, and
+    /// historical sortition parameters remain private Rust state.
+    struct DagVerifyBlockVdfRequest {
+        /// Cursor identity returned by the VDF action step.
+        cursor_id: u64,
+        block_rlp: Vec<u8>,
+        block_level: u64,
+        proposal_period_hash: [u8; 32],
+        vrf_public_key: [u8; 32],
     }
 
     /// External gas facts for one `verifyBlock` session.
@@ -3973,32 +3984,6 @@ pub mod rustaxa_ffi {
         estimated_transactions_weight: u64,
         dag_gas_limit: u64,
         pbft_gas_limit: u64,
-    }
-
-    /// Rust DAG VDF sortition verification result.
-    struct DagVerifyVdfSortitionResult {
-        vdf_status: u8,
-        difficulty: u16,
-        expected_difficulty: u16,
-    }
-
-    /// C++-originated payload to build legacy VRF/VDF messages from block RLP
-    /// and verify embedded sortition proof.
-    struct DagVerifyVdfSortitionFromBlockInput {
-        /// Canonical DAG block RLP bytes.
-        block_rlp: Vec<u8>,
-        /// DAG block level used in legacy VRF message construction.
-        block_level: u64,
-        /// Legacy proposal-period hash used in legacy VRF message construction.
-        proposal_period_hash: [u8; 32],
-        /// Runtime sortition parameters for this proposal period.
-        sortition_params: SortitionRuntimeParams,
-        /// Embedded VRF public key (32 bytes) for direct Rust verification.
-        vrf_public_key: [u8; 32],
-        /// Sender-eligible vote count for threshold normalization.
-        sender_eligible_vote_count: u64,
-        /// Period-effective maximum vote count for normalization denominator.
-        vdf_sortition_max_vote_count: u64,
     }
 
     /// Rust-collected DPoS and VRF facts for DAG authorization.
@@ -4716,10 +4701,12 @@ pub mod rustaxa_ffi {
             runtime: &BridgeDagTransactionService,
             report: DagVerifyBlockAuthorizationReport,
         ) -> Result<DagVerifyBlockSessionStep>;
-        #[rust_name = "service_dag_manager_runtime_verify_block_session_report_vdf"]
-        pub fn dag_manager_runtime_verify_block_session_report_vdf(
+        /// Verifies the active VDF action through isolated DAG and sortition
+        /// lock intervals, then advances only the unchanged cursor.
+        #[rust_name = "service_dag_transaction_service_verify_block_session_vdf"]
+        pub fn dag_transaction_service_verify_block_session_vdf(
             runtime: &BridgeDagTransactionService,
-            report: DagVerifyBlockVdfReport,
+            request: DagVerifyBlockVdfRequest,
         ) -> Result<DagVerifyBlockSessionStep>;
         #[rust_name = "service_dag_manager_runtime_verify_block_session_report_gas"]
         pub fn dag_manager_runtime_verify_block_session_report_gas(
@@ -4807,9 +4794,6 @@ pub mod rustaxa_ffi {
         pub fn dag_plan_proposer_worker_command(
             input: DagProposerWorkerCommandInput,
         ) -> DagProposerWorkerCommand;
-        pub fn dag_verify_vdf_sortition_from_block(
-            input: DagVerifyVdfSortitionFromBlockInput,
-        ) -> Result<DagVerifyVdfSortitionResult>;
         pub fn dag_vdf_message(pivot: &[u8; 32], transaction_hashes: Vec<DagHash>) -> Vec<u8>;
 
         // Consensus PBFT chain

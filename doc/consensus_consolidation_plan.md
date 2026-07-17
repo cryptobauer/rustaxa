@@ -2907,8 +2907,8 @@ service.
   `DagManager` injects its canonical service into the facade, while the stable three-argument compatibility constructor
   creates a full service and injected construction rejects null or transaction-only services.
 - The PBFT preview/stage/commit contract and C++ `SortitionParamsChange` materialization remain typed compatibility
-  boundaries. DAG verification and proposer sortition-parameter relays remain follow-up work before this facade can be
-  retired.
+  boundaries. The later composition slices internalized PBFT finalization commit and DAG verification; proposer
+  sortition-parameter relays remain follow-up work before this facade can be retired.
 - Focused Rust coverage verifies full restore, compatibility rejection, and sortition behavior. Focused C++ coverage
   verifies the facade, canonical sortition behavior, service capability rejection, DAG integration, and a PBFT
   single-node production path.
@@ -2940,11 +2940,38 @@ sortition facade.
   or echoes those facts back to Rust.
 - `PbftManagerFinalizationSortitionCommitReport`, `SortitionFinalizationCommitReport`, and the rewrite-only
   `commitPreparedBlockForSortitionFinalization` helper are deleted. The public storage-owning `pbftBlockPushed` adapter,
-  preview method, canonical compatibility carrier/codec, DAG verification, and proposer crossings remain classified.
+  preview method, canonical compatibility carrier/codec, and proposer crossings remain classified; the following slice
+  internalizes DAG verification.
 - The cross-service lock order is PBFT manager then DAG-service sortition. No Rust guard crosses C++ callbacks; stale
   cursors fail before live sortition publication. Preview/stage divergence cannot safely enter normal duplicate resume
   after the primary batch commits, so the boundary raises a fatal post-storage invariant instead of returning a
   retryable action failure; the lower-level cloned-state helper proves mismatches do not publish live state.
+
+### CRW-05 DAG Verification Sortition Composition
+
+This CRW-05/CRW-07 follow-up removes the remaining direct VDF verifier and sortition-fact relay from live DAG block
+verification.
+
+- Each Rust verification step exposes its cursor identity, while the cursor privately retains the complete signed-block
+  hash, action generation, proposal period, and normalized vote counts. The later request must match both that cursor and
+  the exact block RLP before any proof result can advance it.
+- `BridgeDagTransactionService` snapshots the active VDF action under the DAG lock, releases it, copies the historical
+  sortition parameters under the sortition lock alone, verifies the proof without service locks, then reacquires the DAG
+  lock and revalidates the cursor, block fingerprint, action, counts, and generation before advancing exactly once.
+- Missing capability, storage failure, wrong action, request mismatch, and stale revalidation are operational errors that
+  do not advance the cursor. Malformed and invalid proofs retain the existing deterministic failed-VDF consensus result.
+- `DagManager::verifyBlock` now supplies only the cursor ID, signed block payload/level, external PBFT period hash, and
+  FinalChain VRF key. It no longer materializes historical sortition parameters, relays cursor-owned vote counts, calls a
+  free verifier, converts its result, or reports VDF status through a second bridge operation.
+- `DagVerifyVdfSortitionFromBlockInput`, `DagVerifyVdfSortitionResult`, `DagVerifyBlockVdfReport`, the direct verifier
+  export, and the standalone VDF-report export are deleted. Proposer sortition-parameter crossings remain the next
+  bounded CRW-05 ownership target.
+
+Validation passed all 326 `rustaxa-bridge` tests, including four focused cursor-bound VDF cases; the Rust CXX bridge and
+focused DAG/sortition targets rebuilt; and the DAG, DAG-block, and sortition-shim suites passed 6/6, 13/13, and 4/4.
+The Rust pre-commit hook, Tier 1 and Tier 2 rewrite gates, startup smoke, bridge inventory, upstream-shape check,
+formatting, and whitespace validation also passed. Independent configured review returned `APPROVED` with no blocking
+correctness, concurrency, error-classification, deletion, documentation, or coverage finding.
 
 ## Historical Execution Order
 

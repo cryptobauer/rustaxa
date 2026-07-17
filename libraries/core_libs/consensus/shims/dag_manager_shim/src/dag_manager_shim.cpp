@@ -24,8 +24,6 @@
 namespace taraxa {
 namespace {
 
-constexpr uint8_t kDagVerifyVdfStatusValid = 1;
-constexpr uint8_t kDagVerifyVdfStatusInvalid = 2;
 constexpr uint8_t kDagVerifySessionStatusInvalidReport = 2;
 constexpr uint8_t kDagVerifySessionActionTransactionQuery = 1;
 constexpr uint8_t kDagVerifySessionActionAuthorizationFacts = 2;
@@ -253,21 +251,6 @@ std::array<uint8_t, 32> to_bridge_vrf_public_key(const rust::Vec<uint8_t> &vrf_p
   return out;
 }
 
-rustaxa::DagVerifyVdfSortitionFromBlockInput to_bridge_vdf_sortition_input(
-    const dev::bytes &block_rlp, uint64_t block_level, const blk_hash_t &proposal_period_hash,
-    const rustaxa::SortitionRuntimeParams &sortition_params, const rust::Vec<uint8_t> &vrf_public_key,
-    uint64_t sender_eligible_vote_count, uint64_t vdf_sortition_max_vote_count) {
-  rustaxa::DagVerifyVdfSortitionFromBlockInput out;
-  out.block_rlp = to_rust_vec(block_rlp);
-  out.block_level = block_level;
-  out.proposal_period_hash = to_bridge_hash(proposal_period_hash);
-  out.sortition_params = sortition_params;
-  out.vrf_public_key = to_bridge_vrf_public_key(vrf_public_key);
-  out.sender_eligible_vote_count = sender_eligible_vote_count;
-  out.vdf_sortition_max_vote_count = vdf_sortition_max_vote_count;
-  return out;
-}
-
 dev::bytes rust_vdf_message(const blk_hash_t &pivot, const std::vector<trx_hash_t> &trx_hashes) {
   const auto bridge_pivot = to_bridge_hash(pivot);
   return from_rust_bytes(rustaxa::dag_vdf_message(bridge_pivot, to_bridge_dag_hashes(trx_hashes)));
@@ -276,6 +259,7 @@ dev::bytes rust_vdf_message(const blk_hash_t &pivot, const std::vector<trx_hash_
 rustaxa::DagVerifyBlockSessionInput to_bridge_verify_block_session_input(
     const std::shared_ptr<DagBlock> &block, const std::unordered_map<trx_hash_t, std::shared_ptr<Transaction>> &trxs) {
   rustaxa::DagVerifyBlockSessionInput out;
+  out.block_hash = to_bridge_hash(block->getHash());
   out.block_level = block->getLevel();
   out.pivot = to_bridge_hash(block->getPivot());
   out.tips = to_bridge_dag_hashes(block->getTips());
@@ -513,25 +497,14 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     throw std::runtime_error("DagManager: Rust verifyBlock session did not request VDF sortition");
   }
 
-  uint8_t vdf_status = kDagVerifyVdfStatusValid;
-  try {
-    const auto proposal_period_hash = getPeriodBlockHashForDagProposal(proposal_period);
-    const auto block_rlp = blk->rlp(true);
-    const auto sortition_params = sortition_params_manager_.rustSortitionParamsForRust(proposal_period);
-    const auto vdf_result = rustaxa::dag_verify_vdf_sortition_from_block(
-        to_bridge_vdf_sortition_input(block_rlp, blk->getLevel(), proposal_period_hash, sortition_params,
-                                      authorization_facts.vrf_key, step.vote_count, step.max_vote_count));
-    vdf_status = vdf_result.vdf_status;
-  } catch (std::exception const &) {
-    vdf_status = kDagVerifyVdfStatusInvalid;
-  }
-  rustaxa::DagVerifyBlockVdfReport vdf_report;
-  vdf_report.vdf_status = vdf_status;
-  {
-    std::unique_lock lock(rust_graphs_mutex_);
-    step = rustaxa::dag_manager_runtime_verify_block_session_report_vdf(dag_transaction_service_->service(),
-                                                                        std::move(vdf_report));
-  }
+  rustaxa::DagVerifyBlockVdfRequest vdf_request;
+  vdf_request.cursor_id = step.cursor_id;
+  vdf_request.block_rlp = to_rust_vec(blk->rlp(true));
+  vdf_request.block_level = blk->getLevel();
+  vdf_request.proposal_period_hash = to_bridge_hash(getPeriodBlockHashForDagProposal(proposal_period));
+  vdf_request.vrf_public_key = to_bridge_vrf_public_key(authorization_facts.vrf_key);
+  step = rustaxa::dag_transaction_service_verify_block_session_vdf(dag_transaction_service_->service(),
+                                                                   std::move(vdf_request));
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }

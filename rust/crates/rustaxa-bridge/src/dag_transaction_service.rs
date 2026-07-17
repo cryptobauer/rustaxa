@@ -12,7 +12,9 @@ use crate::transaction_manager::{
 };
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::H256;
-use rustaxa_consensus::dag::dag_block_transaction_hashes;
+use rustaxa_consensus::dag::{
+    dag_block_transaction_hashes, verify_dag_vdf_sortition_from_block, DagVdfSortitionBlockInput,
+};
 use rustaxa_consensus::sortition::SortitionParamsManager;
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
@@ -967,8 +969,72 @@ fn verify_block_transaction_view_requests(
         .collect()
 }
 dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_authorization, dag_manager_runtime_verify_block_session_report_authorization(report: DagVerifyBlockAuthorizationReport) -> DagVerifyBlockSessionStep);
-dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_vdf, dag_manager_runtime_verify_block_session_report_vdf(report: DagVerifyBlockVdfReport) -> DagVerifyBlockSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
+
+/// Executes cursor-bound DAG VDF verification across isolated DAG and
+/// sortition lock intervals.
+pub fn service_dag_transaction_service_verify_block_session_vdf(
+    service: &BridgeDagTransactionService,
+    request: DagVerifyBlockVdfRequest,
+) -> Result<DagVerifyBlockSessionStep> {
+    let snapshot = {
+        let dag_guard = service.dag()?;
+        let dag = dag_guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        dag_manager_runtime_snapshot_verify_block_vdf(dag, request.cursor_id)?
+    };
+
+    let decoded_block = rustaxa_consensus::dag::dag_manager_block_from_rlp(&request.block_rlp);
+    let request_fingerprint = keccak256_bytes(&request.block_rlp);
+    ensure!(
+        request_fingerprint == snapshot.fingerprint,
+        "DAG_VERIFY_SESSION_VDF_REQUEST_FINGERPRINT_MISMATCH"
+    );
+    if let Ok(block) = decoded_block.as_ref() {
+        ensure!(
+            block.level == request.block_level,
+            "DAG_VERIFY_SESSION_VDF_REQUEST_LEVEL_MISMATCH"
+        );
+    }
+
+    let sortition_params = {
+        let sortition = service.sortition()?;
+        sortition
+            .params_for_period_from_storage(snapshot.proposal_period)
+            .context("DAG_VERIFY_SESSION_VDF_SORTITION_PARAMS")?
+    };
+
+    let vdf_status = match decoded_block.and_then(|_| {
+        verify_dag_vdf_sortition_from_block(DagVdfSortitionBlockInput {
+            block_rlp: request.block_rlp,
+            block_level: request.block_level,
+            proposal_period_hash: H256::from(request.proposal_period_hash),
+            vrf_public_key: request.vrf_public_key,
+            sortition_params,
+            sender_eligible_vote_count: snapshot.vote_count,
+            vdf_sortition_max_vote_count: snapshot.max_vote_count,
+        })
+    }) {
+        Ok(result) => result.vdf_status,
+        Err(_) => rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_INVALID,
+    };
+
+    let mut dag_guard = service.dag()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    dag_manager_runtime_complete_verify_block_vdf(dag, &snapshot, vdf_status)
+}
+
+fn keccak256_bytes(bytes: &[u8]) -> [u8; 32] {
+    use tiny_keccak::{Hasher, Keccak};
+    let mut hash = [0u8; 32];
+    let mut hasher = Keccak::v256();
+    hasher.update(bytes);
+    hasher.finalize(&mut hash);
+    hash
+}
 /// Opens a proposer session with transaction pressure derived from the sibling
 /// Rust TransactionManager while holding the universal DAG-then-transaction lock order.
 ///
@@ -1003,12 +1069,18 @@ dag_free_mut_result!(service_dag_manager_runtime_proposer_session_report_add_blo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag::DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS;
+    use crate::dag::{
+        DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS, DAG_VERIFY_SESSION_ACTION_GAS,
+        DAG_VERIFY_SESSION_ACTION_VDF_SORTITION,
+    };
     use crate::storage::{create_storage, create_transaction_storage_queries};
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
+    use rustaxa_consensus::sortition::SortitionParamsChange;
     use rustaxa_types::LegacyTransactionEnvelope;
+    use rustaxa_vdf::prover::CancellationToken;
+    use rustaxa_vdf::sortition::{self, LegacySortitionParams};
     use rustaxa_vdf::vrf::public_key_from_secret;
     use std::fs;
     use std::sync::{Arc, Barrier};
@@ -1297,6 +1369,7 @@ mod tests {
         service_dag_manager_runtime_begin_verify_block_session(
             service,
             DagVerifyBlockSessionInput {
+                block_hash: [0u8; 32],
                 block_level: 1,
                 pivot: [1; 32],
                 tips: Vec::new(),
@@ -1311,6 +1384,308 @@ mod tests {
             },
         )
         .expect("verify-block session should begin");
+    }
+
+    fn vdf_test_block(vdf_payload: Vec<u8>, signature_byte: u8) -> Vec<u8> {
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::from([1u8; 32]));
+        block.append(&1u64);
+        block.append(&0u64);
+        block.append(&vdf_payload);
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[signature_byte; 65][..]);
+        block.append(&0u64);
+        block.out().to_vec()
+    }
+
+    fn valid_vdf_request(
+        threshold_upper: u16,
+        proposal_period_hash: [u8; 32],
+    ) -> DagVerifyBlockVdfRequest {
+        let placeholder = vdf_test_block(Vec::new(), 0);
+        let vrf_input =
+            rustaxa_consensus::dag::construct_dag_vrf_input(1, H256::from(proposal_period_hash));
+        let vdf_input =
+            rustaxa_consensus::dag::construct_dag_vdf_message_from_block_rlp(&placeholder)
+                .expect("VDF message should build");
+        let proof = sortition::prove_legacy_vdf_sortition(
+            LegacySortitionParams {
+                vrf_threshold_upper: threshold_upper,
+                vdf_difficulty_min: 1,
+                vdf_difficulty_max: 10,
+                vdf_difficulty_stale: 3,
+                vdf_lambda_bound: 100,
+            },
+            &SECRET_KEY,
+            &vrf_input,
+            &vdf_input,
+            1,
+            1,
+            &CancellationToken::new(),
+        )
+        .expect("VDF proof should generate");
+        let mut payload = RlpStream::new_list(4);
+        payload.append(&&proof.vrf_proof[..]);
+        payload.append(&proof.vdf_proof);
+        payload.append(&proof.vdf_output);
+        payload.append(&proof.difficulty);
+        DagVerifyBlockVdfRequest {
+            cursor_id: 0,
+            block_rlp: vdf_test_block(payload.out().to_vec(), 0),
+            block_level: 1,
+            proposal_period_hash,
+            vrf_public_key: public_key_from_secret(&SECRET_KEY).expect("VRF public key"),
+        }
+    }
+
+    fn begin_vdf_action(
+        service: &BridgeDagTransactionService,
+        block_rlp: &[u8],
+    ) -> DagVerifyBlockSessionStep {
+        service_dag_manager_runtime_begin_verify_block_session(
+            service,
+            DagVerifyBlockSessionInput {
+                block_hash: keccak256(block_rlp).0,
+                block_level: 1,
+                pivot: [1; 32],
+                tips: Vec::new(),
+                block_transaction_hashes: Vec::new(),
+                supplied_transaction_hashes: Vec::new(),
+            },
+        )
+        .expect("verify session should begin");
+        let preparation =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(service)
+                .expect("empty transaction query should prepare");
+        let authorization = service_dag_manager_runtime_verify_block_session_complete_transactions(
+            service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .expect("empty transaction query should complete");
+        assert_eq!(
+            authorization.action,
+            DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+        );
+        service_dag_manager_runtime_verify_block_session_report_authorization(
+            service,
+            DagVerifyBlockAuthorizationReport {
+                vrf_key_found: true,
+                sender_eligible_vote_count: 1,
+                vdf_sortition_max_vote_count: 1,
+                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+        )
+        .expect("authorization should advance to VDF")
+    }
+
+    #[test]
+    fn cursor_bound_vdf_uses_historical_params_and_advances_valid_proof_once() {
+        let dir = unique_temp_dir("rustaxa_dag_vdf_historical_params");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let proposal_period_hash = [0x91; 32];
+        let mut request = valid_vdf_request(1_234, proposal_period_hash);
+        let step = begin_vdf_action(&service, &request.block_rlp);
+        request.cursor_id = step.cursor_id;
+        storage
+            .0
+            .metadata()
+            .write_sortition_params_change(
+                step.proposal_period,
+                &SortitionParamsChange {
+                    period: step.proposal_period,
+                    interval_efficiency: 5_000,
+                    threshold_upper: 1_234,
+                }
+                .to_rlp_bytes(),
+            )
+            .unwrap();
+        assert_eq!(service.current_params().unwrap().threshold_upper, 1_000);
+
+        let gas = service_dag_transaction_service_verify_block_session_vdf(&service, request)
+            .expect("historical parameters should verify the proof");
+        assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
+        assert_eq!(gas.cursor_id, step.cursor_id);
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cursor_bound_vdf_classifies_malformed_proof_as_invalid() {
+        let dir = unique_temp_dir("rustaxa_dag_vdf_invalid_proof");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let block_rlp = vdf_test_block(vec![0x80], 0);
+        let step = begin_vdf_action(&service, &block_rlp);
+        let invalid = service_dag_transaction_service_verify_block_session_vdf(
+            &service,
+            DagVerifyBlockVdfRequest {
+                cursor_id: step.cursor_id,
+                block_rlp,
+                block_level: 1,
+                proposal_period_hash: [0x92; 32],
+                vrf_public_key: public_key_from_secret(&SECRET_KEY).unwrap(),
+            },
+        )
+        .expect("malformed proof should be a deterministic consensus rejection");
+        assert!(invalid.complete);
+        assert_eq!(
+            invalid.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cursor_bound_vdf_rejects_missing_sortition_and_wrong_action_without_advancing() {
+        let dir = unique_temp_dir("rustaxa_dag_vdf_capability_and_action");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let request = valid_vdf_request(1_000, [0x93; 32]);
+        service_dag_manager_runtime_begin_verify_block_session(
+            &service,
+            DagVerifyBlockSessionInput {
+                block_hash: keccak256(&request.block_rlp).0,
+                block_level: 1,
+                pivot: [1; 32],
+                tips: Vec::new(),
+                block_transaction_hashes: Vec::new(),
+                supplied_transaction_hashes: Vec::new(),
+            },
+        )
+        .unwrap();
+        let action = service_dag_manager_runtime_verify_block_session_next(&service).unwrap();
+        let wrong_action = service_dag_transaction_service_verify_block_session_vdf(
+            &service,
+            DagVerifyBlockVdfRequest {
+                cursor_id: action.cursor_id,
+                ..request
+            },
+        )
+        .err()
+        .expect("wrong action should fail");
+        assert!(wrong_action
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_UNEXPECTED_VDF_ACTION"));
+        assert_eq!(
+            service_dag_manager_runtime_verify_block_session_next(&service)
+                .unwrap()
+                .action,
+            1
+        );
+
+        let mut request = valid_vdf_request(1_000, [0x94; 32]);
+        let vdf = begin_vdf_action(&service, &request.block_rlp);
+        request.cursor_id = vdf.cursor_id;
+        *service.sortition.lock().unwrap() = None;
+        let unavailable =
+            service_dag_transaction_service_verify_block_session_vdf(&service, request)
+                .err()
+                .expect("missing sortition should fail");
+        assert_eq!(unavailable.to_string(), "SORTITION_SERVICE_UNAVAILABLE");
+        assert_eq!(
+            service_dag_manager_runtime_verify_block_session_next(&service)
+                .unwrap()
+                .action,
+            DAG_VERIFY_SESSION_ACTION_VDF_SORTITION
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cursor_bound_vdf_rejects_full_block_mismatch_and_stale_revalidation() {
+        let dir = unique_temp_dir("rustaxa_dag_vdf_stale_revalidation");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let mut request = valid_vdf_request(1_000, [0x95; 32]);
+        let vdf = begin_vdf_action(&service, &request.block_rlp);
+        request.cursor_id = vdf.cursor_id;
+        let mut mismatched = request;
+        mismatched.block_rlp = vdf_test_block(Vec::new(), 1);
+        let mismatch =
+            service_dag_transaction_service_verify_block_session_vdf(&service, mismatched)
+                .err()
+                .expect("mismatched block should fail");
+        assert!(mismatch
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_VDF_REQUEST_FINGERPRINT_MISMATCH"));
+
+        let snapshot = {
+            let dag = service.dag().unwrap();
+            dag_manager_runtime_snapshot_verify_block_vdf(dag.as_ref().unwrap(), vdf.cursor_id)
+                .unwrap()
+        };
+        begin_verify_block_session(&service, &[], &[]);
+        let stale = {
+            let mut dag = service.dag().unwrap();
+            dag_manager_runtime_complete_verify_block_vdf(
+                dag.as_mut().unwrap(),
+                &snapshot,
+                rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
+            )
+            .err()
+            .expect("stale snapshot should fail")
+        };
+        assert!(stale
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH"));
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
