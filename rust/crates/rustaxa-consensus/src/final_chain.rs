@@ -11051,6 +11051,294 @@ mod tests {
     }
 
     #[test]
+    fn dpos_undelegate_v2_preflight_reports_expected_failures_in_order() {
+        struct Case {
+            name: &'static str,
+            delegator: [u8; 20],
+            input_validator: [u8; 20],
+            genesis_validator: [u8; 20],
+            genesis_stake: u64,
+            amount: u64,
+            minimum_deposit: Option<u64>,
+            expected_error: DposContractError,
+            legacy_message: &'static str,
+        }
+
+        let cases = [
+            Case {
+                name: "missing-validator",
+                delegator: [0xAA; 20],
+                input_validator: [0x53; 20],
+                genesis_validator: [0x52; 20],
+                genesis_stake: 10_000u64,
+                amount: 1u64,
+                minimum_deposit: None,
+                expected_error: DposContractError::NonExistentValidator,
+                legacy_message: "Validator does not exist",
+            },
+            Case {
+                name: "missing-delegation",
+                delegator: [0x55; 20],
+                input_validator: [0x54; 20],
+                genesis_validator: [0x54; 20],
+                genesis_stake: 10_000u64,
+                amount: 1u64,
+                minimum_deposit: None,
+                expected_error: DposContractError::NonExistentDelegation,
+                legacy_message: "Delegation does not exist",
+            },
+            Case {
+                name: "amount-above-delegation",
+                delegator: [0x56; 20],
+                input_validator: [0x56; 20],
+                genesis_validator: [0x56; 20],
+                genesis_stake: 10_000u64,
+                amount: 20_000u64,
+                minimum_deposit: None,
+                expected_error: DposContractError::InsufficientDelegation,
+                legacy_message: "Insufficient delegation",
+            },
+            Case {
+                name: "minimum-deposit-remainder",
+                delegator: [0x57; 20],
+                input_validator: [0x57; 20],
+                genesis_validator: [0x57; 20],
+                genesis_stake: 20u64,
+                amount: 11u64,
+                minimum_deposit: Some(10u64),
+                expected_error: DposContractError::InsufficientDelegation,
+                legacy_message: "Insufficient delegation",
+            },
+        ];
+
+        for case in cases {
+            let path = temp_db_path(&format!("dpos-typed-v2-{}", case.name));
+            let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+            let mut final_chain = new_final_chain_with_dpos(
+                storage.clone(),
+                vec![genesis_validator(
+                    case.genesis_validator,
+                    U256::from(case.genesis_stake),
+                )],
+                U256::one(),
+                U256::one(),
+                U256::from(100_000u64),
+            );
+            if let Some(deposit) = case.minimum_deposit {
+                final_chain.dpos_minimum_deposit = u256_to_big_endian(U256::from(deposit));
+            }
+
+            let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+            let snapshot_before = snapshot.clone();
+            let mut accounts = HashMap::new();
+
+            let outcome = final_chain
+                .apply_dpos_undelegate_v2(
+                    &mut snapshot,
+                    &mut accounts,
+                    case.delegator,
+                    case.input_validator,
+                    u256_to_big_endian(U256::from(case.amount)),
+                    0,
+                )
+                .unwrap();
+
+            assert_eq!(outcome.contract_error, Some(case.expected_error.clone()));
+            assert_eq!(case.expected_error.legacy_message(), case.legacy_message);
+            assert_eq!(snapshot, snapshot_before);
+            assert!(accounts.is_empty());
+
+            drop(final_chain);
+            drop(storage);
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+
+    #[test]
+    fn finalize_block_fails_undelegate_v2_status_zero_and_continues_same_sender() {
+        struct Case {
+            name: &'static str,
+            sender: [u8; 20],
+            recipient: [u8; 20],
+            genesis_validator: [u8; 20],
+            input_validator: [u8; 20],
+            genesis_stake: u64,
+            amount: u64,
+            minimum_deposit: Option<u64>,
+        }
+
+        let cases = [
+            Case {
+                name: "missing-validator",
+                sender: [0xA0; 20],
+                recipient: [0xA1; 20],
+                genesis_validator: [0xA2; 20],
+                input_validator: [0xA3; 20],
+                genesis_stake: 10_000u64,
+                amount: 1_000u64,
+                minimum_deposit: None,
+            },
+            Case {
+                name: "missing-delegation",
+                sender: [0xB0; 20],
+                recipient: [0xB1; 20],
+                genesis_validator: [0xB2; 20],
+                input_validator: [0xB2; 20],
+                genesis_stake: 10_000u64,
+                amount: 1_000u64,
+                minimum_deposit: None,
+            },
+            Case {
+                name: "amount-above-delegation",
+                sender: [0xC0; 20],
+                recipient: [0xC1; 20],
+                genesis_validator: [0xC0; 20],
+                input_validator: [0xC0; 20],
+                genesis_stake: 10_000u64,
+                amount: 20_000u64,
+                minimum_deposit: None,
+            },
+            Case {
+                name: "minimum-deposit-remainder",
+                sender: [0xD0; 20],
+                recipient: [0xD1; 20],
+                genesis_validator: [0xD0; 20],
+                input_validator: [0xD0; 20],
+                genesis_stake: 20u64,
+                amount: 11u64,
+                minimum_deposit: Some(10u64),
+            },
+        ];
+
+        for case in cases {
+            let first_period = 1u64;
+            let second_period = 2u64;
+            let path = temp_db_path(&format!("finalize-dpos-undelegate-v2-{}", case.name));
+            let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+            let signing_key = SigningKey::from_slice(&[72u8; 32]).unwrap();
+            let first_pbft = signed_pbft_block(&signing_key, first_period, 271);
+            let second_pbft = signed_pbft_block(&signing_key, second_period, 272);
+            let failed_undelegate_tx = test_transaction(
+                0xF1,
+                case.sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                undelegate_v2_input(case.input_validator, U256::from(case.amount)),
+                vec![0xc1, 0xF1],
+            );
+            let transfer_tx = test_transaction(
+                0xF2,
+                case.sender,
+                Some(case.recipient),
+                1,
+                U256::from(5_000u64),
+                U256::one(),
+                intrinsic_gas(&vec![], false).unwrap(),
+                vec![],
+                vec![0xc1, 0xF2],
+            );
+
+            let config = GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(100_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            };
+            let rewards_config = FinalChainRewardsConfig {
+                magnolia_period: 10,
+                aspen_part_one_period: u64::MAX,
+                ..Default::default()
+            };
+            let mut final_chain = FinalChain::new_with_rewards_config(
+                storage.clone(),
+                200_000,
+                0,
+                vec![genesis_account(case.sender, U256::from(1_000_000u64))],
+                vec![genesis_validator(
+                    case.genesis_validator,
+                    U256::from(case.genesis_stake),
+                )],
+                config,
+                rewards_config,
+            )
+            .unwrap();
+            if let Some(deposit) = case.minimum_deposit {
+                final_chain.dpos_minimum_deposit = u256_to_big_endian(U256::from(deposit));
+            }
+
+            let failed_gas =
+                expected_native_contract_tx_gas(&final_chain, second_period, &failed_undelegate_tx);
+            let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
+            write_period_data(&storage, first_period, &first_pbft, &[]);
+            write_period_data(
+                &storage,
+                second_period,
+                &second_pbft,
+                &[failed_undelegate_tx.rlp.clone(), transfer_tx.rlp.clone()],
+            );
+
+            final_chain
+                .finalize_block(first_pbft, vec![], vec![])
+                .unwrap();
+            let mut snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+            snapshot_before
+                .reward_reference_graph
+                .next_block(second_period)
+                .unwrap();
+            let sender_balance_before = balance_of(&final_chain, case.sender);
+            let contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+
+            let (header_rlp, receipts) = final_chain
+                .finalize_block(
+                    second_pbft,
+                    vec![failed_undelegate_tx.clone(), transfer_tx.clone()],
+                    vec![],
+                )
+                .unwrap();
+            let snapshot_after = final_chain.dpos_snapshot(second_period).unwrap();
+
+            assert_eq!(receipts.len(), 2);
+            assert_eq!(receipt_fields(&receipts[0]), (0, failed_gas, failed_gas));
+            assert_eq!(
+                receipt_fields(&receipts[1]),
+                (1, transfer_gas, failed_gas + transfer_gas)
+            );
+            assert!(receipt_logs(&receipts[0]).is_empty());
+            assert!(receipt_logs(&receipts[1]).is_empty());
+            assert_eq!(snapshot_before, snapshot_after);
+            assert_eq!(final_chain.account(case.sender).unwrap().unwrap().nonce, 2);
+            assert_eq!(
+                balance_of(&final_chain, case.sender),
+                sender_balance_before
+                    - U256::from(failed_gas + transfer_gas)
+                    - U256::from(5_000u64)
+            );
+            assert_eq!(
+                balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+                contract_balance_before
+            );
+            assert_eq!(
+                balance_of(&final_chain, case.recipient),
+                U256::from(5_000u64)
+            );
+            let header = Rlp::new(&header_rlp);
+            let bloom: Vec<u8> = header.val_at(6).unwrap();
+            assert!(bloom.iter().all(|byte| *byte == 0));
+
+            drop(final_chain);
+            drop(storage);
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+
+    #[test]
     fn dpos_claim_all_contextualizes_missing_delegation_before_mutation() {
         let path = temp_db_path("dpos-typed-claim-all-context");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());

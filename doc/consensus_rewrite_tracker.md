@@ -753,6 +753,25 @@ round trip. `rewrite-validate-fast`, `rewrite-validate-final-chain`, the authori
 validation, and the repository pre-commit hook pass with the unchanged warning baseline, followed by independent
 configured review approval.
 
+The next bounded `CRW-08` evidence slice closes Cornus `undelegateV2(address,uint256)` pre-mutation business-failure
+parity without changing production logic. Missing validators fail before delegation lookup; missing delegations fail
+before amount validation; amounts above the delegation and nonzero remainders below `minimum_deposit` both retain the
+legacy `Insufficient delegation` outcome. Every well-formed call charges calldata intrinsic gas plus the fixed 60,000
+action gas, advances the sender nonce, publishes a status-zero receipt with empty logs/bloom, and rolls back DPoS
+custody, stake, votes, reward state, V2 queues, and request IDs. A later same-sender transaction still executes.
+Focused Rust tests protect the exact typed-error order and combined finalization transcript, while a restart-backed
+dual-mode fixture protects receipt RLP, cumulative/header gas, gas-only balances, nonces, unchanged DPoS state, empty
+header bloom, continuation, and durable receipts. There is no production, bridge, carrier, handle, module-flag,
+snapshot-schema, migration, or `CRW-07` inventory delta. `CRW-08` remains active for V2 confirm/cancel failure
+transcripts, the larger slashing-invalid-proof matrix, and any other older failed-contract receipt family established by
+legacy audit.
+
+V2 failure-evidence validation passed both focused Rust tests, all 770 `rustaxa-consensus` tests, the focused
+Rust-enabled C++ fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the authorized Tier 3
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, Rust formatting, whitespace
+validation, and the repository pre-commit hook with the unchanged warning baseline, followed by independent configured
+review.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

@@ -3862,6 +3862,28 @@ Mutation-call validation passed all 768 `rustaxa-consensus` tests, all 56 `rust_
 validation, and the repository pre-commit hook with the unchanged warning baseline, followed by independent configured
 review approval.
 
+### CRW-08 Native DPoS V2 Pre-Mutation Failure Evidence
+
+Cornus `undelegateV2(address,uint256)` now has explicit parity evidence for its four ordered pre-mutation business
+failures without a production-code change. A missing validator returns `Validator does not exist`; an absent
+caller/validator delegation returns `Delegation does not exist`; an amount above the delegation and a nonzero remainder
+below `minimum_deposit` return `Insufficient delegation`. Each well-formed failure consumes calldata intrinsic gas plus
+the fixed 60,000 action gas, advances the sender nonce, emits no logs, publishes a status-zero receipt and empty bloom,
+and rolls back value, DPoS custody, delegation/stake/vote/reward state, V2 queues, and request IDs. Failure does not stop a
+later same-sender transaction in the block.
+
+One table-driven Rust preflight test protects exact typed errors and unchanged staged state, and one combined Rust
+finalization test protects receipt status/gas, continuation, account effects, snapshot rollback, and header bloom. The
+restart-backed dual-mode FinalChain fixture protects exact receipt RLP, cumulative/header gas, gas-only balances,
+nonces, empty logs/blooms, unchanged DPoS and V2 request state, continuation, and restart persistence. No production,
+bridge, carrier, handle, export, module flag, snapshot schema, migration, or `CRW-07` inventory change is required.
+
+Validation passed both focused Rust tests, all 770 `rustaxa-consensus` tests, the focused Rust-enabled C++ fixture,
+`rewrite-validate-fast`, `rewrite-validate-final-chain`, the authorized Tier 3
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, Rust formatting, whitespace
+validation, and the repository pre-commit hook with the unchanged warning baseline, followed by independent configured
+review.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript
