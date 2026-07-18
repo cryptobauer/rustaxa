@@ -3,6 +3,10 @@ use crate::dag::{
     DAG_VERIFY_DPOS_STATUS_NOT_ELIGIBLE, DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE,
     DagDposAuthorizationFacts,
 };
+use crate::dpos_reward_graph::{
+    DposRewardGraph, DposRewardGraphError, Node, NodeKey, decode_dpos_reward_graph,
+    encode_dpos_reward_graph,
+};
 use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
     FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STATUS_MATCHED,
@@ -30,6 +34,7 @@ use anyhow::Result;
 use ethereum_types::{H256, U256};
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use keccak_hasher::KeccakHasher;
+use num_bigint::BigUint;
 use rlp::Rlp;
 use rustaxa_storage::{
     FINAL_CHAIN_BLOOM_INDEX_LEVELS, FINAL_CHAIN_BLOOM_INDEX_SIZE, FinalChainExecutionStatus,
@@ -329,6 +334,8 @@ struct DposSnapshot {
     slashing_jailed_validators: Vec<[u8; 20]>,
     /// Canonical double-voting proof keys already committed by Rust execution.
     slashing_double_voting_proofs: BTreeSet<[u8; 32]>,
+    /// Reward-reference graph for cursor checkpoints and stale head correction.
+    reward_reference_graph: DposRewardGraph,
     /// Whether persisted same-validator corruption markers cover this snapshot's
     /// complete native-redelegation history.
     ///
@@ -549,6 +556,27 @@ impl FinalChain {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        let mut reward_reference_graph = DposRewardGraph::new();
+        for validator in genesis_dpos_total_stakes.keys() {
+            let delegators = genesis_dpos_delegations
+                .get(validator)
+                .map(|delegations| delegations.keys().copied().collect::<Vec<_>>())
+                .unwrap_or_default();
+            reward_reference_graph.bootstrap_node(
+                NodeKey {
+                    validator: *validator,
+                    block: 0,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(0_u8),
+                    count: u32::try_from(delegators.len().checked_add(1).ok_or_else(|| {
+                        anyhow::anyhow!("genesis reward reference graph count overflow")
+                    })?)?,
+                },
+                true,
+                &delegators,
+            )?;
+        }
         let genesis_dpos_delegator_validators =
             delegator_validators_from_delegations(&genesis_dpos_delegations);
         let genesis_dpos_total_vote_count =
@@ -678,6 +706,7 @@ impl FinalChain {
                     slashing_jail_blocks: BTreeMap::new(),
                     slashing_jailed_validators: Vec::new(),
                     slashing_double_voting_proofs: BTreeSet::new(),
+                    reward_reference_graph,
                     redelegate_same_validator_history_complete: true,
                     redelegate_same_validator_corruption: BTreeSet::new(),
                 },
@@ -1917,7 +1946,7 @@ impl FinalChain {
             ));
         }
         let dpos_snapshot = self.dpos_snapshot_at_finalized_block(last_block)?;
-        let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
+        let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot)?;
 
         let mut indexed_log_bloom = [0u8; 256];
         indexed_log_bloom.copy_from_slice(&plan.indexed_log_bloom);
@@ -2313,7 +2342,7 @@ impl FinalChain {
             )
             .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block_rlp)),
         )?;
-        let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot);
+        let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot)?;
         let account_snapshot_rlp = encode_account_snapshot_rlp(&account_snapshot);
         let execution_status = self.finalization_execution_status(
             finalized_dag_blocks.len() as u64,
@@ -2781,67 +2810,146 @@ impl FinalChain {
         Ok(())
     }
 
-    fn current_validator_reward_per_stake(
+    /// Returns the graph-authoritative cumulative reward-per-stake value.
+    /// Node values and intermediates remain arbitrary width.
+    fn current_validator_reward_per_stake_exact(
         &self,
         snapshot: &DposSnapshot,
         validator: [u8; 20],
-    ) -> Result<U256, anyhow::Error> {
-        let base = snapshot
-            .validator_reward_per_stake
-            .get(&validator)
-            .map(|bytes| u256_from_big_endian(bytes))
-            .unwrap_or_default();
-        let rewards_pool = snapshot
+    ) -> Result<BigUint, anyhow::Error> {
+        let graph = &snapshot.reward_reference_graph;
+        let head_block = graph.read_validator_head(&validator)?;
+        let head = graph
+            .load_node(&NodeKey {
+                validator,
+                block: head_block,
+            })?
+            .reward_per_stake;
+        let pool = snapshot
             .delegator_rewards
             .get(&validator)
-            .map(|bytes| u256_from_big_endian(bytes))
+            .map(Vec::as_slice)
             .unwrap_or_default();
-        let stake = snapshot
+        let total_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(|bytes| u256_from_big_endian(bytes))
+            .map(Vec::as_slice)
             .unwrap_or_default();
-        if rewards_pool.is_zero() || stake.is_zero() {
-            return Ok(base);
+        if pool.iter().all(|byte| *byte == 0) || total_stake.iter().all(|byte| *byte == 0) {
+            return Ok(head);
         }
-        base.checked_add(self.reward_per_stake(rewards_pool, stake)?)
-            .ok_or_else(|| anyhow::anyhow!("validator reward-per-stake overflow"))
+        graph
+            .reward_per_stake(&head, pool, &self.dpos_validator_maximum_stake, total_stake)
+            .map_err(Into::into)
     }
 
-    fn reward_per_stake(&self, rewards_pool: U256, stake: U256) -> Result<U256, anyhow::Error> {
-        anyhow::ensure!(
-            !stake.is_zero(),
-            "DPoS reward-per-stake calculation requires nonzero stake"
-        );
-        rewards_pool
-            .checked_mul(u256_from_big_endian(&self.dpos_validator_maximum_stake))
-            .ok_or_else(|| anyhow::anyhow!("DPoS reward-per-stake multiplication overflow"))
-            .map(|value| value / stake)
-    }
-
-    fn delegator_reward_from_per_stake(
+    fn apply_reward_reference_graph<T, F>(
         &self,
-        reward_per_stake: U256,
-        stake: U256,
-    ) -> Result<U256, anyhow::Error> {
-        if reward_per_stake.is_zero() || stake.is_zero() {
-            return Ok(U256::zero());
-        }
-        reward_per_stake
-            .checked_mul(stake)
-            .ok_or_else(|| anyhow::anyhow!("DPoS delegator reward multiplication overflow"))
-            .map(|value| value / u256_from_big_endian(&self.dpos_validator_maximum_stake))
+        snapshot: &mut DposSnapshot,
+        operation: F,
+    ) -> Result<T, anyhow::Error>
+    where
+        F: FnOnce(&mut DposRewardGraph) -> Result<T, DposRewardGraphError>,
+    {
+        operation(&mut snapshot.reward_reference_graph).map_err(Into::into)
+    }
+
+    fn advance_reward_reference_graph_block(
+        &self,
+        snapshot: &mut DposSnapshot,
+        block_number: u64,
+    ) -> Result<(), anyhow::Error> {
+        self.apply_reward_reference_graph(snapshot, |graph| graph.next_block(block_number))?;
+        Ok(())
+    }
+
+    fn synchronize_reward_reference_graph_cursor(
+        &self,
+        snapshot: &mut DposSnapshot,
+        validator: [u8; 20],
+        delegator: [u8; 20],
+    ) -> Result<(), anyhow::Error> {
+        self.apply_reward_reference_graph(snapshot, |graph| {
+            let current_block = graph.current_block()?;
+            graph.load_node(&NodeKey {
+                validator,
+                block: current_block,
+            })?;
+            graph.write_or_create_cursor(validator, delegator, current_block)
+        })?;
+        Ok(())
+    }
+
+    fn remove_reward_reference_graph_cursor(
+        &self,
+        snapshot: &mut DposSnapshot,
+        validator: [u8; 20],
+        delegator: [u8; 20],
+    ) -> Result<(), anyhow::Error> {
+        self.apply_reward_reference_graph(snapshot, |graph| {
+            graph.delete_cursor(&validator, &delegator)?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     fn checkpoint_validator_reward_per_stake(
         &self,
         snapshot: &mut DposSnapshot,
         validator: [u8; 20],
-    ) -> Result<U256, anyhow::Error> {
-        let reward_per_stake = self.current_validator_reward_per_stake(snapshot, validator)?;
+    ) -> Result<BigUint, anyhow::Error> {
+        let rewards_pool = snapshot
+            .delegator_rewards
+            .get(&validator)
+            .cloned()
+            .unwrap_or_default();
+        let total_stake = snapshot
+            .total_stakes
+            .get(&validator)
+            .cloned()
+            .unwrap_or_default();
+        let maximum_stake = self.dpos_validator_maximum_stake.clone();
+        let reward_per_stake = self.apply_reward_reference_graph(snapshot, |graph| {
+            let current_block = graph.current_block()?;
+            match graph.load_node(&NodeKey {
+                validator,
+                block: current_block,
+            }) {
+                Ok(node) => return Ok(node.reward_per_stake),
+                Err(DposRewardGraphError::MissingNode { .. }) => {}
+                Err(error) => return Err(error),
+            }
+            let head_block = graph.read_validator_head(&validator)?;
+            let head = graph
+                .load_node(&NodeKey {
+                    validator,
+                    block: head_block,
+                })?
+                .reward_per_stake;
+            let reward_per_stake = if rewards_pool.iter().all(|byte| *byte == 0)
+                || total_stake.iter().all(|byte| *byte == 0)
+            {
+                head
+            } else {
+                graph.reward_per_stake(&head, &rewards_pool, &maximum_stake, &total_stake)?
+            };
+            graph.bootstrap_node(
+                NodeKey {
+                    validator,
+                    block: current_block,
+                },
+                Node {
+                    reward_per_stake: reward_per_stake.clone(),
+                    count: 1,
+                },
+                true,
+                &[],
+            )?;
+            Ok(reward_per_stake)
+        })?;
         snapshot
             .validator_reward_per_stake
-            .insert(validator, u256_to_big_endian(reward_per_stake));
+            .insert(validator, reward_per_stake.to_bytes_be());
         snapshot.delegator_rewards.insert(validator, Vec::new());
         Ok(reward_per_stake)
     }
@@ -2962,6 +3070,7 @@ impl FinalChain {
         let mut cumulative_gas_used = 0u64;
         let head_block_number = self.last_block_number()?;
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head_block_number)?;
+        self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
         // Legacy RequiredGas counts live delegator membership. Delegation delay
         // applies to eligibility reads, not to DPoS mutation gas accounting.
         let mut dpos_gas_snapshot = dpos_snapshot.clone();
@@ -4634,21 +4743,26 @@ impl FinalChain {
         stake: &[u8],
     ) -> Result<U256, anyhow::Error> {
         let current_reward_per_stake =
-            self.current_validator_reward_per_stake(snapshot, validator)?;
+            self.current_validator_reward_per_stake_exact(snapshot, validator)?;
+        let cursor_block = snapshot
+            .reward_reference_graph
+            .read_cursor(&validator, &delegator)?;
         let cursor = snapshot
-            .delegation_reward_cursors
-            .get(&validator)
-            .and_then(|cursors| cursors.get(&delegator))
-            .map(|bytes| u256_from_big_endian(bytes))
-            .unwrap_or_default();
-        anyhow::ensure!(
-            current_reward_per_stake >= cursor,
-            "DPoS delegation reward cursor exceeds validator reward state"
-        );
-        self.delegator_reward_from_per_stake(
-            current_reward_per_stake - cursor,
-            u256_from_big_endian(stake),
-        )
+            .reward_reference_graph
+            .load_node(&NodeKey {
+                validator,
+                block: cursor_block,
+            })?
+            .reward_per_stake;
+        let reward = snapshot.reward_reference_graph.reward_from_cursor(
+            &cursor,
+            current_reward_per_stake,
+            stake,
+            &self.dpos_validator_maximum_stake,
+        )?;
+        Ok(u256_from_big_endian(&DposRewardGraph::reward_to_u256_abi(
+            &reward,
+        )))
     }
 
     fn apply_dpos_delegator_reward_claim(
@@ -4658,6 +4772,21 @@ impl FinalChain {
         validator: [u8; 20],
         delegator: [u8; 20],
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
+        self.apply_dpos_delegator_reward_claim_with_cursor(
+            snapshot, accounts, validator, delegator, true,
+        )
+    }
+
+    /// Claims the reward while optionally leaving the old cursor in place for
+    /// an operation-specific full/partial removal transcript.
+    fn apply_dpos_delegator_reward_claim_with_cursor(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        validator: [u8; 20],
+        delegator: [u8; 20],
+        move_cursor: bool,
+    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let delegator_stake = snapshot
             .delegations
             .get(&validator)
@@ -4665,23 +4794,27 @@ impl FinalChain {
                 anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
             })?
             .get(&delegator)
-            .map(|bytes| u256_from_big_endian(bytes))
+            .cloned()
             .ok_or_else(|| {
                 anyhow::anyhow!("Rust FinalChain::finalize DPoS delegator stake does not exist")
             })?;
+        let previous_cursor_block = snapshot
+            .reward_reference_graph
+            .read_cursor(&validator, &delegator)?;
         let previous_cursor = snapshot
-            .delegation_reward_cursors
-            .get(&validator)
-            .and_then(|cursors| cursors.get(&delegator))
-            .map(|bytes| u256_from_big_endian(bytes))
-            .unwrap_or_default();
+            .reward_reference_graph
+            .load_node(&NodeKey {
+                validator,
+                block: previous_cursor_block,
+            })?
+            .reward_per_stake;
         let reward_cursor = self.checkpoint_validator_reward_per_stake(snapshot, validator)?;
-        anyhow::ensure!(
-            reward_cursor >= previous_cursor,
-            "DPoS delegation reward cursor exceeds validator reward state"
-        );
-        let reward =
-            self.delegator_reward_from_per_stake(reward_cursor - previous_cursor, delegator_stake)?;
+        let reward_exact = snapshot.reward_reference_graph.reward_from_cursor(
+            &previous_cursor,
+            reward_cursor.clone(),
+            &delegator_stake,
+            &self.dpos_validator_maximum_stake,
+        )?;
         let dpos_contract_balance = u256_from_big_endian(
             accounts
                 .entry(DPOS_CONTRACT_ADDRESS)
@@ -4689,17 +4822,21 @@ impl FinalChain {
                 .balance
                 .as_slice(),
         );
-        if reward > dpos_contract_balance {
+        if reward_exact > BigUint::from_bytes_be(&u256_to_big_endian(dpos_contract_balance)) {
             anyhow::bail!(
                 "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim"
             );
         }
+        let reward = u256_from_big_endian(&reward_exact.to_bytes_be());
 
-        snapshot
-            .delegation_reward_cursors
-            .entry(validator)
-            .or_default()
-            .insert(delegator, u256_to_big_endian(reward_cursor));
+        if move_cursor {
+            snapshot
+                .delegation_reward_cursors
+                .entry(validator)
+                .or_default()
+                .insert(delegator, reward_cursor.to_bytes_be());
+            self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
+        }
 
         if reward.is_zero() {
             return Ok(Vec::new());
@@ -4865,7 +5002,7 @@ impl FinalChain {
             && (!self.magnolia_active(block_number)
                 || dpos_undelegations_count_for_validator(snapshot, validator) == 0)
         {
-            remove_dpos_validator(snapshot, validator)?;
+            remove_dpos_validator(snapshot, validator, false)?;
         }
 
         Ok(DposApplyOutcome::success(vec![
@@ -5096,6 +5233,28 @@ impl FinalChain {
             logs.push(dpos_delegated_log(owner, validator, stake)?);
         }
 
+        let graph_delegators = (!stake.is_zero())
+            .then_some(owner)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let graph_count =
+            u32::try_from(graph_delegators.len().checked_add(1).ok_or_else(|| {
+                anyhow::anyhow!("reward reference graph validator count overflow")
+            })?)?;
+        let mut reward_reference_graph = snapshot.reward_reference_graph.clone();
+        let graph_block = reward_reference_graph.current_block()?;
+        reward_reference_graph.register_validator(
+            NodeKey {
+                validator,
+                block: graph_block,
+            },
+            Node {
+                reward_per_stake: BigUint::from(0_u8),
+                count: graph_count,
+            },
+            &graph_delegators,
+        )?;
+
         snapshot.total_vote_count = total_vote_count;
         snapshot
             .total_stakes
@@ -5141,6 +5300,7 @@ impl FinalChain {
             .validator_reward_per_stake
             .entry(registration.validator)
             .or_default();
+        snapshot.reward_reference_graph = reward_reference_graph;
         Ok(DposApplyOutcome::success(logs))
     }
 
@@ -5182,18 +5342,18 @@ impl FinalChain {
         let reward_cursor = if current_delegation.is_zero() {
             self.checkpoint_validator_reward_per_stake(snapshot, validator)?
         } else {
-            U256::zero()
+            BigUint::from(0_u8)
         };
-        let delegations = snapshot.delegations.entry(validator).or_default();
         if current_delegation.is_zero() {
             add_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
             snapshot
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, u256_to_big_endian(reward_cursor));
+                .insert(delegator, reward_cursor.to_bytes_be());
+            self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
         }
-        delegations.insert(
+        snapshot.delegations.entry(validator).or_default().insert(
             delegator,
             u256_to_big_endian(
                 current_delegation
@@ -5277,7 +5437,7 @@ impl FinalChain {
                 .get(&validator)
                 .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
         {
-            remove_dpos_validator(snapshot, validator)?;
+            remove_dpos_validator(snapshot, validator, true)?;
         }
         create_undelegation(
             snapshot,
@@ -5330,7 +5490,7 @@ impl FinalChain {
                 .get(&validator)
                 .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
         {
-            remove_dpos_validator(snapshot, validator)?;
+            remove_dpos_validator(snapshot, validator, false)?;
         }
         let dpos_contract = accounts
             .entry(DPOS_CONTRACT_ADDRESS)
@@ -5380,7 +5540,8 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, u256_to_big_endian(reward_cursor));
+                .insert(delegator, reward_cursor.to_bytes_be());
+            self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
             Vec::new()
         };
         let current_delegation = snapshot
@@ -5449,7 +5610,7 @@ impl FinalChain {
                 .get(&validator)
                 .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
         {
-            remove_dpos_validator(snapshot, validator)?;
+            remove_dpos_validator(snapshot, validator, true)?;
         }
         let id = create_undelegation_v2(
             snapshot,
@@ -5508,7 +5669,7 @@ impl FinalChain {
                 .get(&validator)
                 .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
         {
-            remove_dpos_validator(snapshot, validator)?;
+            remove_dpos_validator(snapshot, validator, false)?;
         }
         let dpos_account = accounts
             .entry(DPOS_CONTRACT_ADDRESS)
@@ -5555,7 +5716,8 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, u256_to_big_endian(reward_cursor));
+                .insert(delegator, reward_cursor.to_bytes_be());
+            self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
             Vec::new()
         };
         let current_delegation = snapshot
@@ -5803,8 +5965,9 @@ impl FinalChain {
         {
             anyhow::bail!("Rust FinalChain::finalize DPoS remaining delegation is below minimum");
         }
-        let logs =
-            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?;
+        let logs = self.apply_dpos_delegator_reward_claim_with_cursor(
+            snapshot, accounts, validator, delegator, false,
+        )?;
         let delegations = snapshot.delegations.get_mut(&validator).ok_or_else(|| {
             anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
         })?;
@@ -5814,8 +5977,29 @@ impl FinalChain {
             if let Some(cursors) = snapshot.delegation_reward_cursors.get_mut(&validator) {
                 cursors.remove(&delegator);
             }
+            self.remove_reward_reference_graph_cursor(snapshot, validator, delegator)?;
         } else {
             delegations.insert(delegator, u256_to_big_endian(new_delegation));
+            let cursor_block = snapshot.reward_reference_graph.current_block()?;
+            snapshot.reward_reference_graph.load_node(&NodeKey {
+                validator,
+                block: cursor_block,
+            })?;
+            snapshot
+                .reward_reference_graph
+                .write_cursor(validator, delegator, cursor_block)?;
+            let cursor = snapshot
+                .reward_reference_graph
+                .load_node(&NodeKey {
+                    validator,
+                    block: cursor_block,
+                })?
+                .reward_per_stake;
+            snapshot
+                .delegation_reward_cursors
+                .entry(validator)
+                .or_default()
+                .insert(delegator, cursor.to_bytes_be());
         }
         let new_stake = current_stake - remove_amount;
         self.set_validator_stake(snapshot, validator, new_stake)?;
@@ -5857,7 +6041,8 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, u256_to_big_endian(cursor));
+                .insert(delegator, cursor.to_bytes_be());
+            self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
             Vec::new()
         };
         let next_delegation = existing_delegation
@@ -5908,6 +6093,35 @@ impl FinalChain {
             return Ok(DposApplyOutcome::contract_failure());
         }
         let same_validator = from == to;
+        let stale_same_validator_head =
+            if same_validator && block_number <= self.rewards_config.fix_redelegate_block_num {
+                Some(snapshot.reward_reference_graph.read_validator_head(&from)?)
+            } else {
+                None
+            };
+        let repeated_full_loaded_node = if same_validator
+            && block_number <= self.rewards_config.fix_redelegate_block_num
+            && snapshot
+                .delegations
+                .get(&from)
+                .and_then(|delegations| delegations.get(&delegator))
+                .is_some_and(|delegation| u256_from_big_endian(delegation) == amount)
+        {
+            let graph = &snapshot.reward_reference_graph;
+            let cursor_block = graph.read_cursor(&from, &delegator)?;
+            let current_block = graph.current_block()?;
+            (cursor_block == current_block)
+                .then(|| {
+                    let key = NodeKey {
+                        validator: from,
+                        block: current_block,
+                    };
+                    graph.load_node(&key).map(|node| (key, node))
+                })
+                .transpose()?
+        } else {
+            None
+        };
         if same_validator {
             let rewards_pool = snapshot
                 .delegator_rewards
@@ -5941,6 +6155,11 @@ impl FinalChain {
             .filter(is_dpos_rewards_claimed_log)
             .collect::<Vec<_>>();
         let total_vote_count_after_source = snapshot.total_vote_count;
+        if let Some((key, loaded)) = repeated_full_loaded_node {
+            snapshot
+                .reward_reference_graph
+                .restore_loaded_node(key, loaded)?;
+        }
         if !same_validator
             && snapshot
                 .total_stakes
@@ -5953,7 +6172,7 @@ impl FinalChain {
             && (!self.magnolia_active(block_number)
                 || dpos_undelegations_count_for_validator(snapshot, from) == 0)
         {
-            remove_dpos_validator(snapshot, from)?;
+            remove_dpos_validator(snapshot, from, true)?;
         }
         logs.extend(
             self.apply_dpos_redelegate_destination(snapshot, accounts, delegator, to, amount)?
@@ -6003,6 +6222,14 @@ impl FinalChain {
                     snapshot.delegator_rewards.remove(&from);
                 }
             }
+            snapshot
+                .reward_reference_graph
+                .overwrite_validator_head_stale(
+                    from,
+                    stale_same_validator_head.ok_or_else(|| {
+                        anyhow::anyhow!("DPoS same-validator stale head was not captured")
+                    })?,
+                )?;
         }
         logs.push(dpos_redelegated_log(delegator, from, to, amount)?);
         if same_validator && block_number <= self.rewards_config.fix_redelegate_block_num {
@@ -6068,6 +6295,16 @@ impl FinalChain {
             snapshot
                 .vote_counts
                 .insert(correction.validator, corrected_vote_count);
+            let affected_cursor_block = snapshot
+                .reward_reference_graph
+                .read_cursor(&correction.validator, &correction.delegator)?;
+            snapshot
+                .reward_reference_graph
+                .rebind_stale_validator_head(
+                    correction.validator,
+                    correction.delegator,
+                    affected_cursor_block,
+                )?;
         }
         Ok(())
     }
@@ -6871,8 +7108,8 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
     Ok(ethereum_types::H256::from_slice(raw))
 }
 
-fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(23);
+fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Result<Vec<u8>, anyhow::Error> {
+    let mut stream = rlp::RlpStream::new_list(24);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -6905,7 +7142,8 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
             .collect::<Vec<_>>(),
     );
     stream.append(&snapshot.delegation_ledger_history_complete);
-    stream.out().to_vec()
+    stream.append(&encode_dpos_reward_graph(&snapshot.reward_reference_graph)?);
+    Ok(stream.out().to_vec())
 }
 
 fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
@@ -6923,9 +7161,10 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         && item_count != 21
         && item_count != 22
         && item_count != 23
+        && item_count != 24
     {
         anyhow::bail!(
-            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, twenty, twenty-one, twenty-two, or twenty-three items"
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, twenty, twenty-one, twenty-two, twenty-three, or twenty-four items"
         );
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
@@ -7025,6 +7264,11 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         item_count >= 7
     };
+    let reward_reference_graph = if item_count >= 24 {
+        decode_dpos_reward_graph(rlp.at(23)?.data()?)?
+    } else {
+        DposRewardGraph::incomplete()
+    };
     let slashing_jail_blocks = if item_count >= 20 {
         decode_address_u64_map(&rlp.at(17)?, "slashing jail block")?
     } else {
@@ -7063,6 +7307,7 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         slashing_jail_blocks,
         slashing_jailed_validators,
         slashing_double_voting_proofs,
+        reward_reference_graph,
         redelegate_same_validator_history_complete,
         redelegate_same_validator_corruption,
     })
@@ -7441,6 +7686,7 @@ fn remove_delegator_validator(
 fn remove_dpos_validator(
     snapshot: &mut DposSnapshot,
     validator: [u8; 20],
+    force_current_node_delete: bool,
 ) -> Result<(), anyhow::Error> {
     let stake = snapshot
         .total_stakes
@@ -7457,11 +7703,35 @@ fn remove_dpos_validator(
         "DPoS validator deletion requires zero stake and commission rewards"
     );
 
-    let vote_count = snapshot.vote_counts.remove(&validator).unwrap_or_default();
-    snapshot.total_vote_count = snapshot
+    let vote_count = snapshot
+        .vote_counts
+        .get(&validator)
+        .copied()
+        .unwrap_or_default();
+    let total_vote_count = snapshot
         .total_vote_count
         .checked_sub(vote_count)
         .ok_or_else(|| anyhow::anyhow!("DPoS validator deletion vote count underflow"))?;
+    anyhow::ensure!(
+        snapshot
+            .delegations
+            .get(&validator)
+            .is_none_or(BTreeMap::is_empty)
+            && snapshot
+                .delegation_reward_cursors
+                .get(&validator)
+                .is_none_or(BTreeMap::is_empty),
+        "DPoS validator deletion found live delegation references"
+    );
+    let mut reward_reference_graph = snapshot.reward_reference_graph.clone();
+    if force_current_node_delete {
+        reward_reference_graph.force_delete_validator_head(&validator)?;
+    } else {
+        reward_reference_graph.delete_validator_head(&validator)?;
+    }
+    snapshot.total_vote_count = total_vote_count;
+    snapshot.vote_counts.remove(&validator);
+    snapshot.reward_reference_graph = reward_reference_graph;
     if let Some(delegations) = snapshot.delegations.remove(&validator) {
         for delegator in delegations.keys().copied().collect::<Vec<_>>() {
             remove_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
@@ -10925,6 +11195,16 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn encode_legacy_dpos_snapshot_before_reward_graph(snapshot: &DposSnapshot) -> Vec<u8> {
+        let current = encode_dpos_snapshot_rlp(snapshot).unwrap();
+        let current = Rlp::new(&current);
+        let mut stream = RlpStream::new_list(23);
+        for index in 0..23 {
+            stream.append_raw(current.at(index).unwrap().as_raw(), 1);
+        }
+        stream.out().to_vec()
+    }
+
     fn sample_dpos_snapshot_with_undelegations() -> DposSnapshot {
         let delegator = [0x11u8; 20];
         let validator = [0x22u8; 20];
@@ -10991,6 +11271,36 @@ mod tests {
         validator_order.push(validator);
         let mut vrf_keys = BTreeMap::new();
         vrf_keys.insert(validator, [0x55u8; 32]);
+        let mut reward_reference_graph = DposRewardGraph::new();
+        reward_reference_graph
+            .bootstrap_node(
+                NodeKey {
+                    validator,
+                    block: 0,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(2_u8),
+                    count: 1,
+                },
+                false,
+                &[delegator],
+            )
+            .unwrap();
+        reward_reference_graph.next_block(1).unwrap();
+        reward_reference_graph
+            .bootstrap_node(
+                NodeKey {
+                    validator,
+                    block: 1,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(30_000_u64),
+                    count: 1,
+                },
+                true,
+                &[],
+            )
+            .unwrap();
 
         DposSnapshot {
             total_stakes,
@@ -11017,6 +11327,7 @@ mod tests {
             slashing_double_voting_proofs,
             redelegate_same_validator_history_complete: true,
             redelegate_same_validator_corruption: BTreeSet::new(),
+            reward_reference_graph,
         }
     }
 
@@ -11036,7 +11347,8 @@ mod tests {
                     .to_string()
                     .contains("delegation ledger is incomplete")
             );
-            let restarted = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&decoded)).unwrap();
+            let restarted =
+                decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&decoded).unwrap()).unwrap();
             assert!(
                 !restarted.delegation_ledger_history_complete,
                 "the schema-five/six rebuild requirement must survive re-encoding"
@@ -11056,10 +11368,11 @@ mod tests {
             U256::from(10_000u64)
         );
         let restarted_schema_seven =
-            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&schema_seven)).unwrap();
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&schema_seven).unwrap()).unwrap();
         assert!(restarted_schema_seven.delegation_ledger_history_complete);
 
-        let current = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot)).unwrap();
+        let current =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap();
         assert!(current.delegation_ledger_history_complete);
         assert_eq!(current, snapshot);
     }
@@ -11185,7 +11498,7 @@ mod tests {
     #[test]
     fn decode_dpos_snapshot_rlp_preserves_new_undelegation_item() {
         let snapshot = sample_dpos_snapshot_with_undelegations();
-        let encoded_snapshot = encode_dpos_snapshot_rlp(&snapshot);
+        let encoded_snapshot = encode_dpos_snapshot_rlp(&snapshot).unwrap();
         let decoded_snapshot = decode_dpos_snapshot_rlp(&encoded_snapshot).unwrap();
         assert_eq!(decoded_snapshot, snapshot);
 
@@ -11194,7 +11507,59 @@ mod tests {
         let mut expected_legacy_snapshot = snapshot;
         expected_legacy_snapshot.undelegations = BTreeMap::new();
         expected_legacy_snapshot.redelegate_same_validator_history_complete = false;
+        expected_legacy_snapshot.reward_reference_graph = DposRewardGraph::incomplete();
         assert_eq!(decoded_legacy_snapshot, expected_legacy_snapshot);
+    }
+
+    #[test]
+    fn reward_graph_schema_restart_is_exact_and_legacy_schema_hard_fails_mutation() {
+        let snapshot = sample_dpos_snapshot_with_undelegations();
+        let validator = [0x22; 20];
+        let current = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        assert_eq!(Rlp::new(&current).item_count().unwrap(), 24);
+        assert_eq!(decode_dpos_snapshot_rlp(&current).unwrap(), snapshot);
+
+        let legacy = encode_legacy_dpos_snapshot_before_reward_graph(&snapshot);
+        let mut legacy = decode_dpos_snapshot_rlp(&legacy).unwrap();
+        assert!(matches!(
+            legacy.reward_reference_graph.current_block(),
+            Err(DposRewardGraphError::GraphHistoryIncomplete)
+        ));
+
+        let path = temp_db_path("reward-graph-legacy-mutation-guard");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage,
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig::default(),
+        )
+        .unwrap();
+        assert!(
+            final_chain
+                .checkpoint_validator_reward_per_stake(&mut legacy, validator)
+                .unwrap_err()
+                .to_string()
+                .contains("graph history is incomplete")
+        );
+        drop(final_chain);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn reward_graph_schema_rejects_corrupt_embedded_payload() {
+        let snapshot = sample_dpos_snapshot_with_undelegations();
+        let legacy = encode_legacy_dpos_snapshot_before_reward_graph(&snapshot);
+        let legacy = Rlp::new(&legacy);
+        let mut stream = RlpStream::new_list(24);
+        for index in 0..23 {
+            stream.append_raw(legacy.at(index).unwrap().as_raw(), 1);
+        }
+        stream.append(&vec![0xc0_u8]);
+        assert!(decode_dpos_snapshot_rlp(&stream.out()).is_err());
     }
 
     #[test]
@@ -11203,7 +11568,7 @@ mod tests {
         snapshot
             .redelegate_same_validator_corruption
             .insert([0x22; 20]);
-        let encoded_snapshot = encode_dpos_snapshot_rlp(&snapshot);
+        let encoded_snapshot = encode_dpos_snapshot_rlp(&snapshot).unwrap();
         let decoded_snapshot = decode_dpos_snapshot_rlp(&encoded_snapshot).unwrap();
         assert!(decoded_snapshot.redelegate_same_validator_history_complete);
         assert!(
@@ -11228,7 +11593,8 @@ mod tests {
         let decoded_snapshot = decode_dpos_snapshot_rlp(&legacy_snapshot).unwrap();
         assert!(!decoded_snapshot.redelegate_same_validator_history_complete);
         let mut decoded_snapshot =
-            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&decoded_snapshot)).unwrap();
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&decoded_snapshot).unwrap())
+                .unwrap();
         assert!(!decoded_snapshot.redelegate_same_validator_history_complete);
         assert!(
             !decoded_snapshot
@@ -11268,10 +11634,7 @@ mod tests {
                 1,
             )
             .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("cannot replay repeated reward-bearing same-validator redelegation")
-        );
+        assert!(err.to_string().contains("graph history is incomplete"));
         assert_eq!(decoded_snapshot, snapshot_before);
         assert_eq!(accounts, accounts_before);
         drop(final_chain);
@@ -11362,6 +11725,14 @@ mod tests {
             .get_mut(&validator)
             .expect("missing validator reward cursors")
             .insert(delegator, u256_to_big_endian(U256::from(30_000u64)));
+        let head = snapshot
+            .reward_reference_graph
+            .read_validator_head(&validator)
+            .unwrap();
+        snapshot
+            .reward_reference_graph
+            .write_cursor(validator, delegator, head)
+            .unwrap();
         let mut accounts = final_chain.current_account_snapshot().unwrap();
         final_chain
             .apply_dpos_redelegate(
@@ -11437,6 +11808,15 @@ mod tests {
             .get_mut(&validator)
             .expect("missing validator reward cursors")
             .insert(delegator, u256_to_big_endian(U256::from(30_000u64)));
+        let head = snapshot
+            .reward_reference_graph
+            .read_validator_head(&validator)
+            .unwrap();
+        snapshot
+            .reward_reference_graph
+            .write_cursor(validator, delegator, head)
+            .unwrap();
+        snapshot.reward_reference_graph.next_block(2).unwrap();
         let mut accounts = final_chain.current_account_snapshot().unwrap();
         let outcome = final_chain
             .apply_dpos_redelegate(
@@ -11446,10 +11826,22 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::from(1_000u64)),
-                1,
+                2,
             )
             .unwrap();
         assert_eq!(outcome.status_code, 1);
+        let current_key = NodeKey {
+            validator,
+            block: 2,
+        };
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .load_node(&current_key)
+                .unwrap()
+                .count,
+            3
+        );
         assert!(
             snapshot
                 .redelegate_same_validator_corruption
@@ -11467,6 +11859,186 @@ mod tests {
             )
             .unwrap();
         assert_eq!(repeated_outcome.status_code, 1);
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .load_node(&current_key)
+                .unwrap()
+                .count,
+            5
+        );
+
+        drop(final_chain);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_redelegate_repeated_full_restores_loaded_graph_node() {
+        let path = temp_db_path("dpos-redelegate-pre-fix-repeated-full");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage,
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: Vec::new(),
+                vote_eligibility_balance_step: Vec::new(),
+                validator_maximum_stake: Vec::new(),
+                ..Default::default()
+            },
+            FinalChainRewardsConfig {
+                fix_redelegate_block_num: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let delegator = [0x11; 20];
+        let validator = [0x22; 20];
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot.delegator_rewards.remove(&validator);
+        let initial_vote = dpos_vote_count(
+            snapshot.total_stakes.get(&validator).unwrap(),
+            &final_chain.dpos_eligibility_balance_threshold,
+            &final_chain.dpos_vote_eligibility_balance_step,
+            &final_chain.dpos_validator_maximum_stake,
+        )
+        .unwrap();
+        snapshot.vote_counts.insert(validator, initial_vote);
+        snapshot.total_vote_count = initial_vote;
+        let head = snapshot
+            .reward_reference_graph
+            .read_validator_head(&validator)
+            .unwrap();
+        snapshot
+            .reward_reference_graph
+            .write_cursor(validator, delegator, head)
+            .unwrap();
+        snapshot.reward_reference_graph.next_block(2).unwrap();
+        let mut accounts = final_chain.current_account_snapshot().unwrap();
+
+        for expected_count in [2, 3] {
+            let outcome = final_chain
+                .apply_dpos_redelegate(
+                    &mut snapshot,
+                    &mut accounts,
+                    delegator,
+                    validator,
+                    validator,
+                    u256_to_big_endian(U256::from(10_000u64)),
+                    2,
+                )
+                .unwrap();
+            assert_eq!(outcome.status_code, 1);
+            assert_eq!(
+                snapshot
+                    .reward_reference_graph
+                    .load_node(&NodeKey {
+                        validator,
+                        block: 2,
+                    })
+                    .unwrap()
+                    .count,
+                expected_count
+            );
+        }
+
+        drop(final_chain);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn same_block_registration_replaces_terminal_deletion_orphan_node() {
+        let path = temp_db_path("dpos-same-block-delete-reregister-graph-orphan");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator_key = SigningKey::from_slice(&[0x47_u8; 32]).unwrap();
+        let validator: [u8; 20] = address_from_signing_key(&validator_key).into();
+        let final_chain = new_final_chain_with_dpos(
+            storage,
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::zero(),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let mut snapshot = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let head = snapshot
+            .reward_reference_graph
+            .read_validator_head(&validator)
+            .unwrap();
+        snapshot
+            .reward_reference_graph
+            .write_cursor(validator, validator, head)
+            .unwrap();
+        snapshot
+            .reward_reference_graph
+            .delete_cursor(&validator, &validator)
+            .unwrap();
+        snapshot.delegations.remove(&validator);
+        snapshot.delegation_reward_cursors.remove(&validator);
+        remove_delegator_validator(&mut snapshot.delegator_validators, validator, validator);
+        snapshot
+            .total_stakes
+            .insert(validator, u256_to_big_endian(U256::zero()));
+        snapshot
+            .commission_rewards
+            .insert(validator, u256_to_big_endian(U256::zero()));
+        snapshot.vote_counts.insert(validator, 0);
+        snapshot.total_vote_count = 0;
+
+        remove_dpos_validator(&mut snapshot, validator, false).unwrap();
+        let orphan_key = NodeKey {
+            validator,
+            block: head,
+        };
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .load_node(&orphan_key)
+                .unwrap()
+                .count,
+            1
+        );
+
+        let input = register_validator_input(
+            validator,
+            &register_validator_proof(&validator_key, validator, None),
+            [0x47; 32],
+            0,
+            "registered again",
+            "same block",
+        );
+        let mut registration = decode_dpos_register_validator(&input, validator).unwrap();
+        registration.stake = u256_to_big_endian(U256::from(10_000u64));
+        let outcome = final_chain
+            .apply_dpos_registration(&mut snapshot, registration, head)
+            .unwrap();
+
+        assert_eq!(outcome.status_code, 1);
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .load_node(&orphan_key)
+                .unwrap(),
+            Node {
+                reward_per_stake: BigUint::from(0_u8),
+                count: 2,
+            }
+        );
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .read_validator_head(&validator)
+                .unwrap(),
+            head
+        );
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .read_cursor(&validator, &validator)
+                .unwrap(),
+            head
+        );
 
         drop(final_chain);
         let _ = std::fs::remove_dir_all(path);
@@ -11584,7 +12156,31 @@ mod tests {
         snapshot
             .redelegate_same_validator_corruption
             .insert([1; 20]);
-        remove_dpos_validator(&mut snapshot, [1; 20]).unwrap();
+        let corrupt_before = snapshot.clone();
+        assert!(
+            remove_dpos_validator(&mut snapshot, [1; 20], false)
+                .unwrap_err()
+                .to_string()
+                .contains("missing validator head")
+        );
+        assert_eq!(snapshot, corrupt_before);
+        let graph_block = snapshot.reward_reference_graph.current_block().unwrap();
+        snapshot
+            .reward_reference_graph
+            .bootstrap_node(
+                NodeKey {
+                    validator: [1; 20],
+                    block: graph_block,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(0_u8),
+                    count: 1,
+                },
+                true,
+                &[],
+            )
+            .unwrap();
+        remove_dpos_validator(&mut snapshot, [1; 20], false).unwrap();
         assert!(!snapshot.total_stakes.contains_key(&[1; 20]));
         assert!(
             !snapshot
@@ -11666,7 +12262,8 @@ mod tests {
             U256::from(10_000u64)
         );
 
-        let mut snapshot = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot)).unwrap();
+        let mut snapshot =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap();
         assert!(!snapshot.total_stakes.contains_key(&validator));
         assert!(!snapshot.delegations.contains_key(&validator));
         assert_eq!(snapshot.undelegation_v2_last_ids.get(&validator), Some(&1));
@@ -12696,7 +13293,21 @@ mod tests {
         snapshot
             .commission_rewards
             .insert([2; 20], u256_to_big_endian(U256::zero()));
-        remove_dpos_validator(&mut snapshot, [2; 20]).unwrap();
+        let delegators = snapshot
+            .delegations
+            .remove(&[2; 20])
+            .unwrap_or_default()
+            .into_keys()
+            .collect::<Vec<_>>();
+        for delegator in delegators {
+            remove_delegator_validator(&mut snapshot.delegator_validators, delegator, [2; 20]);
+            snapshot
+                .reward_reference_graph
+                .delete_cursor(&[2; 20], &delegator)
+                .unwrap();
+        }
+        snapshot.delegation_reward_cursors.remove(&[2; 20]);
+        remove_dpos_validator(&mut snapshot, [2; 20], false).unwrap();
         assert_eq!(snapshot.validator_order[1], [22; 20]);
         assert_eq!(snapshot.validator_order.len(), 21);
         let swapped_page = final_chain
@@ -12704,7 +13315,7 @@ mod tests {
             .unwrap();
         assert_eq!(validator_page_addresses(&swapped_page).0[1], [22; 20]);
         let restarted_snapshot =
-            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot)).unwrap();
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap();
         let restarted_page = final_chain
             .encode_dpos_validators_from_snapshot(&restarted_snapshot, 0, 0)
             .unwrap();
@@ -13728,9 +14339,10 @@ mod tests {
             u256_from_big_endian(&undelegation_read.code_retval[128..160]),
             U256::one()
         );
-        let restarted_snapshot =
-            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&cornus_execution.dpos_snapshot))
-                .unwrap();
+        let restarted_snapshot = decode_dpos_snapshot_rlp(
+            &encode_dpos_snapshot_rlp(&cornus_execution.dpos_snapshot).unwrap(),
+        )
+        .unwrap();
         let restarted_read = cornus_chain
             .apply_dpos_fixed_singleton_read(
                 &restarted_snapshot,
@@ -13900,7 +14512,8 @@ mod tests {
             0
         );
 
-        let restarted = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot)).unwrap();
+        let restarted =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap();
         assert_eq!(
             final_chain
                 .encode_dpos_undelegations_from_snapshot(&restarted, delegator, 0)
@@ -14348,9 +14961,10 @@ mod tests {
             static_dpos_page_header(&final_v2_page.code_retval),
             (0, true)
         );
-        let restarted =
-            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&cornus_execution.dpos_snapshot))
-                .unwrap();
+        let restarted = decode_dpos_snapshot_rlp(
+            &encode_dpos_snapshot_rlp(&cornus_execution.dpos_snapshot).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             cornus_chain
                 .apply_dpos_undelegation_page_read(
@@ -14643,9 +15257,10 @@ mod tests {
                 .nonce,
             1
         );
-        let restarted =
-            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&pre_execution.dpos_snapshot))
-                .unwrap();
+        let restarted = decode_dpos_snapshot_rlp(
+            &encode_dpos_snapshot_rlp(&pre_execution.dpos_snapshot).unwrap(),
+        )
+        .unwrap();
         let restarted_read = pre_chain
             .apply_dpos_total_delegation_read(&restarted, Ok(delegator))
             .unwrap();
@@ -14969,9 +15584,10 @@ mod tests {
             validator_page_addresses(&live_page.code_retval),
             (vec![[1; 20], [3; 20]], true)
         );
-        let restarted_snapshot =
-            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&pre_execution.dpos_snapshot))
-                .unwrap();
+        let restarted_snapshot = decode_dpos_snapshot_rlp(
+            &encode_dpos_snapshot_rlp(&pre_execution.dpos_snapshot).unwrap(),
+        )
+        .unwrap();
         let restarted_page = pre_chain
             .apply_dpos_validator_page_read(
                 &restarted_snapshot,
@@ -17858,8 +18474,12 @@ mod tests {
             &[failed_claim_tx.rlp.clone(), transfer_tx.rlp.clone()],
         );
 
-        let snapshot_before = final_chain
+        let mut snapshot_before = final_chain
             .dpos_snapshot(second_period.saturating_sub(1))
+            .unwrap();
+        snapshot_before
+            .reward_reference_graph
+            .next_block(second_period)
             .unwrap();
         let contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
         let owner_balance_before = balance_of(&final_chain, wrong_owner);
@@ -17976,6 +18596,20 @@ mod tests {
         snapshot
             .commission_rewards
             .insert(validator, u256_to_big_endian(U256::zero()));
+        let delegators = snapshot
+            .delegations
+            .remove(&validator)
+            .unwrap_or_default()
+            .into_keys()
+            .collect::<Vec<_>>();
+        snapshot.delegation_reward_cursors.remove(&validator);
+        for delegator in delegators {
+            remove_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
+            snapshot
+                .reward_reference_graph
+                .delete_cursor(&validator, &delegator)
+                .unwrap();
+        }
         create_undelegation(
             &mut snapshot,
             owner,
@@ -18072,7 +18706,11 @@ mod tests {
             &[failed_claim_tx.rlp.clone(), transfer_tx.rlp.clone()],
         );
 
-        let snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        let mut snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        snapshot_before
+            .reward_reference_graph
+            .next_block(second_period)
+            .unwrap();
         let (_header_rlp, receipts) = final_chain
             .finalize_block(
                 second_pbft,
@@ -19327,12 +19965,61 @@ mod tests {
             },
         );
 
+        let head = snapshot
+            .reward_reference_graph
+            .read_validator_head(&validator)
+            .unwrap();
+        snapshot
+            .reward_reference_graph
+            .write_or_create_cursor(validator, delegator, head)
+            .unwrap();
+        snapshot.reward_reference_graph.next_block(1).unwrap();
+
         final_chain
             .apply_dpos_delegator_reward_claim(&mut snapshot, &mut accounts, validator, validator)
             .unwrap();
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .read_validator_head(&validator)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .read_cursor(&validator, &validator)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .read_cursor(&validator, &delegator)
+                .unwrap(),
+            0
+        );
         final_chain
             .apply_dpos_delegator_reward_claim(&mut snapshot, &mut accounts, validator, delegator)
             .unwrap();
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .read_cursor(&validator, &delegator)
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            snapshot
+                .reward_reference_graph
+                .load_node(&NodeKey {
+                    validator,
+                    block: 1,
+                })
+                .unwrap()
+                .count,
+            3
+        );
 
         assert_eq!(
             u256_from_big_endian(&accounts.get(&validator).unwrap().balance),
@@ -19349,6 +20036,45 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_reward_delta_application_only_grows_pool_without_checkpointing_graph() {
+        let path = temp_db_path("dpos-reward-delta-does-not-checkpoint");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x78; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage,
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::zero(),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let mut snapshot = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let graph_before = snapshot.reward_reference_graph.clone();
+
+        final_chain
+            .apply_dpos_reward_deltas(
+                &mut snapshot,
+                DposRewardDeltas {
+                    commission_rewards: BTreeMap::new(),
+                    delegator_rewards: BTreeMap::from([(validator, U256::from(77u64))]),
+                },
+                1,
+                U256::from(77u64),
+                None,
+                0,
+            )
+            .unwrap();
+
+        assert_eq!(snapshot.reward_reference_graph, graph_before);
+        assert_eq!(
+            u256_from_big_endian(snapshot.delegator_rewards.get(&validator).unwrap()),
+            U256::from(77u64)
+        );
+
+        drop(final_chain);
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -24291,10 +25017,8 @@ mod tests {
             "validator",
             "endpoint",
         );
-        genesis_validator.delegations = vec![
-            (validator, u256_to_big_endian(U256::from(10_000u64))),
-            ([0xD7; 20], u256_to_big_endian(U256::from(5_000u64))),
-        ];
+        genesis_validator.delegations =
+            vec![(validator, u256_to_big_endian(U256::from(15_000u64)))];
         let genesis_validator_clone = genesis_validator.clone();
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
@@ -24341,7 +25065,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, validator),
-            validator_balance_before + U256::from(666u64)
+            validator_balance_before + U256::from(1_000u64)
         );
         let mut unsupported_snapshot = snapshot_one.clone();
         let mut unsupported_accounts = final_chain.current_account_snapshot().unwrap();
@@ -24385,7 +25109,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, validator),
-            validator_balance_before + U256::from(666u64)
+            validator_balance_before + U256::from(1_000u64)
         );
 
         let (_, receipts) = final_chain
@@ -24417,7 +25141,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, validator),
-            validator_balance_before + U256::from(1_332u64)
+            validator_balance_before + U256::from(2_000u64)
         );
 
         drop(final_chain);
@@ -24454,7 +25178,7 @@ mod tests {
         );
         assert_eq!(
             balance_of(&final_chain, validator),
-            validator_balance_before + U256::from(1_332u64)
+            validator_balance_before + U256::from(2_000u64)
         );
         let mut snapshot_one_after_restart = final_chain.dpos_snapshot(period_one).unwrap();
         let mut accounts_after_restart = final_chain.current_account_snapshot().unwrap();

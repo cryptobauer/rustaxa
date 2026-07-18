@@ -606,14 +606,31 @@ provenance, and the legacy stale-head correction boundary. Clone-staged mutation
 ordering, including same-key count inflation, node resurrection, and positive orphan counts, without recomputing
 persisted counts. The canonical seven-field RLP codec rejects trailing bytes, non-list or unsorted tables, duplicate
 keys, noncanonical integers, dangling references, and undercounted nodes. Reward arithmetic keeps exact `BigUint`
-intermediates and applies `uint256` truncation only at the ABI boundary. The next bounded `CRW-08` slice must integrate
-this graph into the next DPoS snapshot schema, genesis, every reward writer, and replay/incomplete-history routing before
-`getDelegations(address,uint32)` can use it. No CXX carrier, bridge handle/export, shim, module flag, or `CRW-07`
-inventory changes belong to this foundation.
+intermediates and applies `uint256` truncation only at the ABI boundary.
 
 Validation passed all 20 focused reward-graph tests, all 738 `rustaxa-consensus` tests, normal-policy clippy with the
 unchanged 46-warning crate baseline, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the bridge inventory
 guard, skill validation, the repository pre-commit hook, Rust formatting, and whitespace validation.
+
+The follow-up integrates that graph as item 24 of the persisted DPoS snapshot. Genesis and validator registration create
+the exact head/cursor topology; transaction-time checkpoints move only the validator head; claims and every supported
+stake mutation move or remove only their operation-specific delegation cursor; terminal validator deletion preserves
+the distinct legacy force-delete and decrement/orphan outcomes. Block reward distribution still only grows the reward
+pool and never creates a checkpoint. Exact graph nodes are now the reward-per-stake and cursor authority used by reward
+claims, while the scalar rows remain derived compatibility data.
+
+Schemas 5, 6, 7, 9, 11, 14, 15, 17, 20, 21, 22, and 23 decode with explicitly incomplete graph provenance and hard-fail
+graph-dependent reads or mutation pending replay/rebuild. Schema 24 round-trips arbitrary-width accumulators, counts,
+heads, cursors, stale markers, and current block across restart. Pre-fix same-validator redelegation now preserves fresh
+and repeated partial counts `3 -> 5`, fresh and repeated full counts `2 -> 3`, stale live-or-missing heads, and the
+configured count-neutral correction conflict rule. No CXX carrier, bridge handle/export, shim, module flag, or `CRW-07`
+inventory change is introduced. `CRW-08` remains active for native/direct `getDelegations(address,uint32)` routing and
+its dual-mode restart fixture; that read must consume the graph without scalar fallback or filtered corruption.
+
+Integration validation passed all 23 focused reward-graph tests, all 746 `rustaxa-consensus` tests, normal-policy clippy
+with the unchanged 46-warning crate baseline, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the bridge
+inventory guard, skill validation, the repository pre-commit hook, Rust formatting, whitespace validation, and an
+independent configured-reviewer `APPROVED` verdict. The future `getDelegations` C++ fixture remains outside this commit.
 
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned

@@ -261,7 +261,7 @@ impl DposRewardGraph {
     /// counts are decremented first. `node.count` must already include every
     /// requested reference at the new checkpoint; it is not incremented here.
     /// Extra positive count is preserved as legacy orphan bookkeeping, while
-    /// duplicate nodes, stale-head moves, and undercounted references fail
+    /// duplicate nodes and undercounted references fail
     /// without changing the graph.
     pub fn bootstrap_node(
         &mut self,
@@ -287,18 +287,13 @@ impl DposRewardGraph {
                 }
             }
 
-            if validator_head {
-                if graph.stale_validator_heads.contains(&key.validator) {
-                    return Err(DposRewardGraphError::StaleHeadConflict {
-                        validator: key.validator,
-                    });
-                }
-                if let Some(previous_block) = graph.validator_heads.get(&key.validator).copied() {
-                    graph.decrement_count(&NodeKey {
-                        validator: key.validator,
-                        block: previous_block,
-                    })?;
-                }
+            if validator_head
+                && let Some(previous_block) = graph.validator_heads.get(&key.validator).copied()
+            {
+                graph.decrement_count(&NodeKey {
+                    validator: key.validator,
+                    block: previous_block,
+                })?;
             }
             for delegator in &unique_delegators {
                 if let Some(previous_block) = graph
@@ -316,6 +311,7 @@ impl DposRewardGraph {
             graph.nodes.insert(key, node);
             if validator_head {
                 graph.validator_heads.insert(key.validator, key.block);
+                graph.stale_validator_heads.remove(&key.validator);
             }
             for delegator in unique_delegators {
                 graph
@@ -476,6 +472,138 @@ impl DposRewardGraph {
         Ok(detached)
     }
 
+    /// Removes a live validator head node and clears all references.
+    /// This is used for normal validator deletion, where no stale marker should
+    /// be retained after ownership transition.
+    pub fn delete_validator_head(
+        &mut self,
+        validator: &Validator,
+    ) -> Result<u64, DposRewardGraphError> {
+        let mut deleted = None;
+        self.apply_mutation(|graph| {
+            if graph.stale_validator_heads.contains(validator) {
+                return Err(DposRewardGraphError::StaleHeadConflict {
+                    validator: *validator,
+                });
+            }
+            let head_block = graph.validator_heads.remove(validator).ok_or(
+                DposRewardGraphError::MissingHead {
+                    validator: *validator,
+                },
+            )?;
+            graph.decrement_count(&NodeKey {
+                validator: *validator,
+                block: head_block,
+            })?;
+            deleted = Some(head_block);
+            Ok(())
+        })?;
+        deleted.ok_or(DposRewardGraphError::MissingHead {
+            validator: *validator,
+        })
+    }
+
+    /// Creates a validator graph root, replacing only a detached same-key
+    /// orphan left by normal terminal deletion.
+    ///
+    /// Registration cannot coexist with a validator head or delegation cursor
+    /// for the address. An unreferenced node at `key` is legacy storage that
+    /// registration overwrites with reward-per-stake zero and fresh counts.
+    pub fn register_validator(
+        &mut self,
+        key: NodeKey,
+        node: Node,
+        delegators: &[Delegator],
+    ) -> Result<(), DposRewardGraphError> {
+        self.apply_mutation(|graph| {
+            if graph.validator_heads.contains_key(&key.validator) {
+                return Err(DposRewardGraphError::DuplicateHead {
+                    validator: key.validator,
+                });
+            }
+            if let Some((_, existing_delegator)) = graph
+                .delegation_cursors
+                .keys()
+                .find(|(validator, _)| *validator == key.validator)
+                .copied()
+            {
+                return Err(DposRewardGraphError::DuplicateCursor {
+                    validator: key.validator,
+                    delegator: existing_delegator,
+                });
+            }
+            let mut unique_delegators = BTreeSet::new();
+            for delegator in delegators {
+                if !unique_delegators.insert(*delegator) {
+                    return Err(DposRewardGraphError::DuplicateCursor {
+                        validator: key.validator,
+                        delegator: *delegator,
+                    });
+                }
+            }
+            graph.nodes.insert(key, node);
+            graph.validator_heads.insert(key.validator, key.block);
+            graph.stale_validator_heads.remove(&key.validator);
+            for delegator in unique_delegators {
+                graph
+                    .delegation_cursors
+                    .insert((key.validator, delegator), key.block);
+            }
+            Ok(())
+        })
+    }
+
+    /// Reproduces legacy terminal deletion that removes the head checkpoint
+    /// regardless of its persisted count. Dangling live cursors make the staged
+    /// graph invalid instead of being silently repaired.
+    pub fn force_delete_validator_head(
+        &mut self,
+        validator: &Validator,
+    ) -> Result<u64, DposRewardGraphError> {
+        let mut deleted = None;
+        self.apply_mutation(|graph| {
+            if graph.stale_validator_heads.contains(validator) {
+                return Err(DposRewardGraphError::StaleHeadConflict {
+                    validator: *validator,
+                });
+            }
+            let head_block = graph.validator_heads.remove(validator).ok_or(
+                DposRewardGraphError::MissingHead {
+                    validator: *validator,
+                },
+            )?;
+            graph.nodes.remove(&NodeKey {
+                validator: *validator,
+                block: head_block,
+            });
+            deleted = Some(head_block);
+            Ok(())
+        })?;
+        deleted.ok_or(DposRewardGraphError::MissingHead {
+            validator: *validator,
+        })
+    }
+
+    /// Persists the stale validator copy written by a pre-fix same-validator
+    /// redelegation without changing any node count.
+    ///
+    /// The stale block may still resolve when another cursor retains it. The
+    /// configured correction rejects that topology, matching the legacy panic.
+    pub fn overwrite_validator_head_stale(
+        &mut self,
+        validator: Validator,
+        stale_block: u64,
+    ) -> Result<(), DposRewardGraphError> {
+        self.apply_mutation(|graph| {
+            if !graph.validator_heads.contains_key(&validator) {
+                return Err(DposRewardGraphError::MissingHead { validator });
+            }
+            graph.validator_heads.insert(validator, stale_block);
+            graph.stale_validator_heads.insert(validator);
+            Ok(())
+        })
+    }
+
     /// Creates or moves a delegation cursor with explicit count bookkeeping.
     /// Same-key writes preserve legacy load-copy/decrement-delete/increment/
     /// write-last ordering, including count inflation and node resurrection.
@@ -525,6 +653,69 @@ impl DposRewardGraph {
 
             graph.increment_count(&new_node)?;
             graph.delegation_cursors.insert(cursor_key, new_block);
+            Ok(())
+        })
+    }
+
+    /// Writes one delegation cursor, creating it when no prior cursor exists.
+    ///
+    /// This mirrors legacy create-or-update cursor semantics by preserving
+    /// overwrite ordering for existing cursors and introducing a new count
+    /// reference when the delegation had no cursor yet.
+    pub fn write_or_create_cursor(
+        &mut self,
+        validator: Validator,
+        delegator: Delegator,
+        new_block: u64,
+    ) -> Result<(), DposRewardGraphError> {
+        self.apply_mutation(|graph| {
+            let cursor_key = (validator, delegator);
+            if graph.delegation_cursors.contains_key(&cursor_key) {
+                return graph.write_cursor(validator, delegator, new_block);
+            }
+            let new_node = NodeKey {
+                validator,
+                block: new_block,
+            };
+            if !graph.nodes.contains_key(&new_node) {
+                return Err(DposRewardGraphError::MissingNode {
+                    validator,
+                    block: new_block,
+                });
+            }
+            graph.increment_count(&new_node)?;
+            graph.delegation_cursors.insert(cursor_key, new_block);
+            Ok(())
+        })
+    }
+
+    /// Replays a legacy write of an earlier-loaded node copy.
+    ///
+    /// Pre-fix repeated full same-validator redelegation loaded the current
+    /// node before deleting the source cursor, then persisted that earlier
+    /// copy after the deletion. The replacement must retain the exact loaded
+    /// reward accumulator and count; it may only restore bookkeeping that the
+    /// staged mutation reduced, never lower or invent a new node.
+    pub fn restore_loaded_node(
+        &mut self,
+        key: NodeKey,
+        loaded: Node,
+    ) -> Result<(), DposRewardGraphError> {
+        self.apply_mutation(|graph| {
+            let current = graph
+                .nodes
+                .get(&key)
+                .ok_or(DposRewardGraphError::MissingNode {
+                    validator: key.validator,
+                    block: key.block,
+                })?;
+            if loaded.count == 0 || loaded.count < current.count {
+                return Err(DposRewardGraphError::CountMismatch {
+                    validator: key.validator,
+                    block: key.block,
+                });
+            }
+            graph.nodes.insert(key, loaded);
             Ok(())
         })
     }
@@ -758,19 +949,11 @@ impl DposRewardGraph {
         }
 
         for validator in self.stale_validator_heads.iter() {
-            let stale_block = self.validator_heads.get(validator).copied().ok_or(
+            self.validator_heads.get(validator).copied().ok_or(
                 DposRewardGraphError::MissingStaleHead {
                     validator: *validator,
                 },
             )?;
-            if self.nodes.contains_key(&NodeKey {
-                validator: *validator,
-                block: stale_block,
-            }) {
-                return Err(DposRewardGraphError::StaleHeadConflict {
-                    validator: *validator,
-                });
-            }
         }
         Ok(())
     }
@@ -1407,8 +1590,13 @@ mod tests {
         );
         conflict.stale_validator_heads.insert(addr(21));
         conflict.validator_heads.insert(addr(21), 2);
+        let encoded_conflict = encode_dpos_reward_graph(&conflict).unwrap();
+        assert_eq!(
+            decode_dpos_reward_graph(&encoded_conflict).unwrap(),
+            conflict
+        );
         assert!(matches!(
-            encode_dpos_reward_graph(&conflict),
+            conflict.rebind_stale_validator_head(addr(21), addr(22), 2),
             Err(DposRewardGraphError::StaleHeadConflict { .. })
         ));
         assert!(conflict.validator_heads.remove(&addr(21)).is_some());
@@ -1481,6 +1669,138 @@ mod tests {
             validator: addr(40),
             block: 3
         }));
+    }
+
+    #[test]
+    fn loaded_node_restore_reproduces_repeated_full_redelegation_count() {
+        let validator = addr(41);
+        let delegator = addr(42);
+        let key = NodeKey {
+            validator,
+            block: 7,
+        };
+        let mut graph = DposRewardGraph::new();
+        graph
+            .bootstrap_node(
+                key,
+                Node {
+                    reward_per_stake: BigUint::from(99_u8),
+                    count: 2,
+                },
+                true,
+                &[delegator],
+            )
+            .unwrap();
+        let loaded = graph.load_node(&key).unwrap();
+
+        graph.delete_cursor(&validator, &delegator).unwrap();
+        assert_eq!(graph.load_node(&key).unwrap().count, 1);
+        graph.restore_loaded_node(key, loaded).unwrap();
+        graph
+            .write_or_create_cursor(validator, delegator, key.block)
+            .unwrap();
+
+        assert_eq!(graph.load_node(&key).unwrap().count, 3);
+        assert_eq!(graph.read_cursor(&validator, &delegator).unwrap(), 7);
+    }
+
+    #[test]
+    fn normal_and_force_validator_deletion_preserve_distinct_legacy_results() {
+        let normal_validator = addr(43);
+        let force_validator = addr(44);
+        let mut graph = DposRewardGraph::new();
+        for validator in [normal_validator, force_validator] {
+            graph
+                .bootstrap_node(
+                    NodeKey {
+                        validator,
+                        block: 8,
+                    },
+                    Node {
+                        reward_per_stake: BigUint::from(1_u8),
+                        count: 2,
+                    },
+                    true,
+                    &[],
+                )
+                .unwrap();
+        }
+
+        graph.delete_validator_head(&normal_validator).unwrap();
+        assert_eq!(
+            graph
+                .load_node(&NodeKey {
+                    validator: normal_validator,
+                    block: 8,
+                })
+                .unwrap()
+                .count,
+            1
+        );
+        graph.force_delete_validator_head(&force_validator).unwrap();
+        assert!(matches!(
+            graph.load_node(&NodeKey {
+                validator: force_validator,
+                block: 8,
+            }),
+            Err(DposRewardGraphError::MissingNode { .. })
+        ));
+    }
+
+    #[test]
+    fn registration_reinitializes_same_block_orphan_but_rejects_live_references() {
+        let validator = addr(45);
+        let delegator = addr(46);
+        let key = NodeKey {
+            validator,
+            block: 9,
+        };
+        let mut graph = DposRewardGraph::new();
+        graph
+            .bootstrap_node(
+                key,
+                Node {
+                    reward_per_stake: BigUint::from(77_u8),
+                    count: 2,
+                },
+                true,
+                &[],
+            )
+            .unwrap();
+        graph.delete_validator_head(&validator).unwrap();
+        assert_eq!(graph.load_node(&key).unwrap().count, 1);
+
+        graph
+            .register_validator(
+                key,
+                Node {
+                    reward_per_stake: BigUint::from(0_u8),
+                    count: 2,
+                },
+                &[delegator],
+            )
+            .unwrap();
+        assert_eq!(
+            graph.load_node(&key).unwrap().reward_per_stake,
+            BigUint::from(0_u8)
+        );
+        assert_eq!(graph.load_node(&key).unwrap().count, 2);
+        assert_eq!(graph.read_validator_head(&validator).unwrap(), 9);
+        assert_eq!(graph.read_cursor(&validator, &delegator).unwrap(), 9);
+
+        let before = graph.clone();
+        assert!(matches!(
+            graph.register_validator(
+                key,
+                Node {
+                    reward_per_stake: BigUint::from(1_u8),
+                    count: 1
+                },
+                &[]
+            ),
+            Err(DposRewardGraphError::DuplicateHead { .. })
+        ));
+        assert_eq!(graph, before);
     }
 
     #[test]

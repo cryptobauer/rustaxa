@@ -3712,10 +3712,10 @@ and later affordability; correction requires replay/rebuild from the first affec
 principal edit. `CRW-08` remains active for `getDelegations(address,uint32)`, its explicit historical reward-per-stake
 reference graph, and the remaining DPoS method/failure families.
 
-### CRW-08 Reward Reference Graph Foundation
+### CRW-08 Reward Reference Graph Foundation and Snapshot Integration
 
-This bounded foundation adds an isolated deterministic reward-reference graph to `rustaxa-consensus`; it deliberately
-does not yet change FinalChain routing or the persisted DPoS snapshot schema.
+This bounded work adds a deterministic reward-reference graph to `rustaxa-consensus` and then integrates it into
+FinalChain persistence and every supported DPoS reward-reference mutation.
 
 - Reward nodes are keyed by validator and block and retain arbitrary-width reward-per-stake values plus the exact
   persisted reference count. Validator heads, delegation cursors, incomplete-history provenance, and permitted legacy
@@ -3728,14 +3728,27 @@ does not yet change FinalChain routing or the persisted DPoS snapshot schema.
 - Reward-per-stake and claim arithmetic uses exact `BigUint` intermediates. Principal, stake, and maximum inputs retain
   the `uint256` domain, while only the final ABI reward is reduced modulo 2^256.
 
-The next bounded slice must advance the DPoS snapshot schema and integrate the graph into genesis, every reward writer,
-and replay/incomplete-history handling. Only then can native and direct `getDelegations(address,uint32)` reads consume
-the graph as sole reward-head and cursor authority. This foundation adds no CXX carrier, bridge handle/export, shim,
-module flag, or `CRW-07` inventory delta.
+- The DPoS snapshot advances from 23 to 24 items. Item 24 persists the canonical graph; every accepted older schema
+  decodes with incomplete provenance and graph-dependent behavior fails closed pending replay/rebuild.
+- Genesis and registration create exact nodes, validator heads, and delegation cursors. Transaction checkpoints move
+  only the validator head, claims and stake mutations update their specific cursor, and reward distribution grows the
+  pool without checkpointing. Terminal deletion keeps pre-Magnolia force-delete distinct from Magnolia decrement and
+  orphan retention.
+- Reward claims use graph nodes and arbitrary-width arithmetic as authority. Scalar reward-per-stake and cursor rows are
+  retained only as derived compatibility state.
+- Pre-fix same-validator redelegation reproduces fresh/repeated partial and full load-copy-write counts, stale live or
+  missing heads, and the configured count-neutral correction conflict boundary.
 
-Validation passed all 20 focused reward-graph tests, all 738 `rustaxa-consensus` tests, normal-policy clippy with the
-unchanged 46-warning crate baseline, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the bridge inventory
-guard, skill validation, the repository pre-commit hook, Rust formatting, and whitespace validation.
+The next bounded slice routes native and direct `getDelegations(address,uint32)` through this graph, enables the
+restart-backed dual-mode fixture, and proves wrapping page offsets and corrupt-row hard failures. No CXX carrier, bridge
+handle/export, shim, module flag, or `CRW-07` inventory delta belongs to the graph integration.
+
+Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
+Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
+corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript
+coverage. Normal-policy clippy retained the 46-warning baseline; `rewrite-validate-fast`,
+`rewrite-validate-final-chain`, the bridge inventory guard, skill validator, repository pre-commit hook, Rust formatting,
+whitespace validation, and independent configured review also passed.
 
 ## Historical Execution Order
 
