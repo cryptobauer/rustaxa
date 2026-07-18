@@ -3024,14 +3024,12 @@ impl FinalChain {
                             DposTransaction::ClaimRewards {
                                 delegator,
                                 validator,
-                            } => {
-                                DposApplyOutcome::success(self.apply_dpos_delegator_reward_claim(
-                                    &mut dpos_snapshot,
-                                    &mut accounts,
-                                    validator,
-                                    delegator,
-                                )?)
-                            }
+                            } => self.apply_dpos_delegator_reward_claim_for_contract(
+                                &mut dpos_snapshot,
+                                &mut accounts,
+                                validator,
+                                delegator,
+                            )?,
                             DposTransaction::ClaimCommissionRewards { owner, validator } => self
                                 .apply_dpos_commission_reward_claim(
                                     &mut dpos_snapshot,
@@ -4036,6 +4034,32 @@ impl FinalChain {
         Ok(vec![dpos_rewards_claimed_log(
             delegator, validator, reward,
         )?])
+    }
+
+    /// Applies a `claimRewards(address)`-style reward claim and converts missing
+    /// delegation pairs into deterministic contract-failure outcomes.
+    ///
+    /// The `claimRewards` handler must return `status_code = 0` when the sender has
+    /// no delegation to the requested validator, matching legacy contract behavior.
+    /// All other validation failures (state invariants, arithmetic overflow/underflow,
+    /// and contract balance insufficiency) remain hard errors so callers can abort
+    /// execution with a diagnostics-bearing error.
+    fn apply_dpos_delegator_reward_claim_for_contract(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        validator: [u8; 20],
+        delegator: [u8; 20],
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        let Some(delegations) = snapshot.delegations.get(&validator) else {
+            return Ok(DposApplyOutcome::contract_failure());
+        };
+        if !delegations.contains_key(&delegator) {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        Ok(DposApplyOutcome::success(
+            self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?,
+        ))
     }
 
     fn apply_dpos_claim_all_rewards(
@@ -11350,6 +11374,393 @@ mod tests {
         assert_eq!(
             balance_of(&final_chain, validator),
             U256::from(1_000_149u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_fails_claim_rewards_for_missing_delegation() {
+        let path = temp_db_path("finalize-dpos-claim-rewards-missing-delegation");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x73; 20];
+        let missing_validator = [0x74; 20];
+        let signing_key = SigningKey::from_slice(&[22u8; 32]).unwrap();
+        let first_period = 1u64;
+        let second_period = 2u64;
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 205);
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 206);
+        write_period_data(&storage, first_period, &first_pbft, &[]);
+
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(validator, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x75; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(10_000u64, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let _ = final_chain
+            .finalize_block(first_pbft, vec![], vec![])
+            .unwrap();
+        let gas_price = U256::from(3u64);
+        let sender_balance_before = balance_of(&final_chain, validator);
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+        let snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+
+        let failed_claim_tx = test_transaction(
+            0xE2,
+            validator,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            gas_price,
+            100_000,
+            claim_rewards_input(missing_validator),
+            vec![0xc1, 0xE2],
+        );
+        let failed_claim_gas =
+            expected_native_contract_tx_gas(&final_chain, second_period, &failed_claim_tx);
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            std::slice::from_ref(&failed_claim_tx.rlp),
+        );
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(second_pbft, vec![failed_claim_tx], vec![])
+            .unwrap();
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, failed_claim_gas, failed_claim_gas)
+        );
+        assert!(receipt_logs(&receipts[0]).is_empty());
+        let snapshot_after = final_chain.dpos_snapshot(second_period).unwrap();
+        assert_eq!(snapshot_after.total_stakes, snapshot_before.total_stakes);
+        assert_eq!(
+            snapshot_after.total_vote_count,
+            snapshot_before.total_vote_count
+        );
+        assert_eq!(snapshot_after.delegations, snapshot_before.delegations);
+        assert_eq!(
+            snapshot_after.delegation_reward_cursors,
+            snapshot_before.delegation_reward_cursors
+        );
+        assert_eq!(
+            snapshot_after.delegator_rewards,
+            snapshot_before.delegator_rewards
+        );
+        assert_eq!(
+            snapshot_after.validator_reward_per_stake,
+            snapshot_before.validator_reward_per_stake
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
+        );
+        assert_eq!(final_chain.account(validator).unwrap().unwrap().nonce, 1);
+        assert_eq!(
+            balance_of(&final_chain, validator),
+            sender_balance_before - U256::from(failed_claim_gas) * gas_price
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_fails_claim_rewards_then_allows_same_sender_transfer_success_and_restarts() {
+        let path = temp_db_path("finalize-dpos-claim-rewards-missing-then-transfer");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut validator = [0u8; 20];
+        validator[19] = 1;
+        let sender = [0x80; 20];
+        let recipient = [0x81; 20];
+        let signing_key = SigningKey::from_slice(&[23u8; 32]).unwrap();
+        let first_period = 1u64;
+        let second_period = 2u64;
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 207);
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 208);
+        write_period_data(&storage, first_period, &first_pbft, &[]);
+
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(2_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x75; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(10_000u64, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let _ = final_chain
+            .finalize_block(first_pbft, vec![], vec![])
+            .unwrap();
+        let gas_price = U256::from(2u64);
+        let sender_balance_before = balance_of(&final_chain, sender);
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+        let snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        let transfer_value = U256::from(5_000u64);
+
+        let failed_claim_tx = test_transaction(
+            0xE3,
+            sender,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            gas_price,
+            100_000,
+            claim_rewards_input(validator),
+            vec![0xc1, 0xe3],
+        );
+        let transfer_tx = test_transaction(
+            0xE4,
+            sender,
+            Some(recipient),
+            1,
+            transfer_value,
+            gas_price,
+            100_000,
+            vec![],
+            vec![0xc1, 0xe4],
+        );
+        let failed_claim_gas =
+            expected_native_contract_tx_gas(&final_chain, second_period, &failed_claim_tx);
+        assert_eq!(failed_claim_gas, 61_464);
+        let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            &[failed_claim_tx.rlp.clone(), transfer_tx.rlp.clone()],
+        );
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                second_pbft,
+                vec![failed_claim_tx, transfer_tx.clone()],
+                vec![],
+            )
+            .unwrap();
+
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, failed_claim_gas, failed_claim_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, transfer_gas, failed_claim_gas + transfer_gas)
+        );
+        assert!(receipt_logs(&receipts[0]).is_empty());
+        assert!(receipt_logs(&receipts[1]).is_empty());
+        let expected_failed_receipt = receipts[0].clone();
+        let expected_transfer_receipt = receipts[1].clone();
+        assert_eq!(
+            final_chain
+                .transaction_receipt_rlp(second_period, 0)
+                .unwrap(),
+            Some(expected_failed_receipt.clone())
+        );
+        assert_eq!(
+            final_chain
+                .transaction_receipt_rlp(second_period, 1)
+                .unwrap(),
+            Some(expected_transfer_receipt.clone())
+        );
+        let header_rlp = final_chain
+            .block_header(second_period)
+            .unwrap()
+            .expect("missing finalized claim-failure header");
+        let header = Rlp::new(&header_rlp);
+        assert_eq!(
+            header.val_at::<u64>(9).unwrap(),
+            failed_claim_gas + transfer_gas
+        );
+        assert_eq!(balance_of(&final_chain, recipient), transfer_value);
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 2);
+        let expected_sender_balance = sender_balance_before
+            - U256::from(failed_claim_gas + transfer_gas) * gas_price
+            - transfer_value;
+        assert_eq!(balance_of(&final_chain, sender), expected_sender_balance);
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
+        );
+        let snapshot_after = final_chain.dpos_snapshot(second_period).unwrap();
+        assert_eq!(snapshot_after.total_stakes, snapshot_before.total_stakes);
+        assert_eq!(
+            snapshot_after.total_vote_count,
+            snapshot_before.total_vote_count
+        );
+        assert_eq!(snapshot_after.delegations, snapshot_before.delegations);
+        assert_eq!(
+            snapshot_after.delegation_reward_cursors,
+            snapshot_before.delegation_reward_cursors
+        );
+        assert_eq!(
+            snapshot_after.delegator_rewards,
+            snapshot_before.delegator_rewards
+        );
+        assert_eq!(
+            snapshot_after.validator_reward_per_stake,
+            snapshot_before.validator_reward_per_stake
+        );
+
+        drop(final_chain);
+        drop(storage);
+
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(2_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                [0x75; 20],
+                2_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(10_000u64, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(final_chain.last_block_number().unwrap(), second_period);
+        assert_eq!(
+            final_chain
+                .transaction_receipt_rlp(second_period, 0)
+                .unwrap(),
+            Some(expected_failed_receipt)
+        );
+        assert_eq!(
+            final_chain
+                .transaction_receipt_rlp(second_period, 1)
+                .unwrap(),
+            Some(expected_transfer_receipt)
+        );
+        let header_rlp = final_chain
+            .block_header(second_period)
+            .unwrap()
+            .expect("missing restarted claim-failure header");
+        let header = Rlp::new(&header_rlp);
+        assert_eq!(
+            header.val_at::<u64>(9).unwrap(),
+            failed_claim_gas + transfer_gas
+        );
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 2);
+        assert_eq!(balance_of(&final_chain, sender), expected_sender_balance);
+        assert_eq!(balance_of(&final_chain, recipient), transfer_value);
+        assert_eq!(final_chain.account(recipient).unwrap().unwrap().nonce, 0);
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
+        );
+        let snapshot_reloaded = final_chain.dpos_snapshot(second_period).unwrap();
+        assert_eq!(snapshot_reloaded.total_stakes, snapshot_after.total_stakes);
+        assert_eq!(
+            snapshot_reloaded.total_vote_count,
+            snapshot_after.total_vote_count
+        );
+        assert_eq!(snapshot_reloaded.delegations, snapshot_after.delegations);
+        assert_eq!(
+            snapshot_reloaded.delegation_reward_cursors,
+            snapshot_after.delegation_reward_cursors
+        );
+        assert_eq!(
+            snapshot_reloaded.delegator_rewards,
+            snapshot_after.delegator_rewards
+        );
+        assert_eq!(
+            snapshot_reloaded.validator_reward_per_stake,
+            snapshot_after.validator_reward_per_stake
         );
 
         drop(final_chain);

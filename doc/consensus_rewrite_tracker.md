@@ -313,6 +313,18 @@ FinalChain Tier 2, and current-source `make rewrite-validate-final-chain-parity`
 delegate fixtures and the complete Rust-enabled and pure-C++ FinalChain suites. No bridge/export surface changed, so
 `CRW-07` has no inventory delta. `CRW-08` remains active for the next bounded method or failed-receipt family.
 
+The next bounded `CRW-08` slice closes the direct `claimRewards(address)` missing-delegation failure path. Legacy DPoS
+returns `ErrNonExistentDelegation` as a contract execution failure, but Rust previously propagated the missing pair as
+an `anyhow` error and aborted finalization. The Rust contract boundary now checks the caller/validator delegation pair
+before reward cursor or account mutation and emits a status-zero outcome when it is absent; cursor ordering, arithmetic,
+contract-balance, storage, and codec faults remain hard invariants. Focused Rust retains a separate absent-validator case,
+while the same-block/restart Rust fixture and dual-mode C++ fixture target a registered validator delegated only by a
+different account. Together they prove both missing-pair branches, exact 61,464 gas, canonical persisted receipt RLP,
+empty logs and bloom, gas-only sender charge, nonce advancement, unchanged DPoS stake/vote/reward state, same-block
+continuation by the sender, and restart persistence. The reusable pure-C++ parity filter includes the new fixture. No
+bridge/export surface changes, so `CRW-07` again has no inventory delta.
+`CRW-08` remains active for registration, undelegation, redelegation, and remaining reward/method failure families.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

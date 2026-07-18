@@ -1110,6 +1110,143 @@ TEST_F(FinalChainTest, native_dpos_delegate_to_missing_validator_rolls_back_stat
   assert_failed_delegate_persists(SUT);
 }
 
+TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_rolls_back_state) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 100'000;
+  constexpr uint64_t kExpectedGas = 61'464;
+  constexpr uint64_t kContinuationGas = 21'000;
+  constexpr uint64_t kOwnerInitialBalance = 11'000;
+  constexpr uint64_t kSenderInitialBalance = 10'000'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+  const addr_t kValidator("0x0000000000000000000000000000000000000001");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair sender{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{kValidator, owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_dpos_account = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(initial_dpos_account);
+  const auto initial_dpos_balance = initial_dpos_account->balance;
+  const auto initial_eligible_votes = SUT->dposEligibleVoteCount(0, kValidator);
+  const auto initial_total_votes = SUT->dposEligibleTotalVoteCount(0);
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  ASSERT_EQ(initial_stakes.size(), 1u);
+  const auto initial_total_delegated = SUT->dposTotalAmountDelegated(0);
+
+  const auto calldata =
+      dev::fromHex("ef5cfb8c0000000000000000000000000000000000000000000000000000000000000001");
+  ASSERT_EQ(calldata.size(), 36);
+  EXPECT_EQ(bytes(calldata.begin(), calldata.begin() + 4), dev::fromHex("ef5cfb8c"));
+  EXPECT_EQ(bytes(calldata.begin() + 4, calldata.end()),
+            dev::fromHex("0000000000000000000000000000000000000000000000000000000000000001"));
+
+  auto claim_trx = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, calldata, sender.secret(), kDposContract,
+                                                cfg.genesis.chain_id);
+  auto continuation_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(),
+                                                       sender.address());
+  const auto claim_result = advance(
+      {claim_trx, continuation_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(claim_result->trx_receipts.size(), 2);
+
+  TransactionReceipt expected_receipt;
+  expected_receipt.status_code = 0;
+  expected_receipt.gas_used = kExpectedGas;
+  expected_receipt.cumulative_gas_used = kExpectedGas;
+
+  TransactionReceipt continuation_receipt_expected;
+  continuation_receipt_expected.status_code = 1;
+  continuation_receipt_expected.gas_used = kContinuationGas;
+  continuation_receipt_expected.cumulative_gas_used = kExpectedGas + continuation_receipt_expected.gas_used;
+
+  const auto assert_failed_claim_state =
+      [&](const std::shared_ptr<FinalChain>& chain, const u256& expected_sender_balance, uint64_t block_num,
+          uint64_t expected_sender_nonce, uint64_t expected_block_gas) {
+    const auto claim_receipt = chain->transactionReceipt(block_num, 0);
+    ASSERT_TRUE(claim_receipt);
+    EXPECT_EQ(util::rlp_enc(*claim_receipt), util::rlp_enc(expected_receipt));
+    EXPECT_EQ(claim_receipt->status_code, 0);
+    EXPECT_EQ(claim_receipt->gas_used, kExpectedGas);
+    EXPECT_EQ(claim_receipt->cumulative_gas_used, kExpectedGas);
+    EXPECT_EQ(claim_receipt->logs.size(), 0);
+    EXPECT_EQ(claim_receipt->bloom(), LogBloom());
+
+    const auto continuation_receipt = chain->transactionReceipt(block_num, 1);
+    ASSERT_TRUE(continuation_receipt);
+    EXPECT_EQ(continuation_receipt->status_code, continuation_receipt_expected.status_code);
+    EXPECT_EQ(continuation_receipt->gas_used, continuation_receipt_expected.gas_used);
+    EXPECT_EQ(continuation_receipt->cumulative_gas_used, continuation_receipt_expected.cumulative_gas_used);
+    EXPECT_EQ(continuation_receipt->logs.size(), 0);
+    EXPECT_EQ(continuation_receipt->bloom(), LogBloom());
+
+    const auto header = chain->blockHeader(block_num);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(header->gas_used, expected_block_gas);
+    EXPECT_EQ(header->log_bloom, LogBloom());
+
+    const auto sender_account = chain->getAccount(sender.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, expected_sender_nonce);
+    EXPECT_EQ(sender_account->balance, expected_sender_balance);
+
+    const auto dpos_account = chain->getAccount(kDposContract);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, initial_dpos_balance);
+
+    EXPECT_EQ(chain->dposTotalAmountDelegated(block_num), initial_total_delegated);
+
+    const auto stakes = chain->dposValidatorsTotalStakes(block_num);
+    ASSERT_EQ(stakes.size(), 1u);
+    EXPECT_EQ(stakes[0].addr, kValidator);
+    EXPECT_EQ(stakes[0].stake, initial_stakes[0].stake);
+
+    EXPECT_EQ(chain->dposEligibleVoteCount(block_num, kValidator), initial_eligible_votes);
+    EXPECT_EQ(chain->dposEligibleTotalVoteCount(block_num), initial_total_votes);
+  };
+
+  const auto sender_expected_balance_after_block = u256(
+      kSenderInitialBalance - (kExpectedGas + continuation_receipt_expected.gas_used) * kGasPrice);
+  const auto block_gas = kExpectedGas + continuation_receipt_expected.gas_used;
+
+  EXPECT_EQ(util::rlp_enc(claim_result->trx_receipts[0]), util::rlp_enc(expected_receipt));
+  EXPECT_EQ(util::rlp_enc(claim_result->trx_receipts[1]), util::rlp_enc(continuation_receipt_expected));
+  EXPECT_EQ(claim_result->final_chain_blk->gas_used, block_gas);
+  EXPECT_EQ(claim_result->final_chain_blk->number, 1);
+  EXPECT_EQ(claim_result->final_chain_blk->log_bloom, LogBloom());
+  EXPECT_EQ(claim_result->trx_receipts[0].status_code, expected_receipt.status_code);
+  EXPECT_EQ(claim_result->trx_receipts[1].status_code, continuation_receipt_expected.status_code);
+  assert_failed_claim_state(SUT, sender_expected_balance_after_block, 1, 2, block_gas);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+  assert_failed_claim_state(
+      SUT, u256(kSenderInitialBalance - kExpectedGas * kGasPrice - continuation_receipt_expected.gas_used * kGasPrice), 1,
+      2, block_gas);
+}
+
 // This test should be last as state_api isn't destructed correctly because of exception
 TEST_F(FinalChainTest, initial_validator_exceed_maximum_stake) {
   const dev::KeyPair key = dev::KeyPair::create();

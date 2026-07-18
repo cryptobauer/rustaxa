@@ -3134,6 +3134,35 @@ CXX carrier, shim, module flag, or compatibility-only test was removed, so the b
 not change. Remaining registration, undelegation, redelegation, reward, and other DPoS failed-receipt families stay
 explicit follow-up work under active `CRW-08`.
 
+### CRW-08 Native DPoS Direct Reward-Claim Contract-Failure Parity
+
+This bounded follow-up closes the first direct reward-claim business failure without changing reward calculation or the
+accepted external-EVM boundary.
+
+- Current-source legacy contract code checks the caller/validator delegation pair before reward mutation and returns
+  `ErrNonExistentDelegation` through the normal EVM contract-error channel. FinalChain therefore persists a status-zero
+  receipt, charges intrinsic plus 40,000 action gas, advances the nonce, and continues the block.
+- Rust previously called the internal reward-claim mutator directly and propagated its missing-delegation `anyhow`
+  error, aborting native finalization instead of producing a failed receipt. The new contract-facing wrapper classifies
+  only an absent delegation pair as expected failure before mutation. Cursor ordering, reward arithmetic,
+  contract-balance insufficiency, storage, and codec failures remain hard errors.
+- Focused Rust coverage keeps the existing successful nonzero claim path, covers a nonexistent validator separately,
+  and exercises a registered validator whose delegation belongs to another account with a later same-sender transaction
+  in the same block. It proves exact 61,464 claim gas, cumulative/header gas, empty logs, gas-only balance and nonce
+  effects, unchanged stake/vote/reward/cursor state, persisted receipt bytes, and restart.
+- The dual-mode C++ fixture registers the same `0x...01` target for an owner distinct from the caller and uses the same
+  selector, gas price, gas limit, and same-block continuation. It checks canonical receipt RLP for both transactions,
+  block bloom/header gas, public DPoS facts, balances, nonce, and restart.
+  The reusable isolated pure-C++ parity script now includes this fixture in its focused preflight.
+
+No CXX handle, carrier, export, shim, module flag, or compatibility-only test changes in this slice, so the `CRW-07`
+bridge inventory is unchanged. Registration proof/metadata failures, undelegation lifecycles, broader redelegation
+failures, and remaining reward/method families remain explicit follow-up work under active `CRW-08`.
+
+Tier 1, the FinalChain Tier 2 gate, and `make rewrite-validate-final-chain-parity` passed. The Tier 3 gate covered the
+focused three-fixture native DPoS preflight and the complete Rust-enabled and isolated pure-C++ FinalChain suites.
+Pre-existing Clippy and dependency-build warnings remain warnings; this slice introduces no new warning.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
