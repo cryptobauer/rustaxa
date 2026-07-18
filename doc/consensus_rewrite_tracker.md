@@ -680,6 +680,26 @@ the focused Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, 
 skill validation, Rust and changed-line C++ formatting, whitespace validation, the repository pre-commit hook, and
 independent configured review.
 
+The next `CRW-08` foundation slice extracts all finalized DPoS mutation dispatch behind one staged-snapshot kernel.
+Finalized execution still owns gas, fees, nonces, payable-argument value injection, value custody, rollback, receipts,
+reward planning, cleanup, and publication; the kernel owns only the deterministic DPoS transition result. Its
+caller-owned account and DPoS maps make the eventual dry-run boundary explicit without routing `FinalChain::call`
+prematurely. Focused registration/delegation success and failure tests protect value injection and failed-transition
+isolation while the existing finalized transaction suite protects behavior across the full mutation family.
+
+The legacy audit confirms that call closure must be atomic across all 16 mutation branches. The follow-up transient
+envelope must load exact requested-block account and DPoS snapshots, apply intrinsic plus action gas, reserve combined
+gas and value, stage precompile value with rollback, preserve V2 and legacy batch outputs plus logs, and carry exact
+business errors. It must not advance rewards, create receipts, run end-block cleanup, or publish snapshots. Blocks that
+lack complete Rust account or DPoS snapshots remain a separate replay/migration or explicitly retained hybrid-routing
+gap.
+
+Kernel-foundation validation passed the focused register/delegate success and failure tests, the same-block
+register-then-claim-all live-gas regression, all 757 `rustaxa-consensus` tests, `rewrite-validate-fast`,
+`rewrite-validate-final-chain`, `rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy
+baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace validation, and the repository
+pre-commit hook, followed by independent configured review.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

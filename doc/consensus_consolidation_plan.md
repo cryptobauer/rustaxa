@@ -3781,6 +3781,27 @@ the focused Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, 
 skill validation, Rust and changed-line C++ formatting, whitespace validation, the repository pre-commit hook, and
 independent configured review.
 
+### CRW-08 Shared DPoS Mutation Kernel Foundation
+
+All finalized DPoS mutation dispatch now passes through one staged-snapshot kernel. The surrounding finalized executor
+retains transaction-envelope and block responsibilities: gas, fees, nonces, payable-argument value injection, value
+custody and rollback, receipts, reward planning, cleanup, and publication. The kernel owns deterministic DPoS
+transition application over caller-owned account and DPoS maps. Focused registration/delegation success and failure
+coverage protects value injection and failed-transition isolation; `FinalChain::call` remains unchanged in this
+foundation slice.
+
+Legacy dry-run parity requires an atomic follow-up across all 16 mutation branches. That transient envelope must use
+exact requested-block snapshots, intrinsic plus action gas, combined gas-and-value affordability, staged precompile
+value with rollback, typed business errors, mutation outputs, and logs, while excluding reward advancement, receipts,
+end-block cleanup, and persistence. Historical blocks without complete Rust snapshots remain a separate replay,
+migration, or explicitly retained hybrid-routing gap.
+
+Kernel-foundation validation passed the focused register/delegate success and failure tests, the same-block
+register-then-claim-all live-gas regression, all 757 `rustaxa-consensus` tests, `rewrite-validate-fast`,
+`rewrite-validate-final-chain`, `rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy
+baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace validation, and the repository
+pre-commit hook, followed by independent configured review.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

@@ -3138,40 +3138,7 @@ impl FinalChain {
             let gas_price = u256_from_big_endian(&transaction.gas_price);
             let value = u256_from_big_endian(&transaction.value);
             if let Some(NativeContractTransaction::Dpos(dpos_tx)) = contract_transaction.as_mut() {
-                match dpos_tx {
-                    DposTransaction::Register(registration) => {
-                        registration.stake = u256_to_big_endian(value);
-                    }
-                    DposTransaction::Delegate { amount, .. } => {
-                        *amount = u256_to_big_endian(value);
-                    }
-                    DposTransaction::Undelegate { .. }
-                    | DposTransaction::ConfirmUndelegate { .. }
-                    | DposTransaction::CancelUndelegate { .. }
-                    | DposTransaction::UndelegateV2 { .. }
-                    | DposTransaction::ConfirmUndelegateV2 { .. }
-                    | DposTransaction::CancelUndelegateV2 { .. }
-                    | DposTransaction::Redelegate { .. }
-                    | DposTransaction::ClaimRewards { .. }
-                    | DposTransaction::ClaimCommissionRewards { .. }
-                    | DposTransaction::SetValidatorInfo { .. }
-                    | DposTransaction::SetCommission { .. }
-                    | DposTransaction::ClaimAllRewards { .. }
-                    | DposTransaction::IsValidatorEligible(_)
-                    | DposTransaction::GetTotalEligibleVotesCount
-                    | DposTransaction::GetValidatorEligibleVotesCount(_)
-                    | DposTransaction::GetValidator(_)
-                    | DposTransaction::GetTotalDelegation(_)
-                    | DposTransaction::GetValidators(_)
-                    | DposTransaction::GetValidatorsFor(_)
-                    | DposTransaction::GetUndelegations(_)
-                    | DposTransaction::GetUndelegationsV2(_)
-                    | DposTransaction::GetDelegations(_)
-                    | DposTransaction::GetUndelegationV2(_)
-                    | DposTransaction::PhalaenopsisEscrowTransfer
-                    | DposTransaction::MalformedMutation { .. }
-                    | DposTransaction::MethodNotSupported => {}
-                }
+                Self::inject_dpos_transaction_value(dpos_tx, &transaction.value);
             }
             let dpos_value_transfer_allowed = contract_transaction.as_ref().is_some_and(|tx| {
                 matches!(tx, NativeContractTransaction::Dpos(_))
@@ -3331,219 +3298,76 @@ impl FinalChain {
                     }
 
                     contract_outcome = Some(match contract_tx {
-                        NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
-                            DposTransaction::GetTotalDelegation(read) => {
-                                self.apply_dpos_total_delegation_read(&dpos_snapshot, read)?
-                            }
-                            page_tx @ DposTransaction::GetDelegations(_) => {
-                                self.apply_dpos_delegation_page_read(&dpos_snapshot, page_tx)?
-                            }
-                            singleton_tx @ (DposTransaction::GetValidator(_)
-                            | DposTransaction::GetUndelegationV2(_)) => self
-                                .apply_dpos_fixed_singleton_read(
-                                    &dpos_snapshot,
+                        NativeContractTransaction::Dpos(dpos_tx) => {
+                            if FinalChain::is_dpos_mutation_transaction(&dpos_tx) {
+                                self.apply_dpos_mutation_transaction(
                                     block_number,
-                                    singleton_tx,
-                                )?,
-                            page_tx @ (DposTransaction::GetValidators(_)
-                            | DposTransaction::GetValidatorsFor(_)) => self
-                                .apply_dpos_validator_page_read(
-                                    &dpos_snapshot,
-                                    block_number,
-                                    page_tx,
-                                )?,
-                            page_tx @ (DposTransaction::GetUndelegations(_)
-                            | DposTransaction::GetUndelegationsV2(_)) => self
-                                .apply_dpos_undelegation_page_read(
-                                    &dpos_snapshot,
-                                    block_number,
-                                    page_tx,
-                                )?,
-                            DposTransaction::IsValidatorEligible(Err(_))
-                            | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
-                                DposApplyOutcome::contract_failure()
-                            }
-                            eligibility_tx @ (DposTransaction::IsValidatorEligible(Ok(_))
-                            | DposTransaction::GetTotalEligibleVotesCount
-                            | DposTransaction::GetValidatorEligibleVotesCount(
-                                Ok(_),
-                            )) => {
-                                if dpos_eligibility_read_snapshot.is_none() {
-                                    let effective_block = head_block_number
-                                        .saturating_sub(self.dpos_delegation_delay);
-                                    dpos_eligibility_read_snapshot = Some((
-                                        self.dpos_snapshot(head_block_number)?,
-                                        effective_block,
-                                    ));
-                                }
-                                let (snapshot, effective_block) =
-                                    dpos_eligibility_read_snapshot.as_ref().ok_or_else(|| {
-                                        anyhow::anyhow!("DPoS eligibility snapshot is missing")
-                                    })?;
-                                self.apply_dpos_eligibility_read(
-                                    snapshot,
-                                    *effective_block,
-                                    eligibility_tx,
+                                    dpos_tx,
+                                    &mut dpos_snapshot,
+                                    &mut accounts,
                                 )?
+                            } else {
+                                match dpos_tx {
+                                    DposTransaction::GetTotalDelegation(read) => {
+                                        self.apply_dpos_total_delegation_read(&dpos_snapshot, read)?
+                                    }
+                                    page_tx @ DposTransaction::GetDelegations(_) => {
+                                        self.apply_dpos_delegation_page_read(&dpos_snapshot, page_tx)?
+                                    }
+                                    singleton_tx @ (DposTransaction::GetValidator(_)
+                                    | DposTransaction::GetUndelegationV2(_)) => self
+                                        .apply_dpos_fixed_singleton_read(
+                                            &dpos_snapshot,
+                                            block_number,
+                                            singleton_tx,
+                                        )?,
+                                    page_tx @ (DposTransaction::GetValidators(_)
+                                    | DposTransaction::GetValidatorsFor(_)) => self
+                                        .apply_dpos_validator_page_read(
+                                            &dpos_snapshot,
+                                            block_number,
+                                            page_tx,
+                                        )?,
+                                    page_tx @ (DposTransaction::GetUndelegations(_)
+                                    | DposTransaction::GetUndelegationsV2(_)) => self
+                                        .apply_dpos_undelegation_page_read(
+                                            &dpos_snapshot,
+                                            block_number,
+                                            page_tx,
+                                        )?,
+                                    DposTransaction::IsValidatorEligible(Err(_))
+                                    | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
+                                        DposApplyOutcome::contract_failure()
+                                    }
+                                    eligibility_tx @ (DposTransaction::IsValidatorEligible(Ok(_))
+                                    | DposTransaction::GetTotalEligibleVotesCount
+                                    | DposTransaction::GetValidatorEligibleVotesCount(
+                                        Ok(_),
+                                    )) => {
+                                        if dpos_eligibility_read_snapshot.is_none() {
+                                            let effective_block = head_block_number
+                                                .saturating_sub(self.dpos_delegation_delay);
+                                            dpos_eligibility_read_snapshot = Some((
+                                                self.dpos_snapshot(head_block_number)?,
+                                                effective_block,
+                                            ));
+                                        }
+                                        let (snapshot, effective_block) =
+                                            dpos_eligibility_read_snapshot.as_ref().ok_or_else(|| {
+                                                anyhow::anyhow!("DPoS eligibility snapshot is missing")
+                                            })?;
+                                        self.apply_dpos_eligibility_read(
+                                            snapshot,
+                                            *effective_block,
+                                            eligibility_tx,
+                                        )?
+                                    }
+                                    _ => unreachable!(
+                                        "DPoS transaction classifier routed a mutation as a read"
+                                    ),
+                                }
                             }
-                            DposTransaction::Register(registration) => self
-                                .apply_dpos_registration(
-                                    &mut dpos_snapshot,
-                                    registration,
-                                    block_number,
-                                )?,
-                            DposTransaction::Delegate {
-                                delegator,
-                                validator,
-                                amount,
-                            } => self.apply_dpos_delegate(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                validator,
-                                amount,
-                            )?,
-                            DposTransaction::Undelegate {
-                                delegator,
-                                validator,
-                                amount,
-                            } => self.apply_dpos_undelegate(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                validator,
-                                amount,
-                                block_number,
-                            )?,
-                            DposTransaction::ConfirmUndelegate {
-                                delegator,
-                                validator,
-                            } => self.apply_dpos_confirm_undelegate(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                validator,
-                                block_number,
-                            )?,
-                            DposTransaction::CancelUndelegate {
-                                delegator,
-                                validator,
-                            } => self.apply_dpos_cancel_undelegate(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                validator,
-                            )?,
-                            DposTransaction::UndelegateV2 {
-                                delegator,
-                                validator,
-                                amount,
-                            } => self.apply_dpos_undelegate_v2(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                validator,
-                                amount,
-                                block_number,
-                            )?,
-                            DposTransaction::ConfirmUndelegateV2 {
-                                delegator,
-                                validator,
-                                id,
-                            } => self.apply_dpos_confirm_undelegate_v2(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                validator,
-                                id,
-                                block_number,
-                            )?,
-                            DposTransaction::CancelUndelegateV2 {
-                                delegator,
-                                validator,
-                                id,
-                            } => self.apply_dpos_cancel_undelegate_v2(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                validator,
-                                id,
-                            )?,
-                            DposTransaction::Redelegate {
-                                delegator,
-                                from,
-                                to,
-                                amount,
-                            } => self.apply_dpos_redelegate(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                delegator,
-                                from,
-                                to,
-                                amount,
-                                block_number,
-                            )?,
-                            DposTransaction::ClaimRewards {
-                                delegator,
-                                validator,
-                            } => self.apply_dpos_delegator_reward_claim_for_contract(
-                                &mut dpos_snapshot,
-                                &mut accounts,
-                                validator,
-                                delegator,
-                            )?,
-                            DposTransaction::ClaimCommissionRewards { owner, validator } => self
-                                .apply_dpos_commission_reward_claim(
-                                    &mut dpos_snapshot,
-                                    &mut accounts,
-                                    owner,
-                                    validator,
-                                    block_number,
-                                )?,
-                            DposTransaction::SetValidatorInfo {
-                                owner,
-                                validator,
-                                description,
-                                endpoint,
-                            } => self.apply_dpos_validator_info_update(
-                                &mut dpos_snapshot,
-                                owner,
-                                validator,
-                                description,
-                                endpoint,
-                            )?,
-                            DposTransaction::SetCommission {
-                                owner,
-                                validator,
-                                commission,
-                            } => self.apply_dpos_commission_update(
-                                &mut dpos_snapshot,
-                                owner,
-                                validator,
-                                commission,
-                                block_number,
-                            )?,
-                            DposTransaction::ClaimAllRewards { delegator, batch } => {
-                                DposApplyOutcome::success(self.apply_dpos_claim_all_rewards(
-                                    &mut dpos_snapshot,
-                                    &mut accounts,
-                                    delegator,
-                                    batch,
-                                )?)
-                            }
-                            DposTransaction::PhalaenopsisEscrowTransfer => {
-                                DposApplyOutcome::success(vec![])
-                            }
-                            DposTransaction::MethodNotSupported => {
-                                DposApplyOutcome::contract_failure()
-                            }
-                            DposTransaction::MalformedMutation {
-                                selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
-                            } => DposApplyOutcome::success(vec![]),
-                            DposTransaction::MalformedMutation { .. } => {
-                                DposApplyOutcome::contract_failure()
-                            }
-                        },
+                        }
                         NativeContractTransaction::Slashing(slashing_tx) => {
                             let needs_read_snapshot = matches!(
                                 &slashing_tx,
@@ -3737,6 +3561,196 @@ impl FinalChain {
                     block_number
                 )
             })
+    }
+
+    /// Returns whether a decoded DPoS transaction belongs to the mutable
+    /// contract surface shared by finalized execution and future dry runs.
+    fn is_dpos_mutation_transaction(dpos_transaction: &DposTransaction) -> bool {
+        matches!(
+            dpos_transaction,
+            DposTransaction::Register(_)
+                | DposTransaction::Delegate { .. }
+                | DposTransaction::Undelegate { .. }
+                | DposTransaction::ConfirmUndelegate { .. }
+                | DposTransaction::CancelUndelegate { .. }
+                | DposTransaction::UndelegateV2 { .. }
+                | DposTransaction::ConfirmUndelegateV2 { .. }
+                | DposTransaction::CancelUndelegateV2 { .. }
+                | DposTransaction::Redelegate { .. }
+                | DposTransaction::ClaimRewards { .. }
+                | DposTransaction::ClaimCommissionRewards { .. }
+                | DposTransaction::SetValidatorInfo { .. }
+                | DposTransaction::SetCommission { .. }
+                | DposTransaction::ClaimAllRewards { .. }
+                | DposTransaction::PhalaenopsisEscrowTransfer
+                | DposTransaction::MalformedMutation { selector: _ }
+                | DposTransaction::MethodNotSupported
+        )
+    }
+
+    /// Injects transaction value into the two payable DPoS method arguments.
+    ///
+    /// Finalized execution performs this before cloning the decoded transaction
+    /// for same-block claim-gas maintenance, so registration and delegation
+    /// membership changes are visible to later claim-all transactions.
+    fn inject_dpos_transaction_value(dpos_transaction: &mut DposTransaction, value: &[u8]) {
+        match dpos_transaction {
+            DposTransaction::Register(registration) => registration.stake = value.to_vec(),
+            DposTransaction::Delegate { amount, .. } => *amount = value.to_vec(),
+            _ => {}
+        }
+    }
+
+    /// Applies one decoded DPoS mutation to caller-owned staged snapshots.
+    ///
+    /// The caller owns transaction-envelope behavior such as fees, nonces,
+    /// value transfer, rollback, receipts, and persistence. This kernel only
+    /// executes the deterministic DPoS state transition, returning its logs
+    /// and output. Payable argument injection must happen before this boundary.
+    fn apply_dpos_mutation_transaction(
+        &self,
+        block_number: u64,
+        dpos_tx: DposTransaction,
+        dpos_snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        match dpos_tx {
+            DposTransaction::Register(registration) => {
+                self.apply_dpos_registration(dpos_snapshot, registration, block_number)
+            }
+            DposTransaction::Delegate {
+                delegator,
+                validator,
+                amount,
+            } => self.apply_dpos_delegate(dpos_snapshot, accounts, delegator, validator, amount),
+            DposTransaction::Undelegate {
+                delegator,
+                validator,
+                amount,
+            } => self.apply_dpos_undelegate(
+                dpos_snapshot,
+                accounts,
+                delegator,
+                validator,
+                amount,
+                block_number,
+            ),
+            DposTransaction::ConfirmUndelegate {
+                delegator,
+                validator,
+            } => self.apply_dpos_confirm_undelegate(
+                dpos_snapshot,
+                accounts,
+                delegator,
+                validator,
+                block_number,
+            ),
+            DposTransaction::CancelUndelegate {
+                delegator,
+                validator,
+            } => self.apply_dpos_cancel_undelegate(dpos_snapshot, accounts, delegator, validator),
+            DposTransaction::UndelegateV2 {
+                delegator,
+                validator,
+                amount,
+            } => self.apply_dpos_undelegate_v2(
+                dpos_snapshot,
+                accounts,
+                delegator,
+                validator,
+                amount,
+                block_number,
+            ),
+            DposTransaction::ConfirmUndelegateV2 {
+                delegator,
+                validator,
+                id,
+            } => self.apply_dpos_confirm_undelegate_v2(
+                dpos_snapshot,
+                accounts,
+                delegator,
+                validator,
+                id,
+                block_number,
+            ),
+            DposTransaction::CancelUndelegateV2 {
+                delegator,
+                validator,
+                id,
+            } => self.apply_dpos_cancel_undelegate_v2(
+                dpos_snapshot,
+                accounts,
+                delegator,
+                validator,
+                id,
+            ),
+            DposTransaction::Redelegate {
+                delegator,
+                from,
+                to,
+                amount,
+            } => self.apply_dpos_redelegate(
+                dpos_snapshot,
+                accounts,
+                delegator,
+                from,
+                to,
+                amount,
+                block_number,
+            ),
+            DposTransaction::ClaimRewards {
+                delegator,
+                validator,
+            } => self.apply_dpos_delegator_reward_claim_for_contract(
+                dpos_snapshot,
+                accounts,
+                validator,
+                delegator,
+            ),
+            DposTransaction::ClaimCommissionRewards { owner, validator } => self
+                .apply_dpos_commission_reward_claim(
+                    dpos_snapshot,
+                    accounts,
+                    owner,
+                    validator,
+                    block_number,
+                ),
+            DposTransaction::SetValidatorInfo {
+                owner,
+                validator,
+                description,
+                endpoint,
+            } => self.apply_dpos_validator_info_update(
+                dpos_snapshot,
+                owner,
+                validator,
+                description,
+                endpoint,
+            ),
+            DposTransaction::SetCommission {
+                owner,
+                validator,
+                commission,
+            } => self.apply_dpos_commission_update(
+                dpos_snapshot,
+                owner,
+                validator,
+                commission,
+                block_number,
+            ),
+            DposTransaction::ClaimAllRewards { delegator, batch } => Ok(DposApplyOutcome::success(
+                self.apply_dpos_claim_all_rewards(dpos_snapshot, accounts, delegator, batch)?,
+            )),
+            DposTransaction::PhalaenopsisEscrowTransfer => {
+                Ok(DposApplyOutcome::success(Vec::new()))
+            }
+            DposTransaction::MethodNotSupported => Ok(DposApplyOutcome::contract_failure()),
+            DposTransaction::MalformedMutation {
+                selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
+            } => Ok(DposApplyOutcome::success(Vec::new())),
+            DposTransaction::MalformedMutation { .. } => Ok(DposApplyOutcome::contract_failure()),
+            _ => anyhow::bail!("DPoS mutation kernel received a read transaction"),
+        }
     }
 
     fn dpos_total_amount_delegated_u256(&self, block_number: u64) -> Result<U256, anyhow::Error> {
@@ -16330,6 +16344,161 @@ mod tests {
     }
 
     #[test]
+    fn apply_dpos_mutation_transaction_registers_with_injected_transaction_value() {
+        let path = temp_db_path("apply-dpos-mutation-register");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let validator_signing_key = SigningKey::from_slice(&[0xA1; 32]).unwrap();
+        let validator = {
+            let validator = address_from_signing_key(&validator_signing_key);
+            let mut bytes = [0u8; 20];
+            bytes.copy_from_slice(validator.as_bytes());
+            bytes
+        };
+        let owner = [0xB1; 20];
+        let proof = register_validator_proof(&validator_signing_key, validator, None);
+        let registration_input =
+            register_validator_input(validator, &proof, [0xC1; 32], 100, "validator", "endpoint");
+        let mut registration_tx = match decode_dpos_transaction_for_execution(
+            &registration_input,
+            owner,
+            1,
+            u64::MAX,
+            0,
+            u64::MAX,
+        ) {
+            DposTransaction::Register(registration) => DposTransaction::Register(registration),
+            _ => panic!("expected register DPoS transaction"),
+        };
+        let mut dpos_snapshot = sample_dpos_snapshot_with_undelegations();
+        let mut accounts = HashMap::new();
+        let request_value = u256_to_big_endian(U256::from(2_500u64));
+        FinalChain::inject_dpos_transaction_value(&mut registration_tx, &request_value);
+
+        let outcome = final_chain
+            .apply_dpos_mutation_transaction(1, registration_tx, &mut dpos_snapshot, &mut accounts)
+            .unwrap();
+
+        assert_eq!(outcome.status_code, 1);
+        assert_eq!(
+            u256_from_big_endian(
+                dpos_snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("new validator should be registered")
+            ),
+            U256::from(2_500u64)
+        );
+        assert_eq!(u256_from_big_endian(&request_value), U256::from(2_500u64));
+        assert!(!accounts.contains_key(&DPOS_CONTRACT_ADDRESS));
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_mutation_transaction_delegates_injected_transaction_value() {
+        let path = temp_db_path("apply-dpos-mutation-delegate");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let validator = [0x22; 20];
+        let delegator = [0xD1; 20];
+        let tx_value = U256::from(1_500u64);
+        let mut delegate_tx = DposTransaction::Delegate {
+            delegator,
+            validator,
+            amount: vec![],
+        };
+        let mut dpos_snapshot = sample_dpos_snapshot_with_undelegations();
+        let mut accounts = HashMap::new();
+        let request_value = u256_to_big_endian(tx_value);
+        FinalChain::inject_dpos_transaction_value(&mut delegate_tx, &request_value);
+        let previous_stake = u256_from_big_endian(
+            dpos_snapshot
+                .total_stakes
+                .get(&validator)
+                .expect("validator exists in baseline snapshot"),
+        );
+
+        let outcome = final_chain
+            .apply_dpos_mutation_transaction(1, delegate_tx, &mut dpos_snapshot, &mut accounts)
+            .unwrap();
+
+        assert_eq!(outcome.status_code, 1);
+        assert_eq!(
+            u256_from_big_endian(
+                dpos_snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("validator should still exist"),
+            ),
+            previous_stake + tx_value
+        );
+        assert_eq!(
+            u256_from_big_endian(
+                dpos_snapshot
+                    .delegations
+                    .get(&validator)
+                    .expect("validator delegations should exist")
+                    .get(&delegator)
+                    .expect("delegate amount should be recorded"),
+            ),
+            tx_value
+        );
+        assert_eq!(u256_from_big_endian(&request_value), tx_value);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_mutation_transaction_delegate_failures_do_not_modify_state() {
+        let path = temp_db_path("apply-dpos-mutation-failure-rollback");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let mut dpos_snapshot = sample_dpos_snapshot_with_undelegations();
+        let mut accounts = HashMap::new();
+        let before_snapshot = dpos_snapshot.clone();
+        let dpos_tx = DposTransaction::Delegate {
+            delegator: [0xD2; 20],
+            validator: [0xFF; 20],
+            amount: u256_to_big_endian(U256::from(1_000u64)),
+        };
+
+        let outcome = final_chain
+            .apply_dpos_mutation_transaction(1, dpos_tx, &mut dpos_snapshot, &mut accounts)
+            .unwrap();
+
+        assert_eq!(outcome.status_code, 0);
+        assert_eq!(dpos_snapshot, before_snapshot);
+        assert!(accounts.is_empty());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn abi_word_helpers_truncate_high_bytes_like_legacy_go_abi() {
         let mut input = vec![0u8; 36];
         input[4] = 0x01;
@@ -20416,6 +20585,136 @@ mod tests {
         assert_eq!(
             balance_of(&final_chain, validator),
             U256::from(1_000_149u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_supports_same_block_register_followed_by_claim_all_rewards_gas_snapshot() {
+        let path = temp_db_path("finalize-dpos-claim-all-same-block-register");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let owner = [0x88; 20];
+        let validator_signing_key = SigningKey::from_slice(&[0x71; 32]).unwrap();
+        let validator = {
+            let validator = address_from_signing_key(&validator_signing_key);
+            let mut bytes = [0u8; 20];
+            bytes.copy_from_slice(validator.as_bytes());
+            bytes
+        };
+        let signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let period = 1u64;
+        let pbft_block = signed_pbft_block(&signing_key, period, 206);
+        let registration_input = register_validator_input(
+            validator,
+            &register_validator_proof(&validator_signing_key, validator, None),
+            [0xC1; 32],
+            10,
+            "validator",
+            "endpoint",
+        );
+        let register_tx = test_transaction(
+            0xD1,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::zero(),
+            150_000,
+            registration_input,
+            vec![0xc1, 0xD1],
+        );
+        let claim_tx = test_transaction(
+            0xD2,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            claim_all_rewards_input(),
+            vec![0xc1, 0xD2],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[register_tx.rlp.clone(), claim_tx.rlp.clone()],
+        );
+
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                fix_claim_all_block_num: u64::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![register_tx.clone(), claim_tx.clone()],
+                vec![],
+            )
+            .unwrap();
+        let register_gas = expected_native_contract_tx_gas(&final_chain, period, &register_tx);
+        let claim_gas = intrinsic_gas(&claim_tx.data, false).unwrap()
+            + DPOS_CLAIM_REWARDS_GAS
+            + DPOS_BATCH_GET_REWARDS_GAS;
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, register_gas, register_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, claim_gas, register_gas + claim_gas)
+        );
+        assert_eq!(
+            claim_gas,
+            intrinsic_gas(&claim_tx.data, false).unwrap() + 45_000
+        );
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("registered validator should exist")
+            ),
+            U256::from(5_000u64)
+        );
+        assert!(
+            snapshot
+                .delegator_validators
+                .get(&owner)
+                .expect("new owner should be registered as delegator")
+                .contains(&validator)
         );
 
         drop(final_chain);

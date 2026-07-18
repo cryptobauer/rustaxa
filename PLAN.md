@@ -467,6 +467,11 @@ reference builds retain the untouched legacy RewardsStats header and source.
     Rust finalization path also persists the legacy two-level `final_chain_log_blooms_index` chunks with author-augmented
     blooms and routes `FinalChain::withBlockBloom` through Rust. All current Solidity DPoS ABI methods have native Rust
     routing; general mutation simulation through the read-oriented `FinalChain::call` surface remains future work.
+    Finalized DPoS mutation dispatch is consolidated behind a caller-owned staged-snapshot kernel so the future
+    transient call envelope can reuse deterministic contract transitions without inheriting finalized value injection,
+    fees, receipts, reward planning, cleanup, or publication. Exact call parity still requires requested-block account and DPoS
+    snapshots, intrinsic-plus-action gas, combined gas/value affordability, staged value rollback, typed business
+    errors, mutation outputs, and logs across all 16 mutation branches at once.
     Rust native finalization also executes the slashing `commitDoubleVotingProof(bytes,bytes)` precompile path for
     legacy PBFT vote RLPs: Rust decodes the calldata, recovers both vote signers, validates the double-vote facts,
     persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits
