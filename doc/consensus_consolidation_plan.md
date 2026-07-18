@@ -3679,6 +3679,39 @@ the first affected transaction or a separately designed migration rather than an
 `CRW-08` remains active for delegation reads and their explicit historical reward reference graph, plus the remaining
 DPoS method/failure families.
 
+### CRW-08 Native Total Delegation Read
+
+This bounded follow-up executes `getTotalDelegation(address)` through native Rust finalization while keeping paged
+delegation rewards deferred to the historical reward-state reference graph.
+
+- The output is the sum of principal for every validator in the delegator's authoritative membership order. It does not
+  read validator reward pools, reward-per-stake state, or delegation reward cursors. Duplicate or dangling membership,
+  principal wider than `uint256`, and sum overflow are hard snapshot corruption rather than filtered output.
+- Action gas is exactly 5,000 per validator membership; an empty delegator costs zero action gas. Native execution uses
+  transaction-point live state, so earlier same-block delegate, undelegate, cancel, redelegate, and terminal-validator
+  transitions affect both total and gas. Direct calls retain requested-finalized-snapshot semantics.
+- Legacy address decoding ignores the high twelve bytes and accepts trailing calldata. Malformed recognized input has
+  zero action gas. Before Cornus a successful value-bearing read retains value in DPoS custody; Cornus rejects value
+  before decoding. Successful reads emit no logs or state mutation, and normal action/intrinsic out-of-gas nonce rules
+  remain shared with the native DPoS transaction state machine.
+- The snapshot codec appends an independent `delegation_ledger_history_complete` bit as item 23. Genesis/current and
+  schema-seven through schema-22 snapshots are complete. Direct schema-five/six snapshots remain incomplete across
+  re-encoding and the read rejects them pending replay/rebuild. This marker is deliberately separate from the
+  same-validator reward-corruption history marker.
+
+Validation passed all three focused total-delegation Rust tests, all 718 `rustaxa-consensus` tests, the restart-backed
+fixture in Rust-enabled and pure-C++ builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, Rust formatting, and whitespace
+validation.
+
+No CXX carrier, bridge handle/export, shim, module flag, or compatibility-only surface changes are needed, so `CRW-07`
+has no bridge-inventory delta. The internal DPoS storage schema advances from 22 to 23 items. A schema-five/six snapshot
+already rewritten as schema 22 by an older binary is indistinguishable and remains a documented migration limitation.
+Previously finalized Rust native read transactions can differ in status, gas, receipt roots, value custody, balances,
+and later affordability; correction requires replay/rebuild from the first affected read rather than an inferred
+principal edit. `CRW-08` remains active for `getDelegations(address,uint32)`, its explicit historical reward-per-stake
+reference graph, and the remaining DPoS method/failure families.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

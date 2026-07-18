@@ -580,6 +580,25 @@ and later affordability; exact correction requires replay/rebuild from the first
 inferred state edit. `CRW-08` remains active for delegation reads and their explicit historical reward reference graph,
 plus the remaining DPoS method/failure families.
 
+The next bounded `CRW-08` slice executes `getTotalDelegation(address)` natively without coupling principal accounting
+to the remaining historical reward graph. The method sums only the delegator's live authoritative validator-membership
+rows, charges 5,000 action gas per membership with zero action gas for an empty delegator, and observes successful
+earlier same-block delegate, undelegate, cancel, redelegate, and terminal-validator transitions. Duplicate or dangling
+membership, principal wider than `uint256`, and sum overflow are hard snapshot corruption. Legacy narrow address
+decoding and trailing calldata remain accepted; malformed input has zero action gas. Before Cornus, successful value is
+retained in DPoS custody; at Cornus and later value is rejected before ABI decoding. Direct calls continue to use the
+requested finalized snapshot, while native execution uses transaction-point live state and emits no logs or mutations.
+
+The internal DPoS snapshot codec gains a twenty-third item, `delegation_ledger_history_complete`, independent of the
+same-validator reward-corruption marker. Genesis/current and schema-seven through schema-22 snapshots are complete;
+direct schema-five/six snapshots remain incomplete across re-encoding and this read rejects them pending replay/rebuild.
+A schema-five/six snapshot already rewritten as schema 22 by an older binary cannot be distinguished retroactively.
+This is an internal storage-schema delta with no CXX carrier, bridge handle/export, shim, module flag, or `CRW-07`
+bridge-inventory change. Historical Rust native total-delegation transactions may differ in status, gas, receipt roots,
+value custody, balances, and later affordability; exact correction requires replay/rebuild from the first affected read
+rather than an inferred principal edit. `CRW-08` remains active for `getDelegations(address,uint32)`, its explicit
+historical reward-per-stake reference graph, and the remaining DPoS method/failure families.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

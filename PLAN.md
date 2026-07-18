@@ -426,9 +426,11 @@ reference builds retain the untouched legacy RewardsStats header and source.
     result for that topology. Repeated zero-pool calls remain representable on complete-history snapshots.
     Databases finalized by the immediately preceding unreleased redelegation build require rebuild/replay if they contain
     a markerless zero-amount same-validator call, because scalar stake state cannot reveal that reference corruption.
-    The extended 22-item snapshot codec still decodes the prior 21-item form as history-incomplete, but rollback to a
+    The extended 23-item snapshot codec still decodes the prior 21-item same-validator form as history-incomplete and
+    adds an independent delegation-ledger completeness bit. Direct schema-five/six snapshots remain ledger-incomplete;
+    schema-seven through schema-22 snapshots reconstruct complete principal membership. Rollback to a
     pre-slice binary is unsafe after any post-slice DPoS snapshot is finalized because that binary cannot decode the
-    appended marker item. Snapshots
+    appended items. Snapshots
     are persisted atomically with finalized block indexes, executed DAG/transaction status counters, and `lastBlockNumber`. Startup reloads persisted historical DPoS
     snapshots so PBFT, DAG, and pillar reads can reuse block-scoped Rust FinalChain facts after restart.
   - Rust finalization persists account snapshots atomically with finalized block indexes plus `lastBlockNumber`.
@@ -542,7 +544,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     `getValidators(uint32)` and `getValidatorsFor(address,uint32)`, is likewise native-executed against live state with
     legacy page gas, Cornus nonpayability, wrapping `uint32` page offsets, and swap-remove validator ordering. The V1 and
     V2 undelegation-page reads are also native-executed against live state with legacy queue ordering, wrapping page
-    offsets, fork/payability behavior, and their distinct storage-read gas formulas.
+    offsets, fork/payability behavior, and their distinct storage-read gas formulas. `getTotalDelegation(address)` is
+    native-executed against the same live principal ledger with zero gas for empty membership, 5,000 gas per validator
+    membership, Cornus nonpayability, and explicit rejection of incomplete legacy delegation ledgers.
 - Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or

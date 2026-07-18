@@ -2018,6 +2018,383 @@ TEST_F(FinalChainTest, native_dpos_undelegations_page_reads_cover_cornus_gated_s
   EXPECT_EQ(restarted_post_cornus_v2.code_retval, post_cornus_v2_read.code_retval);
 }
 
+TEST_F(FinalChainTest, native_dpos_get_total_delegation_reads_cover_cornus_gated_selector_and_mutation_visibility) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kOwnerInitialBalance = 21'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kPreCornusValue = 111;
+  constexpr uint64_t kRejectedCornusValue = 222;
+  constexpr uint64_t kFirstDelegationAmount = 4'000;
+  constexpr uint64_t kSecondDelegationAmount = 2'000;
+  constexpr uint64_t kUndelegationAmount = kFirstDelegationAmount;
+  constexpr uint64_t kReDelegateAmount = 1'000;
+  constexpr uint64_t kValidatorCountGas = 5'000;
+
+  const auto to_padded_u256 = [](const u256& value) { return u256_to_padded_bytes32(value); };
+  const auto total_input = [](const addr_t& delegator) {
+    return util::EncodingSolidity::packFunctionCall("getTotalDelegation(address)", delegator);
+  };
+  const auto check_total = [&](const std::shared_ptr<FinalChain>& chain, uint64_t block_num, const bytes& input,
+                               const u256& expected) {
+    const auto response = chain->call({addr_t{}, kGasPrice, kDposContractAddress, 0, 0, 1'000'000, input}, block_num);
+    ASSERT_TRUE(response.code_err.empty()) << response.code_err;
+    ASSERT_EQ(response.code_retval.size(), 32u);
+    EXPECT_EQ(response.code_retval, to_padded_u256(expected));
+  };
+  const auto assert_sticky_reject = [&](const std::shared_ptr<FinalChain>& chain, uint64_t block_num,
+                                        const bytes& input) {
+    const auto response = chain->call({addr_t{}, kGasPrice, kDposContractAddress, 0, 0, 1'000'000, input}, block_num);
+    EXPECT_FALSE(response.code_err.empty());
+  };
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair validator_1{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair validator_2{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair delegator{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 2;
+
+  const auto vrf_public_key_1 = vrf_wrapper::getVrfKeyPair().first;
+  const auto vrf_public_key_2 = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_1_info{validator_1.address(), owner.address(), vrf_public_key_1, 0, "", "", {}};
+  validator_1_info.delegations.emplace(owner.address(), kInitialStake);
+  state_api::ValidatorInfo validator_2_info{validator_2.address(), owner.address(), vrf_public_key_2, 0, "", "", {}};
+  validator_2_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_1_info, validator_2_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_delegator_balance = SUT->getAccount(delegator.address())->balance;
+  const auto initial_dpos_balance = SUT->getAccount(kDposContractAddress)->balance;
+
+  const auto zero_total_input = total_input(delegator.address());
+  auto high_bits_total_input = zero_total_input;
+  high_bits_total_input[4] = 0xaa;
+  auto trailing_total_input = zero_total_input;
+  trailing_total_input.push_back(0xbb);
+  auto malformed_total_input = zero_total_input;
+  malformed_total_input.resize(4);
+
+  const auto delegate_to_first_input =
+      util::EncodingSolidity::packFunctionCall("delegate(address)", validator_1.address());
+  const auto delegate_to_second_input =
+      util::EncodingSolidity::packFunctionCall("delegate(address)", validator_2.address());
+  const auto undelegate_input = util::EncodingSolidity::packFunctionCall(
+      "undelegate(address,uint256)", validator_1.address(), u256(kUndelegationAmount));
+  const auto cancel_undelegate_input =
+      util::EncodingSolidity::packFunctionCall("cancelUndelegate(address)", validator_1.address());
+  const auto redelegate_input = util::EncodingSolidity::packFunctionCall(
+      "reDelegate(address,address,uint256)", validator_1.address(), validator_2.address(), u256(kReDelegateAmount));
+
+  auto assert_block_receipts = [](const std::vector<TransactionReceipt>& chain_receipts,
+                                  const std::shared_ptr<FinalChain>& chain, uint64_t block_num) {
+    for (size_t i = 0; i < chain_receipts.size(); ++i) {
+      const auto persisted = chain->transactionReceipt(block_num, i);
+      ASSERT_TRUE(persisted);
+      EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(chain_receipts[i]));
+    }
+  };
+
+  check_total(SUT, 0, zero_total_input, 0);
+
+  const auto block1_txs = SharedTransactions{
+      std::make_shared<Transaction>(0, kPreCornusValue, kGasPrice, kGasLimit, zero_total_input, delegator.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, high_bits_total_input, delegator.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, trailing_total_input, delegator.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(3, 0, kGasPrice, kGasLimit, malformed_total_input, delegator.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(4, kFirstDelegationAmount, kGasPrice, kGasLimit, delegate_to_first_input,
+                                    delegator.secret(), kDposContractAddress, cfg.genesis.chain_id)};
+  const auto block1_result = advance(block1_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block1_result->trx_receipts.size(), block1_txs.size());
+
+  const auto block1_expected_gas =
+      std::array<uint64_t, 5>{IntrinsicGas(zero_total_input, false), IntrinsicGas(high_bits_total_input, false),
+                              IntrinsicGas(trailing_total_input, false), IntrinsicGas(malformed_total_input, false),
+                              IntrinsicGas(delegate_to_first_input, false) + 40'000};
+  const std::array<uint8_t, 5> block1_expected_status{1, 1, 1, 0, 1};
+  uint64_t block1_cumulative = 0;
+  for (size_t i = 0; i < block1_txs.size(); ++i) {
+    block1_cumulative += block1_expected_gas[i];
+    EXPECT_EQ(block1_result->trx_receipts[i].status_code, block1_expected_status[i]);
+    EXPECT_EQ(block1_result->trx_receipts[i].gas_used, block1_expected_gas[i]);
+    EXPECT_EQ(block1_result->trx_receipts[i].cumulative_gas_used, block1_cumulative);
+    if (i == 4) {
+      EXPECT_GT(block1_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_NE(block1_result->trx_receipts[i].bloom(), LogBloom());
+    } else {
+      EXPECT_EQ(block1_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_EQ(block1_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block1_expected_status[i];
+      expected_receipt.gas_used = block1_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block1_cumulative;
+      EXPECT_EQ(util::rlp_enc(block1_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block1_result->final_chain_blk->gas_used, block1_cumulative);
+  LogBloom block1_bloom;
+  for (const auto& receipt : block1_result->trx_receipts) {
+    block1_bloom |= receipt.bloom();
+  }
+  EXPECT_EQ(block1_result->final_chain_blk->log_bloom, block1_bloom);
+  check_total(SUT, 1, zero_total_input, kFirstDelegationAmount);
+
+  const auto block2_txs =
+      SharedTransactions{std::make_shared<Transaction>(5, kRejectedCornusValue, kGasPrice, kGasLimit, zero_total_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(6, 0, kGasPrice, kGasLimit, zero_total_input, delegator.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(7, 0, kGasPrice, kGasLimit, trailing_total_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(8, 0, kGasPrice, kGasLimit, malformed_total_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id)};
+  const auto block2_result = advance(block2_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block2_result->trx_receipts.size(), block2_txs.size());
+
+  const auto block2_expected_gas = std::array<uint64_t, 4>{
+      IntrinsicGas(zero_total_input, false), IntrinsicGas(zero_total_input, false) + kValidatorCountGas,
+      IntrinsicGas(trailing_total_input, false) + kValidatorCountGas, IntrinsicGas(malformed_total_input, false)};
+  const std::array<uint8_t, 4> block2_expected_status{0, 1, 1, 0};
+  uint64_t block2_cumulative = 0;
+  for (size_t i = 0; i < block2_txs.size(); ++i) {
+    block2_cumulative += block2_expected_gas[i];
+    EXPECT_EQ(block2_result->trx_receipts[i].status_code, block2_expected_status[i]);
+    EXPECT_EQ(block2_result->trx_receipts[i].gas_used, block2_expected_gas[i]);
+    EXPECT_EQ(block2_result->trx_receipts[i].cumulative_gas_used, block2_cumulative);
+    EXPECT_EQ(block2_result->trx_receipts[i].logs.size(), 0u);
+    EXPECT_EQ(block2_result->trx_receipts[i].bloom(), LogBloom());
+    TransactionReceipt expected_receipt;
+    expected_receipt.status_code = block2_expected_status[i];
+    expected_receipt.gas_used = block2_expected_gas[i];
+    expected_receipt.cumulative_gas_used = block2_cumulative;
+    EXPECT_EQ(util::rlp_enc(block2_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+  }
+  EXPECT_EQ(block2_result->final_chain_blk->gas_used, block2_cumulative);
+  EXPECT_EQ(block2_result->final_chain_blk->log_bloom, LogBloom());
+  check_total(SUT, 2, zero_total_input, kFirstDelegationAmount);
+
+  const auto block3_txs = SharedTransactions{
+      std::make_shared<Transaction>(9, kSecondDelegationAmount, kGasPrice, kGasLimit, delegate_to_second_input,
+                                    delegator.secret(), kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(10, 0, kGasPrice, kGasLimit, high_bits_total_input, delegator.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id)};
+  const auto block3_result = advance(block3_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block3_result->trx_receipts.size(), block3_txs.size());
+
+  const auto block3_expected_gas =
+      std::array<uint64_t, 2>{IntrinsicGas(delegate_to_second_input, false) + 40'000,
+                              IntrinsicGas(high_bits_total_input, false) + 2 * kValidatorCountGas};
+  const std::array<uint8_t, 2> block3_expected_status{1, 1};
+  uint64_t block3_cumulative = 0;
+  for (size_t i = 0; i < block3_txs.size(); ++i) {
+    block3_cumulative += block3_expected_gas[i];
+    EXPECT_EQ(block3_result->trx_receipts[i].status_code, block3_expected_status[i]);
+    EXPECT_EQ(block3_result->trx_receipts[i].gas_used, block3_expected_gas[i]);
+    EXPECT_EQ(block3_result->trx_receipts[i].cumulative_gas_used, block3_cumulative);
+    if (i == 0) {
+      EXPECT_GT(block3_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_NE(block3_result->trx_receipts[i].bloom(), LogBloom());
+    } else {
+      EXPECT_EQ(block3_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_EQ(block3_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block3_expected_status[i];
+      expected_receipt.gas_used = block3_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block3_cumulative;
+      EXPECT_EQ(util::rlp_enc(block3_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block3_result->final_chain_blk->gas_used, block3_cumulative);
+  LogBloom block3_bloom;
+  for (const auto& receipt : block3_result->trx_receipts) {
+    block3_bloom |= receipt.bloom();
+  }
+  EXPECT_EQ(block3_result->final_chain_blk->log_bloom, block3_bloom);
+  check_total(SUT, 3, zero_total_input, kFirstDelegationAmount + kSecondDelegationAmount);
+
+  const auto block4_txs =
+      SharedTransactions{std::make_shared<Transaction>(11, 0, kGasPrice, kGasLimit, undelegate_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(12, 0, kGasPrice, kGasLimit, zero_total_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id)};
+  const auto block4_result = advance(block4_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block4_result->trx_receipts.size(), block4_txs.size());
+
+  const auto block4_expected_gas = std::array<uint64_t, 2>{IntrinsicGas(undelegate_input, false) + 60'000,
+                                                           IntrinsicGas(zero_total_input, false) + kValidatorCountGas};
+  const std::array<uint8_t, 2> block4_expected_status{1, 1};
+  uint64_t block4_cumulative = 0;
+  for (size_t i = 0; i < block4_txs.size(); ++i) {
+    block4_cumulative += block4_expected_gas[i];
+    EXPECT_EQ(block4_result->trx_receipts[i].status_code, block4_expected_status[i]);
+    EXPECT_EQ(block4_result->trx_receipts[i].gas_used, block4_expected_gas[i]);
+    EXPECT_EQ(block4_result->trx_receipts[i].cumulative_gas_used, block4_cumulative);
+    if (i == 0) {
+      EXPECT_GT(block4_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_NE(block4_result->trx_receipts[i].bloom(), LogBloom());
+    } else {
+      EXPECT_EQ(block4_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_EQ(block4_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block4_expected_status[i];
+      expected_receipt.gas_used = block4_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block4_cumulative;
+      EXPECT_EQ(util::rlp_enc(block4_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block4_result->final_chain_blk->gas_used, block4_cumulative);
+  LogBloom block4_bloom;
+  for (const auto& receipt : block4_result->trx_receipts) {
+    block4_bloom |= receipt.bloom();
+  }
+  EXPECT_EQ(block4_result->final_chain_blk->log_bloom, block4_bloom);
+  check_total(SUT, 4, zero_total_input, kSecondDelegationAmount);
+
+  const auto block5_txs =
+      SharedTransactions{std::make_shared<Transaction>(13, 0, kGasPrice, kGasLimit, cancel_undelegate_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(14, 0, kGasPrice, kGasLimit, trailing_total_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id)};
+  const auto block5_result = advance(block5_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block5_result->trx_receipts.size(), block5_txs.size());
+
+  const auto block5_expected_gas =
+      std::array<uint64_t, 2>{IntrinsicGas(cancel_undelegate_input, false) + 60'000,
+                              IntrinsicGas(trailing_total_input, false) + 2 * kValidatorCountGas};
+  const std::array<uint8_t, 2> block5_expected_status{1, 1};
+  uint64_t block5_cumulative = 0;
+  for (size_t i = 0; i < block5_txs.size(); ++i) {
+    block5_cumulative += block5_expected_gas[i];
+    EXPECT_EQ(block5_result->trx_receipts[i].status_code, block5_expected_status[i]);
+    EXPECT_EQ(block5_result->trx_receipts[i].gas_used, block5_expected_gas[i]);
+    EXPECT_EQ(block5_result->trx_receipts[i].cumulative_gas_used, block5_cumulative);
+    if (i == 0) {
+      EXPECT_GT(block5_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_NE(block5_result->trx_receipts[i].bloom(), LogBloom());
+    } else {
+      EXPECT_EQ(block5_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_EQ(block5_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block5_expected_status[i];
+      expected_receipt.gas_used = block5_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block5_cumulative;
+      EXPECT_EQ(util::rlp_enc(block5_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block5_result->final_chain_blk->gas_used, block5_cumulative);
+  LogBloom block5_bloom;
+  for (const auto& receipt : block5_result->trx_receipts) {
+    block5_bloom |= receipt.bloom();
+  }
+  EXPECT_EQ(block5_result->final_chain_blk->log_bloom, block5_bloom);
+  check_total(SUT, 5, zero_total_input, kFirstDelegationAmount + kSecondDelegationAmount);
+
+  const auto block6_txs =
+      SharedTransactions{std::make_shared<Transaction>(15, 0, kGasPrice, kGasLimit, redelegate_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(16, 0, kGasPrice, kGasLimit, high_bits_total_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id)};
+  const auto block6_result = advance(block6_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block6_result->trx_receipts.size(), block6_txs.size());
+
+  const auto block6_expected_gas =
+      std::array<uint64_t, 2>{IntrinsicGas(redelegate_input, false) + 80'000,
+                              IntrinsicGas(high_bits_total_input, false) + 2 * kValidatorCountGas};
+  const std::array<uint8_t, 2> block6_expected_status{1, 1};
+  uint64_t block6_cumulative = 0;
+  for (size_t i = 0; i < block6_txs.size(); ++i) {
+    block6_cumulative += block6_expected_gas[i];
+    EXPECT_EQ(block6_result->trx_receipts[i].status_code, block6_expected_status[i]);
+    EXPECT_EQ(block6_result->trx_receipts[i].gas_used, block6_expected_gas[i]);
+    EXPECT_EQ(block6_result->trx_receipts[i].cumulative_gas_used, block6_cumulative);
+    if (i == 0) {
+      EXPECT_GT(block6_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_NE(block6_result->trx_receipts[i].bloom(), LogBloom());
+    } else {
+      EXPECT_EQ(block6_result->trx_receipts[i].logs.size(), 0u);
+      EXPECT_EQ(block6_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block6_expected_status[i];
+      expected_receipt.gas_used = block6_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block6_cumulative;
+      EXPECT_EQ(util::rlp_enc(block6_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block6_result->final_chain_blk->gas_used, block6_cumulative);
+  LogBloom block6_bloom;
+  for (const auto& receipt : block6_result->trx_receipts) {
+    block6_bloom |= receipt.bloom();
+  }
+  EXPECT_EQ(block6_result->final_chain_blk->log_bloom, block6_bloom);
+  check_total(SUT, 6, zero_total_input, kFirstDelegationAmount + kSecondDelegationAmount);
+
+  const auto expected_sender_balance = initial_delegator_balance -
+                                       u256((block1_cumulative + block2_cumulative + block3_cumulative +
+                                             block4_cumulative + block5_cumulative + block6_cumulative) *
+                                            kGasPrice) -
+                                       u256(kPreCornusValue + kFirstDelegationAmount + kSecondDelegationAmount);
+  const auto expected_dpos_balance =
+      initial_dpos_balance + u256(kPreCornusValue + kFirstDelegationAmount + kSecondDelegationAmount);
+
+  const auto sender_account = SUT->getAccount(delegator.address());
+  ASSERT_TRUE(sender_account);
+  EXPECT_EQ(sender_account->nonce, 17);
+  EXPECT_EQ(sender_account->balance, expected_sender_balance);
+  const auto dpos_account = SUT->getAccount(kDposContractAddress);
+  ASSERT_TRUE(dpos_account);
+  EXPECT_EQ(dpos_account->nonce, 1);
+  EXPECT_EQ(dpos_account->balance, expected_dpos_balance);
+
+  assert_block_receipts(block1_result->trx_receipts, SUT, 1);
+  assert_block_receipts(block2_result->trx_receipts, SUT, 2);
+  assert_block_receipts(block3_result->trx_receipts, SUT, 3);
+  assert_block_receipts(block4_result->trx_receipts, SUT, 4);
+  assert_block_receipts(block5_result->trx_receipts, SUT, 5);
+  assert_block_receipts(block6_result->trx_receipts, SUT, 6);
+
+  assert_sticky_reject(SUT, 2, malformed_total_input);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 6);
+  const auto restarted_sender_account = SUT->getAccount(delegator.address());
+  ASSERT_TRUE(restarted_sender_account);
+  EXPECT_EQ(restarted_sender_account->nonce, 17);
+  EXPECT_EQ(restarted_sender_account->balance, expected_sender_balance);
+  const auto restarted_dpos_account = SUT->getAccount(kDposContractAddress);
+  ASSERT_TRUE(restarted_dpos_account);
+  EXPECT_EQ(restarted_dpos_account->nonce, 1);
+  EXPECT_EQ(restarted_dpos_account->balance, expected_dpos_balance);
+  check_total(SUT, 6, zero_total_input, kFirstDelegationAmount + kSecondDelegationAmount);
+  assert_block_receipts(block1_result->trx_receipts, SUT, 1);
+  assert_block_receipts(block2_result->trx_receipts, SUT, 2);
+  assert_block_receipts(block3_result->trx_receipts, SUT, 3);
+  assert_block_receipts(block4_result->trx_receipts, SUT, 4);
+  assert_block_receipts(block5_result->trx_receipts, SUT, 5);
+  assert_block_receipts(block6_result->trx_receipts, SUT, 6);
+  assert_sticky_reject(SUT, 2, malformed_total_input);
+}
+
 TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kDelegation = 1'000;
