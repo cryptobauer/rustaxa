@@ -391,13 +391,19 @@ reference builds retain the untouched legacy RewardsStats header and source.
     logging, and network egress.
   - Rust finalization appends DPoS snapshots for finalized native-transfer blocks and the Rust-supported
     `registerValidator(address,bytes,bytes,uint16,string,string)`, `delegate(address)`,
-    `undelegate(address,uint256)`, `undelegateV2(address,uint256)`, `confirmUndelegateV2(address,uint64)`,
+    `undelegate(address,uint256)`, `confirmUndelegate(address)`, `cancelUndelegate(address)`,
+    `undelegateV2(address,uint256)`, `confirmUndelegateV2(address,uint64)`,
     `cancelUndelegateV2(address,uint64)`, `reDelegate(address,address,uint256)`, `setValidatorInfo(address,string,string)`,
     and `setCommission(address,uint16)` DPoS contract subset. The Rust snapshot
     persists validator stake/vote aggregates plus a validator/delegator stake ledger seeded from genesis delegations so
     undelegation and redelegation ownership checks stay in Rust. It also persists validator insertion order and
-    commission-change block numbers plus V2 undelegation queues with per-delegator IDs so paged validator/undelegation
-    reads and owner commission rules remain restart-durable. Snapshots
+    commission-change block numbers, ordered V1 undelegation queues, and V2 undelegation queues with per-delegator IDs
+    so paged validator/undelegation reads, combined pending counts, and owner commission rules remain restart-durable.
+    Before Magnolia, validator queries preserve the legacy zero pending-count field. At Magnolia and later, Rust derives
+    the count and deletion guard from the actual combined queues, intentionally correcting the legacy `ValidatorV1`
+    blind spot where a pre-Magnolia request was omitted from the persisted counter and could permit premature deletion.
+    The extended 21-item snapshot codec still decodes the prior 20-item form, but rollback to a pre-slice binary is unsafe
+    after any post-slice DPoS snapshot is finalized because that binary cannot decode the appended queue item. Snapshots
     are persisted atomically with finalized block indexes, executed DAG/transaction status counters, and `lastBlockNumber`. Startup reloads persisted historical DPoS
     snapshots so PBFT, DAG, and pillar reads can reuse block-scoped Rust FinalChain facts after restart.
   - Rust finalization persists account snapshots atomically with finalized block indexes plus `lastBlockNumber`.
@@ -421,7 +427,7 @@ reference builds retain the untouched legacy RewardsStats header and source.
     updates, current-ABI `claimAllRewards()`, and
     stake-mutation auto-claims by moving reward balances through staged Rust account/DPoS snapshots. Receipts for the
     supported native DPoS subset now carry Rust-generated legacy ABI logs for validator registration, delegation,
-    undelegation, V2 undelegation creation/confirmation/cancelation, redelegation, direct claims, commission claims,
+    undelegation, V1 and V2 undelegation confirmation/cancelation, redelegation, direct claims, commission claims,
     validator info/commission updates, claim-all, and
     stake-mutation auto-claims, with the block header bloom derived from those logs. Supported DPoS owner validation
     failures now persist failed receipts without mutating DPoS state. Rust native finalization now accepts

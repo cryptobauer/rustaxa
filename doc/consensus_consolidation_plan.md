@@ -3255,6 +3255,38 @@ focused Rust-enabled FinalChain fixture, the workspace fast gate, the FinalChain
 Rust-enabled/pure-C++ parity gate, the bridge-inventory guard, formatting, and whitespace checks. Gate output contained
 only the repository's existing compiler, Clippy, CMake, and Conan warnings.
 
+### CRW-08 Native DPoS V1 Undelegation Lifecycle Parity
+
+This bounded follow-up closes the complete V1 request lifecycle rather than persisting principal without both terminal
+operations.
+
+- Successful `undelegate(address,uint256)` writes one ordered request per delegator/validator pair in the same staged
+  DPoS snapshot as reward, delegation, stake, and vote changes. Duplicate detection and unlock-block overflow checks run
+  before mutation; a valid zero-amount call still creates the legacy slot and log.
+- `getUndelegations(address,uint32)` returns the legacy static-entry array payload, 20-entry pages, end flag, current
+  validator-existence fact, and at least one 5,000-gas storage read. `getValidator(address)` derives its pending count
+  from both V1 and V2 queues at Magnolia and later, while pre-Magnolia queries retain the legacy zero count. The
+  post-Magnolia derivation intentionally fixes the legacy `ValidatorV1` persisted-counter blind spot for requests
+  created before the fork, preserving validator metadata and cancelability while a request remains pending.
+- `confirmUndelegate(address)` keeps missing and locked requests as status-zero outcomes, transfers the queued principal
+  from DPoS escrow only after unlock, and emits `UndelegateConfirmed`. Magnolia validator deletion requires zero stake,
+  zero commission rewards, and no remaining V1 or V2 requests.
+- `cancelUndelegate(address)` keeps missing requests and missing validators as status-zero outcomes, removes the request,
+  claims or checkpoints rewards, restores the delegation/stake/vote state without an escrow transfer, and emits
+  `UndelegateCanceled`.
+- The DPoS snapshot codec appends the ordered V1 queue as item 21 and retains decoding for the previous 20-item schema.
+  A pre-slice binary cannot decode newly finalized 21-item snapshots, so rollback requires restoring pre-slice storage.
+- Focused Rust and restart-backed dual-mode FinalChain coverage protects request order/codec compatibility, query shape,
+  duplicate/missing/locked rollback, cancel restoration, confirm payout, exact gas/logs, and mixed V1/V2 deletion rules.
+
+No CXX handle, carrier, export, shim, module flag, or compatibility-only test changed, so `CRW-07` has no inventory delta.
+`CRW-08` remains active for redelegation and remaining DPoS method/failure families.
+
+Validation passed the complete `rustaxa-consensus` test suite, the focused Rust V1/V2 lifecycle and snapshot tests, the
+restart-backed Rust-enabled FinalChain fixtures, `rewrite-validate-fast`, the FinalChain Tier 2 gate, the Tier 3
+Rust-enabled/pure-C++ parity gate, the bridge-inventory guard, Rust/C++ formatting, and whitespace checks. Gate output
+contained only the repository's existing Clippy, CMake, Conan, and compiler warnings.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
