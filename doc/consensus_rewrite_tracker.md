@@ -714,6 +714,24 @@ tests, `rewrite-validate-fast`, `rewrite-validate-final-chain`, `rewrite-validat
 46-warning consensus clippy baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace
 validation, and the repository pre-commit hook, followed by independent configured review approval.
 
+The typed-result slice now preserves exact legacy DPoS mutation business errors separately from ABI return bytes.
+All reachable mutation validation branches carry a `DposContractError`; claim-all failures retain the exact validator
+context and sequential first-error order without cloning canonical successful state, and registration proof recovery
+matches the pinned no-CGO btcec compact-signature behavior, including dynamic recovery errors, zero-S and identity
+recovery, and non-invertible-R hard failure. Delegate validation now preserves legacy maximum-before-minimum ordering,
+while V2 aggregate-stake underflow, reward-graph faults, account inconsistencies, and impossible arithmetic remain hard
+errors. Missing, unknown, retired, or otherwise ABI-unrecognized inputs remain untyped; genuine Cornus-gated method
+rejections retain `Method not supported`. Finalized receipts still publish only the unchanged status, gas, and logs and
+discard the typed reason for successful and ordinary typed business outcomes. Documented hard classifications instead
+abort without a receipt, including V2 aggregate-stake underflow and non-invertible registration proof recovery. The
+atomic transient call envelope is the next remaining DPoS mutation-call prerequisite.
+
+Typed-result validation passed eight focused error, ordering, recovery, dispatch, and rollback regressions, all 766
+`rustaxa-consensus` tests, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
+skill validation, Rust formatting, whitespace validation, and the repository pre-commit hook, followed by independent
+configured review approval.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

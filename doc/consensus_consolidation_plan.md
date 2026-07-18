@@ -3817,6 +3817,26 @@ tests, `rewrite-validate-fast`, `rewrite-validate-final-chain`, `rewrite-validat
 46-warning consensus clippy baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace
 validation, and the repository pre-commit hook, followed by independent configured review approval.
 
+### CRW-08 DPoS Typed Mutation Errors
+
+The shared kernel outcome now carries exact legacy mutation business errors separately from successful ABI return
+bytes. All reachable validation branches are typed, claim-all preserves validator context and sequential first-error
+ordering without adding global-state work to canonical success, and registration proof recovery matches the pinned
+no-CGO btcec compact-signature behavior, including dynamic recovery errors, zero-S and identity recovery, and a hard
+failure for non-invertible R. Delegate checks preserve legacy maximum-before-minimum order. V2 aggregate-stake
+underflow, reward-graph faults, account inconsistencies, and impossible arithmetic remain hard errors rather than
+status-zero contract outcomes. ABI lookup failures for missing, unknown, retired, and non-exact inputs remain untyped;
+only genuine named method rejections receive `Method not supported`. Finalized status, gas, logs, output publication,
+and receipt shape remain unchanged for successful and ordinary typed business outcomes because that boundary
+intentionally discards the typed reason. Documented V2 aggregate-stake underflow and non-invertible registration proof
+recovery remain hard classifications that abort without publishing a receipt.
+
+Typed-result validation passed eight focused error, ordering, recovery, dispatch, and rollback regressions, all 766
+`rustaxa-consensus` tests, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
+skill validation, Rust formatting, whitespace validation, and the repository pre-commit hook, followed by independent
+configured review approval.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

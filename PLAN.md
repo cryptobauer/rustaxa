@@ -475,7 +475,10 @@ reference builds retain the untouched legacy RewardsStats header and source.
     The shared kernel result now preserves the successful `undelegateV2` ABI request ID and legacy pre-fix
     `claimAllRewards(uint32)` end flag while finalized receipt publication continues to discard return bytes. Existing
     widened finalized page selection remains unchanged; aligning wrapping-batch selection has separate historical replay
-    consequences. Exact typed business errors remain required before the transient call envelope can route mutations.
+    consequences. The kernel now also carries exact legacy mutation business errors separately from ABI output, including
+    pinned no-CGO btcec registration-proof diagnostics and claim-all validator context, while ABI lookup failures remain
+    untyped and corrupt state stays a hard error. Finalized receipts discard the typed reason. The atomic transient call
+    envelope remains required before `FinalChain::call` can route all mutation selectors.
     Rust native finalization also executes the slashing `commitDoubleVotingProof(bytes,bytes)` precompile path for
     legacy PBFT vote RLPs: Rust decodes the calldata, recovers both vote signers, validates the double-vote facts,
     persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits

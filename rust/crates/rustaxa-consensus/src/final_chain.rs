@@ -32,7 +32,9 @@ use crate::slashing::{
 };
 use anyhow::Result;
 use ethereum_types::{H256, U256};
-use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
+use k256::ecdsa::VerifyingKey;
+use k256::elliptic_curve::{Group, PrimeField, sec1::ToEncodedPoint};
+use k256::{ProjectivePoint, Scalar};
 use keccak_hasher::KeccakHasher;
 use num_bigint::BigUint;
 use rlp::Rlp;
@@ -3473,6 +3475,9 @@ impl FinalChain {
                 // bytes. They are intentionally consumed at this publication
                 // boundary after read execution has completed successfully.
                 let _code_retval = contract_outcome.code_retval;
+                // Finalized receipts retain only status and logs. The exact
+                // legacy mutation error remains available to call-style users.
+                let _contract_error = contract_outcome.contract_error;
                 receipts.push(NativeReceipt {
                     status_code: contract_outcome.status_code,
                     gas_used,
@@ -3584,6 +3589,7 @@ impl FinalChain {
                 | DposTransaction::ClaimAllRewards { .. }
                 | DposTransaction::PhalaenopsisEscrowTransfer
                 | DposTransaction::MalformedMutation { selector: _ }
+                | DposTransaction::UnrecognizedInput
                 | DposTransaction::MethodNotSupported
         )
     }
@@ -3744,7 +3750,10 @@ impl FinalChain {
             DposTransaction::PhalaenopsisEscrowTransfer => {
                 Ok(DposApplyOutcome::success(Vec::new()))
             }
-            DposTransaction::MethodNotSupported => Ok(DposApplyOutcome::contract_failure()),
+            DposTransaction::MethodNotSupported => Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::MethodNotSupported,
+            )),
+            DposTransaction::UnrecognizedInput => Ok(DposApplyOutcome::contract_failure()),
             DposTransaction::MalformedMutation {
                 selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
             } => Ok(DposApplyOutcome::success(Vec::new())),
@@ -4928,10 +4937,14 @@ impl FinalChain {
         delegator: [u8; 20],
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(delegations) = snapshot.delegations.get(&validator) else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentDelegation,
+            ));
         };
         if !delegations.contains_key(&delegator) {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentDelegation,
+            ));
         }
         Ok(DposApplyOutcome::success(
             self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?,
@@ -4951,13 +4964,13 @@ impl FinalChain {
             .cloned()
             .unwrap_or_default();
         let Some(batch) = batch else {
-            let mut logs = Vec::new();
-            for validator in validators.iter() {
-                logs.extend(self.apply_dpos_delegator_reward_claim(
-                    snapshot, accounts, *validator, delegator,
-                )?);
-            }
-            return Ok(DposApplyOutcome::success(logs));
+            return self.apply_dpos_claim_all_reward_set(
+                snapshot,
+                accounts,
+                delegator,
+                &validators,
+                Vec::new(),
+            );
         };
         let is_end = dpos_claim_all_rewards_batch_is_end(validators.len(), batch)?;
         let start = usize::try_from(batch)
@@ -4980,16 +4993,70 @@ impl FinalChain {
                 abi_word_from_bool(is_end).to_vec(),
             ));
         }
+        let selected_validators = validators
+            .iter()
+            .skip(start)
+            .take(claim_count)
+            .copied()
+            .collect::<Vec<_>>();
+        self.apply_dpos_claim_all_reward_set(
+            snapshot,
+            accounts,
+            delegator,
+            &selected_validators,
+            abi_word_from_bool(is_end).to_vec(),
+        )
+    }
+
+    /// Claims one ordered validator set for a claim-all mutation.
+    ///
+    /// Canonical sets execute directly, keeping charged work proportional to
+    /// the selected claims. If an inconsistent later entry lacks a delegation,
+    /// preceding claims are replayed on clones only to preserve legacy
+    /// first-error ordering without publishing partial state on the business
+    /// failure path.
+    fn apply_dpos_claim_all_reward_set(
+        &self,
+        snapshot: &mut DposSnapshot,
+        accounts: &mut HashMap<[u8; 20], Account>,
+        delegator: [u8; 20],
+        validators: &[[u8; 20]],
+        code_retval: Vec<u8>,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        let first_missing = validators.iter().position(|validator| {
+            !snapshot
+                .delegations
+                .get(validator)
+                .is_some_and(|delegations| delegations.contains_key(&delegator))
+        });
+        if let Some(missing_index) = first_missing {
+            if missing_index > 0 {
+                let mut staged_snapshot = snapshot.clone();
+                let mut staged_accounts = accounts.clone();
+                for validator in &validators[..missing_index] {
+                    self.apply_dpos_delegator_reward_claim(
+                        &mut staged_snapshot,
+                        &mut staged_accounts,
+                        *validator,
+                        delegator,
+                    )?;
+                }
+            }
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ClaimAllValidator {
+                    source: Box::new(DposContractError::NonExistentDelegation),
+                    validator: validators[missing_index],
+                },
+            ));
+        }
+
         let mut logs = Vec::new();
-        for validator in validators.iter().skip(start).take(claim_count) {
+        for validator in validators {
             logs.extend(
                 self.apply_dpos_delegator_reward_claim(snapshot, accounts, *validator, delegator)?,
             );
         }
-        Ok(DposApplyOutcome::success_with(
-            logs,
-            abi_word_from_bool(is_end).to_vec(),
-        ))
+        Ok(DposApplyOutcome::success_with(logs, code_retval))
     }
 
     fn apply_dpos_commission_reward_claim(
@@ -5001,10 +5068,14 @@ impl FinalChain {
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::WrongOwnerAcc,
+            ));
         };
         if metadata.owner != owner {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::WrongOwnerAcc,
+            ));
         }
         let is_zero_stake = snapshot
             .total_stakes
@@ -5076,16 +5147,24 @@ impl FinalChain {
         endpoint: Vec<u8>,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         if endpoint.len() > DPOS_MAX_ENDPOINT_LENGTH {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::MaxEndpointLengthExceeded,
+            ));
         }
         if description.len() > DPOS_MAX_DESCRIPTION_LENGTH {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::MaxDescriptionLengthExceeded,
+            ));
         }
         let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::WrongOwnerAcc,
+            ));
         };
         if metadata.owner != owner {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::WrongOwnerAcc,
+            ));
         }
         if !snapshot.total_stakes.contains_key(&validator)
             && Self::dpos_validator_owned_rows_exist(snapshot, validator)
@@ -5111,13 +5190,19 @@ impl FinalChain {
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::WrongOwnerAcc,
+            ));
         };
         if metadata.owner != owner {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::WrongOwnerAcc,
+            ));
         }
         if commission > DPOS_MAX_COMMISSION {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::CommissionOverflow,
+            ));
         }
         if metadata.last_commission_change > block_number {
             anyhow::bail!(
@@ -5136,12 +5221,16 @@ impl FinalChain {
             && block_number - metadata.last_commission_change
                 < u64::from(self.dpos_commission_change_frequency)
         {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ForbiddenCommissionChange,
+            ));
         }
         if self.dpos_commission_change_delta != 0 {
             let delta = commission.abs_diff(metadata.commission);
             if delta > self.dpos_commission_change_delta {
-                return Ok(DposApplyOutcome::contract_failure());
+                return Ok(DposApplyOutcome::mutation_contract_failure(
+                    DposContractError::ForbiddenCommissionChange,
+                ));
             }
         }
         metadata.commission = commission;
@@ -5255,8 +5344,18 @@ impl FinalChain {
         registration: DposRegistration,
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
-        if !verify_dpos_registration_proof(&registration.proof, registration.validator) {
-            return Ok(DposApplyOutcome::contract_failure());
+        match validate_dpos_registration_proof(&registration.proof, registration.validator)? {
+            DposRegistrationProofValidation::Valid => {}
+            DposRegistrationProofValidation::WrongProof => {
+                return Ok(DposApplyOutcome::mutation_contract_failure(
+                    DposContractError::WrongProof,
+                ));
+            }
+            DposRegistrationProofValidation::RecoveryError(message) => {
+                return Ok(DposApplyOutcome::mutation_contract_failure(
+                    DposContractError::LegacyMessage(message),
+                ));
+            }
         }
 
         let validator = registration.validator;
@@ -5265,22 +5364,34 @@ impl FinalChain {
 
         let minimum_stake = u256_from_big_endian(&self.dpos_minimum_deposit);
         if stake < minimum_stake {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::InsufficientDelegation,
+            ));
         }
         if registration.metadata.endpoint.len() > DPOS_MAX_ENDPOINT_LENGTH {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::MaxEndpointLengthExceeded,
+            ));
         }
         if registration.metadata.description.len() > DPOS_MAX_DESCRIPTION_LENGTH {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::MaxDescriptionLengthExceeded,
+            ));
         }
         if registration.vrf_key.len() != 32 {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::WrongVrfKey,
+            ));
         }
         if registration.metadata.commission > DPOS_MAX_COMMISSION {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::CommissionOverflow,
+            ));
         }
         if snapshot.total_stakes.contains_key(&validator) {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ExistentValidator,
+            ));
         }
         if Self::dpos_validator_owned_rows_exist(snapshot, validator) {
             return Err(anyhow::anyhow!(
@@ -5290,7 +5401,9 @@ impl FinalChain {
 
         let maximum_stake = u256_from_big_endian(&self.dpos_validator_maximum_stake);
         if stake > maximum_stake {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ValidatorsMaxStakeExceeded,
+            ));
         }
 
         let vote_count = dpos_vote_count(
@@ -5390,10 +5503,23 @@ impl FinalChain {
         amount: Vec<u8>,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentValidator,
+            ));
         };
         let current_stake = u256_from_big_endian(stake);
         let add_amount = u256_from_big_endian(&amount);
+        let maximum_stake = u256_from_big_endian(&self.dpos_validator_maximum_stake);
+        let Some(new_stake) = current_stake.checked_add(add_amount) else {
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ValidatorsMaxStakeExceeded,
+            ));
+        };
+        if new_stake > maximum_stake {
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ValidatorsMaxStakeExceeded,
+            ));
+        }
         let current_delegation = snapshot
             .delegations
             .get(&validator)
@@ -5403,13 +5529,9 @@ impl FinalChain {
         if current_delegation.is_zero()
             && add_amount < u256_from_big_endian(&self.dpos_minimum_deposit)
         {
-            return Ok(DposApplyOutcome::contract_failure());
-        }
-        let new_stake = current_stake
-            .checked_add(add_amount)
-            .ok_or_else(|| anyhow::anyhow!("DPoS delegate stake addition overflow"))?;
-        if new_stake > u256_from_big_endian(&self.dpos_validator_maximum_stake) {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::InsufficientDelegation,
+            ));
         }
         let mut logs = if current_delegation.is_zero() {
             Vec::new()
@@ -5484,15 +5606,17 @@ impl FinalChain {
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let remove_amount = u256_from_big_endian(&amount);
         if find_undelegation(snapshot, delegator, validator).is_some() {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::ExistentUndelegation,
+            ));
         }
-        if self.dpos_delegation_removal_v1_contract_preflight(
+        if let Some(contract_error) = self.dpos_delegation_removal_v1_contract_preflight(
             snapshot,
             delegator,
             validator,
             remove_amount,
         )? {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
         let unlock_block = block_number
             .checked_add(self.dpos_delegation_locking_period(block_number))
@@ -5536,10 +5660,14 @@ impl FinalChain {
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(entry) = find_undelegation(snapshot, delegator, validator).cloned() else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentUndelegation,
+            ));
         };
         if entry.block > block_number {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::LockedUndelegation,
+            ));
         }
         let amount = u256_from_big_endian(&entry.amount);
         let dpos_contract_balance = u256_from_big_endian(
@@ -5552,9 +5680,9 @@ impl FinalChain {
         if dpos_contract_balance < amount {
             anyhow::bail!("DPoS contract balance insufficient for undelegation confirmation");
         }
-        if remove_undelegation(snapshot, delegator, validator).is_none() {
-            return Ok(DposApplyOutcome::contract_failure());
-        }
+        remove_undelegation(snapshot, delegator, validator).ok_or_else(|| {
+            anyhow::anyhow!("DPoS V1 undelegation disappeared after successful preflight")
+        })?;
         if self.magnolia_active(block_number)
             && snapshot.total_stakes.contains_key(&validator)
             && dpos_undelegations_count_for_validator(snapshot, validator) == 0
@@ -5594,14 +5722,18 @@ impl FinalChain {
         validator: [u8; 20],
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(entry) = find_undelegation(snapshot, delegator, validator).cloned() else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentUndelegation,
+            ));
         };
         if !snapshot.total_stakes.contains_key(&validator) {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentValidator,
+            ));
         }
-        if remove_undelegation(snapshot, delegator, validator).is_none() {
-            return Ok(DposApplyOutcome::contract_failure());
-        }
+        remove_undelegation(snapshot, delegator, validator).ok_or_else(|| {
+            anyhow::anyhow!("DPoS V1 undelegation disappeared after successful preflight")
+        })?;
         let amount = u256_from_big_endian(&entry.amount);
         let mut logs = if snapshot
             .delegations
@@ -5662,13 +5794,13 @@ impl FinalChain {
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let remove_amount = u256_from_big_endian(&amount);
-        if self.dpos_delegation_removal_v2_contract_failure(
+        if let Some(contract_error) = self.dpos_delegation_removal_v2_contract_failure(
             snapshot,
             delegator,
             validator,
             remove_amount,
-        ) {
-            return Ok(DposApplyOutcome::contract_failure());
+        )? {
+            return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
         let mut logs = self.remove_dpos_delegation_stake(
             snapshot,
@@ -5720,10 +5852,14 @@ impl FinalChain {
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(entry) = find_undelegation_v2(snapshot, delegator, validator, id).cloned() else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentUndelegation,
+            ));
         };
         if entry.block > block_number {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::LockedUndelegation,
+            ));
         }
         let amount = u256_from_big_endian(&entry.amount);
         let dpos_contract_balance = u256_from_big_endian(
@@ -5776,10 +5912,14 @@ impl FinalChain {
         id: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(entry) = find_undelegation_v2(snapshot, delegator, validator, id).cloned() else {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentUndelegation,
+            ));
         };
         if !snapshot.total_stakes.contains_key(&validator) {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(
+                DposContractError::NonExistentValidator,
+            ));
         }
         let amount = u256_from_big_endian(&entry.amount);
         let mut logs = if snapshot
@@ -5847,9 +5987,9 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: U256,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> Result<Option<DposContractError>, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
-            return Ok(true);
+            return Ok(Some(DposContractError::NonExistentValidator));
         };
         let Some(current_delegation) = snapshot
             .delegations
@@ -5857,38 +5997,36 @@ impl FinalChain {
             .and_then(|delegations| delegations.get(&delegator))
             .map(|bytes| u256_from_big_endian(bytes))
         else {
-            return Ok(true);
+            return Ok(Some(DposContractError::NonExistentDelegation));
         };
         if current_delegation < amount {
-            return Ok(true);
+            return Ok(Some(DposContractError::InsufficientDelegation));
         }
         if amount > u256_from_big_endian(stake) {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on undelegate");
         }
         let remaining = current_delegation - amount;
         if !remaining.is_zero() && remaining < u256_from_big_endian(&self.dpos_minimum_deposit) {
-            return Ok(true);
+            return Ok(Some(DposContractError::InsufficientDelegation));
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// Classifies V2 ledger-derived undelegation failures before mutation.
     ///
-    /// V2 preserves the legacy contract boundary: missing state, invalid
-    /// delegation amounts, aggregate validator stake underflow, and a
-    /// non-zero remainder below the minimum deposit all produce a normal
-    /// status-zero contract outcome. This intentionally differs from V1,
-    /// which treats aggregate stake underflow as a hard snapshot invariant
-    /// error.
+    /// Missing validators/delegations and business-invalid amounts are normal
+    /// status-zero outcomes. Aggregate validator stake below an otherwise
+    /// valid delegation removal is corrupt snapshot state and remains a hard
+    /// error, matching the V1 invariant boundary.
     fn dpos_delegation_removal_v2_contract_failure(
         &self,
         snapshot: &DposSnapshot,
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: U256,
-    ) -> bool {
+    ) -> Result<Option<DposContractError>, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
-            return true;
+            return Ok(Some(DposContractError::NonExistentValidator));
         };
         let current_stake = u256_from_big_endian(stake);
         let Some(current_delegation) = snapshot
@@ -5897,13 +6035,20 @@ impl FinalChain {
             .and_then(|delegations| delegations.get(&delegator))
             .map(|bytes| u256_from_big_endian(bytes))
         else {
-            return true;
+            return Ok(Some(DposContractError::NonExistentDelegation));
         };
-        if current_delegation < amount || current_stake < amount {
-            return true;
+        if current_delegation < amount {
+            return Ok(Some(DposContractError::InsufficientDelegation));
         }
+        anyhow::ensure!(
+            current_stake >= amount,
+            "Rust FinalChain::finalize DPoS stake underflows on undelegate V2"
+        );
         let remaining = current_delegation - amount;
-        !remaining.is_zero() && remaining < u256_from_big_endian(&self.dpos_minimum_deposit)
+        if !remaining.is_zero() && remaining < u256_from_big_endian(&self.dpos_minimum_deposit) {
+            return Ok(Some(DposContractError::InsufficientDelegation));
+        }
+        Ok(None)
     }
 
     /// Classifies legacy `reDelegate` business failures without mutating state.
@@ -5920,35 +6065,37 @@ impl FinalChain {
         to: [u8; 20],
         amount: U256,
         block_number: u64,
-    ) -> Result<bool, anyhow::Error> {
+    ) -> Result<Option<DposContractError>, anyhow::Error> {
         if block_number > self.rewards_config.fix_redelegate_block_num && from == to {
-            return Ok(true);
+            return Ok(Some(DposContractError::SameValidator));
         }
         if self.aspen_part_two_active(block_number) && amount.is_zero() {
-            return Ok(true);
+            return Ok(Some(DposContractError::InvalidRedelegation));
         }
         let Some(from_stake) = snapshot
             .total_stakes
             .get(&from)
             .map(|stake| u256_from_big_endian(stake))
         else {
-            return Ok(true);
+            return Ok(Some(DposContractError::NonExistentValidator));
         };
         let Some(to_stake) = snapshot
             .total_stakes
             .get(&to)
             .map(|stake| u256_from_big_endian(stake))
         else {
-            return Ok(true);
+            return Ok(Some(DposContractError::NonExistentValidator));
         };
         let maximum_stake = u256_from_big_endian(&self.dpos_validator_maximum_stake);
-        if !maximum_stake.is_zero()
-            && to_stake
-                .checked_add(amount)
-                .ok_or_else(|| anyhow::anyhow!("DPoS redelegation destination stake overflow"))?
-                > maximum_stake
-        {
-            return Ok(true);
+        if !maximum_stake.is_zero() {
+            let Some(destination_stake) = to_stake.checked_add(amount) else {
+                return Ok(Some(DposContractError::ValidatorsMaxStakeExceeded));
+            };
+            if destination_stake > maximum_stake {
+                return Ok(Some(DposContractError::ValidatorsMaxStakeExceeded));
+            }
+        } else if to_stake.checked_add(amount).is_none() {
+            anyhow::bail!("DPoS redelegation destination stake overflow");
         }
         let Some(from_delegation) = snapshot
             .delegations
@@ -5956,10 +6103,10 @@ impl FinalChain {
             .and_then(|delegations| delegations.get(&delegator))
             .map(|delegation| u256_from_big_endian(delegation))
         else {
-            return Ok(true);
+            return Ok(Some(DposContractError::NonExistentDelegation));
         };
         if amount > from_delegation {
-            return Ok(true);
+            return Ok(Some(DposContractError::InsufficientDelegation));
         }
         anyhow::ensure!(
             from_stake >= amount,
@@ -5967,9 +6114,9 @@ impl FinalChain {
         );
         let remainder = from_delegation - amount;
         if !remainder.is_zero() && remainder < u256_from_big_endian(&self.dpos_minimum_deposit) {
-            return Ok(true);
+            return Ok(Some(DposContractError::InsufficientDelegation));
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// Returns true when a validator has already executed pre-fix same-validator
@@ -6162,7 +6309,7 @@ impl FinalChain {
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let amount = u256_from_big_endian(&amount);
-        if self.dpos_redelegate_contract_failure(
+        if let Some(contract_error) = self.dpos_redelegate_contract_failure(
             snapshot,
             delegator,
             from,
@@ -6170,7 +6317,7 @@ impl FinalChain {
             amount,
             block_number,
         )? {
-            return Ok(DposApplyOutcome::contract_failure());
+            return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
         let same_validator = from == to;
         let stale_same_validator_head =
@@ -8787,7 +8934,7 @@ fn dpos_transaction_required_gas(
             cornus_period,
         )
         .unwrap_or(0),
-        DposTransaction::MethodNotSupported => 0,
+        DposTransaction::UnrecognizedInput | DposTransaction::MethodNotSupported => 0,
         DposTransaction::IsValidatorEligible(_)
         | DposTransaction::GetTotalEligibleVotesCount
         | DposTransaction::GetValidatorEligibleVotesCount(_) => DPOS_DEFAULT_METHOD_GAS,
@@ -9215,6 +9362,15 @@ fn selector_hex(selector: [u8; 4]) -> String {
         .collect::<String>()
 }
 
+/// Formats a twenty-byte address without a `0x` prefix.
+#[allow(dead_code)]
+fn address_hex(address: &[u8; 20]) -> String {
+    address
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
 /// Encodes the legacy slashing `getJailBlock(address)` return value from the
 /// caller-selected delayed snapshot. Missing jail history is returned as zero.
 fn encode_slashing_jail_block(snapshot: &DposSnapshot, validator: [u8; 20]) -> Vec<u8> {
@@ -9460,7 +9616,7 @@ fn decode_dpos_transaction_for_execution(
     phalaenopsis_period: u64,
 ) -> DposTransaction {
     if input.len() < 4 {
-        return DposTransaction::MethodNotSupported;
+        return DposTransaction::UnrecognizedInput;
     }
 
     let mut selector = [0u8; 4];
@@ -9471,7 +9627,7 @@ fn decode_dpos_transaction_for_execution(
         {
             DposTransaction::PhalaenopsisEscrowTransfer
         } else {
-            DposTransaction::MethodNotSupported
+            DposTransaction::UnrecognizedInput
         };
     }
     match selector {
@@ -9549,7 +9705,7 @@ fn decode_dpos_transaction_for_execution(
             if selector == DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
                 && block_number >= fix_claim_all_block_num
             {
-                return DposTransaction::MethodNotSupported;
+                return DposTransaction::UnrecognizedInput;
             }
             decode_dpos_transaction(
                 input,
@@ -9560,7 +9716,7 @@ fn decode_dpos_transaction_for_execution(
             )
             .unwrap_or(DposTransaction::MalformedMutation { selector })
         }
-        _ => DposTransaction::MethodNotSupported,
+        _ => DposTransaction::UnrecognizedInput,
     }
 }
 
@@ -9619,14 +9775,62 @@ fn decode_dpos_register_validator(
     })
 }
 
-fn verify_dpos_registration_proof(proof: &[u8], validator: [u8; 20]) -> bool {
+/// Classifies legacy validator-proof validation without collapsing recovery
+/// library errors into the contract's address-mismatch error.
+#[derive(Debug, Eq, PartialEq)]
+enum DposRegistrationProofValidation {
+    Valid,
+    WrongProof,
+    RecoveryError(String),
+}
+
+fn validate_dpos_registration_proof(
+    proof: &[u8],
+    validator: [u8; 20],
+) -> Result<DposRegistrationProofValidation, anyhow::Error> {
     if proof.len() != 65 {
-        return false;
+        return Ok(DposRegistrationProofValidation::WrongProof);
     }
-    let adjusted_recovery_id = match proof[64] {
-        27 => 0,
-        28 => 1,
-        _ => return false,
+    // The selected legacy no-CGO backend routes through btcec's compact
+    // recovery format. It clears the compact-compression bit instead of
+    // rejecting recovery bytes outside 27..=30, then reports its two possible
+    // recovery errors verbatim.
+    let adjusted_recovery_id = proof[64].wrapping_sub(27);
+    let iteration = adjusted_recovery_id & !4;
+    let curve_order = BigUint::parse_bytes(
+        b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+        16,
+    )
+    .expect("valid secp256k1 order constant");
+    let field_prime = BigUint::parse_bytes(
+        b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F",
+        16,
+    )
+    .expect("valid secp256k1 field-prime constant");
+    let raw_r = BigUint::from_bytes_be(&proof[..32]);
+    let recovery_x = &curve_order * BigUint::from(iteration / 2) + &raw_r;
+    if recovery_x >= field_prime {
+        return Ok(DposRegistrationProofValidation::RecoveryError(
+            "calculated Rx is larger than curve P".to_owned(),
+        ));
+    }
+    let fixed_word = |value: &BigUint| {
+        let bytes = value.to_bytes_be();
+        let mut word = [0u8; 32];
+        word[32 - bytes.len()..].copy_from_slice(&bytes);
+        word
+    };
+    let recovery_x_word = fixed_word(&recovery_x);
+    let mut compressed_recovery_point = [0u8; 33];
+    compressed_recovery_point[0] = if iteration.is_multiple_of(2) { 2 } else { 3 };
+    compressed_recovery_point[1..].copy_from_slice(&recovery_x_word);
+    let recovery_point = match VerifyingKey::from_sec1_bytes(&compressed_recovery_point) {
+        Ok(recovery_point) => ProjectivePoint::from(*recovery_point.as_affine()),
+        Err(_) => {
+            return Ok(DposRegistrationProofValidation::RecoveryError(
+                "invalid square root".to_owned(),
+            ));
+        }
     };
     let mut message = [0u8; 32];
     {
@@ -9636,32 +9840,49 @@ fn verify_dpos_registration_proof(proof: &[u8], validator: [u8; 20]) -> bool {
         hasher.finalize(&mut message);
     }
 
-    let recovery_id = match RecoveryId::try_from(adjusted_recovery_id) {
-        Ok(recovery_id) => recovery_id,
-        Err(_) => return false,
-    };
-    let signature = match Signature::try_from(&proof[..64]) {
-        Ok(signature) => signature,
-        Err(_) => return false,
-    };
-
+    let scalar_r = &raw_r % &curve_order;
+    let scalar_s = BigUint::from_bytes_be(&proof[32..64]) % &curve_order;
+    if scalar_r == BigUint::from(0u8) {
+        anyhow::bail!("DPoS registration proof recovery scalar has no modular inverse");
+    }
+    let scalar_r = Option::<Scalar>::from(Scalar::from_repr(fixed_word(&scalar_r).into()))
+        .expect("non-zero reduced registration proof r scalar");
+    let inverse_r = Option::<Scalar>::from(scalar_r.invert())
+        .expect("non-zero registration proof r scalar is invertible");
+    let scalar_s = Option::<Scalar>::from(Scalar::from_repr(fixed_word(&scalar_s).into()))
+        .expect("reduced registration proof s scalar");
+    let message_scalar = BigUint::from_bytes_be(&message) % &curve_order;
+    let message_scalar =
+        Option::<Scalar>::from(Scalar::from_repr(fixed_word(&message_scalar).into()))
+            .expect("reduced registration proof message scalar");
     let recovered =
-        match VerifyingKey::recover_from_prehash(message.as_ref(), &signature, recovery_id) {
-            Ok(recovered) => recovered,
-            Err(_) => return false,
-        };
-    let uncompressed = recovered.to_encoded_point(false);
+        (recovery_point * scalar_s - ProjectivePoint::GENERATOR * message_scalar) * inverse_r;
+    let uncompressed = if bool::from(recovered.is_identity()) {
+        let mut identity = vec![0u8; 65];
+        identity[0] = 4;
+        identity
+    } else {
+        recovered
+            .to_affine()
+            .to_encoded_point(false)
+            .as_bytes()
+            .to_vec()
+    };
     let mut recovered_address = [0u8; 20];
     {
         let mut pubkey_hash = [0u8; 32];
         use tiny_keccak::{Hasher, Keccak};
         let mut hasher = Keccak::v256();
-        hasher.update(&uncompressed.as_bytes()[1..]);
+        hasher.update(&uncompressed[1..]);
         hasher.finalize(&mut pubkey_hash);
         recovered_address.copy_from_slice(&pubkey_hash[12..]);
     }
 
-    validator == recovered_address
+    if validator == recovered_address {
+        Ok(DposRegistrationProofValidation::Valid)
+    } else {
+        Ok(DposRegistrationProofValidation::WrongProof)
+    }
 }
 
 type DposValidatorInfoUpdate = ([u8; 20], Vec<u8>, Vec<u8>);
@@ -9969,6 +10190,7 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::GetUndelegationV2(_)
         | DposTransaction::PhalaenopsisEscrowTransfer
         | DposTransaction::MalformedMutation { .. }
+        | DposTransaction::UnrecognizedInput
         | DposTransaction::MethodNotSupported => {}
     }
     Ok(())
@@ -10185,6 +10407,10 @@ struct DposApplyOutcome {
     /// transactions discard these bytes when receipts are published, but
     /// retaining them here keeps read execution testable before that boundary.
     code_retval: Vec<u8>,
+    /// Exact legacy DPoS business error for mutation failures. Finalized
+    /// receipts intentionally ignore this diagnostic while future call-style
+    /// execution can expose it without conflating it with return bytes.
+    contract_error: Option<DposContractError>,
 }
 
 impl DposApplyOutcome {
@@ -10193,6 +10419,7 @@ impl DposApplyOutcome {
             status_code: 1,
             logs,
             code_retval,
+            contract_error: None,
         }
     }
 
@@ -10209,6 +10436,83 @@ impl DposApplyOutcome {
             status_code: 0,
             logs: Vec::new(),
             code_retval: Vec::new(),
+            contract_error: None,
+        }
+    }
+
+    fn mutation_contract_failure(contract_error: DposContractError) -> Self {
+        Self {
+            status_code: 0,
+            logs: Vec::new(),
+            code_retval: Vec::new(),
+            contract_error: Some(contract_error),
+        }
+    }
+}
+
+/// Normal legacy DPoS contract failures returned by mutation methods.
+///
+/// These values are consensus-visible diagnostics, not ABI return payloads.
+/// Snapshot corruption, reward-graph faults, account inconsistencies, and
+/// arithmetic invariant failures remain outer `anyhow::Error` values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum DposContractError {
+    NonExistentValidator,
+    NonExistentDelegation,
+    ExistentUndelegation,
+    NonExistentUndelegation,
+    LockedUndelegation,
+    ExistentValidator,
+    SameValidator,
+    InvalidRedelegation,
+    ValidatorsMaxStakeExceeded,
+    InsufficientDelegation,
+    WrongProof,
+    WrongOwnerAcc,
+    WrongVrfKey,
+    ForbiddenCommissionChange,
+    CommissionOverflow,
+    MaxEndpointLengthExceeded,
+    MaxDescriptionLengthExceeded,
+    MethodNotSupported,
+    LegacyMessage(String),
+    ClaimAllValidator {
+        source: Box<DposContractError>,
+        validator: [u8; 20],
+    },
+}
+
+impl DposContractError {
+    /// Renders the byte-for-byte legacy Go error text for direct call results.
+    #[allow(dead_code)]
+    fn legacy_message(&self) -> String {
+        match self {
+            Self::NonExistentValidator => "Validator does not exist".to_owned(),
+            Self::NonExistentDelegation => "Delegation does not exist".to_owned(),
+            Self::ExistentUndelegation => "Undelegation already exist".to_owned(),
+            Self::NonExistentUndelegation => "Undelegation does not exist".to_owned(),
+            Self::LockedUndelegation => "Undelegation is not yet ready to be withdrawn".to_owned(),
+            Self::ExistentValidator => "Validator already exist".to_owned(),
+            Self::SameValidator => "From and to validators are the same".to_owned(),
+            Self::InvalidRedelegation => "Redelegation has to be more than 0".to_owned(),
+            Self::ValidatorsMaxStakeExceeded => "Validator's max stake exceeded".to_owned(),
+            Self::InsufficientDelegation => "Insufficient delegation".to_owned(),
+            Self::WrongProof => "Wrong proof, validator address could not be recovered".to_owned(),
+            Self::WrongOwnerAcc => "This account is not owner of specified validator".to_owned(),
+            Self::WrongVrfKey => "Wrong vrf key specified in validator arguments".to_owned(),
+            Self::ForbiddenCommissionChange => "Forbidden commission change".to_owned(),
+            Self::CommissionOverflow => "Commission is bigger than maximum value".to_owned(),
+            Self::MaxEndpointLengthExceeded => "Max endpoint length exceeded".to_owned(),
+            Self::MaxDescriptionLengthExceeded => "Max description length exceeded".to_owned(),
+            Self::MethodNotSupported => "Method not supported".to_owned(),
+            Self::LegacyMessage(message) => message.clone(),
+            Self::ClaimAllValidator { source, validator } => {
+                format!(
+                    "{} -> validator: 0x{}",
+                    source.legacy_message(),
+                    address_hex(validator)
+                )
+            }
         }
     }
 }
@@ -10307,6 +10611,9 @@ enum DposTransaction {
     MalformedMutation {
         selector: [u8; 4],
     },
+    /// Calldata that legacy ABI dispatch rejects before reaching a named DPoS
+    /// contract error, such as a missing or unknown selector.
+    UnrecognizedInput,
     MethodNotSupported,
 }
 
@@ -10386,6 +10693,449 @@ mod tests {
             "rustaxa-consensus-final-chain-{test_name}-{}-{nanos}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn dpos_contract_errors_render_exact_legacy_messages() {
+        let cases = [
+            (
+                DposContractError::NonExistentValidator,
+                "Validator does not exist",
+            ),
+            (
+                DposContractError::NonExistentDelegation,
+                "Delegation does not exist",
+            ),
+            (
+                DposContractError::ExistentUndelegation,
+                "Undelegation already exist",
+            ),
+            (
+                DposContractError::NonExistentUndelegation,
+                "Undelegation does not exist",
+            ),
+            (
+                DposContractError::LockedUndelegation,
+                "Undelegation is not yet ready to be withdrawn",
+            ),
+            (
+                DposContractError::ExistentValidator,
+                "Validator already exist",
+            ),
+            (
+                DposContractError::SameValidator,
+                "From and to validators are the same",
+            ),
+            (
+                DposContractError::InvalidRedelegation,
+                "Redelegation has to be more than 0",
+            ),
+            (
+                DposContractError::ValidatorsMaxStakeExceeded,
+                "Validator's max stake exceeded",
+            ),
+            (
+                DposContractError::InsufficientDelegation,
+                "Insufficient delegation",
+            ),
+            (
+                DposContractError::WrongProof,
+                "Wrong proof, validator address could not be recovered",
+            ),
+            (
+                DposContractError::WrongOwnerAcc,
+                "This account is not owner of specified validator",
+            ),
+            (
+                DposContractError::WrongVrfKey,
+                "Wrong vrf key specified in validator arguments",
+            ),
+            (
+                DposContractError::ForbiddenCommissionChange,
+                "Forbidden commission change",
+            ),
+            (
+                DposContractError::CommissionOverflow,
+                "Commission is bigger than maximum value",
+            ),
+            (
+                DposContractError::MaxEndpointLengthExceeded,
+                "Max endpoint length exceeded",
+            ),
+            (
+                DposContractError::MaxDescriptionLengthExceeded,
+                "Max description length exceeded",
+            ),
+            (
+                DposContractError::MethodNotSupported,
+                "Method not supported",
+            ),
+            (
+                DposContractError::LegacyMessage("recovery failed".to_owned()),
+                "recovery failed",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.legacy_message(), expected);
+        }
+
+        let validator = [0xab; 20];
+        assert_eq!(
+            DposContractError::ClaimAllValidator {
+                source: Box::new(DposContractError::NonExistentDelegation),
+                validator,
+            }
+            .legacy_message(),
+            "Delegation does not exist -> validator: 0xabababababababababababababababababababab"
+        );
+    }
+
+    #[test]
+    fn dpos_apply_outcome_keeps_error_separate_from_status_logs_and_return_bytes() {
+        let log = ReceiptLog {
+            address: [0x11; 20],
+            topics: vec![[0x22; 32]],
+            data: vec![0x33],
+        };
+        let success = DposApplyOutcome::success_with(vec![log.clone()], vec![0x44]);
+        assert_eq!(success.status_code, 1);
+        assert_eq!(success.logs, vec![log]);
+        assert_eq!(success.code_retval, vec![0x44]);
+        assert_eq!(success.contract_error, None);
+
+        let untyped = DposApplyOutcome::contract_failure();
+        assert_eq!(untyped.status_code, 0);
+        assert!(untyped.logs.is_empty());
+        assert!(untyped.code_retval.is_empty());
+        assert_eq!(untyped.contract_error, None);
+
+        let typed =
+            DposApplyOutcome::mutation_contract_failure(DposContractError::NonExistentValidator);
+        assert_eq!(typed.status_code, 0);
+        assert!(typed.logs.is_empty());
+        assert!(typed.code_retval.is_empty());
+        assert_eq!(
+            typed.contract_error,
+            Some(DposContractError::NonExistentValidator)
+        );
+    }
+
+    #[test]
+    fn dpos_delegate_reports_maximum_before_minimum_when_both_fail() {
+        let path = temp_db_path("dpos-typed-delegate-error-order");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x41; 20];
+        let delegator = [0x42; 20];
+        let mut final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10u64))],
+            U256::one(),
+            U256::one(),
+            U256::from(10u64),
+        );
+        final_chain.dpos_minimum_deposit = u256_to_big_endian(U256::from(5u64));
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let snapshot_before = snapshot.clone();
+        let mut accounts = HashMap::new();
+
+        let outcome = final_chain
+            .apply_dpos_delegate(
+                &mut snapshot,
+                &mut accounts,
+                delegator,
+                validator,
+                u256_to_big_endian(U256::one()),
+            )
+            .unwrap();
+
+        assert_eq!(
+            outcome.contract_error,
+            Some(DposContractError::ValidatorsMaxStakeExceeded)
+        );
+        assert_eq!(snapshot, snapshot_before);
+        assert!(accounts.is_empty());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_undelegate_v2_aggregate_stake_underflow_is_hard_error() {
+        let path = temp_db_path("dpos-typed-v2-hard-underflow");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x51; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10u64))],
+            U256::one(),
+            U256::one(),
+            U256::from(100u64),
+        );
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot
+            .total_stakes
+            .insert(validator, u256_to_big_endian(U256::from(5u64)));
+        let snapshot_before = snapshot.clone();
+        let mut accounts = HashMap::new();
+
+        let error = final_chain
+            .apply_dpos_undelegate_v2(
+                &mut snapshot,
+                &mut accounts,
+                validator,
+                validator,
+                u256_to_big_endian(U256::from(6u64)),
+                0,
+            )
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("stake underflows on undelegate V2")
+        );
+        assert_eq!(snapshot, snapshot_before);
+        assert!(accounts.is_empty());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_claim_all_contextualizes_missing_delegation_before_mutation() {
+        let path = temp_db_path("dpos-typed-claim-all-context");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let delegator = [0x61; 20];
+        let validator = [0x62; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![],
+            U256::one(),
+            U256::one(),
+            U256::from(100u64),
+        );
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot
+            .delegator_validators
+            .insert(delegator, vec![validator]);
+        let snapshot_before = snapshot.clone();
+        let mut accounts = HashMap::new();
+
+        let outcome = final_chain
+            .apply_dpos_claim_all_rewards(&mut snapshot, &mut accounts, delegator, None)
+            .unwrap();
+
+        let expected = DposContractError::ClaimAllValidator {
+            source: Box::new(DposContractError::NonExistentDelegation),
+            validator,
+        };
+        assert_eq!(outcome.contract_error, Some(expected));
+        assert_eq!(snapshot, snapshot_before);
+        assert!(accounts.is_empty());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_claim_all_preserves_first_hard_error_before_later_business_error() {
+        let path = temp_db_path("dpos-typed-claim-all-first-error");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let delegator = [0x11; 20];
+        let first_validator = [0x22; 20];
+        let missing_validator = [0x63; 20];
+        let final_chain = new_final_chain(storage.clone(), 200_000, 0, Vec::new(), Vec::new());
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot
+            .reward_reference_graph
+            .delete_cursor(&first_validator, &delegator)
+            .unwrap();
+        snapshot
+            .delegator_validators
+            .get_mut(&delegator)
+            .unwrap()
+            .push(missing_validator);
+        let snapshot_before = snapshot.clone();
+        let mut accounts = HashMap::new();
+
+        let error = final_chain
+            .apply_dpos_claim_all_rewards(&mut snapshot, &mut accounts, delegator, None)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("missing cursor"));
+        assert_eq!(snapshot, snapshot_before);
+        assert!(accounts.is_empty());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_registration_proof_separates_recovery_errors_from_wrong_proof() {
+        let validator = [0x71; 20];
+        assert_eq!(
+            validate_dpos_registration_proof(&[0u8; 64], validator).unwrap(),
+            DposRegistrationProofValidation::WrongProof
+        );
+
+        let mut invalid_recovery_id = [0u8; 65];
+        invalid_recovery_id[64] = 26;
+        assert_eq!(
+            validate_dpos_registration_proof(&invalid_recovery_id, validator).unwrap(),
+            DposRegistrationProofValidation::RecoveryError(
+                "calculated Rx is larger than curve P".to_owned()
+            )
+        );
+
+        let mut invalid_signature = [0u8; 65];
+        invalid_signature[64] = 27;
+        assert_eq!(
+            validate_dpos_registration_proof(&invalid_signature, validator).unwrap(),
+            DposRegistrationProofValidation::RecoveryError("invalid square root".to_owned())
+        );
+
+        let signing_key = SigningKey::from_slice(&[0x73; 32]).unwrap();
+        let signed_validator: [u8; 20] = address_from_signing_key(&signing_key).into();
+        let mut proof = register_validator_proof(&signing_key, signed_validator, None);
+        assert_eq!(
+            validate_dpos_registration_proof(&proof, signed_validator).unwrap(),
+            DposRegistrationProofValidation::Valid
+        );
+        proof[64] = proof[64].checked_add(4).unwrap();
+        assert_eq!(
+            validate_dpos_registration_proof(&proof, signed_validator).unwrap(),
+            DposRegistrationProofValidation::Valid
+        );
+
+        let curve_order = BigUint::parse_bytes(
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141",
+            16,
+        )
+        .unwrap();
+        let curve_order_bytes = curve_order.to_bytes_be();
+        let mut non_invertible_r = [0u8; 65];
+        non_invertible_r[..32].copy_from_slice(&curve_order_bytes);
+        non_invertible_r[63] = 1;
+        non_invertible_r[64] = 27;
+        assert!(
+            validate_dpos_registration_proof(&non_invertible_r, validator)
+                .unwrap_err()
+                .to_string()
+                .contains("no modular inverse")
+        );
+
+        let identity_hash = keccak256(&[0u8; 64]);
+        let mut identity_validator = [0u8; 20];
+        identity_validator.copy_from_slice(&identity_hash.as_bytes()[12..]);
+        let generator = ProjectivePoint::GENERATOR
+            .to_affine()
+            .to_encoded_point(false);
+        let mut identity_proof = [0u8; 65];
+        identity_proof[..32].copy_from_slice(&generator.as_bytes()[1..33]);
+        identity_proof[32..64].copy_from_slice(keccak256(&identity_validator).as_bytes());
+        identity_proof[64] = 27 + (generator.as_bytes()[64] & 1);
+        assert_eq!(
+            validate_dpos_registration_proof(&identity_proof, identity_validator).unwrap(),
+            DposRegistrationProofValidation::Valid
+        );
+
+        let mut zero_s_accepted = false;
+        for private_key in 1u8..=64 {
+            let mut private_key_bytes = [0u8; 32];
+            private_key_bytes[31] = private_key;
+            let signing_key = SigningKey::from_slice(&private_key_bytes).unwrap();
+            let validator: [u8; 20] = address_from_signing_key(&signing_key).into();
+            let message = keccak256(&validator);
+            let message_scalar = BigUint::from_bytes_be(message.as_bytes()) % &curve_order;
+            let mut message_word = [0u8; 32];
+            let message_bytes = message_scalar.to_bytes_be();
+            message_word[32 - message_bytes.len()..].copy_from_slice(&message_bytes);
+            let message_scalar = Option::<Scalar>::from(Scalar::from_repr(message_word.into()))
+                .expect("reduced test message scalar");
+            let private_key_scalar =
+                Option::<Scalar>::from(Scalar::from_repr(private_key_bytes.into()))
+                    .expect("valid test private key scalar");
+            let r = -(message_scalar
+                * Option::<Scalar>::from(private_key_scalar.invert())
+                    .expect("valid test private key inverse"));
+            let r_bytes: [u8; 32] = r.to_bytes().into();
+            let mut compressed_r = [0u8; 33];
+            compressed_r[0] = 2;
+            compressed_r[1..].copy_from_slice(&r_bytes);
+            if VerifyingKey::from_sec1_bytes(&compressed_r).is_err() {
+                continue;
+            }
+
+            let mut zero_s_proof = [0u8; 65];
+            zero_s_proof[..32].copy_from_slice(&r_bytes);
+            zero_s_proof[64] = 27;
+            assert_eq!(
+                validate_dpos_registration_proof(&zero_s_proof, validator).unwrap(),
+                DposRegistrationProofValidation::Valid
+            );
+            zero_s_accepted = true;
+            break;
+        }
+        assert!(
+            zero_s_accepted,
+            "test could not construct a btcec zero-S proof"
+        );
+    }
+
+    #[test]
+    fn dpos_dispatch_types_only_named_method_not_supported_failures() {
+        let owner = [0x72; 20];
+        assert!(matches!(
+            decode_dpos_transaction_for_execution(&[], owner, 0, u64::MAX, 10, 10),
+            DposTransaction::UnrecognizedInput
+        ));
+        assert!(matches!(
+            decode_dpos_transaction_for_execution(
+                &[0xde, 0xad, 0xbe, 0xef],
+                owner,
+                0,
+                u64::MAX,
+                10,
+                10,
+            ),
+            DposTransaction::UnrecognizedInput
+        ));
+        assert!(matches!(
+            decode_dpos_transaction_for_execution(
+                &DPOS_UNDELEGATE_V2_SELECTOR,
+                owner,
+                0,
+                u64::MAX,
+                10,
+                10,
+            ),
+            DposTransaction::MethodNotSupported
+        ));
+        assert!(matches!(
+            decode_dpos_transaction_for_execution(
+                &DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
+                owner,
+                10,
+                10,
+                10,
+                10,
+            ),
+            DposTransaction::UnrecognizedInput
+        ));
+
+        let unrecognized = DposApplyOutcome::contract_failure();
+        let gated =
+            DposApplyOutcome::mutation_contract_failure(DposContractError::MethodNotSupported);
+        assert_eq!(unrecognized.contract_error, None);
+        assert_eq!(
+            gated.contract_error,
+            Some(DposContractError::MethodNotSupported)
+        );
     }
 
     #[test]
@@ -11116,7 +11866,7 @@ mod tests {
             cornus_period,
             phalaenopsis_period,
         );
-        assert!(matches!(pre_fork, DposTransaction::MethodNotSupported));
+        assert!(matches!(pre_fork, DposTransaction::UnrecognizedInput));
 
         let at_fork = decode_dpos_transaction_for_execution(
             &exact,
@@ -11153,7 +11903,7 @@ mod tests {
             cornus_period,
             phalaenopsis_period,
         );
-        assert!(matches!(trailing, DposTransaction::MethodNotSupported));
+        assert!(matches!(trailing, DposTransaction::UnrecognizedInput));
 
         let post_cornus = decode_dpos_transaction_for_execution(
             &exact,
@@ -25039,7 +25789,7 @@ mod tests {
     }
 
     #[test]
-    fn finalize_block_undelegate_v2_corrupt_stake_is_contract_failure_and_rolls_back() {
+    fn finalize_block_undelegate_v2_corrupt_stake_underflow_is_hard_error() {
         let path = temp_db_path("finalize-dpos-undelegate-v2-corrupt-stake");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = [0x5D; 20];
@@ -25103,24 +25853,25 @@ mod tests {
             vec![0xc1, 0xf4],
         );
         write_period_data(&storage, 2, &period_two_block, &[undelegate_tx.rlp.clone()]);
-        let (_header_rlp, receipts) = final_chain
-            .finalize_block(period_two_block, vec![undelegate_tx.clone()], vec![])
-            .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, 2, &undelegate_tx);
-
-        assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
-        assert!(receipt_logs(&receipts[0]).is_empty());
+        let error = final_chain
+            .finalize_block(period_two_block, vec![undelegate_tx], vec![])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("stake underflows on undelegate V2")
+        );
         let post_fail_validator = final_chain.account(validator).unwrap().unwrap();
-        assert_eq!(post_fail_validator.nonce, 2);
+        assert_eq!(post_fail_validator.nonce, pre_fail_validator.nonce);
         assert_eq!(
             u256_from_big_endian(&post_fail_validator.balance),
-            pre_fail_validator_balance - U256::from(tx_gas) * gas_price
+            pre_fail_validator_balance
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             pre_fail_contract_balance
         );
-        let post_fail_snapshot = final_chain.dpos_snapshot(2).unwrap();
+        let post_fail_snapshot = final_chain.dpos_snapshot(1).unwrap();
         assert_eq!(
             u256_from_big_endian(post_fail_snapshot.total_stakes.get(&validator).unwrap()),
             U256::from(1_000u64)
