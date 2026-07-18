@@ -402,6 +402,12 @@ reference builds retain the untouched legacy RewardsStats header and source.
     Before Magnolia, validator queries preserve the legacy zero pending-count field. At Magnolia and later, Rust derives
     the count and deletion guard from the actual combined queues, intentionally correcting the legacy `ValidatorV1`
     blind spot where a pre-Magnolia request was omitted from the persisted counter and could permit premature deletion.
+    A full pre-Magnolia V2 undelegation removes a zero-stake, zero-commission validator after stake mutation but retains
+    the V2 request and last-ID cursor as custody/history state, so the request remains queryable and confirmable after
+    registration deletion. V2 unlock blocks select active Cacti, Cornus, then base locking configuration. The staged
+    same-block claim-gas view removes confirmed V2 requests and restores delegation membership and principal after a
+    successful V2 cancellation before pricing a later `claimAllRewards()` call. Exact nonzero-`delegation_delay`
+    claim-all gas parity remains follow-up work.
     Native redelegation now preserves the legacy ordered business checks, reward-claim/log ordering, unchanged escrow
     and aggregate delegated amount, below-minimum destination-pair creation, Aspen zero-amount boundary, disabled
     maximum-stake semantics when the configured maximum is zero, and validator deletion guard. Before and at

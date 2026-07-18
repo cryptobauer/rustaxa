@@ -433,6 +433,21 @@ interval's conditional zero-reward persistence bug is not claimed as replay pari
 a separate hardfork carrier. No CXX handle, carrier, export, shim, or module flag changes, so `CRW-07` has no inventory
 delta. `CRW-08` remains active for the remaining DPoS method/failure families and the explicit historical reward graph.
 
+The next bounded `CRW-08` slice closes two native V2 undelegation custody details. Before Magnolia, a successful full
+`undelegateV2(address,uint256)` now removes a zero-stake, zero-commission validator after reward checkpointing and stake
+removal, while retaining the V2 request and last-ID cursor as custody/history state. The request uses the active locking
+period in Cacti, Cornus, then base priority and remains queryable and confirmable after registration deletion; confirmation
+removes the request and releases the exact escrowed principal. At Magnolia and later, validator retention/deletion keeps
+using the corrected combined live V1/V2 queue view. The staged same-block claim-gas snapshot now removes V2 requests on
+confirmation and, on successful cancellation, restores both delegation membership and principal before a later
+`claimAllRewards()` gas calculation. Failed calls still leave that staged view unchanged. Focused Rust coverage protects
+snapshot round-trips, retained IDs/queues, pre-Magnolia terminal deletion, and confirm/cancel gas-view transitions.
+Restart-backed dual-mode FinalChain fixtures protect exact action gas, receipts, logs, blooms, Cornus lock selection,
+confirmation payout, cancel restoration, claim-all gas, and durable state. Nonzero `delegation_delay` claim-all gas and
+the known legacy Magnolia persisted-counter divergence remain outside this transcript. No CXX handle, carrier, export,
+shim, or module flag changes, so `CRW-07` has no inventory delta. `CRW-08` remains active for the remaining DPoS
+method/failure families and the explicit historical reward graph.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

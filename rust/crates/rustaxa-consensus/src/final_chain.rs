@@ -4852,6 +4852,18 @@ impl FinalChain {
             validator,
             remove_amount,
         )?;
+        if !self.magnolia_active(block_number)
+            && snapshot
+                .total_stakes
+                .get(&validator)
+                .is_some_and(|stake| u256_from_big_endian(stake).is_zero())
+            && snapshot
+                .commission_rewards
+                .get(&validator)
+                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+        {
+            remove_dpos_validator(snapshot, validator)?;
+        }
         let id = create_undelegation_v2(
             snapshot,
             delegator,
@@ -8531,6 +8543,7 @@ fn update_dpos_claim_gas_snapshot(
             amount,
         } => {
             update_dpos_claim_gas_snapshot_remove(snapshot, *delegator, *validator, amount)?;
+            create_undelegation_v2(snapshot, *delegator, *validator, amount.clone(), 0)?;
         }
         DposTransaction::Redelegate {
             delegator,
@@ -8590,9 +8603,45 @@ fn update_dpos_claim_gas_snapshot(
                 remove_undelegation(snapshot, *delegator, *validator);
             }
         }
+        DposTransaction::ConfirmUndelegateV2 {
+            delegator,
+            validator,
+            id,
+        } => {
+            remove_undelegation_v2(snapshot, *delegator, *validator, *id);
+        }
+        DposTransaction::CancelUndelegateV2 {
+            delegator,
+            validator,
+            id,
+        } => {
+            if let Some(entry) =
+                find_undelegation_v2(snapshot, *delegator, *validator, *id).cloned()
+            {
+                add_delegator_validator(&mut snapshot.delegator_validators, *delegator, *validator);
+                let current = snapshot
+                    .delegations
+                    .entry(*validator)
+                    .or_default()
+                    .get(delegator)
+                    .map(|bytes| u256_from_big_endian(bytes))
+                    .unwrap_or_default();
+                snapshot.delegations.entry(*validator).or_default().insert(
+                    *delegator,
+                    u256_to_big_endian(
+                        current
+                            .checked_add(u256_from_big_endian(&entry.amount))
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "claimAllRewards gas snapshot V2 undelegation cancel overflow"
+                                )
+                            })?,
+                    ),
+                );
+                remove_undelegation_v2(snapshot, *delegator, *validator, *id);
+            }
+        }
         DposTransaction::ClaimRewards { .. }
-        | DposTransaction::ConfirmUndelegateV2 { .. }
-        | DposTransaction::CancelUndelegateV2 { .. }
         | DposTransaction::ClaimCommissionRewards { .. }
         | DposTransaction::SetValidatorInfo { .. }
         | DposTransaction::SetCommission { .. }
@@ -10226,6 +10275,208 @@ mod tests {
 
         drop(final_chain);
         drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_undelegate_v2_premagnolia_terminal_removal_keeps_v2_queue_and_last_id_on_snapshot_roundtrip()
+     {
+        let path =
+            temp_db_path("dpos-undelegate-v2-premagnolia-terminal-remove-undelegation-v2-restart");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x33; 20];
+        let rewards_config = FinalChainRewardsConfig {
+            magnolia_period: 1_000,
+            ..Default::default()
+        };
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(validator, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                validator,
+                0,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig::default(),
+            rewards_config.clone(),
+        )
+        .unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot
+            .commission_rewards
+            .insert(validator, u256_to_big_endian(U256::zero()));
+        let mut accounts = HashMap::new();
+        accounts.insert(DPOS_CONTRACT_ADDRESS, empty_account());
+
+        let outcome = final_chain
+            .apply_dpos_undelegate_v2(
+                &mut snapshot,
+                &mut accounts,
+                validator,
+                validator,
+                u256_to_big_endian(U256::from(10_000u64)),
+                10,
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 1);
+        assert!(!snapshot.total_stakes.contains_key(&validator));
+        assert!(!snapshot.delegations.contains_key(&validator));
+        assert!(!snapshot.delegator_validators.contains_key(&validator));
+        assert_eq!(snapshot.undelegation_v2_last_ids.get(&validator), Some(&1));
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .undelegations_v2
+                    .get(&validator)
+                    .expect("missing V2 undelegation queue")
+                    .iter()
+                    .find(|group| group.validator == validator)
+                    .expect("missing validator V2 queue group")
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == 1)
+                    .expect("missing V2 undelegation id")
+                    .amount
+                    .as_slice(),
+            ),
+            U256::from(10_000u64)
+        );
+
+        let mut snapshot = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot)).unwrap();
+        assert!(!snapshot.total_stakes.contains_key(&validator));
+        assert!(!snapshot.delegations.contains_key(&validator));
+        assert_eq!(snapshot.undelegation_v2_last_ids.get(&validator), Some(&1));
+        assert!(
+            snapshot
+                .undelegations_v2
+                .get(&validator)
+                .is_some_and(|delegations| delegations.iter().any(|group| {
+                    group.validator == validator
+                        && group.entries.iter().any(|entry| {
+                            entry.id == 1
+                                && entry.amount == u256_to_big_endian(U256::from(10_000u64))
+                        })
+                }))
+        );
+        let next_id = create_undelegation_v2(
+            &mut snapshot,
+            validator,
+            validator,
+            u256_to_big_endian(U256::from(1u64)),
+            20,
+        )
+        .unwrap();
+        assert_eq!(next_id, 2);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn update_dpos_claim_gas_snapshot_handles_v2_confirm_and_cancel_restore() {
+        let path = temp_db_path("dpos-claim-gas-snapshot-v2-cancel-restore");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain(storage.clone(), 200_000, 0, vec![], vec![]);
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        let delegator = [0x11u8; 20];
+        let validator = [0x22u8; 20];
+
+        update_dpos_claim_gas_snapshot(
+            &mut snapshot,
+            &DposTransaction::ConfirmUndelegateV2 {
+                delegator,
+                validator,
+                id: 1,
+            },
+        )
+        .unwrap();
+        assert!(
+            !snapshot
+                .undelegations_v2
+                .get(&delegator)
+                .is_some_and(|groups| {
+                    groups.iter().any(|group| {
+                        group.validator == validator
+                            && group.entries.iter().any(|entry| entry.id == 1)
+                    })
+                })
+        );
+
+        let mut cancel_snapshot = sample_dpos_snapshot_with_undelegations();
+        cancel_snapshot.undelegations_v2.clear();
+        cancel_snapshot.undelegation_v2_last_ids.clear();
+        update_dpos_claim_gas_snapshot(
+            &mut cancel_snapshot,
+            &DposTransaction::UndelegateV2 {
+                delegator,
+                validator,
+                amount: u256_to_big_endian(U256::from(10_000u64)),
+            },
+        )
+        .unwrap();
+        assert!(
+            cancel_snapshot
+                .undelegations_v2
+                .get(&delegator)
+                .is_some_and(|groups| {
+                    groups.iter().any(|group| {
+                        group.validator == validator
+                            && group.entries.iter().any(|entry| {
+                                entry.id == 1
+                                    && entry.amount == u256_to_big_endian(U256::from(10_000u64))
+                            })
+                    })
+                })
+        );
+        let cancel_item_count_before =
+            dpos_claim_all_rewards_item_count(&cancel_snapshot, delegator, None).unwrap();
+        assert_eq!(cancel_item_count_before, 0);
+        update_dpos_claim_gas_snapshot(
+            &mut cancel_snapshot,
+            &DposTransaction::CancelUndelegateV2 {
+                delegator,
+                validator,
+                id: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                cancel_snapshot
+                    .delegations
+                    .get(&validator)
+                    .and_then(|delegations| delegations.get(&delegator))
+                    .expect("delegation was not restored"),
+            ),
+            U256::from(10_000u64)
+        );
+        assert_eq!(
+            dpos_claim_all_rewards_item_count(&cancel_snapshot, delegator, None).unwrap(),
+            1
+        );
+        let claim_all_gas = dpos_transaction_required_gas(
+            &DposTransaction::ClaimAllRewards {
+                delegator,
+                batch: None,
+            },
+            10,
+            u64::MAX,
+            final_chain.dpos_cornus_period,
+            Some(&cancel_snapshot),
+        )
+        .unwrap();
+        assert_eq!(
+            claim_all_gas,
+            DPOS_CLAIM_REWARDS_GAS + DPOS_BATCH_GET_REWARDS_GAS
+        );
+
+        drop(final_chain);
         let _ = std::fs::remove_dir_all(path);
     }
 

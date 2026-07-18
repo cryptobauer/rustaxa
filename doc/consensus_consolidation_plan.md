@@ -3379,6 +3379,39 @@ No CXX carrier, handle, export, shim, module flag, or compatibility-only test su
 inventory delta. `CRW-08` remains active for the remaining method/failure families and the explicit historical reward
 reference graph.
 
+### CRW-08 Native DPoS V2 Custody and Same-Block Gas Lifecycle
+
+This bounded follow-up closes the pre-Magnolia terminal-validator boundary for
+`undelegateV2(address,uint256)` and the staged claim-gas effect of V2 confirmation/cancellation.
+
+- Successful V2 undelegation preserves legacy mutation order: validate, checkpoint/claim rewards, remove delegation and
+  aggregate stake, apply the pre-Magnolia zero-stake/zero-commission validator deletion rule, then create the custody
+  request and increment its per-delegator/validator ID. Deletion deliberately retains the V2 queue and last-ID cursor.
+- The unlock block selects Cacti, Cornus, then base locking configuration according to the active hardfork. A retained
+  request remains queryable and confirmable after pre-Magnolia registration deletion; confirmation removes the request,
+  transfers its exact principal from DPoS escrow, and emits `UndelegateConfirmedV2`. Cancellation still fails when the
+  validator registration is absent.
+- At Magnolia and later, undelegation leaves the validator registered while custody is pending, and confirmation uses the
+  corrected combined live V1/V2 queue guard already established by the V1 lifecycle work.
+- The in-block DPoS view used for current-ABI claim-all gas now removes the selected V2 entry after successful
+  confirmation. After successful V2 cancellation it restores the delegation membership and amount before removing the
+  entry, so a later same-block `claimAllRewards()` charges for the restored validator. Normal transaction rollback keeps
+  failed calls from updating this staged view.
+- Focused Rust tests protect pre-Magnolia deletion with queue/ID snapshot round-trips and confirm/cancel gas-view
+  transitions. Restart-backed dual-mode FinalChain fixtures protect exact gas, receipt/log/bloom behavior, explicit
+  Cornus-over-base lock selection while Cacti is inactive, confirmation payout after validator deletion, same-block
+  undelegate/cancel/claim-all behavior, and durable state.
+
+The fixtures use `delegation_delay = 0`; exact nonzero-delay claim-all gas parity remains separate work. They also avoid
+the known legacy Magnolia persisted-counter divergence already documented by the commission-claim slice. No CXX handle,
+carrier, export, shim, module flag, or compatibility-only test surface changes, so `CRW-07` has no inventory delta.
+`CRW-08` remains active for the remaining method/failure families and the explicit historical reward reference graph.
+
+Validation passed the complete `rustaxa-consensus` suite, focused Rust lifecycle tests, both focused Rust-enabled and
+pure-C++ FinalChain fixtures, `rewrite-validate-fast`, the FinalChain Tier 2 gate, the Tier 3
+Rust-enabled/pure-C++ parity gate, the bridge-inventory guard, formatting, and whitespace checks. Gate output contained
+only the repository's existing Clippy, CMake, Conan, and compiler warnings.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
