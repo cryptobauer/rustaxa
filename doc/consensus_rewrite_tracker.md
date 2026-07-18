@@ -420,8 +420,8 @@ when the combined V1/V2 pending-undelegation count is zero. Pending requests rem
 confirmable even when pre-Magnolia deletion removes the registration; V2 last-ID state is likewise retained. Deletion
 clears every validator-owned snapshot row plus the Rust-only same-validator corruption marker, so restart and fresh
 same-address registration cannot inherit stale metadata, VRF, ordering, reward, vote, or redelegation history. Registration
-also clears a marker left without validator rows by a pre-upgrade deletion, making that cleanup durable across an old
-snapshot restart. A
+after a clean deletion remains supported; a marker left without validator rows by an older binary is instead a hard
+snapshot inconsistency that requires explicit repair, migration, or replay/rebuild. A
 metadata row without the corresponding stake row is classified as hard snapshot corruption before payout rather than
 as a terminal zero-stake validator. Focused Rust coverage protects pre-/post-Magnolia queue rules, V1 and V2 retention,
 failure rollback, restart, and re-registration. A dual-mode `native_dpos_*` FinalChain fixture protects exact current-ABI
@@ -525,6 +525,26 @@ transactions may differ in gas, cumulative gas, nonce, balances, and later affor
 replay/rebuild from the first affected transaction or a separately designed migration rather than inferred account
 repairs. `CRW-08` remains active for the remaining static and dynamic DPoS read transactions, remaining DPoS
 method/failure families, and the explicit historical reward graph.
+
+The next bounded `CRW-08` slice closes the remaining fixed-5,000 singleton DPoS read family:
+`getValidator(address)` and Cornus-gated `getUndelegationV2(address,address,uint64)`. Rust direct calls normalize
+recognized malformed and missing-record outcomes into contract errors instead of escaping as executor failures, while
+retaining orphaned validator-owned rows, including the persisted same-validator corruption marker, as a hard snapshot
+inconsistency. Native finalized transactions read the exact
+live block-local DPoS snapshot. Consequently a V2 read observes a
+successful `undelegateV2` earlier in the same block rather than the frozen delayed eligibility view. Before Cornus,
+`getValidator` accepts successful call value into the DPoS account and the V2 selector remains unsupported with zero
+action gas. At Cornus and later both methods reject value before ABI decoding with intrinsic gas only. Active valid,
+missing, and malformed calls retain 5,000 action gas; action-out-of-gas calls charge intrinsic gas, and the shared
+pre-/at-Cornus intrinsic-out-of-gas nonce rule remains unchanged. Successful reads emit no logs, do not mutate DPoS
+state, and leave the DPoS account nonce at one. A restart-backed dual-mode fixture protects trailing calldata,
+pre-Cornus value custody and V2 rejection, same-block V2 creation/read visibility, missing-record and Cornus value
+failures, exact receipt RLP and gas, log/bloom isolation from the preceding mutation, balances, nonces, and persisted
+receipts. No carrier, bridge handle/export, shim, module flag, or snapshot schema changes, so `CRW-07` has no inventory
+delta. Historical Rust receipts for these native selectors may differ in status, gas, cumulative gas, value custody,
+balances, and later affordability; recovery requires replay/rebuild from the first affected transaction or a separately
+designed migration rather than inferred account repairs. `CRW-08` remains active for dynamic validator pages,
+delegation and undelegation reads, remaining DPoS method/failure families, and the explicit historical reward graph.
 
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned

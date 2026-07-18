@@ -3362,8 +3362,8 @@ This bounded follow-up closes the validator-deletion behavior that follows a suc
 - Pending V1/V2 requests and the V2 last-ID cursor survive validator deletion because they represent custody/history
   state. Validator metadata, order, VRF key, reward rows, delegation rows, vote state, and the Rust-only
   same-validator corruption marker are validator-owned and are removed, allowing a clean same-address registration
-  after restart. Successful registration also clears a marker left without validator rows by a pre-upgrade deletion, so
-  persisted upgrade residue cannot taint the fresh lifecycle.
+  after restart. A marker left without validator rows by an older binary is a hard snapshot inconsistency; operators
+  must repair or migrate that state, or replay/rebuild from an unaffected point, before registration can proceed.
 - The legacy Magnolia-to-Phalaenopsis interval sometimes left the zeroed reward row unpersisted while retaining a
   validator with pending undelegations. Rust native finalization does not yet carry the Phalaenopsis boundary, so this
   slice protects current-ABI lifecycle parity and pre-/post-Magnolia deletion semantics without claiming exact replay of
@@ -3575,6 +3575,42 @@ pre-correction Cornus intrinsic-out-of-gas nonces. Because receipts, cumulative 
 affordability may differ, correction requires replay/rebuild from the first affected transaction or a separately
 designed migration rather than inferred account repairs. `CRW-08` remains active for remaining static and dynamic DPoS
 read transactions, the remaining DPoS method/failure families, and the explicit historical reward reference graph.
+
+### CRW-08 Fixed-Gas DPoS Singleton Reads
+
+This bounded follow-up completes the native and direct-call surface for the two remaining fixed-5,000 singleton reads.
+
+- `getValidator(address)` is available throughout history; `getUndelegationV2(address,address,uint64)` remains
+  unsupported before Cornus and becomes active at the fork. Active valid, missing-record, and malformed calls retain the
+  legacy 5,000 action-gas rule. Direct-call decode and expected missing-record failures become typed contract errors
+  rather than escaping as Rust executor failures. Partially deleted validator rows, including a marker-only persisted
+  same-validator corruption record, remain a hard snapshot inconsistency instead of being normalized as an absent
+  validator or accepted by registration.
+- Unlike eligibility queries, both methods read exact live block-local DPoS state. Native execution can therefore
+  observe successful earlier same-block registration, metadata/commission, stake, V2 creation, cancel, or confirmation
+  transitions. The V2 payload reports the current validator-existence flag alongside stake, unlock block, validator,
+  and ID; `getValidator` preserves its dynamic strings and full validator tuple.
+- Before Cornus, a successful validator read accepts legacy EVM call value into the DPoS account, while the unavailable
+  V2 selector fails and rolls value back. At Cornus and later both methods reject value before decoding and charge only
+  intrinsic gas. Action-out-of-gas calls charge intrinsic gas, intrinsic-out-of-gas follows the existing fork-specific
+  sender-nonce rule, and read execution never emits logs, mutates DPoS state, or changes the DPoS account nonce.
+- A restart-backed dual-mode fixture protects trailing validator calldata, malformed and missing validator reads,
+  pre-Cornus V2 rejection, action/intrinsic out-of-gas, successful-only value custody, sender continuation, a Cornus
+  `undelegateV2` followed by a successful same-block singleton read, a missing V2 ID, Cornus nonpayability, exact receipt
+  RLP and cumulative/header gas, empty read logs/bloom, DPoS and receiver balances/nonces, and persisted receipts.
+
+Validation passed both focused singleton-read Rust tests, all 711 `rustaxa-consensus` tests, the restart-backed fixture
+in Rust-enabled and pure-C++ builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, the repository pre-commit hook,
+changed-line C++ formatting, Rust formatting, and whitespace validation.
+
+No CXX carrier, bridge handle/export, shim, module flag, compatibility-only surface, or DPoS snapshot schema changes, so
+`CRW-07` has no inventory delta. Historical Rust execution may contain intrinsic-only failed receipts for these native
+selectors and missing pre-Cornus validator-read value custody. Because receipt roots, cumulative gas, balances, later
+affordability, and transaction ordering may differ, correction requires replay/rebuild from the first affected
+transaction or a separately designed migration rather than inferred account repairs. `CRW-08` remains active for
+dynamic validator pages, delegation and undelegation reads, remaining DPoS method/failure families, and the explicit
+historical reward reference graph.
 
 ## Historical Execution Order
 

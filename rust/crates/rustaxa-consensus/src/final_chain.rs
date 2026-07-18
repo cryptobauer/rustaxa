@@ -1199,7 +1199,9 @@ impl FinalChain {
             });
         }
 
-        if (is_dpos_mutation_selector(selector) || is_dpos_eligibility_read_selector(selector))
+        if (is_dpos_mutation_selector(selector)
+            || is_dpos_eligibility_read_selector(selector)
+            || is_dpos_fixed_singleton_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
             && !u256_from_big_endian(&request.value).is_zero()
             && !dpos_selector_is_payable(selector)
@@ -1305,8 +1307,26 @@ impl FinalChain {
             }
             DPOS_GET_VALIDATOR_SELECTOR => {
                 let validator =
-                    decode_abi_address_argument(&request.input, "getValidator(address)")?;
-                self.encode_dpos_validator(request.block_number, validator)?
+                    match decode_abi_address_argument(&request.input, "getValidator(address)") {
+                        Ok(validator) => validator,
+                        Err(error) => {
+                            return Ok(FinalChainCallOutcome {
+                                gas_used,
+                                code_err: error.to_string(),
+                                ..Default::default()
+                            });
+                        }
+                    };
+                match self.encode_dpos_validator(request.block_number, validator)? {
+                    Some(output) => output,
+                    None => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: "Validator does not exist".to_string(),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
             DPOS_GET_VALIDATORS_SELECTOR => {
                 let batch = decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)")?;
@@ -1375,22 +1395,39 @@ impl FinalChain {
                         ..Default::default()
                     });
                 }
-                let delegator = decode_abi_address_argument_with_offset(
-                    &request.input,
-                    4,
-                    "getUndelegationV2 delegator",
-                )?;
-                let validator = decode_abi_address_argument_with_offset(
-                    &request.input,
-                    36,
-                    "getUndelegationV2 validator",
-                )?;
-                let id = decode_abi_word_as_u64(&request.input, 68, "getUndelegationV2 id")?;
+                let decoded = (|| -> Result<DposUndelegationV2Read, anyhow::Error> {
+                    let delegator = decode_abi_address_argument_with_offset(
+                        &request.input,
+                        4,
+                        "getUndelegationV2 delegator",
+                    )?;
+                    let validator = decode_abi_address_argument_with_offset(
+                        &request.input,
+                        36,
+                        "getUndelegationV2 validator",
+                    )?;
+                    let id = decode_abi_word_as_u64(&request.input, 68, "getUndelegationV2 id")?;
+                    Ok(DposUndelegationV2Read {
+                        delegator,
+                        validator,
+                        id,
+                    })
+                })();
+                let decoded = match decoded {
+                    Ok(decoded) => decoded,
+                    Err(error) => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: error.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                };
                 match self.encode_dpos_undelegation_v2(
                     request.block_number,
-                    delegator,
-                    validator,
-                    id,
+                    decoded.delegator,
+                    decoded.validator,
+                    decoded.id,
                 )? {
                     Some(output) => output,
                     None => {
@@ -2960,6 +2997,8 @@ impl FinalChain {
                     | DposTransaction::IsValidatorEligible(_)
                     | DposTransaction::GetTotalEligibleVotesCount
                     | DposTransaction::GetValidatorEligibleVotesCount(_)
+                    | DposTransaction::GetValidator(_)
+                    | DposTransaction::GetUndelegationV2(_)
                     | DposTransaction::PhalaenopsisEscrowTransfer
                     | DposTransaction::MalformedMutation { .. }
                     | DposTransaction::MethodNotSupported => {}
@@ -3116,6 +3155,13 @@ impl FinalChain {
 
                     contract_outcome = Some(match contract_tx {
                         NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
+                            singleton_tx @ (DposTransaction::GetValidator(_)
+                            | DposTransaction::GetUndelegationV2(_)) => self
+                                .apply_dpos_fixed_singleton_read(
+                                    &dpos_snapshot,
+                                    block_number,
+                                    singleton_tx,
+                                )?,
                             DposTransaction::IsValidatorEligible(Err(_))
                             | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
                                 DposApplyOutcome::contract_failure()
@@ -3632,7 +3678,8 @@ impl FinalChain {
         request: &FinalChainCallRequest,
         selector: [u8; 4],
     ) -> Result<u64, anyhow::Error> {
-        if is_dpos_eligibility_read_selector(selector)
+        if (is_dpos_eligibility_read_selector(selector)
+            || is_dpos_fixed_singleton_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
             && !u256_from_big_endian(&request.value).is_zero()
         {
@@ -3771,17 +3818,6 @@ impl FinalChain {
                     .ok_or_else(|| anyhow::anyhow!("getUndelegations gas multiplication overflow"))
             }
             DPOS_GET_UNDELEGATION_V2_SELECTOR => {
-                decode_abi_address_argument_with_offset(
-                    &request.input,
-                    4,
-                    "getUndelegationV2 delegator",
-                )?;
-                decode_abi_address_argument_with_offset(
-                    &request.input,
-                    36,
-                    "getUndelegationV2 validator",
-                )?;
-                decode_abi_word_as_u64(&request.input, 68, "getUndelegationV2 id")?;
                 if self.is_on_cornus(request.block_number) {
                     Ok(DPOS_GET_METHOD_GAS)
                 } else {
@@ -3899,6 +3935,44 @@ impl FinalChain {
         })
     }
 
+    /// Executes a fixed-gas singleton read against the live block-local DPoS state.
+    ///
+    /// Unlike eligibility reads, these methods intentionally observe mutations
+    /// from earlier transactions in the same block. Expected decode and
+    /// missing-record failures are returned as contract outcomes.
+    fn apply_dpos_fixed_singleton_read(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+        transaction: DposTransaction,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        Ok(match transaction {
+            DposTransaction::GetValidator(Ok(validator)) => {
+                match self.encode_dpos_validator_from_snapshot(snapshot, block_number, validator)? {
+                    Some(output) => DposApplyOutcome::success_with_return(output),
+                    None => DposApplyOutcome::contract_failure(),
+                }
+            }
+            DposTransaction::GetValidator(Err(_)) => DposApplyOutcome::contract_failure(),
+            DposTransaction::GetUndelegationV2(_) if !self.is_on_cornus(block_number) => {
+                DposApplyOutcome::contract_failure()
+            }
+            DposTransaction::GetUndelegationV2(Ok(read)) => {
+                match Self::encode_dpos_undelegation_v2_from_snapshot(
+                    snapshot,
+                    read.delegator,
+                    read.validator,
+                    read.id,
+                )? {
+                    Some(output) => DposApplyOutcome::success_with_return(output),
+                    None => DposApplyOutcome::contract_failure(),
+                }
+            }
+            DposTransaction::GetUndelegationV2(Err(_)) => DposApplyOutcome::contract_failure(),
+            _ => anyhow::bail!("non-singleton transaction routed to singleton reader"),
+        })
+    }
+
     fn dpos_effective_total_vote_count(
         &self,
         snapshot: &DposSnapshot,
@@ -3937,16 +4011,52 @@ impl FinalChain {
         &self,
         block_number: u64,
         validator: [u8; 20],
-    ) -> Result<Vec<u8>, anyhow::Error> {
+    ) -> Result<Option<Vec<u8>>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
+        self.encode_dpos_validator_from_snapshot(&snapshot, block_number, validator)
+    }
+
+    fn encode_dpos_validator_from_snapshot(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+        validator: [u8; 20],
+    ) -> Result<Option<Vec<u8>>, anyhow::Error> {
+        if !snapshot.total_stakes.contains_key(&validator) {
+            if Self::dpos_validator_owned_rows_exist(snapshot, validator) {
+                return Err(anyhow::anyhow!(
+                    "DPoS validator snapshot inconsistency: orphan rows found without stake row"
+                ));
+            }
+            return Ok(None);
+        }
         let mut output = Vec::new();
         output.extend_from_slice(&abi_word_from_u64(32));
         output.extend_from_slice(&self.encode_dpos_validator_basic_info_payload(
-            &snapshot,
+            snapshot,
             validator,
             block_number,
         )?);
-        Ok(output)
+        Ok(Some(output))
+    }
+
+    /// Returns whether validator-owned rows remain without consulting canonical stake existence.
+    ///
+    /// Callers use this to distinguish an absent validator from a corrupt partially deleted
+    /// validator. The canonical `total_stakes` row is intentionally excluded.
+    fn dpos_validator_owned_rows_exist(snapshot: &DposSnapshot, validator: [u8; 20]) -> bool {
+        snapshot.commission_rewards.contains_key(&validator)
+            || snapshot.delegator_rewards.contains_key(&validator)
+            || snapshot.validator_metadata.contains_key(&validator)
+            || snapshot.vrf_keys.contains_key(&validator)
+            || snapshot.vote_counts.contains_key(&validator)
+            || snapshot.delegations.contains_key(&validator)
+            || snapshot.validator_order.contains(&validator)
+            || snapshot.delegation_reward_cursors.contains_key(&validator)
+            || snapshot.validator_reward_per_stake.contains_key(&validator)
+            || snapshot
+                .redelegate_same_validator_corruption
+                .contains(&validator)
     }
 
     fn encode_dpos_validator_basic_info_payload(
@@ -4280,11 +4390,20 @@ impl FinalChain {
         id: u64,
     ) -> Result<Option<Vec<u8>>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
-        let Some(entry) = find_undelegation_v2(&snapshot, delegator, validator, id) else {
+        Self::encode_dpos_undelegation_v2_from_snapshot(&snapshot, delegator, validator, id)
+    }
+
+    fn encode_dpos_undelegation_v2_from_snapshot(
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        validator: [u8; 20],
+        id: u64,
+    ) -> Result<Option<Vec<u8>>, anyhow::Error> {
+        let Some(entry) = find_undelegation_v2(snapshot, delegator, validator, id) else {
             return Ok(None);
         };
         let mut output = Vec::new();
-        encode_dpos_undelegation_v2_payload(&mut output, &snapshot, validator, entry)?;
+        encode_dpos_undelegation_v2_payload(&mut output, snapshot, validator, entry)?;
         Ok(Some(output))
     }
 
@@ -4695,8 +4814,6 @@ impl FinalChain {
     ///   snapshot.
     /// - Treats orphaned registration-owned rows as hard corruption when canonical `total_stakes`
     ///   is missing, returning an explicit `Err`.
-    /// - Clears a marker left by a pre-upgrade validator deletion so a fresh registration cannot
-    ///   inherit stale same-validator redelegation corruption state.
     /// - Performs all proof/stake/metadata checks and log construction before first mutation so the
     ///   success write path is infallible.
     fn apply_dpos_registration(
@@ -4732,16 +4849,7 @@ impl FinalChain {
         if snapshot.total_stakes.contains_key(&validator) {
             return Ok(DposApplyOutcome::contract_failure());
         }
-        if snapshot.commission_rewards.contains_key(&validator)
-            || snapshot.delegator_rewards.contains_key(&validator)
-            || snapshot.validator_metadata.contains_key(&validator)
-            || snapshot.vrf_keys.contains_key(&validator)
-            || snapshot.vote_counts.contains_key(&validator)
-            || snapshot.delegations.contains_key(&validator)
-            || snapshot.validator_order.contains(&validator)
-            || snapshot.delegation_reward_cursors.contains_key(&validator)
-            || snapshot.validator_reward_per_stake.contains_key(&validator)
-        {
+        if Self::dpos_validator_owned_rows_exist(snapshot, validator) {
             return Err(anyhow::anyhow!(
                 "DPoS registration snapshot inconsistency: orphan rows found without stake row"
             ));
@@ -4770,9 +4878,6 @@ impl FinalChain {
         }
 
         snapshot.total_vote_count = total_vote_count;
-        snapshot
-            .redelegate_same_validator_corruption
-            .remove(&validator);
         snapshot
             .total_stakes
             .insert(registration.validator, registration.stake.clone());
@@ -8016,6 +8121,11 @@ fn dpos_transaction_required_gas(
         DposTransaction::IsValidatorEligible(_)
         | DposTransaction::GetTotalEligibleVotesCount
         | DposTransaction::GetValidatorEligibleVotesCount(_) => DPOS_DEFAULT_METHOD_GAS,
+        DposTransaction::GetValidator(_) => DPOS_GET_METHOD_GAS,
+        DposTransaction::GetUndelegationV2(_) if block_number >= cornus_period => {
+            DPOS_GET_METHOD_GAS
+        }
+        DposTransaction::GetUndelegationV2(_) => 0,
         DposTransaction::PhalaenopsisEscrowTransfer => DPOS_PHALA_ESCROW_TRANSFER_GAS,
         DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
         DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
@@ -8086,6 +8196,14 @@ fn is_dpos_eligibility_read_selector(selector: [u8; 4]) -> bool {
         DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR
             | DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR
             | DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR
+    )
+}
+
+/// Returns whether a selector belongs to the fixed-gas exact-state singleton reads.
+fn is_dpos_fixed_singleton_read_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        DPOS_GET_VALIDATOR_SELECTOR | DPOS_GET_UNDELEGATION_V2_SELECTOR
     )
 }
 
@@ -8549,6 +8667,28 @@ fn decode_dpos_transaction_for_execution(
                     .map_err(|error| error.to_string()),
             )
         }
+        DPOS_GET_VALIDATOR_SELECTOR => DposTransaction::GetValidator(
+            decode_abi_address_argument(input, "getValidator(address)")
+                .map_err(|error| error.to_string()),
+        ),
+        DPOS_GET_UNDELEGATION_V2_SELECTOR => {
+            let decoded = (|| -> Result<DposUndelegationV2Read, anyhow::Error> {
+                Ok(DposUndelegationV2Read {
+                    delegator: decode_abi_address_argument_with_offset(
+                        input,
+                        4,
+                        "getUndelegationV2 delegator",
+                    )?,
+                    validator: decode_abi_address_argument_with_offset(
+                        input,
+                        36,
+                        "getUndelegationV2 validator",
+                    )?,
+                    id: decode_abi_word_as_u64(input, 68, "getUndelegationV2 id")?,
+                })
+            })();
+            DposTransaction::GetUndelegationV2(decoded.map_err(|error| error.to_string()))
+        }
         DPOS_CLAIM_REWARDS_SELECTOR
         | DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR
         | DPOS_SET_VALIDATOR_INFO_SELECTOR
@@ -8977,6 +9117,8 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::IsValidatorEligible(_)
         | DposTransaction::GetTotalEligibleVotesCount
         | DposTransaction::GetValidatorEligibleVotesCount(_)
+        | DposTransaction::GetValidator(_)
+        | DposTransaction::GetUndelegationV2(_)
         | DposTransaction::PhalaenopsisEscrowTransfer
         | DposTransaction::MalformedMutation { .. }
         | DposTransaction::MethodNotSupported => {}
@@ -9142,6 +9284,10 @@ enum DposTransaction {
     GetTotalEligibleVotesCount,
     /// Fixed-gas delayed per-validator eligible vote-count read.
     GetValidatorEligibleVotesCount(std::result::Result<[u8; 20], String>),
+    /// Fixed-gas exact-state validator record read.
+    GetValidator(std::result::Result<[u8; 20], String>),
+    /// Cornus-gated fixed-gas exact-state V2 undelegation record read.
+    GetUndelegationV2(std::result::Result<DposUndelegationV2Read, String>),
     Register(DposRegistration),
     Delegate {
         delegator: [u8; 20],
@@ -9212,6 +9358,14 @@ enum DposTransaction {
         selector: [u8; 4],
     },
     MethodNotSupported,
+}
+
+/// Arguments for one exact V2 undelegation lookup.
+#[derive(Clone)]
+struct DposUndelegationV2Read {
+    delegator: [u8; 20],
+    validator: [u8; 20],
+    id: u64,
 }
 
 #[derive(Clone)]
@@ -12096,6 +12250,556 @@ mod tests {
     }
 
     #[test]
+    fn fixed_singleton_calls_preserve_fork_decode_and_lookup_ordering() {
+        let pre_path = temp_db_path("fixed-singleton-call-pre-cornus");
+        let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
+        let validator = [0x51; 20];
+        let delegator = [0x52; 20];
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            ..Default::default()
+        };
+        let pre_chain = FinalChain::new_with_rewards_config(
+            pre_storage.clone(),
+            1_000_000,
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            dpos_config.clone(),
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut payable_validator = dpos_call_request(0, get_validator_input(validator));
+        payable_validator.value = vec![7];
+        let payable_validator = pre_chain.call(payable_validator).unwrap();
+        assert_eq!(payable_validator.code_err, "");
+        assert_eq!(payable_validator.gas_used, DPOS_GET_METHOD_GAS);
+
+        let missing_validator = pre_chain
+            .call(dpos_call_request(0, get_validator_input([0x99; 20])))
+            .unwrap();
+        assert_eq!(missing_validator.code_err, "Validator does not exist");
+        assert_eq!(missing_validator.gas_used, DPOS_GET_METHOD_GAS);
+
+        let malformed_validator = pre_chain
+            .call(dpos_call_request(0, DPOS_GET_VALIDATOR_SELECTOR.to_vec()))
+            .unwrap();
+        assert!(!malformed_validator.code_err.is_empty());
+        assert_eq!(malformed_validator.gas_used, DPOS_GET_METHOD_GAS);
+
+        let pre_cornus_v2 = pre_chain
+            .call(dpos_call_request(
+                0,
+                get_undelegation_v2_input(delegator, validator, 1),
+            ))
+            .unwrap();
+        assert_eq!(pre_cornus_v2.code_err, "Method not supported");
+        assert_eq!(pre_cornus_v2.gas_used, 0);
+        let malformed_pre_cornus_v2 = pre_chain
+            .call(dpos_call_request(
+                0,
+                DPOS_GET_UNDELEGATION_V2_SELECTOR.to_vec(),
+            ))
+            .unwrap();
+        assert_eq!(malformed_pre_cornus_v2.code_err, "Method not supported");
+        assert_eq!(malformed_pre_cornus_v2.gas_used, 0);
+
+        let cornus_path = temp_db_path("fixed-singleton-call-cornus");
+        let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
+        let cornus_chain = FinalChain::new_with_rewards_config(
+            cornus_storage.clone(),
+            1_000_000,
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            dpos_config,
+            FinalChainRewardsConfig {
+                cornus_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut snapshot = cornus_chain.dpos_snapshot(0).unwrap();
+        assert_eq!(
+            create_undelegation_v2(
+                &mut snapshot,
+                delegator,
+                validator,
+                u256_to_big_endian(U256::from(321u64)),
+                77,
+            )
+            .unwrap(),
+            1
+        );
+        cornus_chain.insert_dpos_snapshot(0, snapshot).unwrap();
+
+        let mut permissive_v2 = get_undelegation_v2_input(delegator, validator, 1);
+        permissive_v2[4] = 0xa1;
+        permissive_v2[36] = 0xb2;
+        permissive_v2[68] = 0xc3;
+        permissive_v2.extend_from_slice(&[0xdd; 32]);
+        let existing = cornus_chain
+            .call(dpos_call_request(0, permissive_v2))
+            .unwrap();
+        assert_eq!(existing.code_err, "");
+        assert_eq!(existing.gas_used, DPOS_GET_METHOD_GAS);
+        assert_eq!(existing.code_retval.len(), 5 * 32);
+        assert_eq!(
+            u256_from_big_endian(&existing.code_retval[0..32]),
+            U256::from(321u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&existing.code_retval[32..64]),
+            U256::from(77u64)
+        );
+        assert_eq!(
+            &existing.code_retval[64..96],
+            &abi_word_from_address(validator)
+        );
+        assert_eq!(
+            u256_from_big_endian(&existing.code_retval[96..128]),
+            U256::one()
+        );
+        assert_eq!(
+            u256_from_big_endian(&existing.code_retval[128..160]),
+            U256::one()
+        );
+
+        let missing_v2 = cornus_chain
+            .call(dpos_call_request(
+                0,
+                get_undelegation_v2_input(delegator, validator, 2),
+            ))
+            .unwrap();
+        assert_eq!(missing_v2.code_err, "Undelegation does not exist");
+        assert_eq!(missing_v2.gas_used, DPOS_GET_METHOD_GAS);
+        let malformed_v2 = cornus_chain
+            .call(dpos_call_request(
+                0,
+                DPOS_GET_UNDELEGATION_V2_SELECTOR.to_vec(),
+            ))
+            .unwrap();
+        assert!(!malformed_v2.code_err.is_empty());
+        assert_eq!(malformed_v2.gas_used, DPOS_GET_METHOD_GAS);
+
+        let mut nonpayable_v2 =
+            dpos_call_request(0, get_undelegation_v2_input(delegator, validator, 1));
+        nonpayable_v2.value = vec![1];
+        let nonpayable_v2 = cornus_chain.call(nonpayable_v2).unwrap();
+        assert_eq!(nonpayable_v2.code_err, "DPoS method is not payable");
+        assert_eq!(nonpayable_v2.gas_used, 0);
+
+        let mut corrupt_snapshot = pre_chain.dpos_snapshot(0).unwrap();
+        corrupt_snapshot.total_stakes.remove(&validator);
+        pre_chain
+            .insert_dpos_snapshot(0, corrupt_snapshot.clone())
+            .unwrap();
+        let direct_error = pre_chain
+            .call(dpos_call_request(0, get_validator_input(validator)))
+            .unwrap_err();
+        assert!(direct_error.to_string().contains("orphan rows found"));
+        let native_error = pre_chain
+            .apply_dpos_fixed_singleton_read(
+                &corrupt_snapshot,
+                0,
+                DposTransaction::GetValidator(Ok(validator)),
+            )
+            .unwrap_err();
+        assert!(native_error.to_string().contains("orphan rows found"));
+
+        let orphan_key = SigningKey::from_slice(&[81u8; 32]).unwrap();
+        let orphan_validator: [u8; 20] = address_from_signing_key(&orphan_key).into();
+        let mut marker_only_snapshot = corrupt_snapshot;
+        marker_only_snapshot
+            .redelegate_same_validator_corruption
+            .insert(orphan_validator);
+        pre_chain
+            .insert_dpos_snapshot(0, marker_only_snapshot.clone())
+            .unwrap();
+        let marker_direct_error = pre_chain
+            .call(dpos_call_request(0, get_validator_input(orphan_validator)))
+            .unwrap_err();
+        assert!(
+            marker_direct_error
+                .to_string()
+                .contains("orphan rows found")
+        );
+        let marker_native_error = pre_chain
+            .apply_dpos_fixed_singleton_read(
+                &marker_only_snapshot,
+                0,
+                DposTransaction::GetValidator(Ok(orphan_validator)),
+            )
+            .unwrap_err();
+        assert!(
+            marker_native_error
+                .to_string()
+                .contains("orphan rows found")
+        );
+
+        let registration_input = register_validator_input(
+            orphan_validator,
+            &register_validator_proof(&orphan_key, orphan_validator, None),
+            [0x81; 32],
+            2_500,
+            "orphan validator",
+            "orphan endpoint",
+        );
+        let mut registration =
+            decode_dpos_register_validator(&registration_input, [0x54; 20]).unwrap();
+        registration.stake = u256_to_big_endian(U256::from(10_000u64));
+        let registration_error = pre_chain
+            .apply_dpos_registration(&mut marker_only_snapshot, registration, 0)
+            .unwrap_err();
+        assert!(registration_error.to_string().contains("orphan rows found"));
+
+        drop(pre_chain);
+        drop(pre_storage);
+        drop(cornus_chain);
+        drop(cornus_storage);
+        let _ = std::fs::remove_dir_all(pre_path);
+        let _ = std::fs::remove_dir_all(cornus_path);
+    }
+
+    #[test]
+    fn native_fixed_singleton_reads_preserve_gas_rollback_and_live_state() {
+        let sender = [0x61; 20];
+        let validator = [0x62; 20];
+        let initial_balance = U256::from(2_000_000u64);
+        let initial_stake = U256::from(10_000u64);
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            ..Default::default()
+        };
+
+        let pre_path = temp_db_path("native-fixed-singleton-pre-cornus");
+        let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
+        let pre_chain = FinalChain::new_with_rewards_config(
+            pre_storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(sender, initial_balance)],
+            vec![genesis_validator(validator, initial_stake)],
+            dpos_config.clone(),
+            FinalChainRewardsConfig {
+                cornus_period: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let validator_input = get_validator_input(validator);
+        let validator_intrinsic = intrinsic_gas(&validator_input, false).unwrap();
+        let pre_transactions = vec![
+            test_transaction(
+                0x71,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::from(7u64),
+                U256::one(),
+                100_000,
+                validator_input.clone(),
+                vec![0xc1, 0x71],
+            ),
+            test_transaction(
+                0x72,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::from(9u64),
+                U256::one(),
+                100_000,
+                DPOS_GET_VALIDATOR_SELECTOR.to_vec(),
+                vec![0xc1, 0x72],
+            ),
+            test_transaction(
+                0x73,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::from(11u64),
+                U256::one(),
+                100_000,
+                get_undelegation_v2_input(sender, validator, 1),
+                vec![0xc1, 0x73],
+            ),
+            test_transaction(
+                0x74,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::zero(),
+                U256::one(),
+                validator_intrinsic,
+                validator_input.clone(),
+                vec![0xc1, 0x74],
+            ),
+            test_transaction(
+                0x75,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                4,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                validator_input.clone(),
+                vec![0xc1, 0x75],
+            ),
+        ];
+        let pre_execution = pre_chain
+            .execute_native_transactions(1, &pre_transactions)
+            .unwrap();
+        assert_eq!(
+            pre_execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![1, 0, 0, 0, 1]
+        );
+        assert_eq!(
+            pre_execution.receipts[0].gas_used,
+            validator_intrinsic + DPOS_GET_METHOD_GAS
+        );
+        assert_eq!(
+            pre_execution.receipts[1].gas_used,
+            intrinsic_gas(&DPOS_GET_VALIDATOR_SELECTOR, false).unwrap() + DPOS_GET_METHOD_GAS
+        );
+        assert_eq!(
+            pre_execution.receipts[2].gas_used,
+            intrinsic_gas(&get_undelegation_v2_input(sender, validator, 1), false,).unwrap()
+        );
+        assert_eq!(pre_execution.receipts[3].gas_used, validator_intrinsic);
+        assert!(
+            pre_execution
+                .receipts
+                .iter()
+                .all(|receipt| receipt.logs.is_empty())
+        );
+        assert_eq!(pre_execution.accounts.get(&sender).unwrap().nonce, 5);
+        assert_eq!(
+            u256_from_big_endian(
+                &pre_execution
+                    .accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance
+            ),
+            initial_stake + U256::from(7u64)
+        );
+        assert_eq!(
+            pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .nonce,
+            1
+        );
+
+        let cornus_path = temp_db_path("native-fixed-singleton-cornus");
+        let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
+        let cornus_chain = FinalChain::new_with_rewards_config(
+            cornus_storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(validator, initial_balance)],
+            vec![genesis_validator(validator, initial_stake)],
+            dpos_config,
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                cornus_delegation_locking_period: 0,
+                cacti_period: u64::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let undelegate = undelegate_v2_input(validator, U256::from(1_000u64));
+        let get_v2 = get_undelegation_v2_input(validator, validator, 1);
+        let malformed_v2 = DPOS_GET_UNDELEGATION_V2_SELECTOR.to_vec();
+        let missing_v2 = get_undelegation_v2_input(validator, validator, 99);
+        let cornus_transactions = vec![
+            test_transaction(
+                0x81,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                undelegate,
+                vec![0xc1, 0x81],
+            ),
+            test_transaction(
+                0x82,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                validator_input.clone(),
+                vec![0xc1, 0x82],
+            ),
+            test_transaction(
+                0x83,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                get_v2.clone(),
+                vec![0xc1, 0x83],
+            ),
+            test_transaction(
+                0x84,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::one(),
+                U256::one(),
+                100_000,
+                validator_input.clone(),
+                vec![0xc1, 0x84],
+            ),
+            test_transaction(
+                0x85,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                4,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                malformed_v2.clone(),
+                vec![0xc1, 0x85],
+            ),
+            test_transaction(
+                0x86,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                5,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                missing_v2.clone(),
+                vec![0xc1, 0x86],
+            ),
+            test_transaction(
+                0x87,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                6,
+                U256::zero(),
+                U256::one(),
+                validator_intrinsic,
+                validator_input.clone(),
+                vec![0xc1, 0x87],
+            ),
+            test_transaction(
+                0x88,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                7,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                validator_input,
+                vec![0xc1, 0x88],
+            ),
+        ];
+        let cornus_execution = cornus_chain
+            .execute_native_transactions(1, &cornus_transactions)
+            .unwrap();
+        assert_eq!(
+            cornus_execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1, 0, 0, 0, 0, 1]
+        );
+        assert_eq!(cornus_execution.receipts[3].gas_used, validator_intrinsic);
+        assert_eq!(
+            cornus_execution.receipts[4].gas_used,
+            intrinsic_gas(&malformed_v2, false).unwrap() + DPOS_GET_METHOD_GAS
+        );
+        assert_eq!(
+            cornus_execution.receipts[5].gas_used,
+            intrinsic_gas(&missing_v2, false).unwrap() + DPOS_GET_METHOD_GAS
+        );
+        assert_eq!(cornus_execution.receipts[6].gas_used, validator_intrinsic);
+        assert_eq!(cornus_execution.accounts.get(&validator).unwrap().nonce, 8);
+        assert!(
+            cornus_execution.receipts[1..]
+                .iter()
+                .all(|receipt| receipt.logs.is_empty())
+        );
+
+        let validator_read = cornus_chain
+            .apply_dpos_fixed_singleton_read(
+                &cornus_execution.dpos_snapshot,
+                1,
+                DposTransaction::GetValidator(Ok(validator)),
+            )
+            .unwrap();
+        assert_eq!(validator_read.status_code, 1);
+        assert_eq!(
+            u256_from_big_endian(&validator_read.code_retval[32..64]),
+            U256::from(9_000u64)
+        );
+        let undelegation_read = cornus_chain
+            .apply_dpos_fixed_singleton_read(
+                &cornus_execution.dpos_snapshot,
+                1,
+                DposTransaction::GetUndelegationV2(Ok(DposUndelegationV2Read {
+                    delegator: validator,
+                    validator,
+                    id: 1,
+                })),
+            )
+            .unwrap();
+        assert_eq!(undelegation_read.status_code, 1);
+        assert_eq!(
+            u256_from_big_endian(&undelegation_read.code_retval[0..32]),
+            U256::from(1_000u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&undelegation_read.code_retval[128..160]),
+            U256::one()
+        );
+        let restarted_snapshot =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&cornus_execution.dpos_snapshot))
+                .unwrap();
+        let restarted_read = cornus_chain
+            .apply_dpos_fixed_singleton_read(
+                &restarted_snapshot,
+                1,
+                DposTransaction::GetUndelegationV2(Ok(DposUndelegationV2Read {
+                    delegator: validator,
+                    validator,
+                    id: 1,
+                })),
+            )
+            .unwrap();
+        assert_eq!(restarted_read, undelegation_read);
+
+        drop(pre_chain);
+        drop(pre_storage);
+        drop(cornus_chain);
+        drop(cornus_storage);
+        let _ = std::fs::remove_dir_all(pre_path);
+        let _ = std::fs::remove_dir_all(cornus_path);
+    }
+
+    #[test]
     fn call_reads_genesis_dpos_validator_metadata() {
         let path = temp_db_path("call-genesis-dpos-metadata");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -14430,25 +15134,6 @@ mod tests {
                 .total_stakes
                 .contains_key(&validator)
         );
-
-        // Simulate a snapshot written by an older binary that deleted the validator-owned rows
-        // but left the Rust-only same-validator corruption marker behind.
-        let mut legacy_deleted_snapshot = final_chain.dpos_snapshot(fourth_period).unwrap();
-        legacy_deleted_snapshot
-            .redelegate_same_validator_corruption
-            .insert(validator);
-        let mut snapshot_key = b"rustaxa:dpos_snapshot:".to_vec();
-        snapshot_key.extend_from_slice(&fourth_period.to_le_bytes());
-        let mut batch = storage.create_write_batch();
-        storage
-            .batch_put_raw(
-                &mut batch,
-                rustaxa_storage::Column::FinalChainMeta,
-                &snapshot_key,
-                &encode_dpos_snapshot_rlp(&legacy_deleted_snapshot),
-            )
-            .unwrap();
-        storage.commit_write_batch_with_sync(batch, true).unwrap();
 
         drop(final_chain);
         drop(storage);

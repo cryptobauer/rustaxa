@@ -1255,6 +1255,183 @@ TEST_F(FinalChainTest, native_dpos_eligibility_reads_match_fixed_gas_and_cornus_
   assert_persisted_state(SUT);
 }
 
+TEST_F(FinalChainTest, native_dpos_singleton_reads_match_live_state_gas_and_cornus_rules) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kGasPrice = 0;
+  constexpr uint64_t kGasLimit = 100'000;
+  constexpr uint64_t kSenderInitialBalance = 10'000'000;
+  constexpr uint64_t kValidatorReadValue = 101;
+  constexpr uint64_t kTransferBeforeCornus = 606;
+  constexpr uint64_t kTransferAtCornus = 909;
+
+  const dev::KeyPair owner{dev::Secret("abababababababababababababababababababababababababababababababab")};
+  const dev::KeyPair validator{dev::Secret("bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc")};
+  const dev::KeyPair sender{dev::Secret("cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd")};
+  const dev::KeyPair receiver{dev::Secret("dededededededededededededededededededededededededededededededededede")};
+  const dev::KeyPair missing{dev::Secret("efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kInitialStake + 1'000;
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.minimum_deposit = 1'000;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 2;
+  cfg.genesis.state.hardforks.cornus_hf.delegation_locking_period = 1;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 2;
+  cfg.genesis.state.hardforks.cacti_hf.block_num = 100;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{
+      validator.address(), owner.address(), vrf_public_key, 0, "validator", "node", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  assume_only_toplevel_transfers = false;
+  init();
+
+  auto validator_input = util::EncodingSolidity::packFunctionCall("getValidator(address)", validator.address());
+  validator_input.push_back(0xaa);
+  const auto missing_validator_input =
+      util::EncodingSolidity::packFunctionCall("getValidator(address)", missing.address());
+  auto malformed_validator_input = validator_input;
+  malformed_validator_input.resize(4);
+  const auto v2_input = util::EncodingSolidity::packFunctionCall("getUndelegationV2(address,address,uint64)",
+                                                                 owner.address(), validator.address(), uint64_t{1});
+  const auto validator_intrinsic = IntrinsicGas(validator_input, false);
+
+  const auto pre_cornus_txs =
+      SharedTransactions{std::make_shared<Transaction>(0, kValidatorReadValue, kGasPrice, kGasLimit, validator_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(1, 202, kGasPrice, kGasLimit, missing_validator_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(2, 303, kGasPrice, kGasLimit, malformed_validator_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(3, 404, kGasPrice, kGasLimit, v2_input, sender.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(4, 505, kGasPrice, validator_intrinsic, validator_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(5, 707, kGasPrice, validator_intrinsic - 1, validator_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(5, kTransferBeforeCornus, kGasPrice, kGasLimit, bytes{},
+                                                       sender.secret(), receiver.address(), cfg.genesis.chain_id)};
+  const auto pre_cornus_result = advance(pre_cornus_txs, {.dont_assume_all_trx_success = true});
+  ASSERT_EQ(pre_cornus_result->trx_receipts.size(), pre_cornus_txs.size());
+
+  const std::array<uint64_t, 7> pre_cornus_gas = {
+      validator_intrinsic + 5'000,
+      IntrinsicGas(missing_validator_input, false) + 5'000,
+      IntrinsicGas(malformed_validator_input, false) + 5'000,
+      IntrinsicGas(v2_input, false),
+      validator_intrinsic,
+      validator_intrinsic - 1,
+      IntrinsicGas(bytes{}, false),
+  };
+  const std::array<uint64_t, 7> pre_cornus_status = {1, 0, 0, 0, 0, 0, 1};
+  uint64_t cumulative_gas = 0;
+  for (size_t idx = 0; idx < pre_cornus_txs.size(); ++idx) {
+    cumulative_gas += pre_cornus_gas[idx];
+    TransactionReceipt expected;
+    expected.status_code = pre_cornus_status[idx];
+    expected.gas_used = pre_cornus_gas[idx];
+    expected.cumulative_gas_used = cumulative_gas;
+    EXPECT_EQ(util::rlp_enc(pre_cornus_result->trx_receipts[idx]), util::rlp_enc(expected));
+    EXPECT_EQ(pre_cornus_result->trx_receipts[idx].bloom(), LogBloom());
+  }
+  EXPECT_EQ(pre_cornus_result->final_chain_blk->gas_used, cumulative_gas);
+  EXPECT_EQ(pre_cornus_result->final_chain_blk->log_bloom, LogBloom());
+
+  const auto undelegate_input = util::EncodingSolidity::packFunctionCall("undelegateV2(address,uint256)",
+                                                                         validator.address(), u256(kInitialStake));
+  const auto missing_v2_input = util::EncodingSolidity::packFunctionCall(
+      "getUndelegationV2(address,address,uint64)", owner.address(), validator.address(), uint64_t{2});
+  const auto undelegate_tx = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, undelegate_input, owner.secret(),
+                                                           kDposContractAddress, cfg.genesis.chain_id);
+  const auto at_cornus_txs =
+      SharedTransactions{undelegate_tx,
+                         std::make_shared<Transaction>(6, 0, kGasPrice, kGasLimit, v2_input, sender.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(7, 0, kGasPrice, kGasLimit, missing_v2_input, sender.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(8, 808, kGasPrice, kGasLimit, v2_input, sender.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(9, 909, kGasPrice, kGasLimit, validator_input, sender.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(10, kTransferAtCornus, kGasPrice, kGasLimit, bytes{},
+                                                       sender.secret(), receiver.address(), cfg.genesis.chain_id)};
+  const auto at_cornus_result =
+      advance(at_cornus_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(at_cornus_result->trx_receipts.size(), at_cornus_txs.size());
+
+  const auto undelegate_gas = IntrinsicGas(undelegate_input, false) + 60'000;
+  const std::array<uint64_t, 6> at_cornus_gas = {undelegate_gas,
+                                                 IntrinsicGas(v2_input, false) + 5'000,
+                                                 IntrinsicGas(missing_v2_input, false) + 5'000,
+                                                 IntrinsicGas(v2_input, false),
+                                                 validator_intrinsic,
+                                                 IntrinsicGas(bytes{}, false)};
+  const std::array<uint64_t, 6> at_cornus_status = {1, 1, 0, 0, 0, 1};
+  cumulative_gas = 0;
+  for (size_t idx = 0; idx < at_cornus_txs.size(); ++idx) {
+    cumulative_gas += at_cornus_gas[idx];
+    TransactionReceipt expected;
+    expected.status_code = at_cornus_status[idx];
+    expected.gas_used = at_cornus_gas[idx];
+    expected.cumulative_gas_used = cumulative_gas;
+    if (idx == 0) {
+      expected.logs.emplace_back(
+          kDposContractAddress,
+          std::vector<h256>{dev::sha3(dev::asBytes("UndelegatedV2(address,address,uint64,uint256)")),
+                            h256(owner.address(), h256::AlignRight), h256(validator.address(), h256::AlignRight),
+                            h256(uint64_t{1})},
+          dev::toBigEndian(u256(kInitialStake)));
+    }
+    EXPECT_EQ(util::rlp_enc(at_cornus_result->trx_receipts[idx]), util::rlp_enc(expected));
+    if (idx != 0) {
+      EXPECT_EQ(at_cornus_result->trx_receipts[idx].bloom(), LogBloom());
+    }
+  }
+  EXPECT_EQ(at_cornus_result->final_chain_blk->gas_used, cumulative_gas);
+  EXPECT_EQ(at_cornus_result->final_chain_blk->log_bloom, at_cornus_result->trx_receipts[0].bloom());
+
+  const auto assert_persisted_state = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto sender_account = chain->getAccount(sender.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, 11);
+    EXPECT_EQ(sender_account->balance,
+              u256(kSenderInitialBalance - kValidatorReadValue - kTransferBeforeCornus - kTransferAtCornus));
+    const auto dpos_account = chain->getAccount(kDposContractAddress);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, u256(kInitialStake + kValidatorReadValue));
+    const auto receiver_account = chain->getAccount(receiver.address());
+    ASSERT_TRUE(receiver_account);
+    EXPECT_EQ(receiver_account->balance, u256(kTransferBeforeCornus + kTransferAtCornus));
+    EXPECT_EQ(receiver_account->nonce, 0);
+    const auto owner_account = chain->getAccount(owner.address());
+    ASSERT_TRUE(owner_account);
+    EXPECT_EQ(owner_account->nonce, 1);
+
+    for (size_t idx = 0; idx < pre_cornus_txs.size(); ++idx) {
+      ASSERT_TRUE(chain->transactionReceipt(1, idx));
+      EXPECT_EQ(util::rlp_enc(*chain->transactionReceipt(1, idx)), util::rlp_enc(pre_cornus_result->trx_receipts[idx]));
+    }
+    for (size_t idx = 0; idx < at_cornus_txs.size(); ++idx) {
+      ASSERT_TRUE(chain->transactionReceipt(2, idx));
+      EXPECT_EQ(util::rlp_enc(*chain->transactionReceipt(2, idx)), util::rlp_enc(at_cornus_result->trx_receipts[idx]));
+    }
+  };
+
+  assert_persisted_state(SUT);
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  assert_persisted_state(SUT);
+}
+
 TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kDelegation = 1'000;

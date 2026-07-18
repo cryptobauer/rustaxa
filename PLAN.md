@@ -535,7 +535,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     and `getUndelegationV2(address,address,uint64)`. The three eligibility reads use the configured delayed snapshot and
     delayed hardfork/jail evaluation block, matching the legacy delayed reader; the remaining selected reads use the
     exact finalized-block snapshot. The fixed-gas eligibility family is also executable as native finalized
-    transactions with its Cornus nonpayability behavior.
+    transactions with its Cornus nonpayability behavior. Native finalization additionally executes the two fixed-5,000
+    singleton reads, `getValidator(address)` and Cornus-gated `getUndelegationV2(address,address,uint64)`, against live
+    block-local DPoS state so they observe successful earlier same-block mutations.
 - Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or
