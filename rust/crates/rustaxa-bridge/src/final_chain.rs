@@ -421,6 +421,7 @@ pub(crate) fn create_final_chain(
             magnolia_period: 0,
             aspen_part_one_period: u64::MAX,
             fix_claim_all_block_num: u64::MAX,
+            fix_redelegate_block_num: u64::MAX,
             aspen_part_two_period: 0,
             max_block_author_reward_percent: 0,
             dag_proposers_reward_percent: 0,
@@ -437,6 +438,7 @@ pub(crate) fn create_final_chain(
             magnolia_jail_time: 0,
             cacti_jail_time: 0,
             frequency_rules: Vec::new(),
+            redelegations: Vec::new(),
         },
     )
 }
@@ -509,6 +511,7 @@ pub fn create_final_chain_with_rewards_config(
             magnolia_period: rewards_config.magnolia_period,
             aspen_part_one_period: rewards_config.aspen_part_one_period,
             fix_claim_all_block_num: rewards_config.fix_claim_all_block_num,
+            fix_redelegate_block_num: rewards_config.fix_redelegate_block_num,
             aspen_part_two_period: rewards_config.aspen_part_two_period,
             max_block_author_reward_percent: rewards_config.max_block_author_reward_percent,
             dag_proposers_reward_percent: rewards_config.dag_proposers_reward_percent,
@@ -528,6 +531,15 @@ pub fn create_final_chain_with_rewards_config(
                 .frequency_rules
                 .into_iter()
                 .map(|rule| (rule.from_period, rule.frequency))
+                .collect(),
+            redelegations: rewards_config
+                .redelegations
+                .into_iter()
+                .map(|correction| rustaxa_consensus::RedelegationCorrection {
+                    validator: correction.validator,
+                    delegator: correction.delegator,
+                    amount: correction.amount,
+                })
                 .collect(),
         },
     )?;

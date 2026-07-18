@@ -402,6 +402,16 @@ reference builds retain the untouched legacy RewardsStats header and source.
     Before Magnolia, validator queries preserve the legacy zero pending-count field. At Magnolia and later, Rust derives
     the count and deletion guard from the actual combined queues, intentionally correcting the legacy `ValidatorV1`
     blind spot where a pre-Magnolia request was omitted from the persisted counter and could permit premature deletion.
+    Native redelegation now preserves the legacy ordered business checks, reward-claim/log ordering, unchanged escrow
+    and aggregate delegated amount, below-minimum destination-pair creation, Aspen zero-amount boundary, disabled
+    maximum-stake semantics when the configured maximum is zero, and validator deletion guard. Before and at
+    `fix_redelegate_block_num`, Rust reproduces the historical same-validator stale stake, ordered vote-delta, and
+    restored reward-pool writes required to replay old blocks; at the exact fix block it applies the configured ordered
+    corrections after reward distribution and transaction effects but before snapshot publication, and later
+    same-validator calls fail normally.
+    A repeated reward-bearing same-validator call after an already corrupted pre-fix snapshot remains an explicit hard
+    unsupported history until Rust owns the legacy reward-state reference graph; Rust must not publish an approximate
+    cumulative-reward result for that topology.
     The extended 21-item snapshot codec still decodes the prior 20-item form, but rollback to a pre-slice binary is unsafe
     after any post-slice DPoS snapshot is finalized because that binary cannot decode the appended queue item. Snapshots
     are persisted atomically with finalized block indexes, executed DAG/transaction status counters, and `lastBlockNumber`. Startup reloads persisted historical DPoS

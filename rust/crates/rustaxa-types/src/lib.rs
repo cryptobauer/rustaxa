@@ -11,7 +11,7 @@ pub use final_chain::{
     FinalChainBlockHeader, FinalChainBlockHeaderBuilder, FinalChainCallOutcome,
     FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock, FinalizationTransaction,
     GenesisAccount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
-    StoredFinalChainBlockHeader,
+    RedelegationCorrection, StoredFinalChainBlockHeader,
 };
 pub use pbft::PbftBlockMetadata;
 pub use pillar::{

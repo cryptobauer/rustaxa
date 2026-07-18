@@ -3,6 +3,7 @@
 #include <libdevcore/CommonData.h>
 
 #include <array>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -843,6 +844,34 @@ std::shared_ptr<Transaction> makeDoubleVotingProofTx(const std::shared_ptr<PbftV
                                        kSlashingContractAddress);
 }
 
+const addr_t kDposContractAddress = addr_t("0x00000000000000000000000000000000000000FE");
+
+u256 get_validator_stake(const std::vector<state_api::ValidatorStake>& stakes, const addr_t& validator) {
+  for (const auto& item : stakes) {
+    if (item.addr == validator) {
+      return item.stake;
+    }
+  }
+  return 0;
+}
+
+bytes u256_to_padded_bytes32(const u256& value) {
+  const auto value_bytes = dev::toBigEndian(value);
+  bytes encoded(32, 0);
+  std::copy(value_bytes.begin(), value_bytes.end(), encoded.begin() + (32 - value_bytes.size()));
+  return encoded;
+}
+
+std::shared_ptr<Transaction> make_redelegate_tx(const FullNodeConfig& sender_cfg, const dev::KeyPair& sender,
+                                                uint64_t nonce, const addr_t& from_validator,
+                                                const addr_t& to_validator, const u256& amount, const u256& gas_price,
+                                                const uint64_t gas_limit = TEST_TX_GAS_LIMIT) {
+  return std::make_shared<Transaction>(nonce, 0, gas_price, gas_limit,
+                                       util::EncodingSolidity::packFunctionCall("reDelegate(address,address,uint256)",
+                                                                                from_validator, to_validator, amount),
+                                       sender.secret(), kDposContractAddress, sender_cfg.genesis.chain_id);
+}
+
 TEST_F(FinalChainTest, remove_jailed_validator_votes_from_total) {
   const dev::KeyPair key = dev::KeyPair::create();
   const std::vector<dev::KeyPair> validator_keys = {dev::KeyPair::create(), dev::KeyPair::create(),
@@ -1109,6 +1138,682 @@ TEST_F(FinalChainTest, native_dpos_delegate_to_missing_validator_rolls_back_stat
   SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_failed_delegate_persists(SUT);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_persists_receipt_and_state) {
+  constexpr uint64_t kDestinationStake = 3'000;
+  constexpr uint64_t kDelegation = 5'000;
+  constexpr uint64_t kRedelegation = kDelegation;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kOwnerInitialBalance = 100'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair destination_validator{
+      dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair delegator{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(delegator.address(), kDelegation);
+  state_api::ValidatorInfo destination_validator_info{
+      destination_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  destination_validator_info.delegations.emplace(owner.address(), kDestinationStake);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info, destination_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_dpos_account = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(initial_dpos_account);
+  ASSERT_EQ(initial_dpos_account->nonce, 1);
+  const auto initial_dpos_balance = initial_dpos_account->balance;
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto initial_destination_stake = get_validator_stake(initial_stakes, destination_validator.address());
+
+  const auto redelegate_tx = make_redelegate_tx(cfg, delegator, 0, source_validator.address(),
+                                                destination_validator.address(), u256(kRedelegation), kGasPrice);
+  const auto result = advance({redelegate_tx}, {.dont_assume_no_logs = true});
+  ASSERT_EQ(result->trx_receipts.size(), 1);
+
+  const auto redelegated_amount = u256_to_padded_bytes32(u256(kRedelegation));
+  const LogEntry redelegated_log{
+      kDposContract,
+      {dev::sha3(dev::asBytes("Redelegated(address,address,address,uint256)")),
+       h256(delegator.address(), h256::AlignRight), h256(source_validator.address(), h256::AlignRight),
+       h256(destination_validator.address(), h256::AlignRight)},
+      redelegated_amount};
+  TransactionReceipt expected_receipt;
+  expected_receipt.status_code = 1;
+  const auto expected_gas = IntrinsicGas(redelegate_tx->getData(), false) + 80'000;
+  expected_receipt.gas_used = expected_gas;
+  expected_receipt.cumulative_gas_used = expected_gas;
+  expected_receipt.logs = {redelegated_log};
+
+  auto assert_persisted_redelegate = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto receipt = chain->transactionReceipt(1, 0);
+    ASSERT_TRUE(receipt);
+    EXPECT_EQ(receipt->status_code, 1);
+    EXPECT_EQ(receipt->gas_used, expected_gas);
+    EXPECT_EQ(receipt->cumulative_gas_used, expected_gas);
+    ASSERT_EQ(receipt->logs.size(), 1);
+    EXPECT_EQ(receipt->logs[0].address, redelegated_log.address);
+    EXPECT_EQ(receipt->logs[0].topics, redelegated_log.topics);
+    EXPECT_EQ(receipt->logs[0].data, redelegated_log.data);
+    EXPECT_EQ(util::rlp_enc(*receipt), util::rlp_enc(expected_receipt));
+    EXPECT_EQ(receipt->bloom(), expected_receipt.bloom());
+
+    const auto header = chain->blockHeader(1);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(header->gas_used, expected_gas);
+    EXPECT_EQ(header->log_bloom, expected_receipt.bloom());
+
+    const auto delegator_account = chain->getAccount(delegator.address());
+    ASSERT_TRUE(delegator_account);
+    EXPECT_EQ(delegator_account->nonce, 1);
+    EXPECT_EQ(delegator_account->balance, u256(kDelegatorInitialBalance - kDelegation - expected_gas * kGasPrice));
+
+    const auto dpos_account = chain->getAccount(kDposContract);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, initial_dpos_balance);
+
+    EXPECT_EQ(chain->dposTotalAmountDelegated(1), initial_total);
+    const auto current_stakes = chain->dposValidatorsTotalStakes(1);
+    ASSERT_EQ(current_stakes.size(), 1);
+    EXPECT_EQ(get_validator_stake(current_stakes, source_validator.address()), 0);
+    EXPECT_EQ(get_validator_stake(current_stakes, destination_validator.address()),
+              initial_destination_stake + kRedelegation);
+  };
+
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[0]), util::rlp_enc(expected_receipt));
+  EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
+  assert_persisted_redelegate(SUT);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+  assert_persisted_redelegate(SUT);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_to_missing_validator_rolls_back_state) {
+  constexpr uint64_t kStake = 10'000;
+  constexpr uint64_t kDelegation = 5'000;
+  constexpr uint64_t kRedelegation = 1'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = TEST_TX_GAS_LIMIT;
+  constexpr uint64_t kOwnerInitialBalance = 100'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+  const addr_t kMissingValidator("0x0000000000000000000000000000000000000000");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair delegator{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(owner.address(), kStake);
+  source_validator_info.delegations.emplace(delegator.address(), kDelegation);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_dpos_account = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(initial_dpos_account);
+  const auto initial_dpos_balance = initial_dpos_account->balance;
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+
+  auto redelegate_tx = std::make_shared<Transaction>(
+      0, 0, kGasPrice, kGasLimit,
+      util::EncodingSolidity::packFunctionCall("reDelegate(address,address,uint256)", source_validator.address(),
+                                               kMissingValidator, u256(kRedelegation)),
+      delegator.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto result = advance(
+      {redelegate_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true, .expect_to_fail = true});
+  ASSERT_EQ(result->trx_receipts.size(), 1);
+
+  const auto expected_gas = IntrinsicGas(redelegate_tx->getData(), false) + 80'000;
+  TransactionReceipt expected_receipt;
+  expected_receipt.status_code = 0;
+  expected_receipt.gas_used = expected_gas;
+  expected_receipt.cumulative_gas_used = expected_gas;
+
+  auto assert_failed_redelegate_persists = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto receipt = chain->transactionReceipt(1, 0);
+    ASSERT_TRUE(receipt);
+    EXPECT_EQ(receipt->status_code, 0);
+    EXPECT_EQ(receipt->gas_used, expected_gas);
+    EXPECT_EQ(receipt->cumulative_gas_used, expected_gas);
+    EXPECT_EQ(receipt->logs.size(), 0);
+    EXPECT_EQ(receipt->bloom(), expected_receipt.bloom());
+    EXPECT_EQ(util::rlp_enc(*receipt), util::rlp_enc(expected_receipt));
+
+    const auto header = chain->blockHeader(1);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(header->gas_used, expected_gas);
+    EXPECT_EQ(header->log_bloom, expected_receipt.bloom());
+
+    const auto delegator_account = chain->getAccount(delegator.address());
+    ASSERT_TRUE(delegator_account);
+    EXPECT_EQ(delegator_account->nonce, 1);
+    EXPECT_EQ(delegator_account->balance, u256(kDelegatorInitialBalance - kDelegation - expected_gas * kGasPrice));
+
+    const auto dpos_account = chain->getAccount(kDposContract);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, initial_dpos_balance);
+    EXPECT_EQ(chain->dposTotalAmountDelegated(1), initial_total);
+
+    const auto current_stakes = chain->dposValidatorsTotalStakes(1);
+    ASSERT_EQ(current_stakes.size(), initial_stakes.size());
+    EXPECT_EQ(get_validator_stake(current_stakes, source_validator.address()),
+              get_validator_stake(initial_stakes, source_validator.address()));
+  };
+
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[0]), util::rlp_enc(expected_receipt));
+  EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
+  assert_failed_redelegate_persists(SUT);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+  assert_failed_redelegate_persists(SUT);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_to_maxed_validator_rolls_back_state) {
+  constexpr uint64_t kSourceStake = 10'000;
+  constexpr uint64_t kDestinationStake = 30'000;
+  constexpr uint64_t kDelegation = 5'000;
+  constexpr uint64_t kRedelegation = 1'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = TEST_TX_GAS_LIMIT;
+  constexpr uint64_t kOwnerInitialBalance = 100'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair destination_validator{
+      dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair delegator{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(owner.address(), kSourceStake);
+  source_validator_info.delegations.emplace(delegator.address(), kDelegation);
+  state_api::ValidatorInfo destination_validator_info{
+      destination_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  destination_validator_info.delegations.emplace(owner.address(), kDestinationStake);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info, destination_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_dpos_account = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(initial_dpos_account);
+  const auto initial_dpos_balance = initial_dpos_account->balance;
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+
+  auto redelegate_tx = std::make_shared<Transaction>(
+      0, 0, kGasPrice, kGasLimit,
+      util::EncodingSolidity::packFunctionCall("reDelegate(address,address,uint256)", source_validator.address(),
+                                               destination_validator.address(), u256(kRedelegation)),
+      delegator.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto result = advance(
+      {redelegate_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true, .expect_to_fail = true});
+  ASSERT_EQ(result->trx_receipts.size(), 1);
+
+  const auto expected_gas = IntrinsicGas(redelegate_tx->getData(), false) + 80'000;
+  TransactionReceipt expected_receipt;
+  expected_receipt.status_code = 0;
+  expected_receipt.gas_used = expected_gas;
+  expected_receipt.cumulative_gas_used = expected_gas;
+
+  auto assert_failed_redelegate_persists = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto receipt = chain->transactionReceipt(1, 0);
+    ASSERT_TRUE(receipt);
+    EXPECT_EQ(receipt->status_code, 0);
+    EXPECT_EQ(receipt->gas_used, expected_gas);
+    EXPECT_EQ(receipt->cumulative_gas_used, expected_gas);
+    EXPECT_EQ(receipt->logs.size(), 0);
+    EXPECT_EQ(receipt->bloom(), expected_receipt.bloom());
+    EXPECT_EQ(util::rlp_enc(*receipt), util::rlp_enc(expected_receipt));
+
+    const auto header = chain->blockHeader(1);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(header->gas_used, expected_gas);
+    EXPECT_EQ(header->log_bloom, expected_receipt.bloom());
+
+    const auto delegator_account = chain->getAccount(delegator.address());
+    ASSERT_TRUE(delegator_account);
+    EXPECT_EQ(delegator_account->nonce, 1);
+    EXPECT_EQ(delegator_account->balance, u256(kDelegatorInitialBalance - kDelegation - expected_gas * kGasPrice));
+
+    const auto dpos_account = chain->getAccount(kDposContract);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, initial_dpos_balance);
+
+    EXPECT_EQ(chain->dposTotalAmountDelegated(1), initial_total);
+
+    const auto source_stakes = chain->dposValidatorsTotalStakes(1);
+    EXPECT_EQ(get_validator_stake(source_stakes, source_validator.address()), u256(kSourceStake + kDelegation));
+    EXPECT_EQ(get_validator_stake(source_stakes, destination_validator.address()), u256(kDestinationStake));
+  };
+
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[0]), util::rlp_enc(expected_receipt));
+  EXPECT_EQ(result->final_chain_blk->log_bloom, expected_receipt.bloom());
+  assert_failed_redelegate_persists(SUT);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+  assert_failed_redelegate_persists(SUT);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_pre_mutation_failures_roll_back_state) {
+  constexpr uint64_t kSourceStake = 10'000;
+  constexpr uint64_t kSourceDelegation = 5'000;
+  constexpr uint64_t kDestinationStake = 8'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kOwnerInitialBalance = 100'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  constexpr uint64_t kNonDelegatorInitialBalance = 10'000'000;
+  constexpr uint64_t kGasPrice = 7;
+  const addr_t kMissingValidator("0x0000000000000000000000000000000000000001");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair destination_validator{
+      dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair delegator{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+  const dev::KeyPair non_delegator{dev::Secret("5555555555555555555555555555555555555555555555555555555555555555")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.initial_balances[non_delegator.address()] = kNonDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(owner.address(), kSourceStake);
+  source_validator_info.delegations.emplace(delegator.address(), kSourceDelegation);
+  state_api::ValidatorInfo destination_validator_info{
+      destination_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  destination_validator_info.delegations.emplace(owner.address(), kDestinationStake);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info, destination_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+
+  const SharedTransactions transactions = {
+      make_redelegate_tx(cfg, delegator, 0, kMissingValidator, destination_validator.address(), 1'000, kGasPrice),
+      make_redelegate_tx(cfg, non_delegator, 0, source_validator.address(), destination_validator.address(), 1'000,
+                         kGasPrice),
+      make_redelegate_tx(cfg, delegator, 1, source_validator.address(), destination_validator.address(),
+                         kSourceDelegation + 1, kGasPrice),
+      make_redelegate_tx(cfg, delegator, 2, source_validator.address(), destination_validator.address(), 4'500,
+                         kGasPrice),
+  };
+  const auto result = advance(transactions, {.expect_to_fail = true});
+  ASSERT_EQ(result->trx_receipts.size(), transactions.size());
+  for (const auto& receipt : result->trx_receipts) {
+    EXPECT_EQ(receipt.status_code, 0);
+    EXPECT_TRUE(receipt.logs.empty());
+  }
+
+  auto assert_unchanged = [&](const std::shared_ptr<FinalChain>& chain) {
+    EXPECT_EQ(chain->dposTotalAmountDelegated(1), initial_total);
+    const auto stakes = chain->dposValidatorsTotalStakes(1);
+    EXPECT_EQ(get_validator_stake(stakes, source_validator.address()),
+              get_validator_stake(initial_stakes, source_validator.address()));
+    EXPECT_EQ(get_validator_stake(stakes, destination_validator.address()),
+              get_validator_stake(initial_stakes, destination_validator.address()));
+  };
+  assert_unchanged(SUT);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  ASSERT_EQ(SUT->lastBlockNumber(), 1);
+  assert_unchanged(SUT);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_correction_applies_only_at_fix_block) {
+  constexpr uint64_t kSourceStake = 10'000;
+  constexpr uint64_t kSourceDelegation = 5'000;
+  constexpr uint64_t kBugAmount = 1'000;
+  constexpr uint64_t kCorrection = kBugAmount;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 10'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kOwnerInitialBalance = 11'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  constexpr uint64_t kFixBlockNum = 2;
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair delegator{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.fix_redelegate_block_num = kFixBlockNum;
+  cfg.genesis.state.hardforks.redelegations = {
+      taraxa::Redelegation{source_validator.address(), delegator.address(), kCorrection}};
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(owner.address(), kSourceStake);
+  source_validator_info.delegations.emplace(delegator.address(), kSourceDelegation);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+  const auto initial_stake = get_validator_stake(initial_stakes, source_validator.address());
+
+  const auto pre_fix_tx =
+      make_redelegate_tx(cfg, delegator, 0, source_validator.address(), source_validator.address(), kBugAmount, 0);
+  const auto block1 = advance({pre_fix_tx}, {.dont_assume_no_logs = true});
+  ASSERT_EQ(block1->trx_receipts.size(), 1);
+  EXPECT_EQ(block1->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(1), initial_total);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(1), source_validator.address()),
+            initial_stake + kBugAmount);
+
+  const auto fix_block_tx =
+      make_redelegate_tx(cfg, delegator, 1, source_validator.address(), source_validator.address(), kBugAmount, 0);
+  const auto block2 = advance({fix_block_tx}, {.dont_assume_no_logs = true});
+  ASSERT_EQ(block2->trx_receipts.size(), 1);
+  EXPECT_EQ(block2->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(2), initial_total);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(2), source_validator.address()),
+            initial_stake + kBugAmount);
+  EXPECT_EQ(SUT->dposEligibleVoteCount(2, source_validator.address()), 1);
+  EXPECT_EQ(SUT->dposEligibleTotalVoteCount(2), 1);
+
+  const auto post_fix_tx =
+      make_redelegate_tx(cfg, delegator, 2, source_validator.address(), source_validator.address(), kBugAmount, 0);
+  const auto block3 = advance(
+      {post_fix_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true, .expect_to_fail = true});
+  ASSERT_EQ(block3->trx_receipts.size(), 1);
+  EXPECT_EQ(block3->trx_receipts[0].status_code, 0);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(3), initial_total);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(3), source_validator.address()),
+            initial_stake + kBugAmount);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 3);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(3), source_validator.address()),
+            initial_stake + kBugAmount);
+  EXPECT_EQ(SUT->dposEligibleVoteCount(3, source_validator.address()), 1);
+  EXPECT_EQ(SUT->dposEligibleTotalVoteCount(3), 1);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_zero_to_new_destination_pair_pre_aspen_succeeds) {
+  constexpr uint64_t kSourceStake = 10'000;
+  constexpr uint64_t kSourceDelegation = 5'000;
+  constexpr uint64_t kDestinationStake = 8'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kRedelegation = 0;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kOwnerInitialBalance = 100'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  const auto gas_limit = TEST_TX_GAS_LIMIT;
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair destination_validator{
+      dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair delegator{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.aspen_hf.block_num_part_one = std::numeric_limits<uint64_t>::max();
+  cfg.genesis.state.hardforks.aspen_hf.block_num_part_two = std::numeric_limits<uint64_t>::max();
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(owner.address(), kSourceStake);
+  source_validator_info.delegations.emplace(delegator.address(), kSourceDelegation);
+  state_api::ValidatorInfo destination_validator_info{
+      destination_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  destination_validator_info.delegations.emplace(owner.address(), kDestinationStake);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info, destination_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+  const auto initial_source_stake = get_validator_stake(initial_stakes, source_validator.address());
+  const auto initial_destination_stake = get_validator_stake(initial_stakes, destination_validator.address());
+
+  const auto redelegate_tx =
+      make_redelegate_tx(cfg, delegator, 0, source_validator.address(), destination_validator.address(),
+                         u256(kRedelegation), kGasPrice, gas_limit);
+  const auto result = advance({redelegate_tx}, {.dont_assume_no_logs = true});
+  ASSERT_EQ(result->trx_receipts.size(), 1);
+  EXPECT_EQ(result->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(1), initial_total);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(1), source_validator.address()), initial_source_stake);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(1), destination_validator.address()),
+            initial_destination_stake);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_zero_at_aspen_fails) {
+  constexpr uint64_t kSourceStake = 10'000;
+  constexpr uint64_t kDelegation = 5'000;
+  constexpr uint64_t kDestinationStake = 8'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = TEST_TX_GAS_LIMIT;
+  constexpr uint64_t kRedelegation = 0;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kOwnerInitialBalance = 100'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair destination_validator{
+      dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair delegator{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.aspen_hf.block_num_part_one = 1;
+  cfg.genesis.state.hardforks.aspen_hf.block_num_part_two = 1;
+  cfg.genesis.state.hardforks.aspen_hf.max_supply = kOwnerInitialBalance + kDelegatorInitialBalance;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(owner.address(), kSourceStake);
+  source_validator_info.delegations.emplace(delegator.address(), kDelegation);
+  state_api::ValidatorInfo destination_validator_info{
+      destination_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  destination_validator_info.delegations.emplace(owner.address(), kDestinationStake);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info, destination_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_dpos_account = SUT->getAccount(kDposContractAddress);
+  ASSERT_TRUE(initial_dpos_account);
+  const auto initial_dpos_balance = initial_dpos_account->balance;
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+  const auto initial_source_stake = get_validator_stake(initial_stakes, source_validator.address());
+  const auto initial_destination_stake = get_validator_stake(initial_stakes, destination_validator.address());
+
+  const auto redelegate_tx =
+      make_redelegate_tx(cfg, delegator, 0, source_validator.address(), destination_validator.address(),
+                         u256(kRedelegation), kGasPrice, kGasLimit);
+  const auto result = advance(
+      {redelegate_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true, .expect_to_fail = true});
+  ASSERT_EQ(result->trx_receipts.size(), 1);
+  const auto expected_gas = IntrinsicGas(redelegate_tx->getData(), false) + 80'000;
+  EXPECT_EQ(result->trx_receipts[0].status_code, 0);
+  EXPECT_EQ(result->trx_receipts[0].gas_used, expected_gas);
+  EXPECT_EQ(result->trx_receipts[0].logs.size(), 0);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(1), initial_total);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(1), source_validator.address()), initial_source_stake);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(1), destination_validator.address()),
+            initial_destination_stake);
+  EXPECT_EQ(SUT->getAccount(kDposContractAddress)->balance, initial_dpos_balance);
+}
+
+TEST_F(FinalChainTest, native_dpos_redelegate_sub_minimum_to_new_destination_pair_succeeds) {
+  constexpr uint64_t kSourceStake = 10'000;
+  constexpr uint64_t kSourceDelegation = 5'000;
+  constexpr uint64_t kDestinationStake = 8'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kRedelegation = 1;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kOwnerInitialBalance = 100'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair source_validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair destination_validator{
+      dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair delegator{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo source_validator_info{
+      source_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  source_validator_info.delegations.emplace(owner.address(), kSourceStake);
+  source_validator_info.delegations.emplace(delegator.address(), kSourceDelegation);
+  state_api::ValidatorInfo destination_validator_info{
+      destination_validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  destination_validator_info.delegations.emplace(owner.address(), kDestinationStake);
+  cfg.genesis.state.dpos.initial_validators = {source_validator_info, destination_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto initial_total = SUT->dposTotalAmountDelegated(0);
+  const auto initial_source_stake = get_validator_stake(initial_stakes, source_validator.address());
+  const auto initial_destination_stake = get_validator_stake(initial_stakes, destination_validator.address());
+
+  const auto redelegate_tx = make_redelegate_tx(cfg, delegator, 0, source_validator.address(),
+                                                destination_validator.address(), u256(kRedelegation), kGasPrice);
+  const auto result = advance({redelegate_tx}, {.dont_assume_no_logs = true});
+  ASSERT_EQ(result->trx_receipts.size(), 1);
+  const auto expected_gas = IntrinsicGas(redelegate_tx->getData(), false) + 80'000;
+  EXPECT_EQ(result->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(result->trx_receipts[0].gas_used, expected_gas);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(1), initial_total);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(1), source_validator.address()),
+            initial_source_stake - kRedelegation);
+  EXPECT_EQ(get_validator_stake(SUT->dposValidatorsTotalStakes(1), destination_validator.address()),
+            initial_destination_stake + kRedelegation);
 }
 
 TEST_F(FinalChainTest, native_dpos_undelegate_v1_pre_mutation_failures_roll_back_state) {

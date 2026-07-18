@@ -303,6 +303,7 @@ pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
     FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock, FinalizationTransaction,
     GenesisAccount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
+    RedelegationCorrection,
 };
 pub use slashing::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofPlanStatus,

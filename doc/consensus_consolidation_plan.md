@@ -3287,6 +3287,40 @@ restart-backed Rust-enabled FinalChain fixtures, `rewrite-validate-fast`, the Fi
 Rust-enabled/pure-C++ parity gate, the bridge-inventory guard, Rust/C++ formatting, and whitespace checks. Gate output
 contained only the repository's existing Clippy, CMake, Conan, and compiler warnings.
 
+### CRW-08 Native DPoS Redelegation and Configured Correction Parity
+
+This bounded follow-up closes normal `reDelegate(address,address,uint256)` behavior plus the configured historical
+correction transcript rather than implementing only the post-fix happy path.
+
+- Rust preserves the legacy validation order: same-validator after the fix block, Aspen-part-two zero amount, missing
+  source validator, missing destination validator, enabled maximum stake, missing source delegation, amount greater
+  than the delegation, and nonzero remainder below `minimum_deposit`. Expected failures are status-zero contract
+  outcomes; inconsistent aggregate stake remains a hard invariant.
+- Success claims source rewards and then existing-destination rewards, moves stake between delegation rows without an
+  escrow or aggregate-delegated transfer, allows a new destination pair below the standalone delegation minimum,
+  preserves the pre-Aspen zero-pair/index/cursor behavior, and emits reward logs before `Redelegated`. Empty-source
+  deletion uses the combined V1/V2 pending count after Magnolia and the legacy pre-Magnolia rule before it.
+- A zero configured validator maximum disables the ceiling. Before and at `fix_redelegate_block_num`, the native path
+  reproduces the legacy same-validator stale validator writes, ordered vote deltas, and stale destination reward-record
+  write that restores the pre-claim delegator reward pool. At the exact fix block, ordered
+  configured redelegation corrections run after reward distribution and transaction effects but before the DPoS
+  snapshot is encoded and published. They subtract only the configured amounts and refresh the validator's derived vote
+  count while preserving the legacy global eligible-vote total; an additional same-validator call at the fix block may
+  therefore leave the same unconfigured stake gap as legacy. Later same-validator calls fail normally.
+- A repeated reward-bearing same-validator call after a prior stale-write gap depends on legacy validator/delegation
+  reward-state reference counts and `LastUpdated` history that the current scalar Rust reward snapshot does not retain.
+  Rust rejects that topology as a hard unsupported replay instead of publishing an approximate payout; modeling that
+  reference graph remains active `CRW-08` work.
+- Focused Rust and dual-mode FinalChain tests cover normal success, complete source deletion, all selected pre-mutation
+  failures, enabled and disabled maximums, pre-Aspen zero and below-minimum new destination pairs, Aspen zero rejection,
+  the fix boundary including a new unconfigured fix-block gap, exact duplicate reward-pool payouts, exact
+  gas/log/bloom behavior, unchanged escrow/aggregate stake, and restart persistence.
+
+`FinalChainRewardsConfig` and its CXX carrier now include `fix_redelegate_block_num` and ordered
+`RedelegationCorrection` entries sourced from genesis hardfork configuration. This is a documented `CRW-07` carrier
+field delta; no bridge handle, constructor, or standalone export was added. `CRW-08` remains active for the remaining
+DPoS method and failure families.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

@@ -385,6 +385,29 @@ snapshot is finalized. Restart-backed dual-mode coverage exercises create/query/
 locked confirmation, and successful payout. No bridge/export surface changed, so `CRW-07` has no inventory delta.
 `CRW-08` remains active for redelegation and the remaining DPoS method/failure families.
 
+The next bounded `CRW-08` slice closes native `reDelegate(address,address,uint256)` for normal calls and the configured
+historical correction transcript. Rust applies the legacy ordered failures for same-validator post-fix calls,
+Aspen-part-two zero amounts, missing validators or source delegation, enabled destination maximum, excess source amount,
+and a nonzero below-minimum remainder before mutation; aggregate-stake corruption remains hard. Success claims source
+then existing-destination
+rewards, moves only the delegation ledger, leaves DPoS escrow and aggregate delegated amount unchanged, permits new
+destination pairs below `minimum_deposit` (including a zero pair before Aspen), emits only reward logs followed by
+`Redelegated`, and deletes an empty source validator only under the pre-/post-Magnolia pending-queue rule. A configured
+maximum stake of zero is treated as unlimited. Rust deliberately reproduces the historical same-validator stale-stake,
+ordered vote-delta, and restored pre-claim reward-pool writes through `fix_redelegate_block_num`, then applies the
+ordered configured corrections after rewards and transaction effects and before snapshot publication. Corrections
+subtract only the configured amounts, derive each validator's vote count from resulting stake, and preserve the legacy
+global eligible-vote total even when another same-validator call at the fix block leaves an unconfigured gap; later
+same-validator calls persist status-zero receipts.
+Repeated reward-bearing same-validator calls after a snapshot already contains the stale-write gap require the legacy
+reward-state reference graph, which the current scalar reward snapshot cannot represent. That topology now fails
+finalization explicitly instead of publishing an approximate payout and remains active `CRW-08` work.
+Restart-backed Rust and dual-mode coverage protect exact action gas, receipt/log/bloom behavior, rollback, source
+deletion, fix-1/fix/fix+1 state, configured-versus-new fix-block gaps, duplicate reward-pool payouts, Aspen zero handling,
+below-minimum/new-pair behavior, maximum handling, and correction persistence. `FinalChainRewardsConfig` gains the fix
+block and ordered correction entries, so `CRW-07` records a carrier field delta but no new handle or export. `CRW-08`
+remains active for the remaining DPoS method/failure families.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

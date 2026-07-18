@@ -467,6 +467,10 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The default-rewards `create_final_chain(...)` constructor is deleted from the CXX surface. C++ bridge tests now pass an
   explicit `FinalChainRewardsConfig` through `create_final_chain_with_rewards_config`, which is the constructor shape
   used by the live `final_chain_shim`; the default wrapper is Rust test-only fixture code.
+- The retained `FinalChainRewardsConfig` carrier now includes `fix_redelegate_block_num` and an ordered vector of
+  `RedelegationCorrection { validator, delegator, amount }` records copied from genesis hardfork configuration. This
+  bounded `CRW-08` replay input is consumed inside Rust FinalChain publication; it adds no handle, constructor, free
+  export, or C++ execution authority.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

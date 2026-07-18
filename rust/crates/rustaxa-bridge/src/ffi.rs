@@ -3285,11 +3285,18 @@ pub mod rustaxa_ffi {
         dag_vdf_sortition_total_vote_count_until_period: u64,
     }
 
+    struct RedelegationCorrection {
+        validator: [u8; 20],
+        delegator: [u8; 20],
+        amount: Vec<u8>,
+    }
+
     struct FinalChainRewardsConfig {
         committee_size: u32,
         magnolia_period: u64,
         aspen_part_one_period: u64,
         fix_claim_all_block_num: u64,
+        fix_redelegate_block_num: u64,
         aspen_part_two_period: u64,
         max_block_author_reward_percent: u16,
         dag_proposers_reward_percent: u16,
@@ -3306,6 +3313,7 @@ pub mod rustaxa_ffi {
         magnolia_jail_time: u64,
         cacti_jail_time: u64,
         frequency_rules: Vec<RewardsFrequencyRule>,
+        redelegations: Vec<RedelegationCorrection>,
     }
 
     struct AccountLookup {

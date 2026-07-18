@@ -220,6 +220,7 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.magnolia_period = config.genesis.state.hardforks.magnolia_hf.block_num;
   rewards_config.aspen_part_one_period = config.genesis.state.hardforks.aspen_hf.block_num_part_one;
   rewards_config.fix_claim_all_block_num = config.genesis.state.hardforks.fix_claim_all_block_num;
+  rewards_config.fix_redelegate_block_num = config.genesis.state.hardforks.fix_redelegate_block_num;
   rewards_config.aspen_part_two_period = config.genesis.state.hardforks.aspen_hf.block_num_part_two;
   rewards_config.max_block_author_reward_percent = config.genesis.state.dpos.max_block_author_reward;
   rewards_config.dag_proposers_reward_percent = config.genesis.state.dpos.dag_proposers_reward;
@@ -240,6 +241,14 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.cacti_delegation_locking_period = config.genesis.state.hardforks.cacti_hf.delegation_locking_period;
   rewards_config.magnolia_jail_time = config.genesis.state.hardforks.magnolia_hf.jail_time;
   rewards_config.cacti_jail_time = config.genesis.state.hardforks.cacti_hf.jail_time;
+  rewards_config.redelegations.reserve(config.genesis.state.hardforks.redelegations.size());
+  for (const auto& redelegation : config.genesis.state.hardforks.redelegations) {
+    rustaxa::RedelegationCorrection correction;
+    correction.validator = into_address_array(redelegation.validator);
+    correction.delegator = into_address_array(redelegation.delegator);
+    correction.amount = into_big_endian_vec(redelegation.amount);
+    rewards_config.redelegations.push_back(std::move(correction));
+  }
   rewards_config.frequency_rules.reserve(config.genesis.state.hardforks.rewards_distribution_frequency.size());
   for (const auto& [from_period, frequency] : config.genesis.state.hardforks.rewards_distribution_frequency) {
     rustaxa::RewardsFrequencyRule rule{};

@@ -117,6 +117,16 @@ pub struct GenesisDposConfig {
     pub dag_vdf_sortition_total_vote_count_until_period: u64,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RedelegationCorrection {
+    /// Validator address receiving the redelegation correction amount.
+    pub validator: [u8; 20],
+    /// Delegator address whose historical redelegation is being corrected.
+    pub delegator: [u8; 20],
+    /// Correction amount as an unsigned big-endian integer byte string.
+    pub amount: Vec<u8>,
+}
+
 /// Rewards and hardfork configuration used by Rust native finalization.
 ///
 /// This is intentionally separate from `GenesisDposConfig`: DPoS genesis
@@ -136,12 +146,19 @@ pub struct FinalChainRewardsConfig {
     /// A value of `u64::MAX` keeps the compatibility ABI enabled for local
     /// rewrite tests that do not configure the hardfork boundary.
     pub fix_claim_all_block_num: u64,
+    /// First period where a one-time redelegation hardfork stake correction is applied.
+    ///
+    /// A value of `u64::MAX` disables correction outside configured hardforks.
+    pub fix_redelegate_block_num: u64,
     /// First period where Aspen part-two dynamic-yield rewards are active.
     ///
     /// Rust native finalization currently distributes fixed-yield rewards only.
     /// A zero value keeps the part-two path disabled for rewrite tests and
     /// local configurations that do not provide the hardfork boundary.
     pub aspen_part_two_period: u64,
+    /// Ordered redelegation stake corrections applied when
+    /// `fix_redelegate_block_num` is reached.
+    pub redelegations: Vec<RedelegationCorrection>,
     /// Maximum percentage of a block reward paid to the PBFT block author as a
     /// cert-vote inclusion bonus.
     pub max_block_author_reward_percent: u16,
@@ -188,6 +205,7 @@ impl Default for FinalChainRewardsConfig {
             magnolia_period: 0,
             aspen_part_one_period: 0,
             fix_claim_all_block_num: u64::MAX,
+            fix_redelegate_block_num: u64::MAX,
             aspen_part_two_period: 0,
             max_block_author_reward_percent: 0,
             dag_proposers_reward_percent: 0,
@@ -204,6 +222,7 @@ impl Default for FinalChainRewardsConfig {
             magnolia_jail_time: 0,
             cacti_jail_time: 0,
             rewards_distribution_frequency: Vec::new(),
+            redelegations: Vec::new(),
         }
     }
 }
