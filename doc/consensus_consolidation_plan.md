@@ -3199,6 +3199,37 @@ Validation passed the workspace fast gate, the FinalChain Tier 2 gate, the Tier 
 the bridge-inventory guard. The complete `rustaxa-consensus` package suite passed 672 tests across its library and boundary
 test binaries. Gate output contained only the repository's existing compiler, clippy, CMake, and Conan warnings.
 
+### CRW-08 Native DPoS ABI Decode-Failure Parity
+
+This bounded follow-up closes the cross-method malformed-calldata family left by validator-registration business parity.
+
+- Native DPoS execution now classifies supported mutation selectors before ABI decoding. Malformed known fixed-argument
+  methods advance nonce, charge intrinsic plus the selector action gas, roll back value/state/logs, emit status zero, and
+  continue the block. Malformed pre-fix `claimAllRewards(uint32)` preserves the legacy successful no-op with
+  intrinsic-only gas. Short/unknown inputs and hardfork-disabled methods also retain zero action gas but fail normally.
+- Mutation gas selection is shared by FinalChain execution and read-only call estimation. Current claim-all and valid
+  legacy batches remain snapshot-dependent; both accept legacy-permitted trailing calldata. The legacy batch decoder
+  rejects `uint32` overflow, while other retained narrow integer decoders intentionally truncate high bytes to match Go
+  ABI behavior.
+- Cornus nonpayable calls with value fail before decode or snapshot access and charge intrinsic gas only. Before Cornus,
+  successful nonpayable calls retain the legacy value transfer to the DPoS account.
+- Finalized validator descriptions and endpoints are raw bytes. Genesis/CXX configuration remains UTF-8 `String`, while
+  ABI mutation ingress, queries, and snapshot RLP preserve arbitrary byte payloads. Existing valid-string snapshot bytes
+  need no migration. Once invalid metadata is finalized, rollback to a pre-slice Rust binary is unsafe because its
+  snapshot decoder still requires UTF-8; rollout therefore remains consensus-sensitive.
+- Rust coverage proves claim-all trailing acceptance, scalar truncation, mutation-call gas classification, invalid-byte
+  persistence, and the affected package suites. The dual-mode FinalChain fixture exercises malformed fixed/dynamic,
+  short/unknown, pre-/post-fix claim-all, Cornus nonpayability, same-sender continuation, invalid-byte registration,
+  byte-exact query output, and restart persistence.
+
+No CXX handle, carrier, export, shim, module flag, or compatibility-only test changed, so `CRW-07` has no inventory delta.
+Undelegation, redelegation, and remaining reward/method contract-failure families remain active under `CRW-08`.
+
+Validation passed the workspace fast gate, the FinalChain Tier 2 gate, the Tier 3 Rust-enabled/pure-C++ parity gate, and
+the bridge-inventory guard. Focused package validation passed 673 `rustaxa-consensus` library tests plus 377
+`rustaxa-types`/`rustaxa-bridge` tests. Gate output contained only the repository's existing compiler, Clippy, CMake, and
+Conan warnings.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

@@ -20,8 +20,8 @@ pub struct GenesisAccount {
 /// These fields mirror the user-visible DPoS validator info returned by
 /// `getValidator(address)`. The owner address is encoded in canonical
 /// Ethereum/Taraxa address order, `commission` is the Solidity `uint16`
-/// percentage value, and the text fields are stored as UTF-8 strings so the
-/// FinalChain read model can ABI-encode them without crossing back into C++.
+/// percentage value, and the text fields are stored as UTF-8 strings supplied
+/// by the external genesis configuration boundary.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GenesisValidatorMetadata {
     /// Validator owner address bytes in canonical address order.
@@ -75,10 +75,10 @@ pub struct DposValidatorMetadata {
     pub commission: u16,
     /// Finalized block number of the latest accepted commission change.
     pub last_commission_change: u64,
-    /// Human-readable validator description encoded as UTF-8.
-    pub description: String,
-    /// Validator endpoint encoded as UTF-8.
-    pub endpoint: String,
+    /// Validator description as raw bytes.
+    pub description: Vec<u8>,
+    /// Validator endpoint as raw bytes.
+    pub endpoint: Vec<u8>,
 }
 
 impl From<&GenesisValidator> for DposValidatorMetadata {
@@ -87,8 +87,8 @@ impl From<&GenesisValidator> for DposValidatorMetadata {
             owner: validator.metadata.owner,
             commission: validator.metadata.commission,
             last_commission_change: 0,
-            description: validator.metadata.description.clone(),
-            endpoint: validator.metadata.endpoint.clone(),
+            description: validator.metadata.description.as_bytes().to_vec(),
+            endpoint: validator.metadata.endpoint.as_bytes().to_vec(),
         }
     }
 }

@@ -1153,6 +1153,57 @@ impl FinalChain {
                 ..Default::default()
             });
         }
+
+        if is_dpos_mutation_selector(selector)
+            && request.block_number >= self.dpos_cornus_period
+            && !u256_from_big_endian(&request.value).is_zero()
+            && !dpos_selector_is_payable(selector)
+        {
+            return Ok(FinalChainCallOutcome {
+                gas_used,
+                code_err: "DPoS method is not payable".to_string(),
+                ..Default::default()
+            });
+        }
+
+        if is_dpos_mutation_selector(selector) {
+            let dpos_tx = decode_dpos_transaction_for_execution(
+                &request.input,
+                request.sender,
+                request.block_number,
+                self.rewards_config.fix_claim_all_block_num,
+                self.dpos_cornus_period,
+            );
+            if let DposTransaction::MalformedMutation {
+                selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
+            } = dpos_tx
+            {
+                return Ok(FinalChainCallOutcome {
+                    gas_used,
+                    ..Default::default()
+                });
+            }
+            if let DposTransaction::MalformedMutation { selector } = dpos_tx {
+                return Ok(FinalChainCallOutcome {
+                    gas_used,
+                    code_err: format!(
+                        "Rust FinalChain::call malformed DPoS mutation 0x{}",
+                        selector_hex(selector)
+                    ),
+                    ..Default::default()
+                });
+            }
+            if let DposTransaction::MethodNotSupported = dpos_tx {
+                return Ok(FinalChainCallOutcome {
+                    gas_used,
+                    code_err: format!(
+                        "Rust FinalChain::call unsupported DPoS selector 0x{}",
+                        selector_hex(selector)
+                    ),
+                    ..Default::default()
+                });
+            }
+        }
         let code_retval = match selector {
             DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => {
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
@@ -2747,13 +2798,15 @@ impl FinalChain {
 
         for transaction in transactions.iter() {
             let mut contract_transaction = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
-                Some(NativeContractTransaction::Dpos(decode_dpos_transaction(
-                    &transaction.data,
-                    transaction.sender,
-                    block_number,
-                    self.rewards_config.fix_claim_all_block_num,
-                    self.dpos_cornus_period,
-                )?))
+                Some(NativeContractTransaction::Dpos(
+                    decode_dpos_transaction_for_execution(
+                        &transaction.data,
+                        transaction.sender,
+                        block_number,
+                        self.rewards_config.fix_claim_all_block_num,
+                        self.dpos_cornus_period,
+                    ),
+                ))
             } else if transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS) {
                 Some(NativeContractTransaction::Slashing(
                     decode_slashing_transaction(&transaction.data)?,
@@ -2785,53 +2838,39 @@ impl FinalChain {
                     | DposTransaction::SetValidatorInfo { .. }
                     | DposTransaction::SetCommission { .. }
                     | DposTransaction::ClaimAllRewards { .. }
+                    | DposTransaction::MalformedMutation { .. }
                     | DposTransaction::MethodNotSupported => {}
                 }
             }
-            let contract_nonpayable_value_failure =
-                contract_transaction.as_ref().is_some_and(|contract_tx| {
-                    !value.is_zero()
-                        && !matches!(
-                            contract_tx,
-                            NativeContractTransaction::Dpos(
-                                DposTransaction::Register(_) | DposTransaction::Delegate { .. }
-                            )
-                        )
-                });
+            let dpos_value_transfer_allowed = contract_transaction.as_ref().is_some_and(|tx| {
+                matches!(tx, NativeContractTransaction::Dpos(_))
+                    && (block_number < self.dpos_cornus_period
+                        || matches!(tx, NativeContractTransaction::Dpos(dpos_tx) if dpos_transaction_is_payable(dpos_tx)))
+            });
+            let contract_nonpayable_value_failure = !value.is_zero()
+                && contract_transaction
+                    .as_ref()
+                    .is_some_and(|contract_tx| match contract_tx {
+                        NativeContractTransaction::Dpos(dpos_tx) => {
+                            block_number >= self.dpos_cornus_period
+                                && !dpos_transaction_is_payable(dpos_tx)
+                        }
+                        NativeContractTransaction::Slashing(_) => true,
+                    });
             let intrinsic_gas = intrinsic_gas(&transaction.data, false)?;
-            let required_gas = if let Some(contract_transaction) = contract_transaction.as_ref() {
+            let required_gas = if contract_nonpayable_value_failure {
+                0
+            } else if let Some(contract_transaction) = contract_transaction.as_ref() {
                 match contract_transaction {
-                    NativeContractTransaction::Dpos(dpos_transaction) => match dpos_transaction {
-                        DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
-                        DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
-                        DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
-                        DposTransaction::UndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
-                        DposTransaction::ConfirmUndelegateV2 { .. } => DPOS_DEFAULT_METHOD_GAS,
-                        DposTransaction::CancelUndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
-                        DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
-                        DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
-                        DposTransaction::ClaimCommissionRewards { .. } => {
-                            DPOS_CLAIM_COMMISSION_REWARDS_GAS
-                        }
-                        DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
-                        DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
-                        DposTransaction::ClaimAllRewards { delegator, batch } => {
-                            let claim_items = dpos_claim_all_rewards_item_count(
-                                &dpos_gas_snapshot,
-                                *delegator,
-                                *batch,
-                            )?;
-                            let per_item_gas = DPOS_CLAIM_REWARDS_GAS
-                                .checked_add(DPOS_BATCH_GET_REWARDS_GAS)
-                                .ok_or_else(|| {
-                                    anyhow::anyhow!("claimAllRewards per-item gas overflow")
-                                })?;
-                            claim_items.checked_mul(per_item_gas).ok_or_else(|| {
-                                anyhow::anyhow!("claimAllRewards gas multiplication overflow")
-                            })?
-                        }
-                        DposTransaction::MethodNotSupported => 0,
-                    },
+                    NativeContractTransaction::Dpos(dpos_transaction) => {
+                        dpos_transaction_required_gas(
+                            dpos_transaction,
+                            block_number,
+                            self.rewards_config.fix_claim_all_block_num,
+                            self.dpos_cornus_period,
+                            Some(&dpos_gas_snapshot),
+                        )?
+                    }
                     NativeContractTransaction::Slashing(slashing_transaction) => {
                         match slashing_transaction {
                             SlashingTransaction::CommitDoubleVotingProof(_) => {
@@ -2883,15 +2922,9 @@ impl FinalChain {
                     .checked_mul(U256::from(gas_used))
                     .ok_or_else(|| anyhow::anyhow!("transaction gas cost overflow"))?;
                 if status_code == 1 || advance_nonce {
-                    let deferred_dpos_value = matches!(
-                        contract_transaction.as_ref(),
-                        Some(NativeContractTransaction::Dpos(
-                            DposTransaction::Register(_) | DposTransaction::Delegate { .. }
-                        ))
-                    );
                     let charged_value = if status_code == 0
                         || contract_nonpayable_value_failure
-                        || deferred_dpos_value
+                        || dpos_value_transfer_allowed
                     {
                         U256::zero()
                     } else {
@@ -2923,15 +2956,9 @@ impl FinalChain {
                     status_code = 0;
                 } else if let Some(contract_tx) = contract_transaction {
                     let contract_tx_for_gas = contract_tx.clone();
-                    let payable_dpos_call = matches!(
-                        &contract_tx,
-                        NativeContractTransaction::Dpos(
-                            DposTransaction::Register(_) | DposTransaction::Delegate { .. }
-                        )
-                    );
                     let slashing_call =
                         matches!(&contract_tx, NativeContractTransaction::Slashing(_));
-                    if payable_dpos_call && !value.is_zero() {
+                    if dpos_value_transfer_allowed && !value.is_zero() {
                         let sender_balance = accounts
                             .get(&transaction.sender)
                             .map(|sender| u256_from_big_endian(&sender.balance))
@@ -3071,6 +3098,12 @@ impl FinalChain {
                             DposTransaction::MethodNotSupported => {
                                 DposApplyOutcome::contract_failure()
                             }
+                            DposTransaction::MalformedMutation {
+                                selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
+                            } => DposApplyOutcome::success(vec![]),
+                            DposTransaction::MalformedMutation { .. } => {
+                                DposApplyOutcome::contract_failure()
+                            }
                         },
                         NativeContractTransaction::Slashing(slashing_tx) => self
                             .apply_slashing_transaction(
@@ -3085,7 +3118,7 @@ impl FinalChain {
                             if let NativeContractTransaction::Dpos(dpos_tx) = &contract_tx_for_gas {
                                 update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, dpos_tx)?;
                             }
-                            if payable_dpos_call && !value.is_zero() {
+                            if dpos_value_transfer_allowed && !value.is_zero() {
                                 let sender = accounts
                                     .entry(transaction.sender)
                                     .or_insert_with(empty_account);
@@ -3352,6 +3385,34 @@ impl FinalChain {
         request: &FinalChainCallRequest,
         selector: [u8; 4],
     ) -> Result<u64, anyhow::Error> {
+        if is_dpos_mutation_selector(selector) {
+            if request.block_number >= self.dpos_cornus_period
+                && !u256_from_big_endian(&request.value).is_zero()
+                && !dpos_selector_is_payable(selector)
+            {
+                return Ok(0);
+            }
+            let dpos_tx = decode_dpos_transaction_for_execution(
+                &request.input,
+                request.sender,
+                request.block_number,
+                self.rewards_config.fix_claim_all_block_num,
+                self.dpos_cornus_period,
+            );
+            return dpos_transaction_required_gas(
+                &dpos_tx,
+                request.block_number,
+                self.rewards_config.fix_claim_all_block_num,
+                self.dpos_cornus_period,
+                match &dpos_tx {
+                    DposTransaction::ClaimAllRewards { .. } => {
+                        Some(self.dpos_snapshot_at_finalized_block(request.block_number)?)
+                    }
+                    _ => None,
+                }
+                .as_ref(),
+            );
+        }
         match selector {
             DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => Ok(DPOS_GET_TOTAL_ELIGIBLE_VOTES_GAS),
             DPOS_GET_VALIDATOR_SELECTOR => Ok(DPOS_GET_METHOD_GAS),
@@ -3453,101 +3514,6 @@ impl FinalChain {
                 } else {
                     Ok(0)
                 }
-            }
-            DPOS_REGISTER_VALIDATOR_SELECTOR => {
-                decode_dpos_register_validator(&request.input, request.sender)?;
-                Ok(DPOS_REGISTER_VALIDATOR_GAS)
-            }
-            DPOS_DELEGATE_SELECTOR => {
-                decode_abi_address_argument(&request.input, "delegate(address)")?;
-                Ok(DPOS_DELEGATE_GAS)
-            }
-            DPOS_UNDELEGATE_SELECTOR => {
-                if request.input.len() < 4 + 2 * 32 {
-                    anyhow::bail!("undelegate input is shorter than selector plus ABI head");
-                }
-                decode_abi_address_argument(&request.input, "undelegate(address,...)")?;
-                decode_abi_word_as_vec(&request.input, 4 + 32, "undelegate amount")?;
-                Ok(DPOS_UNDELEGATE_GAS)
-            }
-            DPOS_UNDELEGATE_V2_SELECTOR => {
-                if !self.is_on_cornus(request.block_number) {
-                    return Ok(0);
-                }
-                if request.input.len() < 4 + 2 * 32 {
-                    anyhow::bail!("undelegateV2 input is shorter than selector plus ABI head");
-                }
-                decode_abi_address_argument(&request.input, "undelegateV2(address,...)")?;
-                decode_abi_word_as_vec(&request.input, 4 + 32, "undelegateV2 amount")?;
-                Ok(DPOS_UNDELEGATE_GAS)
-            }
-            DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR => {
-                if !self.is_on_cornus(request.block_number) {
-                    return Ok(0);
-                }
-                if request.input.len() < 4 + 2 * 32 {
-                    anyhow::bail!(
-                        "confirmUndelegateV2 input is shorter than selector plus ABI head"
-                    );
-                }
-                decode_abi_address_argument(&request.input, "confirmUndelegateV2(address,uint64)")?;
-                decode_abi_word_as_u64(&request.input, 4 + 32, "confirmUndelegateV2 id")?;
-                Ok(DPOS_DEFAULT_METHOD_GAS)
-            }
-            DPOS_CANCEL_UNDELEGATE_V2_SELECTOR => {
-                if !self.is_on_cornus(request.block_number) {
-                    return Ok(0);
-                }
-                if request.input.len() < 4 + 2 * 32 {
-                    anyhow::bail!(
-                        "cancelUndelegateV2 input is shorter than selector plus ABI head"
-                    );
-                }
-                decode_abi_address_argument(&request.input, "cancelUndelegateV2(address,uint64)")?;
-                decode_abi_word_as_u64(&request.input, 4 + 32, "cancelUndelegateV2 id")?;
-                Ok(DPOS_UNDELEGATE_GAS)
-            }
-            DPOS_REDELEGATE_SELECTOR => {
-                if request.input.len() < 4 + 3 * 32 {
-                    anyhow::bail!("reDelegate input is shorter than selector plus ABI head");
-                }
-                decode_abi_address_argument_with_offset(&request.input, 4, "reDelegate from")?;
-                decode_abi_address_argument_with_offset(&request.input, 4 + 32, "reDelegate to")?;
-                decode_abi_word_as_vec(&request.input, 4 + 2 * 32, "reDelegate amount")?;
-                Ok(DPOS_REDELEGATE_GAS)
-            }
-            DPOS_CLAIM_REWARDS_SELECTOR => {
-                decode_abi_address_argument(&request.input, "claimRewards(address)")?;
-                Ok(DPOS_DEFAULT_METHOD_GAS)
-            }
-            DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR => {
-                decode_abi_address_argument(&request.input, "claimCommissionRewards(address)")?;
-                Ok(DPOS_DEFAULT_METHOD_GAS)
-            }
-            DPOS_SET_VALIDATOR_INFO_SELECTOR => {
-                decode_dpos_set_validator_info(&request.input)?;
-                Ok(DPOS_DEFAULT_METHOD_GAS)
-            }
-            DPOS_SET_COMMISSION_SELECTOR => {
-                decode_abi_address_argument(&request.input, "setCommission(address,uint16)")?;
-                decode_abi_word_as_u16(&request.input, 4 + 32, "setCommission commission")?;
-                Ok(DPOS_DEFAULT_METHOD_GAS)
-            }
-            DPOS_CLAIM_ALL_REWARDS_SELECTOR => {
-                if request.input.len() != 4 {
-                    anyhow::bail!("claimAllRewards input is malformed");
-                }
-                Ok(DPOS_DEFAULT_METHOD_GAS)
-            }
-            DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR => {
-                if request.block_number >= self.rewards_config.fix_claim_all_block_num {
-                    return Ok(0);
-                }
-                if request.input.len() != 4 + 32 {
-                    anyhow::bail!("claimAllRewards(uint32) input is malformed");
-                }
-                decode_abi_word_as_u32(&request.input, 4, "claimAllRewards(uint32) batch")?;
-                Ok(DPOS_DEFAULT_METHOD_GAS)
             }
             _ => Ok(0),
         }
@@ -3668,10 +3634,10 @@ impl FinalChain {
             .checked_mul(32)
             .ok_or_else(|| anyhow::anyhow!("validator ABI tuple head size overflow"))?;
         let endpoint_offset = description_offset
-            .checked_add(abi_dynamic_string_tail_len(&metadata.description)?)
+            .checked_add(abi_dynamic_bytes_tail_len(&metadata.description)?)
             .ok_or_else(|| anyhow::anyhow!("validator ABI endpoint offset overflow"))?;
-        let description_tail_len = abi_dynamic_string_tail_len(&metadata.description)?;
-        let endpoint_tail_len = abi_dynamic_string_tail_len(&metadata.endpoint)?;
+        let description_tail_len = abi_dynamic_bytes_tail_len(&metadata.description)?;
+        let endpoint_tail_len = abi_dynamic_bytes_tail_len(&metadata.endpoint)?;
         let output_capacity = 32usize
             .checked_add(description_offset)
             .and_then(|size| size.checked_add(description_tail_len))
@@ -3695,8 +3661,8 @@ impl FinalChain {
             endpoint_offset,
             "validator endpoint offset",
         )?);
-        output.extend_from_slice(&abi_string_tail(&metadata.description)?);
-        output.extend_from_slice(&abi_string_tail(&metadata.endpoint)?);
+        output.extend_from_slice(&abi_bytes_tail(&metadata.description)?);
+        output.extend_from_slice(&abi_bytes_tail(&metadata.endpoint)?);
         Ok(output)
     }
 
@@ -4172,8 +4138,8 @@ impl FinalChain {
         snapshot: &mut DposSnapshot,
         owner: [u8; 20],
         validator: [u8; 20],
-        description: String,
-        endpoint: String,
+        description: Vec<u8>,
+        endpoint: Vec<u8>,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         if endpoint.len() > DPOS_MAX_ENDPOINT_LENGTH
             || description.len() > DPOS_MAX_DESCRIPTION_LENGTH
@@ -5876,8 +5842,8 @@ fn append_validator_metadata_map(
         stream.append(&metadata.owner.as_slice());
         stream.append(&metadata.commission);
         stream.append(&metadata.last_commission_change);
-        stream.append(&metadata.description.as_str());
-        stream.append(&metadata.endpoint.as_str());
+        stream.append(&metadata.description.as_slice());
+        stream.append(&metadata.endpoint.as_slice());
     }
 }
 
@@ -6814,6 +6780,128 @@ fn total_transaction_fees(transaction_fees: &[([u8; 32], U256)]) -> Result<U256,
         })
 }
 
+/// Returns the fixed action gas for a supported DPoS mutation selector.
+///
+/// Snapshot-dependent claim-all methods deliberately return `None`; their gas
+/// is derived only after successful ABI decoding. Hardfork-disabled selectors
+/// also return `None`, which preserves the legacy zero-action-gas failure.
+fn dpos_mutation_action_gas(
+    selector: [u8; 4],
+    block_number: u64,
+    fix_claim_all_block_num: u64,
+    cornus_period: u64,
+) -> Option<u64> {
+    match selector {
+        DPOS_REGISTER_VALIDATOR_SELECTOR => Some(DPOS_REGISTER_VALIDATOR_GAS),
+        DPOS_DELEGATE_SELECTOR => Some(DPOS_DELEGATE_GAS),
+        DPOS_UNDELEGATE_SELECTOR => Some(DPOS_UNDELEGATE_GAS),
+        DPOS_UNDELEGATE_V2_SELECTOR if block_number >= cornus_period => Some(DPOS_UNDELEGATE_GAS),
+        DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR if block_number >= cornus_period => {
+            Some(DPOS_DEFAULT_METHOD_GAS)
+        }
+        DPOS_CANCEL_UNDELEGATE_V2_SELECTOR if block_number >= cornus_period => {
+            Some(DPOS_UNDELEGATE_GAS)
+        }
+        DPOS_REDELEGATE_SELECTOR => Some(DPOS_REDELEGATE_GAS),
+        DPOS_CLAIM_REWARDS_SELECTOR => Some(DPOS_CLAIM_REWARDS_GAS),
+        DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR => Some(DPOS_CLAIM_COMMISSION_REWARDS_GAS),
+        DPOS_SET_VALIDATOR_INFO_SELECTOR => Some(DPOS_SET_VALIDATOR_INFO_GAS),
+        DPOS_SET_COMMISSION_SELECTOR => Some(DPOS_SET_COMMISSION_GAS),
+        DPOS_CLAIM_ALL_REWARDS_SELECTOR => None,
+        DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR if block_number < fix_claim_all_block_num => None,
+        _ => None,
+    }
+}
+
+/// Computes legacy DPoS action gas after selector classification and decoding.
+///
+/// Malformed fixed-gas methods retain selector gas. Malformed legacy batch
+/// claim-all is a successful no-op with zero action gas, while unsupported
+/// selectors fail with zero action gas. Valid claim-all calls derive gas from
+/// the staged snapshot and may surface only snapshot or arithmetic invariant
+/// failures.
+fn dpos_transaction_required_gas(
+    dpos_tx: &DposTransaction,
+    block_number: u64,
+    fix_claim_all_block_num: u64,
+    cornus_period: u64,
+    snapshot: Option<&DposSnapshot>,
+) -> Result<u64, anyhow::Error> {
+    Ok(match dpos_tx {
+        DposTransaction::ClaimAllRewards { delegator, batch } => {
+            let snapshot = snapshot.ok_or_else(|| {
+                anyhow::anyhow!("claimAllRewards gas snapshot is required for gas estimation")
+            })?;
+            let claim_items = dpos_claim_all_rewards_item_count(snapshot, *delegator, *batch)?;
+            let per_item_gas = DPOS_CLAIM_REWARDS_GAS
+                .checked_add(DPOS_BATCH_GET_REWARDS_GAS)
+                .ok_or_else(|| anyhow::anyhow!("claimAllRewards per-item gas overflow"))?;
+            claim_items
+                .checked_mul(per_item_gas)
+                .ok_or_else(|| anyhow::anyhow!("claimAllRewards gas multiplication overflow"))?
+        }
+        DposTransaction::MalformedMutation { selector } => dpos_mutation_action_gas(
+            *selector,
+            block_number,
+            fix_claim_all_block_num,
+            cornus_period,
+        )
+        .unwrap_or(0),
+        DposTransaction::MethodNotSupported => 0,
+        DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
+        DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
+        DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
+        DposTransaction::UndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
+        DposTransaction::ConfirmUndelegateV2 { .. } => DPOS_DEFAULT_METHOD_GAS,
+        DposTransaction::CancelUndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
+        DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
+        DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
+        DposTransaction::ClaimCommissionRewards { .. } => DPOS_CLAIM_COMMISSION_REWARDS_GAS,
+        DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
+        DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
+    })
+}
+
+/// Returns whether the DPoS mutation accepts value under the current ABI.
+fn dpos_transaction_is_payable(dpos_tx: &DposTransaction) -> bool {
+    matches!(
+        dpos_tx,
+        DposTransaction::Register(_)
+            | DposTransaction::Delegate { .. }
+            | DposTransaction::MalformedMutation {
+                selector: DPOS_REGISTER_VALIDATOR_SELECTOR | DPOS_DELEGATE_SELECTOR,
+            }
+    )
+}
+
+/// Returns whether the selector accepts value under the current DPoS ABI.
+fn dpos_selector_is_payable(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        DPOS_REGISTER_VALIDATOR_SELECTOR | DPOS_DELEGATE_SELECTOR
+    )
+}
+
+/// Returns whether a selector belongs to the Rust-owned DPoS mutation surface.
+fn is_dpos_mutation_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        DPOS_CLAIM_REWARDS_SELECTOR
+            | DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR
+            | DPOS_SET_VALIDATOR_INFO_SELECTOR
+            | DPOS_SET_COMMISSION_SELECTOR
+            | DPOS_CLAIM_ALL_REWARDS_SELECTOR
+            | DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
+            | DPOS_REGISTER_VALIDATOR_SELECTOR
+            | DPOS_DELEGATE_SELECTOR
+            | DPOS_UNDELEGATE_SELECTOR
+            | DPOS_UNDELEGATE_V2_SELECTOR
+            | DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR
+            | DPOS_CANCEL_UNDELEGATE_V2_SELECTOR
+            | DPOS_REDELEGATE_SELECTOR
+    )
+}
+
 /// Returns the temporary Rust gas estimate for native non-DPoS read calls.
 ///
 /// Native value transfers use the fixed transfer cost. Contract creation keeps
@@ -6857,33 +6945,36 @@ fn decode_abi_u32_argument(
     start: usize,
     function_name: &str,
 ) -> Result<u32, anyhow::Error> {
-    if input.len() < start + 32 {
-        anyhow::bail!("{function_name} input is shorter than selector plus ABI argument");
-    }
-    anyhow::ensure!(
-        input[start..start + 28].iter().all(|byte| *byte == 0),
-        "{function_name} argument does not fit into uint32"
-    );
-    let mut bytes = [0u8; 4];
-    bytes.copy_from_slice(&input[start + 28..start + 32]);
-    Ok(u32::from_be_bytes(bytes))
+    decode_abi_word_as_u32(input, start, function_name)
 }
 
 fn decode_abi_word_as_u32(input: &[u8], offset: usize, field: &str) -> Result<u32, anyhow::Error> {
     let word = abi_word(input, offset, field)?;
-    if word[..28].iter().any(|byte| *byte != 0) {
-        anyhow::bail!("{field} argument does not fit into uint32");
-    }
     let mut bytes = [0u8; 4];
     bytes.copy_from_slice(&word[28..32]);
     Ok(u32::from_be_bytes(bytes))
 }
 
+/// Decodes a canonical Solidity `uint32` word and rejects non-zero high bytes.
+///
+/// The legacy Go ABI decoder applies this overflow check to the pre-fix
+/// `claimAllRewards(uint32)` argument before execution. Other retained narrow
+/// integer paths intentionally keep their separately validated truncation
+/// behavior.
+fn decode_abi_word_as_canonical_u32(
+    input: &[u8],
+    offset: usize,
+    field: &str,
+) -> Result<u32, anyhow::Error> {
+    let word = abi_word(input, offset, field)?;
+    if word[..28].iter().any(|byte| *byte != 0) {
+        anyhow::bail!("{field} exceeds uint32 range");
+    }
+    decode_abi_word_as_u32(input, offset, field)
+}
+
 fn decode_abi_word_as_u64(input: &[u8], offset: usize, field: &str) -> Result<u64, anyhow::Error> {
     let word = abi_word(input, offset, field)?;
-    if word[..24].iter().any(|byte| *byte != 0) {
-        anyhow::bail!("{field} argument does not fit into uint64");
-    }
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&word[24..32]);
     Ok(u64::from_be_bytes(bytes))
@@ -6934,24 +7025,23 @@ fn abi_word_from_u256_bytes(bytes: &[u8]) -> Result<[u8; 32], anyhow::Error> {
     Ok(word)
 }
 
-/// Returns the padded ABI tail length for a Solidity string.
-fn abi_dynamic_string_tail_len(value: &str) -> Result<usize, anyhow::Error> {
+/// Returns the padded ABI tail length for a Solidity dynamic byte payload.
+fn abi_dynamic_bytes_tail_len(value: &[u8]) -> Result<usize, anyhow::Error> {
     32usize
         .checked_add(abi_padded_len(value.len())?)
         .ok_or_else(|| anyhow::anyhow!("ABI string tail length overflow"))
 }
 
-/// Encodes a Solidity string tail as length word, UTF-8 bytes, and zero padding.
-fn abi_string_tail(value: &str) -> Result<Vec<u8>, anyhow::Error> {
-    let bytes = value.as_bytes();
-    let padded_len = abi_padded_len(bytes.len())?;
+/// Encodes a Solidity dynamic-bytes tail as length word plus zero padding.
+fn abi_bytes_tail(value: &[u8]) -> Result<Vec<u8>, anyhow::Error> {
+    let padded_len = abi_padded_len(value.len())?;
     let mut tail = Vec::with_capacity(
         32usize
             .checked_add(padded_len)
             .ok_or_else(|| anyhow::anyhow!("ABI string tail allocation size overflow"))?,
     );
-    tail.extend_from_slice(&abi_word_from_usize(bytes.len(), "ABI string length")?);
-    tail.extend_from_slice(bytes);
+    tail.extend_from_slice(&abi_word_from_usize(value.len(), "ABI string length")?);
+    tail.extend_from_slice(value);
     tail.resize(32 + padded_len, 0);
     Ok(tail)
 }
@@ -7058,7 +7148,7 @@ fn decode_dpos_transaction(
             })
         }
         DPOS_CLAIM_ALL_REWARDS_SELECTOR => {
-            if input.len() != 4 {
+            if input.len() < 4 {
                 anyhow::bail!("claimAllRewards input is malformed");
             }
             Ok(DposTransaction::ClaimAllRewards {
@@ -7073,10 +7163,11 @@ fn decode_dpos_transaction(
                     selector_hex(selector)
                 );
             }
-            if input.len() != 4 + 32 {
+            if input.len() < 4 + 32 {
                 anyhow::bail!("claimAllRewards(uint32) input is malformed");
             }
-            let batch = decode_abi_word_as_u32(input, 4, "claimAllRewards(uint32) batch")?;
+            let batch =
+                decode_abi_word_as_canonical_u32(input, 4, "claimAllRewards(uint32) batch")?;
             Ok(DposTransaction::ClaimAllRewards {
                 delegator: owner,
                 batch: Some(batch),
@@ -7176,6 +7267,51 @@ fn decode_dpos_transaction(
     }
 }
 
+fn decode_dpos_transaction_for_execution(
+    input: &[u8],
+    owner: [u8; 20],
+    block_number: u64,
+    fix_claim_all_block_num: u64,
+    cornus_period: u64,
+) -> DposTransaction {
+    if input.len() < 4 {
+        return DposTransaction::MethodNotSupported;
+    }
+
+    let mut selector = [0u8; 4];
+    selector.copy_from_slice(&input[..4]);
+    match selector {
+        DPOS_CLAIM_REWARDS_SELECTOR
+        | DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR
+        | DPOS_SET_VALIDATOR_INFO_SELECTOR
+        | DPOS_SET_COMMISSION_SELECTOR
+        | DPOS_CLAIM_ALL_REWARDS_SELECTOR
+        | DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
+        | DPOS_REGISTER_VALIDATOR_SELECTOR
+        | DPOS_DELEGATE_SELECTOR
+        | DPOS_UNDELEGATE_SELECTOR
+        | DPOS_UNDELEGATE_V2_SELECTOR
+        | DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR
+        | DPOS_CANCEL_UNDELEGATE_V2_SELECTOR
+        | DPOS_REDELEGATE_SELECTOR => {
+            if selector == DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
+                && block_number >= fix_claim_all_block_num
+            {
+                return DposTransaction::MethodNotSupported;
+            }
+            decode_dpos_transaction(
+                input,
+                owner,
+                block_number,
+                fix_claim_all_block_num,
+                cornus_period,
+            )
+            .unwrap_or(DposTransaction::MalformedMutation { selector })
+        }
+        _ => DposTransaction::MethodNotSupported,
+    }
+}
+
 fn decode_dpos_register_validator(
     input: &[u8],
     owner: [u8; 20],
@@ -7217,12 +7353,12 @@ fn decode_dpos_register_validator(
             owner,
             commission,
             last_commission_change: 0,
-            description: decode_abi_dynamic_string(
+            description: decode_abi_dynamic_bytes(
                 input,
                 description_offset,
                 "registerValidator description",
             )?,
-            endpoint: decode_abi_dynamic_string(
+            endpoint: decode_abi_dynamic_bytes(
                 input,
                 endpoint_offset,
                 "registerValidator endpoint",
@@ -7276,9 +7412,9 @@ fn verify_dpos_registration_proof(proof: &[u8], validator: [u8; 20]) -> bool {
     validator == recovered_address
 }
 
-fn decode_dpos_set_validator_info(
-    input: &[u8],
-) -> Result<([u8; 20], String, String), anyhow::Error> {
+type DposValidatorInfoUpdate = ([u8; 20], Vec<u8>, Vec<u8>);
+
+fn decode_dpos_set_validator_info(input: &[u8]) -> Result<DposValidatorInfoUpdate, anyhow::Error> {
     if input.len() < 4 + 3 * 32 {
         anyhow::bail!("setValidatorInfo input is shorter than selector plus ABI head");
     }
@@ -7289,8 +7425,8 @@ fn decode_dpos_set_validator_info(
     let endpoint_offset =
         decode_abi_word_as_usize(input, 4 + 2 * 32, "setValidatorInfo endpoint offset")?;
     let description =
-        decode_abi_dynamic_string(input, description_offset, "setValidatorInfo description")?;
-    let endpoint = decode_abi_dynamic_string(input, endpoint_offset, "setValidatorInfo endpoint")?;
+        decode_abi_dynamic_bytes(input, description_offset, "setValidatorInfo description")?;
+    let endpoint = decode_abi_dynamic_bytes(input, endpoint_offset, "setValidatorInfo endpoint")?;
     Ok((validator, description, endpoint))
 }
 
@@ -7309,11 +7445,8 @@ fn decode_abi_word_as_usize(
 
 fn decode_abi_word_as_u16(input: &[u8], offset: usize, field: &str) -> Result<u16, anyhow::Error> {
     let word = abi_word(input, offset, field)?;
-    let value = u256_from_big_endian(word);
-    if value > U256::from(u16::MAX) {
-        anyhow::bail!("{field} does not fit into uint16");
-    }
-    Ok(value.as_u32() as u16)
+    let value = u16::from_be_bytes([word[30], word[31]]);
+    Ok(value)
 }
 
 fn decode_abi_word_as_vec(
@@ -7355,15 +7488,6 @@ fn decode_abi_dynamic_bytes(
         .get(start..end)
         .ok_or_else(|| anyhow::anyhow!("{field} bytes are out of bounds"))?
         .to_vec())
-}
-
-fn decode_abi_dynamic_string(
-    input: &[u8],
-    relative_offset: usize,
-    field: &str,
-) -> Result<String, anyhow::Error> {
-    let bytes = decode_abi_dynamic_bytes(input, relative_offset, field)?;
-    String::from_utf8(bytes).map_err(|err| anyhow::anyhow!("{field} is not valid UTF-8: {err}"))
 }
 
 fn dpos_vote_count(
@@ -7500,6 +7624,7 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::SetValidatorInfo { .. }
         | DposTransaction::SetCommission { .. }
         | DposTransaction::ClaimAllRewards { .. }
+        | DposTransaction::MalformedMutation { .. }
         | DposTransaction::MethodNotSupported => {}
     }
     Ok(())
@@ -7685,8 +7810,8 @@ enum DposTransaction {
     SetValidatorInfo {
         owner: [u8; 20],
         validator: [u8; 20],
-        description: String,
-        endpoint: String,
+        description: Vec<u8>,
+        endpoint: Vec<u8>,
     },
     SetCommission {
         owner: [u8; 20],
@@ -7696,6 +7821,9 @@ enum DposTransaction {
     ClaimAllRewards {
         delegator: [u8; 20],
         batch: Option<u32>,
+    },
+    MalformedMutation {
+        selector: [u8; 4],
     },
     MethodNotSupported,
 }
@@ -7883,19 +8011,18 @@ mod tests {
         proof
     }
 
-    fn register_validator_input_with_raw_vrf(
+    fn register_validator_input_with_metadata_bytes(
         validator: [u8; 20],
         proof: &[u8],
         vrf_key: &[u8],
         commission: u16,
-        description: &str,
-        endpoint: &str,
+        description: &[u8],
+        endpoint: &[u8],
     ) -> Vec<u8> {
         let proof_offset = 6 * 32;
         let vrf_offset = proof_offset + 32 + abi_padded_len(proof.len()).unwrap();
         let description_offset = vrf_offset + 32 + abi_padded_len(vrf_key.len()).unwrap();
-        let endpoint_offset =
-            description_offset + abi_dynamic_string_tail_len(description).unwrap();
+        let endpoint_offset = description_offset + abi_dynamic_bytes_tail_len(description).unwrap();
         let mut input = DPOS_REGISTER_VALIDATOR_SELECTOR.to_vec();
         input.extend_from_slice(&abi_word_from_address(validator));
         input.extend_from_slice(&abi_word_from_bytes_offset(proof_offset));
@@ -7910,9 +8037,27 @@ mod tests {
             .extend_from_slice(&abi_word_from_usize(vrf_key.len(), "test VRF key length").unwrap());
         input.extend_from_slice(vrf_key);
         input.resize(4 + description_offset, 0);
-        input.extend_from_slice(&abi_string_tail(description).unwrap());
-        input.extend_from_slice(&abi_string_tail(endpoint).unwrap());
+        input.extend_from_slice(&abi_bytes_tail(description));
+        input.extend_from_slice(&abi_bytes_tail(endpoint));
         input
+    }
+
+    fn register_validator_input_with_raw_vrf(
+        validator: [u8; 20],
+        proof: &[u8],
+        vrf_key: &[u8],
+        commission: u16,
+        description: &str,
+        endpoint: &str,
+    ) -> Vec<u8> {
+        register_validator_input_with_metadata_bytes(
+            validator,
+            proof,
+            vrf_key,
+            commission,
+            description.as_bytes(),
+            endpoint.as_bytes(),
+        )
     }
 
     fn period_data_rlp(pbft_block_rlp: &[u8], transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
@@ -8040,34 +8185,16 @@ mod tests {
                     final_chain.dpos_cornus_period,
                 )
                 .unwrap();
-                match dpos_tx {
-                    DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
-                    DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
-                    DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
-                    DposTransaction::UndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
-                    DposTransaction::ConfirmUndelegateV2 { .. } => DPOS_DEFAULT_METHOD_GAS,
-                    DposTransaction::CancelUndelegateV2 { .. } => DPOS_UNDELEGATE_GAS,
-                    DposTransaction::Redelegate { .. } => DPOS_REDELEGATE_GAS,
-                    DposTransaction::ClaimRewards { .. } => DPOS_CLAIM_REWARDS_GAS,
-                    DposTransaction::ClaimCommissionRewards { .. } => {
-                        DPOS_CLAIM_COMMISSION_REWARDS_GAS
-                    }
-                    DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
-                    DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
-                    DposTransaction::ClaimAllRewards { delegator, batch } => {
-                        let snapshot = final_chain.dpos_snapshot(block_number).unwrap();
-                        let claim_items =
-                            dpos_claim_all_rewards_item_count(&snapshot, delegator, batch).unwrap();
-                        claim_items
-                            .checked_mul(
-                                DPOS_CLAIM_REWARDS_GAS
-                                    .checked_add(DPOS_BATCH_GET_REWARDS_GAS)
-                                    .unwrap(),
-                            )
-                            .unwrap()
-                    }
-                    DposTransaction::MethodNotSupported => 0,
-                }
+                let snapshot = matches!(dpos_tx, DposTransaction::ClaimAllRewards { .. })
+                    .then(|| final_chain.dpos_snapshot(block_number).unwrap());
+                dpos_transaction_required_gas(
+                    &dpos_tx,
+                    block_number,
+                    final_chain.rewards_config.fix_claim_all_block_num,
+                    final_chain.dpos_cornus_period,
+                    snapshot.as_ref(),
+                )
+                .unwrap()
             }
             Some(SLASHING_CONTRACT_ADDRESS) => {
                 match decode_slashing_transaction(&tx.data).unwrap() {
@@ -8381,13 +8508,13 @@ mod tests {
     fn set_validator_info_input(validator: [u8; 20], description: &str, endpoint: &str) -> Vec<u8> {
         let description_offset = 3 * 32;
         let endpoint_offset =
-            description_offset + abi_dynamic_string_tail_len(description).unwrap();
+            description_offset + abi_dynamic_bytes_tail_len(description.as_bytes()).unwrap();
         let mut input = DPOS_SET_VALIDATOR_INFO_SELECTOR.to_vec();
         input.extend_from_slice(&abi_word_from_address(validator));
         input.extend_from_slice(&abi_word_from_bytes_offset(description_offset));
         input.extend_from_slice(&abi_word_from_bytes_offset(endpoint_offset));
-        input.extend_from_slice(&abi_string_tail(description).unwrap());
-        input.extend_from_slice(&abi_string_tail(endpoint).unwrap());
+        input.extend_from_slice(&abi_bytes_tail(description.as_bytes()));
+        input.extend_from_slice(&abi_bytes_tail(endpoint.as_bytes()));
         input
     }
 
@@ -8428,14 +8555,14 @@ mod tests {
 
         let mut malformed_batch_input = claim_all_rewards_batch_input(1);
         malformed_batch_input.push(0);
-        let err = match decode_dpos_transaction(&malformed_batch_input, owner, 9, 10, 0) {
-            Ok(_) => panic!("expected malformed legacy batched claimAllRewards to be rejected"),
-            Err(err) => err,
+        let decoded = decode_dpos_transaction(&malformed_batch_input, owner, 9, 10, 0).unwrap();
+        match decoded {
+            DposTransaction::ClaimAllRewards {
+                delegator,
+                batch: Some(1),
+            } => assert_eq!(delegator, owner),
+            _ => panic!("expected trailing-byte legacy batched claimAllRewards to be accepted"),
         };
-        assert!(
-            err.to_string()
-                .contains("claimAllRewards(uint32) input is malformed")
-        );
 
         let decoded =
             decode_dpos_transaction(&claim_all_rewards_input(), owner, 10, 10, 0).unwrap();
@@ -8445,6 +8572,18 @@ mod tests {
                 batch: None,
             } => assert_eq!(delegator, owner),
             _ => panic!("expected current no-arg claimAllRewards"),
+        }
+
+        let mut malformed_claim_all_input = claim_all_rewards_input();
+        malformed_claim_all_input.push(1);
+        let decoded =
+            decode_dpos_transaction(&malformed_claim_all_input, owner, 10, 10, 0).unwrap();
+        match decoded {
+            DposTransaction::ClaimAllRewards {
+                delegator,
+                batch: None,
+            } => assert_eq!(delegator, owner),
+            _ => panic!("expected trailing-byte no-arg claimAllRewards to be accepted"),
         }
 
         let validator = [0x45; 20];
@@ -8495,8 +8634,8 @@ mod tests {
             } => {
                 assert_eq!(decoded_owner, owner);
                 assert_eq!(decoded_validator, validator);
-                assert_eq!(description, "new description");
-                assert_eq!(endpoint, "new endpoint");
+                assert_eq!(description, b"new description".to_vec());
+                assert_eq!(endpoint, b"new endpoint".to_vec());
             }
             _ => panic!("expected setValidatorInfo"),
         }
@@ -9291,11 +9430,11 @@ mod tests {
 
         let description_offset = 8 * 32;
         let endpoint_offset =
-            description_offset + abi_dynamic_string_tail_len(description).unwrap();
+            description_offset + abi_dynamic_bytes_tail_len(description.as_bytes()).unwrap();
         let expected_len = 32
             + description_offset
-            + abi_dynamic_string_tail_len(description).unwrap()
-            + abi_dynamic_string_tail_len(endpoint).unwrap();
+            + abi_dynamic_bytes_tail_len(description.as_bytes()).unwrap()
+            + abi_dynamic_bytes_tail_len(endpoint.as_bytes()).unwrap();
         assert_eq!(validator_info.code_err, "");
         assert_eq!(validator_info.code_retval.len(), expected_len);
         assert_eq!(
@@ -9378,9 +9517,57 @@ mod tests {
             U256::from(10_000u64)
         );
 
+        let malformed = final_chain
+            .call(dpos_call_request(0, {
+                let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
+                input.push(0x11);
+                input
+            }))
+            .unwrap();
+        assert_eq!(
+            malformed.code_err,
+            format!(
+                "Rust FinalChain::call malformed DPoS mutation 0x{}",
+                selector_hex(DPOS_DELEGATE_SELECTOR)
+            )
+        );
+        assert_eq!(malformed.gas_used, DPOS_DELEGATE_GAS);
+        assert_eq!(malformed.code_retval, Vec::<u8>::new());
+
+        let mut nonpayable = dpos_call_request(0, claim_rewards_input(validator));
+        nonpayable.value = vec![1];
+        let nonpayable = final_chain.call(nonpayable).unwrap();
+        assert_eq!(nonpayable.code_err, "DPoS method is not payable");
+        assert_eq!(nonpayable.gas_used, 0);
+
         drop(final_chain);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn abi_word_helpers_truncate_high_bytes_like_legacy_go_abi() {
+        let mut input = vec![0u8; 36];
+        input[4] = 0x01;
+
+        assert_eq!(
+            decode_abi_word_as_u16(&input, 4, "setCommission commission").unwrap(),
+            0
+        );
+        assert_eq!(
+            decode_abi_u32_argument(&input, 4, "getValidators(uint32)").unwrap(),
+            0
+        );
+        assert_eq!(
+            decode_abi_word_as_u64(&input, 4, "confirmUndelegateV2 id").unwrap(),
+            0
+        );
+        assert!(
+            decode_abi_word_as_canonical_u32(&input, 4, "claimAllRewards(uint32) batch")
+                .unwrap_err()
+                .to_string()
+                .contains("exceeds uint32 range")
+        );
     }
 
     #[test]
@@ -13702,7 +13889,7 @@ mod tests {
         let utf8_over_validator = address_from_signing_key(&utf8_over_key).into();
         let utf8_over_proof = register_validator_proof(&utf8_over_key, utf8_over_validator, None);
         let utf8_boundary_description = "é".repeat(DPOS_MAX_DESCRIPTION_LENGTH / 2);
-        let utf8_over_description = format!("{utf8_boundary_description}x");
+        let invalid_utf8_description = vec![0xC1u8, 0xC3u8];
         let malformed_65_signature = {
             let mut bytes = [0u8; 65];
             bytes[64] = 27;
@@ -13834,7 +14021,7 @@ mod tests {
             ),
             vec![0xc1, 0xc9],
         );
-        let description_utf8_fail_tx = test_transaction(
+        let description_invalid_utf8_tx = test_transaction(
             0xCA,
             owner,
             Some(DPOS_CONTRACT_ADDRESS),
@@ -13842,13 +14029,13 @@ mod tests {
             U256::from(5_000u64),
             U256::from(2u64),
             150_000,
-            register_validator_input(
+            register_validator_input_with_metadata_bytes(
                 utf8_over_validator,
                 &utf8_over_proof,
-                [0xAA; 32],
+                &[0xAAu8; 32],
                 10,
-                &utf8_over_description,
-                &endpoint_ok,
+                &invalid_utf8_description,
+                endpoint_ok.as_bytes(),
             ),
             vec![0xc1, 0xca],
         );
@@ -13882,7 +14069,7 @@ mod tests {
                 description_too_long_tx.rlp.clone(),
                 description_ok_tx.rlp.clone(),
                 description_utf8_ok_tx.rlp.clone(),
-                description_utf8_fail_tx.rlp.clone(),
+                description_invalid_utf8_tx.rlp.clone(),
                 vrf33_tx.rlp.clone(),
             ],
         );
@@ -13902,7 +14089,7 @@ mod tests {
             description_too_long_tx,
             description_ok_tx,
             description_utf8_ok_tx,
-            description_utf8_fail_tx,
+            description_invalid_utf8_tx,
             vrf33_tx,
         ];
         let malformed_signature_gas =
@@ -13914,7 +14101,7 @@ mod tests {
         let description_ok_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[4]);
         let description_utf8_ok_gas =
             expected_native_contract_tx_gas(&final_chain, period, &txs[5]);
-        let description_utf8_fail_gas =
+        let description_invalid_utf8_gas =
             expected_native_contract_tx_gas(&final_chain, period, &txs[6]);
         let vrf33_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[7]);
         let (_header_rlp, receipts) = final_chain.finalize_block(pbft_block, txs, vec![]).unwrap();
@@ -13978,15 +14165,15 @@ mod tests {
         assert_eq!(
             receipt_fields(&receipts[6]),
             (
-                0,
-                description_utf8_fail_gas,
+                1,
+                description_invalid_utf8_gas,
                 malformed_signature_gas
                     + endpoint_too_long_gas
                     + endpoint_ok_gas
                     + description_too_long_gas
                     + description_ok_gas
                     + description_utf8_ok_gas
-                    + description_utf8_fail_gas
+                    + description_invalid_utf8_gas
             )
         );
         assert_eq!(
@@ -14000,10 +14187,17 @@ mod tests {
                     + description_too_long_gas
                     + description_ok_gas
                     + description_utf8_ok_gas
-                    + description_utf8_fail_gas
+                    + description_invalid_utf8_gas
                     + vrf33_gas
             )
         );
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let metadata = snapshot
+            .validator_metadata
+            .get(&utf8_over_validator)
+            .expect("expected invalid UTF-8 metadata to be persisted");
+        assert_eq!(metadata.description, invalid_utf8_description);
+        assert_eq!(metadata.endpoint, endpoint_ok.as_bytes());
         drop(final_chain);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

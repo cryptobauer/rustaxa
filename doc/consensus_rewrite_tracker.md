@@ -341,6 +341,22 @@ ABI and invalid-UTF-8 string handling remain an explicit cross-method DPoS decod
 changes, so `CRW-07` again has no inventory delta. `CRW-08` remains active for that decoder family plus undelegation,
 redelegation, and remaining reward/method failure families.
 
+The next bounded `CRW-08` slice closes that cross-method native DPoS ABI decode-failure family. Rust now classifies the
+mutation selector before decoding arguments, so malformed known fixed-gas methods produce normal status-zero receipts
+with their legacy action gas instead of aborting FinalChain. Malformed legacy `claimAllRewards(uint32)` preserves its
+legacy successful no-op with intrinsic-only gas. Short and unknown inputs and hardfork-disabled selectors also consume
+intrinsic gas only but fail normally. Current claim-all and well-formed legacy batches accept trailing calldata; the
+legacy batch decoder rejects `uint32` overflow, while other retained `uint16`/`uint32`/`uint64` decoders use the
+low-width bytes like the legacy Go ABI. Cornus
+nonpayable calls with value fail before decode with zero action gas, while pre-Cornus successful DPoS calls retain legacy
+value-transfer behavior. Finalized validator description and endpoint fields are byte-native, preserving invalid UTF-8
+through ABI queries and snapshot RLP without changing the CXX/genesis string carrier or existing RLP layout. Old
+valid-UTF-8 snapshots remain byte-compatible, but rollback to a pre-slice Rust binary is unsafe after invalid metadata is
+finalized because that binary cannot decode the new payload. The dual-mode fixture covers malformed fixed/dynamic calls,
+short/unknown and hardfork-disabled selectors, Cornus nonpayability, claim-all overflow/trailing behavior, same-sender
+continuation, invalid-byte registration, query bytes, and restart. No bridge/export surface changed, so `CRW-07` again
+has no inventory delta. `CRW-08` remains active for undelegation, redelegation, and remaining reward/method failures.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,
