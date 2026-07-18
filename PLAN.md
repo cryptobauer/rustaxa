@@ -394,7 +394,8 @@ reference builds retain the untouched legacy RewardsStats header and source.
     `undelegate(address,uint256)`, `confirmUndelegate(address)`, `cancelUndelegate(address)`,
     `undelegateV2(address,uint256)`, `confirmUndelegateV2(address,uint64)`,
     `cancelUndelegateV2(address,uint64)`, `reDelegate(address,address,uint256)`, `setValidatorInfo(address,string,string)`,
-    and `setCommission(address,uint16)` DPoS contract subset. The Rust snapshot
+    `setCommission(address,uint16)`, and the exact four-byte Phalaenopsis DPoS escrow-transfer action `0x44df8e70`
+    contract subset. The Rust snapshot
     persists validator stake/vote aggregates plus a validator/delegator stake ledger seeded from genesis delegations so
     undelegation and redelegation ownership checks stay in Rust. It also persists validator insertion order and
     commission-change block numbers, ordered V1 undelegation queues, and V2 undelegation queues with per-delegator IDs
@@ -408,6 +409,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     same-block claim-gas view removes confirmed V2 requests and restores delegation membership and principal after a
     successful V2 cancellation before pricing a later `claimAllRewards()` call. Exact nonzero-`delegation_delay`
     claim-all gas parity remains follow-up work.
+    The Phalaenopsis escrow-transfer action is gated by its configured activation period, remains payable after Cornus,
+    charges 1,000 action gas, and mutates only sender/DPoS account balances through the common successful contract-payment
+    path; exact-input failures and pre-activation calls remain normal status-zero unknown-method receipts.
     Native redelegation now preserves the legacy ordered business checks, reward-claim/log ordering, unchanged escrow
     and aggregate delegated amount, below-minimum destination-pair creation, Aspen zero-amount boundary, disabled
     maximum-stake semantics when the configured maximum is zero, and validator deletion guard. Before and at

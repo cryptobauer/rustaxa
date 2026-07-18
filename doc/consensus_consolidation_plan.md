@@ -3412,6 +3412,39 @@ pure-C++ FinalChain fixtures, `rewrite-validate-fast`, the FinalChain Tier 2 gat
 Rust-enabled/pure-C++ parity gate, the bridge-inventory guard, formatting, and whitespace checks. Gate output contained
 only the repository's existing Clippy, CMake, Conan, and compiler warnings.
 
+### CRW-08 Phalaenopsis DPoS Escrow-Transfer Parity
+
+This bounded follow-up restores the special account-only transfer action that is intentionally outside the Solidity
+DPoS ABI.
+
+- Calldata must equal exactly `0x44df8e70`. Before `phalaenopsis_hf_block_num`, and for the four-byte selector with any
+  trailing data, the action remains an unknown method: a normal status-zero receipt charges intrinsic gas, advances a
+  valid sender nonce, rolls back value, and emits no logs or bloom.
+- At the activation block and later, the action charges 1,000 action gas and remains payable after Cornus because the
+  legacy precompile recognizes and returns from this special branch before applying ABI-method nonpayability checks.
+  Zero-value calls are likewise successful.
+- Success reuses the native FinalChain contract-payment commit path to debit the sender and credit the DPoS account only
+  after all gas, nonce, balance, and action checks succeed. The action returns no payload, emits no logs, and leaves the
+  complete DPoS snapshot unchanged. Receipt, account snapshots, balances, nonce, block gas, and head publication remain
+  atomic and restart-durable.
+- Focused Rust coverage protects exact-input classification, fork-minus-one/fork/post-Cornus boundaries, action gas,
+  payable handling, failure rollback, empty logs/bloom, balance movement, and persistence. A restart-backed dual-mode
+  FinalChain fixture protects the same receipt, sender, escrow-value, nonce, DPoS-state, and restart transcript in
+  Rust-enabled and pure-C++ modes while accounting explicitly for the modes' pre-existing difference in DPoS
+  transaction-fee custody representation.
+
+`FinalChainRewardsConfig` and its CXX carrier gain `phalaenopsis_period`, populated from genesis hardfork configuration.
+This is a documented `CRW-07` carrier-field delta; no bridge handle, free export, constructor, shim, module flag, DPoS
+snapshot field, or external-EVM responsibility is added. Existing Rust-finalized databases that encountered this selector
+before the slice may contain status-zero receipts and missing escrow credits; recovery requires replay/rebuild from before
+the first affected block or an explicitly designed migration, not an inferred balance top-up. `CRW-08` remains active
+for the remaining DPoS method/failure families, nonzero-delay claim-all gas parity, and the explicit historical reward
+reference graph.
+
+Validation passed with the focused Rust classifier/gas test, all 701 `rustaxa-consensus` tests, the restart-backed selector
+fixture in both Rust-enabled and pure-C++ FinalChain builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, and whitespace checks.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

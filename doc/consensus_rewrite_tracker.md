@@ -448,6 +448,19 @@ the known legacy Magnolia persisted-counter divergence remain outside this trans
 shim, or module flag changes, so `CRW-07` has no inventory delta. `CRW-08` remains active for the remaining DPoS
 method/failure families and the explicit historical reward graph.
 
+The next bounded `CRW-08` slice restores the exact four-byte Phalaenopsis DPoS escrow-transfer action
+`0x44df8e70`. Before the configured activation period, or when any trailing calldata is present, Rust preserves the
+legacy unknown-selector status-zero receipt with intrinsic gas only and no value transfer. At activation and later the
+action remains payable even after Cornus, charges 1,000 action gas, and uses the common successful contract-payment path
+to move only the transaction value from the sender account into DPoS escrow. It emits no logs, returns no payload, and
+does not mutate validator, delegation, vote, reward, supply, or other DPoS snapshot state. Account/receipt publication
+remains atomic and restart-durable. `FinalChainRewardsConfig` gains the Phalaenopsis activation period sourced from
+genesis hardfork configuration, so `CRW-07` records a carrier-field delta but no new handle, export, constructor, shim,
+module flag, or snapshot schema. Historical databases finalized by the prior Rust path with this selector require
+replay/rebuild or a separately designed migration; this slice does not infer or top up escrow. `CRW-08` remains active
+for the remaining DPoS method/failure families, nonzero-delay claim-all gas parity, and the explicit historical reward
+graph.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

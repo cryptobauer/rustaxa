@@ -96,6 +96,7 @@ const EMPTY_TRIE_ROOT: [u8; 32] = [
 const VALUE_TRANSFER_GAS: u64 = 21_000;
 const CONTRACT_CREATION_ESTIMATE_GAS: u64 = 0x5dcc5;
 const DPOS_DEFAULT_METHOD_GAS: u64 = 20_000;
+const DPOS_PHALA_ESCROW_TRANSFER_GAS: u64 = 1_000;
 const DPOS_GET_TOTAL_ELIGIBLE_VOTES_GAS: u64 = 22_000;
 const DPOS_GET_METHOD_GAS: u64 = 5_000;
 pub(crate) const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
@@ -124,6 +125,7 @@ const DPOS_REGISTER_VALIDATOR_SELECTOR: [u8; 4] = [0xd6, 0xfd, 0xc1, 0x27];
 const DPOS_CLAIM_REWARDS_SELECTOR: [u8; 4] = [0xef, 0x5c, 0xfb, 0x8c];
 const DPOS_CLAIM_ALL_REWARDS_SELECTOR: [u8; 4] = [0x0b, 0x83, 0xa7, 0x27];
 const DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR: [u8; 4] = [0x09, 0xb7, 0x2e, 0x00];
+const DPOS_PHALA_ESCROW_TRANSFER_SELECTOR: [u8; 4] = [0x44, 0xdf, 0x8e, 0x70];
 const DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR: [u8; 4] = [0xd0, 0xee, 0xbf, 0xe2];
 const DPOS_SET_COMMISSION_SELECTOR: [u8; 4] = [0xf0, 0x00, 0x32, 0x2c];
 const DPOS_SET_VALIDATOR_INFO_SELECTOR: [u8; 4] = [0x0b, 0xab, 0xea, 0x4c];
@@ -226,6 +228,7 @@ pub struct FinalChain {
     dpos_delegation_locking_period: u64,
     dpos_cornus_period: u64,
     dpos_cornus_delegation_locking_period: u64,
+    dpos_phalaenopsis_period: u64,
     dpos_cacti_period: u64,
     dpos_cacti_delegation_locking_period: u64,
     /// DAG VDF sortition vote-count ceiling after the configured legacy
@@ -601,6 +604,7 @@ impl FinalChain {
         let dpos_delegation_locking_period = rewards_config.dpos_delegation_locking_period;
         let dpos_cornus_period = rewards_config.cornus_period;
         let dpos_cornus_delegation_locking_period = rewards_config.cornus_delegation_locking_period;
+        let dpos_phalaenopsis_period = rewards_config.phalaenopsis_period;
         let dpos_cacti_period = rewards_config.cacti_period;
         let dpos_cacti_delegation_locking_period = rewards_config.cacti_delegation_locking_period;
         let final_chain = FinalChain {
@@ -623,6 +627,7 @@ impl FinalChain {
             dpos_delegation_locking_period,
             dpos_cornus_period,
             dpos_cornus_delegation_locking_period,
+            dpos_phalaenopsis_period,
             dpos_cacti_period,
             dpos_cacti_delegation_locking_period,
             dag_vdf_sortition_max_vote_count,
@@ -1212,6 +1217,7 @@ impl FinalChain {
                 request.block_number,
                 self.rewards_config.fix_claim_all_block_num,
                 self.dpos_cornus_period,
+                self.dpos_phalaenopsis_period,
             );
             if let DposTransaction::MalformedMutation {
                 selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
@@ -1364,7 +1370,8 @@ impl FinalChain {
             | DPOS_SET_VALIDATOR_INFO_SELECTOR
             | DPOS_SET_COMMISSION_SELECTOR
             | DPOS_CLAIM_ALL_REWARDS_SELECTOR
-            | DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR => Vec::new(),
+            | DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
+            | DPOS_PHALA_ESCROW_TRANSFER_SELECTOR => Vec::new(),
             _ => {
                 return Ok(FinalChainCallOutcome {
                     gas_used,
@@ -2859,6 +2866,7 @@ impl FinalChain {
                         block_number,
                         self.rewards_config.fix_claim_all_block_num,
                         self.dpos_cornus_period,
+                        self.dpos_phalaenopsis_period,
                     ),
                 ))
             } else if transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS) {
@@ -2894,6 +2902,7 @@ impl FinalChain {
                     | DposTransaction::SetValidatorInfo { .. }
                     | DposTransaction::SetCommission { .. }
                     | DposTransaction::ClaimAllRewards { .. }
+                    | DposTransaction::PhalaenopsisEscrowTransfer
                     | DposTransaction::MalformedMutation { .. }
                     | DposTransaction::MethodNotSupported => {}
                 }
@@ -3172,6 +3181,9 @@ impl FinalChain {
                                     delegator,
                                     batch,
                                 )?)
+                            }
+                            DposTransaction::PhalaenopsisEscrowTransfer => {
+                                DposApplyOutcome::success(vec![])
                             }
                             DposTransaction::MethodNotSupported => {
                                 DposApplyOutcome::contract_failure()
@@ -3476,6 +3488,7 @@ impl FinalChain {
                 request.block_number,
                 self.rewards_config.fix_claim_all_block_num,
                 self.dpos_cornus_period,
+                self.dpos_phalaenopsis_period,
             );
             return dpos_transaction_required_gas(
                 &dpos_tx,
@@ -7750,6 +7763,7 @@ fn dpos_transaction_required_gas(
         )
         .unwrap_or(0),
         DposTransaction::MethodNotSupported => 0,
+        DposTransaction::PhalaenopsisEscrowTransfer => DPOS_PHALA_ESCROW_TRANSFER_GAS,
         DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
         DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
         DposTransaction::Undelegate { .. } => DPOS_UNDELEGATE_GAS,
@@ -7772,6 +7786,7 @@ fn dpos_transaction_is_payable(dpos_tx: &DposTransaction) -> bool {
         dpos_tx,
         DposTransaction::Register(_)
             | DposTransaction::Delegate { .. }
+            | DposTransaction::PhalaenopsisEscrowTransfer
             | DposTransaction::MalformedMutation {
                 selector: DPOS_REGISTER_VALIDATOR_SELECTOR | DPOS_DELEGATE_SELECTOR,
             }
@@ -7782,7 +7797,9 @@ fn dpos_transaction_is_payable(dpos_tx: &DposTransaction) -> bool {
 fn dpos_selector_is_payable(selector: [u8; 4]) -> bool {
     matches!(
         selector,
-        DPOS_REGISTER_VALIDATOR_SELECTOR | DPOS_DELEGATE_SELECTOR
+        DPOS_REGISTER_VALIDATOR_SELECTOR
+            | DPOS_DELEGATE_SELECTOR
+            | DPOS_PHALA_ESCROW_TRANSFER_SELECTOR
     )
 }
 
@@ -7805,6 +7822,7 @@ fn is_dpos_mutation_selector(selector: [u8; 4]) -> bool {
             | DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR
             | DPOS_CANCEL_UNDELEGATE_V2_SELECTOR
             | DPOS_REDELEGATE_SELECTOR
+            | DPOS_PHALA_ESCROW_TRANSFER_SELECTOR
     )
 }
 
@@ -8213,6 +8231,7 @@ fn decode_dpos_transaction_for_execution(
     block_number: u64,
     fix_claim_all_block_num: u64,
     cornus_period: u64,
+    phalaenopsis_period: u64,
 ) -> DposTransaction {
     if input.len() < 4 {
         return DposTransaction::MethodNotSupported;
@@ -8220,6 +8239,15 @@ fn decode_dpos_transaction_for_execution(
 
     let mut selector = [0u8; 4];
     selector.copy_from_slice(&input[..4]);
+    if selector == DPOS_PHALA_ESCROW_TRANSFER_SELECTOR {
+        return if input.len() == DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.len()
+            && block_number >= phalaenopsis_period
+        {
+            DposTransaction::PhalaenopsisEscrowTransfer
+        } else {
+            DposTransaction::MethodNotSupported
+        };
+    }
     match selector {
         DPOS_CLAIM_REWARDS_SELECTOR
         | DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR
@@ -8646,6 +8674,7 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::SetValidatorInfo { .. }
         | DposTransaction::SetCommission { .. }
         | DposTransaction::ClaimAllRewards { .. }
+        | DposTransaction::PhalaenopsisEscrowTransfer
         | DposTransaction::MalformedMutation { .. }
         | DposTransaction::MethodNotSupported => {}
     }
@@ -8852,6 +8881,9 @@ enum DposTransaction {
         delegator: [u8; 20],
         batch: Option<u32>,
     },
+    /// Exact four-byte Phalaenopsis compatibility action that transfers value
+    /// into the DPoS escrow account without mutating DPoS snapshot state.
+    PhalaenopsisEscrowTransfer,
     MalformedMutation {
         selector: [u8; 4],
     },
@@ -9568,6 +9600,75 @@ mod tests {
         let mut input = DPOS_CANCEL_UNDELEGATE_SELECTOR.to_vec();
         input.extend_from_slice(&abi_word_from_address(validator));
         input
+    }
+
+    #[test]
+    fn phalaenopsis_escrow_transfer_requires_exact_selector_and_activation() {
+        let owner = [0x44; 20];
+        let phalaenopsis_period = 10;
+        let cornus_period = 11;
+        let exact = DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec();
+
+        let pre_fork = decode_dpos_transaction_for_execution(
+            &exact,
+            owner,
+            phalaenopsis_period - 1,
+            u64::MAX,
+            cornus_period,
+            phalaenopsis_period,
+        );
+        assert!(matches!(pre_fork, DposTransaction::MethodNotSupported));
+
+        let at_fork = decode_dpos_transaction_for_execution(
+            &exact,
+            owner,
+            phalaenopsis_period,
+            u64::MAX,
+            cornus_period,
+            phalaenopsis_period,
+        );
+        assert!(matches!(
+            at_fork,
+            DposTransaction::PhalaenopsisEscrowTransfer
+        ));
+        assert_eq!(
+            dpos_transaction_required_gas(
+                &at_fork,
+                phalaenopsis_period,
+                u64::MAX,
+                cornus_period,
+                None,
+            )
+            .unwrap(),
+            DPOS_PHALA_ESCROW_TRANSFER_GAS
+        );
+        assert!(dpos_transaction_is_payable(&at_fork));
+
+        let mut trailing = exact.clone();
+        trailing.push(0);
+        let trailing = decode_dpos_transaction_for_execution(
+            &trailing,
+            owner,
+            phalaenopsis_period,
+            u64::MAX,
+            cornus_period,
+            phalaenopsis_period,
+        );
+        assert!(matches!(trailing, DposTransaction::MethodNotSupported));
+
+        let post_cornus = decode_dpos_transaction_for_execution(
+            &exact,
+            owner,
+            cornus_period,
+            u64::MAX,
+            cornus_period,
+            phalaenopsis_period,
+        );
+        assert!(matches!(
+            post_cornus,
+            DposTransaction::PhalaenopsisEscrowTransfer
+        ));
+        assert!(dpos_transaction_is_payable(&post_cornus));
     }
 
     #[test]

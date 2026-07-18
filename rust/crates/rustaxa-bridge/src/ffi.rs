@@ -3294,6 +3294,7 @@ pub mod rustaxa_ffi {
     struct FinalChainRewardsConfig {
         committee_size: u32,
         magnolia_period: u64,
+        phalaenopsis_period: u64,
         aspen_part_one_period: u64,
         fix_claim_all_block_num: u64,
         fix_redelegate_block_num: u64,

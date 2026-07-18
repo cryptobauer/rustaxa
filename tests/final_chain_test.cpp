@@ -3438,6 +3438,176 @@ TEST_F(FinalChainTest, native_dpos_abi_decode_failure_and_invalid_metadata_rollb
   EXPECT_EQ(pending_validator_state, get_validator_at_head(SUT, pending_validator.address()));
 }
 
+TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_transition) {
+  constexpr uint64_t kInitialBalance = 10'000'000;
+  constexpr uint64_t kInitialStake = 1'000;
+  constexpr uint64_t kGasPrice = 1;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kTransferAmount = 2'000;
+  constexpr uint64_t kTransferActionGas = 1'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+
+  const dev::KeyPair sender{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[sender.address()] = kInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 100;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 10;
+  cfg.genesis.state.dpos.validator_maximum_stake = 10'000;
+  cfg.genesis.state.dpos.minimum_deposit = 1'000;
+  cfg.genesis.state.dpos.delegation_locking_period = 0;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 1;
+  cfg.genesis.state.hardforks.phalaenopsis_hf_block_num = 2;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 3;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{sender.address(), sender.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(sender.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const bytes transfer_selector = dev::fromHex("44df8e70");
+  bytes transfer_selector_with_trailing = transfer_selector;
+  transfer_selector_with_trailing.push_back(0xaa);
+
+  const auto initial_sender_balance = SUT->getAccount(sender.address())->balance;
+  const auto initial_dpos_balance = SUT->getAccount(kDposContract)->balance;
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto initial_total_delegated = SUT->dposTotalAmountDelegated(0);
+  const auto initial_validator_votes = SUT->dposEligibleVoteCount(0, sender.address());
+  const auto initial_total_votes = SUT->dposEligibleTotalVoteCount(0);
+
+  const auto assert_no_dpos_mutation = [&](const std::shared_ptr<FinalChain>& chain, uint64_t block_number) {
+    EXPECT_EQ(chain->dposTotalAmountDelegated(block_number), initial_total_delegated);
+    EXPECT_EQ(chain->dposEligibleVoteCount(block_number, sender.address()), initial_validator_votes);
+    EXPECT_EQ(chain->dposEligibleTotalVoteCount(block_number), initial_total_votes);
+    const auto stakes = chain->dposValidatorsTotalStakes(block_number);
+    ASSERT_EQ(stakes.size(), initial_stakes.size());
+    for (size_t i = 0; i < stakes.size(); ++i) {
+      EXPECT_EQ(stakes[i].addr, initial_stakes[i].addr);
+      EXPECT_EQ(stakes[i].stake, initial_stakes[i].stake);
+    }
+  };
+
+  const auto pre_fork_tx = std::make_shared<Transaction>(
+      0, kTransferAmount, kGasPrice, kGasLimit, transfer_selector, sender.secret(), kDposContract,
+      cfg.genesis.chain_id);
+  const auto pre_fork_trailing_tx = std::make_shared<Transaction>(
+      1, 0, kGasPrice, kGasLimit, transfer_selector_with_trailing, sender.secret(), kDposContract,
+      cfg.genesis.chain_id);
+
+  const auto pre_fork_selector_gas = IntrinsicGas(transfer_selector, false);
+  const auto pre_fork_trailing_gas = IntrinsicGas(transfer_selector_with_trailing, false);
+  const auto phalaenopsis_success_gas = IntrinsicGas(transfer_selector, false) + kTransferActionGas;
+
+  const auto block1 = advance({pre_fork_tx, pre_fork_trailing_tx}, {.dont_assume_all_trx_success = true});
+  ASSERT_EQ(block1->trx_receipts.size(), 2);
+  EXPECT_EQ(block1->final_chain_blk->number, 1);
+  EXPECT_EQ(block1->trx_receipts[0].status_code, 0);
+  EXPECT_EQ(block1->trx_receipts[0].gas_used, pre_fork_selector_gas);
+  EXPECT_EQ(block1->trx_receipts[1].status_code, 0);
+  EXPECT_EQ(block1->trx_receipts[1].gas_used, pre_fork_trailing_gas);
+  EXPECT_EQ(block1->trx_receipts[0].cumulative_gas_used, pre_fork_selector_gas);
+  EXPECT_EQ(block1->trx_receipts[1].cumulative_gas_used, pre_fork_selector_gas + pre_fork_trailing_gas);
+  EXPECT_EQ(block1->final_chain_blk->gas_used, pre_fork_selector_gas + pre_fork_trailing_gas);
+  EXPECT_EQ(block1->final_chain_blk->log_bloom, LogBloom());
+  for (const auto& receipt : block1->trx_receipts) {
+    EXPECT_EQ(receipt.logs.size(), 0u);
+    EXPECT_EQ(receipt.bloom(), LogBloom());
+  }
+
+  const auto post_block1_sender = SUT->getAccount(sender.address());
+  ASSERT_TRUE(post_block1_sender);
+  const auto post_block1_dpos = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(post_block1_dpos);
+  const auto expected_sender_after_block1 =
+      initial_sender_balance - u256(pre_fork_selector_gas + pre_fork_trailing_gas) * kGasPrice;
+  auto expected_dpos_after_block1 = initial_dpos_balance;
+#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
+  // Rust finalization materializes transaction-fee custody in the DPoS
+  // contract account; legacy C++ keeps that reward accounting internal.
+  expected_dpos_after_block1 += u256(pre_fork_selector_gas + pre_fork_trailing_gas) * kGasPrice;
+#endif
+  EXPECT_EQ(post_block1_sender->nonce, 2);
+  EXPECT_EQ(post_block1_sender->balance, expected_sender_after_block1);
+  EXPECT_EQ(post_block1_dpos->balance, expected_dpos_after_block1);
+  assert_no_dpos_mutation(SUT, 1);
+
+  const auto activation_tx = std::make_shared<Transaction>(
+      2, kTransferAmount, kGasPrice, kGasLimit, transfer_selector, sender.secret(), kDposContract,
+      cfg.genesis.chain_id);
+  const auto block2 = advance({activation_tx});
+  ASSERT_EQ(block2->trx_receipts.size(), 1);
+  EXPECT_EQ(block2->final_chain_blk->number, 2);
+  EXPECT_EQ(block2->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(block2->trx_receipts[0].gas_used, phalaenopsis_success_gas);
+  EXPECT_EQ(block2->trx_receipts[0].cumulative_gas_used, phalaenopsis_success_gas);
+  EXPECT_EQ(block2->final_chain_blk->gas_used, phalaenopsis_success_gas);
+  EXPECT_EQ(block2->trx_receipts[0].logs.size(), 0u);
+  EXPECT_EQ(block2->trx_receipts[0].bloom(), LogBloom());
+  EXPECT_EQ(block2->final_chain_blk->log_bloom, LogBloom());
+
+  const auto post_block2_sender = SUT->getAccount(sender.address());
+  ASSERT_TRUE(post_block2_sender);
+  const auto post_block2_dpos = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(post_block2_dpos);
+  const auto expected_sender_after_block2 =
+      expected_sender_after_block1 - u256(phalaenopsis_success_gas) * kGasPrice - kTransferAmount;
+  auto expected_dpos_after_block2 = expected_dpos_after_block1 + kTransferAmount;
+#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
+  expected_dpos_after_block2 += u256(phalaenopsis_success_gas) * kGasPrice;
+#endif
+  EXPECT_EQ(post_block2_sender->nonce, 3);
+  EXPECT_EQ(post_block2_sender->balance, expected_sender_after_block2);
+  EXPECT_EQ(post_block2_dpos->balance, expected_dpos_after_block2);
+  assert_no_dpos_mutation(SUT, 2);
+
+  const auto cornus_block_tx = std::make_shared<Transaction>(
+      3, kTransferAmount, kGasPrice, kGasLimit, transfer_selector, sender.secret(), kDposContract,
+      cfg.genesis.chain_id);
+  const auto block3 = advance({cornus_block_tx});
+  ASSERT_EQ(block3->trx_receipts.size(), 1);
+  EXPECT_EQ(block3->final_chain_blk->number, 3);
+  EXPECT_EQ(block3->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(block3->trx_receipts[0].gas_used, phalaenopsis_success_gas);
+  EXPECT_EQ(block3->trx_receipts[0].cumulative_gas_used, phalaenopsis_success_gas);
+  EXPECT_EQ(block3->final_chain_blk->gas_used, phalaenopsis_success_gas);
+  EXPECT_EQ(block3->trx_receipts[0].logs.size(), 0u);
+  EXPECT_EQ(block3->trx_receipts[0].bloom(), LogBloom());
+  EXPECT_EQ(block3->final_chain_blk->log_bloom, LogBloom());
+
+  const auto post_block3_sender = SUT->getAccount(sender.address());
+  ASSERT_TRUE(post_block3_sender);
+  const auto post_block3_dpos = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(post_block3_dpos);
+  const auto expected_sender_after_block3 =
+      expected_sender_after_block2 - u256(phalaenopsis_success_gas) * kGasPrice - kTransferAmount;
+  auto expected_dpos_after_block3 = expected_dpos_after_block2 + kTransferAmount;
+#ifdef RUSTAXA_ENABLE_FINAL_CHAIN
+  expected_dpos_after_block3 += u256(phalaenopsis_success_gas) * kGasPrice;
+#endif
+  EXPECT_EQ(post_block3_sender->nonce, 4);
+  EXPECT_EQ(post_block3_sender->balance, expected_sender_after_block3);
+  EXPECT_EQ(post_block3_dpos->balance, expected_dpos_after_block3);
+  assert_no_dpos_mutation(SUT, 3);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 3);
+  const auto restarted_sender = SUT->getAccount(sender.address());
+  ASSERT_TRUE(restarted_sender);
+  EXPECT_EQ(restarted_sender->nonce, 4);
+  EXPECT_EQ(restarted_sender->balance, expected_sender_after_block3);
+  const auto restarted_dpos_contract = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(restarted_dpos_contract);
+  EXPECT_EQ(restarted_dpos_contract->balance, expected_dpos_after_block3);
+  assert_no_dpos_mutation(SUT, 3);
+}
+
 TEST_F(FinalChainTest, native_dpos_pre_cornus_nonpayable_value_transfers_on_success) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kInitialBalance = 1'000'000;

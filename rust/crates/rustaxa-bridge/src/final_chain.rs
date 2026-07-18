@@ -419,6 +419,7 @@ pub(crate) fn create_final_chain(
         rustaxa_ffi::FinalChainRewardsConfig {
             committee_size: 0,
             magnolia_period: 0,
+            phalaenopsis_period: u64::MAX,
             aspen_part_one_period: u64::MAX,
             fix_claim_all_block_num: u64::MAX,
             fix_redelegate_block_num: u64::MAX,
@@ -509,6 +510,7 @@ pub fn create_final_chain_with_rewards_config(
         rustaxa_consensus::FinalChainRewardsConfig {
             committee_size: rewards_config.committee_size,
             magnolia_period: rewards_config.magnolia_period,
+            phalaenopsis_period: rewards_config.phalaenopsis_period,
             aspen_part_one_period: rewards_config.aspen_part_one_period,
             fix_claim_all_block_num: rewards_config.fix_claim_all_block_num,
             fix_redelegate_block_num: rewards_config.fix_redelegate_block_num,

@@ -229,6 +229,7 @@ rustaxa::FinalChainRewardsConfig make_final_chain_rewards_config(const taraxa::F
   rewards_config.dpos_delegation_locking_period = config.genesis.state.dpos.delegation_locking_period;
   rewards_config.cornus_period = config.genesis.state.hardforks.cornus_hf.block_num;
   rewards_config.cornus_delegation_locking_period = config.genesis.state.hardforks.cornus_hf.delegation_locking_period;
+  rewards_config.phalaenopsis_period = config.genesis.state.hardforks.phalaenopsis_hf_block_num;
   u256 genesis_balance_sum = 0;
   for (const auto& [_, balance] : config.genesis.state.initial_balances) {
     genesis_balance_sum += balance;

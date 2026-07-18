@@ -467,10 +467,10 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The default-rewards `create_final_chain(...)` constructor is deleted from the CXX surface. C++ bridge tests now pass an
   explicit `FinalChainRewardsConfig` through `create_final_chain_with_rewards_config`, which is the constructor shape
   used by the live `final_chain_shim`; the default wrapper is Rust test-only fixture code.
-- The retained `FinalChainRewardsConfig` carrier now includes `fix_redelegate_block_num` and an ordered vector of
-  `RedelegationCorrection { validator, delegator, amount }` records copied from genesis hardfork configuration. This
-  bounded `CRW-08` replay input is consumed inside Rust FinalChain publication; it adds no handle, constructor, free
-  export, or C++ execution authority.
+- The retained `FinalChainRewardsConfig` carrier now includes `fix_redelegate_block_num`, `phalaenopsis_period`, and an
+  ordered vector of `RedelegationCorrection { validator, delegator, amount }` records copied from genesis hardfork
+  configuration. These bounded `CRW-08` replay/activation inputs are consumed inside Rust FinalChain publication; they
+  add no handle, constructor, free export, or C++ execution authority.
 - The follow-up restart-durable same-validator history-completeness bit and corruption marker set are private DPoS
   snapshot state. They reuse the retained FinalChain handle and existing snapshot publication path, so they add no CXX
   carrier, export, shim, or module flag.

@@ -139,6 +139,12 @@ pub struct FinalChainRewardsConfig {
     pub committee_size: u32,
     /// First period where Magnolia fee rewards are active.
     pub magnolia_period: u64,
+    /// First period where the exact legacy Phalaenopsis DPoS escrow-transfer
+    /// selector is active.
+    ///
+    /// A value of `u64::MAX` disables the compatibility action outside
+    /// configured networks.
+    pub phalaenopsis_period: u64,
     /// First period where Aspen part-one DAG reward counting is active.
     pub aspen_part_one_period: u64,
     /// First period where the legacy pre-Aspen `claimAllRewards(uint32)` ABI is disabled.
@@ -203,6 +209,7 @@ impl Default for FinalChainRewardsConfig {
         Self {
             committee_size: 0,
             magnolia_period: 0,
+            phalaenopsis_period: u64::MAX,
             aspen_part_one_period: 0,
             fix_claim_all_block_num: u64::MAX,
             fix_redelegate_block_num: u64::MAX,
