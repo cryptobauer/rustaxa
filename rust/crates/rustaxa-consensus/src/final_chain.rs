@@ -3738,9 +3738,9 @@ impl FinalChain {
                 commission,
                 block_number,
             ),
-            DposTransaction::ClaimAllRewards { delegator, batch } => Ok(DposApplyOutcome::success(
-                self.apply_dpos_claim_all_rewards(dpos_snapshot, accounts, delegator, batch)?,
-            )),
+            DposTransaction::ClaimAllRewards { delegator, batch } => {
+                self.apply_dpos_claim_all_rewards(dpos_snapshot, accounts, delegator, batch)
+            }
             DposTransaction::PhalaenopsisEscrowTransfer => {
                 Ok(DposApplyOutcome::success(Vec::new()))
             }
@@ -4944,45 +4944,52 @@ impl FinalChain {
         accounts: &mut HashMap<[u8; 20], Account>,
         delegator: [u8; 20],
         batch: Option<u32>,
-    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
         let validators = snapshot
             .delegator_validators
             .get(&delegator)
             .cloned()
             .unwrap_or_default();
-        let start = if let Some(batch) = batch {
-            usize::try_from(batch)
-                .map_err(|_| {
-                    anyhow::anyhow!("claimAllRewards batch index does not fit into usize")
-                })?
-                .checked_mul(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT)
-                .ok_or_else(|| anyhow::anyhow!("claimAllRewards batch start offset overflow"))?
-        } else {
-            0usize
+        let Some(batch) = batch else {
+            let mut logs = Vec::new();
+            for validator in validators.iter() {
+                logs.extend(self.apply_dpos_delegator_reward_claim(
+                    snapshot, accounts, *validator, delegator,
+                )?);
+            }
+            return Ok(DposApplyOutcome::success(logs));
         };
-        let claim_count = match batch {
-            None => validators.len() as u64,
-            Some(batch) => dpos_batch_items_count(
-                validators.len() as u64,
-                batch,
-                u64::try_from(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT).map_err(|_| {
-                    anyhow::anyhow!("claimAllRewards batch max count does not fit into u64")
-                })?,
-            )?,
-        };
+        let is_end = dpos_claim_all_rewards_batch_is_end(validators.len(), batch)?;
+        let start = usize::try_from(batch)
+            .map_err(|_| anyhow::anyhow!("claimAllRewards batch index does not fit into usize"))?
+            .checked_mul(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT)
+            .ok_or_else(|| anyhow::anyhow!("claimAllRewards batch start offset overflow"))?;
+        let claim_count = usize::try_from(dpos_batch_items_count(
+            u64::try_from(validators.len()).map_err(|_| {
+                anyhow::anyhow!("claimAllRewards validator count does not fit into uint64")
+            })?,
+            batch,
+            u64::try_from(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT).map_err(|_| {
+                anyhow::anyhow!("claimAllRewards page size does not fit into uint64")
+            })?,
+        )?)
+        .map_err(|_| anyhow::anyhow!("claimAllRewards item count does not fit into usize"))?;
         if start > 0 && start >= validators.len() {
-            return Ok(Vec::new());
+            return Ok(DposApplyOutcome::success_with(
+                Vec::new(),
+                abi_word_from_bool(is_end).to_vec(),
+            ));
         }
-        let claim_count = usize::try_from(claim_count).map_err(|_| {
-            anyhow::anyhow!("claimAllRewards batch item count does not fit into usize")
-        })?;
         let mut logs = Vec::new();
         for validator in validators.iter().skip(start).take(claim_count) {
             logs.extend(
                 self.apply_dpos_delegator_reward_claim(snapshot, accounts, *validator, delegator)?,
             );
         }
-        Ok(logs)
+        Ok(DposApplyOutcome::success_with(
+            logs,
+            abi_word_from_bool(is_end).to_vec(),
+        ))
     }
 
     fn apply_dpos_commission_reward_claim(
@@ -5697,7 +5704,10 @@ impl FinalChain {
             id,
             remove_amount,
         )?);
-        Ok(DposApplyOutcome::success(logs))
+        Ok(DposApplyOutcome::success_with(
+            logs,
+            abi_word_from_u64(id).to_vec(),
+        ))
     }
 
     fn apply_dpos_confirm_undelegate_v2(
@@ -10076,6 +10086,30 @@ fn dpos_batch_items_count(
     Ok(max_batch_items_count.min(actual_count - start))
 }
 
+/// Returns the legacy pre-Aspen claim-all page end flag.
+///
+/// The old Solidity-compatible storage path performed both page-offset
+/// operations as `uint32`, so wrapping is part of the historical ABI output.
+/// Finalized native selection intentionally remains on the established widened
+/// path until its replay consequences are audited separately.
+fn dpos_claim_all_rewards_batch_is_end(
+    actual_count: usize,
+    batch: u32,
+) -> Result<bool, anyhow::Error> {
+    let page_size = u32::try_from(DPOS_CLAIM_ALL_REWARDS_MAX_COUNT)
+        .map_err(|_| anyhow::anyhow!("claimAllRewards page size does not fit into uint32"))?;
+    let start_u32 = batch.wrapping_mul(page_size);
+    let end_u32 = start_u32.wrapping_add(page_size);
+    let actual_count_u64 = u64::try_from(actual_count)
+        .map_err(|_| anyhow::anyhow!("claimAllRewards validator count does not fit into uint64"))?;
+    let start_u64 = u64::from(start_u32);
+    Ok(
+        actual_count == 0
+            || start_u64 >= actual_count_u64
+            || actual_count_u64 <= u64::from(end_u32),
+    )
+}
+
 fn dpos_vdf_sortition_max_vote_count(
     genesis_dpos_config: &GenesisDposConfig,
 ) -> Result<u64, anyhow::Error> {
@@ -10154,20 +10188,20 @@ struct DposApplyOutcome {
 }
 
 impl DposApplyOutcome {
-    fn success(logs: Vec<ReceiptLog>) -> Self {
+    fn success_with(logs: Vec<ReceiptLog>, code_retval: Vec<u8>) -> Self {
         Self {
             status_code: 1,
             logs,
-            code_retval: Vec::new(),
+            code_retval,
         }
     }
 
+    fn success(logs: Vec<ReceiptLog>) -> Self {
+        Self::success_with(logs, Vec::new())
+    }
+
     fn success_with_return(code_retval: Vec<u8>) -> Self {
-        Self {
-            status_code: 1,
-            logs: Vec::new(),
-            code_retval,
-        }
+        Self::success_with(Vec::new(), code_retval)
     }
 
     fn contract_failure() -> Self {
@@ -11282,6 +11316,53 @@ mod tests {
         assert_eq!(dpos_batch_items_count(12, 0, 10).unwrap(), 10);
         assert_eq!(dpos_batch_items_count(12, 1, 10).unwrap(), 2);
         assert_eq!(dpos_batch_items_count(12, 2, 10).unwrap(), 1);
+    }
+
+    #[test]
+    fn claim_all_rewards_batch_end_output_matches_legacy_boundaries_without_reselection() {
+        let is_end = |count, batch| dpos_claim_all_rewards_batch_is_end(count, batch).unwrap();
+        assert!(!is_end(11, 0));
+        assert!(is_end(11, 1));
+        assert!(is_end(10, 0));
+        assert!(is_end(11, 2));
+        assert!(is_end(0, 0));
+        let wrapping_batch = u32::MAX / DPOS_CLAIM_ALL_REWARDS_MAX_COUNT as u32 + 1;
+        assert!(is_end(11, wrapping_batch));
+
+        let path = temp_db_path("claim-all-batch-output-boundaries");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain(storage.clone(), 200_000, 0, Vec::new(), Vec::new());
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        let mut accounts = HashMap::new();
+        let delegator = [0x99; 20];
+        let output = final_chain
+            .apply_dpos_claim_all_rewards(&mut snapshot, &mut accounts, delegator, Some(0))
+            .unwrap();
+        assert_eq!(output.status_code, 1);
+        assert_eq!(output.code_retval, abi_word_from_bool(true).to_vec());
+
+        let output = final_chain
+            .apply_dpos_claim_all_rewards(&mut snapshot, &mut accounts, delegator, None)
+            .unwrap();
+        assert_eq!(output.status_code, 1);
+        assert!(output.code_retval.is_empty());
+
+        let before_wrapping_call = snapshot.clone();
+        let output = final_chain
+            .apply_dpos_claim_all_rewards(
+                &mut snapshot,
+                &mut accounts,
+                [0x11; 20],
+                Some(wrapping_batch),
+            )
+            .unwrap();
+        assert_eq!(output.status_code, 1);
+        assert_eq!(output.code_retval, abi_word_from_bool(true).to_vec());
+        assert_eq!(snapshot, before_wrapping_call);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     fn encode_legacy_dpos_snapshot_without_undelegations(snapshot: &DposSnapshot) -> Vec<u8> {
@@ -12682,6 +12763,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcome.status_code, 1);
+        assert_eq!(outcome.code_retval, abi_word_from_u64(1).to_vec());
         assert!(!snapshot.total_stakes.contains_key(&validator));
         assert!(!snapshot.delegations.contains_key(&validator));
         assert!(!snapshot.delegator_validators.contains_key(&validator));

@@ -472,6 +472,10 @@ reference builds retain the untouched legacy RewardsStats header and source.
     fees, receipts, reward planning, cleanup, or publication. Exact call parity still requires requested-block account and DPoS
     snapshots, intrinsic-plus-action gas, combined gas/value affordability, staged value rollback, typed business
     errors, mutation outputs, and logs across all 16 mutation branches at once.
+    The shared kernel result now preserves the successful `undelegateV2` ABI request ID and legacy pre-fix
+    `claimAllRewards(uint32)` end flag while finalized receipt publication continues to discard return bytes. Existing
+    widened finalized page selection remains unchanged; aligning wrapping-batch selection has separate historical replay
+    consequences. Exact typed business errors remain required before the transient call envelope can route mutations.
     Rust native finalization also executes the slashing `commitDoubleVotingProof(bytes,bytes)` precompile path for
     legacy PBFT vote RLPs: Rust decodes the calldata, recovers both vote signers, validates the double-vote facts,
     persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits

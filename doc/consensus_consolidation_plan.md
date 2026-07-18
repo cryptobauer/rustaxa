@@ -3802,6 +3802,21 @@ register-then-claim-all live-gas regression, all 757 `rustaxa-consensus` tests, 
 baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace validation, and the repository
 pre-commit hook, followed by independent configured review.
 
+### CRW-08 DPoS Mutation Success-Output Preservation
+
+The shared kernel result now retains the legacy ABI outputs that finalized receipt publication intentionally discards:
+the `undelegateV2(address,uint256)` request ID and the pre-fix `claimAllRewards(uint32)` `bool is_end` result. The end
+flag preserves legacy wrapping-`uint32` offsets and empty, exact-final, partial-final, non-final, and out-of-range
+boundaries; current `claimAllRewards()` remains outputless. Established widened finalized page selection remains
+unchanged, including no mutation for wrapping batches that are out of range on the native path; correcting selection
+has separate historical replay consequences and stays pending. Finalized status, gas, logs, state, and receipt shape are
+unchanged. Exact typed business errors remain the next kernel-result prerequisite for atomic mutation-call routing.
+
+Output-preservation validation passed the focused V2 ID and claim-all end-flag boundary tests, all 758 `rustaxa-consensus`
+tests, `rewrite-validate-fast`, `rewrite-validate-final-chain`, `rewrite-validate-final-chain-parity`, the unchanged
+46-warning consensus clippy baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace
+validation, and the repository pre-commit hook, followed by independent configured review approval.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

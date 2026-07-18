@@ -700,6 +700,20 @@ register-then-claim-all live-gas regression, all 757 `rustaxa-consensus` tests, 
 baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace validation, and the repository
 pre-commit hook, followed by independent configured review.
 
+The next result-carrier slice preserves mutation success output without changing finalized receipts. Successful
+`undelegateV2(address,uint256)` now retains its ABI-encoded `uint64` request ID alongside the existing log. Legacy
+pre-fix `claimAllRewards(uint32)` retains the exact ABI `bool is_end` word for empty, non-final, exact final, partial
+final, out-of-range, and wrapping-`uint32` page offsets, while current `claimAllRewards()` continues to return no bytes.
+Established widened finalized page selection remains unchanged, including no mutation for wrapping batches that are
+out of range on the native path; correcting selection has separate historical replay consequences and stays pending.
+The finalized transaction boundary still discards contract return bytes after execution and publishes the same status,
+gas, and logs. Exact typed business errors remain the next kernel-result requirement before atomic call routing.
+
+Output-preservation validation passed the focused V2 ID and claim-all end-flag boundary tests, all 758 `rustaxa-consensus`
+tests, `rewrite-validate-fast`, `rewrite-validate-final-chain`, `rewrite-validate-final-chain-parity`, the unchanged
+46-warning consensus clippy baseline, the bridge inventory guard, skill validation, Rust formatting, whitespace
+validation, and the repository pre-commit hook, followed by independent configured review approval.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,
