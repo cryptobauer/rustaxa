@@ -407,8 +407,8 @@ reference builds retain the untouched legacy RewardsStats header and source.
     the V2 request and last-ID cursor as custody/history state, so the request remains queryable and confirmable after
     registration deletion. V2 unlock blocks select active Cacti, Cornus, then base locking configuration. The staged
     same-block claim-gas view removes confirmed V2 requests and restores delegation membership and principal after a
-    successful V2 cancellation before pricing a later `claimAllRewards()` call. Exact nonzero-`delegation_delay`
-    claim-all gas parity remains follow-up work.
+    successful V2 cancellation before pricing a later `claimAllRewards()` call. Claim-all gas starts from live finalized
+    delegation membership even when eligibility APIs use a nonzero delayed snapshot.
     The Phalaenopsis escrow-transfer action is gated by its configured activation period, remains payable after Cornus,
     charges 1,000 action gas, and mutates only sender/DPoS account balances through the common successful contract-payment
     path; exact-input failures and pre-activation calls remain normal status-zero unknown-method receipts.
@@ -457,7 +457,8 @@ reference builds retain the untouched legacy RewardsStats header and source.
     stake-mutation auto-claims, with the block header bloom derived from those logs. Supported DPoS owner validation
     failures now persist failed receipts without mutating DPoS state. Rust native finalization now accepts
     both the current `claimAllRewards()` ABI and the legacy pre-fix `claimAllRewards(uint32)` batch ABI, gates the batch
-    selector on `fix_claim_all_block_num`, and charges claim-all gas from the staged Rust DPoS delegation view. The active
+    selector on `fix_claim_all_block_num`, and charges claim-all gas from a staged live Rust DPoS delegation view that is
+    independent of the configured eligibility delay. The active
     Rust finalization path also persists the legacy two-level `final_chain_log_blooms_index` chunks with author-augmented
     blooms and routes `FinalChain::withBlockBloom` through Rust. Unsupported DPoS methods remain future work.
     Rust native finalization also executes the slashing `commitDoubleVotingProof(bytes,bytes)` precompile path for

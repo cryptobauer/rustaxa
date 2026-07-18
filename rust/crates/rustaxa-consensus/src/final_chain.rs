@@ -2843,7 +2843,9 @@ impl FinalChain {
         let mut cumulative_gas_used = 0u64;
         let head_block_number = self.last_block_number()?;
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head_block_number)?;
-        let mut dpos_gas_snapshot = self.dpos_snapshot(head_block_number)?;
+        // Legacy RequiredGas counts live delegator membership. Delegation delay
+        // applies to eligibility reads, not to DPoS mutation gas accounting.
+        let mut dpos_gas_snapshot = dpos_snapshot.clone();
         let delayed_snapshot_block = block_number.saturating_sub(self.dpos_delegation_delay);
         let slashing_validator_snapshot = {
             let snapshots = self
@@ -9247,8 +9249,12 @@ mod tests {
                     final_chain.dpos_cornus_period,
                 )
                 .unwrap();
-                let snapshot = matches!(dpos_tx, DposTransaction::ClaimAllRewards { .. })
-                    .then(|| final_chain.dpos_snapshot(block_number).unwrap());
+                let snapshot =
+                    matches!(dpos_tx, DposTransaction::ClaimAllRewards { .. }).then(|| {
+                        final_chain
+                            .dpos_snapshot_at_finalized_block(block_number)
+                            .unwrap()
+                    });
                 dpos_transaction_required_gas(
                     &dpos_tx,
                     block_number,

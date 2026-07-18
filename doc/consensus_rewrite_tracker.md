@@ -443,8 +443,9 @@ confirmation and, on successful cancellation, restores both delegation membershi
 `claimAllRewards()` gas calculation. Failed calls still leave that staged view unchanged. Focused Rust coverage protects
 snapshot round-trips, retained IDs/queues, pre-Magnolia terminal deletion, and confirm/cancel gas-view transitions.
 Restart-backed dual-mode FinalChain fixtures protect exact action gas, receipts, logs, blooms, Cornus lock selection,
-confirmation payout, cancel restoration, claim-all gas, and durable state. Nonzero `delegation_delay` claim-all gas and
-the known legacy Magnolia persisted-counter divergence remain outside this transcript. No CXX handle, carrier, export,
+confirmation payout, cancel restoration, claim-all gas, and durable state. Nonzero `delegation_delay` claim-all gas is
+closed by the later live-membership slice below; the known legacy Magnolia persisted-counter divergence remains outside
+this transcript. No CXX handle, carrier, export,
 shim, or module flag changes, so `CRW-07` has no inventory delta. `CRW-08` remains active for the remaining DPoS
 method/failure families and the explicit historical reward graph.
 
@@ -458,8 +459,19 @@ remains atomic and restart-durable. `FinalChainRewardsConfig` gains the Phalaeno
 genesis hardfork configuration, so `CRW-07` records a carrier-field delta but no new handle, export, constructor, shim,
 module flag, or snapshot schema. Historical databases finalized by the prior Rust path with this selector require
 replay/rebuild or a separately designed migration; this slice does not infer or top up escrow. `CRW-08` remains active
-for the remaining DPoS method/failure families, nonzero-delay claim-all gas parity, and the explicit historical reward
-graph.
+for the remaining DPoS method/failure families and the explicit historical reward graph.
+
+The next bounded `CRW-08` slice closes nonzero-`delegation_delay` claim-all gas parity. Legacy
+`claimAllRewards()` and `claimAllRewards(uint32)` price the caller's live contract membership; the delay applies to
+eligibility and historical authorization reads, not mutation gas. Rust native execution now seeds its staged claim-gas
+view from the immediately preceding finalized DPoS snapshot, the same live state used for transaction mutation, and then
+continues applying successful same-block membership changes before each later claim. Delayed eligibility APIs retain
+their existing historical snapshot selection. A zero-gas-price, restart-backed dual-mode fixture creates a delegation
+after genesis with delay two, then proves a current claim-all receipt charges one exact 45,000-gas item while total stake
+uses live state and eligible votes remain delayed. It also protects empty logs/bloom, nonce, balances, receipt RLP, and
+restart persistence. No carrier, bridge handle/export, shim, module flag, or snapshot schema changes, so `CRW-07` has no
+inventory delta. `CRW-08` remains active for the remaining DPoS method/failure families and the explicit historical
+reward graph.
 
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned

@@ -3113,7 +3113,7 @@ external-EVM boundary.
   account/DPoS snapshot clones per native call while keeping reverted value available to a later same-sender
   transaction in the same block.
 - Mutable DPoS execution starts from the immediately preceding finalized snapshot, independent of the delayed snapshot
-  used for historical delegation reads and claim-all gas facts. A nonzero-delay multi-block test proves that recent
+  used for historical eligibility and authorization reads. A nonzero-delay multi-block test proves that recent
   registration/delegation state survives subsequent finalization and restart. Native contract transactions also pass
   through the common fee-reward accounting path; focused pre-Magnolia tests cover both status-one and status-zero calls.
 - `apply_dpos_delegate` returns typed contract failure for the three business rejections while keeping invariant and
@@ -3402,7 +3402,8 @@ This bounded follow-up closes the pre-Magnolia terminal-validator boundary for
   Cornus-over-base lock selection while Cacti is inactive, confirmation payout after validator deletion, same-block
   undelegate/cancel/claim-all behavior, and durable state.
 
-The fixtures use `delegation_delay = 0`; exact nonzero-delay claim-all gas parity remains separate work. They also avoid
+The fixtures use `delegation_delay = 0`; the later live-membership claim-all slice below closes exact nonzero-delay gas
+parity. They also avoid
 the known legacy Magnolia persisted-counter divergence already documented by the commission-claim slice. No CXX handle,
 carrier, export, shim, module flag, or compatibility-only test surface changes, so `CRW-07` has no inventory delta.
 `CRW-08` remains active for the remaining method/failure families and the explicit historical reward reference graph.
@@ -3438,12 +3439,38 @@ This is a documented `CRW-07` carrier-field delta; no bridge handle, free export
 snapshot field, or external-EVM responsibility is added. Existing Rust-finalized databases that encountered this selector
 before the slice may contain status-zero receipts and missing escrow credits; recovery requires replay/rebuild from before
 the first affected block or an explicitly designed migration, not an inferred balance top-up. `CRW-08` remains active
-for the remaining DPoS method/failure families, nonzero-delay claim-all gas parity, and the explicit historical reward
-reference graph.
+for the remaining DPoS method/failure families and the explicit historical reward reference graph.
 
 Validation passed with the focused Rust classifier/gas test, all 701 `rustaxa-consensus` tests, the restart-backed selector
 fixture in both Rust-enabled and pure-C++ FinalChain builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
 `rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, and whitespace checks.
+
+### CRW-08 Live Claim-All Gas with Nonzero Delegation Delay
+
+This bounded follow-up separates mutation-gas membership from delayed eligibility views.
+
+- Legacy current and pre-fix batch claim-all gas counts the caller's live DPoS contract memberships. Rust now initializes
+  the staged claim-gas snapshot from the immediately preceding finalized DPoS state, matching the state against which the
+  block's native mutations execute, instead of applying `delegation_delay` to that initial gas view.
+- Successful same-block registration, delegation, undelegation, cancellation, confirmation, and redelegation updates
+  continue to project into the staged gas view. Failed calls still leave it unchanged. Current and legacy batch
+  claim-all therefore share the same live-membership source while retaining their existing paging and hardfork rules.
+- Eligibility and historical authorization APIs continue selecting `period - delegation_delay`; the gas fix does not
+  change validator eligibility, vote counts, PBFT authorization, or delayed FinalChain hash semantics.
+- A restart-backed dual-mode FinalChain fixture uses delay two, creates a post-genesis delegation, and proves that the
+  following current claim-all charges intrinsic gas plus one 45,000-gas item even though eligible votes still reflect
+  genesis. Zero gas price isolates membership pricing from rewards and protects an empty log/bloom, sender nonce and
+  balance, DPoS escrow, receipt RLP, live total stake, and restart durability.
+
+No CXX carrier, bridge handle/export, shim, module flag, compatibility-only surface, or snapshot schema changes, so
+`CRW-07` has no inventory delta. Existing Rust-finalized receipts may contain deficient gas/cumulative-gas values when a
+claim-all call observed live memberships absent from its delayed snapshot; correction requires replay/rebuild from before
+the first affected receipt rather than an in-place state mutation. `CRW-08` remains active for the remaining DPoS
+method/failure families and the explicit historical reward reference graph.
+
+Validation passed all 701 `rustaxa-consensus` tests, the focused restart-backed fixture in Rust-enabled and pure-C++
+FinalChain builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`, `rewrite-validate-final-chain-parity`, the
+bridge inventory guard, skill validation, the pre-commit hook, formatting, and whitespace checks.
 
 ## Historical Execution Order
 
