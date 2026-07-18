@@ -449,7 +449,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     Rust reward stats into staged validator commission and delegator reward pools, credits the DPoS contract account with
     the minted total, migrates part-one minted tokens into durable total supply at the Aspen part-two boundary, and writes
     header `total_reward` from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
-    total supply, and read-only delegator reward pages backed by Rust F1 reward cursors. Rust now executes delegator
+    total supply, and read-only delegator reward pages backed by the persisted Rust reward-reference graph. The page
+    read preserves legacy insertion/removal ordering, wrapping offsets, widened gas calculation, and strict corruption
+    handling without falling back to scalar reward state. Rust now executes delegator
     `claimRewards(address)`, validator-owner `claimCommissionRewards(address)`, validator-owner metadata/commission
     updates, current-ABI `claimAllRewards()`, and
     stake-mutation auto-claims by moving reward balances through staged Rust account/DPoS snapshots. Receipts for the

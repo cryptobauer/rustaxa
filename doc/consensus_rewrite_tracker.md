@@ -632,6 +632,28 @@ with the unchanged 46-warning crate baseline, `rewrite-validate-fast`, `rewrite-
 inventory guard, skill validation, the repository pre-commit hook, Rust formatting, whitespace validation, and an
 independent configured-reviewer `APPROVED` verdict. The future `getDelegations` C++ fixture remains outside this commit.
 
+The follow-up routes direct and native `getDelegations(address,uint32)` through the persisted reward graph. Genesis
+membership preserves validator insertion order, pages use the legacy wrapping `uint32` offset calculation and
+swap-last removal order, and each returned row carries graph-authoritative pending reward without scalar fallback.
+Action gas deliberately retains the legacy widened batch calculation, including its large-batch divergence from the
+wrapped output page. Malformed recognized input has zero action gas; narrow ABI words and trailing calldata remain
+accepted. Before Cornus successful value is retained in DPoS custody, while Cornus rejects value before decode.
+
+Duplicate membership, missing principal or validator rows, incomplete graph history, and missing graph references are
+hard errors. Only selected page rows are reward-resolved, and zero aggregate validator stake returns zero pending reward
+without consulting an older cursor. Rust unit coverage proves native same-block membership visibility through read gas.
+Restart-backed Rust-enabled and pure-C++ fixtures protect ordering, page/end flags, large-batch behavior, decoder
+variants, and persistence. No CXX carrier, bridge
+handle/export, shim, module flag, snapshot schema, or `CRW-07` inventory delta is introduced. Historical Rust native
+reads may differ in status, gas, receipt roots, value custody, balances, ordering, and later affordability; exact
+correction requires replay/rebuild from the first affected read. `CRW-08` remains active for the next bounded
+method/failure family selected from the queue.
+
+Read integration validation passed the focused Rust page test, all 747 `rustaxa-consensus` tests, the focused
+Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
+skill validation, Rust and changed-line C++ formatting, whitespace validation, and independent configured review.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

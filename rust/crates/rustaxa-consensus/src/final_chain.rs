@@ -577,8 +577,10 @@ impl FinalChain {
                 &delegators,
             )?;
         }
-        let genesis_dpos_delegator_validators =
-            delegator_validators_from_delegations(&genesis_dpos_delegations);
+        let genesis_dpos_delegator_validators = delegator_validators_from_delegations_with_order(
+            &genesis_dpos_delegations,
+            &genesis_validator_order,
+        );
         let genesis_dpos_total_vote_count =
             genesis_vrf_keys
                 .iter()
@@ -1241,6 +1243,7 @@ impl FinalChain {
             || is_dpos_eligibility_read_selector(selector)
             || is_dpos_fixed_singleton_read_selector(selector)
             || is_dpos_total_delegation_read_selector(selector)
+            || is_dpos_delegation_page_read_selector(selector)
             || is_dpos_validator_page_read_selector(selector)
             || is_dpos_undelegation_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
@@ -1413,14 +1416,20 @@ impl FinalChain {
                 self.encode_dpos_total_delegation(request.block_number, delegator)?
             }
             DPOS_GET_DELEGATIONS_SELECTOR => {
-                let delegator =
-                    decode_abi_address_argument(&request.input, "getDelegations(address,uint32)")?;
-                let batch = decode_abi_u32_argument(
+                let read = match decode_dpos_delegation_page_read(
                     &request.input,
-                    36,
-                    "getDelegations(address,uint32) batch",
-                )?;
-                self.encode_dpos_delegations(request.block_number, delegator, batch)?
+                    "getDelegations(address,uint32)",
+                ) {
+                    Ok(read) => read,
+                    Err(error) => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: error.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                };
+                self.encode_dpos_delegations(request.block_number, read.delegator, read.batch)?
             }
             DPOS_GET_UNDELEGATIONS_SELECTOR => {
                 let read = match decode_dpos_undelegation_page_read(
@@ -3157,6 +3166,7 @@ impl FinalChain {
                     | DposTransaction::GetValidatorsFor(_)
                     | DposTransaction::GetUndelegations(_)
                     | DposTransaction::GetUndelegationsV2(_)
+                    | DposTransaction::GetDelegations(_)
                     | DposTransaction::GetUndelegationV2(_)
                     | DposTransaction::PhalaenopsisEscrowTransfer
                     | DposTransaction::MalformedMutation { .. }
@@ -3324,6 +3334,9 @@ impl FinalChain {
                         NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
                             DposTransaction::GetTotalDelegation(read) => {
                                 self.apply_dpos_total_delegation_read(&dpos_snapshot, read)?
+                            }
+                            page_tx @ DposTransaction::GetDelegations(_) => {
+                                self.apply_dpos_delegation_page_read(&dpos_snapshot, page_tx)?
                             }
                             singleton_tx @ (DposTransaction::GetValidator(_)
                             | DposTransaction::GetUndelegationV2(_)) => self
@@ -3865,6 +3878,7 @@ impl FinalChain {
         if (is_dpos_eligibility_read_selector(selector)
             || is_dpos_fixed_singleton_read_selector(selector)
             || is_dpos_total_delegation_read_selector(selector)
+            || is_dpos_delegation_page_read_selector(selector)
             || is_dpos_validator_page_read_selector(selector)
             || is_dpos_undelegation_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
@@ -3946,21 +3960,16 @@ impl FinalChain {
             }
             DPOS_GET_DELEGATIONS_SELECTOR => {
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
-                let delegator =
-                    decode_abi_address_argument(&request.input, "getDelegations(address,uint32)")?;
-                let batch = decode_abi_u32_argument(
+                let read = match decode_dpos_delegation_page_read(
                     &request.input,
-                    36,
-                    "getDelegations(address,uint32) batch",
-                )?;
-                let count = snapshot
-                    .delegator_validators
-                    .get(&delegator)
-                    .map(Vec::len)
-                    .unwrap_or_default() as u64;
-                let items =
-                    dpos_batch_items_count(count, batch, DPOS_GET_DELEGATIONS_MAX_COUNT as u64)?;
-                items
+                    "getDelegations(address,uint32)",
+                ) {
+                    Ok(read) => read,
+                    Err(_) => return Ok(0),
+                };
+                let count =
+                    dpos_delegations_storage_read_count(&snapshot, read.delegator, read.batch)?;
+                count
                     .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
                     .ok_or_else(|| anyhow::anyhow!("getDelegations gas multiplication overflow"))
             }
@@ -4234,6 +4243,25 @@ impl FinalChain {
             ),
             DposTransaction::GetUndelegationsV2(Err(_)) => DposApplyOutcome::contract_failure(),
             _ => anyhow::bail!("non-undelegation-page transaction routed to page reader"),
+        })
+    }
+
+    /// Executes one delegation-page read against the live block-local DPoS state.
+    ///
+    /// Successful reads return ABI bytes without logs or state mutation.
+    /// Expected ABI failures become status-zero outcomes; malformed principal
+    /// rows remain hard execution errors to keep snapshot corruption visible.
+    fn apply_dpos_delegation_page_read(
+        &self,
+        snapshot: &DposSnapshot,
+        transaction: DposTransaction,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        Ok(match transaction {
+            DposTransaction::GetDelegations(Ok(read)) => DposApplyOutcome::success_with_return(
+                self.encode_dpos_delegations_from_snapshot(snapshot, read.delegator, read.batch)?,
+            ),
+            DposTransaction::GetDelegations(Err(_)) => DposApplyOutcome::contract_failure(),
+            _ => anyhow::bail!("non-delegation-page transaction routed to delegation page reader"),
         })
     }
 
@@ -4585,42 +4613,50 @@ impl FinalChain {
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
-        let validator_order = snapshot
-            .delegator_validators
-            .get(&delegator)
-            .cloned()
-            .unwrap_or_default();
-        let delegations = validator_order
-            .iter()
-            .filter_map(|validator| {
-                snapshot
-                    .delegations
-                    .get(validator)
-                    .and_then(|validator_delegations| validator_delegations.get(&delegator))
-                    .map(|stake| (*validator, stake.as_slice()))
-            })
-            .collect::<Vec<_>>();
+        self.encode_dpos_delegations_from_snapshot(&snapshot, delegator, batch)
+    }
 
-        let start = usize::try_from(batch)
-            .map_err(|_| anyhow::anyhow!("getDelegations batch does not fit into usize"))?
-            .checked_mul(DPOS_GET_DELEGATIONS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getDelegations batch offset overflow"))?;
-        let end_index = start
-            .checked_add(DPOS_GET_DELEGATIONS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getDelegations batch end overflow"))?;
-        let page = delegations
+    fn encode_dpos_delegations_from_snapshot(
+        &self,
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        batch: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        // Graph provenance is part of the method's storage contract even when
+        // the requested page is empty. Older snapshots cannot serve a partial
+        // success merely because no reward row happens to be selected.
+        snapshot.reward_reference_graph.current_block()?;
+        let membership = dpos_total_delegation_membership(snapshot, delegator)?;
+        let count = u32::try_from(membership.len())
+            .map_err(|_| anyhow::anyhow!("getDelegations count exceeds uint32"))?;
+        let start = batch.wrapping_mul(DPOS_GET_DELEGATIONS_MAX_COUNT as u32);
+        let end_index = start.wrapping_add(DPOS_GET_DELEGATIONS_MAX_COUNT as u32);
+        let page = membership
             .iter()
-            .skip(start)
+            .skip(start as usize)
             .take(DPOS_GET_DELEGATIONS_MAX_COUNT)
             .collect::<Vec<_>>();
-        let is_end = end_index >= delegations.len();
-
+        let is_end = start >= count || count <= end_index;
         let mut output = Vec::new();
         output.extend_from_slice(&abi_word_from_u64(64));
         output.extend_from_slice(&abi_word_from_bool(is_end));
         output.extend_from_slice(&abi_word_from_usize(page.len(), "getDelegations length")?);
-        for (validator, stake) in page {
-            let reward = self.pending_delegator_reward(&snapshot, *validator, delegator, stake)?;
+        for validator in page {
+            let stake = snapshot
+                .delegations
+                .get(validator)
+                .and_then(|validator_delegations| validator_delegations.get(&delegator))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("DPoS delegation membership references a missing principal row")
+                })?;
+            let total_stake = snapshot.total_stakes.get(validator).ok_or_else(|| {
+                anyhow::anyhow!("DPoS delegation membership references a missing validator row")
+            })?;
+            let reward = if total_stake.iter().all(|byte| *byte == 0) {
+                U256::zero()
+            } else {
+                self.pending_delegator_reward(snapshot, *validator, delegator, stake)?
+            };
             output.extend_from_slice(&abi_word_from_address(*validator));
             output.extend_from_slice(&abi_word_from_u256_bytes(stake)?);
             output.extend_from_slice(&abi_word_from_u256_bytes(&u256_to_big_endian(reward))?);
@@ -7646,6 +7682,30 @@ fn delegator_validators_from_delegations(delegations: &DposDelegations) -> DposD
     map
 }
 
+fn delegator_validators_from_delegations_with_order(
+    delegations: &DposDelegations,
+    validator_order: &[[u8; 20]],
+) -> DposDelegatorValidators {
+    let mut map = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for validator in validator_order {
+        if let Some(delegators) = delegations.get(validator) {
+            seen.insert(*validator);
+            for delegator in delegators.keys() {
+                add_delegator_validator(&mut map, *delegator, *validator);
+            }
+        }
+    }
+    for (validator, validator_delegations) in delegations {
+        if seen.insert(*validator) {
+            for delegator in validator_delegations.keys() {
+                add_delegator_validator(&mut map, *delegator, *validator);
+            }
+        }
+    }
+    map
+}
+
 fn add_delegator_validator(
     map: &mut DposDelegatorValidators,
     delegator: [u8; 20],
@@ -8697,6 +8757,15 @@ fn dpos_transaction_required_gas(
                 .ok_or_else(|| anyhow::anyhow!("getTotalDelegation gas multiplication overflow"))?
         }
         DposTransaction::GetTotalDelegation(Err(_)) => 0,
+        DposTransaction::GetDelegations(Ok(read)) => {
+            let snapshot = snapshot.ok_or_else(|| {
+                anyhow::anyhow!("getDelegations gas snapshot is required for gas estimation")
+            })?;
+            dpos_delegations_storage_read_count(snapshot, read.delegator, read.batch)?
+                .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                .ok_or_else(|| anyhow::anyhow!("getDelegations gas multiplication overflow"))?
+        }
+        DposTransaction::GetDelegations(Err(_)) => 0,
         DposTransaction::GetValidators(Ok(batch)) => {
             let snapshot = snapshot.ok_or_else(|| {
                 anyhow::anyhow!("getValidators gas snapshot is required for gas estimation")
@@ -8824,6 +8893,11 @@ fn is_dpos_total_delegation_read_selector(selector: [u8; 4]) -> bool {
     selector == DPOS_GET_TOTAL_DELEGATION_SELECTOR
 }
 
+/// Returns whether a selector is the variable-gas exact-state delegation-page read.
+fn is_dpos_delegation_page_read_selector(selector: [u8; 4]) -> bool {
+    selector == DPOS_GET_DELEGATIONS_SELECTOR
+}
+
 /// Returns whether a selector belongs to the dynamic validator-page read family.
 fn is_dpos_validator_page_read_selector(selector: [u8; 4]) -> bool {
     matches!(
@@ -8906,6 +8980,20 @@ fn decode_dpos_undelegation_page_read(
     function_name: &str,
 ) -> Result<DposUndelegationPageRead, anyhow::Error> {
     Ok(DposUndelegationPageRead {
+        delegator: decode_abi_address_argument_with_offset(input, 4, function_name)?,
+        batch: decode_abi_u32_argument(input, 36, function_name)?,
+    })
+}
+
+/// Decodes one validator delegation-page read request with legacy narrow words.
+///
+/// The legacy ABI reader accepts trailing bytes, ignores the address word's
+/// high twelve bytes, and truncates the batch word to its low four bytes.
+fn decode_dpos_delegation_page_read(
+    input: &[u8],
+    function_name: &str,
+) -> Result<DposDelegationPageRead, anyhow::Error> {
+    Ok(DposDelegationPageRead {
         delegator: decode_abi_address_argument_with_offset(input, 4, function_name)?,
         batch: decode_abi_u32_argument(input, 36, function_name)?,
     })
@@ -9360,6 +9448,10 @@ fn decode_dpos_transaction_for_execution(
         ),
         DPOS_GET_TOTAL_DELEGATION_SELECTOR => DposTransaction::GetTotalDelegation(
             decode_abi_address_argument(input, "getTotalDelegation(address)")
+                .map_err(|error| error.to_string()),
+        ),
+        DPOS_GET_DELEGATIONS_SELECTOR => DposTransaction::GetDelegations(
+            decode_dpos_delegation_page_read(input, "getDelegations(address,uint32)")
                 .map_err(|error| error.to_string()),
         ),
         DPOS_GET_VALIDATORS_SELECTOR => DposTransaction::GetValidators(
@@ -9829,6 +9921,7 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::GetValidatorsFor(_)
         | DposTransaction::GetUndelegations(_)
         | DposTransaction::GetUndelegationsV2(_)
+        | DposTransaction::GetDelegations(_)
         | DposTransaction::GetUndelegationV2(_)
         | DposTransaction::PhalaenopsisEscrowTransfer
         | DposTransaction::MalformedMutation { .. }
@@ -9885,6 +9978,22 @@ fn dpos_total_delegation_storage_read_count(
 ) -> Result<u64, anyhow::Error> {
     u64::try_from(dpos_total_delegation_membership(snapshot, delegator)?.len())
         .map_err(|_| anyhow::anyhow!("getTotalDelegation count does not fit into uint64"))
+}
+
+fn dpos_delegations_storage_read_count(
+    snapshot: &DposSnapshot,
+    delegator: [u8; 20],
+    batch: u32,
+) -> Result<u64, anyhow::Error> {
+    let count = u64::try_from(
+        snapshot
+            .delegator_validators
+            .get(&delegator)
+            .map(Vec::len)
+            .unwrap_or_default(),
+    )
+    .map_err(|_| anyhow::anyhow!("getDelegations count does not fit into uint64"))?;
+    dpos_batch_items_count(count, batch, DPOS_GET_DELEGATIONS_MAX_COUNT as u64)
 }
 
 fn update_dpos_claim_gas_snapshot_remove(
@@ -10049,6 +10158,8 @@ enum DposTransaction {
     GetValidator(std::result::Result<[u8; 20], String>),
     /// Variable-gas exact-state total principal delegated by one account.
     GetTotalDelegation(std::result::Result<[u8; 20], String>),
+    /// Variable-gas exact-state validator delegation page read.
+    GetDelegations(std::result::Result<DposDelegationPageRead, String>),
     /// Variable-gas exact-state validator page read.
     GetValidators(std::result::Result<u32, String>),
     /// Fixed-maximum-gas exact-state owner-filtered validator page read.
@@ -10149,6 +10260,13 @@ struct DposValidatorsForRead {
 /// Arguments for one V1 or V2 undelegation custody page.
 #[derive(Clone)]
 struct DposUndelegationPageRead {
+    delegator: [u8; 20],
+    batch: u32,
+}
+
+/// Arguments for one address-filtered delegation-principal page.
+#[derive(Clone)]
+struct DposDelegationPageRead {
     delegator: [u8; 20],
     batch: u32,
 }
@@ -10808,6 +10926,22 @@ mod tests {
             u256_from_big_endian(&output[64..96]).as_usize(),
             u256_from_big_endian(&output[32..64]) == U256::one(),
         )
+    }
+
+    fn delegation_page_entries(output: &[u8]) -> (Vec<([u8; 20], U256, U256)>, bool) {
+        let (len, is_end) = static_dpos_page_header(output);
+        let mut entries = Vec::with_capacity(len);
+        for index in 0..len {
+            let start = 96 + index * 96;
+            let mut validator = [0u8; 20];
+            validator.copy_from_slice(&output[start + 12..start + 32]);
+            entries.push((
+                validator,
+                u256_from_big_endian(&output[start + 32..start + 64]),
+                u256_from_big_endian(&output[start + 64..start + 96]),
+            ));
+        }
+        (entries, is_end)
     }
 
     fn static_dpos_page_address(output: &[u8], index: usize, words_per_entry: usize) -> [u8; 20] {
@@ -11489,6 +11623,281 @@ mod tests {
                 .to_string()
                 .contains("total delegation overflow")
         );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn delegation_pages_preserve_graph_rewards_order_wrapping_gas_and_corruption_rules() {
+        let path = temp_db_path("delegation-page-graph-semantics");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let delegator = [0xa1; 20];
+        let expected_order = (1u8..=21)
+            .rev()
+            .map(|index| [index; 20])
+            .collect::<Vec<_>>();
+        let validators = expected_order
+            .iter()
+            .map(|validator| {
+                let mut genesis = genesis_validator(*validator, U256::from(10_000u64));
+                genesis.delegations = vec![(delegator, u256_to_big_endian(U256::from(10_000u64)))];
+                genesis
+            })
+            .collect::<Vec<_>>();
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(delegator, U256::from(1_000_000u64))],
+            validators,
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                ..Default::default()
+            },
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let page_zero_input = get_delegations_input(delegator, 0);
+        let page_zero = final_chain
+            .call(dpos_call_request(0, page_zero_input.clone()))
+            .unwrap();
+        let (entries, is_end) = delegation_page_entries(&page_zero.code_retval);
+        assert_eq!(page_zero.gas_used, 100_000);
+        assert!(!is_end);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|(validator, _, _)| *validator)
+                .collect::<Vec<_>>(),
+            expected_order[..20]
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|(_, stake, reward)| *stake == U256::from(10_000u64) && reward.is_zero())
+        );
+
+        let page_one = final_chain
+            .call(dpos_call_request(0, get_delegations_input(delegator, 1)))
+            .unwrap();
+        assert_eq!(page_one.gas_used, 5_000);
+        assert_eq!(
+            delegation_page_entries(&page_one.code_retval),
+            (
+                vec![(expected_order[20], U256::from(10_000u64), U256::zero())],
+                true
+            )
+        );
+        let out_of_range = final_chain
+            .call(dpos_call_request(0, get_delegations_input(delegator, 2)))
+            .unwrap();
+        assert_eq!(out_of_range.gas_used, 5_000);
+        assert_eq!(
+            delegation_page_entries(&out_of_range.code_retval),
+            (vec![], true)
+        );
+
+        let high_batch = final_chain
+            .call(dpos_call_request(
+                0,
+                get_delegations_input(delegator, 0x8000_0000),
+            ))
+            .unwrap();
+        assert_eq!(high_batch.gas_used, 5_000);
+        assert_eq!(high_batch.code_retval, page_zero.code_retval);
+
+        let mut permissive = page_zero_input.clone();
+        permissive[4] = 0xaa;
+        permissive[36..64].fill(0xff);
+        permissive[64..68].fill(0);
+        permissive.extend_from_slice(&[0xbb, 0xcc]);
+        assert_eq!(
+            final_chain
+                .call(dpos_call_request(0, permissive))
+                .unwrap()
+                .code_retval,
+            page_zero.code_retval
+        );
+        let malformed = final_chain
+            .call(dpos_call_request(0, DPOS_GET_DELEGATIONS_SELECTOR.to_vec()))
+            .unwrap();
+        assert_eq!(malformed.gas_used, 0);
+        assert!(!malformed.code_err.is_empty());
+        assert!(malformed.code_retval.is_empty());
+        let mut pre_cornus_value = dpos_call_request(0, page_zero_input.clone());
+        pre_cornus_value.value = vec![1];
+        assert!(
+            final_chain
+                .call(pre_cornus_value)
+                .unwrap()
+                .code_err
+                .is_empty()
+        );
+        let mut cornus_value = dpos_call_request(1, page_zero_input.clone());
+        cornus_value.value = vec![1];
+        let cornus_value = final_chain.call(cornus_value).unwrap();
+        assert_eq!(cornus_value.gas_used, 0);
+        assert_eq!(cornus_value.code_err, "DPoS method is not payable");
+
+        let native_read_input = page_zero_input.clone();
+        let native = final_chain
+            .execute_native_transactions(
+                1,
+                &[
+                    test_transaction(
+                        0x8f,
+                        delegator,
+                        Some(DPOS_CONTRACT_ADDRESS),
+                        0,
+                        U256::zero(),
+                        U256::zero(),
+                        200_000,
+                        undelegate_input(expected_order[0], U256::from(10_000u64)),
+                        vec![0xc1, 0x8f],
+                    ),
+                    test_transaction(
+                        0x90,
+                        delegator,
+                        Some(DPOS_CONTRACT_ADDRESS),
+                        1,
+                        U256::zero(),
+                        U256::zero(),
+                        200_000,
+                        undelegate_input(expected_order[1], U256::from(10_000u64)),
+                        vec![0xc1, 0x90],
+                    ),
+                    test_transaction(
+                        0x91,
+                        delegator,
+                        Some(DPOS_CONTRACT_ADDRESS),
+                        2,
+                        U256::zero(),
+                        U256::zero(),
+                        200_000,
+                        native_read_input.clone(),
+                        vec![0xc1, 0x91],
+                    ),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            native
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1]
+        );
+        assert_eq!(
+            native.receipts[2].gas_used,
+            intrinsic_gas(&native_read_input, false).unwrap() + 95_000
+        );
+
+        let first_validator = expected_order[0];
+        let mut reward_snapshot = final_chain.dpos_snapshot(0).unwrap();
+        reward_snapshot
+            .delegator_rewards
+            .insert(first_validator, u256_to_big_endian(U256::from(100u64)));
+        let reward_page = final_chain
+            .encode_dpos_delegations_from_snapshot(&reward_snapshot, delegator, 0)
+            .unwrap();
+        assert_eq!(
+            delegation_page_entries(&reward_page).0[0].2,
+            U256::from(100u64)
+        );
+
+        let mut zero_stake = reward_snapshot.clone();
+        zero_stake.reward_reference_graph.next_block(1).unwrap();
+        zero_stake
+            .reward_reference_graph
+            .bootstrap_node(
+                NodeKey {
+                    validator: first_validator,
+                    block: 1,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(300_u64),
+                    count: 1,
+                },
+                true,
+                &[],
+            )
+            .unwrap();
+        zero_stake
+            .total_stakes
+            .insert(first_validator, u256_to_big_endian(U256::zero()));
+        zero_stake.delegator_rewards.remove(&first_validator);
+        let zero_page = final_chain
+            .encode_dpos_delegations_from_snapshot(&zero_stake, delegator, 0)
+            .unwrap();
+        assert_eq!(delegation_page_entries(&zero_page).0[0].2, U256::zero());
+
+        let mut duplicate = reward_snapshot.clone();
+        duplicate
+            .delegator_validators
+            .get_mut(&delegator)
+            .unwrap()
+            .push(first_validator);
+        assert!(
+            final_chain
+                .encode_dpos_delegations_from_snapshot(&duplicate, delegator, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate validator")
+        );
+        let mut missing_principal = reward_snapshot.clone();
+        missing_principal
+            .delegations
+            .get_mut(&first_validator)
+            .unwrap()
+            .remove(&delegator);
+        assert!(
+            final_chain
+                .encode_dpos_delegations_from_snapshot(&missing_principal, delegator, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("missing principal")
+        );
+        let mut missing_validator = reward_snapshot.clone();
+        missing_validator.total_stakes.remove(&first_validator);
+        assert!(
+            final_chain
+                .encode_dpos_delegations_from_snapshot(&missing_validator, delegator, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("missing validator row")
+        );
+        let mut missing_cursor = reward_snapshot.clone();
+        missing_cursor
+            .reward_reference_graph
+            .delete_cursor(&first_validator, &delegator)
+            .unwrap();
+        assert!(
+            final_chain
+                .encode_dpos_delegations_from_snapshot(&missing_cursor, delegator, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("missing cursor")
+        );
+        let mut incomplete = reward_snapshot;
+        incomplete.reward_reference_graph = DposRewardGraph::incomplete();
+        for (page_delegator, batch) in [(delegator, 0), (delegator, 2), ([0xff; 20], 0)] {
+            assert!(
+                final_chain
+                    .encode_dpos_delegations_from_snapshot(&incomplete, page_delegator, batch)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("graph history is incomplete")
+            );
+        }
 
         drop(final_chain);
         drop(storage);

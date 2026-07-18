@@ -3739,9 +3739,21 @@ FinalChain persistence and every supported DPoS reward-reference mutation.
 - Pre-fix same-validator redelegation reproduces fresh/repeated partial and full load-copy-write counts, stale live or
   missing heads, and the configured count-neutral correction conflict boundary.
 
-The next bounded slice routes native and direct `getDelegations(address,uint32)` through this graph, enables the
-restart-backed dual-mode fixture, and proves wrapping page offsets and corrupt-row hard failures. No CXX carrier, bridge
-handle/export, shim, module flag, or `CRW-07` inventory delta belongs to the graph integration.
+Native and direct `getDelegations(address,uint32)` now route through this graph. The read preserves genesis validator
+insertion order and swap-last removal order, uses wrapping `uint32` page offsets while retaining the legacy widened gas
+calculation, and resolves rewards only for selected rows. Malformed input has zero action gas, low-width ABI decoding
+and trailing calldata remain compatible, pre-Cornus value is retained on success, and Cornus rejects value before
+decode. Duplicate or dangling membership, missing principal/validator rows, incomplete history, and missing graph
+references fail hard; zero aggregate validator stake returns zero reward without consulting an older cursor. Rust unit
+coverage proves native same-block membership visibility through read gas. Restart-backed Rust-enabled and pure-C++
+coverage protects paging, ordering, decoder variants, corruption handling, and persistence. No CXX carrier, bridge
+handle/export, shim, module flag, snapshot schema, or
+`CRW-07` inventory delta belongs to the read integration.
+
+Read integration validation passed the focused Rust page test, all 747 `rustaxa-consensus` tests, the focused
+Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
+skill validation, Rust and changed-line C++ formatting, whitespace validation, and independent configured review.
 
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,

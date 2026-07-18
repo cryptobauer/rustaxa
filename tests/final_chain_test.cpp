@@ -874,6 +874,17 @@ struct DposValidatorPage {
   std::vector<addr_t> validators;
 };
 
+struct DposDelegationEntry {
+  addr_t validator;
+  u256 stake;
+  u256 reward;
+};
+
+struct DposDelegationPage {
+  bool is_end;
+  std::vector<DposDelegationEntry> entries;
+};
+
 bytes make_dpos_get_validators_input(uint32_t batch) {
   bytes input = {0x19, 0xd8, 0x02, 0x4f};
   const auto batch_word = u256_to_padded_bytes32(u256(batch));
@@ -885,6 +896,15 @@ bytes make_dpos_get_validators_for_input(const addr_t& owner, uint32_t batch) {
   bytes input = {0x72, 0x4a, 0xc6, 0xb0};
   input.insert(input.end(), 12, 0);
   input.insert(input.end(), owner.begin(), owner.end());
+  const auto batch_word = u256_to_padded_bytes32(u256(batch));
+  input.insert(input.end(), batch_word.begin(), batch_word.end());
+  return input;
+}
+
+bytes make_dpos_get_delegations_input(const addr_t& delegator, uint32_t batch) {
+  bytes input = {0x8b, 0x49, 0xd3, 0x94};
+  input.insert(input.end(), 12, 0);
+  input.insert(input.end(), delegator.begin(), delegator.end());
   const auto batch_word = u256_to_padded_bytes32(u256(batch));
   input.insert(input.end(), batch_word.begin(), batch_word.end());
   return input;
@@ -907,6 +927,32 @@ DposValidatorPage decode_dpos_validator_page(const bytes& data) {
     const auto payload_pos = 96 + payload_offset;
     EXPECT_GE(data.size(), payload_pos + 32u);
     page.validators.emplace_back(bytes(data.begin() + payload_pos + 12, data.begin() + payload_pos + 32));
+  }
+
+  return page;
+}
+
+DposDelegationPage decode_dpos_delegation_page(const bytes& data) {
+  DposDelegationPage page{false, {}};
+  if (data.size() < 96u) {
+    return page;
+  }
+
+  EXPECT_EQ(u256_from_bytes32_be(data, 0), u256(64));
+  page.is_end = u256_from_bytes32_be(data, 32) == 1;
+  const auto count = u256_from_bytes32_be(data, 64).convert_to<size_t>();
+  page.entries.reserve(count);
+
+  for (size_t index = 0; index < count; ++index) {
+    const auto payload_pos = 96 + index * 96;
+    EXPECT_GE(data.size(), payload_pos + 96u);
+    const auto validator = bytes(data.begin() + payload_pos + 12, data.begin() + payload_pos + 32);
+    DposDelegationEntry entry{
+        addr_t(validator),
+        u256_from_bytes32_be(data, payload_pos + 32),
+        u256_from_bytes32_be(data, payload_pos + 64),
+    };
+    page.entries.push_back(entry);
   }
 
   return page;
@@ -1762,6 +1808,176 @@ TEST_F(FinalChainTest, native_dpos_validator_page_reads_cover_gas_cornus_boundar
   }
   EXPECT_EQ(query_page(make_dpos_get_validators_input(0)).validators, expected_page0_after_delete);
   assert_accounts(SUT);
+}
+
+TEST_F(FinalChainTest, dpos_delegations_direct_read_page_reads_cover_restart_and_decode_variants) {
+  constexpr uint64_t kStake = 10'000;
+  constexpr uint64_t kUndelegateGasPrice = 0;
+  constexpr uint64_t kUndelegateGasLimit = 200'000;
+  constexpr size_t kValidatorCount = 21;
+  constexpr size_t kDeleteIndex = 10;
+
+  const dev::KeyPair sender{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair delegator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const auto delegator_address = delegator.address();
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[sender.address()] = 20'000'000;
+  cfg.genesis.state.initial_balances[delegator_address] = 10'000'000'000;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.minimum_deposit = 1'000;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.dpos.blocks_per_year = 1'000;
+
+  const auto make_validator_secret = [](const size_t index) {
+    static constexpr char kHexDigits[] = "0123456789abcdef";
+    auto value = index + 1;
+    std::string secret(64, '0');
+    secret[62] = kHexDigits[(value & 0x0f)];
+    secret[63] = kHexDigits[(value >> 4) & 0x0f];
+    return dev::Secret(secret);
+  };
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  std::vector<addr_t> initial_order;
+  initial_order.reserve(kValidatorCount);
+  for (size_t i = 0; i < kValidatorCount; ++i) {
+    const dev::KeyPair validator{make_validator_secret(i)};
+    state_api::ValidatorInfo info{validator.address(), sender.address(), vrf_public_key, 0, "", "", {}};
+    info.delegations.emplace(delegator_address, kStake);
+    cfg.genesis.state.dpos.initial_validators.push_back(info);
+    initial_order.push_back(validator.address());
+  }
+
+  const auto expected_before_delete = initial_order;
+  ASSERT_LT(kDeleteIndex, expected_before_delete.size());
+  auto expected_after_delete = expected_before_delete;
+  const auto removed_validator = expected_after_delete[kDeleteIndex];
+  expected_after_delete[kDeleteIndex] = expected_after_delete.back();
+  expected_after_delete.pop_back();
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto assert_page_eq = [](const DposDelegationPage& lhs, const DposDelegationPage& rhs) {
+    EXPECT_EQ(lhs.is_end, rhs.is_end);
+    ASSERT_EQ(lhs.entries.size(), rhs.entries.size());
+    for (size_t i = 0; i < lhs.entries.size(); ++i) {
+      EXPECT_EQ(lhs.entries[i].validator, rhs.entries[i].validator);
+      EXPECT_EQ(lhs.entries[i].stake, rhs.entries[i].stake);
+      EXPECT_EQ(lhs.entries[i].reward, rhs.entries[i].reward);
+    }
+  };
+
+  const auto query_page = [&](const bytes& input, const uint64_t block_num) {
+    const auto response = SUT->call({addr_t{}, 0, kDposContractAddress, 0, 0, 1'000'000, input}, block_num);
+    EXPECT_TRUE(response.code_err.empty()) << response.code_err;
+    const auto parsed = decode_dpos_delegation_page(response.code_retval);
+    EXPECT_GE(response.code_retval.size(), 96u);
+    return parsed;
+  };
+
+  const auto baseline_batch0_input = make_dpos_get_delegations_input(delegator_address, 0);
+  const auto baseline_batch1_input = make_dpos_get_delegations_input(delegator_address, 1);
+  const auto baseline_batch2_input = make_dpos_get_delegations_input(delegator_address, 2);
+  const auto baseline_batch_high_input = make_dpos_get_delegations_input(delegator_address, 0x8000'0000u);
+  const auto undelegate_input =
+      util::EncodingSolidity::packFunctionCall("undelegate(address,uint256)", removed_validator, kStake);
+  std::vector<addr_t> expected_page0_before_delete(initial_order.begin(), initial_order.begin() + 20);
+
+  const auto pre_block0_page0 = query_page(baseline_batch0_input, 0);
+  const auto pre_block0_page1 = query_page(baseline_batch1_input, 0);
+  const auto pre_block0_page2 = query_page(baseline_batch2_input, 0);
+  EXPECT_FALSE(pre_block0_page0.is_end);
+  EXPECT_TRUE(pre_block0_page1.is_end);
+  EXPECT_TRUE(pre_block0_page2.is_end);
+  EXPECT_EQ(pre_block0_page0.entries.size(), 20u);
+  EXPECT_EQ(pre_block0_page1.entries.size(), 1u);
+  EXPECT_EQ(pre_block0_page2.entries.size(), 0u);
+
+  for (size_t idx = 0; idx < pre_block0_page0.entries.size(); ++idx) {
+    EXPECT_EQ(pre_block0_page0.entries[idx].validator, expected_before_delete[idx]);
+    EXPECT_EQ(pre_block0_page0.entries[idx].stake, u256(kStake));
+    EXPECT_EQ(pre_block0_page0.entries[idx].reward, u256(0));
+  }
+  EXPECT_EQ(pre_block0_page0.entries.size(), expected_page0_before_delete.size());
+  EXPECT_EQ(pre_block0_page1.entries.size(), 1u);
+  EXPECT_EQ(pre_block0_page1.entries[0].validator, expected_before_delete[20]);
+
+  EXPECT_EQ(pre_block0_page0.entries[0].validator, expected_page0_before_delete[0]);
+  EXPECT_EQ(pre_block0_page0.entries[0].stake, u256(kStake));
+
+  auto trailing_input = baseline_batch0_input;
+  trailing_input.push_back(0xaa);
+  const auto trailing_page0 = query_page(trailing_input, 0);
+  assert_page_eq(trailing_page0, pre_block0_page0);
+  EXPECT_EQ(trailing_page0.is_end, pre_block0_page0.is_end);
+
+  auto low_bits_input = baseline_batch0_input;
+  low_bits_input[4] = 0xaa;
+  for (size_t i = 36; i < 64; ++i) {
+    low_bits_input[i] = 0xff;
+  }
+  for (size_t i = 64; i < 68; ++i) {
+    low_bits_input[i] = 0;
+  }
+  const auto low_bits_page0 = query_page(low_bits_input, 0);
+  assert_page_eq(low_bits_page0, pre_block0_page0);
+  EXPECT_EQ(low_bits_page0.is_end, pre_block0_page0.is_end);
+
+  const auto high_batch_page0 = query_page(baseline_batch_high_input, 0);
+  EXPECT_FALSE(high_batch_page0.is_end);
+  EXPECT_EQ(high_batch_page0.entries.size(), 20u);
+  for (size_t idx = 0; idx < high_batch_page0.entries.size(); ++idx) {
+    EXPECT_EQ(high_batch_page0.entries[idx].validator, expected_before_delete[idx]);
+    EXPECT_EQ(high_batch_page0.entries[idx].stake, u256(kStake));
+    EXPECT_EQ(high_batch_page0.entries[idx].reward, u256(0));
+  }
+
+  auto malformed_short_input = baseline_batch0_input;
+  malformed_short_input.resize(36);
+  const auto malformed_direct_call =
+      SUT->call({addr_t{}, 0, kDposContractAddress, 0, 0, 1'000'000, malformed_short_input}, 0);
+  EXPECT_FALSE(malformed_direct_call.code_err.empty());
+  EXPECT_TRUE(malformed_direct_call.code_retval.empty());
+
+  const auto block1_txs =
+      SharedTransactions{std::make_shared<Transaction>(0, 0, kUndelegateGasPrice, kUndelegateGasLimit, undelegate_input,
+                                                       delegator.secret(), kDposContractAddress, cfg.genesis.chain_id)};
+  const auto block1 = advance(block1_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block1->trx_receipts.size(), block1_txs.size());
+
+  EXPECT_EQ(block1->trx_receipts[0].status_code, uint8_t{1});
+  const auto block1_expected_gas = IntrinsicGas(undelegate_input, false) + 60'000;
+  EXPECT_EQ(block1->trx_receipts[0].gas_used, block1_expected_gas);
+  EXPECT_EQ(block1->final_chain_blk->gas_used, block1_expected_gas);
+
+  const auto block1_page0 = query_page(baseline_batch0_input, 1);
+  EXPECT_TRUE(block1_page0.is_end);
+  EXPECT_EQ(block1_page0.entries.size(), 20u);
+  for (size_t idx = 0; idx < block1_page0.entries.size(); ++idx) {
+    EXPECT_EQ(block1_page0.entries[idx].validator, expected_after_delete[idx]);
+  }
+
+  const auto block2 = advance({});
+  const auto block2_page0 = query_page(baseline_batch0_input, 2);
+  EXPECT_EQ(block2->final_chain_blk->number, 2u);
+  EXPECT_EQ(block1_page0.entries.size(), block2_page0.entries.size());
+  for (size_t idx = 0; idx < block2_page0.entries.size(); ++idx) {
+    EXPECT_EQ(block1_page0.entries[idx].reward, u256(0));
+    EXPECT_EQ(block2_page0.entries[idx].reward, u256(0));
+    EXPECT_EQ(block2_page0.entries[idx].reward, block1_page0.entries[idx].reward);
+  }
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  ASSERT_EQ(SUT->lastBlockNumber(), 2);
+  const auto restarted_block1_page0 = query_page(baseline_batch0_input, 1);
+  const auto restarted_block2_page0 = query_page(baseline_batch0_input, 2);
+  assert_page_eq(block1_page0, restarted_block1_page0);
+  assert_page_eq(block2_page0, restarted_block2_page0);
 }
 
 TEST_F(FinalChainTest, native_dpos_undelegations_page_reads_cover_cornus_gated_selector_and_malformed_inputs) {
