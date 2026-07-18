@@ -1202,7 +1202,8 @@ impl FinalChain {
         if (is_dpos_mutation_selector(selector)
             || is_dpos_eligibility_read_selector(selector)
             || is_dpos_fixed_singleton_read_selector(selector)
-            || is_dpos_validator_page_read_selector(selector))
+            || is_dpos_validator_page_read_selector(selector)
+            || is_dpos_undelegation_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
             && !u256_from_big_endian(&request.value).is_zero()
             && !dpos_selector_is_payable(selector)
@@ -1372,16 +1373,20 @@ impl FinalChain {
                 self.encode_dpos_delegations(request.block_number, delegator, batch)?
             }
             DPOS_GET_UNDELEGATIONS_SELECTOR => {
-                let delegator = decode_abi_address_argument(
+                let read = match decode_dpos_undelegation_page_read(
                     &request.input,
                     "getUndelegations(address,uint32)",
-                )?;
-                let batch = decode_abi_u32_argument(
-                    &request.input,
-                    36,
-                    "getUndelegations(address,uint32) batch",
-                )?;
-                self.encode_dpos_undelegations(request.block_number, delegator, batch)?
+                ) {
+                    Ok(read) => read,
+                    Err(error) => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: error.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                };
+                self.encode_dpos_undelegations(request.block_number, read.delegator, read.batch)?
             }
             DPOS_GET_UNDELEGATIONS_V2_SELECTOR => {
                 if !self.is_on_cornus(request.block_number) {
@@ -1391,16 +1396,20 @@ impl FinalChain {
                         ..Default::default()
                     });
                 }
-                let delegator = decode_abi_address_argument(
+                let read = match decode_dpos_undelegation_page_read(
                     &request.input,
                     "getUndelegationsV2(address,uint32)",
-                )?;
-                let batch = decode_abi_u32_argument(
-                    &request.input,
-                    36,
-                    "getUndelegationsV2(address,uint32) batch",
-                )?;
-                self.encode_dpos_undelegations_v2(request.block_number, delegator, batch)?
+                ) {
+                    Ok(read) => read,
+                    Err(error) => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: error.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                };
+                self.encode_dpos_undelegations_v2(request.block_number, read.delegator, read.batch)?
             }
             DPOS_GET_UNDELEGATION_V2_SELECTOR => {
                 if !self.is_on_cornus(request.block_number) {
@@ -3015,6 +3024,8 @@ impl FinalChain {
                     | DposTransaction::GetValidator(_)
                     | DposTransaction::GetValidators(_)
                     | DposTransaction::GetValidatorsFor(_)
+                    | DposTransaction::GetUndelegations(_)
+                    | DposTransaction::GetUndelegationsV2(_)
                     | DposTransaction::GetUndelegationV2(_)
                     | DposTransaction::PhalaenopsisEscrowTransfer
                     | DposTransaction::MalformedMutation { .. }
@@ -3190,6 +3201,13 @@ impl FinalChain {
                             page_tx @ (DposTransaction::GetValidators(_)
                             | DposTransaction::GetValidatorsFor(_)) => self
                                 .apply_dpos_validator_page_read(
+                                    &dpos_snapshot,
+                                    block_number,
+                                    page_tx,
+                                )?,
+                            page_tx @ (DposTransaction::GetUndelegations(_)
+                            | DposTransaction::GetUndelegationsV2(_)) => self
+                                .apply_dpos_undelegation_page_read(
                                     &dpos_snapshot,
                                     block_number,
                                     page_tx,
@@ -3712,7 +3730,8 @@ impl FinalChain {
     ) -> Result<u64, anyhow::Error> {
         if (is_dpos_eligibility_read_selector(selector)
             || is_dpos_fixed_singleton_read_selector(selector)
-            || is_dpos_validator_page_read_selector(selector))
+            || is_dpos_validator_page_read_selector(selector)
+            || is_dpos_undelegation_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
             && !u256_from_big_endian(&request.value).is_zero()
         {
@@ -3816,17 +3835,17 @@ impl FinalChain {
                     return Ok(0);
                 }
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
-                let delegator = decode_abi_address_argument(
+                let Ok(read) = decode_dpos_undelegation_page_read(
                     &request.input,
                     "getUndelegationsV2(address,uint32)",
+                ) else {
+                    return Ok(0);
+                };
+                let storage_reads = dpos_undelegations_v2_storage_read_count(
+                    &snapshot,
+                    read.delegator,
+                    read.batch,
                 )?;
-                let batch = decode_abi_u32_argument(
-                    &request.input,
-                    36,
-                    "getUndelegationsV2(address,uint32) batch",
-                )?;
-                let storage_reads =
-                    dpos_undelegations_v2_storage_read_count(&snapshot, delegator, batch)?;
                 storage_reads
                     .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
                     .ok_or_else(|| {
@@ -3835,17 +3854,14 @@ impl FinalChain {
             }
             DPOS_GET_UNDELEGATIONS_SELECTOR => {
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
-                let delegator = decode_abi_address_argument(
+                let Ok(read) = decode_dpos_undelegation_page_read(
                     &request.input,
                     "getUndelegations(address,uint32)",
-                )?;
-                let batch = decode_abi_u32_argument(
-                    &request.input,
-                    36,
-                    "getUndelegations(address,uint32) batch",
-                )?;
+                ) else {
+                    return Ok(0);
+                };
                 let storage_reads =
-                    dpos_undelegations_storage_read_count(&snapshot, delegator, batch)?;
+                    dpos_undelegations_storage_read_count(&snapshot, read.delegator, read.batch)?;
                 storage_reads
                     .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
                     .ok_or_else(|| anyhow::anyhow!("getUndelegations gas multiplication overflow"))
@@ -4032,6 +4048,39 @@ impl FinalChain {
             ),
             DposTransaction::GetValidatorsFor(Err(_)) => DposApplyOutcome::contract_failure(),
             _ => anyhow::bail!("non-validator-page transaction routed to page reader"),
+        })
+    }
+
+    /// Executes one undelegation-page read against live block-local custody state.
+    ///
+    /// V1 exists throughout history and retains the legacy one-read minimum gas.
+    /// V2 remains unavailable before Cornus and, once active, prices the exact
+    /// validator-group, ID, and request-object traversal. Expected ABI failures
+    /// become status-zero outcomes; successful reads return ABI bytes without
+    /// logs, reward changes, principal release, or other snapshot mutation.
+    fn apply_dpos_undelegation_page_read(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+        transaction: DposTransaction,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        Ok(match transaction {
+            DposTransaction::GetUndelegations(Ok(read)) => DposApplyOutcome::success_with_return(
+                self.encode_dpos_undelegations_from_snapshot(snapshot, read.delegator, read.batch)?,
+            ),
+            DposTransaction::GetUndelegations(Err(_)) => DposApplyOutcome::contract_failure(),
+            DposTransaction::GetUndelegationsV2(_) if !self.is_on_cornus(block_number) => {
+                DposApplyOutcome::contract_failure()
+            }
+            DposTransaction::GetUndelegationsV2(Ok(read)) => DposApplyOutcome::success_with_return(
+                self.encode_dpos_undelegations_v2_from_snapshot(
+                    snapshot,
+                    read.delegator,
+                    read.batch,
+                )?,
+            ),
+            DposTransaction::GetUndelegationsV2(Err(_)) => DposApplyOutcome::contract_failure(),
+            _ => anyhow::bail!("non-undelegation-page transaction routed to page reader"),
         })
     }
 
@@ -4412,27 +4461,34 @@ impl FinalChain {
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
-        let start = usize::try_from(batch)
-            .map_err(|_| anyhow::anyhow!("getUndelegations batch does not fit into usize"))?
-            .checked_mul(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getUndelegations batch offset overflow"))?;
-        let flattened = dpos_undelegations_for_delegator(&snapshot, delegator);
-        let end_index = start
-            .checked_add(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getUndelegations batch end overflow"))?;
+        self.encode_dpos_undelegations_from_snapshot(&snapshot, delegator, batch)
+    }
+
+    fn encode_dpos_undelegations_from_snapshot(
+        &self,
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        batch: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let flattened = dpos_undelegations_for_delegator(snapshot, delegator);
+        validate_dpos_undelegations_page(&flattened)?;
+        let count = u32::try_from(flattened.len())
+            .map_err(|_| anyhow::anyhow!("getUndelegations count exceeds uint32"))?;
+        let start = batch.wrapping_mul(DPOS_GET_UNDELEGATIONS_MAX_COUNT as u32);
+        let end_index = start.wrapping_add(DPOS_GET_UNDELEGATIONS_MAX_COUNT as u32);
         let page = flattened
             .iter()
-            .skip(start)
+            .skip(start as usize)
             .take(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
             .collect::<Vec<_>>();
-        let is_end = end_index >= flattened.len();
+        let is_end = start >= count || count <= end_index;
 
         let mut output = Vec::new();
         output.extend_from_slice(&abi_word_from_u64(64));
         output.extend_from_slice(&abi_word_from_bool(is_end));
         output.extend_from_slice(&abi_word_from_usize(page.len(), "getUndelegations length")?);
         for entry in page {
-            encode_dpos_undelegation_payload(&mut output, &snapshot, entry)?;
+            encode_dpos_undelegation_payload(&mut output, snapshot, entry)?;
         }
         Ok(output)
     }
@@ -4444,21 +4500,28 @@ impl FinalChain {
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
-        let start = usize::try_from(batch)
-            .map_err(|_| anyhow::anyhow!("getUndelegationsV2 batch does not fit into usize"))?
-            .checked_mul(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 batch offset overflow"))?;
-        let flattened = dpos_undelegations_v2_for_delegator(&snapshot, delegator);
-        let end_index = start
-            .checked_add(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 batch end overflow"))?;
+        self.encode_dpos_undelegations_v2_from_snapshot(&snapshot, delegator, batch)
+    }
+
+    fn encode_dpos_undelegations_v2_from_snapshot(
+        &self,
+        snapshot: &DposSnapshot,
+        delegator: [u8; 20],
+        batch: u32,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        validate_dpos_undelegations_v2_page(snapshot, delegator)?;
+        let flattened = dpos_undelegations_v2_for_delegator(snapshot, delegator);
+        let count = u32::try_from(flattened.len())
+            .map_err(|_| anyhow::anyhow!("getUndelegationsV2 count exceeds uint32"))?;
+        let start = batch.wrapping_mul(DPOS_GET_UNDELEGATIONS_MAX_COUNT as u32);
+        let end_index = start.wrapping_add(DPOS_GET_UNDELEGATIONS_MAX_COUNT as u32);
         let page = flattened
             .iter()
-            .skip(start)
+            .skip(start as usize)
             .take(DPOS_GET_UNDELEGATIONS_MAX_COUNT)
             .copied()
             .collect::<Vec<_>>();
-        let is_end = end_index >= flattened.len();
+        let is_end = start >= count || count <= end_index;
 
         let mut output = Vec::new();
         output.extend_from_slice(&abi_word_from_u64(64));
@@ -4468,7 +4531,7 @@ impl FinalChain {
             "getUndelegationsV2 length",
         )?);
         for (validator, entry) in page {
-            encode_dpos_undelegation_v2_payload(&mut output, &snapshot, validator, entry)?;
+            encode_dpos_undelegation_v2_payload(&mut output, snapshot, validator, entry)?;
         }
         Ok(output)
     }
@@ -7408,6 +7471,29 @@ fn dpos_undelegations_for_delegator(
         .unwrap_or_default()
 }
 
+/// Validates the Rust representation of the legacy V1 iterable map.
+///
+/// A healthy legacy map has at most one request for each validator and each
+/// stored principal must fit the ABI `uint256`. Rust stores membership and the
+/// request object together, so representable violations are hard snapshot
+/// corruption rather than entries that may be silently filtered from a page.
+fn validate_dpos_undelegations_page(
+    undelegations: &[&DposUndelegation],
+) -> Result<(), anyhow::Error> {
+    let mut validators = BTreeSet::new();
+    for entry in undelegations {
+        anyhow::ensure!(
+            validators.insert(entry.validator),
+            "DPoS V1 undelegation snapshot contains duplicate validator membership"
+        );
+        anyhow::ensure!(
+            entry.amount.len() <= 32,
+            "DPoS V1 undelegation amount exceeds uint256"
+        );
+    }
+    Ok(())
+}
+
 fn dpos_undelegations_count_for_validator(snapshot: &DposSnapshot, validator: [u8; 20]) -> u16 {
     let v1_count = snapshot
         .undelegations
@@ -7430,7 +7516,9 @@ fn dpos_undelegations_storage_read_count(
     delegator: [u8; 20],
     batch: u32,
 ) -> Result<u64, anyhow::Error> {
-    let count = u64::try_from(snapshot.undelegations.get(&delegator).map_or(0, Vec::len))?;
+    let undelegations = dpos_undelegations_for_delegator(snapshot, delegator);
+    validate_dpos_undelegations_page(&undelegations)?;
+    let count = u64::try_from(undelegations.len())?;
     dpos_batch_items_count(count, batch, DPOS_GET_UNDELEGATIONS_MAX_COUNT as u64)
 }
 
@@ -7536,6 +7624,44 @@ fn dpos_undelegations_v2_for_delegator(
         .unwrap_or_default()
 }
 
+/// Validates the nested iterable-map invariants used by V2 page traversal.
+///
+/// Validator groups and request IDs are unique, groups are never retained
+/// empty, and every principal fits the ABI `uint256`. Violations cannot arise
+/// through the supported lifecycle and therefore surface as hard snapshot
+/// corruption rather than changing gas, ordering, or the `end` flag.
+fn validate_dpos_undelegations_v2_page(
+    snapshot: &DposSnapshot,
+    delegator: [u8; 20],
+) -> Result<(), anyhow::Error> {
+    let Some(groups) = snapshot.undelegations_v2.get(&delegator) else {
+        return Ok(());
+    };
+    let mut validators = BTreeSet::new();
+    let mut ids = BTreeSet::new();
+    for group in groups {
+        anyhow::ensure!(
+            validators.insert(group.validator),
+            "DPoS V2 undelegation snapshot contains duplicate validator group"
+        );
+        anyhow::ensure!(
+            !group.entries.is_empty(),
+            "DPoS V2 undelegation snapshot contains empty validator group"
+        );
+        for entry in &group.entries {
+            anyhow::ensure!(
+                ids.insert(entry.id),
+                "DPoS V2 undelegation snapshot contains duplicate request ID"
+            );
+            anyhow::ensure!(
+                entry.amount.len() <= 32,
+                "DPoS V2 undelegation amount exceeds uint256"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn dpos_undelegations_v2_count_for_validator(snapshot: &DposSnapshot, validator: [u8; 20]) -> u16 {
     let count = snapshot
         .undelegations_v2
@@ -7552,6 +7678,7 @@ fn dpos_undelegations_v2_storage_read_count(
     delegator: [u8; 20],
     batch: u32,
 ) -> Result<u64, anyhow::Error> {
+    validate_dpos_undelegations_v2_page(snapshot, delegator)?;
     let mut to_skip = u64::from(batch)
         .checked_mul(DPOS_GET_UNDELEGATIONS_MAX_COUNT as u64)
         .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 batch offset overflow"))?;
@@ -8233,6 +8360,25 @@ fn dpos_transaction_required_gas(
             .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
             .ok_or_else(|| anyhow::anyhow!("getValidatorsFor gas multiplication overflow"))?,
         DposTransaction::GetValidatorsFor(Err(_)) => 0,
+        DposTransaction::GetUndelegations(Ok(read)) => {
+            let snapshot = snapshot.ok_or_else(|| {
+                anyhow::anyhow!("getUndelegations gas snapshot is required for gas estimation")
+            })?;
+            dpos_undelegations_storage_read_count(snapshot, read.delegator, read.batch)?
+                .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                .ok_or_else(|| anyhow::anyhow!("getUndelegations gas multiplication overflow"))?
+        }
+        DposTransaction::GetUndelegations(Err(_)) => 0,
+        DposTransaction::GetUndelegationsV2(_) if block_number < cornus_period => 0,
+        DposTransaction::GetUndelegationsV2(Ok(read)) => {
+            let snapshot = snapshot.ok_or_else(|| {
+                anyhow::anyhow!("getUndelegationsV2 gas snapshot is required for gas estimation")
+            })?;
+            dpos_undelegations_v2_storage_read_count(snapshot, read.delegator, read.batch)?
+                .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                .ok_or_else(|| anyhow::anyhow!("getUndelegationsV2 gas multiplication overflow"))?
+        }
+        DposTransaction::GetUndelegationsV2(Err(_)) => 0,
         DposTransaction::GetUndelegationV2(_) if block_number >= cornus_period => {
             DPOS_GET_METHOD_GAS
         }
@@ -8326,6 +8472,14 @@ fn is_dpos_validator_page_read_selector(selector: [u8; 4]) -> bool {
     )
 }
 
+/// Returns whether a selector belongs to the live custody-backed page reads.
+fn is_dpos_undelegation_page_read_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        DPOS_GET_UNDELEGATIONS_SELECTOR | DPOS_GET_UNDELEGATIONS_V2_SELECTOR
+    )
+}
+
 /// Returns the temporary Rust gas estimate for native non-DPoS read calls.
 ///
 /// Native value transfers use the fixed transfer cost. Contract creation keeps
@@ -8380,6 +8534,20 @@ fn decode_dpos_validators_for_read(input: &[u8]) -> Result<DposValidatorsForRead
     Ok(DposValidatorsForRead {
         owner: decode_abi_address_argument_with_offset(input, 4, "getValidatorsFor owner")?,
         batch: decode_abi_u32_argument(input, 36, "getValidatorsFor batch")?,
+    })
+}
+
+/// Decodes one V1 or V2 undelegation-page request with legacy narrow words.
+///
+/// The legacy ABI reader accepts trailing bytes, ignores the address word's
+/// high twelve bytes, and truncates the batch word to its low four bytes.
+fn decode_dpos_undelegation_page_read(
+    input: &[u8],
+    function_name: &str,
+) -> Result<DposUndelegationPageRead, anyhow::Error> {
+    Ok(DposUndelegationPageRead {
+        delegator: decode_abi_address_argument_with_offset(input, 4, function_name)?,
+        batch: decode_abi_u32_argument(input, 36, function_name)?,
     })
 }
 
@@ -8497,9 +8665,9 @@ fn encode_dpos_undelegation_v2_payload(
     output.extend_from_slice(&abi_word_from_u256_bytes(&entry.amount)?);
     output.extend_from_slice(&abi_word_from_u64(entry.block));
     output.extend_from_slice(&abi_word_from_address(validator));
-    output.extend_from_slice(&abi_word_from_bool(
-        snapshot.total_stakes.contains_key(&validator),
-    ));
+    output.extend_from_slice(&abi_word_from_bool(dpos_validator_exists_for_undelegation(
+        snapshot, validator,
+    )?));
     output.extend_from_slice(&abi_word_from_u64(entry.id));
     Ok(())
 }
@@ -8512,10 +8680,39 @@ fn encode_dpos_undelegation_payload(
     output.extend_from_slice(&abi_word_from_u256_bytes(&entry.amount)?);
     output.extend_from_slice(&abi_word_from_u64(entry.block));
     output.extend_from_slice(&abi_word_from_address(entry.validator));
-    output.extend_from_slice(&abi_word_from_bool(
-        snapshot.total_stakes.contains_key(&entry.validator),
-    ));
+    output.extend_from_slice(&abi_word_from_bool(dpos_validator_exists_for_undelegation(
+        snapshot,
+        entry.validator,
+    )?));
     Ok(())
+}
+
+/// Resolves the current validator-existence flag without normalizing partial deletion.
+///
+/// The stake row is Rust's canonical registration marker. A present marker must
+/// retain metadata and iterable ordering; an absent marker must not leave any
+/// validator-owned rows. Pending undelegation custody is deliberately excluded
+/// from those owned rows and may outlive a clean pre-Magnolia deletion.
+fn dpos_validator_exists_for_undelegation(
+    snapshot: &DposSnapshot,
+    validator: [u8; 20],
+) -> Result<bool, anyhow::Error> {
+    if snapshot.total_stakes.contains_key(&validator) {
+        anyhow::ensure!(
+            snapshot.validator_metadata.contains_key(&validator),
+            "DPoS undelegation references registered validator with missing metadata"
+        );
+        anyhow::ensure!(
+            snapshot.validator_order.contains(&validator),
+            "DPoS undelegation references registered validator missing from iterable order"
+        );
+        return Ok(true);
+    }
+    anyhow::ensure!(
+        !FinalChain::dpos_validator_owned_rows_exist(snapshot, validator),
+        "DPoS undelegation references partially deleted validator rows"
+    );
+    Ok(false)
 }
 
 /// Formats a four-byte call selector without a `0x` prefix.
@@ -8807,6 +9004,14 @@ fn decode_dpos_transaction_for_execution(
         ),
         DPOS_GET_VALIDATORS_FOR_SELECTOR => DposTransaction::GetValidatorsFor(
             decode_dpos_validators_for_read(input).map_err(|error| error.to_string()),
+        ),
+        DPOS_GET_UNDELEGATIONS_SELECTOR => DposTransaction::GetUndelegations(
+            decode_dpos_undelegation_page_read(input, "getUndelegations(address,uint32)")
+                .map_err(|error| error.to_string()),
+        ),
+        DPOS_GET_UNDELEGATIONS_V2_SELECTOR => DposTransaction::GetUndelegationsV2(
+            decode_dpos_undelegation_page_read(input, "getUndelegationsV2(address,uint32)")
+                .map_err(|error| error.to_string()),
         ),
         DPOS_GET_UNDELEGATION_V2_SELECTOR => {
             let decoded = (|| -> Result<DposUndelegationV2Read, anyhow::Error> {
@@ -9257,6 +9462,8 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::GetValidator(_)
         | DposTransaction::GetValidators(_)
         | DposTransaction::GetValidatorsFor(_)
+        | DposTransaction::GetUndelegations(_)
+        | DposTransaction::GetUndelegationsV2(_)
         | DposTransaction::GetUndelegationV2(_)
         | DposTransaction::PhalaenopsisEscrowTransfer
         | DposTransaction::MalformedMutation { .. }
@@ -9429,6 +9636,10 @@ enum DposTransaction {
     GetValidators(std::result::Result<u32, String>),
     /// Fixed-maximum-gas exact-state owner-filtered validator page read.
     GetValidatorsFor(std::result::Result<DposValidatorsForRead, String>),
+    /// Variable-gas exact-state V1 undelegation custody page read.
+    GetUndelegations(std::result::Result<DposUndelegationPageRead, String>),
+    /// Cornus-gated variable-gas exact-state V2 undelegation custody page read.
+    GetUndelegationsV2(std::result::Result<DposUndelegationPageRead, String>),
     /// Cornus-gated fixed-gas exact-state V2 undelegation record read.
     GetUndelegationV2(std::result::Result<DposUndelegationV2Read, String>),
     Register(DposRegistration),
@@ -9515,6 +9726,13 @@ struct DposUndelegationV2Read {
 #[derive(Clone)]
 struct DposValidatorsForRead {
     owner: [u8; 20],
+    batch: u32,
+}
+
+/// Arguments for one V1 or V2 undelegation custody page.
+#[derive(Clone)]
+struct DposUndelegationPageRead {
+    delegator: [u8; 20],
     batch: u32,
 }
 
@@ -10165,6 +10383,21 @@ mod tests {
             addresses.push(address);
         }
         (addresses, is_end)
+    }
+
+    fn static_dpos_page_header(output: &[u8]) -> (usize, bool) {
+        assert_eq!(u256_from_big_endian(&output[0..32]), U256::from(64u64));
+        (
+            u256_from_big_endian(&output[64..96]).as_usize(),
+            u256_from_big_endian(&output[32..64]) == U256::one(),
+        )
+    }
+
+    fn static_dpos_page_address(output: &[u8], index: usize, words_per_entry: usize) -> [u8; 20] {
+        let address_start = 96 + index * words_per_entry * 32 + 2 * 32;
+        let mut address = [0u8; 20];
+        address.copy_from_slice(&output[address_start + 12..address_start + 32]);
+        address
     }
 
     fn abi_word_from_bytes_offset(offset: usize) -> [u8; 32] {
@@ -13172,6 +13405,632 @@ mod tests {
             )
             .unwrap();
         assert_eq!(restarted_read, undelegation_read);
+
+        drop(pre_chain);
+        drop(pre_storage);
+        drop(cornus_chain);
+        drop(cornus_storage);
+        let _ = std::fs::remove_dir_all(pre_path);
+        let _ = std::fs::remove_dir_all(cornus_path);
+    }
+
+    #[test]
+    fn undelegation_pages_preserve_order_dynamic_gas_wrapping_and_corruption_rules() {
+        let path = temp_db_path("undelegation-page-semantics");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let registered_validator = [1; 20];
+        let delegator = [0xa1; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(
+                registered_validator,
+                U256::from(10_000u64),
+            )],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot.undelegations.insert(
+            delegator,
+            (1u8..=22)
+                .map(|index| DposUndelegation {
+                    validator: [index; 20],
+                    amount: u256_to_big_endian(U256::from(u64::from(index) * 100)),
+                    block: u64::from(index) + 100,
+                })
+                .collect(),
+        );
+
+        let first_v1 = final_chain
+            .encode_dpos_undelegations_from_snapshot(&snapshot, delegator, 0)
+            .unwrap();
+        assert_eq!(static_dpos_page_header(&first_v1), (20, false));
+        assert_eq!(
+            static_dpos_page_address(&first_v1, 0, 4),
+            registered_validator
+        );
+        assert_eq!(static_dpos_page_address(&first_v1, 19, 4), [20; 20]);
+        assert_eq!(
+            u256_from_big_endian(&first_v1[192..224]),
+            U256::one(),
+            "the current registered-validator flag must be true"
+        );
+        assert_eq!(
+            u256_from_big_endian(&first_v1[192 + 4 * 32..224 + 4 * 32]),
+            U256::zero(),
+            "a cleanly deleted or never-registered validator must report false"
+        );
+        assert_eq!(
+            dpos_undelegations_storage_read_count(&snapshot, delegator, 0).unwrap(),
+            20
+        );
+        let second_v1 = final_chain
+            .encode_dpos_undelegations_from_snapshot(&snapshot, delegator, 1)
+            .unwrap();
+        assert_eq!(static_dpos_page_header(&second_v1), (2, true));
+        assert_eq!(static_dpos_page_address(&second_v1, 0, 4), [21; 20]);
+        assert_eq!(
+            dpos_undelegations_storage_read_count(&snapshot, delegator, 2).unwrap(),
+            1,
+            "V1 empty and out-of-range pages retain the one-read minimum"
+        );
+
+        let overflow_batch = 0xcccc_cccdu32;
+        let overflow_v1 = final_chain
+            .encode_dpos_undelegations_from_snapshot(&snapshot, delegator, overflow_batch)
+            .unwrap();
+        assert_eq!(static_dpos_page_header(&overflow_v1), (18, true));
+        assert_eq!(static_dpos_page_address(&overflow_v1, 0, 4), [5; 20]);
+        assert_eq!(
+            dpos_undelegations_storage_read_count(&snapshot, delegator, overflow_batch).unwrap(),
+            1,
+            "gas widens the batch while execution wraps uint32 batch * 20"
+        );
+
+        snapshot.undelegations_v2.insert(
+            delegator,
+            vec![
+                DposValidatorUndelegationsV2 {
+                    validator: registered_validator,
+                    entries: (1u64..=2)
+                        .map(|id| DposUndelegationV2Entry {
+                            id,
+                            amount: u256_to_big_endian(U256::from(id * 100)),
+                            block: 200 + id,
+                        })
+                        .collect(),
+                },
+                DposValidatorUndelegationsV2 {
+                    validator: [9; 20],
+                    entries: (3u64..=21)
+                        .map(|id| DposUndelegationV2Entry {
+                            id,
+                            amount: u256_to_big_endian(U256::from(id * 100)),
+                            block: 200 + id,
+                        })
+                        .collect(),
+                },
+            ],
+        );
+        let first_v2 = final_chain
+            .encode_dpos_undelegations_v2_from_snapshot(&snapshot, delegator, 0)
+            .unwrap();
+        assert_eq!(static_dpos_page_header(&first_v2), (20, false));
+        assert_eq!(static_dpos_page_address(&first_v2, 0, 5), [1; 20]);
+        assert_eq!(static_dpos_page_address(&first_v2, 2, 5), [9; 20]);
+        assert_eq!(
+            u256_from_big_endian(&first_v2[96 + 19 * 5 * 32 + 4 * 32..96 + 20 * 5 * 32]),
+            U256::from(20u64)
+        );
+        assert_eq!(
+            dpos_undelegations_v2_storage_read_count(&snapshot, delegator, 0).unwrap(),
+            44,
+            "two group reads plus two reads per returned ID/object"
+        );
+        let second_v2 = final_chain
+            .encode_dpos_undelegations_v2_from_snapshot(&snapshot, delegator, 1)
+            .unwrap();
+        assert_eq!(static_dpos_page_header(&second_v2), (1, true));
+        assert_eq!(
+            u256_from_big_endian(&second_v2[96 + 4 * 32..96 + 5 * 32]),
+            U256::from(21u64)
+        );
+        assert_eq!(
+            dpos_undelegations_v2_storage_read_count(&snapshot, delegator, 1).unwrap(),
+            6
+        );
+        assert_eq!(
+            dpos_undelegations_v2_storage_read_count(&snapshot, delegator, 2).unwrap(),
+            4,
+            "an out-of-range V2 page still reads each validator and ID count"
+        );
+        let overflow_v2 = final_chain
+            .encode_dpos_undelegations_v2_from_snapshot(&snapshot, delegator, overflow_batch)
+            .unwrap();
+        assert_eq!(static_dpos_page_header(&overflow_v2), (17, true));
+        assert_eq!(
+            u256_from_big_endian(&overflow_v2[96 + 4 * 32..96 + 5 * 32]),
+            U256::from(5u64)
+        );
+        assert_eq!(
+            dpos_undelegations_v2_storage_read_count(&snapshot, delegator, overflow_batch).unwrap(),
+            4
+        );
+        assert_eq!(
+            dpos_undelegations_v2_storage_read_count(&snapshot, [0xff; 20], 0).unwrap(),
+            0
+        );
+
+        let restarted = decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot)).unwrap();
+        assert_eq!(
+            final_chain
+                .encode_dpos_undelegations_from_snapshot(&restarted, delegator, 0)
+                .unwrap(),
+            first_v1
+        );
+        assert_eq!(
+            final_chain
+                .encode_dpos_undelegations_v2_from_snapshot(&restarted, delegator, 0)
+                .unwrap(),
+            first_v2
+        );
+
+        let mut duplicate_v1 = snapshot.clone();
+        duplicate_v1
+            .undelegations
+            .get_mut(&delegator)
+            .unwrap()
+            .push(DposUndelegation {
+                validator: registered_validator,
+                amount: vec![1],
+                block: 1,
+            });
+        assert!(
+            final_chain
+                .encode_dpos_undelegations_from_snapshot(&duplicate_v1, delegator, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate validator")
+        );
+        let mut empty_v2_group = snapshot.clone();
+        empty_v2_group.undelegations_v2.get_mut(&delegator).unwrap()[0]
+            .entries
+            .clear();
+        assert!(
+            dpos_undelegations_v2_storage_read_count(&empty_v2_group, delegator, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("empty validator group")
+        );
+        let mut orphaned_validator = snapshot;
+        orphaned_validator
+            .validator_metadata
+            .insert([9; 20], DposValidatorMetadata::default());
+        assert!(
+            final_chain
+                .encode_dpos_undelegations_v2_from_snapshot(&orphaned_validator, delegator, 0,)
+                .unwrap_err()
+                .to_string()
+                .contains("partially deleted")
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn native_undelegation_pages_preserve_live_lifecycle_fork_value_and_gas_rules() {
+        let validator = [0x61; 20];
+        let initial_balance = U256::from(5_000_000u64);
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            ..Default::default()
+        };
+
+        let pre_path = temp_db_path("native-undelegation-pages-pre-cornus");
+        let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
+        let pre_chain = FinalChain::new_with_rewards_config(
+            pre_storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(validator, initial_balance)],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            dpos_config.clone(),
+            FinalChainRewardsConfig {
+                cornus_period: 2,
+                magnolia_period: 2,
+                dpos_delegation_locking_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let undelegate = undelegate_input(validator, U256::from(1_000u64));
+        let v1_page = get_undelegations_input(validator, 0);
+        let v2_page = get_undelegations_v2_input(validator, 0);
+        let malformed_v1 = DPOS_GET_UNDELEGATIONS_SELECTOR.to_vec();
+        let v1_intrinsic = intrinsic_gas(&v1_page, false).unwrap();
+        let pre_transactions = vec![
+            test_transaction(
+                0xb1,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                undelegate,
+                vec![0xc1, 0xb1],
+            ),
+            test_transaction(
+                0xb2,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::from(7u64),
+                U256::one(),
+                200_000,
+                v1_page.clone(),
+                vec![0xc1, 0xb2],
+            ),
+            test_transaction(
+                0xb3,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::from(11u64),
+                U256::one(),
+                200_000,
+                malformed_v1.clone(),
+                vec![0xc1, 0xb3],
+            ),
+            test_transaction(
+                0xb4,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::from(13u64),
+                U256::one(),
+                200_000,
+                v2_page.clone(),
+                vec![0xc1, 0xb4],
+            ),
+            test_transaction(
+                0xb5,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                4,
+                U256::zero(),
+                U256::one(),
+                v1_intrinsic + DPOS_BATCH_GET_REWARDS_GAS - 1,
+                v1_page.clone(),
+                vec![0xc1, 0xb5],
+            ),
+            test_transaction(
+                0xb6,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                5,
+                U256::zero(),
+                U256::one(),
+                v1_intrinsic - 1,
+                v1_page.clone(),
+                vec![0xc1, 0xb6],
+            ),
+            test_transaction(
+                0xb7,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                5,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                v1_page.clone(),
+                vec![0xc1, 0xb7],
+            ),
+        ];
+        let pre_execution = pre_chain
+            .execute_native_transactions(1, &pre_transactions)
+            .unwrap();
+        assert_eq!(
+            pre_execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 0, 0, 0, 0, 1]
+        );
+        assert_eq!(
+            pre_execution.receipts[1].gas_used,
+            v1_intrinsic + DPOS_BATCH_GET_REWARDS_GAS
+        );
+        assert_eq!(
+            pre_execution.receipts[2].gas_used,
+            intrinsic_gas(&malformed_v1, false).unwrap()
+        );
+        assert_eq!(
+            pre_execution.receipts[3].gas_used,
+            intrinsic_gas(&v2_page, false).unwrap()
+        );
+        assert_eq!(pre_execution.receipts[4].gas_used, v1_intrinsic);
+        assert_eq!(pre_execution.receipts[5].gas_used, v1_intrinsic - 1);
+        assert_eq!(pre_execution.accounts.get(&validator).unwrap().nonce, 6);
+        assert_eq!(
+            u256_from_big_endian(
+                &pre_execution
+                    .accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance
+            ),
+            U256::from(10_007u64),
+            "only the successful pre-Cornus V1 read may add call value to escrow"
+        );
+        assert!(
+            pre_execution.receipts[1..]
+                .iter()
+                .all(|receipt| receipt.logs.is_empty())
+        );
+        let pre_read = pre_chain
+            .apply_dpos_undelegation_page_read(
+                &pre_execution.dpos_snapshot,
+                1,
+                DposTransaction::GetUndelegations(Ok(DposUndelegationPageRead {
+                    delegator: validator,
+                    batch: 0,
+                })),
+            )
+            .unwrap();
+        assert_eq!(pre_read.status_code, 1);
+        assert_eq!(static_dpos_page_header(&pre_read.code_retval), (1, true));
+        assert_eq!(
+            u256_from_big_endian(&pre_read.code_retval[96..128]),
+            U256::from(1_000u64)
+        );
+        let malformed_call = pre_chain
+            .call(dpos_call_request(0, malformed_v1.clone()))
+            .unwrap();
+        assert_eq!(malformed_call.gas_used, 0);
+        assert!(!malformed_call.code_err.is_empty());
+        let pre_v2_call = pre_chain
+            .call(dpos_call_request(
+                0,
+                DPOS_GET_UNDELEGATIONS_V2_SELECTOR.to_vec(),
+            ))
+            .unwrap();
+        assert_eq!(pre_v2_call.gas_used, 0);
+        assert_eq!(pre_v2_call.code_err, "Method not supported");
+
+        let cornus_path = temp_db_path("native-undelegation-pages-cornus");
+        let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
+        let cornus_chain = FinalChain::new_with_rewards_config(
+            cornus_storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(validator, initial_balance)],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            dpos_config,
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                magnolia_period: 1,
+                cornus_delegation_locking_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let v2_intrinsic = intrinsic_gas(&v2_page, false).unwrap();
+        let malformed_v2 = DPOS_GET_UNDELEGATIONS_V2_SELECTOR.to_vec();
+        let cornus_transactions = vec![
+            test_transaction(
+                0xc1,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                undelegate_v2_input(validator, U256::from(1_000u64)),
+                vec![0xc1, 0xc1],
+            ),
+            test_transaction(
+                0xc2,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                v2_page.clone(),
+                vec![0xc1, 0xc2],
+            ),
+            test_transaction(
+                0xc3,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                cancel_undelegate_v2_input(validator, 1),
+                vec![0xc1, 0xc3],
+            ),
+            test_transaction(
+                0xc4,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                v2_page.clone(),
+                vec![0xc1, 0xc4],
+            ),
+            test_transaction(
+                0xc5,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                4,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                undelegate_v2_input(validator, U256::from(1_000u64)),
+                vec![0xc1, 0xc5],
+            ),
+            test_transaction(
+                0xc6,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                5,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                v2_page.clone(),
+                vec![0xc1, 0xc6],
+            ),
+            test_transaction(
+                0xc7,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                6,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                confirm_undelegate_v2_input(validator, 2),
+                vec![0xc1, 0xc7],
+            ),
+            test_transaction(
+                0xc8,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                7,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                v2_page.clone(),
+                vec![0xc1, 0xc8],
+            ),
+            test_transaction(
+                0xc9,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                8,
+                U256::one(),
+                U256::one(),
+                200_000,
+                malformed_v2.clone(),
+                vec![0xc1, 0xc9],
+            ),
+            test_transaction(
+                0xca,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                9,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                malformed_v1.clone(),
+                vec![0xc1, 0xca],
+            ),
+            test_transaction(
+                0xcb,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                10,
+                U256::zero(),
+                U256::one(),
+                v1_intrinsic - 1,
+                v1_page.clone(),
+                vec![0xc1, 0xcb],
+            ),
+            test_transaction(
+                0xcc,
+                validator,
+                Some(DPOS_CONTRACT_ADDRESS),
+                11,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                v1_page,
+                vec![0xc1, 0xcc],
+            ),
+        ];
+        let cornus_execution = cornus_chain
+            .execute_native_transactions(1, &cornus_transactions)
+            .unwrap();
+        assert_eq!(
+            cornus_execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1]
+        );
+        assert_eq!(
+            cornus_execution.receipts[1].gas_used,
+            v2_intrinsic + 4 * DPOS_BATCH_GET_REWARDS_GAS
+        );
+        assert_eq!(cornus_execution.receipts[3].gas_used, v2_intrinsic);
+        assert_eq!(
+            cornus_execution.receipts[5].gas_used,
+            v2_intrinsic + 4 * DPOS_BATCH_GET_REWARDS_GAS
+        );
+        assert_eq!(cornus_execution.receipts[7].gas_used, v2_intrinsic);
+        assert_eq!(
+            cornus_execution.receipts[8].gas_used,
+            intrinsic_gas(&malformed_v2, false).unwrap()
+        );
+        assert_eq!(cornus_execution.receipts[10].gas_used, v1_intrinsic - 1);
+        assert_eq!(cornus_execution.accounts.get(&validator).unwrap().nonce, 12);
+        assert_eq!(
+            u256_from_big_endian(
+                &cornus_execution
+                    .accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance
+            ),
+            U256::from(9_000u64),
+            "confirmation releases principal while reads never move custody"
+        );
+        let final_v2_page = cornus_chain
+            .apply_dpos_undelegation_page_read(
+                &cornus_execution.dpos_snapshot,
+                1,
+                DposTransaction::GetUndelegationsV2(Ok(DposUndelegationPageRead {
+                    delegator: validator,
+                    batch: 0,
+                })),
+            )
+            .unwrap();
+        assert_eq!(
+            static_dpos_page_header(&final_v2_page.code_retval),
+            (0, true)
+        );
+        let restarted =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&cornus_execution.dpos_snapshot))
+                .unwrap();
+        assert_eq!(
+            cornus_chain
+                .apply_dpos_undelegation_page_read(
+                    &restarted,
+                    1,
+                    DposTransaction::GetUndelegationsV2(Ok(DposUndelegationPageRead {
+                        delegator: validator,
+                        batch: 0,
+                    })),
+                )
+                .unwrap(),
+            final_v2_page
+        );
+        let mut cornus_nonpayable = dpos_call_request(1, malformed_v1);
+        cornus_nonpayable.value = vec![1];
+        let cornus_nonpayable = cornus_chain.call(cornus_nonpayable).unwrap();
+        assert_eq!(cornus_nonpayable.gas_used, 0);
+        assert_eq!(cornus_nonpayable.code_err, "DPoS method is not payable");
 
         drop(pre_chain);
         drop(pre_storage);

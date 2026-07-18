@@ -564,6 +564,22 @@ ordering, and later affordability can therefore differ; exact recovery requires 
 read or deletion, or a separately designed migration rather than inferred repair. `CRW-08` remains active for
 delegation and undelegation reads, remaining DPoS method/failure families, and the explicit historical reward graph.
 
+The next bounded `CRW-08` slice executes the two custody-only undelegation page reads natively:
+`getUndelegations(address,uint32)` and Cornus-gated `getUndelegationsV2(address,uint32)`. Both use the exact live
+block-local DPoS snapshot, so successful earlier same-block create, cancel, and confirm transitions affect page output
+and gas. V1 charges 5,000 action gas for each returned request, capped at 20, with a 5,000 minimum for an empty or
+out-of-range page. V2 charges 5,000 for each validator and request-index storage read: two reads per visited validator
+group plus two per returned request, including scanned groups before an out-of-range page. Execution retains legacy
+narrow ABI decoding, trailing calldata, iterable swap-remove order, and wrapping `uint32 batch * 20` offsets while gas
+calculation widens the batch first. V1 is active throughout history; V2 remains unsupported before Cornus. Before
+Cornus a successful value-bearing V1 read retains value in DPoS custody, while Cornus rejects value for both active
+selectors before ABI decoding. Successful reads emit no logs and do not mutate DPoS state. No carrier, bridge
+handle/export, shim, module flag, or snapshot schema changes are required, so `CRW-07` has no inventory delta.
+Historical Rust native page transactions may differ in status, gas, receipt roots, value custody, balances, ordering,
+and later affordability; exact correction requires replay/rebuild from the first affected transaction rather than an
+inferred state edit. `CRW-08` remains active for delegation reads and their explicit historical reward reference graph,
+plus the remaining DPoS method/failure families.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

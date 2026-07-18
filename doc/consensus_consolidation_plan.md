@@ -3646,6 +3646,39 @@ designed migration; current snapshot order is insufficient to reconstruct the or
 `CRW-08` remains active for delegation and undelegation reads, the remaining DPoS method/failure families, and the
 explicit historical reward graph.
 
+### CRW-08 Dynamic Undelegation Pages
+
+This bounded follow-up executes the V1 and V2 undelegation-list page reads through native Rust finalization while
+retaining the existing direct-call ABI surface.
+
+- `getUndelegations(address,uint32)` charges 5,000 action gas for each returned request, up to 20, and preserves the
+  legacy 5,000 minimum for empty and out-of-range pages. Cornus-gated `getUndelegationsV2(address,uint32)` charges two
+  5,000-gas reads for each visited validator group plus two reads for each returned request.
+- Both selectors use the exact live block-local DPoS snapshot. Successful create, cancel, or confirm transitions earlier
+  in the same block are therefore visible to output and gas. They do not use delayed eligibility or claim-all gas views.
+- Execution preserves legacy narrow ABI decoding, trailing calldata, wrapping `uint32 batch * 20` offsets, and iterable
+  swap-remove ordering. Gas estimation intentionally widens the batch first. V2 output flattens validator-group order
+  followed by per-validator request-ID order and includes each request ID; both versions report current validator
+  existence from live stake membership.
+- V1 is active throughout history, while V2 is unsupported before Cornus. Before Cornus, successful value-bearing V1
+  reads retain value in DPoS custody. At Cornus and later both active selectors reject value before ABI decoding.
+  Recognized malformed calls have zero action gas, action out-of-gas charges intrinsic gas, and successful reads emit no
+  logs or state changes.
+- Missing request or validator objects referenced by representable Rust queue indexes remain hard snapshot corruption
+  rather than being silently filtered or normalized.
+
+Validation passed both focused undelegation-page Rust tests, all 715 `rustaxa-consensus` tests, the restart-backed
+fixture in Rust-enabled and pure-C++ builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, changed-line C++ formatting, Rust
+formatting, and whitespace validation.
+
+No CXX carrier, bridge handle/export, shim, module flag, compatibility-only surface, or DPoS snapshot schema changes are
+needed, so `CRW-07` has no inventory delta. Previously finalized Rust native page transactions can differ in status,
+gas, receipt roots, value custody, balances, ordering, and later affordability. Correction requires replay/rebuild from
+the first affected transaction or a separately designed migration rather than an inferred balance or queue edit.
+`CRW-08` remains active for delegation reads and their explicit historical reward reference graph, plus the remaining
+DPoS method/failure families.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

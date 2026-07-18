@@ -531,7 +531,8 @@ reference builds retain the untouched legacy RewardsStats header and source.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `isValidatorEligible(address)`,
     `getTotalEligibleVotesCount()`, `getValidatorEligibleVotesCount(address)`, `getValidator(address)`,
     `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,
-    `getTotalDelegation(address)`, `getDelegations(address,uint32)`, `getUndelegationsV2(address,uint32)`,
+    `getTotalDelegation(address)`, `getDelegations(address,uint32)`, `getUndelegations(address,uint32)`,
+    `getUndelegationsV2(address,uint32)`,
     and `getUndelegationV2(address,address,uint64)`. The three eligibility reads use the configured delayed snapshot and
     delayed hardfork/jail evaluation block, matching the legacy delayed reader; the remaining selected reads use the
     exact finalized-block snapshot. The fixed-gas eligibility family is also executable as native finalized
@@ -539,7 +540,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     singleton reads, `getValidator(address)` and Cornus-gated `getUndelegationV2(address,address,uint64)`, against live
     block-local DPoS state so they observe successful earlier same-block mutations. The dynamic validator-page family,
     `getValidators(uint32)` and `getValidatorsFor(address,uint32)`, is likewise native-executed against live state with
-    legacy page gas, Cornus nonpayability, wrapping `uint32` page offsets, and swap-remove validator ordering.
+    legacy page gas, Cornus nonpayability, wrapping `uint32` page offsets, and swap-remove validator ordering. The V1 and
+    V2 undelegation-page reads are also native-executed against live state with legacy queue ordering, wrapping page
+    offsets, fork/payability behavior, and their distinct storage-read gas formulas.
 - Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or

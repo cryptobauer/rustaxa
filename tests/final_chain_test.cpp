@@ -1764,6 +1764,260 @@ TEST_F(FinalChainTest, native_dpos_validator_page_reads_cover_gas_cornus_boundar
   assert_accounts(SUT);
 }
 
+TEST_F(FinalChainTest, native_dpos_undelegations_page_reads_cover_cornus_gated_selector_and_malformed_inputs) {
+  constexpr uint64_t kOwnerInitialBalance = 11'000;
+  constexpr uint64_t kDelegatorInitialBalance = 10'000'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kReadableValue = 111;
+  constexpr uint64_t kRejectedValue = 222;
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kDelegatorStake = 10'000;
+  constexpr uint64_t kUndelegationAmount = 2'000;
+  constexpr uint64_t kV2UndelegationAmount = 3'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kUndelegationsGetGas = 5'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+  const auto to_u256 = [](const bytes& value, size_t offset) {
+    return u256("0x" + dev::toHex(bytes(value.begin() + offset, value.begin() + offset + 32)));
+  };
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair delegator{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[delegator.address()] = kDelegatorInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 2;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  validator_info.delegations.emplace(delegator.address(), kDelegatorStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto undelegate_v1_input = util::EncodingSolidity::packFunctionCall(
+      "undelegate(address,uint256)", validator.address(), u256(kUndelegationAmount));
+  const auto get_undelegations_input =
+      util::EncodingSolidity::packFunctionCall("getUndelegations(address,uint32)", delegator.address(), uint32_t{0});
+  auto malformed_get_undelegations_input = get_undelegations_input;
+  malformed_get_undelegations_input.resize(4);
+  const auto get_undelegations_v2_input =
+      util::EncodingSolidity::packFunctionCall("getUndelegationsV2(address,uint32)", delegator.address(), uint32_t{0});
+  const bytes malformed_get_undelegations_v2_input = dev::fromHex("78df66e3");
+  const auto undelegate_v2_input = util::EncodingSolidity::packFunctionCall(
+      "undelegateV2(address,uint256)", validator.address(), u256(kV2UndelegationAmount));
+  auto wrapped_get_undelegations_input = util::EncodingSolidity::packFunctionCall(
+      "getUndelegations(address,uint32)", delegator.address(), uint32_t{0x4000'0000});
+  wrapped_get_undelegations_input[4] = 0xaa;
+  wrapped_get_undelegations_input[36] = 0xbb;
+  wrapped_get_undelegations_input.push_back(0xcc);
+  auto wrapped_get_undelegations_v2_input = util::EncodingSolidity::packFunctionCall(
+      "getUndelegationsV2(address,uint32)", delegator.address(), uint32_t{0x4000'0000});
+  wrapped_get_undelegations_v2_input[4] = 0xaa;
+  wrapped_get_undelegations_v2_input[36] = 0xbb;
+  wrapped_get_undelegations_v2_input.push_back(0xcc);
+
+  const auto block1_txs =
+      SharedTransactions{std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, undelegate_v1_input,
+                                                       delegator.secret(), kDposContract, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(1, kReadableValue, kGasPrice, kGasLimit, get_undelegations_input,
+                                                       delegator.secret(), kDposContract, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, malformed_get_undelegations_input,
+                                                       delegator.secret(), kDposContract, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(3, 0, kGasPrice, kGasLimit, get_undelegations_v2_input,
+                                                       delegator.secret(), kDposContract, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(4, 0, kGasPrice, kGasLimit, malformed_get_undelegations_v2_input,
+                                                       delegator.secret(), kDposContract, cfg.genesis.chain_id)};
+  const auto block1_result = advance(block1_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block1_result->trx_receipts.size(), block1_txs.size());
+
+  const auto undelegate_v1_gas = IntrinsicGas(undelegate_v1_input, false) + 60'000;
+  const auto get_undelegations_gas = IntrinsicGas(get_undelegations_input, false) + kUndelegationsGetGas;
+  const auto malformed_get_undelegations_gas = IntrinsicGas(malformed_get_undelegations_input, false);
+  const auto blocked_get_undelegations_v2_gas = IntrinsicGas(get_undelegations_v2_input, false);
+  const auto blocked_malformed_get_undelegations_v2_gas = IntrinsicGas(malformed_get_undelegations_v2_input, false);
+  const std::array<uint64_t, 5> block1_expected_gas = {
+      undelegate_v1_gas, get_undelegations_gas, malformed_get_undelegations_gas, blocked_get_undelegations_v2_gas,
+      blocked_malformed_get_undelegations_v2_gas};
+  const std::array<uint8_t, 5> block1_expected_status = {1, 1, 0, 0, 0};
+
+  uint64_t block1_cumulative = 0;
+  for (size_t i = 0; i < block1_txs.size(); ++i) {
+    block1_cumulative += block1_expected_gas[i];
+    EXPECT_EQ(block1_result->trx_receipts[i].status_code, block1_expected_status[i]);
+    EXPECT_EQ(block1_result->trx_receipts[i].gas_used, block1_expected_gas[i]);
+    EXPECT_EQ(block1_result->trx_receipts[i].cumulative_gas_used, block1_cumulative);
+    if (i == 0) {
+      ASSERT_EQ(block1_result->trx_receipts[i].logs.size(), 1);
+      EXPECT_EQ(block1_result->trx_receipts[i].logs[0].topics[0],
+                dev::sha3(dev::asBytes("Undelegated(address,address,uint256)")));
+    } else {
+      EXPECT_EQ(block1_result->trx_receipts[i].logs.size(), 0);
+      EXPECT_EQ(block1_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block1_expected_status[i];
+      expected_receipt.gas_used = block1_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block1_cumulative;
+      EXPECT_EQ(util::rlp_enc(block1_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block1_result->final_chain_blk->gas_used, block1_cumulative);
+  EXPECT_EQ(block1_result->final_chain_blk->log_bloom, block1_result->trx_receipts[0].bloom());
+
+  const auto pre_cornus_v2_read =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, get_undelegations_v2_input}, 1);
+  EXPECT_FALSE(pre_cornus_v2_read.code_err.empty());
+  EXPECT_EQ(pre_cornus_v2_read.code_err, "Method not supported");
+  const auto pre_cornus_malformed_v2_read =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, malformed_get_undelegations_v2_input}, 1);
+  EXPECT_FALSE(pre_cornus_malformed_v2_read.code_err.empty());
+  EXPECT_EQ(pre_cornus_malformed_v2_read.code_err, "Method not supported");
+
+  const auto block1_pending =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, get_undelegations_input}, 1);
+  ASSERT_TRUE(block1_pending.code_err.empty());
+  ASSERT_GE(block1_pending.code_retval.size(), 224u);
+  EXPECT_EQ(to_u256(block1_pending.code_retval, 32), 1);
+  EXPECT_EQ(to_u256(block1_pending.code_retval, 64), 1);
+  EXPECT_EQ(to_u256(block1_pending.code_retval, 96), u256(kUndelegationAmount));
+  EXPECT_EQ(to_u256(block1_pending.code_retval, 160), u256("0x" + validator.address().toString()));
+  EXPECT_EQ(to_u256(block1_pending.code_retval, 192), 1);
+
+  const auto block2_txs = SharedTransactions{
+      std::make_shared<Transaction>(5, 0, kGasPrice, kGasLimit, undelegate_v2_input, delegator.secret(), kDposContract,
+                                    cfg.genesis.chain_id),
+      std::make_shared<Transaction>(6, 0, kGasPrice, kGasLimit, get_undelegations_v2_input, delegator.secret(),
+                                    kDposContract, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(7, kRejectedValue, kGasPrice, kGasLimit, get_undelegations_v2_input,
+                                    delegator.secret(), kDposContract, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(8, 0, kGasPrice, kGasLimit, malformed_get_undelegations_v2_input,
+                                    delegator.secret(), kDposContract, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(9, 0, kGasPrice, kGasLimit, get_undelegations_input, delegator.secret(),
+                                    kDposContract, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(10, 0, kGasPrice, kGasLimit, wrapped_get_undelegations_v2_input, delegator.secret(),
+                                    kDposContract, cfg.genesis.chain_id)};
+  const auto block2_result = advance(block2_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block2_result->trx_receipts.size(), block2_txs.size());
+
+  const auto undelegate_v2_gas = IntrinsicGas(undelegate_v2_input, false) + 60'000;
+  const auto get_undelegations_v2_success_gas = IntrinsicGas(get_undelegations_v2_input, false) + 20'000;
+  const auto rejected_get_undelegations_v2_gas = IntrinsicGas(get_undelegations_v2_input, false);
+  const auto malformed_get_undelegations_v2_failure_gas = IntrinsicGas(malformed_get_undelegations_v2_input, false);
+  const auto wrapped_get_undelegations_v2_gas = IntrinsicGas(wrapped_get_undelegations_v2_input, false) + 10'000;
+  const auto block2_expected_gas = std::array<uint64_t, 6>{undelegate_v2_gas,
+                                                           get_undelegations_v2_success_gas,
+                                                           rejected_get_undelegations_v2_gas,
+                                                           malformed_get_undelegations_v2_failure_gas,
+                                                           get_undelegations_gas,
+                                                           wrapped_get_undelegations_v2_gas};
+  const std::array<uint8_t, 6> block2_expected_status = {1, 1, 0, 0, 1, 1};
+
+  uint64_t block2_cumulative = 0;
+  for (size_t i = 0; i < block2_txs.size(); ++i) {
+    block2_cumulative += block2_expected_gas[i];
+    EXPECT_EQ(block2_result->trx_receipts[i].status_code, block2_expected_status[i]);
+    EXPECT_EQ(block2_result->trx_receipts[i].gas_used, block2_expected_gas[i]);
+    EXPECT_EQ(block2_result->trx_receipts[i].cumulative_gas_used, block2_cumulative);
+    if (i == 0) {
+      ASSERT_EQ(block2_result->trx_receipts[i].logs.size(), 1);
+      EXPECT_EQ(block2_result->trx_receipts[i].logs[0].topics[0],
+                dev::sha3(dev::asBytes("UndelegatedV2(address,address,uint64,uint256)")));
+    } else {
+      EXPECT_EQ(block2_result->trx_receipts[i].logs.size(), 0);
+      EXPECT_EQ(block2_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block2_expected_status[i];
+      expected_receipt.gas_used = block2_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block2_cumulative;
+      EXPECT_EQ(util::rlp_enc(block2_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block2_result->final_chain_blk->gas_used, block2_cumulative);
+  EXPECT_EQ(block2_result->final_chain_blk->log_bloom, block2_result->trx_receipts[0].bloom());
+
+  const auto post_cornus_v2_read =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, get_undelegations_v2_input}, 2);
+  ASSERT_TRUE(post_cornus_v2_read.code_err.empty());
+  ASSERT_GE(post_cornus_v2_read.code_retval.size(), 256u);
+  EXPECT_EQ(to_u256(post_cornus_v2_read.code_retval, 32), 1);
+  EXPECT_EQ(to_u256(post_cornus_v2_read.code_retval, 64), 1);
+  EXPECT_EQ(to_u256(post_cornus_v2_read.code_retval, 96), u256(kV2UndelegationAmount));
+  EXPECT_EQ(to_u256(post_cornus_v2_read.code_retval, 160), u256("0x" + validator.address().toString()));
+  EXPECT_EQ(post_cornus_v2_read.code_retval.size(), 256u);
+  EXPECT_EQ(to_u256(post_cornus_v2_read.code_retval, 224), 1);
+
+  const auto post_cornus_v1_read =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, get_undelegations_input}, 2);
+  ASSERT_TRUE(post_cornus_v1_read.code_err.empty());
+  ASSERT_GE(post_cornus_v1_read.code_retval.size(), 224u);
+  EXPECT_EQ(to_u256(post_cornus_v1_read.code_retval, 32), 1);
+  EXPECT_EQ(to_u256(post_cornus_v1_read.code_retval, 64), 1);
+  EXPECT_EQ(to_u256(post_cornus_v1_read.code_retval, 96), u256(kUndelegationAmount));
+
+  const auto wrapped_v1_read =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, wrapped_get_undelegations_input}, 2);
+  ASSERT_TRUE(wrapped_v1_read.code_err.empty());
+  EXPECT_EQ(wrapped_v1_read.code_retval, post_cornus_v1_read.code_retval);
+  const auto wrapped_v2_read =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, wrapped_get_undelegations_v2_input}, 2);
+  ASSERT_TRUE(wrapped_v2_read.code_err.empty());
+  EXPECT_EQ(wrapped_v2_read.code_retval, post_cornus_v2_read.code_retval);
+
+  const auto malformed_v2_gas_check =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, malformed_get_undelegations_v2_input}, 2);
+  EXPECT_FALSE(malformed_v2_gas_check.code_err.empty());
+
+  const auto persisted_after_block1 = block1_result->trx_receipts;
+  const auto persisted_after_block2 = block2_result->trx_receipts;
+  for (size_t i = 0; i < persisted_after_block1.size(); ++i) {
+    const auto persisted = SUT->transactionReceipt(1, i);
+    ASSERT_TRUE(persisted);
+    EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(persisted_after_block1[i]));
+  }
+  for (size_t i = 0; i < persisted_after_block2.size(); ++i) {
+    const auto persisted = SUT->transactionReceipt(2, i);
+    ASSERT_TRUE(persisted);
+    EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(persisted_after_block2[i]));
+  }
+
+  const auto delegator_account = SUT->getAccount(delegator.address());
+  ASSERT_TRUE(delegator_account);
+  EXPECT_EQ(delegator_account->nonce, 11);
+  EXPECT_EQ(delegator_account->balance, u256(kDelegatorInitialBalance - kDelegatorStake - kReadableValue) -
+                                            u256(block1_cumulative * kGasPrice + block2_cumulative * kGasPrice));
+  const auto dpos_account = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(dpos_account);
+  EXPECT_EQ(dpos_account->balance, u256(kInitialStake + kDelegatorStake + kReadableValue));
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  const auto restarted_delegator_account = SUT->getAccount(delegator.address());
+  ASSERT_TRUE(restarted_delegator_account);
+  EXPECT_EQ(restarted_delegator_account->nonce, 11);
+  EXPECT_EQ(restarted_delegator_account->balance,
+            u256(kDelegatorInitialBalance - kDelegatorStake - kReadableValue) -
+                u256(block1_cumulative * kGasPrice + block2_cumulative * kGasPrice));
+  const auto restarted_post_cornus_v2 =
+      SUT->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, get_undelegations_v2_input}, 2);
+  ASSERT_TRUE(restarted_post_cornus_v2.code_err.empty());
+  EXPECT_EQ(restarted_post_cornus_v2.code_retval, post_cornus_v2_read.code_retval);
+}
+
 TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kDelegation = 1'000;
