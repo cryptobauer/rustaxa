@@ -916,6 +916,113 @@ TEST_F(FinalChainTest, remove_jailed_validator_votes_from_total) {
   EXPECT_EQ(total_votes_before - votes_per_address, total_votes);
 }
 
+TEST_F(FinalChainTest, native_slashing_value_custody_commits_only_for_successful_proof) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kFirstValue = 777;
+  constexpr uint64_t kFailedValue = 888;
+  constexpr uint64_t kJailTime = 50;
+  constexpr uint64_t kSubmitterInitialBalance = 10'000'000;
+  const addr_t kSlashingContract("0x00000000000000000000000000000000000000EE");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair submitter{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kInitialStake + 1'000;
+  cfg.genesis.state.initial_balances[submitter.address()] = kSubmitterInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 1;
+  cfg.genesis.state.hardforks.magnolia_hf.jail_time = kJailTime;
+  cfg.genesis.state.hardforks.cacti_hf.block_num = 1;
+  cfg.genesis.state.hardforks.cacti_hf.jail_time = kJailTime;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  init();
+  advance({});
+
+  const auto [vote_vrf_key, vote_vrf_secret] = vrf_wrapper::getVrfKeyPair();
+  (void)vote_vrf_key;
+  VrfPbftSortition vote_sortition(vote_vrf_secret, {PbftVoteTypes::propose_vote, 1, 1, 1});
+  auto vote_a = std::make_shared<PbftVote>(validator.secret(), vote_sortition, blk_hash_t(1));
+  vote_a->calculateWeight(1, 1, 1);
+  auto vote_b = std::make_shared<PbftVote>(validator.secret(), vote_sortition, blk_hash_t(2));
+  vote_b->calculateWeight(1, 1, 1);
+  const auto input =
+      util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)", vote_a->rlp(), vote_b->rlp());
+
+  const auto successful_tx = std::make_shared<Transaction>(0, kFirstValue, kGasPrice, kGasLimit, input,
+                                                           submitter.secret(), kSlashingContract, cfg.genesis.chain_id);
+  const auto duplicate_tx = std::make_shared<Transaction>(1, kFailedValue, kGasPrice, kGasLimit, input,
+                                                          submitter.secret(), kSlashingContract, cfg.genesis.chain_id);
+  const auto result =
+      advance({successful_tx, duplicate_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(result->trx_receipts.size(), 2);
+
+  const auto proof_gas = IntrinsicGas(input, false) + 20'000;
+  const auto expected_jail_block = uint64_t{2} + kJailTime;
+  bytes behaviour(32, 0);
+  behaviour.back() = 1;
+  const LogEntry jailed_log{
+      kSlashingContract,
+      {dev::sha3(dev::asBytes("Jailed(address,uint64,uint64,uint8)")), h256(validator.address(), h256::AlignRight),
+       h256(u256(2)), h256(u256(expected_jail_block))},
+      behaviour};
+
+  TransactionReceipt expected_success;
+  expected_success.status_code = 1;
+  expected_success.gas_used = proof_gas;
+  expected_success.cumulative_gas_used = proof_gas;
+  expected_success.logs = {jailed_log};
+  TransactionReceipt expected_duplicate;
+  expected_duplicate.status_code = 0;
+  expected_duplicate.gas_used = proof_gas;
+  expected_duplicate.cumulative_gas_used = proof_gas * 2;
+
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[0]), util::rlp_enc(expected_success));
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[1]), util::rlp_enc(expected_duplicate));
+  EXPECT_EQ(result->trx_receipts[0].bloom(), expected_success.bloom());
+  EXPECT_EQ(result->trx_receipts[1].bloom(), LogBloom());
+  EXPECT_EQ(result->final_chain_blk->gas_used, proof_gas * 2);
+  EXPECT_EQ(result->final_chain_blk->log_bloom, expected_success.bloom());
+
+  const auto assert_persisted_state = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto sender_account = chain->getAccount(submitter.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, 2);
+    EXPECT_EQ(sender_account->balance, u256(kSubmitterInitialBalance - kFirstValue - proof_gas * kGasPrice * 2));
+    const auto slashing_account = chain->getAccount(kSlashingContract);
+    ASSERT_TRUE(slashing_account);
+    EXPECT_EQ(slashing_account->nonce, 1);
+    EXPECT_EQ(slashing_account->balance, u256(kFirstValue));
+
+    EXPECT_EQ(chain->dposEligibleVoteCount(2, validator.address()), 0);
+
+    const auto persisted_success = chain->transactionReceipt(2, 0);
+    const auto persisted_duplicate = chain->transactionReceipt(2, 1);
+    ASSERT_TRUE(persisted_success);
+    ASSERT_TRUE(persisted_duplicate);
+    EXPECT_EQ(util::rlp_enc(*persisted_success), util::rlp_enc(expected_success));
+    EXPECT_EQ(util::rlp_enc(*persisted_duplicate), util::rlp_enc(expected_duplicate));
+  };
+
+  assert_persisted_state(SUT);
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  assert_persisted_state(SUT);
+}
+
 TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kDelegation = 1'000;

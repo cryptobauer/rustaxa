@@ -473,6 +473,21 @@ restart persistence. No carrier, bridge handle/export, shim, module flag, or sna
 inventory delta. `CRW-08` remains active for the remaining DPoS method/failure families and the explicit historical
 reward graph.
 
+The next bounded `CRW-08` slice restores value custody for native slashing
+`commitDoubleVotingProof(bytes,bytes)`. The legacy EVM transfers call value before invoking the precompile, and the
+slashing contract has no generic or Cornus nonpayability check, so a successful proof keeps that value at the slashing
+account despite the ABI's nonpayable metadata. Rust now defers both sender debit and contract credit until the proof
+outcome succeeds, initializes the slashing account nonce to one on its first successful jail write, and never increments
+that nonce again. Duplicate, malformed, invalid, and otherwise failed proofs retain their action gas and sender nonce but
+roll back value and slashing state. A restart-backed dual-mode fixture submits a valid value-bearing proof followed by a
+duplicate value-bearing proof in one block and protects exact receipt RLP, gas/cumulative gas, `Jailed` log/bloom,
+success-only slashing balance, sender balance/nonce, eligibility effect, account nonce, duplicate rollback, and restart.
+No carrier, bridge handle/export, shim, module flag, or snapshot schema changes, so `CRW-07` has no inventory delta.
+Rust-finalized history that previously encountered a valid value-bearing proof contains a failed receipt, missing jail
+state, and missing slashing-account custody; recovery requires replay/rebuild from before the first affected proof or a
+separately designed migration rather than an inferred balance edit. `CRW-08` remains active for precompile read
+transactions, the remaining DPoS method/failure families, and the explicit historical reward graph.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

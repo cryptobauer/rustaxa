@@ -2914,16 +2914,25 @@ impl FinalChain {
                     && (block_number < self.dpos_cornus_period
                         || matches!(tx, NativeContractTransaction::Dpos(dpos_tx) if dpos_transaction_is_payable(dpos_tx)))
             });
+            let slashing_value_transfer_allowed =
+                contract_transaction.as_ref().is_some_and(|contract_tx| {
+                    matches!(
+                        contract_tx,
+                        NativeContractTransaction::Slashing(
+                            SlashingTransaction::CommitDoubleVotingProof(_)
+                        )
+                    )
+                });
+            let contract_payment_recipient = if dpos_value_transfer_allowed {
+                Some(DPOS_CONTRACT_ADDRESS)
+            } else if slashing_value_transfer_allowed {
+                Some(SLASHING_CONTRACT_ADDRESS)
+            } else {
+                None
+            };
             let contract_nonpayable_value_failure = !value.is_zero()
-                && contract_transaction
-                    .as_ref()
-                    .is_some_and(|contract_tx| match contract_tx {
-                        NativeContractTransaction::Dpos(dpos_tx) => {
-                            block_number >= self.dpos_cornus_period
-                                && !dpos_transaction_is_payable(dpos_tx)
-                        }
-                        NativeContractTransaction::Slashing(_) => true,
-                    });
+                && contract_transaction.is_some()
+                && contract_payment_recipient.is_none();
             let intrinsic_gas = intrinsic_gas(&transaction.data, false)?;
             let required_gas = if contract_nonpayable_value_failure {
                 0
@@ -2991,7 +3000,7 @@ impl FinalChain {
                 if status_code == 1 || advance_nonce {
                     let charged_value = if status_code == 0
                         || contract_nonpayable_value_failure
-                        || dpos_value_transfer_allowed
+                        || contract_payment_recipient.is_some()
                     {
                         U256::zero()
                     } else {
@@ -3025,7 +3034,7 @@ impl FinalChain {
                     let contract_tx_for_gas = contract_tx.clone();
                     let slashing_call =
                         matches!(&contract_tx, NativeContractTransaction::Slashing(_));
-                    if dpos_value_transfer_allowed && !value.is_zero() {
+                    if !value.is_zero() {
                         let sender_balance = accounts
                             .get(&transaction.sender)
                             .map(|sender| u256_from_big_endian(&sender.balance))
@@ -3210,33 +3219,47 @@ impl FinalChain {
                             if let NativeContractTransaction::Dpos(dpos_tx) = &contract_tx_for_gas {
                                 update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, dpos_tx)?;
                             }
-                            if dpos_value_transfer_allowed && !value.is_zero() {
-                                let sender = accounts
-                                    .entry(transaction.sender)
+                            if let Some(contract_recipient) = contract_payment_recipient {
+                                let sender_balance = accounts
+                                    .get(&transaction.sender)
+                                    .map(|sender| u256_from_big_endian(&sender.balance))
+                                    .unwrap_or_default();
+                                if !value.is_zero() {
+                                    if sender_balance < value {
+                                        anyhow::bail!(
+                                            "Rust FinalChain::finalize cannot apply underfunded native transfer"
+                                        );
+                                    }
+                                    let sender = accounts
+                                        .entry(transaction.sender)
+                                        .or_insert_with(empty_account);
+                                    let sender_balance = u256_from_big_endian(&sender.balance);
+                                    sender.balance = u256_to_big_endian(
+                                        sender_balance.checked_sub(value).ok_or_else(|| {
+                                            anyhow::anyhow!(
+                                                "Rust FinalChain::finalize contract payment underflow"
+                                            )
+                                        })?,
+                                    );
+                                }
+                                let contract_account = accounts
+                                    .entry(contract_recipient)
                                     .or_insert_with(empty_account);
-                                let sender_balance = u256_from_big_endian(&sender.balance);
-                                sender.balance = u256_to_big_endian(
-                                    sender_balance.checked_sub(value).ok_or_else(|| {
-                                        anyhow::anyhow!(
-                                            "Rust FinalChain::finalize DPoS contract payment underflow"
-                                        )
+                                let contract_balance =
+                                    u256_from_big_endian(&contract_account.balance);
+                                contract_account.balance = u256_to_big_endian(
+                                    contract_balance.checked_add(value).ok_or_else(|| {
+                                        anyhow::anyhow!("contract balance overflow")
                                     })?,
-                                );
-                                let dpos_account = accounts
-                                    .entry(DPOS_CONTRACT_ADDRESS)
-                                    .or_insert_with(empty_account);
-                                let current_contract_balance =
-                                    u256_from_big_endian(&dpos_account.balance);
-                                dpos_account.balance = u256_to_big_endian(
-                                    current_contract_balance.checked_add(value).ok_or_else(
-                                        || anyhow::anyhow!("DPoS contract balance overflow"),
-                                    )?,
                                 );
                             }
                             if slashing_call {
-                                accounts
+                                let slashing_account = accounts
                                     .entry(SLASHING_CONTRACT_ADDRESS)
                                     .or_insert_with(empty_account);
+                                if slashing_account.nonce == 0 {
+                                    slashing_account.nonce = 1;
+                                }
                             }
                         }
                         status_code = outcome.status_code;
@@ -11815,6 +11838,274 @@ mod tests {
     #[test]
     fn finalize_block_executes_slashing_when_hardforks_activate_at_zero() {
         assert_finalize_block_executes_slashing(0, 0);
+    }
+
+    #[test]
+    fn finalize_block_does_not_double_charge_duplicate_slashing_proof_value() {
+        let path = temp_db_path("finalize-slashing-double-vote-duplicate-value");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator_key = SigningKey::from_slice(&[0x62; 32]).unwrap();
+        let validator_h160 = address_from_signing_key(&validator_key);
+        let mut validator = [0u8; 20];
+        validator.copy_from_slice(validator_h160.as_bytes());
+        let submitter = [0x63; 20];
+        let period = 1u64;
+        let block_signing_key = SigningKey::from_slice(&[0x64; 32]).unwrap();
+        let pbft = signed_pbft_block(&block_signing_key, period, 243);
+        let sortition = legacy_vrf_sortition_rlp(period, 2, 4, 0x5c);
+        let vote_a =
+            signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(300), &sortition);
+        let vote_b =
+            signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(301), &sortition);
+        let input = commit_double_voting_proof_input(&vote_a, &vote_b);
+        let first_value = U256::from(777u64);
+        let duplicate_value = U256::from(888u64);
+        let gas_price = U256::from(3u64);
+        let first_tx = test_transaction(
+            0xD4,
+            submitter,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            first_value,
+            gas_price,
+            100_000,
+            input.clone(),
+            vec![0xc1, 0xd4],
+        );
+        let duplicate_tx = test_transaction(
+            0xD5,
+            submitter,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            1,
+            duplicate_value,
+            gas_price,
+            100_000,
+            input,
+            vec![0xc1, 0xd5],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft,
+            &[first_tx.rlp.clone(), duplicate_tx.rlp.clone()],
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(submitter, U256::from(1_000_000u64))],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 1,
+                cacti_period: 1,
+                magnolia_jail_time: 2,
+                cacti_jail_time: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header, receipts) = final_chain
+            .finalize_block(pbft, vec![first_tx.clone(), duplicate_tx.clone()], vec![])
+            .unwrap();
+        let first_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &first_tx);
+        let duplicate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &duplicate_tx);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (1, first_tx_gas, first_tx_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (0, duplicate_tx_gas, first_tx_gas + duplicate_tx_gas)
+        );
+        assert_eq!(
+            balance_of(&final_chain, submitter),
+            U256::from(1_000_000u64)
+                .checked_sub(
+                    (U256::from(first_tx_gas)
+                        .checked_add(U256::from(duplicate_tx_gas))
+                        .unwrap())
+                    .checked_mul(gas_price)
+                    .unwrap()
+                )
+                .expect("submitter sender balance must remain non-negative")
+                - first_value
+        );
+        assert_eq!(
+            balance_of(&final_chain, SLASHING_CONTRACT_ADDRESS),
+            first_value
+        );
+        let slashing_account = final_chain
+            .account(SLASHING_CONTRACT_ADDRESS)
+            .unwrap()
+            .unwrap();
+        assert_eq!(slashing_account.nonce, 1);
+        assert_eq!(slashing_account.balance, u256_to_big_endian(first_value));
+
+        let header_before_restart = final_chain.block_header(period).unwrap().unwrap();
+        drop(final_chain);
+        drop(storage);
+
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let restart_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(submitter, U256::from(1_000_000u64))],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 1,
+                cacti_period: 1,
+                magnolia_jail_time: 2,
+                cacti_jail_time: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            restart_chain.block_header(period).unwrap().unwrap(),
+            header_before_restart
+        );
+        assert_eq!(
+            restart_chain
+                .transaction_receipt_rlp(period, 1)
+                .unwrap()
+                .unwrap(),
+            receipts[1].clone()
+        );
+        assert_eq!(
+            restart_chain
+                .account(SLASHING_CONTRACT_ADDRESS)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            1
+        );
+        assert_eq!(
+            balance_of(&restart_chain, SLASHING_CONTRACT_ADDRESS),
+            first_value
+        );
+        assert_eq!(restart_chain.account(submitter).unwrap().unwrap().nonce, 2);
+
+        drop(restart_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_does_not_charge_value_on_invalid_slashing_proof_and_preserves_state() {
+        let path = temp_db_path("finalize-slashing-double-vote-invalid-proof");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator_key = SigningKey::from_slice(&[0x72; 32]).unwrap();
+        let validator_h160 = address_from_signing_key(&validator_key);
+        let mut validator = [0u8; 20];
+        validator.copy_from_slice(validator_h160.as_bytes());
+        let submitter = [0x73; 20];
+        let period = 1u64;
+        let block_signing_key = SigningKey::from_slice(&[0x74; 32]).unwrap();
+        let pbft = signed_pbft_block(&block_signing_key, period, 244);
+        let tx_value = U256::from(555u64);
+        let gas_price = U256::from(2u64);
+        let malformed_input = SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR.to_vec();
+        let malformed_tx = test_transaction(
+            0xD6,
+            submitter,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            tx_value,
+            gas_price,
+            100_000,
+            malformed_input,
+            vec![0xc1, 0xd6],
+        );
+        write_period_data(&storage, period, &pbft, &[malformed_tx.rlp.clone()]);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(submitter, U256::from(1_000_000u64))],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 1,
+                cacti_period: 1,
+                magnolia_jail_time: 2,
+                cacti_jail_time: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &malformed_tx);
+        let gas_cost = U256::from(tx_gas)
+            .checked_mul(gas_price)
+            .expect("gas usage should fit in balance domain");
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft, vec![malformed_tx.clone()], vec![])
+            .unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
+        assert_eq!(
+            balance_of(&final_chain, submitter),
+            U256::from(1_000_000u64).checked_sub(gas_cost).unwrap()
+        );
+        assert_eq!(
+            balance_of(&final_chain, SLASHING_CONTRACT_ADDRESS),
+            U256::zero()
+        );
+        assert!(
+            final_chain
+                .account(SLASHING_CONTRACT_ADDRESS)
+                .unwrap()
+                .is_none()
+        );
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert!(snapshot.slashing_double_voting_proofs.is_empty());
+        assert!(snapshot.slashing_jail_blocks.is_empty());
+        assert!(snapshot.slashing_jailed_validators.is_empty());
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, validator)
+                .unwrap(),
+            10
+        );
+        assert_eq!(
+            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            10
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]

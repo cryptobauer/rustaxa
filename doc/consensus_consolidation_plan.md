@@ -3472,6 +3472,37 @@ Validation passed all 701 `rustaxa-consensus` tests, the focused restart-backed 
 FinalChain builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`, `rewrite-validate-final-chain-parity`, the
 bridge inventory guard, skill validation, the pre-commit hook, formatting, and whitespace checks.
 
+### CRW-08 Slashing Proof Value Custody
+
+This bounded follow-up restores the legacy value-bearing transcript for native
+`commitDoubleVotingProof(bytes,bytes)` execution.
+
+- Legacy EVM call handling transfers value into the callee before running a precompile and reverts that transfer on
+  execution error. The slashing precompile does not apply the DPoS Cornus nonpayability guard, so a valid proof is
+  payable in practice even though its ABI metadata says nonpayable.
+- Rust now identifies the slashing contract as the deferred payment recipient for proof transactions. Gas is charged
+  first, but sender value is debited and the slashing account is credited only after proof verification, duplicate
+  detection, validator authorization, jail mutation, and log construction succeed. A failed proof therefore retains
+  gas and nonce while rolling back value and slashing state.
+- The first successful legacy jail write initializes the slashing account nonce. Rust mirrors that success-only rule by
+  changing nonce zero to one without incrementing an already initialized account on later proofs or failures.
+- A restart-backed dual-mode fixture executes a valid value-bearing proof followed by a duplicate value-bearing proof in
+  the same block. It protects exact action and cumulative gas, receipt RLP, the `Jailed` log and block bloom, success-only
+  sender/slashing balances, sender and contract nonces, Cacti eligibility removal, duplicate rollback, and restart
+  persistence. Focused Rust tests separately protect successful custody, duplicate rollback, and invalid-proof rollback.
+
+No CXX carrier, bridge handle/export, shim, module flag, compatibility-only surface, or DPoS snapshot schema changes, so
+`CRW-07` has no inventory delta. Existing Rust-finalized blocks with valid value-bearing proofs contain a different
+receipt, account state, and jail state; replay/rebuild from before the first affected proof or a separately designed
+migration is required. The slice does not infer a slashing-account top-up. `CRW-08` remains active for native
+precompile-read transactions, the remaining DPoS method/failure families, and the explicit historical reward reference
+graph.
+
+Validation passed the focused 25-test Rust slashing filter, all 703 `rustaxa-consensus` tests, the restart-backed fixture
+in Rust-enabled and pure-C++ FinalChain builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, the pre-commit hook, formatting, and
+whitespace checks. Existing repository clippy and CMake warnings remain unchanged.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
