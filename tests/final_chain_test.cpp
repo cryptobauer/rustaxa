@@ -1114,6 +1114,147 @@ TEST_F(FinalChainTest, native_slashing_reads_preserve_value_gas_and_nonce_semant
   assert_persisted_state(SUT);
 }
 
+TEST_F(FinalChainTest, native_dpos_eligibility_reads_match_fixed_gas_and_cornus_value_rules) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kGasPrice = 0;
+  constexpr uint64_t kGasLimit = 100'000;
+  constexpr uint64_t kSenderInitialBalance = 10'000'000;
+  constexpr uint64_t kEligibleValue = 111;
+  constexpr uint64_t kTotalValue = 222;
+  constexpr uint64_t kVotesValue = 333;
+  constexpr uint64_t kTransferBeforeCornus = 666;
+  constexpr uint64_t kTransferAtCornus = 999;
+
+  const dev::KeyPair owner{dev::Secret("7777777777777777777777777777777777777777777777777777777777777777")};
+  const dev::KeyPair validator{dev::Secret("8888888888888888888888888888888888888888888888888888888888888888")};
+  const dev::KeyPair sender{dev::Secret("9999999999999999999999999999999999999999999999999999999999999999")};
+  const dev::KeyPair receiver{dev::Secret("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kInitialStake + 1'000;
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 1;
+  cfg.genesis.state.hardforks.cacti_hf.block_num = 1;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 2;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  assume_only_toplevel_transfers = false;
+  init();
+
+  auto eligible_input = util::EncodingSolidity::packFunctionCall("isValidatorEligible(address)", validator.address());
+  auto total_input = util::EncodingSolidity::packFunctionCall("getTotalEligibleVotesCount()");
+  auto votes_input =
+      util::EncodingSolidity::packFunctionCall("getValidatorEligibleVotesCount(address)", validator.address());
+  votes_input.push_back(0xbb);
+  auto malformed_eligible_input = eligible_input;
+  malformed_eligible_input.resize(4);
+  const auto total_intrinsic = IntrinsicGas(total_input, false);
+
+  const auto pre_cornus_txs =
+      SharedTransactions{std::make_shared<Transaction>(0, kEligibleValue, kGasPrice, kGasLimit, eligible_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(1, kTotalValue, kGasPrice, kGasLimit, total_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(2, kVotesValue, kGasPrice, kGasLimit, votes_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(3, 444, kGasPrice, kGasLimit, malformed_eligible_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(4, 555, kGasPrice, total_intrinsic, total_input, sender.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(5, 777, kGasPrice, total_intrinsic - 1, total_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(5, kTransferBeforeCornus, kGasPrice, kGasLimit, bytes{},
+                                                       sender.secret(), receiver.address(), cfg.genesis.chain_id)};
+  const auto pre_cornus_result = advance(pre_cornus_txs, {.dont_assume_all_trx_success = true});
+  ASSERT_EQ(pre_cornus_result->trx_receipts.size(), pre_cornus_txs.size());
+
+  const std::array<uint64_t, 7> pre_cornus_gas = {IntrinsicGas(eligible_input, false) + 20'000,
+                                                  total_intrinsic + 20'000,
+                                                  IntrinsicGas(votes_input, false) + 20'000,
+                                                  IntrinsicGas(malformed_eligible_input, false) + 20'000,
+                                                  total_intrinsic,
+                                                  total_intrinsic - 1,
+                                                  IntrinsicGas(bytes{}, false)};
+  const std::array<uint64_t, 7> pre_cornus_status = {1, 1, 1, 0, 0, 0, 1};
+  uint64_t cumulative_gas = 0;
+  for (size_t idx = 0; idx < pre_cornus_txs.size(); ++idx) {
+    cumulative_gas += pre_cornus_gas[idx];
+    TransactionReceipt expected;
+    expected.status_code = pre_cornus_status[idx];
+    expected.gas_used = pre_cornus_gas[idx];
+    expected.cumulative_gas_used = cumulative_gas;
+    EXPECT_EQ(util::rlp_enc(pre_cornus_result->trx_receipts[idx]), util::rlp_enc(expected));
+    EXPECT_EQ(pre_cornus_result->trx_receipts[idx].bloom(), LogBloom());
+  }
+  EXPECT_EQ(pre_cornus_result->final_chain_blk->gas_used, cumulative_gas);
+  EXPECT_EQ(pre_cornus_result->final_chain_blk->log_bloom, LogBloom());
+
+  const auto at_cornus_txs =
+      SharedTransactions{std::make_shared<Transaction>(6, 888, kGasPrice, kGasLimit, total_input, sender.secret(),
+                                                       kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(7, 999, kGasPrice, total_intrinsic - 1, total_input,
+                                                       sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+                         std::make_shared<Transaction>(8, kTransferAtCornus, kGasPrice, kGasLimit, bytes{},
+                                                       sender.secret(), receiver.address(), cfg.genesis.chain_id)};
+  const auto at_cornus_result = advance(at_cornus_txs, {.dont_assume_all_trx_success = true});
+  ASSERT_EQ(at_cornus_result->trx_receipts.size(), at_cornus_txs.size());
+
+  const std::array<uint64_t, 3> at_cornus_gas = {total_intrinsic, total_intrinsic - 1, IntrinsicGas(bytes{}, false)};
+  const std::array<uint64_t, 3> at_cornus_status = {0, 0, 1};
+  cumulative_gas = 0;
+  for (size_t idx = 0; idx < at_cornus_txs.size(); ++idx) {
+    cumulative_gas += at_cornus_gas[idx];
+    TransactionReceipt expected;
+    expected.status_code = at_cornus_status[idx];
+    expected.gas_used = at_cornus_gas[idx];
+    expected.cumulative_gas_used = cumulative_gas;
+    EXPECT_EQ(util::rlp_enc(at_cornus_result->trx_receipts[idx]), util::rlp_enc(expected));
+    EXPECT_EQ(at_cornus_result->trx_receipts[idx].bloom(), LogBloom());
+  }
+  EXPECT_EQ(at_cornus_result->final_chain_blk->gas_used, cumulative_gas);
+  EXPECT_EQ(at_cornus_result->final_chain_blk->log_bloom, LogBloom());
+
+  const auto assert_persisted_state = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto sender_account = chain->getAccount(sender.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, 9);
+    EXPECT_EQ(sender_account->balance, u256(kSenderInitialBalance - kEligibleValue - kTotalValue - kVotesValue -
+                                            kTransferBeforeCornus - kTransferAtCornus));
+    const auto dpos_account = chain->getAccount(kDposContractAddress);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, u256(kInitialStake + kEligibleValue + kTotalValue + kVotesValue));
+    const auto receiver_account = chain->getAccount(receiver.address());
+    ASSERT_TRUE(receiver_account);
+    EXPECT_EQ(receiver_account->balance, u256(kTransferBeforeCornus + kTransferAtCornus));
+    EXPECT_EQ(receiver_account->nonce, 0);
+
+    for (size_t idx = 0; idx < pre_cornus_txs.size(); ++idx) {
+      ASSERT_TRUE(chain->transactionReceipt(1, idx));
+      EXPECT_EQ(util::rlp_enc(*chain->transactionReceipt(1, idx)), util::rlp_enc(pre_cornus_result->trx_receipts[idx]));
+    }
+    for (size_t idx = 0; idx < at_cornus_txs.size(); ++idx) {
+      ASSERT_TRUE(chain->transactionReceipt(2, idx));
+      EXPECT_EQ(util::rlp_enc(*chain->transactionReceipt(2, idx)), util::rlp_enc(at_cornus_result->trx_receipts[idx]));
+    }
+  };
+
+  assert_persisted_state(SUT);
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  assert_persisted_state(SUT);
+}
+
 TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kDelegation = 1'000;

@@ -506,6 +506,26 @@ transaction affordability; recovery requires replay/rebuild from before the firs
 designed migration rather than an inferred balance edit. `CRW-08` remains active for DPoS precompile read transactions,
 the remaining DPoS method/failure families, and the explicit historical reward graph.
 
+The next bounded `CRW-08` slice closes the complete fixed-gas DPoS eligibility-read family:
+`isValidatorEligible(address)`, `getTotalEligibleVotesCount()`, and
+`getValidatorEligibleVotesCount(address)`. Rust direct calls now serve all three from the delayed eligibility snapshot,
+evaluate stake thresholds, vote schedules, Cacti jail state, and jail expiry at the same delayed block, and charge the
+legacy 20,000 action gas; this corrects the prior 22,000 total-count estimate. Native finalized transactions use one
+frozen preceding-head delayed view for the whole block, emit no logs, and do not expose earlier same-block DPoS or
+slashing mutations. Before Cornus the reads retain legacy value custody at the DPoS account. At and after Cornus they
+are nonpayable before ABI decoding, so value-bearing calls fail with intrinsic gas only and roll value back. Recognized
+malformed address calls retain fixed action gas before Cornus, unknown selectors remain intrinsic-only failures, and
+action-out-of-gas calls charge intrinsic gas. The shared native transaction state machine now also follows the Cornus
+fork rule for intrinsic-out-of-gas nonce advancement while retaining the pre-Cornus unchanged nonce. A restart-backed
+dual-mode fixture protects exact receipt RLP, gas/cumulative gas, empty logs/bloom, successful-only value custody,
+pre-/at-Cornus intrinsic-gas nonce behavior, same-sender continuation, DPoS account state, and persisted receipts. No
+carrier, bridge handle/export, shim, module flag, or snapshot schema changes, so `CRW-07` has no inventory delta.
+Historical Rust receipts for these selectors, the prior 22,000 call estimate, and Cornus intrinsic-out-of-gas native
+transactions may differ in gas, cumulative gas, nonce, balances, and later affordability; recovery requires
+replay/rebuild from the first affected transaction or a separately designed migration rather than inferred account
+repairs. `CRW-08` remains active for the remaining static and dynamic DPoS read transactions, remaining DPoS
+method/failure families, and the explicit historical reward graph.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

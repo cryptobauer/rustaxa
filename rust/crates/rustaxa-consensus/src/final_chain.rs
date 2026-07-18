@@ -97,7 +97,6 @@ const VALUE_TRANSFER_GAS: u64 = 21_000;
 const CONTRACT_CREATION_ESTIMATE_GAS: u64 = 0x5dcc5;
 const DPOS_DEFAULT_METHOD_GAS: u64 = 20_000;
 const DPOS_PHALA_ESCROW_TRANSFER_GAS: u64 = 1_000;
-const DPOS_GET_TOTAL_ELIGIBLE_VOTES_GAS: u64 = 22_000;
 const DPOS_GET_METHOD_GAS: u64 = 5_000;
 pub(crate) const DPOS_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfe,
@@ -106,6 +105,8 @@ pub(crate) const SLASHING_CONTRACT_ADDRESS: [u8; 20] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xee,
 ];
 const DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0xde, 0x8e, 0x4b, 0x50];
+const DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR: [u8; 4] = [0xf3, 0x09, 0x4e, 0x90];
+const DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR: [u8; 4] = [0x61, 0x8e, 0x38, 0x62];
 const DPOS_GET_VALIDATOR_SELECTOR: [u8; 4] = [0x19, 0x04, 0xbb, 0x2e];
 const DPOS_GET_DELEGATIONS_SELECTOR: [u8; 4] = [0x8b, 0x49, 0xd3, 0x94];
 const DPOS_GET_UNDELEGATIONS_SELECTOR: [u8; 4] = [0x4e, 0xdd, 0x99, 0x43];
@@ -1198,7 +1199,7 @@ impl FinalChain {
             });
         }
 
-        if is_dpos_mutation_selector(selector)
+        if (is_dpos_mutation_selector(selector) || is_dpos_eligibility_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
             && !u256_from_big_endian(&request.value).is_zero()
             && !dpos_selector_is_payable(selector)
@@ -1250,11 +1251,56 @@ impl FinalChain {
             }
         }
         let code_retval = match selector {
+            DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR => {
+                let validator = match decode_abi_address_argument(
+                    &request.input,
+                    "isValidatorEligible(address)",
+                ) {
+                    Ok(validator) => validator,
+                    Err(error) => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: error.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                };
+                let (snapshot, effective_block) =
+                    self.dpos_eligibility_snapshot(request.block_number)?;
+                abi_word_from_bool(self.dpos_validator_is_eligible(
+                    &snapshot,
+                    effective_block,
+                    validator,
+                ))
+                .to_vec()
+            }
             DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => {
-                let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
-                abi_word_from_u64(
-                    self.dpos_effective_total_vote_count(&snapshot, request.block_number)?,
-                )
+                let (snapshot, effective_block) =
+                    self.dpos_eligibility_snapshot(request.block_number)?;
+                abi_word_from_u64(self.dpos_effective_total_vote_count(&snapshot, effective_block)?)
+                    .to_vec()
+            }
+            DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR => {
+                let validator = match decode_abi_address_argument(
+                    &request.input,
+                    "getValidatorEligibleVotesCount(address)",
+                ) {
+                    Ok(validator) => validator,
+                    Err(error) => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: error.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                };
+                let (snapshot, effective_block) =
+                    self.dpos_eligibility_snapshot(request.block_number)?;
+                abi_word_from_u64(self.dpos_effective_vote_count(
+                    &snapshot,
+                    effective_block,
+                    validator,
+                ))
                 .to_vec()
             }
             DPOS_GET_VALIDATOR_SELECTOR => {
@@ -2841,6 +2887,10 @@ impl FinalChain {
         // loaded, this remains frozen for the whole block so a proof earlier in
         // the transaction stream is not visible to a later read transaction.
         let mut slashing_read_snapshot = None;
+        // Loaded lazily only when a DPoS eligibility read appears. Legacy
+        // precompile reads use the delayed reader published after the preceding
+        // block, so mutations earlier in this block must remain invisible.
+        let mut dpos_eligibility_read_snapshot = None;
         let delayed_snapshot_block = block_number.saturating_sub(self.dpos_delegation_delay);
         let slashing_validator_snapshot = {
             let snapshots = self
@@ -2907,6 +2957,9 @@ impl FinalChain {
                     | DposTransaction::SetValidatorInfo { .. }
                     | DposTransaction::SetCommission { .. }
                     | DposTransaction::ClaimAllRewards { .. }
+                    | DposTransaction::IsValidatorEligible(_)
+                    | DposTransaction::GetTotalEligibleVotesCount
+                    | DposTransaction::GetValidatorEligibleVotesCount(_)
                     | DposTransaction::PhalaenopsisEscrowTransfer
                     | DposTransaction::MalformedMutation { .. }
                     | DposTransaction::MethodNotSupported => {}
@@ -2990,6 +3043,10 @@ impl FinalChain {
                     if transaction.gas_limit < intrinsic_gas {
                         status_code = 0;
                         gas_used = transaction.gas_limit;
+                        // Legacy Cornus advances the sender nonce even when
+                        // intrinsic gas validation fails. Earlier periods leave
+                        // the nonce unchanged while still consuming the limit.
+                        advance_nonce = block_number >= self.dpos_cornus_period;
                     } else if transaction.gas_limit < required_gas {
                         status_code = 0;
                         gas_used = intrinsic_gas;
@@ -3059,6 +3116,33 @@ impl FinalChain {
 
                     contract_outcome = Some(match contract_tx {
                         NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
+                            DposTransaction::IsValidatorEligible(Err(_))
+                            | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
+                                DposApplyOutcome::contract_failure()
+                            }
+                            eligibility_tx @ (DposTransaction::IsValidatorEligible(Ok(_))
+                            | DposTransaction::GetTotalEligibleVotesCount
+                            | DposTransaction::GetValidatorEligibleVotesCount(
+                                Ok(_),
+                            )) => {
+                                if dpos_eligibility_read_snapshot.is_none() {
+                                    let effective_block = head_block_number
+                                        .saturating_sub(self.dpos_delegation_delay);
+                                    dpos_eligibility_read_snapshot = Some((
+                                        self.dpos_snapshot(head_block_number)?,
+                                        effective_block,
+                                    ));
+                                }
+                                let (snapshot, effective_block) =
+                                    dpos_eligibility_read_snapshot.as_ref().ok_or_else(|| {
+                                        anyhow::anyhow!("DPoS eligibility snapshot is missing")
+                                    })?;
+                                self.apply_dpos_eligibility_read(
+                                    snapshot,
+                                    *effective_block,
+                                    eligibility_tx,
+                                )?
+                            }
                             DposTransaction::Register(registration) => self
                                 .apply_dpos_registration(
                                     &mut dpos_snapshot,
@@ -3377,6 +3461,19 @@ impl FinalChain {
             .cloned())
     }
 
+    /// Loads the delayed DPoS reader state used by legacy eligibility methods.
+    ///
+    /// Both the snapshot selection and hardfork/jail evaluation block are
+    /// delayed. This prevents a current-block mutation from being combined
+    /// with historical stake when evaluating validator eligibility.
+    fn dpos_eligibility_snapshot(
+        &self,
+        block_number: u64,
+    ) -> Result<(DposSnapshot, u64), anyhow::Error> {
+        let effective_block = block_number.saturating_sub(self.dpos_delegation_delay);
+        Ok((self.dpos_snapshot(block_number)?, effective_block))
+    }
+
     /// Returns the DPoS snapshot produced for the requested finalized block.
     ///
     /// Read-only DPoS precompile calls use the current finalized validator
@@ -3535,6 +3632,12 @@ impl FinalChain {
         request: &FinalChainCallRequest,
         selector: [u8; 4],
     ) -> Result<u64, anyhow::Error> {
+        if is_dpos_eligibility_read_selector(selector)
+            && request.block_number >= self.dpos_cornus_period
+            && !u256_from_big_endian(&request.value).is_zero()
+        {
+            return Ok(0);
+        }
         if is_dpos_mutation_selector(selector) {
             if request.block_number >= self.dpos_cornus_period
                 && !u256_from_big_endian(&request.value).is_zero()
@@ -3565,7 +3668,9 @@ impl FinalChain {
             );
         }
         match selector {
-            DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => Ok(DPOS_GET_TOTAL_ELIGIBLE_VOTES_GAS),
+            DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR
+            | DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR
+            | DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR => Ok(DPOS_DEFAULT_METHOD_GAS),
             DPOS_GET_VALIDATOR_SELECTOR => Ok(DPOS_GET_METHOD_GAS),
             DPOS_GET_VALIDATORS_SELECTOR => {
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
@@ -3724,6 +3829,74 @@ impl FinalChain {
             return 0;
         }
         *snapshot.vote_counts.get(&validator).unwrap_or(&0)
+    }
+
+    /// Applies the legacy `isValidatorEligible(address)` threshold and jail rules.
+    ///
+    /// Eligibility is a stake-threshold predicate, not an alias for nonzero
+    /// vote count. The caller supplies the delayed reader block so hardfork and
+    /// jail-expiry behavior is evaluated against the same state as stake.
+    fn dpos_validator_is_eligible(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+        validator: [u8; 20],
+    ) -> bool {
+        if self.cacti_active(block_number)
+            && self.slashing_is_jailed(snapshot, block_number, validator)
+        {
+            return false;
+        }
+        let stake = snapshot
+            .total_stakes
+            .get(&validator)
+            .map(|stake| u256_from_big_endian(stake))
+            .unwrap_or_default();
+        stake >= u256_from_big_endian(&self.dpos_eligibility_balance_threshold)
+    }
+
+    /// Executes one decoded fixed-gas DPoS eligibility read against a frozen snapshot.
+    ///
+    /// Valid reads return a single ABI word without logs or mutation. Recognized
+    /// selectors with malformed address calldata return a contract failure so
+    /// the transaction layer can retain the selector's action gas.
+    fn apply_dpos_eligibility_read(
+        &self,
+        snapshot: &DposSnapshot,
+        effective_block: u64,
+        transaction: DposTransaction,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        Ok(match transaction {
+            DposTransaction::IsValidatorEligible(Ok(validator)) => {
+                DposApplyOutcome::success_with_return(
+                    abi_word_from_bool(self.dpos_validator_is_eligible(
+                        snapshot,
+                        effective_block,
+                        validator,
+                    ))
+                    .to_vec(),
+                )
+            }
+            DposTransaction::GetTotalEligibleVotesCount => DposApplyOutcome::success_with_return(
+                abi_word_from_u64(self.dpos_effective_total_vote_count(snapshot, effective_block)?)
+                    .to_vec(),
+            ),
+            DposTransaction::GetValidatorEligibleVotesCount(Ok(validator)) => {
+                DposApplyOutcome::success_with_return(
+                    abi_word_from_u64(self.dpos_effective_vote_count(
+                        snapshot,
+                        effective_block,
+                        validator,
+                    ))
+                    .to_vec(),
+                )
+            }
+            DposTransaction::IsValidatorEligible(Err(_))
+            | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
+                DposApplyOutcome::contract_failure()
+            }
+            _ => anyhow::bail!("non-eligibility transaction routed to eligibility reader"),
+        })
     }
 
     fn dpos_effective_total_vote_count(
@@ -7840,6 +8013,9 @@ fn dpos_transaction_required_gas(
         )
         .unwrap_or(0),
         DposTransaction::MethodNotSupported => 0,
+        DposTransaction::IsValidatorEligible(_)
+        | DposTransaction::GetTotalEligibleVotesCount
+        | DposTransaction::GetValidatorEligibleVotesCount(_) => DPOS_DEFAULT_METHOD_GAS,
         DposTransaction::PhalaenopsisEscrowTransfer => DPOS_PHALA_ESCROW_TRANSFER_GAS,
         DposTransaction::Register(_) => DPOS_REGISTER_VALIDATOR_GAS,
         DposTransaction::Delegate { .. } => DPOS_DELEGATE_GAS,
@@ -7900,6 +8076,16 @@ fn is_dpos_mutation_selector(selector: [u8; 4]) -> bool {
             | DPOS_CANCEL_UNDELEGATE_V2_SELECTOR
             | DPOS_REDELEGATE_SELECTOR
             | DPOS_PHALA_ESCROW_TRANSFER_SELECTOR
+    )
+}
+
+/// Returns whether a selector belongs to the fixed-gas delayed eligibility surface.
+fn is_dpos_eligibility_read_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR
+            | DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR
+            | DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR
     )
 }
 
@@ -8352,6 +8538,17 @@ fn decode_dpos_transaction_for_execution(
         };
     }
     match selector {
+        DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR => DposTransaction::IsValidatorEligible(
+            decode_abi_address_argument(input, "isValidatorEligible(address)")
+                .map_err(|error| error.to_string()),
+        ),
+        DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR => DposTransaction::GetTotalEligibleVotesCount,
+        DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR => {
+            DposTransaction::GetValidatorEligibleVotesCount(
+                decode_abi_address_argument(input, "getValidatorEligibleVotesCount(address)")
+                    .map_err(|error| error.to_string()),
+            )
+        }
         DPOS_CLAIM_REWARDS_SELECTOR
         | DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR
         | DPOS_SET_VALIDATOR_INFO_SELECTOR
@@ -8777,6 +8974,9 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::SetValidatorInfo { .. }
         | DposTransaction::SetCommission { .. }
         | DposTransaction::ClaimAllRewards { .. }
+        | DposTransaction::IsValidatorEligible(_)
+        | DposTransaction::GetTotalEligibleVotesCount
+        | DposTransaction::GetValidatorEligibleVotesCount(_)
         | DposTransaction::PhalaenopsisEscrowTransfer
         | DposTransaction::MalformedMutation { .. }
         | DposTransaction::MethodNotSupported => {}
@@ -8935,6 +9135,13 @@ impl DposApplyOutcome {
 
 #[derive(Clone)]
 enum DposTransaction {
+    /// Fixed-gas delayed eligibility read. Decode failures remain typed so
+    /// native execution can charge action gas and publish a failed receipt.
+    IsValidatorEligible(std::result::Result<[u8; 20], String>),
+    /// Fixed-gas delayed total eligible vote-count read.
+    GetTotalEligibleVotesCount,
+    /// Fixed-gas delayed per-validator eligible vote-count read.
+    GetValidatorEligibleVotesCount(std::result::Result<[u8; 20], String>),
     Register(DposRegistration),
     Delegate {
         delegator: [u8; 20],
@@ -9358,14 +9565,14 @@ mod tests {
         let intrinsic = intrinsic_gas(&tx.data, false).unwrap();
         let action_gas = match tx.receiver {
             Some(DPOS_CONTRACT_ADDRESS) => {
-                let dpos_tx = decode_dpos_transaction(
+                let dpos_tx = decode_dpos_transaction_for_execution(
                     &tx.data,
                     tx.sender,
                     block_number,
                     final_chain.rewards_config.fix_claim_all_block_num,
                     final_chain.dpos_cornus_period,
-                )
-                .unwrap();
+                    final_chain.dpos_phalaenopsis_period,
+                );
                 let snapshot =
                     matches!(dpos_tx, DposTransaction::ClaimAllRewards { .. }).then(|| {
                         final_chain
@@ -9554,6 +9761,12 @@ mod tests {
         let mut input = DPOS_GET_VALIDATOR_SELECTOR.to_vec();
         input.extend_from_slice(&[0u8; 12]);
         input.extend_from_slice(&validator);
+        input
+    }
+
+    fn dpos_eligibility_address_input(selector: [u8; 4], validator: [u8; 20]) -> Vec<u8> {
+        let mut input = selector.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
         input
     }
 
@@ -11446,17 +11659,78 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(total_votes.code_err, "");
+        assert_eq!(total_votes.gas_used, DPOS_DEFAULT_METHOD_GAS);
         assert_eq!(
             u256_from_big_endian(&total_votes.code_retval),
             U256::from(10u64)
         );
 
-        let mut low_gas_total_votes_request =
-            dpos_call_request(0, DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec());
-        low_gas_total_votes_request.gas_limit = 0x5330;
-        let low_gas_total_votes = final_chain.call(low_gas_total_votes_request).unwrap();
-        assert_eq!(low_gas_total_votes.code_err, "out of gas");
-        assert_eq!(low_gas_total_votes.gas_used, 0x5330);
+        let eligible = final_chain
+            .call(dpos_call_request(
+                0,
+                dpos_eligibility_address_input(DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, validator),
+            ))
+            .unwrap();
+        assert_eq!(eligible.code_err, "");
+        assert_eq!(eligible.gas_used, DPOS_DEFAULT_METHOD_GAS);
+        assert_eq!(u256_from_big_endian(&eligible.code_retval), U256::one());
+
+        let validator_votes = final_chain
+            .call(dpos_call_request(
+                0,
+                dpos_eligibility_address_input(
+                    DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR,
+                    validator,
+                ),
+            ))
+            .unwrap();
+        assert_eq!(validator_votes.code_err, "");
+        assert_eq!(validator_votes.gas_used, DPOS_DEFAULT_METHOD_GAS);
+        assert_eq!(
+            u256_from_big_endian(&validator_votes.code_retval),
+            U256::from(10u64)
+        );
+
+        let missing_eligible = final_chain
+            .call(dpos_call_request(
+                0,
+                dpos_eligibility_address_input(DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, [0x99; 20]),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&missing_eligible.code_retval),
+            U256::zero()
+        );
+
+        let mut trailing_input =
+            dpos_eligibility_address_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, validator);
+        trailing_input.extend_from_slice(&[0xaa; 32]);
+        let trailing = final_chain
+            .call(dpos_call_request(0, trailing_input))
+            .unwrap();
+        assert_eq!(trailing.code_err, "");
+        assert_eq!(
+            u256_from_big_endian(&trailing.code_retval),
+            U256::from(10u64)
+        );
+
+        let malformed = final_chain
+            .call(dpos_call_request(
+                0,
+                DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR.to_vec(),
+            ))
+            .unwrap();
+        assert!(!malformed.code_err.is_empty());
+        assert_eq!(malformed.gas_used, DPOS_DEFAULT_METHOD_GAS);
+
+        let mut nonpayable = dpos_call_request(
+            0,
+            dpos_eligibility_address_input(DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, validator),
+        );
+        nonpayable.value = vec![1];
+        let nonpayable = final_chain.call(nonpayable).unwrap();
+        assert_eq!(nonpayable.code_err, "DPoS method is not payable");
+        assert_eq!(nonpayable.gas_used, 0);
 
         let validator_info = final_chain
             .call(dpos_call_request(0, get_validator_input(validator)))
@@ -11479,6 +11753,346 @@ mod tests {
         drop(final_chain);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn eligibility_reads_use_delayed_threshold_and_jail_expiry_state() {
+        let path = temp_db_path("eligibility-read-delayed-jail");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x17; 20];
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000,
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(1_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+                delegation_delay: 1,
+                ..Default::default()
+            },
+            FinalChainRewardsConfig {
+                magnolia_period: 0,
+                cacti_period: 0,
+                cornus_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut delayed = final_chain.dpos_snapshot(0).unwrap();
+        delayed.slashing_jail_blocks.insert(validator, 0);
+        delayed.slashing_jailed_validators.push(validator);
+        let after_expiry = delayed.clone();
+        {
+            let mut snapshots = final_chain.dpos_snapshots.lock().unwrap();
+            snapshots.insert(0, delayed.clone());
+            snapshots.insert(1, after_expiry);
+        }
+
+        let jailed = final_chain
+            .call(dpos_call_request(
+                1,
+                dpos_eligibility_address_input(DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, validator),
+            ))
+            .unwrap();
+        assert_eq!(u256_from_big_endian(&jailed.code_retval), U256::zero());
+        let jailed_votes = final_chain
+            .call(dpos_call_request(
+                1,
+                dpos_eligibility_address_input(
+                    DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR,
+                    validator,
+                ),
+            ))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&jailed_votes.code_retval),
+            U256::zero()
+        );
+
+        let expired = final_chain
+            .call(dpos_call_request(
+                2,
+                dpos_eligibility_address_input(DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, validator),
+            ))
+            .unwrap();
+        assert_eq!(u256_from_big_endian(&expired.code_retval), U256::one());
+
+        let mut current = delayed.clone();
+        current.total_stakes.insert(validator, Vec::new());
+        current.vote_counts.insert(validator, 0);
+        current.total_vote_count = 0;
+        let frozen_read = final_chain
+            .apply_dpos_eligibility_read(
+                &delayed,
+                1,
+                DposTransaction::GetValidatorEligibleVotesCount(Ok(validator)),
+            )
+            .unwrap();
+        let current_read = final_chain
+            .apply_dpos_eligibility_read(
+                &current,
+                1,
+                DposTransaction::GetValidatorEligibleVotesCount(Ok(validator)),
+            )
+            .unwrap();
+        assert_eq!(u256_from_big_endian(&frozen_read.code_retval), U256::one());
+        assert_eq!(
+            u256_from_big_endian(&current_read.code_retval),
+            U256::zero()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn native_eligibility_reads_preserve_value_failure_and_nonce_boundaries() {
+        let pre_path = temp_db_path("native-eligibility-read-pre-cornus");
+        let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
+        let sender = [0x21; 20];
+        let validator = [0x22; 20];
+        let initial_balance = U256::from(1_000_000u64);
+        let initial_dpos_balance = U256::from(10_000u64);
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            ..Default::default()
+        };
+        let pre_chain = FinalChain::new_with_rewards_config(
+            pre_storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(sender, initial_balance)],
+            vec![genesis_validator(validator, initial_dpos_balance)],
+            dpos_config.clone(),
+            FinalChainRewardsConfig {
+                cornus_period: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let valid_total_input = DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR.to_vec();
+        let malformed_input = DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR.to_vec();
+        let unknown_input = vec![0xde, 0xad, 0xbe, 0xef];
+        let valid_validator_input =
+            dpos_eligibility_address_input(DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR, validator);
+        let intrinsic_oog_limit = intrinsic_gas(&valid_validator_input, false).unwrap() - 1;
+        let action_oog_limit = intrinsic_gas(&valid_validator_input, false).unwrap();
+        let pre_transactions = vec![
+            test_transaction(
+                0x31,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::from(7u64),
+                U256::one(),
+                100_000,
+                valid_total_input.clone(),
+                vec![0xc1, 0x31],
+            ),
+            test_transaction(
+                0x32,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::from(9u64),
+                U256::one(),
+                100_000,
+                malformed_input,
+                vec![0xc1, 0x32],
+            ),
+            test_transaction(
+                0x33,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::from(11u64),
+                U256::one(),
+                100_000,
+                unknown_input,
+                vec![0xc1, 0x33],
+            ),
+            test_transaction(
+                0x34,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::zero(),
+                U256::one(),
+                intrinsic_oog_limit,
+                valid_validator_input.clone(),
+                vec![0xc1, 0x34],
+            ),
+            test_transaction(
+                0x35,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::zero(),
+                U256::one(),
+                action_oog_limit,
+                valid_validator_input.clone(),
+                vec![0xc1, 0x35],
+            ),
+            test_transaction(
+                0x36,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                4,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                valid_validator_input.clone(),
+                vec![0xc1, 0x36],
+            ),
+        ];
+        let pre_execution = pre_chain
+            .execute_native_transactions(1, &pre_transactions)
+            .unwrap();
+        assert_eq!(
+            pre_execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![1, 0, 0, 0, 0, 1]
+        );
+        assert_eq!(
+            pre_execution.receipts[0].gas_used,
+            intrinsic_gas(&valid_total_input, false).unwrap() + DPOS_DEFAULT_METHOD_GAS
+        );
+        assert_eq!(
+            pre_execution.receipts[1].gas_used,
+            intrinsic_gas(&DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, false).unwrap()
+                + DPOS_DEFAULT_METHOD_GAS
+        );
+        assert_eq!(pre_execution.receipts[3].gas_used, intrinsic_oog_limit);
+        assert_eq!(pre_execution.receipts[4].gas_used, action_oog_limit);
+        assert!(
+            pre_execution
+                .receipts
+                .iter()
+                .all(|receipt| receipt.logs.is_empty())
+        );
+        assert_eq!(pre_execution.accounts.get(&sender).unwrap().nonce, 5);
+        assert_eq!(
+            u256_from_big_endian(
+                &pre_execution
+                    .accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance
+            ),
+            initial_dpos_balance + U256::from(7u64)
+        );
+        assert_eq!(
+            pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .nonce,
+            1
+        );
+
+        let cornus_path = temp_db_path("native-eligibility-read-cornus");
+        let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
+        let cornus_chain = FinalChain::new_with_rewards_config(
+            cornus_storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(sender, initial_balance)],
+            vec![genesis_validator(validator, initial_dpos_balance)],
+            dpos_config,
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cornus_intrinsic = intrinsic_gas(&valid_validator_input, false).unwrap();
+        let cornus_transactions = vec![
+            test_transaction(
+                0x41,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::from(13u64),
+                U256::one(),
+                100_000,
+                valid_validator_input.clone(),
+                vec![0xc1, 0x41],
+            ),
+            test_transaction(
+                0x42,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::zero(),
+                U256::one(),
+                cornus_intrinsic - 1,
+                valid_validator_input.clone(),
+                vec![0xc1, 0x42],
+            ),
+            test_transaction(
+                0x43,
+                sender,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::zero(),
+                U256::one(),
+                100_000,
+                valid_validator_input,
+                vec![0xc1, 0x43],
+            ),
+        ];
+        let cornus_execution = cornus_chain
+            .execute_native_transactions(1, &cornus_transactions)
+            .unwrap();
+        assert_eq!(
+            cornus_execution
+                .receipts
+                .iter()
+                .map(|receipt| (receipt.status_code, receipt.gas_used))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, cornus_intrinsic),
+                (0, cornus_intrinsic - 1),
+                (1, cornus_intrinsic + DPOS_DEFAULT_METHOD_GAS),
+            ]
+        );
+        assert_eq!(cornus_execution.accounts.get(&sender).unwrap().nonce, 3);
+        assert_eq!(
+            u256_from_big_endian(
+                &cornus_execution
+                    .accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance
+            ),
+            initial_dpos_balance
+        );
+        assert_eq!(
+            cornus_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .nonce,
+            1
+        );
+
+        drop(pre_chain);
+        drop(pre_storage);
+        drop(cornus_chain);
+        drop(cornus_storage);
+        let _ = std::fs::remove_dir_all(pre_path);
+        let _ = std::fs::remove_dir_all(cornus_path);
     }
 
     #[test]

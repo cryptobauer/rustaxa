@@ -3538,6 +3538,44 @@ fixture in Rust-enabled and pure-C++ FinalChain builds, `rewrite-validate-fast`,
 `rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, the pre-commit hook, formatting,
 and whitespace checks. Existing repository clippy and CMake warnings remain unchanged.
 
+### CRW-08 Fixed-Gas DPoS Eligibility Reads
+
+This bounded follow-up completes the native and direct-call surface for the three delayed eligibility queries.
+
+- `isValidatorEligible(address)`, `getTotalEligibleVotesCount()`, and
+  `getValidatorEligibleVotesCount(address)` now share the legacy 20,000 action-gas rule. The total-count direct call no
+  longer uses the incorrect 22,000 estimate, and malformed recognized address inputs return contract errors after fixed
+  gas instead of escaping as Rust execution failures.
+- Direct calls and native transactions select the configured delayed snapshot and evaluate the threshold/vote schedule,
+  Cacti activation, jail membership, and jail expiry at that delayed block. Native execution freezes the preceding-head
+  view for the whole block, so an earlier registration, delegation, undelegation, or slashing proof cannot affect a later
+  eligibility-read result in the same block.
+- Before Cornus, legacy DPoS reads accept value in actual EVM execution; Rust commits that value to the DPoS account only
+  after a recognized read succeeds. At Cornus and later, nonpayability is checked before ABI decoding: value-bearing
+  reads consume intrinsic gas, advance the sender nonce, and roll value back. Malformed recognized reads retain 20,000
+  action gas before Cornus, unknown selectors retain zero action gas, and action-out-of-gas calls commit only the normal
+  gas/nonce effects.
+- Legacy Cornus also advances the sender nonce when intrinsic gas is insufficient, while earlier periods leave it
+  unchanged. The shared Rust native transaction state machine now applies that fork rule, and focused plus dual-mode
+  coverage protects both sides with same-sender continuation.
+- A restart-backed dual-mode FinalChain fixture exercises all three successful pre-Cornus reads, malformed and action-
+  and intrinsic-out-of-gas calls, Cornus nonpayability, Cornus intrinsic-out-of-gas, and ordinary continuations. It
+  protects exact receipt RLP, gas/cumulative/header gas, empty logs/bloom, sender/receiver balances and nonces, DPoS
+  custody and nonce, and persisted receipts. Direct-call and focused Rust tests protect ABI return values, delayed
+  threshold/vote/jail semantics, trailing calldata, and frozen same-block visibility.
+
+Validation passed the three focused Rust eligibility tests, all 709 `rustaxa-consensus` tests, the restart-backed fixture
+in Rust-enabled and pure-C++ builds, the corrected `RPCTest.eth_call` boundary, `rewrite-validate-fast`,
+`rewrite-validate-final-chain`, `rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, the
+repository pre-commit hook, and whitespace validation.
+
+No CXX carrier, bridge handle/export, shim, module flag, compatibility-only surface, or DPoS snapshot schema changes, so
+`CRW-07` has no inventory delta. Historical Rust execution may contain unsupported or mispriced eligibility reads and
+pre-correction Cornus intrinsic-out-of-gas nonces. Because receipts, cumulative gas, balances, nonces, and later
+affordability may differ, correction requires replay/rebuild from the first affected transaction or a separately
+designed migration rather than inferred account repairs. `CRW-08` remains active for remaining static and dynamic DPoS
+read transactions, the remaining DPoS method/failure families, and the explicit historical reward reference graph.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

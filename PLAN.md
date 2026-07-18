@@ -528,12 +528,14 @@ reference builds retain the untouched legacy RewardsStats header and source.
   - non-genesis DPoS queries still return typed errors or throw when the queried block has not been finalized through
     Rust snapshot maintenance; DPoS transitions beyond the supported validator-registration/delegation/owner-update/slashing subset and legacy databases without Rust
     account snapshots remain explicit gaps.
-  - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `getTotalEligibleVotesCount()`,
-    `getValidator(address)`, `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,
+  - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `isValidatorEligible(address)`,
+    `getTotalEligibleVotesCount()`, `getValidatorEligibleVotesCount(address)`, `getValidator(address)`,
+    `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,
     `getTotalDelegation(address)`, `getDelegations(address,uint32)`, `getUndelegationsV2(address,uint32)`,
-    and `getUndelegationV2(address,address,uint64)`. These precompile reads
-    use the exact finalized-block snapshot, while DAG authorization and explicit eligibility APIs still use the
-    configured delegation-delay snapshot.
+    and `getUndelegationV2(address,address,uint64)`. The three eligibility reads use the configured delayed snapshot and
+    delayed hardfork/jail evaluation block, matching the legacy delayed reader; the remaining selected reads use the
+    exact finalized-block snapshot. The fixed-gas eligibility family is also executable as native finalized
+    transactions with its Cornus nonpayability behavior.
 - Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or

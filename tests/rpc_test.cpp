@@ -1237,17 +1237,15 @@ TEST_F(RPCTest, eth_call) {
   }
 
   {
-    // Tested on Ethereum mainnet node.
-    // ERROR: out of gas
-    // Sending from address with no funds. Default `gasPrice == 0`, no funds needed.
-    // Gas value lower then needed intrinsic gas, but lower then total required gas
-    // '{"method":"eth_call","params":[{"from":"0xeEA2524616B61E12c0Cb00a41dA78Ded1635F566","to":"0xdac17f958d2ee523a2206206994597c13d831ec7","gas":"0x5250","data":"0x3eaaf86b"},"latest"]}'
+    // The DPoS method's corrected 20,000 action-gas requirement is below the
+    // transaction's intrinsic-gas floor, so an intrinsic-valid call succeeds.
+    // '{"method":"eth_call","params":[{"from":"0xeEA2524616B61E12c0Cb00a41dA78Ded1635F566","to":"0xdac17f958d2ee523a2206206994597c13d831ec7","gas":"0x5330","data":"0x3eaaf86b"},"latest"]}'
     Json::Value trx(Json::objectValue);
     trx["from"] = empty_address;
     trx["to"] = dpos_contract;
     trx["gas"] = "0x5330";
     trx["data"] = get_total_eligible_method;
-    EXPECT_THROW_WITH(eth_json_rpc->eth_call(trx, "latest"), jsonrpc::JsonRpcException, "out of gas");
+    EXPECT_EQ(eth_json_rpc->eth_call(trx, "latest"), total_eligible_str);
   }
 
   {
