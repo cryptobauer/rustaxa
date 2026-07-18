@@ -11155,6 +11155,153 @@ mod tests {
     }
 
     #[test]
+    fn dpos_v2_request_consumption_errors_are_ordered_and_state_is_unchanged() {
+        enum RequestCall {
+            Confirm,
+            Cancel,
+        }
+
+        struct Case {
+            name: &'static str,
+            call: RequestCall,
+            delegator: [u8; 20],
+            validator: [u8; 20],
+            request_id: u64,
+            block_number: u64,
+            expected: DposContractError,
+            expected_message: &'static str,
+        }
+
+        let path = temp_db_path("dpos-typed-v2-consumption-errors");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let delegator = [0xA1; 20];
+        let wrong_delegator = [0xA2; 20];
+        let active_validator = [0xA3; 20];
+        let absent_validator = [0xA4; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(active_validator, U256::from(10u64))],
+            U256::one(),
+            U256::one(),
+            U256::from(100u64),
+        );
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let active_request_id = create_undelegation_v2(
+            &mut snapshot,
+            delegator,
+            active_validator,
+            vec![1u8; 32],
+            10,
+        )
+        .unwrap();
+        create_undelegation_v2(
+            &mut snapshot,
+            delegator,
+            absent_validator,
+            vec![2u8; 32],
+            10,
+        )
+        .unwrap();
+        let snapshot_before = snapshot.clone();
+
+        let cases = [
+            Case {
+                name: "confirm_missing_id",
+                call: RequestCall::Confirm,
+                delegator,
+                validator: active_validator,
+                request_id: active_request_id + 1,
+                block_number: 9,
+                expected: DposContractError::NonExistentUndelegation,
+                expected_message: "Undelegation does not exist",
+            },
+            Case {
+                name: "confirm_wrong_caller",
+                call: RequestCall::Confirm,
+                delegator: wrong_delegator,
+                validator: active_validator,
+                request_id: active_request_id,
+                block_number: 9,
+                expected: DposContractError::NonExistentUndelegation,
+                expected_message: "Undelegation does not exist",
+            },
+            Case {
+                name: "confirm_locked",
+                call: RequestCall::Confirm,
+                delegator,
+                validator: active_validator,
+                request_id: active_request_id,
+                block_number: 9,
+                expected: DposContractError::LockedUndelegation,
+                expected_message: "Undelegation is not yet ready to be withdrawn",
+            },
+            Case {
+                name: "cancel_missing_id",
+                call: RequestCall::Cancel,
+                delegator,
+                validator: active_validator,
+                request_id: 99,
+                block_number: 0,
+                expected: DposContractError::NonExistentUndelegation,
+                expected_message: "Undelegation does not exist",
+            },
+            Case {
+                name: "cancel_terminally_absent_validator",
+                call: RequestCall::Cancel,
+                delegator,
+                validator: absent_validator,
+                request_id: 2,
+                block_number: 0,
+                expected: DposContractError::NonExistentValidator,
+                expected_message: "Validator does not exist",
+            },
+        ];
+
+        for case in cases {
+            let mut working_snapshot = snapshot_before.clone();
+            let mut accounts = HashMap::new();
+
+            let outcome = match case.call {
+                RequestCall::Confirm => final_chain.apply_dpos_confirm_undelegate_v2(
+                    &mut working_snapshot,
+                    &mut accounts,
+                    case.delegator,
+                    case.validator,
+                    case.request_id,
+                    case.block_number,
+                ),
+                RequestCall::Cancel => final_chain.apply_dpos_cancel_undelegate_v2(
+                    &mut working_snapshot,
+                    &mut accounts,
+                    case.delegator,
+                    case.validator,
+                    case.request_id,
+                ),
+            }
+            .unwrap();
+
+            assert_eq!(
+                outcome.contract_error,
+                Some(case.expected.clone()),
+                "{} contract_error mismatch",
+                case.name
+            );
+            assert_eq!(
+                case.expected.legacy_message(),
+                case.expected_message,
+                "{} legacy message mismatch",
+                case.name
+            );
+            assert_eq!(working_snapshot, snapshot_before, "{} snapshot", case.name);
+            assert!(accounts.is_empty(), "{} staging state", case.name);
+        }
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_fails_undelegate_v2_status_zero_and_continues_same_sender() {
         struct Case {
             name: &'static str,

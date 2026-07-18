@@ -3884,6 +3884,31 @@ Validation passed both focused Rust tests, all 770 `rustaxa-consensus` tests, th
 validation, and the repository pre-commit hook with the unchanged warning baseline, followed by independent configured
 review.
 
+### CRW-08 Native DPoS V2 Request-Consumption Failure Evidence
+
+Cornus V2 confirmation and cancellation now have explicit failure-transcript parity evidence without production-code
+changes. `confirmUndelegateV2(address,uint64)` and `cancelUndelegateV2(address,uint64)` first index a request by caller,
+validator, and ID, making missing IDs and wrong callers the same `Undelegation does not exist` business failure.
+Confirmation next rejects an unexpired request with `Undelegation is not yet ready to be withdrawn`; cancellation next
+requires the validator and returns `Validator does not exist` when a pre-Magnolia full undelegation retained custody
+history after terminal validator deletion. An unlocked confirmation deliberately remains valid without the validator.
+
+The restart-backed dual-mode fixture creates request ID one while deleting its zero-stake validator, then executes
+missing and locked confirmations, missing and validator-absent cancellations, and a later same-sender transfer. Confirm
+failures consume calldata intrinsic gas plus 20,000 action gas; cancel failures consume intrinsic plus 60,000. All four
+publish exact status-zero receipt RLP with empty logs/bloom, charge gas while advancing nonce, preserve escrow and the
+request/last-ID state, and leave the validator absent. Block gas, cumulative gas, account state, request queries, and
+every receipt remain identical after restart. A compact Rust test separately protects typed branch order, exact legacy
+messages, wrong-caller behavior, and staged-state rollback. There is no production, bridge, carrier, handle, export,
+module-flag, snapshot-schema, migration, or `CRW-07` inventory change. Rust-only duplicate-key corruption remains a
+separate invariant-validation question because the legacy iterable map cannot represent it naturally.
+
+Validation passed the focused Rust request-consumption test, all 771 `rustaxa-consensus` tests, the focused restart-backed
+dual-mode C++ fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the Tier 3
+`rewrite-validate-final-chain-parity` differential gate, `rewrite-bridge-inventory-guard`, skill validation, whitespace
+validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` after the restart fixture
+also reloaded and compared the exact block-two header, gas usage, and DPoS escrow balance.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

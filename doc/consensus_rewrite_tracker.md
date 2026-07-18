@@ -772,6 +772,31 @@ Rust-enabled C++ fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain
 validation, and the repository pre-commit hook with the unchanged warning baseline, followed by independent configured
 review.
 
+The next bounded `CRW-08` evidence slice closes Cornus V2 request-consumption failure parity for
+`confirmUndelegateV2(address,uint64)` and `cancelUndelegateV2(address,uint64)` without changing production logic. Both
+methods first index the request by caller, validator, and ID, so a missing ID or wrong caller returns
+`Undelegation does not exist`. Confirmation then rejects a still-locked request with
+`Undelegation is not yet ready to be withdrawn`; cancellation instead checks the retained validator and returns
+`Validator does not exist` when a pre-Magnolia terminal deletion left the request as custody history. Confirmation
+intentionally does not require the validator and can still succeed after unlock.
+
+The restart-backed dual-mode transcript creates one full V2 undelegation that deletes its zero-stake validator, then
+proves missing and locked confirmations at intrinsic plus 20,000 gas, missing and validator-absent cancellations at
+intrinsic plus 60,000 gas, and a successful later same-sender transfer. All four failures advance the sender nonce,
+charge gas only, publish exact status-zero receipt RLP with empty logs/bloom, preserve escrow and the request/last-ID
+state, and leave the validator absent across restart; all block-two receipts are reloaded and compared after restart.
+A compact Rust test protects the exact typed-error order, wrong-caller alias, legacy text, and unchanged staged state.
+No production, bridge, carrier, handle, module-flag, snapshot-schema, migration, or `CRW-07` inventory delta is
+introduced. Corrupt Rust-only duplicate V2 keys remain a separate invariant-validation question rather than a
+legacy-representable receipt branch. `CRW-08` remains active for the larger slashing-invalid-proof matrix and any other
+older failed-contract receipt family established by legacy audit.
+
+Validation passed the focused Rust request-consumption test, all 771 `rustaxa-consensus` tests, the focused restart-backed
+dual-mode C++ fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the Tier 3
+`rewrite-validate-final-chain-parity` differential gate, `rewrite-bridge-inventory-guard`, skill validation, whitespace
+validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` after the restart fixture
+also reloaded and compared the exact block-two header, gas usage, and DPoS escrow balance.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,
