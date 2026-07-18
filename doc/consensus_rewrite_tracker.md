@@ -413,6 +413,26 @@ below-minimum/new-pair behavior, maximum handling, and correction persistence. `
 block and ordered correction entries, so `CRW-07` records a carrier field delta but no new handle or export. `CRW-08`
 remains active for the remaining DPoS method/failure families.
 
+The next bounded `CRW-08` slice closes the terminal validator lifecycle for
+`claimCommissionRewards(address)`. After validating the owner, paying the exact commission pool, zeroing it, and
+emitting `CommissionRewardsClaimed`, Rust deletes a zero-stake validator before Magnolia or, from Magnolia onward, only
+when the combined V1/V2 pending-undelegation count is zero. Pending requests remain custody/history state and stay
+confirmable even when pre-Magnolia deletion removes the registration; V2 last-ID state is likewise retained. Deletion
+clears every validator-owned snapshot row plus the Rust-only same-validator corruption marker, so restart and fresh
+same-address registration cannot inherit stale metadata, VRF, ordering, reward, vote, or redelegation history. Registration
+also clears a marker left without validator rows by a pre-upgrade deletion, making that cleanup durable across an old
+snapshot restart. A
+metadata row without the corresponding stake row is classified as hard snapshot corruption before payout rather than
+as a terminal zero-stake validator. Focused Rust coverage protects pre-/post-Magnolia queue rules, V1 and V2 retention,
+failure rollback, restart, and re-registration. A dual-mode `native_dpos_*` FinalChain fixture protects exact current-ABI
+action gas, receipt/log/bloom, payout, and durable validator retention while a V2 request remains pending. The pure-C++
+reference keeps its observable pending counter after V2 confirmation in this path, whereas Rust intentionally uses the
+corrected combined live-queue view, so terminal deletion and fresh same-address registration remain Rust-focused coverage
+rather than a misleading common transcript. The legacy Magnolia-to-Phalaenopsis
+interval's conditional zero-reward persistence bug is not claimed as replay parity; modeling that interval would require
+a separate hardfork carrier. No CXX handle, carrier, export, shim, or module flag changes, so `CRW-07` has no inventory
+delta. `CRW-08` remains active for the remaining DPoS method/failure families and the explicit historical reward graph.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

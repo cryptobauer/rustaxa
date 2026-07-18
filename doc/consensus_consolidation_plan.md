@@ -3347,6 +3347,38 @@ state without changing validator stake, so a later reward-bearing call could eva
 This snapshot-only state adds no CXX carrier, handle, export, shim, or module flag, so `CRW-07` has no new inventory delta.
 Full reward-version graph ownership and a production-history replay fixture remain active `CRW-08` work.
 
+### CRW-08 Native DPoS Commission-Claim Terminal Lifecycle
+
+This bounded follow-up closes the validator-deletion behavior that follows a successful
+`claimCommissionRewards(address)` call.
+
+- The owner and validator are validated before mutation. A metadata row without a matching total-stake row is treated
+  as hard snapshot corruption, so Rust cannot pay from an orphaned validator record and then reinterpret the missing
+  stake as zero.
+- Rust pays the exact commission pool, emits `CommissionRewardsClaimed`, and zeros the pool before applying the legacy
+  deletion boundary. A zero-stake validator is deleted before Magnolia regardless of pending requests; at Magnolia and
+  later it is deleted only when the combined V1/V2 pending count is zero. This intentionally uses the corrected combined
+  queue view already established by the V1 lifecycle slice.
+- Pending V1/V2 requests and the V2 last-ID cursor survive validator deletion because they represent custody/history
+  state. Validator metadata, order, VRF key, reward rows, delegation rows, vote state, and the Rust-only
+  same-validator corruption marker are validator-owned and are removed, allowing a clean same-address registration
+  after restart. Successful registration also clears a marker left without validator rows by a pre-upgrade deletion, so
+  persisted upgrade residue cannot taint the fresh lifecycle.
+- The legacy Magnolia-to-Phalaenopsis interval sometimes left the zeroed reward row unpersisted while retaining a
+  validator with pending undelegations. Rust native finalization does not yet carry the Phalaenopsis boundary, so this
+  slice protects current-ABI lifecycle parity and pre-/post-Magnolia deletion semantics without claiming exact replay of
+  that historical storage-write bug.
+- Focused Rust tests cover terminal deletion, V1/V2 pending retention, the pre-Magnolia rule, owner and orphan-state
+  failures, restart durability, and re-registration. A dual-mode `FinalChainTest.native_dpos_*` fixture protects exact
+  action gas, receipt/log/bloom behavior, payout, and restart-backed retention while a V2 request remains pending. The
+  pure-C++ reference keeps its observable pending counter after V2 confirmation in this path, while Rust intentionally
+  uses the corrected combined live-queue view, so terminal deletion and fresh same-address registration are not claimed
+  as a common dual-mode transcript.
+
+No CXX carrier, handle, export, shim, module flag, or compatibility-only test surface changes, so `CRW-07` has no
+inventory delta. `CRW-08` remains active for the remaining method/failure families and the explicit historical reward
+reference graph.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

@@ -2714,6 +2714,162 @@ TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_
       1, 2, block_gas);
 }
 
+TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_pays_and_retains_pending_validator) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kGasPrice = 1'000'000'000;
+  constexpr uint64_t kActionGasPrice = 0;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kOwnerInitialBalance = 21'000;
+  constexpr uint64_t kSenderInitialBalance = 10'000'000'000'000'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair& validator = dag_proposer_keys;
+  const dev::KeyPair sender{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair receiver{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+  const auto to_u256 = [](const bytes& value, size_t offset) {
+    return u256("0x" + dev::toHex(bytes(value.begin() + offset, value.begin() + offset + 32)));
+  };
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_locking_period = 9;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 2;
+  cfg.genesis.state.hardforks.phalaenopsis_hf_block_num = 2;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 1;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  const auto pbft_vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo pbft_validator_info{pbft_proposer_keys.address(), owner.address(), pbft_vrf_public_key, 0,
+                                               "", "", {}};
+  pbft_validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info, pbft_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto query_validator = [&](const std::shared_ptr<FinalChain>& chain, const addr_t& who) {
+    return chain->call({
+        addr_t{},
+        kGasPrice,
+        kDposContract,
+        0,
+        0,
+        1000000,
+        util::EncodingSolidity::packFunctionCall("getValidator(address)", who),
+    });
+  };
+  const auto validator_exists = [&](const std::shared_ptr<FinalChain>& chain, const addr_t& who) {
+    try {
+      return query_validator(chain, who).code_err.empty();
+    } catch (const std::exception&) {
+      return false;
+    }
+  };
+  const auto get_commission_rewards = [&](const std::shared_ptr<FinalChain>& chain, const addr_t& who) -> u256 {
+    const auto response = query_validator(chain, who);
+    if (!response.code_err.empty()) {
+      return u256{0};
+    }
+    EXPECT_GE(response.code_retval.size(), 96);
+    if (response.code_retval.size() < 96) {
+      return 0;
+    }
+    const auto hex_commission = "0x" + dev::toHex(bytes(response.code_retval.begin() + 64, response.code_retval.begin() + 96));
+    return u256(hex_commission);
+  };
+  const auto reward_tx = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(),
+                                                      receiver.address(), cfg.genesis.chain_id);
+  const auto reward_result = advance({reward_tx});
+  EXPECT_EQ(reward_result->trx_receipts.size(), 1);
+  EXPECT_EQ(reward_result->trx_receipts[0].status_code, 1);
+  const auto magnolia_reward_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, dev::bytes(),
+                                                               sender.secret(), receiver.address(),
+                                                               cfg.genesis.chain_id);
+  const auto magnolia_reward_result = advance({magnolia_reward_tx});
+  ASSERT_EQ(magnolia_reward_result->trx_receipts.size(), 1);
+  ASSERT_EQ(magnolia_reward_result->trx_receipts[0].status_code, 1);
+  const auto reward_gas_used = magnolia_reward_result->trx_receipts[0].gas_used;
+  const auto initial_commission = get_commission_rewards(SUT, validator.address());
+  EXPECT_EQ(initial_commission, u256(reward_gas_used * kGasPrice));
+  const auto undelegate_tx =
+      std::make_shared<Transaction>(0, 0, kActionGasPrice, kGasLimit,
+                                    util::EncodingSolidity::packFunctionCall("undelegateV2(address,uint256)",
+                                                                             validator.address(), u256(kInitialStake)),
+                                    owner.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto undelegate_result = advance({undelegate_tx}, {.dont_assume_no_logs = true});
+  EXPECT_EQ(undelegate_result->trx_receipts.size(), 1);
+  EXPECT_EQ(undelegate_result->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(undelegate_result->trx_receipts[0].gas_used, IntrinsicGas(undelegate_tx->getData(), false) + 60'000);
+  const auto validator_state_after_undelegate = query_validator(SUT, validator.address()).code_retval;
+  ASSERT_GE(validator_state_after_undelegate.size(), 192u);
+  EXPECT_EQ(to_u256(validator_state_after_undelegate, 32), u256(0));
+  EXPECT_EQ(to_u256(validator_state_after_undelegate, 64), initial_commission);
+  EXPECT_EQ(to_u256(validator_state_after_undelegate, 160), u256(1));
+
+  const auto dpos_balance_before_claim = SUT->getAccount(kDposContract)->balance;
+  const auto owner_balance_before_claim = SUT->getAccount(owner.address())->balance;
+
+  auto claim_tx = std::make_shared<Transaction>(
+      1, 0, kActionGasPrice, kGasLimit,
+      util::EncodingSolidity::packFunctionCall("claimCommissionRewards(address)", validator.address()), owner.secret(),
+      kDposContract, cfg.genesis.chain_id);
+  const uint64_t claim_tx_expected_gas = IntrinsicGas(claim_tx->getData(), false) + 20'000;
+  const auto claim_result = advance({claim_tx}, {.dont_assume_no_logs = true});
+  ASSERT_EQ(claim_result->trx_receipts.size(), 1);
+  EXPECT_EQ(claim_result->final_chain_blk->number, 4);
+  EXPECT_EQ(claim_result->trx_receipts[0].status_code, 1);
+  EXPECT_EQ(claim_result->trx_receipts[0].gas_used, claim_tx_expected_gas);
+  EXPECT_EQ(claim_result->final_chain_blk->gas_used, claim_tx_expected_gas);
+  ASSERT_EQ(claim_result->trx_receipts[0].logs.size(), 1u);
+  EXPECT_EQ(claim_result->final_chain_blk->log_bloom, claim_result->trx_receipts[0].bloom());
+  EXPECT_EQ(claim_result->trx_receipts[0].logs[0].address, kDposContract);
+  EXPECT_EQ(claim_result->trx_receipts[0].logs[0].topics[0],
+            dev::sha3(dev::asBytes("CommissionRewardsClaimed(address,address,uint256)")));
+  EXPECT_EQ(claim_result->trx_receipts[0].logs[0].topics[1], h256(owner.address(), h256::AlignRight));
+  EXPECT_EQ(claim_result->trx_receipts[0].logs[0].topics[2], h256(validator.address(), h256::AlignRight));
+  EXPECT_EQ(claim_result->trx_receipts[0].logs[0].data.size(), 32);
+  EXPECT_EQ(to_u256(claim_result->trx_receipts[0].logs[0].data, 0), initial_commission);
+
+  const auto expected_owner_balance_after_claim =
+      owner_balance_before_claim + initial_commission - u256(claim_tx_expected_gas) * kActionGasPrice;
+  const auto expected_dpos_balance_after_claim = dpos_balance_before_claim - initial_commission;
+  EXPECT_EQ(SUT->getAccount(owner.address())->balance, expected_owner_balance_after_claim);
+  EXPECT_EQ(SUT->getAccount(kDposContract)->balance, expected_dpos_balance_after_claim);
+  EXPECT_TRUE(validator_exists(SUT, validator.address()));
+  const auto validator_state_after_claim = query_validator(SUT, validator.address()).code_retval;
+  ASSERT_GE(validator_state_after_claim.size(), 192u);
+  EXPECT_EQ(to_u256(validator_state_after_claim, 32), u256(0));
+  EXPECT_EQ(to_u256(validator_state_after_claim, 64), u256(0));
+  EXPECT_EQ(to_u256(validator_state_after_claim, 160), u256(1));
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(4), u256(kInitialStake));
+  EXPECT_EQ(SUT->dposValidatorsTotalStakes(4).size(), 2u);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 4);
+  EXPECT_TRUE(validator_exists(SUT, validator.address()));
+  const auto restarted_validator_state = query_validator(SUT, validator.address()).code_retval;
+  ASSERT_GE(restarted_validator_state.size(), 192u);
+  EXPECT_EQ(to_u256(restarted_validator_state, 32), u256(0));
+  EXPECT_EQ(to_u256(restarted_validator_state, 64), u256(0));
+  EXPECT_EQ(to_u256(restarted_validator_state, 160), u256(1));
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(4), u256(kInitialStake));
+  EXPECT_EQ(SUT->dposValidatorsTotalStakes(4).size(), 2u);
+}
+
 TEST_F(FinalChainTest, native_dpos_abi_decode_failure_and_invalid_metadata_rollback) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kEligibilityThreshold = 1'000;
