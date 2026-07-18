@@ -797,6 +797,30 @@ dual-mode C++ fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`, 
 validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` after the restart fixture
 also reloaded and compared the exact block-two header, gas usage, and DPoS escrow balance.
 
+The next bounded `CRW-08` evidence slice closes the ordinary well-formed semantic failure matrix for native
+`commitDoubleVotingProof(bytes,bytes)` without production changes. It covers identical votes; separate period, round,
+and step mismatches; equal block hashes with distinct unsigned vote hashes; both odd-next-step mixed zero/nonzero
+orientations; invalid first and second signatures; distinct recovered validators; and a valid common signer absent from
+the delayed validator view. Duplicate-proof behavior remains protected by the existing value-custody fixture.
+
+The restart-backed dual-mode transcript submits every selected failure with nonzero value from consecutive sender nonces,
+then executes an ordinary transfer. Each failure publishes exact status-zero receipt RLP at intrinsic plus 20,000 gas,
+rolls value back, emits no logs, and preserves proof, jail, validator, DPoS, and slashing-account state. Cumulative/header
+gas, gas-only sender debit, nonce continuation, accounts, receipts, and the exact block header remain identical after
+restart. Compact Rust tests protect verifier branch coverage and delayed membership selection. There is
+no production, bridge, carrier, handle, export, module-flag, snapshot-schema, migration, or `CRW-07` inventory delta.
+
+Exact diagnostic text and combined-invalid precedence remain a separate production question: legacy consults stored
+duplicate state before most semantic checks, Rust verifies the proof first, and finalized receipts publish neither
+diagnostic. Malformed inner vote or sortition RLP is also excluded because legacy treats it as a must-decode hard boundary
+while Rust currently normalizes the verifier failure to status zero. `CRW-08` remains active for those audited boundaries
+and any other required FinalChain/DPoS family selected from the canonical queue.
+
+Validation passed both focused Rust slashing tests, all 773 `rustaxa-consensus` tests, the focused fixture in both
+Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the Tier 3
+`rewrite-validate-final-chain-parity` differential gate, `rewrite-bridge-inventory-guard`, skill validation, whitespace
+validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` for the final scoped diff.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

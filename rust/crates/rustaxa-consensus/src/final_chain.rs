@@ -19087,6 +19087,84 @@ mod tests {
     }
 
     #[test]
+    fn apply_slashing_double_voting_proof_uses_delayed_validator_membership() {
+        let path = temp_db_path("slashing-proof-delayed-membership");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let signing_key = SigningKey::from_slice(&[0x72; 32]).unwrap();
+        let validator_h160 = address_from_signing_key(&signing_key);
+        let mut validator = [0u8; 20];
+        validator.copy_from_slice(validator_h160.as_bytes());
+        let mut dpos_config = GenesisDposConfig::default();
+        dpos_config.delegation_delay = 1;
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            dpos_config,
+            FinalChainRewardsConfig {
+                magnolia_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let delayed_snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut current_snapshot = delayed_snapshot.clone();
+        current_snapshot.total_stakes.remove(&validator);
+        let vote_a = signed_legacy_pbft_vote(
+            &signing_key,
+            H256::from_low_u64_be(201),
+            &legacy_vrf_sortition_rlp(10, 2, 4, 0x66),
+        );
+        let vote_b = signed_legacy_pbft_vote(
+            &signing_key,
+            H256::from_low_u64_be(202),
+            &legacy_vrf_sortition_rlp(10, 2, 4, 0x66),
+        );
+        let proof = verify_legacy_double_voting_proof_call_data(&commit_double_voting_proof_input(
+            &vote_a, &vote_b,
+        ))
+        .unwrap();
+        let proof_key = *proof.proof_key.as_fixed_bytes();
+
+        let rejected = final_chain
+            .apply_slashing_double_voting_proof(&mut current_snapshot, None, 2, proof.clone())
+            .unwrap();
+        assert_eq!(rejected.status_code, 0);
+        assert!(
+            !current_snapshot
+                .slashing_double_voting_proofs
+                .contains(&proof_key)
+        );
+
+        let accepted = final_chain
+            .apply_slashing_double_voting_proof(
+                &mut current_snapshot,
+                Some(&delayed_snapshot),
+                2,
+                proof,
+            )
+            .unwrap();
+        assert_eq!(accepted.status_code, 1);
+        assert!(
+            current_snapshot
+                .slashing_double_voting_proofs
+                .contains(&proof_key)
+        );
+        assert!(
+            current_snapshot
+                .slashing_jail_blocks
+                .contains_key(&validator)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_does_not_charge_value_on_invalid_slashing_proof_and_preserves_state() {
         let path = temp_db_path("finalize-slashing-double-vote-invalid-proof");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());

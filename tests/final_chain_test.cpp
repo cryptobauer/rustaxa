@@ -1119,6 +1119,247 @@ TEST_F(FinalChainTest, native_slashing_value_custody_commits_only_for_successful
   assert_persisted_state(SUT);
 }
 
+TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_restart_parity) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kFailureValue = 333;
+  constexpr uint64_t kTransferValue = 444;
+  constexpr uint64_t kSenderInitialBalance = 100'000'000;
+  const addr_t kSlashingContract("0x00000000000000000000000000000000000000EE");
+
+  const dev::KeyPair owner{dev::Secret("1212121212121212121212121212121212121212121212121212121212121212")};
+  const dev::KeyPair validator{dev::Secret("2323232323232323232323232323232323232323232323232323232323232323")};
+  const dev::KeyPair other_validator{
+      dev::Secret("3434343434343434343434343434343434343434343434343434343434343434")};
+  const dev::KeyPair absent_validator{
+      dev::Secret("4545454545454545454545454545454545454545454545454545454545454545")};
+  const dev::KeyPair sender{dev::Secret("5656565656565656565656565656565656565656565656565656565656565656")};
+  const dev::KeyPair receiver{dev::Secret("6767676767676767676767676767676767676767676767676767676767676767")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kInitialStake + 1'000;
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.delegation_delay = 1;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 1;
+  cfg.genesis.state.hardforks.magnolia_hf.jail_time = 50;
+  cfg.genesis.state.hardforks.cacti_hf.block_num = 1;
+  cfg.genesis.state.hardforks.cacti_hf.jail_time = 50;
+
+  const auto genesis_vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), genesis_vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  init();
+  advance({});
+
+  const auto [vote_vrf_key_a, vote_vrf_secret_a] = vrf_wrapper::getVrfKeyPair();
+  const auto [vote_vrf_key_b, vote_vrf_secret_b] = vrf_wrapper::getVrfKeyPair();
+  (void)vote_vrf_key_a;
+  (void)vote_vrf_key_b;
+  const auto vote_type = [](PbftStep step) {
+    if (step == 1) return PbftVoteTypes::propose_vote;
+    if (step == 2) return PbftVoteTypes::soft_vote;
+    if (step == 3) return PbftVoteTypes::cert_vote;
+    return PbftVoteTypes::next_vote;
+  };
+  const auto make_vote = [&](const dev::KeyPair& signer, PbftPeriod period, PbftRound round, PbftStep step,
+                             const blk_hash_t& block_hash, bool alternate_sortition = false) {
+    const auto& vrf_secret = alternate_sortition ? vote_vrf_secret_b : vote_vrf_secret_a;
+    VrfPbftSortition sortition(vrf_secret, {vote_type(step), period, round, step});
+    return std::make_shared<PbftVote>(signer.secret(), sortition, block_hash);
+  };
+  const auto invalidate_signature = [](const std::shared_ptr<PbftVote>& vote) {
+    auto invalid_signature = vote->getVoteSignature();
+    invalid_signature[64] = 0xff;
+    dev::RLPStream stream(3);
+    stream << vote->getBlockHash() << vote->getVrfSortition().getRlpBytes() << invalid_signature;
+    return stream.invalidate();
+  };
+
+  const auto base_a = make_vote(validator, 1, 1, 1, blk_hash_t(1));
+  const auto base_b = make_vote(validator, 1, 1, 1, blk_hash_t(2));
+  const auto period_b = make_vote(validator, 2, 1, 1, blk_hash_t(3));
+  const auto round_b = make_vote(validator, 1, 2, 1, blk_hash_t(4));
+  const auto step_b = make_vote(validator, 1, 1, 2, blk_hash_t(5));
+  const auto equal_hash_a = make_vote(validator, 1, 1, 1, blk_hash_t(6));
+  const auto equal_hash_b = make_vote(validator, 1, 1, 1, blk_hash_t(6), true);
+  const auto odd_zero = make_vote(validator, 1, 1, 5, blk_hash_t(0));
+  const auto odd_nonzero = make_vote(validator, 1, 1, 5, blk_hash_t(7));
+  const auto other_signer = make_vote(other_validator, 1, 1, 1, blk_hash_t(8));
+  const auto absent_a = make_vote(absent_validator, 1, 1, 1, blk_hash_t(9));
+  const auto absent_b = make_vote(absent_validator, 1, 1, 1, blk_hash_t(10));
+
+  struct InvalidProof {
+    const char* name;
+    bytes vote_a;
+    bytes vote_b;
+  };
+  const std::vector<InvalidProof> invalid_proofs = {
+      {"identical", base_a->rlp(), base_a->rlp()},
+      {"period mismatch", base_a->rlp(), period_b->rlp()},
+      {"round mismatch", base_a->rlp(), round_b->rlp()},
+      {"step mismatch", base_a->rlp(), step_b->rlp()},
+      {"equal block hash", equal_hash_a->rlp(), equal_hash_b->rlp()},
+      {"odd step mixed zero A", odd_zero->rlp(), odd_nonzero->rlp()},
+      {"odd step mixed zero B", odd_nonzero->rlp(), odd_zero->rlp()},
+      {"invalid signature A", invalidate_signature(base_a), base_b->rlp()},
+      {"invalid signature B", base_a->rlp(), invalidate_signature(base_b)},
+      {"distinct recovered validators", base_a->rlp(), other_signer->rlp()},
+      {"validator absent from delayed view", absent_a->rlp(), absent_b->rlp()},
+  };
+
+  const auto jail_block_input =
+      util::EncodingSolidity::packFunctionCall("getJailBlock(address)", validator.address());
+  const auto jailed_validators_input = util::EncodingSolidity::packFunctionCall("getJailedValidators()");
+  const auto call_slashing = [&](const std::shared_ptr<FinalChain>& chain, const bytes& input) {
+    return chain->call({sender.address(), kGasPrice, kSlashingContract, 0, 0, kGasLimit, input});
+  };
+  const auto jail_block_before = call_slashing(SUT, jail_block_input);
+  const auto jailed_validators_before = call_slashing(SUT, jailed_validators_input);
+  ASSERT_TRUE(jail_block_before.code_err.empty());
+  ASSERT_TRUE(jailed_validators_before.code_err.empty());
+
+  const auto owner_account_before = SUT->getAccount(owner.address());
+  const auto slashing_account_before = SUT->getAccount(kSlashingContract);
+  ASSERT_TRUE(owner_account_before);
+  const auto total_delegated_before = SUT->dposTotalAmountDelegated(1);
+  const auto validator_stakes_before = SUT->dposValidatorsTotalStakes(1);
+  const auto validator_votes_before = SUT->dposEligibleVoteCount(1, validator.address());
+  const auto total_votes_before = SUT->dposEligibleTotalVoteCount(1);
+
+  std::vector<bytes> proof_inputs;
+  std::vector<std::shared_ptr<Transaction>> transactions;
+  proof_inputs.reserve(invalid_proofs.size());
+  transactions.reserve(invalid_proofs.size() + 1);
+  for (size_t idx = 0; idx < invalid_proofs.size(); ++idx) {
+    proof_inputs.push_back(util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)",
+                                                                    invalid_proofs[idx].vote_a,
+                                                                    invalid_proofs[idx].vote_b));
+    transactions.push_back(std::make_shared<Transaction>(idx, kFailureValue, kGasPrice, kGasLimit, proof_inputs.back(),
+                                                         sender.secret(), kSlashingContract, cfg.genesis.chain_id));
+  }
+  transactions.push_back(std::make_shared<Transaction>(invalid_proofs.size(), kTransferValue, kGasPrice, kGasLimit,
+                                                       bytes{}, sender.secret(), receiver.address(),
+                                                       cfg.genesis.chain_id));
+
+  const auto result =
+      advance(transactions, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(result->trx_receipts.size(), transactions.size());
+
+  std::vector<TransactionReceipt> expected_receipts;
+  expected_receipts.reserve(transactions.size());
+  uint64_t cumulative_gas = 0;
+  for (size_t idx = 0; idx < invalid_proofs.size(); ++idx) {
+    SCOPED_TRACE(invalid_proofs[idx].name);
+    const uint64_t gas_used = IntrinsicGas(proof_inputs[idx], false) + 20'000;
+    cumulative_gas += gas_used;
+    TransactionReceipt expected;
+    expected.status_code = 0;
+    expected.gas_used = gas_used;
+    expected.cumulative_gas_used = cumulative_gas;
+    expected_receipts.push_back(expected);
+    EXPECT_EQ(util::rlp_enc(result->trx_receipts[idx]), util::rlp_enc(expected));
+    EXPECT_EQ(result->trx_receipts[idx].status_code, 0);
+    EXPECT_EQ(result->trx_receipts[idx].logs.size(), 0);
+    EXPECT_EQ(result->trx_receipts[idx].bloom(), LogBloom());
+  }
+
+  cumulative_gas += IntrinsicGas(bytes{}, false);
+  TransactionReceipt expected_transfer;
+  expected_transfer.status_code = 1;
+  expected_transfer.gas_used = IntrinsicGas(bytes{}, false);
+  expected_transfer.cumulative_gas_used = cumulative_gas;
+  expected_receipts.push_back(expected_transfer);
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts.back()), util::rlp_enc(expected_transfer));
+  EXPECT_EQ(result->trx_receipts.back().logs.size(), 0);
+  EXPECT_EQ(result->trx_receipts.back().bloom(), LogBloom());
+  EXPECT_EQ(result->final_chain_blk->gas_used, cumulative_gas);
+  EXPECT_EQ(result->final_chain_blk->log_bloom, LogBloom());
+
+  const auto assert_account_matches = [](const std::shared_ptr<FinalChain>& chain, const addr_t& address,
+                                         const std::optional<state_api::Account>& expected) {
+    const auto account = chain->getAccount(address);
+    ASSERT_EQ(account.has_value(), expected.has_value());
+    if (expected) {
+      EXPECT_EQ(util::rlp_enc(*account), util::rlp_enc(*expected));
+    }
+  };
+  assert_account_matches(SUT, owner.address(), owner_account_before);
+  assert_account_matches(SUT, kSlashingContract, slashing_account_before);
+
+  const auto sender_account = SUT->getAccount(sender.address());
+  const auto receiver_account = SUT->getAccount(receiver.address());
+  ASSERT_TRUE(sender_account);
+  ASSERT_TRUE(receiver_account);
+  EXPECT_EQ(sender_account->nonce, invalid_proofs.size() + 1);
+  EXPECT_EQ(sender_account->balance,
+            u256(kSenderInitialBalance - cumulative_gas * kGasPrice - kTransferValue));
+  EXPECT_EQ(receiver_account->nonce, 0);
+  EXPECT_EQ(receiver_account->balance, u256(kTransferValue));
+
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(2), total_delegated_before);
+  const auto validator_stakes_after = SUT->dposValidatorsTotalStakes(2);
+  ASSERT_EQ(validator_stakes_after.size(), validator_stakes_before.size());
+  EXPECT_EQ(get_validator_stake(validator_stakes_after, validator.address()),
+            get_validator_stake(validator_stakes_before, validator.address()));
+  EXPECT_EQ(SUT->dposEligibleVoteCount(2, validator.address()), validator_votes_before);
+  EXPECT_EQ(SUT->dposEligibleTotalVoteCount(2), total_votes_before);
+  const auto jail_block_after = call_slashing(SUT, jail_block_input);
+  const auto jailed_validators_after = call_slashing(SUT, jailed_validators_input);
+  EXPECT_EQ(jail_block_after.code_err, jail_block_before.code_err);
+  EXPECT_EQ(jail_block_after.code_retval, jail_block_before.code_retval);
+  EXPECT_EQ(jailed_validators_after.code_err, jailed_validators_before.code_err);
+  EXPECT_EQ(jailed_validators_after.code_retval, jailed_validators_before.code_retval);
+
+  const auto expected_header_rlp = util::rlp_enc(*result->final_chain_blk);
+  const auto expected_sender_account = sender_account;
+  const auto expected_receiver_account = receiver_account;
+  const auto assert_persisted_state = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto header = chain->blockHeader(2);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(util::rlp_enc(*header), expected_header_rlp);
+    EXPECT_EQ(header->gas_used, cumulative_gas);
+    EXPECT_EQ(header->log_bloom, LogBloom());
+
+    assert_account_matches(chain, sender.address(), expected_sender_account);
+    assert_account_matches(chain, receiver.address(), expected_receiver_account);
+    assert_account_matches(chain, owner.address(), owner_account_before);
+    assert_account_matches(chain, kSlashingContract, slashing_account_before);
+
+    EXPECT_EQ(chain->dposTotalAmountDelegated(2), total_delegated_before);
+    const auto persisted_stakes = chain->dposValidatorsTotalStakes(2);
+    ASSERT_EQ(persisted_stakes.size(), validator_stakes_before.size());
+    EXPECT_EQ(get_validator_stake(persisted_stakes, validator.address()),
+              get_validator_stake(validator_stakes_before, validator.address()));
+    EXPECT_EQ(chain->dposEligibleVoteCount(2, validator.address()), validator_votes_before);
+    EXPECT_EQ(chain->dposEligibleTotalVoteCount(2), total_votes_before);
+    const auto persisted_jail_block = call_slashing(chain, jail_block_input);
+    const auto persisted_jailed_validators = call_slashing(chain, jailed_validators_input);
+    EXPECT_EQ(persisted_jail_block.code_err, jail_block_before.code_err);
+    EXPECT_EQ(persisted_jail_block.code_retval, jail_block_before.code_retval);
+    EXPECT_EQ(persisted_jailed_validators.code_err, jailed_validators_before.code_err);
+    EXPECT_EQ(persisted_jailed_validators.code_retval, jailed_validators_before.code_retval);
+
+    for (size_t idx = 0; idx < expected_receipts.size(); ++idx) {
+      const auto persisted = chain->transactionReceipt(2, idx);
+      ASSERT_TRUE(persisted);
+      EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(expected_receipts[idx]));
+    }
+  };
+
+  assert_persisted_state(SUT);
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  assert_persisted_state(SUT);
+}
+
 TEST_F(FinalChainTest, native_slashing_reads_preserve_value_gas_and_nonce_semantics) {
   constexpr uint64_t kGasPrice = 7;
   constexpr uint64_t kGasLimit = 100'000;

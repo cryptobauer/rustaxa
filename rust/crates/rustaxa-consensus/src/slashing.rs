@@ -820,6 +820,211 @@ mod tests {
     }
 
     #[test]
+    fn verify_legacy_double_voting_proof_call_data_matrix_and_precedence() {
+        let signing_key_a = SigningKey::from_slice(&[0x45; 32]).unwrap();
+        let signing_key_b = SigningKey::from_slice(&[0x46; 32]).unwrap();
+        let mut invalid_signature = [0xAAu8; SIGNATURE_SIZE];
+        invalid_signature[64] = 27;
+        let mut other_invalid_signature = [0xAAu8; SIGNATURE_SIZE];
+        other_invalid_signature[1] ^= 0x01;
+
+        let build_vote = |sortition: &[u8],
+                          block_hash: H256,
+                          signing_key: &SigningKey,
+                          signature_override: Option<[u8; SIGNATURE_SIZE]>|
+         -> Vec<u8> {
+            sign_vote(signing_key, block_hash, sortition, signature_override, None).0
+        };
+
+        let period_sortition = encode_vrf_sortition(10, 2, 4, 0x55);
+        let period_sortition_round = encode_vrf_sortition(10, 3, 4, 0x55);
+        let period_sortition_step = encode_vrf_sortition(10, 2, 5, 0x55);
+        let period_sortition_epoch = encode_vrf_sortition(11, 2, 4, 0x55);
+        let mixed_zero_sortition = encode_vrf_sortition(10, 2, 5, 0x56);
+        let mixed_zero_reverse_sortition = encode_vrf_sortition(10, 2, 4, 0x56);
+
+        let cases = [
+            (
+                "period_mismatch",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(11),
+                        &signing_key_a,
+                        None,
+                    ),
+                    &build_vote(
+                        &period_sortition_epoch,
+                        H256::from_low_u64_be(22),
+                        &signing_key_a,
+                        None,
+                    ),
+                ),
+                "invalid votes period/round/step",
+            ),
+            (
+                "round_mismatch",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(33),
+                        &signing_key_a,
+                        None,
+                    ),
+                    &build_vote(
+                        &period_sortition_round,
+                        H256::from_low_u64_be(44),
+                        &signing_key_a,
+                        None,
+                    ),
+                ),
+                "invalid votes period/round/step",
+            ),
+            (
+                "step_mismatch",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(55),
+                        &signing_key_a,
+                        None,
+                    ),
+                    &build_vote(
+                        &period_sortition_step,
+                        H256::from_low_u64_be(66),
+                        &signing_key_a,
+                        None,
+                    ),
+                ),
+                "invalid votes period/round/step",
+            ),
+            (
+                "same_hash_different_sortition",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(77),
+                        &signing_key_a,
+                        None,
+                    ),
+                    &build_vote(
+                        &mixed_zero_reverse_sortition,
+                        H256::from_low_u64_be(77),
+                        &signing_key_a,
+                        None,
+                    ),
+                ),
+                "invalid votes block hash",
+            ),
+            (
+                "mixed_zero_vote_a_is_zero",
+                commit_double_voting_proof_call_data(
+                    &build_vote(&mixed_zero_sortition, H256::zero(), &signing_key_a, None),
+                    &build_vote(
+                        &mixed_zero_sortition,
+                        H256::from_low_u64_be(99),
+                        &signing_key_a,
+                        None,
+                    ),
+                ),
+                "invalid mixed zero/non-zero next-vote block hashes",
+            ),
+            (
+                "mixed_zero_vote_b_is_zero",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &mixed_zero_sortition,
+                        H256::from_low_u64_be(99),
+                        &signing_key_a,
+                        None,
+                    ),
+                    &build_vote(&mixed_zero_sortition, H256::zero(), &signing_key_a, None),
+                ),
+                "invalid mixed zero/non-zero next-vote block hashes",
+            ),
+            (
+                "invalid_signature_a",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(101),
+                        &signing_key_a,
+                        Some(invalid_signature),
+                    ),
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(102),
+                        &signing_key_a,
+                        None,
+                    ),
+                ),
+                "invalid vote signature",
+            ),
+            (
+                "invalid_signature_b",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(103),
+                        &signing_key_a,
+                        None,
+                    ),
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(104),
+                        &signing_key_a,
+                        Some(invalid_signature),
+                    ),
+                ),
+                "invalid vote signature",
+            ),
+            (
+                "distinct_valid_signers",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(201),
+                        &signing_key_a,
+                        None,
+                    ),
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(202),
+                        &signing_key_b,
+                        None,
+                    ),
+                ),
+                "invalid votes validator",
+            ),
+            (
+                "identical_votes_take_precedence_over_later_errors",
+                commit_double_voting_proof_call_data(
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(201),
+                        &signing_key_a,
+                        Some(invalid_signature),
+                    ),
+                    &build_vote(
+                        &period_sortition,
+                        H256::from_low_u64_be(201),
+                        &signing_key_a,
+                        Some(other_invalid_signature),
+                    ),
+                ),
+                "votes are identical",
+            ),
+        ];
+
+        for (name, calldata, expected_message) in cases {
+            let err = verify_legacy_double_voting_proof_call_data(&calldata)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, expected_message, "{name} expected {expected_message}");
+        }
+    }
+
+    #[test]
     fn plans_call_data_and_canonical_hash_for_matching_votes() {
         let planner = SlashingProofPlanner::new(true, 0, 1000, 100).unwrap();
 

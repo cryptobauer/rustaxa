@@ -3909,6 +3909,33 @@ dual-mode C++ fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`, 
 validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` after the restart fixture
 also reloaded and compared the exact block-two header, gas usage, and DPoS escrow balance.
 
+### CRW-08 Native Slashing Semantic Invalid-Proof Evidence
+
+The remaining well-formed semantic failures for native `commitDoubleVotingProof(bytes,bytes)` now have explicit parity
+evidence without production-code changes. The matrix covers identical votes; period, round, and step mismatches; equal
+block hashes with distinct unsigned vote hashes; both odd-next-step mixed zero/nonzero block-hash orientations; invalid
+first and second signatures; different recovered validators; and a common valid signer absent from the delayed validator
+view. The already established value-custody fixture retains duplicate-proof coverage.
+
+Every selected post-Magnolia failure charges calldata intrinsic gas plus the fixed 20,000 action gas, advances the sender
+nonce, rolls back nonzero call value, emits no logs, and leaves the proof set, jail facts, validator eligibility, DPoS
+state, and slashing account unchanged. The restart-backed dual-mode transcript proves exact status-zero receipt RLP,
+cumulative and header gas, empty blooms, gas-only sender debit, same-sender continuation, persisted accounts, and durable
+receipts/header state. Rust-only tests protect the verifier branches and delayed validator-membership
+selection. No production, bridge, carrier, handle, export, module-flag, snapshot-schema, migration, or `CRW-07` inventory
+change is introduced.
+
+This evidence deliberately does not claim exact diagnostic-text or combined-invalid precedence parity. Legacy checks a
+stored duplicate before most semantic validation, while Rust verifies the proof before consulting stored state, and the
+current receipt carrier does not publish either diagnostic. Malformed inner vote or sortition RLP is also excluded:
+legacy uses a must-decode hard boundary while Rust currently normalizes that verifier failure to status zero. Those are
+separate production-design questions rather than members of this ordinary semantic receipt family.
+
+Validation passed both focused Rust slashing tests, all 773 `rustaxa-consensus` tests, the focused fixture in both
+Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the Tier 3
+`rewrite-validate-final-chain-parity` differential gate, `rewrite-bridge-inventory-guard`, skill validation, whitespace
+validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` for the final scoped diff.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript
