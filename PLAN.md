@@ -453,7 +453,8 @@ reference builds retain the untouched legacy RewardsStats header and source.
     read preserves legacy insertion/removal ordering, wrapping offsets, widened gas calculation, and strict corruption
     handling without falling back to scalar reward state. Rust now executes delegator
     `claimRewards(address)`, validator-owner `claimCommissionRewards(address)`, validator-owner metadata/commission
-    updates, current-ABI `claimAllRewards()`, and
+    updates with ordered business failures, snapshot-consistency checks, and same-block commission reward effects,
+    current-ABI `claimAllRewards()`, and
     stake-mutation auto-claims by moving reward balances through staged Rust account/DPoS snapshots. Receipts for the
     supported native DPoS subset now carry Rust-generated legacy ABI logs for validator registration, delegation,
     undelegation, V1 and V2 undelegation confirmation/cancelation, redelegation, direct claims, commission claims,
@@ -464,7 +465,8 @@ reference builds retain the untouched legacy RewardsStats header and source.
     selector on `fix_claim_all_block_num`, and charges claim-all gas from a staged live Rust DPoS delegation view that is
     independent of the configured eligibility delay. The active
     Rust finalization path also persists the legacy two-level `final_chain_log_blooms_index` chunks with author-augmented
-    blooms and routes `FinalChain::withBlockBloom` through Rust. Unsupported DPoS methods remain future work.
+    blooms and routes `FinalChain::withBlockBloom` through Rust. All current Solidity DPoS ABI methods have native Rust
+    routing; general mutation simulation through the read-oriented `FinalChain::call` surface remains future work.
     Rust native finalization also executes the slashing `commitDoubleVotingProof(bytes,bytes)` precompile path for
     legacy PBFT vote RLPs: Rust decodes the calldata, recovers both vote signers, validates the double-vote facts,
     persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits
@@ -530,8 +532,8 @@ reference builds retain the untouched legacy RewardsStats header and source.
     delayed headers or DPoS snapshots are returned to PBFT as typed Rust facts instead of re-centering those consensus
     decisions in C++ FinalChain orchestration.
   - non-genesis DPoS queries still return typed errors or throw when the queried block has not been finalized through
-    Rust snapshot maintenance; DPoS transitions beyond the supported validator-registration/delegation/owner-update/slashing subset and legacy databases without Rust
-    account snapshots remain explicit gaps.
+    Rust snapshot maintenance; shared ephemeral DPoS mutation simulation through `FinalChain::call` and legacy databases
+    without Rust account snapshots remain explicit gaps.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `isValidatorEligible(address)`,
     `getTotalEligibleVotesCount()`, `getValidatorEligibleVotesCount(address)`, `getValidator(address)`,
     `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,

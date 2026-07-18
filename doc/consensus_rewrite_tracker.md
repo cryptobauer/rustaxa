@@ -654,6 +654,32 @@ Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, `rewrite-val
 `rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
 skill validation, Rust and changed-line C++ formatting, whitespace validation, and independent configured review.
 
+The next bounded `CRW-08` slice closes finalized native owner-update parity for
+`setValidatorInfo(address,string,string)` and `setCommission(address,uint16)`. Rust preserves the legacy ordered
+business failures: endpoint then description byte limits and owner for validator info; owner, maximum commission,
+frequency, then delta for commission. Exact limits pass, successful commission writes the current block, and the live
+block-local update affects that block's minted commission/delegator reward split. Both methods charge 20,000 action gas.
+Before Cornus successful value remains in DPoS custody while business failures roll it back; from Cornus onward value is
+rejected before decode with intrinsic-only gas. Success emits exact `ValidatorInfoSet` or `CommissionSet` logs and bloom,
+while failures emit none. Metadata without canonical stake and a future persisted commission-change block are hard
+snapshot inconsistencies after legacy user-error precedence; clean absence remains a status-zero contract failure.
+Restart-backed dual-mode coverage protects ordered failures, gas, value, logs, metadata/commission state, nonpayability,
+receipt persistence, and restart, while focused Rust coverage protects corruption ordering, exact frequency/delta
+boundaries, and same-block reward effects. No CXX carrier, bridge handle/export, shim, module flag, or snapshot schema
+changes are introduced, so `CRW-07` has no inventory delta.
+
+All 25 current Solidity DPoS ABI methods now have Rust selector/decode and native apply/read routing. `CRW-08` remains
+active because general DPoS mutation simulation through `FinalChain::call` is still incomplete: that read-oriented Rust
+surface recognizes mutation ABI/gas but returns empty success without applying business rules. Close that cross-method
+gap through one shared ephemeral native executor rather than setter-only simulation, and continue auditing any
+remaining failed-receipt transcript before declaring `CRW-08` complete.
+
+Owner-update validation passed the focused maximum-height frequency regression, all 753 `rustaxa-consensus` tests,
+the focused Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
+skill validation, Rust and changed-line C++ formatting, whitespace validation, the repository pre-commit hook, and
+independent configured review.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,
@@ -1249,7 +1275,7 @@ Open questions:
 
 | Item | Status | Owner decision needed |
 | --- | --- | --- |
-| Replace temporary DPoS query behavior | `partial` | Genesis DPoS vote-count, eligibility, validator total stake, validator eligible vote-count queries, total delegated, Aspen yield, Aspen total supply, `getValidator`, `getValidators`, `getValidatorsFor`, `getTotalDelegation`, `getDelegations`, V1 and V2 undelegation queue reads, `claimRewards`, `claimCommissionRewards`, current-ABI `claimAllRewards`, legacy pre-fix `claimAllRewards(uint32)`, slashing `getJailBlock`, slashing `getJailedValidators`, `withBlockBloom`, validator metadata/commission setters, Rust-executed double-vote jailing, and the `delegate`/`undelegate`/`confirmUndelegate`/`cancelUndelegate`/`undelegateV2`/`confirmUndelegateV2`/`cancelUndelegateV2`/`reDelegate` stake-mutation subset are Rust-backed for account/DPoS state. Rust-finalized native-transfer and supported DPoS/slashing mutation blocks now carry forward snapshots, post-Magnolia fee commission rewards, supported DPoS contract fee-balance credits, fixed/dynamic minted reward pools, direct delegator reward claims, commission reward claims, claim-all dynamic gas from staged DPoS state, owner-update and V2 undelegation failed receipts, auto-claim cursor updates, legacy ABI receipt logs for supported DPoS/slashing events, header blooms derived from those logs, legacy log-bloom index chunks, and restart-durable DPoS/account snapshot sidecars with a persisted validator/delegator stake ledger, validator insertion order, ordered V1 queues, V2 undelegation queues with per-delegator IDs, last commission-change blocks, F1 reward cursors, Aspen supply state, slashing jail blocks, jailed-validator order, and duplicate double-vote proof keys. Remaining gaps: contract methods outside the supported registration/delegation/claim/owner-update/V1-and-V2-undelegation/slashing subset and full failed-contract receipt parity for older supported mutation paths. |
+| Replace temporary DPoS query behavior | `partial` | Genesis DPoS vote-count, eligibility, validator total stake, validator eligible vote-count queries, total delegated, Aspen yield, Aspen total supply, `getValidator`, `getValidators`, `getValidatorsFor`, `getTotalDelegation`, `getDelegations`, V1 and V2 undelegation queue reads, `claimRewards`, `claimCommissionRewards`, current-ABI `claimAllRewards`, legacy pre-fix `claimAllRewards(uint32)`, slashing `getJailBlock`, slashing `getJailedValidators`, `withBlockBloom`, validator metadata/commission setters, Rust-executed double-vote jailing, and the `delegate`/`undelegate`/`confirmUndelegate`/`cancelUndelegate`/`undelegateV2`/`confirmUndelegateV2`/`cancelUndelegateV2`/`reDelegate` stake-mutation subset are Rust-backed for account/DPoS state. Rust-finalized native-transfer and supported DPoS/slashing mutation blocks now carry forward snapshots, post-Magnolia fee commission rewards, supported DPoS contract fee-balance credits, fixed/dynamic minted reward pools, direct delegator reward claims, commission reward claims, claim-all dynamic gas from staged DPoS state, owner-update and V2 undelegation failed receipts, auto-claim cursor updates, legacy ABI receipt logs for supported DPoS/slashing events, header blooms derived from those logs, legacy log-bloom index chunks, and restart-durable DPoS/account snapshot sidecars with a persisted validator/delegator stake ledger, validator insertion order, ordered V1 queues, V2 undelegation queues with per-delegator IDs, last commission-change blocks, F1 reward cursors, Aspen supply state, slashing jail blocks, jailed-validator order, and duplicate double-vote proof keys. All 25 current Solidity DPoS ABI methods have native Rust routing. Remaining gaps: shared ephemeral mutation simulation through `FinalChain::call` and full failed-contract receipt parity for older supported mutation paths. |
 | Create Rust DAG graph module | `complete` | Native `DagGraph` is owned by `DagManagerState`; the standalone CXX handle, overlay shim, and bridge-mechanics tests are retired. Pure-C++ reference builds retain the untouched original graph. |
 | Route sortition params through Rust | `rust-backed` | Landed under master `RUSTAXA_ENABLE`; native Rust storage owns startup and finalized-period persistence. The public `Batch&` parameter remains only as a cross-mode compatibility signature. |
 | Route verified votes through Rust | `rust-backed` | Landed under `RUSTAXA_ENABLE_VERIFIED_VOTES`; C++ shim preserves live `PbftVote` ownership while Rust owns deterministic index semantics and 2t+1 metadata. VoteManager Rust mode now consumes Rust-owned verified-vote state directly from the shim overlay for insertion, lookup, snapshots, cleanup, round advancement, and current-round 2t+1 bundle persistence. |

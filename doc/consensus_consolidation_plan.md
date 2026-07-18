@@ -3755,6 +3755,32 @@ Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, `rewrite-val
 `rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
 skill validation, Rust and changed-line C++ formatting, whitespace validation, and independent configured review.
 
+### CRW-08 Finalized DPoS Validator Owner-Update Parity
+
+This bounded slice closes finalized native transaction parity for `setValidatorInfo(address,string,string)` and
+`setCommission(address,uint16)`. Rust preserves legacy user-error ordering, exact byte/commission/frequency/delta
+boundaries, fixed 20,000 action gas, pre-Cornus successful value custody, Cornus rejection before decode, exact success
+logs/blooms, failure rollback, and restart persistence. Commission updates mutate the live block-local snapshot before
+reward planning, so a successful update affects that block's minted reward split while a failed update preserves the
+old split.
+
+Metadata without canonical stake and a future persisted commission-change block now fail as hard snapshot corruption
+after user-error precedence. Clean absence remains a normal contract failure. The restart-backed dual-mode fixture
+protects ordered failures, gas, value, logs, persisted receipts, owner metadata, commission, and fork behavior; focused
+Rust tests protect corruption ordering, exact frequency/delta boundaries, and same-block reward effects. No CXX carrier,
+bridge handle/export, shim, module flag, snapshot schema, or `CRW-07` inventory delta is introduced.
+
+All 25 current Solidity DPoS ABI methods now have Rust selector/decode and native apply/read routing. General DPoS
+mutation simulation through `FinalChain::call` remains a cross-method `CRW-08` gap: the read-oriented Rust surface
+recognizes mutation ABI/gas but does not execute business rules. It requires a shared ephemeral native executor rather
+than setter-only simulation.
+
+Owner-update validation passed the focused maximum-height frequency regression, all 753 `rustaxa-consensus` tests,
+the focused Rust-enabled and pure-C++ restart fixture, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the unchanged 46-warning consensus clippy baseline, the bridge inventory guard,
+skill validation, Rust and changed-line C++ formatting, whitespace validation, the repository pre-commit hook, and
+independent configured review.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

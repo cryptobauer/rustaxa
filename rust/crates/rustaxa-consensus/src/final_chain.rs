@@ -5054,17 +5054,26 @@ impl FinalChain {
         description: Vec<u8>,
         endpoint: Vec<u8>,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
-        if endpoint.len() > DPOS_MAX_ENDPOINT_LENGTH
-            || description.len() > DPOS_MAX_DESCRIPTION_LENGTH
-        {
+        if endpoint.len() > DPOS_MAX_ENDPOINT_LENGTH {
             return Ok(DposApplyOutcome::contract_failure());
         }
-        let Some(metadata) = snapshot.validator_metadata.get_mut(&validator) else {
+        if description.len() > DPOS_MAX_DESCRIPTION_LENGTH {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
             return Ok(DposApplyOutcome::contract_failure());
         };
         if metadata.owner != owner {
             return Ok(DposApplyOutcome::contract_failure());
         }
+        if !snapshot.total_stakes.contains_key(&validator)
+            && Self::dpos_validator_owned_rows_exist(snapshot, validator)
+        {
+            anyhow::bail!(
+                "DPoS validator snapshot inconsistency: orphan rows found without stake row"
+            );
+        }
+        let metadata = snapshot.validator_metadata.get_mut(&validator).unwrap();
         metadata.description = description;
         metadata.endpoint = endpoint;
         Ok(DposApplyOutcome::success(vec![
@@ -5080,20 +5089,31 @@ impl FinalChain {
         commission: u16,
         block_number: u64,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
-        if commission > DPOS_MAX_COMMISSION {
-            return Ok(DposApplyOutcome::contract_failure());
-        }
-        let Some(metadata) = snapshot.validator_metadata.get_mut(&validator) else {
+        let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
             return Ok(DposApplyOutcome::contract_failure());
         };
         if metadata.owner != owner {
             return Ok(DposApplyOutcome::contract_failure());
         }
+        if commission > DPOS_MAX_COMMISSION {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if metadata.last_commission_change > block_number {
+            anyhow::bail!(
+                "DPoS validator snapshot inconsistency: last commission change is in the future"
+            );
+        }
+        if !snapshot.total_stakes.contains_key(&validator)
+            && Self::dpos_validator_owned_rows_exist(snapshot, validator)
+        {
+            anyhow::bail!(
+                "DPoS validator snapshot inconsistency: orphan rows found without stake row"
+            );
+        }
+        let metadata = snapshot.validator_metadata.get_mut(&validator).unwrap();
         if self.dpos_commission_change_frequency != 0
-            && block_number
-                < metadata
-                    .last_commission_change
-                    .saturating_add(u64::from(self.dpos_commission_change_frequency))
+            && block_number - metadata.last_commission_change
+                < u64::from(self.dpos_commission_change_frequency)
         {
             return Ok(DposApplyOutcome::contract_failure());
         }
@@ -18176,6 +18196,241 @@ mod tests {
     }
 
     #[test]
+    fn finalize_block_reward_split_uses_same_block_setcommission_and_preserves_failed_path() {
+        let path = temp_db_path("finalize-dpos-setcommission-minted-reward-split-success");
+        let failed_path = temp_db_path("finalize-dpos-setcommission-minted-reward-split-failed");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x71; 20];
+        let receiver = [0x72; 20];
+        let validator = [0x73; 20];
+        let owner = [0x74; 20];
+        let initial_commission = 2_500u16;
+        let updated_commission = 5_000u16;
+        let genesis_validator = genesis_validator_with_metadata(
+            validator,
+            U256::from(10_000u64),
+            owner,
+            initial_commission,
+            "validator",
+            "endpoint",
+        );
+        let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 181);
+        let set_commission_tx = test_transaction(
+            0xD1,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            set_commission_input(validator, updated_commission),
+            vec![0xc1, 0xD1],
+        );
+        let transfer_tx = test_transaction(
+            0xD2,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(1u64),
+            U256::zero(),
+            50_000,
+            vec![],
+            vec![0xc1, 0xD2],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[set_commission_tx.rlp.clone(), transfer_tx.rlp.clone()],
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block.clone(),
+                vec![set_commission_tx.clone(), transfer_tx.clone()],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![set_commission_tx.hash, transfer_tx.hash],
+                }],
+            )
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (
+                1,
+                expected_native_contract_tx_gas(&final_chain, period, &set_commission_tx),
+                expected_native_contract_tx_gas(&final_chain, period, &set_commission_tx)
+            )
+        );
+        let updated_snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(period)
+            .unwrap();
+        assert_eq!(
+            updated_snapshot
+                .commission_rewards
+                .get(&validator)
+                .map(|reward| u256_from_big_endian(reward))
+                .unwrap_or_default(),
+            U256::from(100u64)
+        );
+        assert_eq!(
+            updated_snapshot
+                .delegator_rewards
+                .get(&validator)
+                .map(|reward| u256_from_big_endian(reward))
+                .unwrap_or_default(),
+            U256::from(100u64)
+        );
+        let updated_validator_info = final_chain
+            .call(dpos_call_request(period, get_validator_input(validator)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&updated_validator_info.code_retval[64..96]),
+            U256::from(100u64)
+        );
+        assert_eq!(
+            u256_from_big_endian(&updated_validator_info.code_retval[96..128]),
+            U256::from(updated_commission)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let storage = Arc::new(Storage::new(Config::new(failed_path.clone())).unwrap());
+        let failed_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                initial_commission,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+            FinalChainRewardsConfig {
+                committee_size: 100,
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 100,
+                yield_percentage: 20,
+                dpos_blocks_per_year: 10,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let failed_commission_tx = test_transaction(
+            0xE1,
+            sender,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::zero(),
+            100_000,
+            set_commission_input(validator, updated_commission),
+            vec![0xc1, 0xE1],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[failed_commission_tx.rlp.clone(), transfer_tx.rlp.clone()],
+        );
+        let failed_receipts = failed_chain
+            .finalize_block(
+                pbft_block,
+                vec![failed_commission_tx.clone(), transfer_tx.clone()],
+                vec![FinalizationDagBlock {
+                    author: validator,
+                    difficulty: 0,
+                    transaction_hashes: vec![failed_commission_tx.hash, transfer_tx.hash],
+                }],
+            )
+            .unwrap()
+            .1;
+        assert_eq!(receipt_fields(&failed_receipts[0]).0, 0);
+        let failed_snapshot = failed_chain
+            .dpos_snapshot_at_finalized_block(period)
+            .unwrap();
+        assert_eq!(
+            failed_snapshot
+                .commission_rewards
+                .get(&validator)
+                .map(|reward| u256_from_big_endian(reward))
+                .unwrap_or_default(),
+            U256::from(50u64)
+        );
+        assert_eq!(
+            failed_snapshot
+                .delegator_rewards
+                .get(&validator)
+                .map(|reward| u256_from_big_endian(reward))
+                .unwrap_or_default(),
+            U256::from(150u64)
+        );
+        let failed_validator_info = failed_chain
+            .call(dpos_call_request(period, get_validator_input(validator)))
+            .unwrap();
+        assert_eq!(
+            u256_from_big_endian(&failed_validator_info.code_retval[96..128]),
+            U256::from(initial_commission as u64)
+        );
+
+        drop(failed_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(failed_path);
+    }
+
+    #[test]
     fn finalize_block_supports_claim_commission_rewards() {
         let path = temp_db_path("finalize-dpos-claim-commission-rewards");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -19386,6 +19641,508 @@ mod tests {
         assert_eq!(
             u256_from_big_endian(&validator_info.code_retval[128..160]),
             U256::from(period)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_validator_info_update_rejects_orphan_metadata_rows() {
+        let path = temp_db_path("finalize-dpos-validator-info-orphan-rows");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let owner = [0xD4; 20];
+        let validator = [0xD5; 20];
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                1_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot.total_stakes.remove(&validator);
+
+        let error = final_chain
+            .apply_dpos_validator_info_update(
+                &mut snapshot,
+                owner,
+                validator,
+                b"new description".to_vec(),
+                b"new endpoint".to_vec(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains(
+            "DPoS validator snapshot inconsistency: orphan rows found without stake row"
+        ));
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .description,
+            b"validator".to_vec()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_commission_update_rejects_orphan_metadata_rows() {
+        let path = temp_db_path("finalize-dpos-commission-orphan-rows");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let owner = [0xD6; 20];
+        let validator = [0xD7; 20];
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                1_000,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot.total_stakes.remove(&validator);
+
+        let error = final_chain
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_200, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains(
+            "DPoS validator snapshot inconsistency: orphan rows found without stake row"
+        ));
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            1_000
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_validator_info_update_validation_precedes_orphan_snapshot_check() {
+        let path = temp_db_path("finalize-dpos-validator-info-validation-order");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let owner = [0xA1; 20];
+        let wrong_owner = [0xA2; 20];
+        let validator = [0xA3; 20];
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                1_500,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot.total_stakes.remove(&validator);
+
+        let outcome = final_chain
+            .apply_dpos_validator_info_update(
+                &mut snapshot,
+                wrong_owner,
+                validator,
+                b"description".to_vec(),
+                "e".repeat(DPOS_MAX_ENDPOINT_LENGTH + 1).into_bytes(),
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 0);
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .description,
+            b"validator".to_vec()
+        );
+
+        let outcome = final_chain
+            .apply_dpos_validator_info_update(
+                &mut snapshot,
+                wrong_owner,
+                validator,
+                "d".repeat(DPOS_MAX_DESCRIPTION_LENGTH + 1).into_bytes(),
+                b"endpoint".to_vec(),
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 0);
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .description,
+            b"validator".to_vec()
+        );
+
+        let outcome = final_chain
+            .apply_dpos_validator_info_update(
+                &mut snapshot,
+                wrong_owner,
+                validator,
+                b"description".to_vec(),
+                b"endpoint".to_vec(),
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 0);
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .description,
+            b"validator".to_vec()
+        );
+
+        let orphan_error = final_chain
+            .apply_dpos_validator_info_update(
+                &mut snapshot,
+                owner,
+                validator,
+                b"description".to_vec(),
+                b"endpoint".to_vec(),
+            )
+            .unwrap_err();
+        assert!(orphan_error.to_string().contains(
+            "DPoS validator snapshot inconsistency: orphan rows found without stake row"
+        ));
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .description,
+            b"validator".to_vec()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_commission_update_validation_and_timestamp_precedes_orphan_and_limits() {
+        let path = temp_db_path("finalize-dpos-commission-validation-order");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let owner = [0xB1; 20];
+        let wrong_owner = [0xB2; 20];
+        let validator = [0xB3; 20];
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                1_000,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 500,
+                commission_change_frequency: 1,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot.total_stakes.remove(&validator);
+
+        let outcome = final_chain
+            .apply_dpos_commission_update(
+                &mut snapshot,
+                wrong_owner,
+                validator,
+                DPOS_MAX_COMMISSION + 1,
+                5,
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 0);
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            1_000
+        );
+
+        let outcome = final_chain
+            .apply_dpos_commission_update(
+                &mut snapshot,
+                owner,
+                validator,
+                DPOS_MAX_COMMISSION + 1,
+                5,
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 0);
+
+        let orphan_error = final_chain
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500, 5)
+            .unwrap_err();
+        assert!(orphan_error.to_string().contains(
+            "DPoS validator snapshot inconsistency: orphan rows found without stake row"
+        ));
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            1_000
+        );
+
+        snapshot
+            .validator_metadata
+            .get_mut(&validator)
+            .unwrap()
+            .last_commission_change = 10;
+        let max_after_orphan = final_chain
+            .apply_dpos_commission_update(
+                &mut snapshot,
+                owner,
+                validator,
+                DPOS_MAX_COMMISSION + 1,
+                5,
+            )
+            .unwrap();
+        assert_eq!(max_after_orphan.status_code, 0);
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            1_000
+        );
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .last_commission_change,
+            10
+        );
+
+        snapshot
+            .total_stakes
+            .insert(validator, u256_to_big_endian(U256::from(10_000u64)));
+        snapshot
+            .validator_metadata
+            .get_mut(&validator)
+            .unwrap()
+            .last_commission_change = 10;
+        let future_error = final_chain
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500, 5)
+            .unwrap_err();
+        assert!(future_error.to_string().contains(
+            "DPoS validator snapshot inconsistency: last commission change is in the future"
+        ));
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            1_000
+        );
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .last_commission_change,
+            10
+        );
+
+        snapshot
+            .validator_metadata
+            .get_mut(&validator)
+            .unwrap()
+            .last_commission_change = 5;
+        let exact_delta = final_chain
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500, 6)
+            .unwrap();
+        assert_eq!(exact_delta.status_code, 1);
+        assert_eq!(
+            exact_delta.logs,
+            vec![dpos_commission_set_log(validator, 1_500).unwrap()]
+        );
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            1_500
+        );
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .last_commission_change,
+            6
+        );
+
+        let mut exact_max_snapshot = final_chain.dpos_snapshot(0).unwrap();
+        exact_max_snapshot
+            .total_stakes
+            .insert(validator, u256_to_big_endian(U256::from(10_000u64)));
+        if let Some(metadata) = exact_max_snapshot.validator_metadata.get_mut(&validator) {
+            metadata.commission = 9_500;
+            metadata.last_commission_change = 5;
+        }
+        let exact_max = final_chain
+            .apply_dpos_commission_update(
+                &mut exact_max_snapshot,
+                owner,
+                validator,
+                DPOS_MAX_COMMISSION,
+                6,
+            )
+            .unwrap();
+        assert_eq!(exact_max.status_code, 1);
+        assert_eq!(
+            exact_max_snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            DPOS_MAX_COMMISSION
+        );
+        assert_eq!(
+            exact_max.logs[0],
+            dpos_commission_set_log(validator, DPOS_MAX_COMMISSION).unwrap()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_commission_update_frequency_uses_elapsed_blocks_at_max_height() {
+        let path = temp_db_path("finalize-dpos-commission-max-height-frequency");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let owner = [0xC1; 20];
+        let validator = [0xC2; 20];
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![genesis_validator_with_metadata(
+                validator,
+                U256::from(10_000u64),
+                owner,
+                1_000,
+                "validator",
+                "endpoint",
+            )],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 4,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot
+            .validator_metadata
+            .get_mut(&validator)
+            .unwrap()
+            .last_commission_change = u64::MAX - 1;
+
+        let too_early = final_chain
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_100, u64::MAX)
+            .unwrap();
+        assert_eq!(too_early.status_code, 0);
+        assert_eq!(
+            snapshot
+                .validator_metadata
+                .get(&validator)
+                .unwrap()
+                .commission,
+            1_000
         );
 
         drop(final_chain);
