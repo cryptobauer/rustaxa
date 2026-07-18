@@ -3230,6 +3230,31 @@ the bridge-inventory guard. Focused package validation passed 673 `rustaxa-conse
 `rustaxa-types`/`rustaxa-bridge` tests. Gate output contained only the repository's existing compiler, Clippy, CMake, and
 Conan warnings.
 
+### CRW-08 Native DPoS V1 Undelegate Pre-Mutation Failure Parity
+
+This bounded follow-up closes four ledger-derived V1 `undelegate(address,uint256)` business failures without claiming
+the V1 request lifecycle or successful escrow release.
+
+- Rust preflight now classifies a missing validator, a missing caller/validator delegation, an amount greater than the
+  delegation, and a nonzero remainder below `minimum_deposit` as normal contract failures before mutation. Aggregate
+  validator stake that cannot cover an otherwise valid removal remains a hard invariant error.
+- The selected failures consume the legacy 60,000 action gas, produce status-zero receipts, advance nonce, charge gas,
+  roll back value, emit no logs or bloom, and preserve account, delegation, aggregate stake, vote, and reward state.
+- Rust unit coverage proves every selected rejection plus the corrupt aggregate-stake invariant. The dual-mode
+  FinalChain fixture proves exact receipts and cumulative gas, same-sender block continuation, unchanged DPoS facts,
+  balances/nonces, and restart persistence.
+- Existing V1 undelegation requests, pending-request persistence, `confirmUndelegate(address)`,
+  `cancelUndelegate(address)`, V1 query behavior, zero-amount requests, and successful end-to-end escrow release remain
+  explicit follow-up work.
+
+No CXX handle, carrier, export, shim, module flag, or compatibility-only test changed, so `CRW-07` has no inventory delta.
+`CRW-08` remains active for the V1 undelegation lifecycle, redelegation, and remaining reward/method failure families.
+
+Validation passed the focused Rust V1 failure and V2 regression tests, the retained V1 undelegate success test, the
+focused Rust-enabled FinalChain fixture, the workspace fast gate, the FinalChain Tier 2 gate, the Tier 3
+Rust-enabled/pure-C++ parity gate, the bridge-inventory guard, formatting, and whitespace checks. Gate output contained
+only the repository's existing compiler, Clippy, CMake, and Conan warnings.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

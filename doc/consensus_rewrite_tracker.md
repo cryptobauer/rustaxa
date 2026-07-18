@@ -357,6 +357,17 @@ short/unknown and hardfork-disabled selectors, Cornus nonpayability, claim-all o
 continuation, invalid-byte registration, query bytes, and restart. No bridge/export surface changed, so `CRW-07` again
 has no inventory delta. `CRW-08` remains active for undelegation, redelegation, and remaining reward/method failures.
 
+The next bounded `CRW-08` slice closes four ledger-derived, pre-mutation failures for native V1
+`undelegate(address,uint256)`: a missing validator, a missing caller/validator delegation, an amount greater than the
+delegation, and a nonzero remainder below `minimum_deposit`. A fallible Rust preflight classifies those expected business
+rejections as contract failures while preserving aggregate-stake corruption as a hard invariant error. Each selected
+failure now produces the legacy status-zero receipt with 60,000 action gas, advances the sender nonce, charges gas,
+rolls back value, emits no logs or bloom, and leaves account, delegation, stake, vote, and reward state unchanged; the
+dual-mode fixture also proves same-sender block continuation and restart stability. Existing V1 undelegation requests,
+V1 request persistence and confirm/cancel/query behavior, zero-amount requests, and successful escrow release remain
+outside this slice. No bridge/export surface changed, so `CRW-07` has no inventory delta. `CRW-08` remains active for
+the V1 undelegation lifecycle, redelegation, and remaining reward/method failures.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,
