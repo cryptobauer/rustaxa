@@ -547,6 +547,12 @@ reference builds retain the untouched legacy RewardsStats header and source.
     offsets, fork/payability behavior, and their distinct storage-read gas formulas. `getTotalDelegation(address)` is
     native-executed against the same live principal ledger with zero gas for empty membership, 5,000 gas per validator
     membership, Cornus nonpayability, and explicit rejection of incomplete legacy delegation ledgers.
+  - `rustaxa-consensus::dpos_reward_graph` now provides the isolated persistence model and canonical codec for the
+    historical reward references required by paged delegation reads. It preserves arbitrary-width reward-per-stake,
+    explicit validator heads and delegation cursors, exact persisted counts including legacy inflation/orphans,
+    incomplete-history provenance, stale-head correction, and exact reward arithmetic. FinalChain snapshot-schema,
+    genesis, reward-writer, replay, and `getDelegations(address,uint32)` routing integration remains the next bounded
+    `CRW-08` work; this foundation does not claim production read ownership by itself.
 - Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or

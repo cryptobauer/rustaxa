@@ -2,6 +2,7 @@ pub mod consensus_execution_api;
 pub mod consensus_pipeline;
 pub mod consensus_query_api;
 pub mod dag;
+pub mod dpos_reward_graph;
 pub mod gas_pricer;
 pub mod network_api;
 pub mod pbft_chain;

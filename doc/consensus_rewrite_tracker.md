@@ -599,6 +599,22 @@ value custody, balances, and later affordability; exact correction requires repl
 rather than an inferred principal edit. `CRW-08` remains active for `getDelegations(address,uint32)`, its explicit
 historical reward-per-stake reference graph, and the remaining DPoS method/failure families.
 
+The first bounded reward-reference-graph foundation is now isolated in `rustaxa-consensus` without routing
+FinalChain reads or changing the persisted DPoS snapshot schema. It models arbitrary-width reward-per-stake nodes keyed
+by validator and block, explicit validator heads and delegation cursors, persisted reference counts, incomplete-history
+provenance, and the legacy stale-head correction boundary. Clone-staged mutations reproduce legacy load-copy-write
+ordering, including same-key count inflation, node resurrection, and positive orphan counts, without recomputing
+persisted counts. The canonical seven-field RLP codec rejects trailing bytes, non-list or unsorted tables, duplicate
+keys, noncanonical integers, dangling references, and undercounted nodes. Reward arithmetic keeps exact `BigUint`
+intermediates and applies `uint256` truncation only at the ABI boundary. The next bounded `CRW-08` slice must integrate
+this graph into the next DPoS snapshot schema, genesis, every reward writer, and replay/incomplete-history routing before
+`getDelegations(address,uint32)` can use it. No CXX carrier, bridge handle/export, shim, module flag, or `CRW-07`
+inventory changes belong to this foundation.
+
+Validation passed all 20 focused reward-graph tests, all 738 `rustaxa-consensus` tests, normal-policy clippy with the
+unchanged 46-warning crate baseline, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the bridge inventory
+guard, skill validation, the repository pre-commit hook, Rust formatting, and whitespace validation.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

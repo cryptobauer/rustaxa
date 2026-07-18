@@ -3712,6 +3712,31 @@ and later affordability; correction requires replay/rebuild from the first affec
 principal edit. `CRW-08` remains active for `getDelegations(address,uint32)`, its explicit historical reward-per-stake
 reference graph, and the remaining DPoS method/failure families.
 
+### CRW-08 Reward Reference Graph Foundation
+
+This bounded foundation adds an isolated deterministic reward-reference graph to `rustaxa-consensus`; it deliberately
+does not yet change FinalChain routing or the persisted DPoS snapshot schema.
+
+- Reward nodes are keyed by validator and block and retain arbitrary-width reward-per-stake values plus the exact
+  persisted reference count. Validator heads, delegation cursors, incomplete-history provenance, and permitted legacy
+  stale heads are explicit graph state.
+- Clone-staged mutations preserve legacy load-copy-write ordering. Same-key cursor writes can inflate counts and
+  resurrect a deleted node; positive orphan counts remain representable and are never recomputed from live references.
+  Checkpoint creation can atomically move existing heads and cursors without double-counting them.
+- The canonical seven-field RLP codec has deterministic table ordering and rejects trailing bytes, non-list tables,
+  duplicate or unsorted rows, noncanonical integers, dangling complete-history references, and undercounted nodes.
+- Reward-per-stake and claim arithmetic uses exact `BigUint` intermediates. Principal, stake, and maximum inputs retain
+  the `uint256` domain, while only the final ABI reward is reduced modulo 2^256.
+
+The next bounded slice must advance the DPoS snapshot schema and integrate the graph into genesis, every reward writer,
+and replay/incomplete-history handling. Only then can native and direct `getDelegations(address,uint32)` reads consume
+the graph as sole reward-head and cursor authority. This foundation adds no CXX carrier, bridge handle/export, shim,
+module flag, or `CRW-07` inventory delta.
+
+Validation passed all 20 focused reward-graph tests, all 738 `rustaxa-consensus` tests, normal-policy clippy with the
+unchanged 46-warning crate baseline, `rewrite-validate-fast`, `rewrite-validate-final-chain`, the bridge inventory
+guard, skill validation, the repository pre-commit hook, Rust formatting, and whitespace validation.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

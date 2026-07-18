@@ -13,5 +13,6 @@ rustaxa-storage = { version = "0.1.0", path = "../rustaxa-storage" }
 rustaxa-types = { version = "0.1.0", path = "../rustaxa-types" }
 rustaxa-vdf = { version = "0.1.0", path = "../rustaxa-vdf" }
 serde_json = "1.0.145"
+num-bigint = "0.4.6"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 triehash = "0.8.4"
