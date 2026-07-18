@@ -960,6 +960,19 @@ impl BridgeFinalChain {
         })?;
         Ok(rustaxa_ffi::FinalChainCallOutcome {
             code_retval: outcome.code_retval,
+            logs: outcome
+                .logs
+                .into_iter()
+                .map(|log| rustaxa_ffi::FinalChainEvmLog {
+                    address: log.address,
+                    topics: log
+                        .topics
+                        .into_iter()
+                        .map(|topic| rustaxa_ffi::FinalChainEvmLogTopic { topic })
+                        .collect(),
+                    data: log.data,
+                })
+                .collect(),
             gas_used: outcome.gas_used,
             code_err: outcome.code_err,
             consensus_err: outcome.consensus_err,

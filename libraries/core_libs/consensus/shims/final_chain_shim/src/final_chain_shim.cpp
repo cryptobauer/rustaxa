@@ -966,6 +966,17 @@ state_api::ExecutionResult FinalChain::call(state_api::EVMTransaction const& trx
 
     state_api::ExecutionResult result;
     result.code_retval = into_bytes(outcome.code_retval);
+    result.logs.reserve(outcome.logs.size());
+    for (const auto& log : outcome.logs) {
+      state_api::LogRecord converted;
+      converted.address = into_address(log.address);
+      converted.topics.reserve(log.topics.size());
+      for (const auto& topic : log.topics) {
+        converted.topics.emplace_back(dev::bytes(topic.topic.begin(), topic.topic.end()));
+      }
+      converted.data = into_bytes(log.data);
+      result.logs.push_back(std::move(converted));
+    }
     result.gas_used = outcome.gas_used;
     result.code_err = std::string(outcome.code_err);
     result.consensus_err = std::string(outcome.consensus_err);

@@ -86,6 +86,21 @@ class RustFinalChainTest : public ::testing::Test {
     return input;
   }
 
+  static rust::Vec<uint8_t> get_delegate_input(std::array<uint8_t, 20> validator_address) {
+    rust::Vec<uint8_t> input;
+    input.push_back(0x5c);
+    input.push_back(0x19);
+    input.push_back(0xa9);
+    input.push_back(0x5c);
+    for (auto i = 0; i < 12; ++i) {
+      input.push_back(0);
+    }
+    for (const auto byte : validator_address) {
+      input.push_back(byte);
+    }
+    return input;
+  }
+
   static rust::Vec<uint8_t> get_delegations_input(std::array<uint8_t, 20> delegator_address, uint32_t batch) {
     rust::Vec<uint8_t> input;
     input.push_back(0x8b);
@@ -197,7 +212,7 @@ class RustFinalChainTest : public ::testing::Test {
     addresses.reserve(size);
     for (auto i = 0u; i < size; ++i) {
       const auto offset = static_cast<size_t>(abi_word_u64(data, array_start + 32 + i * 32));
-      const auto payload_start = array_start + offset;
+      const auto payload_start = array_start + 32 + offset;
       std::array<uint8_t, 20> validator{};
       std::copy(data.begin() + payload_start + 12, data.begin() + payload_start + 32, validator.begin());
       addresses.push_back(validator);
@@ -397,18 +412,33 @@ TEST_F(RustFinalChainTest, DposCallReturnsGenesisValidatorPages) {
   EXPECT_EQ(validator_page_addresses(by_owner.code_retval), (std::vector{first_validator}));
 }
 
-TEST_F(RustFinalChainTest, DposCallTreatsMutatingSelectorsAsNoOps) {
+TEST_F(RustFinalChainTest, DposCallExecutesMutationsTransientlyAndReturnsLogs) {
   const auto validator_address = address(0x10);
   auto storage = create_storage(test_dir.string());
   auto final_chain = create_final_chain_for_test(*storage, genesis_validators(validator_address));
 
   auto claim_rewards_outcome = final_chain->call(dpos_call(0, get_claim_rewards_input(validator_address)));
-  ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "");
+  ASSERT_EQ(std::string(claim_rewards_outcome.code_err), "Delegation does not exist");
   EXPECT_EQ(std::string(claim_rewards_outcome.consensus_err), "");
   EXPECT_TRUE(claim_rewards_outcome.code_retval.empty());
+  EXPECT_TRUE(claim_rewards_outcome.logs.empty());
+
+  auto delegate_call = dpos_call(0, get_delegate_input(validator_address));
+  delegate_call.value = u64_be(1'000);
+  auto delegate_outcome = final_chain->call(std::move(delegate_call));
+  ASSERT_EQ(std::string(delegate_outcome.code_err), "");
+  ASSERT_EQ(std::string(delegate_outcome.consensus_err), "");
+  ASSERT_EQ(delegate_outcome.logs.size(), 1u);
+  EXPECT_EQ(delegate_outcome.logs[0].address[19], 0xfe);
+  EXPECT_EQ(delegate_outcome.logs[0].topics.size(), 3u);
+  EXPECT_EQ(delegate_outcome.logs[0].data.size(), 32u);
 
   auto claim_all_outcome = final_chain->call(dpos_call(0, get_claim_all_rewards_input()));
   ASSERT_EQ(std::string(claim_all_outcome.code_err), "");
   EXPECT_EQ(std::string(claim_all_outcome.consensus_err), "");
   EXPECT_TRUE(claim_all_outcome.code_retval.empty());
+  EXPECT_TRUE(claim_all_outcome.logs.empty());
+
+  auto delegation_after_call = final_chain->call(dpos_call(0, get_total_delegation_input(address(0x00))));
+  EXPECT_EQ(abi_word_u64(delegation_after_call.code_retval, 0), 0u);
 }

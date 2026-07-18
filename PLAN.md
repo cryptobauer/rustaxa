@@ -466,19 +466,22 @@ reference builds retain the untouched legacy RewardsStats header and source.
     independent of the configured eligibility delay. The active
     Rust finalization path also persists the legacy two-level `final_chain_log_blooms_index` chunks with author-augmented
     blooms and routes `FinalChain::withBlockBloom` through Rust. All current Solidity DPoS ABI methods have native Rust
-    routing; general mutation simulation through the read-oriented `FinalChain::call` surface remains future work.
-    Finalized DPoS mutation dispatch is consolidated behind a caller-owned staged-snapshot kernel so the future
-    transient call envelope can reuse deterministic contract transitions without inheriting finalized value injection,
-    fees, receipts, reward planning, cleanup, or publication. Exact call parity still requires requested-block account and DPoS
-    snapshots, intrinsic-plus-action gas, combined gas/value affordability, staged value rollback, typed business
-    errors, mutation outputs, and logs across all 16 mutation branches at once.
+    routing, and `FinalChain::call` simulates all 16 mutation selectors through an atomic transient envelope.
+    Finalized DPoS mutation dispatch is consolidated behind a caller-owned staged-snapshot kernel so transient calls
+    reuse deterministic contract transitions without inheriting finalized value injection, fees, receipts, reward
+    planning, cleanup, or publication.
     The shared kernel result now preserves the successful `undelegateV2` ABI request ID and legacy pre-fix
     `claimAllRewards(uint32)` end flag while finalized receipt publication continues to discard return bytes. Existing
     widened finalized page selection remains unchanged; aligning wrapping-batch selection has separate historical replay
     consequences. The kernel now also carries exact legacy mutation business errors separately from ABI output, including
     pinned no-CGO btcec registration-proof diagnostics and claim-all validator context, while ABI lookup failures remain
-    untyped and corrupt state stays a hard error. Finalized receipts discard the typed reason. The atomic transient call
-    envelope remains required before `FinalChain::call` can route all mutation selectors.
+    untyped and corrupt state stays a hard error. Finalized receipts discard the typed reason. `FinalChain::call` now
+    routes all 16 mutation selectors through one atomic transient envelope over exact requested-block account and DPoS
+    snapshots. The envelope reproduces gas-cap and value affordability, intrinsic-plus-action gas, Cornus payability,
+    staged payable value, typed business errors, ABI outputs, and logs, then drops all staged account/DPoS changes
+    without reward advancement, receipts, end-block cleanup, or publication. Historical blocks without complete Rust
+    snapshots fail closed and still require replay, migration, or an explicitly retained hybrid route. A narrow call-log
+    result carrier is the only bridge delta; no new handle or request export was added.
     Rust native finalization also executes the slashing `commitDoubleVotingProof(bytes,bytes)` precompile path for
     legacy PBFT vote RLPs: Rust decodes the calldata, recovers both vote signers, validates the double-vote facts,
     persists restart-durable jail blocks, jailed-validator order, and duplicate-proof keys in the DPoS snapshot, emits

@@ -52,7 +52,7 @@ use rustaxa_types::codec::rlp::final_chain::{
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::transaction::intrinsic_gas;
 use rustaxa_types::{
-    Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
+    Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount, FinalChainCallLog,
     FinalChainCallOutcome, FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock,
     FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
     RedelegationCorrection, StoredFinalChainBlockHeader,
@@ -951,6 +951,24 @@ impl FinalChain {
             .cloned())
     }
 
+    /// Clones the complete account snapshot for transient execution at a block.
+    ///
+    /// Missing historical snapshots remain hard errors; callers must never
+    /// substitute the latest account state for a requested finalized block.
+    fn account_snapshot_map_at_block(
+        &self,
+        block_number: u64,
+    ) -> Result<HashMap<[u8; 20], Account>, anyhow::Error> {
+        self.account_snapshots
+            .lock()
+            .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?
+            .get(&block_number)
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!("final-chain account snapshot unavailable for block {block_number}")
+            })
+    }
+
     pub fn vrf_key(&self, address: [u8; 20]) -> Result<Option<[u8; 32]>, anyhow::Error> {
         let latest_block = self.last_block_number()?;
         self.vrf_key_at_block(latest_block, address)
@@ -1190,15 +1208,25 @@ impl FinalChain {
         Ok(gas_limit)
     }
 
-    /// Executes the Rust-backed read-only call subset for FinalChain.
+    /// Executes the Rust-backed transient call subset for FinalChain.
     ///
-    /// This currently supports native empty-return calls plus selected DPoS
-    /// precompile reads. EVM-style failures are returned in the outcome so the
-    /// C++ RPC layer can preserve its existing `ExecutionResult` handling.
+    /// DPoS mutations run against caller-owned clones of the requested
+    /// finalized account and contract snapshots. Their outputs and logs are
+    /// returned to the caller, while all account and DPoS changes are discarded.
+    /// EVM-style failures are returned in the outcome so the C++ RPC layer can
+    /// preserve its existing `ExecutionResult` handling.
     pub fn call(
         &self,
         request: FinalChainCallRequest,
     ) -> Result<FinalChainCallOutcome, anyhow::Error> {
+        if request.receiver == Some(DPOS_CONTRACT_ADDRESS) && request.input.len() >= 4 {
+            let mut selector = [0u8; 4];
+            selector.copy_from_slice(&request.input[..4]);
+            if is_dpos_mutation_selector(selector) {
+                return self.dpos_mutation_call(request);
+            }
+        }
+
         if let Some(outcome) = self.validate_call_funds_and_gas(&request)? {
             return Ok(outcome);
         }
@@ -1241,8 +1269,7 @@ impl FinalChain {
             });
         }
 
-        if (is_dpos_mutation_selector(selector)
-            || is_dpos_eligibility_read_selector(selector)
+        if (is_dpos_eligibility_read_selector(selector)
             || is_dpos_fixed_singleton_read_selector(selector)
             || is_dpos_total_delegation_read_selector(selector)
             || is_dpos_delegation_page_read_selector(selector)
@@ -1259,45 +1286,6 @@ impl FinalChain {
             });
         }
 
-        if is_dpos_mutation_selector(selector) {
-            let dpos_tx = decode_dpos_transaction_for_execution(
-                &request.input,
-                request.sender,
-                request.block_number,
-                self.rewards_config.fix_claim_all_block_num,
-                self.dpos_cornus_period,
-                self.dpos_phalaenopsis_period,
-            );
-            if let DposTransaction::MalformedMutation {
-                selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
-            } = dpos_tx
-            {
-                return Ok(FinalChainCallOutcome {
-                    gas_used,
-                    ..Default::default()
-                });
-            }
-            if let DposTransaction::MalformedMutation { selector } = dpos_tx {
-                return Ok(FinalChainCallOutcome {
-                    gas_used,
-                    code_err: format!(
-                        "Rust FinalChain::call malformed DPoS mutation 0x{}",
-                        selector_hex(selector)
-                    ),
-                    ..Default::default()
-                });
-            }
-            if let DposTransaction::MethodNotSupported = dpos_tx {
-                return Ok(FinalChainCallOutcome {
-                    gas_used,
-                    code_err: format!(
-                        "Rust FinalChain::call unsupported DPoS selector 0x{}",
-                        selector_hex(selector)
-                    ),
-                    ..Default::default()
-                });
-            }
-        }
         let code_retval = match selector {
             DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR => {
                 let validator = match decode_abi_address_argument(
@@ -1524,22 +1512,6 @@ impl FinalChain {
                     }
                 }
             }
-            DPOS_REGISTER_VALIDATOR_SELECTOR
-            | DPOS_DELEGATE_SELECTOR
-            | DPOS_UNDELEGATE_SELECTOR
-            | DPOS_CONFIRM_UNDELEGATE_SELECTOR
-            | DPOS_CANCEL_UNDELEGATE_SELECTOR
-            | DPOS_UNDELEGATE_V2_SELECTOR
-            | DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR
-            | DPOS_CANCEL_UNDELEGATE_V2_SELECTOR
-            | DPOS_REDELEGATE_SELECTOR
-            | DPOS_CLAIM_REWARDS_SELECTOR
-            | DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR
-            | DPOS_SET_VALIDATOR_INFO_SELECTOR
-            | DPOS_SET_COMMISSION_SELECTOR
-            | DPOS_CLAIM_ALL_REWARDS_SELECTOR
-            | DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
-            | DPOS_PHALA_ESCROW_TRANSFER_SELECTOR => Vec::new(),
             _ => {
                 return Ok(FinalChainCallOutcome {
                     gas_used,
@@ -1554,6 +1526,180 @@ impl FinalChain {
 
         Ok(FinalChainCallOutcome {
             code_retval,
+            gas_used,
+            ..Default::default()
+        })
+    }
+
+    /// Executes one DPoS mutation inside an atomic, non-persisted transaction envelope.
+    ///
+    /// The requested finalized account and DPoS snapshots are cloned before
+    /// execution. Gas-cap and value affordability, intrinsic and action gas,
+    /// Cornus payability, payable value transfer, ABI output, typed contract
+    /// errors, and logs follow the native precompile path. The clones are
+    /// dropped for every result, so calls never publish accounts, DPoS state,
+    /// receipts, rewards, end-block effects, or storage writes.
+    fn dpos_mutation_call(
+        &self,
+        request: FinalChainCallRequest,
+    ) -> Result<FinalChainCallOutcome, anyhow::Error> {
+        let mut selector = [0u8; 4];
+        selector.copy_from_slice(&request.input[..4]);
+        let mut accounts = self.account_snapshot_map_at_block(request.block_number)?;
+        let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
+        let gas_price = u256_from_big_endian(&request.gas_price);
+        let value = u256_from_big_endian(&request.value);
+
+        let mut balance_after_gas_cap = None;
+        if request.sender != [0u8; 20] {
+            let sender = accounts.entry(request.sender).or_insert_with(empty_account);
+            let sender_balance = u256_from_big_endian(&sender.balance);
+            let Some(gas_cap_cost) = gas_price.checked_mul(U256::from(request.gas_limit)) else {
+                return Ok(FinalChainCallOutcome {
+                    gas_used: affordable_gas(sender, gas_price, request.gas_limit),
+                    consensus_err: "insufficient balance to pay for gas".to_string(),
+                    ..Default::default()
+                });
+            };
+            if sender_balance < gas_cap_cost {
+                return Ok(FinalChainCallOutcome {
+                    gas_used: affordable_gas(sender, gas_price, request.gas_limit),
+                    consensus_err: "insufficient balance to pay for gas".to_string(),
+                    ..Default::default()
+                });
+            }
+            let remaining_balance = sender_balance - gas_cap_cost;
+            sender.balance = u256_to_big_endian(remaining_balance);
+            balance_after_gas_cap = Some(remaining_balance);
+        }
+
+        let intrinsic_gas = intrinsic_gas(&request.input, false)?;
+        if request.gas_limit < intrinsic_gas {
+            return Ok(FinalChainCallOutcome {
+                gas_used: request.gas_limit,
+                consensus_err: "intrinsic gas too low".to_string(),
+                ..Default::default()
+            });
+        }
+        if balance_after_gas_cap.is_some_and(|balance| balance < value) {
+            return Ok(FinalChainCallOutcome {
+                gas_used: request.gas_limit,
+                consensus_err: "insufficient balance for transfer".to_string(),
+                ..Default::default()
+            });
+        }
+
+        let mut dpos_tx = decode_dpos_transaction_for_execution(
+            &request.input,
+            request.sender,
+            request.block_number,
+            self.rewards_config.fix_claim_all_block_num,
+            self.dpos_cornus_period,
+            self.dpos_phalaenopsis_period,
+        );
+        let value_transfer_allowed =
+            request.block_number < self.dpos_cornus_period || dpos_transaction_is_payable(&dpos_tx);
+        let action_gas = if !value.is_zero() && !value_transfer_allowed {
+            0
+        } else {
+            dpos_transaction_required_gas(
+                &dpos_tx,
+                request.block_number,
+                self.rewards_config.fix_claim_all_block_num,
+                self.dpos_cornus_period,
+                Some(&dpos_snapshot),
+            )?
+        };
+        let gas_used = intrinsic_gas
+            .checked_add(action_gas)
+            .ok_or_else(|| anyhow::anyhow!("required call gas overflow"))?;
+        if request.gas_limit < gas_used {
+            return Ok(FinalChainCallOutcome {
+                gas_used: intrinsic_gas,
+                code_err: "out of gas".to_string(),
+                ..Default::default()
+            });
+        }
+
+        if matches!(dpos_tx, DposTransaction::UnrecognizedInput) {
+            return Ok(FinalChainCallOutcome {
+                gas_used: intrinsic_gas,
+                code_err: format!("no method with id: 0x{}", selector_hex(selector)),
+                ..Default::default()
+            });
+        }
+
+        if !value.is_zero() && !value_transfer_allowed {
+            return Ok(FinalChainCallOutcome {
+                gas_used: intrinsic_gas,
+                code_err: "Method is not payable".to_string(),
+                ..Default::default()
+            });
+        }
+
+        let malformed_error = match &dpos_tx {
+            DposTransaction::MalformedMutation {
+                selector: DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
+            } => None,
+            DposTransaction::MalformedMutation { selector } => Some(format!(
+                "Rust FinalChain::call malformed DPoS mutation 0x{}",
+                selector_hex(*selector)
+            )),
+            _ => None,
+        };
+
+        Self::inject_dpos_transaction_value(&mut dpos_tx, &request.value);
+        if value_transfer_allowed && !value.is_zero() {
+            if request.sender != [0u8; 20] {
+                let sender = accounts
+                    .get_mut(&request.sender)
+                    .ok_or_else(|| anyhow::anyhow!("transient call sender account is missing"))?;
+                let balance = u256_from_big_endian(&sender.balance);
+                sender.balance =
+                    u256_to_big_endian(balance.checked_sub(value).ok_or_else(|| {
+                        anyhow::anyhow!("transient call value transfer underflow")
+                    })?);
+            }
+            let contract = accounts
+                .entry(DPOS_CONTRACT_ADDRESS)
+                .or_insert_with(empty_account);
+            let contract_balance = u256_from_big_endian(&contract.balance);
+            contract.balance = u256_to_big_endian(
+                contract_balance
+                    .checked_add(value)
+                    .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?,
+            );
+        }
+
+        let outcome = self.apply_dpos_mutation_transaction(
+            request.block_number,
+            dpos_tx,
+            &mut dpos_snapshot,
+            &mut accounts,
+        )?;
+        if outcome.status_code == 0 {
+            return Ok(FinalChainCallOutcome {
+                gas_used,
+                code_err: outcome
+                    .contract_error
+                    .map(|error| error.legacy_message())
+                    .or(malformed_error)
+                    .unwrap_or_default(),
+                ..Default::default()
+            });
+        }
+
+        Ok(FinalChainCallOutcome {
+            code_retval: outcome.code_retval,
+            logs: outcome
+                .logs
+                .into_iter()
+                .map(|log| FinalChainCallLog {
+                    address: log.address,
+                    topics: log.topics,
+                    data: log.data,
+                })
+                .collect(),
             gas_used,
             ..Default::default()
         })
@@ -17097,18 +17243,19 @@ mod tests {
     }
 
     #[test]
-    fn call_estimates_dpos_mutation_selectors_without_mutating_snapshot() {
+    fn call_executes_dpos_mutations_without_persisting_transient_state() {
         let path = temp_db_path("call-estimates-dpos-mutations");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = [0x10; 20];
         let new_validator = [0x22; 20];
-        let final_chain = new_final_chain_with_dpos(
+        let mut final_chain = new_final_chain_with_dpos(
             storage.clone(),
             vec![genesis_validator(validator, U256::from(10_000u64))],
             U256::from(1_000u64),
             U256::from(1_000u64),
             U256::from(30_000u64),
         );
+        final_chain.rewards_config.fix_claim_all_block_num = u64::MAX;
 
         let register = final_chain
             .call(dpos_call_request(
@@ -17123,18 +17270,64 @@ mod tests {
                 ),
             ))
             .unwrap();
-        assert_eq!(register.code_err, "");
         assert_eq!(register.consensus_err, "");
         assert_eq!(register.code_retval, Vec::<u8>::new());
-        assert_eq!(register.gas_used, DPOS_REGISTER_VALIDATOR_GAS);
+        assert_eq!(register.code_err, "calculated Rx is larger than curve P");
+        assert!(register.logs.is_empty());
+        assert_eq!(
+            register.gas_used,
+            intrinsic_gas(
+                &register_validator_input(
+                    new_validator,
+                    &[0x77; 65],
+                    [0x88; 32],
+                    10,
+                    "test",
+                    "test",
+                ),
+                false
+            )
+            .unwrap()
+                + DPOS_REGISTER_VALIDATOR_GAS
+        );
 
-        let delegate = final_chain
-            .call(dpos_call_request(0, delegate_input(validator)))
-            .unwrap();
+        let delegate_input = delegate_input(validator);
+        let mut delegate_request = dpos_call_request(0, delegate_input.clone());
+        delegate_request.value = u256_to_big_endian(U256::from(1_000u64));
+        let delegate = final_chain.call(delegate_request).unwrap();
         assert_eq!(delegate.code_err, "");
         assert_eq!(delegate.consensus_err, "");
         assert_eq!(delegate.code_retval, Vec::<u8>::new());
-        assert_eq!(delegate.gas_used, DPOS_DELEGATE_GAS);
+        assert_eq!(delegate.logs.len(), 1);
+        assert_eq!(delegate.logs[0].address, DPOS_CONTRACT_ADDRESS);
+        assert_eq!(
+            delegate.gas_used,
+            intrinsic_gas(&delegate_input, false).unwrap() + DPOS_DELEGATE_GAS
+        );
+
+        let mut undelegate_v2 =
+            dpos_call_request(0, undelegate_v2_input(validator, U256::from(1_000u64)));
+        undelegate_v2.sender = validator;
+        let undelegate_v2 = final_chain.call(undelegate_v2).unwrap();
+        assert!(undelegate_v2.code_err.is_empty());
+        assert_eq!(undelegate_v2.code_retval, abi_word_from_u64(1).to_vec());
+        assert_eq!(undelegate_v2.logs.len(), 1);
+
+        let legacy_claim_all = final_chain
+            .call(dpos_call_request(0, claim_all_rewards_batch_input(0)))
+            .unwrap();
+        assert!(legacy_claim_all.code_err.is_empty());
+        assert_eq!(
+            legacy_claim_all.code_retval,
+            abi_word_from_bool(true).to_vec()
+        );
+        assert!(legacy_claim_all.logs.is_empty());
+
+        let current_claim_all = final_chain
+            .call(dpos_call_request(0, claim_all_rewards_input()))
+            .unwrap();
+        assert!(current_claim_all.code_err.is_empty());
+        assert!(current_claim_all.code_retval.is_empty());
 
         assert_eq!(
             final_chain
@@ -17161,14 +17354,285 @@ mod tests {
                 selector_hex(DPOS_DELEGATE_SELECTOR)
             )
         );
-        assert_eq!(malformed.gas_used, DPOS_DELEGATE_GAS);
+        let malformed_input = {
+            let mut input = DPOS_DELEGATE_SELECTOR.to_vec();
+            input.push(0x11);
+            input
+        };
+        assert_eq!(
+            malformed.gas_used,
+            intrinsic_gas(&malformed_input, false).unwrap() + DPOS_DELEGATE_GAS
+        );
         assert_eq!(malformed.code_retval, Vec::<u8>::new());
+        assert!(malformed.logs.is_empty());
 
         let mut nonpayable = dpos_call_request(0, claim_rewards_input(validator));
         nonpayable.value = vec![1];
         let nonpayable = final_chain.call(nonpayable).unwrap();
-        assert_eq!(nonpayable.code_err, "DPoS method is not payable");
-        assert_eq!(nonpayable.gas_used, 0);
+        assert_eq!(nonpayable.code_err, "Method is not payable");
+        assert_eq!(
+            nonpayable.gas_used,
+            intrinsic_gas(&claim_rewards_input(validator), false).unwrap()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn call_routes_all_dpos_mutation_selectors_through_transient_envelope() {
+        let path = temp_db_path("call-routes-all-dpos-mutations");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x10; 20];
+        let mut final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        final_chain.dpos_phalaenopsis_period = 0;
+        let selectors_and_action_gas = [
+            (
+                DPOS_REGISTER_VALIDATOR_SELECTOR,
+                DPOS_REGISTER_VALIDATOR_GAS,
+            ),
+            (DPOS_DELEGATE_SELECTOR, DPOS_DELEGATE_GAS),
+            (DPOS_UNDELEGATE_SELECTOR, DPOS_UNDELEGATE_GAS),
+            (DPOS_CONFIRM_UNDELEGATE_SELECTOR, DPOS_DEFAULT_METHOD_GAS),
+            (DPOS_CANCEL_UNDELEGATE_SELECTOR, DPOS_UNDELEGATE_GAS),
+            (DPOS_UNDELEGATE_V2_SELECTOR, DPOS_UNDELEGATE_GAS),
+            (DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR, DPOS_DEFAULT_METHOD_GAS),
+            (DPOS_CANCEL_UNDELEGATE_V2_SELECTOR, DPOS_UNDELEGATE_GAS),
+            (DPOS_REDELEGATE_SELECTOR, DPOS_REDELEGATE_GAS),
+            (DPOS_CLAIM_REWARDS_SELECTOR, DPOS_CLAIM_REWARDS_GAS),
+            (
+                DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR,
+                DPOS_CLAIM_COMMISSION_REWARDS_GAS,
+            ),
+            (
+                DPOS_SET_VALIDATOR_INFO_SELECTOR,
+                DPOS_SET_VALIDATOR_INFO_GAS,
+            ),
+            (DPOS_SET_COMMISSION_SELECTOR, DPOS_SET_COMMISSION_GAS),
+            (DPOS_CLAIM_ALL_REWARDS_SELECTOR, 0),
+            (DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR, 0),
+            (
+                DPOS_PHALA_ESCROW_TRANSFER_SELECTOR,
+                DPOS_PHALA_ESCROW_TRANSFER_GAS,
+            ),
+        ];
+        let accounts_before = final_chain.account_snapshot_map_at_block(0).unwrap();
+        let dpos_before = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+
+        for (selector, action_gas) in selectors_and_action_gas {
+            let outcome = final_chain
+                .call(dpos_call_request(0, selector.to_vec()))
+                .unwrap();
+            assert_eq!(
+                outcome.gas_used,
+                intrinsic_gas(&selector, false).unwrap() + action_gas,
+                "selector 0x{} did not use the transient mutation envelope",
+                selector_hex(selector)
+            );
+            assert!(outcome.consensus_err.is_empty());
+            assert!(outcome.logs.is_empty());
+            if !matches!(
+                selector,
+                DPOS_CLAIM_ALL_REWARDS_SELECTOR
+                    | DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR
+                    | DPOS_PHALA_ESCROW_TRANSFER_SELECTOR
+            ) {
+                assert!(
+                    !outcome.code_err.is_empty(),
+                    "malformed selector 0x{} must remain a code failure",
+                    selector_hex(selector)
+                );
+            }
+        }
+
+        final_chain.rewards_config.fix_claim_all_block_num = 0;
+        let mut retired_batch_request =
+            dpos_call_request(0, DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec());
+        retired_batch_request.value = vec![1];
+        let retired_batch = final_chain.call(retired_batch_request).unwrap();
+        assert_eq!(retired_batch.code_err, "no method with id: 0x09b72e00");
+        assert_eq!(
+            retired_batch.gas_used,
+            intrinsic_gas(&DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR, false).unwrap()
+        );
+
+        final_chain.dpos_phalaenopsis_period = u64::MAX;
+        let mut inactive_phala_request =
+            dpos_call_request(0, DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec());
+        inactive_phala_request.value = vec![1];
+        let inactive_phala = final_chain.call(inactive_phala_request).unwrap();
+        assert_eq!(inactive_phala.code_err, "no method with id: 0x44df8e70");
+        assert_eq!(
+            inactive_phala.gas_used,
+            intrinsic_gas(&DPOS_PHALA_ESCROW_TRANSFER_SELECTOR, false).unwrap()
+        );
+
+        assert_eq!(
+            final_chain.account_snapshot_map_at_block(0).unwrap(),
+            accounts_before
+        );
+        assert_eq!(
+            final_chain.dpos_snapshot_at_finalized_block(0).unwrap(),
+            dpos_before
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn dpos_mutation_call_enforces_atomic_historical_gas_and_value_envelope() {
+        let path = temp_db_path("dpos-mutation-call-envelope");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x10; 20];
+        let sender = [0x20; 20];
+        let final_chain = new_final_chain_with_dpos(
+            storage.clone(),
+            vec![genesis_validator(validator, U256::from(10_000u64))],
+            U256::from(1_000u64),
+            U256::from(1_000u64),
+            U256::from(30_000u64),
+        );
+        let input = delegate_input(validator);
+        let intrinsic = intrinsic_gas(&input, false).unwrap();
+        let required = intrinsic + DPOS_DELEGATE_GAS;
+        let value = U256::from(1_000u64);
+        let set_sender_balance = |balance: U256| {
+            let mut snapshots = final_chain.account_snapshots.lock().unwrap();
+            let snapshot = snapshots.get_mut(&0).unwrap();
+            let mut account = snapshot.get(&sender).cloned().unwrap_or_else(empty_account);
+            account.balance = u256_to_big_endian(balance);
+            snapshot.insert(sender, account);
+        };
+        let request = |gas_limit: u64, request_value: U256| {
+            let mut request = dpos_call_request(0, input.clone());
+            request.sender = sender;
+            request.value = u256_to_big_endian(request_value);
+            request.gas_price = vec![1];
+            request.gas_limit = gas_limit;
+            request
+        };
+
+        set_sender_balance(U256::from(required - 1));
+        let gas_short = final_chain.call(request(required, U256::zero())).unwrap();
+        assert_eq!(
+            gas_short.consensus_err,
+            "insufficient balance to pay for gas"
+        );
+        assert_eq!(gas_short.gas_used, required - 1);
+
+        set_sender_balance(U256::MAX);
+        let mut overflowing_gas_cap = request(2, U256::zero());
+        overflowing_gas_cap.gas_price = u256_to_big_endian(U256::MAX);
+        let overflowing_gas_cap = final_chain.call(overflowing_gas_cap).unwrap();
+        assert_eq!(
+            overflowing_gas_cap.consensus_err,
+            "insufficient balance to pay for gas"
+        );
+        assert_eq!(overflowing_gas_cap.gas_used, 1);
+
+        set_sender_balance(U256::from(required) + value - U256::one());
+        let value_short = final_chain.call(request(required, value)).unwrap();
+        assert_eq!(
+            value_short.consensus_err,
+            "insufficient balance for transfer"
+        );
+        assert_eq!(value_short.gas_used, required);
+
+        set_sender_balance(U256::from(intrinsic - 1));
+        let intrinsic_precedes_value = final_chain
+            .call(request(intrinsic - 1, U256::one()))
+            .unwrap();
+        assert_eq!(
+            intrinsic_precedes_value.consensus_err,
+            "intrinsic gas too low"
+        );
+        assert_eq!(intrinsic_precedes_value.gas_used, intrinsic - 1);
+
+        set_sender_balance(U256::from(required) + value);
+        let intrinsic_short = final_chain
+            .call(request(intrinsic - 1, U256::zero()))
+            .unwrap();
+        assert_eq!(intrinsic_short.consensus_err, "intrinsic gas too low");
+        assert_eq!(intrinsic_short.gas_used, intrinsic - 1);
+
+        let action_short = final_chain
+            .call(request(required - 1, U256::zero()))
+            .unwrap();
+        assert_eq!(action_short.code_err, "out of gas");
+        assert_eq!(action_short.gas_used, intrinsic);
+
+        let accounts_before = final_chain.account_snapshot_map_at_block(0).unwrap();
+        let dpos_before = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let success = final_chain.call(request(required, value)).unwrap();
+        assert_eq!(success.gas_used, required);
+        assert!(success.code_err.is_empty());
+        assert!(success.consensus_err.is_empty());
+        assert_eq!(success.logs.len(), 1);
+        assert_eq!(
+            final_chain.account_snapshot_map_at_block(0).unwrap(),
+            accounts_before
+        );
+        assert_eq!(
+            final_chain.dpos_snapshot_at_finalized_block(0).unwrap(),
+            dpos_before
+        );
+
+        {
+            final_chain
+                .account_snapshots
+                .lock()
+                .unwrap()
+                .insert(1, accounts_before.clone());
+            let mut block_one_dpos = dpos_before.clone();
+            block_one_dpos.total_stakes.remove(&validator);
+            block_one_dpos.validator_metadata.remove(&validator);
+            block_one_dpos.delegations.remove(&validator);
+            final_chain
+                .dpos_snapshots
+                .lock()
+                .unwrap()
+                .insert(1, block_one_dpos);
+        }
+        let mut historical = request(required, value);
+        historical.block_number = 1;
+        let historical = final_chain.call(historical).unwrap();
+        assert_eq!(historical.code_err, "Validator does not exist");
+
+        final_chain.account_snapshots.lock().unwrap().remove(&1);
+        let mut missing_accounts = request(required, value);
+        missing_accounts.block_number = 1;
+        assert!(
+            final_chain
+                .call(missing_accounts)
+                .unwrap_err()
+                .to_string()
+                .contains("account snapshot unavailable for block 1")
+        );
+
+        final_chain
+            .account_snapshots
+            .lock()
+            .unwrap()
+            .insert(1, accounts_before);
+        final_chain.dpos_snapshots.lock().unwrap().remove(&1);
+        let mut missing_dpos = request(required, value);
+        missing_dpos.block_number = 1;
+        assert!(
+            final_chain
+                .call(missing_dpos)
+                .unwrap_err()
+                .to_string()
+                .contains("DPoS snapshot for finalized block 1 is not implemented")
+        );
 
         drop(final_chain);
         drop(storage);

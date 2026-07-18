@@ -234,12 +234,13 @@ impl Default for FinalChainRewardsConfig {
     }
 }
 
-/// Read-only FinalChain call request routed from C++ into Rust.
+/// Transient FinalChain call request routed from C++ into Rust.
 ///
 /// This type intentionally models the execution-facing fields Rust needs for
-/// deterministic native/precompile reads. Values are kept as big-endian byte
-/// strings at the boundary so the bridge does not need to interpret C++ `u256`
-/// layouts.
+/// deterministic native/precompile reads and DPoS mutation simulation. Values
+/// are kept as big-endian byte strings at the boundary so the bridge does not
+/// need to interpret C++ `u256` layouts. Mutation calls execute against cloned
+/// requested-block snapshots and never publish their staged state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalChainCallRequest {
     /// Block number used for historical reads.
@@ -258,7 +259,7 @@ pub struct FinalChainCallRequest {
     pub input: Vec<u8>,
 }
 
-/// Result of a Rust-backed read-only FinalChain call.
+/// Result of a Rust-backed transient FinalChain call.
 ///
 /// EVM-style failures are represented as error strings in the result to match
 /// the C++ `state_api::ExecutionResult` contract. Infrastructure failures still
@@ -267,12 +268,26 @@ pub struct FinalChainCallRequest {
 pub struct FinalChainCallOutcome {
     /// Returned call data bytes.
     pub code_retval: Vec<u8>,
-    /// Gas used by the read-only call.
+    /// Contract logs produced by the transient call. These are returned to the
+    /// caller but are never persisted as finalized receipts.
+    pub logs: Vec<FinalChainCallLog>,
+    /// Gas used by the transient call.
     pub gas_used: u64,
     /// EVM/code-level error text, if any.
     pub code_err: String,
     /// Consensus/account-level error text, if any.
     pub consensus_err: String,
+}
+
+/// One EVM-compatible log produced by a transient FinalChain call.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalChainCallLog {
+    /// Emitting contract address.
+    pub address: [u8; 20],
+    /// Ordered event signature and indexed argument topics.
+    pub topics: Vec<[u8; 32]>,
+    /// ABI-encoded non-indexed event data.
+    pub data: Vec<u8>,
 }
 
 /// Finalized DAG block summary needed by Rust finalization reward accounting.

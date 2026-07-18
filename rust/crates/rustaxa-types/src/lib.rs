@@ -8,7 +8,7 @@ pub mod transaction;
 pub use dag::DagBlock;
 pub use final_chain::{
     Account, BlockHeaderContext, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
-    FinalChainBlockHeader, FinalChainBlockHeaderBuilder, FinalChainCallOutcome,
+    FinalChainBlockHeader, FinalChainBlockHeaderBuilder, FinalChainCallLog, FinalChainCallOutcome,
     FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock, FinalizationTransaction,
     GenesisAccount, GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata,
     RedelegationCorrection, StoredFinalChainBlockHeader,

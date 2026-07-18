@@ -3837,6 +3837,31 @@ Typed-result validation passed eight focused error, ordering, recovery, dispatch
 skill validation, Rust formatting, whitespace validation, and the repository pre-commit hook, followed by independent
 configured review approval.
 
+### CRW-08 Atomic DPoS Mutation Call Envelope
+
+`FinalChain::call` now executes all 16 DPoS mutation selectors through the shared staged-snapshot kernel. The call
+envelope clones exact requested-block account and DPoS snapshots, preserves legacy zero-sender exemptions and dry-run
+nonce replacement semantics, checks full gas-cap affordability, validates intrinsic gas before combined value
+affordability, charges method action gas, and stages payable value before contract execution. Cornus nonpayable
+calls consume intrinsic gas only. Successful calls return kernel ABI output and transient logs; typed business failures
+return exact legacy error text; snapshot corruption, reward-graph faults, and impossible arithmetic remain hard errors.
+All staged account, value, reward, and DPoS changes are discarded for every outcome, with no receipt, bloom, reward
+advancement, end-block cleanup, storage write, or publication.
+
+The call outcome gained a documented log vector that reuses the existing bridge EVM-log DTO and maps into C++
+`ExecutionResult::logs`; no handle, request field, module flag, or new export was added. The bridge fixture now proves a
+successful transient delegation log and unchanged state. Historical blocks without complete Rust account and DPoS
+snapshots fail closed, preserving the existing replay/migration or explicit hybrid-routing requirement. Coverage spans
+all selectors, historical selection, both missing-snapshot cases, gas/value boundaries, intrinsic and action OOG,
+typed failure, rollback, V2 and legacy/current claim-all outputs, and log conversion. The C++ bridge page fixture also
+corrects its ABI dynamic-array offset base so it validates the existing encoder rather than reading tuple metadata.
+
+Mutation-call validation passed all 768 `rustaxa-consensus` tests, all 56 `rust_consensus_tests` bridge cases,
+`rewrite-validate-fast`, `rewrite-validate-final-chain`, the authorized Tier 3
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, Rust formatting, whitespace
+validation, and the repository pre-commit hook with the unchanged warning baseline, followed by independent configured
+review approval.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

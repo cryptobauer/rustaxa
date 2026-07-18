@@ -3349,6 +3349,7 @@ pub mod rustaxa_ffi {
 
     struct FinalChainCallOutcome {
         code_retval: Vec<u8>,
+        logs: Vec<FinalChainEvmLog>,
         gas_used: u64,
         code_err: String,
         consensus_err: String,
