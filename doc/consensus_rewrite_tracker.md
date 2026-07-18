@@ -488,6 +488,24 @@ state, and missing slashing-account custody; recovery requires replay/rebuild fr
 separately designed migration rather than an inferred balance edit. `CRW-08` remains active for precompile read
 transactions, the remaining DPoS method/failure families, and the explicit historical reward graph.
 
+The next bounded `CRW-08` slice closes native slashing read transactions for `getJailBlock(address)` and
+`getJailedValidators()`. At Magnolia and later, both recognized selectors charge 5,000 action gas and succeed without
+logs or jail-state mutation; `getJailedValidators()` retains the legacy acceptance of trailing calldata, while a
+malformed jail-block argument is a status-zero contract failure with the same action gas. Legacy EVM call ordering makes
+these ABI-view methods payable in actual transaction execution, so successful reads move value into the slashing
+account while malformed and action-out-of-gas calls roll it back. Read success never initializes the slashing account
+nonce: that storage-initialization side effect remains exclusive to a successful double-voting-proof write. The read
+view remains frozen at the delayed previously committed snapshot and cannot observe a proof earlier in the same block.
+A pre-Magnolia call retains ordinary empty-account semantics: intrinsic-only success, value transfer only when nonzero,
+and no materialized receiver account for a zero-value call.
+A restart-backed dual-mode fixture protects exact receipt RLP, gas/cumulative gas, empty logs/bloom, successful-only
+value custody, sender continuation, account nonces, and persisted receipts. No carrier, bridge handle/export, shim,
+module flag, or snapshot schema changes, so `CRW-07` has no inventory delta. Rust-finalized history that previously
+treated these selectors as unsupported contains different receipts, cumulative gas, balances, and potentially later
+transaction affordability; recovery requires replay/rebuild from before the first affected read or a separately
+designed migration rather than an inferred balance edit. `CRW-08` remains active for DPoS precompile read transactions,
+the remaining DPoS method/failure families, and the explicit historical reward graph.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

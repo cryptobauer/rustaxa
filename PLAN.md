@@ -467,8 +467,10 @@ reference builds retain the untouched legacy RewardsStats header and source.
     the legacy `Jailed(address,uint64,uint64,uint8)` log, and derives effective DPoS eligibility/total vote counts from
     the Rust jail state. Value-bearing proof calls preserve the legacy precompile behavior despite the ABI's nonpayable
     metadata: value moves into the slashing account only after a successful proof, while failed or duplicate proofs roll
-    it back, and the first successful write initializes the slashing account nonce to one. Slashing read calls for
-    `getJailBlock(address)` and `getJailedValidators()` are Rust-backed.
+    it back, and the first successful write initializes the slashing account nonce to one. Slashing reads for
+    `getJailBlock(address)` and `getJailedValidators()` are Rust-backed both through `FinalChain::call` and as finalized
+    native transactions. Recognized read transactions charge the legacy fixed action gas, retain successful value at
+    the slashing account, emit no logs, and leave its nonce unchanged; malformed and out-of-gas reads roll value back.
   - FinalChain native execution is now behind a Rust-owned `FinalChainExecutionRuntime` session boundary. The
     C++ FinalChain shim now builds the session request directly, asks Rust for the next execution step, and commits only
     when Rust returns a native commit action. Native value transfers plus the supported DPoS/slashing precompile subset

@@ -1423,18 +1423,9 @@ impl FinalChain {
             SLASHING_GET_JAIL_BLOCK_SELECTOR => {
                 let validator =
                     decode_abi_address_argument(&request.input, "getJailBlock(address)")?;
-                abi_word_from_u64(
-                    snapshot
-                        .slashing_jail_blocks
-                        .get(&validator)
-                        .copied()
-                        .unwrap_or_default(),
-                )
-                .to_vec()
+                encode_slashing_jail_block(&snapshot, validator)
             }
-            SLASHING_GET_JAILED_VALIDATORS_SELECTOR => {
-                encode_abi_address_array(&snapshot.slashing_jailed_validators)
-            }
+            SLASHING_GET_JAILED_VALIDATORS_SELECTOR => encode_slashing_jailed_validators(&snapshot),
             _ => {
                 return Ok(FinalChainCallOutcome {
                     gas_used,
@@ -2846,6 +2837,10 @@ impl FinalChain {
         // Legacy RequiredGas counts live delegator membership. Delegation delay
         // applies to eligibility reads, not to DPoS mutation gas accounting.
         let mut dpos_gas_snapshot = dpos_snapshot.clone();
+        // Loaded lazily only when a slashing read transaction appears. Once
+        // loaded, this remains frozen for the whole block so a proof earlier in
+        // the transaction stream is not visible to a later read transaction.
+        let mut slashing_read_snapshot = None;
         let delayed_snapshot_block = block_number.saturating_sub(self.dpos_delegation_delay);
         let slashing_validator_snapshot = {
             let snapshots = self
@@ -2871,10 +2866,18 @@ impl FinalChain {
                         self.dpos_phalaenopsis_period,
                     ),
                 ))
-            } else if transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS) {
+            } else if transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS)
+                && self.magnolia_active(block_number)
+            {
                 Some(NativeContractTransaction::Slashing(
                     decode_slashing_transaction(&transaction.data)?,
                 ))
+            } else if transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS) {
+                // Before Magnolia the slashing precompile is not registered.
+                // Legacy EVM therefore treats calldata to this address as an
+                // ordinary empty-account call: intrinsic gas only, successful
+                // value transfer, and no contract method execution.
+                None
             } else if !transaction.data.is_empty() || transaction.receiver.is_none() {
                 anyhow::bail!(
                     "Rust FinalChain::finalize currently supports only native value transfers and selected DPoS/slashing actions"
@@ -2920,6 +2923,8 @@ impl FinalChain {
                         contract_tx,
                         NativeContractTransaction::Slashing(
                             SlashingTransaction::CommitDoubleVotingProof(_)
+                                | SlashingTransaction::GetJailBlock(_)
+                                | SlashingTransaction::GetJailedValidators
                         )
                     )
                 });
@@ -2952,6 +2957,8 @@ impl FinalChain {
                             SlashingTransaction::CommitDoubleVotingProof(_) => {
                                 SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
                             }
+                            SlashingTransaction::GetJailBlock(_)
+                            | SlashingTransaction::GetJailedValidators => SLASHING_GET_METHOD_GAS,
                             SlashingTransaction::MethodNotSupported => 0,
                         }
                     }
@@ -3032,8 +3039,12 @@ impl FinalChain {
                     status_code = 0;
                 } else if let Some(contract_tx) = contract_transaction {
                     let contract_tx_for_gas = contract_tx.clone();
-                    let slashing_call =
-                        matches!(&contract_tx, NativeContractTransaction::Slashing(_));
+                    let slashing_proof_call = matches!(
+                        &contract_tx,
+                        NativeContractTransaction::Slashing(
+                            SlashingTransaction::CommitDoubleVotingProof(_)
+                        )
+                    );
                     if !value.is_zero() {
                         let sender_balance = accounts
                             .get(&transaction.sender)
@@ -3206,13 +3217,26 @@ impl FinalChain {
                                 DposApplyOutcome::contract_failure()
                             }
                         },
-                        NativeContractTransaction::Slashing(slashing_tx) => self
-                            .apply_slashing_transaction(
+                        NativeContractTransaction::Slashing(slashing_tx) => {
+                            let needs_read_snapshot = matches!(
+                                &slashing_tx,
+                                SlashingTransaction::GetJailBlock(Ok(_))
+                                    | SlashingTransaction::GetJailedValidators
+                            );
+                            if needs_read_snapshot && slashing_read_snapshot.is_none() {
+                                // Legacy slashing reads use the delayed reader
+                                // published after the preceding block committed.
+                                slashing_read_snapshot =
+                                    Some(self.dpos_snapshot(head_block_number)?);
+                            }
+                            self.apply_slashing_transaction(
                                 &mut dpos_snapshot,
                                 slashing_validator_snapshot.as_ref(),
+                                slashing_read_snapshot.as_ref(),
                                 block_number,
                                 slashing_tx,
-                            )?,
+                            )?
+                        }
                     });
                     if let Some(outcome) = contract_outcome.as_mut() {
                         if outcome.status_code == 1 {
@@ -3253,7 +3277,7 @@ impl FinalChain {
                                     })?,
                                 );
                             }
-                            if slashing_call {
+                            if slashing_proof_call {
                                 let slashing_account = accounts
                                     .entry(SLASHING_CONTRACT_ADDRESS)
                                     .or_insert_with(empty_account);
@@ -3269,24 +3293,35 @@ impl FinalChain {
                         anyhow::anyhow!("native value transfer missing receiver after validation")
                     })?;
                     if receiver_address == DPOS_CONTRACT_ADDRESS
-                        || receiver_address == SLASHING_CONTRACT_ADDRESS
+                        || (receiver_address == SLASHING_CONTRACT_ADDRESS
+                            && self.magnolia_active(block_number))
                     {
                         anyhow::bail!(
                             "Rust FinalChain::finalize unsupported native precompile transaction selector"
                         );
                     }
-                    let receiver = accounts
-                        .entry(receiver_address)
-                        .or_insert_with(empty_account);
-                    let receiver_balance = u256_from_big_endian(&receiver.balance);
-                    receiver.balance = u256_to_big_endian(
-                        receiver_balance
-                            .checked_add(value)
-                            .ok_or_else(|| anyhow::anyhow!("receiver balance overflow"))?,
-                    );
+                    // Legacy EVM does not materialize a previously absent
+                    // ordinary-call receiver when no value moves. This matters
+                    // for calls to the slashing address before Magnolia, while
+                    // the precompile is still unregistered.
+                    if !value.is_zero() || accounts.contains_key(&receiver_address) {
+                        let receiver = accounts
+                            .entry(receiver_address)
+                            .or_insert_with(empty_account);
+                        let receiver_balance = u256_from_big_endian(&receiver.balance);
+                        receiver.balance = u256_to_big_endian(
+                            receiver_balance
+                                .checked_add(value)
+                                .ok_or_else(|| anyhow::anyhow!("receiver balance overflow"))?,
+                        );
+                    }
                 }
             }
             if let Some(contract_outcome) = contract_outcome {
+                // Native EOA transaction receipts do not retain contract return
+                // bytes. They are intentionally consumed at this publication
+                // boundary after read execution has completed successfully.
+                let _code_retval = contract_outcome.code_retval;
                 receipts.push(NativeReceipt {
                     status_code: contract_outcome.status_code,
                     gas_used,
@@ -4395,6 +4430,7 @@ impl FinalChain {
         &self,
         snapshot: &mut DposSnapshot,
         validator_snapshot: Option<&DposSnapshot>,
+        read_snapshot: Option<&DposSnapshot>,
         block_number: u64,
         slashing_tx: SlashingTransaction,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
@@ -4408,6 +4444,22 @@ impl FinalChain {
                 ),
                 Err(_) => Ok(DposApplyOutcome::contract_failure()),
             },
+            SlashingTransaction::GetJailBlock(validator) => match validator {
+                Ok(validator) => Ok(DposApplyOutcome::success_with_return(
+                    encode_slashing_jail_block(
+                        read_snapshot.ok_or_else(|| {
+                            anyhow::anyhow!("slashing jail-block read snapshot is unavailable")
+                        })?,
+                        validator,
+                    ),
+                )),
+                Err(_) => Ok(DposApplyOutcome::contract_failure()),
+            },
+            SlashingTransaction::GetJailedValidators => Ok(DposApplyOutcome::success_with_return(
+                encode_slashing_jailed_validators(read_snapshot.ok_or_else(|| {
+                    anyhow::anyhow!("slashing jailed-validator read snapshot is unavailable")
+                })?),
+            )),
             SlashingTransaction::MethodNotSupported => Ok(DposApplyOutcome::contract_failure()),
         }
     }
@@ -8040,6 +8092,25 @@ fn selector_hex(selector: [u8; 4]) -> String {
         .collect::<String>()
 }
 
+/// Encodes the legacy slashing `getJailBlock(address)` return value from the
+/// caller-selected delayed snapshot. Missing jail history is returned as zero.
+fn encode_slashing_jail_block(snapshot: &DposSnapshot, validator: [u8; 20]) -> Vec<u8> {
+    abi_word_from_u64(
+        snapshot
+            .slashing_jail_blocks
+            .get(&validator)
+            .copied()
+            .unwrap_or_default(),
+    )
+    .to_vec()
+}
+
+/// Encodes the legacy slashing `getJailedValidators()` dynamic address array
+/// from the caller-selected delayed snapshot, preserving stored order.
+fn encode_slashing_jailed_validators(snapshot: &DposSnapshot) -> Vec<u8> {
+    encode_abi_address_array(&snapshot.slashing_jailed_validators)
+}
+
 /// Decodes Rust-supported slashing contract method payloads.
 ///
 /// The slashing precompile exposes read methods plus
@@ -8058,6 +8129,13 @@ fn decode_slashing_transaction(input: &[u8]) -> Result<SlashingTransaction, anyh
                 verify_legacy_double_voting_proof_call_data(input).map_err(|err| err.to_string()),
             )))
         }
+        SLASHING_GET_JAIL_BLOCK_SELECTOR => Ok(SlashingTransaction::GetJailBlock(
+            decode_abi_address_argument(input, "getJailBlock(address)")
+                .map_err(|err| err.to_string()),
+        )),
+        // Legacy dispatch identifies this no-argument method from the first
+        // four bytes and does not reject trailing calldata.
+        SLASHING_GET_JAILED_VALIDATORS_SELECTOR => Ok(SlashingTransaction::GetJailedValidators),
         _ => Ok(SlashingTransaction::MethodNotSupported),
     }
 }
@@ -8823,6 +8901,10 @@ struct ReceiptLog {
 struct DposApplyOutcome {
     status_code: u8,
     logs: Vec<ReceiptLog>,
+    /// Contract return bytes produced during native execution. Direct EOA
+    /// transactions discard these bytes when receipts are published, but
+    /// retaining them here keeps read execution testable before that boundary.
+    code_retval: Vec<u8>,
 }
 
 impl DposApplyOutcome {
@@ -8830,6 +8912,15 @@ impl DposApplyOutcome {
         Self {
             status_code: 1,
             logs,
+            code_retval: Vec::new(),
+        }
+    }
+
+    fn success_with_return(code_retval: Vec<u8>) -> Self {
+        Self {
+            status_code: 1,
+            logs: Vec::new(),
+            code_retval,
         }
     }
 
@@ -8837,6 +8928,7 @@ impl DposApplyOutcome {
         Self {
             status_code: 0,
             logs: Vec::new(),
+            code_retval: Vec::new(),
         }
     }
 }
@@ -8924,6 +9016,8 @@ enum NativeContractTransaction {
 #[derive(Clone)]
 enum SlashingTransaction {
     CommitDoubleVotingProof(Box<std::result::Result<VerifiedLegacyDoubleVotingProof, String>>),
+    GetJailBlock(std::result::Result<[u8; 20], String>),
+    GetJailedValidators,
     MethodNotSupported,
 }
 
@@ -9288,11 +9382,17 @@ mod tests {
                 .unwrap()
             }
             Some(SLASHING_CONTRACT_ADDRESS) => {
-                match decode_slashing_transaction(&tx.data).unwrap() {
-                    SlashingTransaction::CommitDoubleVotingProof(_) => {
-                        SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+                if !final_chain.magnolia_active(block_number) {
+                    0
+                } else {
+                    match decode_slashing_transaction(&tx.data).unwrap() {
+                        SlashingTransaction::CommitDoubleVotingProof(_) => {
+                            SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+                        }
+                        SlashingTransaction::GetJailBlock(_)
+                        | SlashingTransaction::GetJailedValidators => SLASHING_GET_METHOD_GAS,
+                        SlashingTransaction::MethodNotSupported => 0,
                     }
-                    SlashingTransaction::MethodNotSupported => 0,
                 }
             }
             _ => 0,
@@ -12008,6 +12108,376 @@ mod tests {
         assert_eq!(restart_chain.account(submitter).unwrap().unwrap().nonce, 2);
 
         drop(restart_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_executes_slashing_reads_with_value_and_failure_rollback() {
+        let path = temp_db_path("finalize-slashing-read-transactions");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0x81; 20];
+        let validator = [0x82; 20];
+        let period = 1u64;
+        let block_signing_key = SigningKey::from_slice(&[0x83; 32]).unwrap();
+        let pbft = signed_pbft_block(&block_signing_key, period, 245);
+        let gas_price = U256::one();
+
+        let jail_value = U256::from(111u64);
+        let jailed_value = U256::from(222u64);
+        let malformed_value = U256::from(333u64);
+        let oog_value = U256::from(444u64);
+        let jail_tx = test_transaction(
+            0xE1,
+            sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            jail_value,
+            gas_price,
+            100_000,
+            get_jail_block_input(validator),
+            vec![0xc1, 0xe1],
+        );
+        let mut jailed_input = get_jailed_validators_input();
+        jailed_input.extend_from_slice(&[0xaa, 0xbb]);
+        let jailed_tx = test_transaction(
+            0xE2,
+            sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            1,
+            jailed_value,
+            gas_price,
+            100_000,
+            jailed_input,
+            vec![0xc1, 0xe2],
+        );
+        let malformed_tx = test_transaction(
+            0xE3,
+            sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            2,
+            malformed_value,
+            gas_price,
+            100_000,
+            SLASHING_GET_JAIL_BLOCK_SELECTOR.to_vec(),
+            vec![0xc1, 0xe3],
+        );
+        let oog_input = get_jail_block_input(validator);
+        let oog_intrinsic_gas = intrinsic_gas(&oog_input, false).unwrap();
+        let oog_tx = test_transaction(
+            0xE4,
+            sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            3,
+            oog_value,
+            gas_price,
+            oog_intrinsic_gas,
+            oog_input,
+            vec![0xc1, 0xe4],
+        );
+        let transactions = vec![
+            jail_tx.clone(),
+            jailed_tx.clone(),
+            malformed_tx.clone(),
+            oog_tx.clone(),
+        ];
+        write_period_data(
+            &storage,
+            period,
+            &pbft,
+            &transactions
+                .iter()
+                .map(|transaction| transaction.rlp.clone())
+                .collect::<Vec<_>>(),
+        );
+        let initial_balance = U256::from(2_000_000u64);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            500_000,
+            0,
+            vec![genesis_account(sender, initial_balance)],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 0,
+                cacti_period: u64::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let jail_gas = expected_native_contract_tx_gas(&final_chain, period, &jail_tx);
+        let jailed_gas = expected_native_contract_tx_gas(&final_chain, period, &jailed_tx);
+        let malformed_gas = expected_native_contract_tx_gas(&final_chain, period, &malformed_tx);
+        let (_header, receipts) = final_chain
+            .finalize_block(pbft, transactions, vec![])
+            .unwrap();
+
+        assert_eq!(receipt_fields(&receipts[0]), (1, jail_gas, jail_gas));
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, jailed_gas, jail_gas + jailed_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[2]),
+            (0, malformed_gas, jail_gas + jailed_gas + malformed_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[3]),
+            (
+                0,
+                oog_intrinsic_gas,
+                jail_gas + jailed_gas + malformed_gas + oog_intrinsic_gas
+            )
+        );
+        assert!(
+            receipts
+                .iter()
+                .all(|receipt| receipt_logs(receipt).is_empty())
+        );
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 4);
+        assert_eq!(
+            balance_of(&final_chain, sender),
+            initial_balance
+                - U256::from(jail_gas + jailed_gas + malformed_gas + oog_intrinsic_gas)
+                - jail_value
+                - jailed_value
+        );
+        assert_eq!(
+            balance_of(&final_chain, SLASHING_CONTRACT_ADDRESS),
+            jail_value + jailed_value
+        );
+        assert_eq!(
+            final_chain
+                .account(SLASHING_CONTRACT_ADDRESS)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            0
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_activates_slashing_read_gas_at_magnolia_boundary() {
+        let path = temp_db_path("finalize-slashing-read-activation");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0x84; 20];
+        let signing_key = SigningKey::from_slice(&[0x85; 32]).unwrap();
+        let initial_balance = U256::from(1_000_000u64);
+        let value_before = U256::from(10u64);
+        let value_at = U256::from(20u64);
+        let mut read_input = get_jailed_validators_input();
+        read_input.push(0xcc);
+        let before_tx = test_transaction(
+            0xE5,
+            sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            value_before,
+            U256::one(),
+            100_000,
+            read_input.clone(),
+            vec![0xc1, 0xe5],
+        );
+        let at_tx = test_transaction(
+            0xE6,
+            sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            1,
+            value_at,
+            U256::one(),
+            100_000,
+            read_input,
+            vec![0xc1, 0xe6],
+        );
+        let before_pbft = signed_pbft_block(&signing_key, 1, 246);
+        write_period_data(
+            &storage,
+            1,
+            &before_pbft,
+            std::slice::from_ref(&before_tx.rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(sender, initial_balance)],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 2,
+                cacti_period: u64::MAX,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let before_intrinsic = intrinsic_gas(&before_tx.data, false).unwrap();
+        let (_, before_receipts) = final_chain
+            .finalize_block(before_pbft, vec![before_tx], vec![])
+            .unwrap();
+        assert_eq!(
+            receipt_fields(&before_receipts[0]),
+            (1, before_intrinsic, before_intrinsic)
+        );
+
+        let at_pbft = signed_pbft_block(&signing_key, 2, 247);
+        write_period_data(&storage, 2, &at_pbft, std::slice::from_ref(&at_tx.rlp));
+        let at_gas = expected_native_contract_tx_gas(&final_chain, 2, &at_tx);
+        let (_, at_receipts) = final_chain
+            .finalize_block(at_pbft, vec![at_tx], vec![])
+            .unwrap();
+        assert_eq!(receipt_fields(&at_receipts[0]), (1, at_gas, at_gas));
+        assert_eq!(at_gas, before_intrinsic + SLASHING_GET_METHOD_GAS);
+        assert_eq!(
+            balance_of(&final_chain, SLASHING_CONTRACT_ADDRESS),
+            value_before + value_at
+        );
+        assert_eq!(
+            final_chain
+                .account(SLASHING_CONTRACT_ADDRESS)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            0
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn pre_magnolia_zero_value_slashing_call_does_not_create_account() {
+        let path = temp_db_path("pre-magnolia-zero-value-slashing-call");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0x87; 20];
+        let signing_key = SigningKey::from_slice(&[0x88; 32]).unwrap();
+        let pbft = signed_pbft_block(&signing_key, 1, 248);
+        let tx = test_transaction(
+            0xE7,
+            sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::one(),
+            100_000,
+            get_jailed_validators_input(),
+            vec![0xc1, 0xe7],
+        );
+        write_period_data(&storage, 1, &pbft, std::slice::from_ref(&tx.rlp));
+        let initial_balance = U256::from(1_000_000u64);
+        let rewards_config = FinalChainRewardsConfig {
+            magnolia_period: 2,
+            cacti_period: u64::MAX,
+            ..Default::default()
+        };
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(sender, initial_balance)],
+            vec![],
+            GenesisDposConfig::default(),
+            rewards_config.clone(),
+        )
+        .unwrap();
+
+        let intrinsic = intrinsic_gas(&tx.data, false).unwrap();
+        let (_, receipts) = final_chain.finalize_block(pbft, vec![tx], vec![]).unwrap();
+        assert_eq!(receipt_fields(&receipts[0]), (1, intrinsic, intrinsic));
+        assert!(
+            final_chain
+                .account(SLASHING_CONTRACT_ADDRESS)
+                .unwrap()
+                .is_none()
+        );
+
+        drop(final_chain);
+        let restart_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(sender, initial_balance)],
+            vec![],
+            GenesisDposConfig::default(),
+            rewards_config,
+        )
+        .unwrap();
+        assert_eq!(restart_chain.last_block_number().unwrap(), 1);
+        assert!(
+            restart_chain
+                .account(SLASHING_CONTRACT_ADDRESS)
+                .unwrap()
+                .is_none()
+        );
+
+        drop(restart_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn slashing_read_transactions_use_the_frozen_delayed_snapshot() {
+        let path = temp_db_path("slashing-read-frozen-delayed-snapshot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x86; 20];
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let frozen = final_chain.dpos_snapshot(0).unwrap();
+        let mut current = frozen.clone();
+        current.slashing_jail_blocks.insert(validator, 99);
+        current.slashing_jailed_validators.push(validator);
+
+        let jail_outcome = final_chain
+            .apply_slashing_transaction(
+                &mut current,
+                None,
+                Some(&frozen),
+                1,
+                SlashingTransaction::GetJailBlock(Ok(validator)),
+            )
+            .unwrap();
+        assert_eq!(jail_outcome.status_code, 1);
+        assert_eq!(
+            u256_from_big_endian(&jail_outcome.code_retval),
+            U256::zero()
+        );
+        let jailed_outcome = final_chain
+            .apply_slashing_transaction(
+                &mut current,
+                None,
+                Some(&frozen),
+                1,
+                SlashingTransaction::GetJailedValidators,
+            )
+            .unwrap();
+        assert_eq!(jailed_outcome.status_code, 1);
+        assert_eq!(
+            u256_from_big_endian(&jailed_outcome.code_retval[32..64]),
+            U256::zero()
+        );
+        assert_eq!(
+            u256_from_big_endian(&encode_slashing_jail_block(&current, validator)),
+            U256::from(99u64)
+        );
+
+        drop(final_chain);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
     }

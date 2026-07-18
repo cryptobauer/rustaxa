@@ -1023,6 +1023,97 @@ TEST_F(FinalChainTest, native_slashing_value_custody_commits_only_for_successful
   assert_persisted_state(SUT);
 }
 
+TEST_F(FinalChainTest, native_slashing_reads_preserve_value_gas_and_nonce_semantics) {
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 100'000;
+  constexpr uint64_t kJailBlockValue = 111;
+  constexpr uint64_t kJailedValidatorsValue = 222;
+  constexpr uint64_t kMalformedValue = 333;
+  constexpr uint64_t kTransferValue = 444;
+  constexpr uint64_t kSenderInitialBalance = 10'000'000;
+  const addr_t kSlashingContract("0x00000000000000000000000000000000000000EE");
+
+  const dev::KeyPair sender{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+  const dev::KeyPair queried_validator{dev::Secret("5555555555555555555555555555555555555555555555555555555555555555")};
+  const dev::KeyPair receiver{dev::Secret("6666666666666666666666666666666666666666666666666666666666666666")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 1;
+
+  init();
+  advance({});
+
+  auto jail_block_input =
+      util::EncodingSolidity::packFunctionCall("getJailBlock(address)", queried_validator.address());
+  auto jailed_validators_input = util::EncodingSolidity::packFunctionCall("getJailedValidators()");
+  jailed_validators_input.insert(jailed_validators_input.end(), {0xaa, 0xbb});
+  auto malformed_jail_block_input = jail_block_input;
+  malformed_jail_block_input.resize(4);
+
+  const auto jail_block_tx = std::make_shared<Transaction>(0, kJailBlockValue, kGasPrice, kGasLimit, jail_block_input,
+                                                           sender.secret(), kSlashingContract, cfg.genesis.chain_id);
+  const auto jailed_validators_tx =
+      std::make_shared<Transaction>(1, kJailedValidatorsValue, kGasPrice, kGasLimit, jailed_validators_input,
+                                    sender.secret(), kSlashingContract, cfg.genesis.chain_id);
+  const auto malformed_tx =
+      std::make_shared<Transaction>(2, kMalformedValue, kGasPrice, kGasLimit, malformed_jail_block_input,
+                                    sender.secret(), kSlashingContract, cfg.genesis.chain_id);
+  const auto continuation_tx = std::make_shared<Transaction>(3, kTransferValue, kGasPrice, kGasLimit, bytes{},
+                                                             sender.secret(), receiver.address(), cfg.genesis.chain_id);
+
+  const auto result = advance({jail_block_tx, jailed_validators_tx, malformed_tx, continuation_tx},
+                              {.dont_assume_all_trx_success = true});
+  ASSERT_EQ(result->trx_receipts.size(), 4);
+
+  const std::array<uint64_t, 4> expected_gas = {
+      IntrinsicGas(jail_block_input, false) + 5'000, IntrinsicGas(jailed_validators_input, false) + 5'000,
+      IntrinsicGas(malformed_jail_block_input, false) + 5'000, IntrinsicGas(bytes{}, false)};
+  const std::array<uint64_t, 4> expected_status = {1, 1, 0, 1};
+  uint64_t cumulative_gas = 0;
+  for (size_t idx = 0; idx < result->trx_receipts.size(); ++idx) {
+    cumulative_gas += expected_gas[idx];
+    TransactionReceipt expected;
+    expected.status_code = expected_status[idx];
+    expected.gas_used = expected_gas[idx];
+    expected.cumulative_gas_used = cumulative_gas;
+    EXPECT_EQ(util::rlp_enc(result->trx_receipts[idx]), util::rlp_enc(expected));
+    EXPECT_EQ(result->trx_receipts[idx].bloom(), LogBloom());
+  }
+  EXPECT_EQ(result->final_chain_blk->gas_used, cumulative_gas);
+  EXPECT_EQ(result->final_chain_blk->log_bloom, LogBloom());
+
+  const auto assert_persisted_state = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto sender_account = chain->getAccount(sender.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, 4);
+    EXPECT_EQ(sender_account->balance,
+              u256(kSenderInitialBalance - (kJailBlockValue + kJailedValidatorsValue + kTransferValue) -
+                   cumulative_gas * kGasPrice));
+    const auto slashing_account = chain->getAccount(kSlashingContract);
+    ASSERT_TRUE(slashing_account);
+    EXPECT_EQ(slashing_account->nonce, 0);
+    EXPECT_EQ(slashing_account->balance, u256(kJailBlockValue + kJailedValidatorsValue));
+    const auto receiver_account = chain->getAccount(receiver.address());
+    ASSERT_TRUE(receiver_account);
+    EXPECT_EQ(receiver_account->nonce, 0);
+    EXPECT_EQ(receiver_account->balance, u256(kTransferValue));
+
+    for (size_t idx = 0; idx < result->trx_receipts.size(); ++idx) {
+      const auto persisted = chain->transactionReceipt(2, idx);
+      ASSERT_TRUE(persisted);
+      EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(result->trx_receipts[idx]));
+    }
+  };
+
+  assert_persisted_state(SUT);
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  assert_persisted_state(SUT);
+}
+
 TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kDelegation = 1'000;

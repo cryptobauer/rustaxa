@@ -3503,6 +3503,41 @@ in Rust-enabled and pure-C++ FinalChain builds, `rewrite-validate-fast`, `rewrit
 `rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, the pre-commit hook, formatting, and
 whitespace checks. Existing repository clippy and CMake warnings remain unchanged.
 
+### CRW-08 Native Slashing Read Transactions
+
+This bounded follow-up extends the Rust-owned native slashing transaction surface to the two fixed-gas read selectors.
+
+- At Magnolia and later, `getJailBlock(address)` and `getJailedValidators()` charge the legacy 5,000 action gas in
+  addition to transaction intrinsic gas. Successful reads produce status-one receipts with no logs or bloom and do not
+  mutate jail state. The transaction path evaluates the frozen delayed previously committed snapshot, so it does not
+  expose a proof written earlier in the same block.
+- Before Magnolia registers the precompile, calls to its future address retain ordinary empty-account behavior:
+  intrinsic-only success, value transfer only when nonzero, and no persisted receiver account for a zero-value call.
+- Legacy precompile execution transfers call value before running either read despite their ABI-view metadata. Rust
+  therefore defers the sender debit and slashing-account credit until a recognized read succeeds. A malformed
+  `getJailBlock` argument or insufficient action gas keeps the normal gas/nonce charge but rolls value back. The
+  zero-argument jailed-validator selector continues accepting trailing calldata because the legacy method performs no
+  argument unpack.
+- Slashing storage initialization is write-specific. Successful reads leave a fresh slashing account nonce at zero and
+  preserve any existing nonce; only a successful `commitDoubleVotingProof` jail write can initialize zero to one.
+- A restart-backed dual-mode FinalChain fixture executes two value-bearing reads, a malformed value-bearing jail-block
+  read, and a same-sender native continuation. It protects exact receipt RLP, action/cumulative/header gas, empty
+  logs/bloom, successful-only value custody, sender/receiver balances and nonces, slashing nonce, and persisted receipts.
+  Focused Rust coverage additionally protects selector decoding, malformed and out-of-gas rollback, trailing calldata,
+  and the frozen read view.
+
+No CXX carrier, bridge handle/export, shim, module flag, compatibility-only surface, or DPoS snapshot schema changes, so
+`CRW-07` has no inventory delta. Existing Rust-finalized recognized read transactions may have status-zero,
+intrinsic-only receipts and missing slashing-account custody. Because cumulative gas, sender balances, and later
+affordability may differ, correction requires replay/rebuild from before the first affected transaction or a separately
+designed migration rather than an inferred balance top-up. `CRW-08` remains active for DPoS precompile read
+transactions, the remaining DPoS method/failure families, and the explicit historical reward reference graph.
+
+Validation passed the focused 29-test Rust slashing filter, all 707 `rustaxa-consensus` tests, the restart-backed
+fixture in Rust-enabled and pure-C++ FinalChain builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, the pre-commit hook, formatting,
+and whitespace checks. Existing repository clippy and CMake warnings remain unchanged.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
