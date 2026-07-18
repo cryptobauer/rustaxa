@@ -471,6 +471,9 @@ Current snapshot after DAG manager verify-result API cleanup:
   `RedelegationCorrection { validator, delegator, amount }` records copied from genesis hardfork configuration. This
   bounded `CRW-08` replay input is consumed inside Rust FinalChain publication; it adds no handle, constructor, free
   export, or C++ execution authority.
+- The follow-up restart-durable same-validator history-completeness bit and corruption marker set are private DPoS
+  snapshot state. They reuse the retained FinalChain handle and existing snapshot publication path, so they add no CXX
+  carrier, export, shim, or module flag.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

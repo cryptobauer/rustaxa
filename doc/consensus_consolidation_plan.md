@@ -3307,10 +3307,10 @@ correction transcript rather than implementing only the post-fix happy path.
   snapshot is encoded and published. They subtract only the configured amounts and refresh the validator's derived vote
   count while preserving the legacy global eligible-vote total; an additional same-validator call at the fix block may
   therefore leave the same unconfigured stake gap as legacy. Later same-validator calls fail normally.
-- A repeated reward-bearing same-validator call after a prior stale-write gap depends on legacy validator/delegation
-  reward-state reference counts and `LastUpdated` history that the current scalar Rust reward snapshot does not retain.
-  Rust rejects that topology as a hard unsupported replay instead of publishing an approximate payout; modeling that
-  reference graph remains active `CRW-08` work.
+- A repeated reward-bearing same-validator call after prior stale reference corruption depends on legacy
+  validator/delegation reward-state reference counts and `LastUpdated` history that the current scalar Rust reward
+  snapshot does not retain. Rust rejects that topology as a hard unsupported replay instead of publishing an approximate
+  payout; modeling that reference graph remains active `CRW-08` work.
 - Focused Rust and dual-mode FinalChain tests cover normal success, complete source deletion, all selected pre-mutation
   failures, enabled and disabled maximums, pre-Aspen zero and below-minimum new destination pairs, Aspen zero rejection,
   the fix boundary including a new unconfigured fix-block gap, exact duplicate reward-pool payouts, exact
@@ -3320,6 +3320,32 @@ correction transcript rather than implementing only the post-fix happy path.
 `RedelegationCorrection` entries sourced from genesis hardfork configuration. This is a documented `CRW-07` carrier
 field delta; no bridge handle, constructor, or standalone export was added. `CRW-08` remains active for the remaining
 DPoS method and failure families.
+
+### CRW-08 Persistent Same-Validator Reward-Corruption Guard
+
+The reward-reference audit found that stake-gap inference alone did not protect the bounded redelegation path. A
+pre-Aspen zero-amount same-validator call restores the stale reward pool and corrupts legacy `LastUpdated`/reference-count
+state without changing validator stake, so a later reward-bearing call could evade the original guard.
+
+- Rust records complete-history state plus the validator in a restart-durable corruption set after every successful
+  same-validator call at or before `fix_redelegate_block_num`, including zero-amount and zero-pool calls. Before mutation,
+  an incomplete older snapshot, that marker, or any validator-stake versus delegation-principal mismatch classifies the
+  history as unsafe for scalar replay.
+- A repeated marked-or-inferred call with a nonzero delegator reward pool hard-fails before account, cursor, stake, vote,
+  reward, or log mutation. Repeated zero-pool calls remain allowed because the bounded configured-correction transcript
+  can represent them exactly; post-fix same-validator calls remain normal status-zero contract failures.
+- The DPoS snapshot appends a `(history_complete, marker_set)` state as item 22. Prior 5-through-21-item forms decode as
+  history-incomplete, and that bit remains false when the snapshot is re-encoded, because a markerless zero-amount call
+  cannot be inferred from scalar stake state. Reward-bearing pre-fix same-validator replay from such a database requires
+  rebuild/replay rather than silent upgrade. Rollback to a binary that only accepts 21 items is unsafe after a new snapshot
+  is finalized.
+- Focused Rust coverage protects zero-amount first/repeated calls, pre-mutation failure state, encode/decode and restart
+  persistence, older positive-gap inference, repeated zero-pool compatibility, and the post-fix boundary. The existing
+  dual-mode correction fixture remains the honest C++ reference for the representable zero-pool transcript; the explicit
+  safety abort is intentionally not described as general legacy replay parity.
+
+This snapshot-only state adds no CXX carrier, handle, export, shim, or module flag, so `CRW-07` has no new inventory delta.
+Full reward-version graph ownership and a production-history replay fixture remain active `CRW-08` work.
 
 ## Historical Execution Order
 

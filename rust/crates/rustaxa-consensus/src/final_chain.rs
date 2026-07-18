@@ -317,6 +317,20 @@ struct DposSnapshot {
     slashing_jailed_validators: Vec<[u8; 20]>,
     /// Canonical double-voting proof keys already committed by Rust execution.
     slashing_double_voting_proofs: BTreeSet<[u8; 32]>,
+    /// Whether persisted same-validator corruption markers cover this snapshot's
+    /// complete native-redelegation history.
+    ///
+    /// Snapshots decoded from the older 5-through-21-item schemas set this to
+    /// false because zero-amount corruption cannot be reconstructed from scalar
+    /// stake state. Reward-bearing pre-fix same-validator replay then fails
+    /// explicitly until the database is rebuilt or migrated from a transcript.
+    redelegate_same_validator_history_complete: bool,
+    /// Validators that have already executed pre-fix same-validator redelegation.
+    ///
+    /// Restarting nodes must preserve this marker so reward-bearing repeated
+    /// same-validator redelegation cannot silently mutate legacy-corruption
+    /// history.
+    redelegate_same_validator_corruption: BTreeSet<[u8; 20]>,
 }
 
 struct NativeRewardsStatsPlan {
@@ -649,6 +663,8 @@ impl FinalChain {
                     slashing_jail_blocks: BTreeMap::new(),
                     slashing_jailed_validators: Vec::new(),
                     slashing_double_voting_proofs: BTreeSet::new(),
+                    redelegate_same_validator_history_complete: true,
+                    redelegate_same_validator_corruption: BTreeSet::new(),
                 },
             )])),
         };
@@ -5092,6 +5108,42 @@ impl FinalChain {
         Ok(false)
     }
 
+    /// Returns true when a validator has already executed pre-fix same-validator
+    /// redelegation in a persisted or inferable form.
+    ///
+    /// New snapshots persist complete-history state and an explicit marker set.
+    /// Older schemas remain history-incomplete, while markerless current
+    /// snapshots are also classified as corrupted whenever validator stake and
+    /// summed delegation principal differ in either direction.
+    fn is_pre_fix_same_validator_redelegate_corrupted(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+    ) -> Result<bool, anyhow::Error> {
+        if !snapshot.redelegate_same_validator_history_complete
+            || snapshot
+                .redelegate_same_validator_corruption
+                .contains(&validator)
+        {
+            return Ok(true);
+        }
+        let current_stake = match snapshot.total_stakes.get(&validator) {
+            Some(stake) => u256_from_big_endian(stake),
+            None => return Ok(false),
+        };
+        let delegated_principal = snapshot
+            .delegations
+            .get(&validator)
+            .into_iter()
+            .flat_map(|delegations| delegations.values())
+            .try_fold(U256::zero(), |total, delegation| {
+                total
+                    .checked_add(u256_from_big_endian(delegation))
+                    .ok_or_else(|| anyhow::anyhow!("DPoS same-validator delegation sum overflow"))
+            })?;
+        Ok(current_stake != delegated_principal)
+    }
+
     fn remove_dpos_delegation_stake(
         &self,
         snapshot: &mut DposSnapshot,
@@ -5235,32 +5287,19 @@ impl FinalChain {
         }
         let same_validator = from == to;
         if same_validator {
-            let current_stake = snapshot
-                .total_stakes
-                .get(&from)
-                .map(|stake| u256_from_big_endian(stake))
-                .ok_or_else(|| anyhow::anyhow!("DPoS same-validator redelegation lost stake"))?;
-            let delegated_principal = snapshot
-                .delegations
-                .get(&from)
-                .into_iter()
-                .flat_map(|delegations| delegations.values())
-                .try_fold(U256::zero(), |total, delegation| {
-                    total
-                        .checked_add(u256_from_big_endian(delegation))
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("DPoS same-validator delegation sum overflow")
-                        })
-                })?;
             let rewards_pool = snapshot
                 .delegator_rewards
                 .get(&from)
                 .map(|rewards| u256_from_big_endian(rewards))
                 .unwrap_or_default();
-            anyhow::ensure!(
-                current_stake == delegated_principal || rewards_pool.is_zero(),
-                "Rust FinalChain cannot replay repeated reward-bearing same-validator redelegation before the historical fix"
-            );
+            if !rewards_pool.is_zero()
+                && block_number <= self.rewards_config.fix_redelegate_block_num
+                && self.is_pre_fix_same_validator_redelegate_corrupted(snapshot, from)?
+            {
+                anyhow::bail!(
+                    "Rust FinalChain cannot replay repeated reward-bearing same-validator redelegation before the historical fix"
+                );
+            }
         }
         let initial_same_stake = same_validator
             .then(|| {
@@ -5344,6 +5383,9 @@ impl FinalChain {
             }
         }
         logs.push(dpos_redelegated_log(delegator, from, to, amount)?);
+        if same_validator && block_number <= self.rewards_config.fix_redelegate_block_num {
+            snapshot.redelegate_same_validator_corruption.insert(from);
+        }
         Ok(DposApplyOutcome::success(logs))
     }
 
@@ -6208,7 +6250,7 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 }
 
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
-    let mut stream = rlp::RlpStream::new_list(21);
+    let mut stream = rlp::RlpStream::new_list(22);
     append_address_bytes_map(&mut stream, &snapshot.total_stakes);
     append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
@@ -6230,6 +6272,16 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Vec<u8> {
     append_address_vec(&mut stream, &snapshot.slashing_jailed_validators);
     append_fixed_hash_set(&mut stream, &snapshot.slashing_double_voting_proofs);
     append_undelegations_map(&mut stream, &snapshot.undelegations);
+    stream.begin_list(2);
+    stream.append(&snapshot.redelegate_same_validator_history_complete);
+    append_address_vec(
+        &mut stream,
+        &snapshot
+            .redelegate_same_validator_corruption
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+    );
     stream.out().to_vec()
 }
 
@@ -6246,9 +6298,10 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         && item_count != 17
         && item_count != 20
         && item_count != 21
+        && item_count != 22
     {
         anyhow::bail!(
-            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, twenty, or twenty-one items"
+            "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, twenty, twenty-one, or twenty-two items"
         );
     }
     let total_stakes = decode_address_bytes_map(&rlp.at(0)?, "total stakes")?;
@@ -6318,11 +6371,28 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
     } else {
         BTreeMap::new()
     };
-    let undelegations = if item_count == 21 {
+    let undelegations = if item_count == 21 || item_count == 22 {
         decode_undelegations_map(&rlp.at(20)?)?
     } else {
         BTreeMap::new()
     };
+    let (redelegate_same_validator_history_complete, redelegate_same_validator_corruption) =
+        if item_count == 22 {
+            let marker_state = rlp.at(21)?;
+            if marker_state.item_count()? != 2 {
+                anyhow::bail!(
+                    "same-validator redelegation marker state must contain exactly two items"
+                );
+            }
+            (
+                marker_state.val_at(0)?,
+                decode_address_vec(&marker_state.at(1)?, "same-validator redelegation marker")?
+                    .into_iter()
+                    .collect(),
+            )
+        } else {
+            (false, BTreeSet::new())
+        };
     let slashing_jail_blocks = if item_count >= 20 {
         decode_address_u64_map(&rlp.at(17)?, "slashing jail block")?
     } else {
@@ -6360,6 +6430,8 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         slashing_jail_blocks,
         slashing_jailed_validators,
         slashing_double_voting_proofs,
+        redelegate_same_validator_history_complete,
+        redelegate_same_validator_corruption,
     })
 }
 
@@ -9596,6 +9668,32 @@ mod tests {
         stream.out().to_vec()
     }
 
+    fn encode_legacy_dpos_snapshot_with_undelegations(snapshot: &DposSnapshot) -> Vec<u8> {
+        let mut stream = RlpStream::new_list(21);
+        append_address_bytes_map(&mut stream, &snapshot.total_stakes);
+        append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
+        append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
+        append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
+        append_vote_count_map(&mut stream, &snapshot.vote_counts);
+        stream.append(&snapshot.total_vote_count);
+        append_delegations_map(&mut stream, &snapshot.delegations);
+        append_address_bytes_map(&mut stream, &snapshot.delegator_rewards);
+        stream.append(&snapshot.minted_tokens.as_slice());
+        stream.append(&snapshot.total_supply.as_slice());
+        stream.append(&snapshot.current_yield);
+        append_address_bytes_map(&mut stream, &snapshot.validator_reward_per_stake);
+        append_delegations_map(&mut stream, &snapshot.delegation_reward_cursors);
+        append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
+        append_address_vec(&mut stream, &snapshot.validator_order);
+        append_undelegations_v2_map(&mut stream, &snapshot.undelegations_v2);
+        append_address_u64_map(&mut stream, &snapshot.undelegation_v2_last_ids);
+        append_address_u64_map(&mut stream, &snapshot.slashing_jail_blocks);
+        append_address_vec(&mut stream, &snapshot.slashing_jailed_validators);
+        append_fixed_hash_set(&mut stream, &snapshot.slashing_double_voting_proofs);
+        append_undelegations_map(&mut stream, &snapshot.undelegations);
+        stream.out().to_vec()
+    }
+
     fn sample_dpos_snapshot_with_undelegations() -> DposSnapshot {
         let delegator = [0x11u8; 20];
         let validator = [0x22u8; 20];
@@ -9685,6 +9783,8 @@ mod tests {
             slashing_jail_blocks,
             slashing_jailed_validators: vec![validator],
             slashing_double_voting_proofs,
+            redelegate_same_validator_history_complete: true,
+            redelegate_same_validator_corruption: BTreeSet::new(),
         }
     }
 
@@ -9699,7 +9799,283 @@ mod tests {
         let decoded_legacy_snapshot = decode_dpos_snapshot_rlp(&legacy_snapshot).unwrap();
         let mut expected_legacy_snapshot = snapshot;
         expected_legacy_snapshot.undelegations = BTreeMap::new();
+        expected_legacy_snapshot.redelegate_same_validator_history_complete = false;
         assert_eq!(decoded_legacy_snapshot, expected_legacy_snapshot);
+    }
+
+    #[test]
+    fn decode_dpos_snapshot_rlp_preserves_redelegate_same_validator_corruption_marker() {
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot
+            .redelegate_same_validator_corruption
+            .insert([0x22; 20]);
+        let encoded_snapshot = encode_dpos_snapshot_rlp(&snapshot);
+        let decoded_snapshot = decode_dpos_snapshot_rlp(&encoded_snapshot).unwrap();
+        assert!(decoded_snapshot.redelegate_same_validator_history_complete);
+        assert!(
+            decoded_snapshot
+                .redelegate_same_validator_corruption
+                .contains(&[0x22; 20])
+        );
+        assert_eq!(
+            decoded_snapshot.delegator_rewards,
+            snapshot.delegator_rewards
+        );
+    }
+
+    #[test]
+    fn decode_dpos_snapshot_rlp_rejects_ambiguous_older_same_validator_history() {
+        let storage_path = temp_db_path("legacy-redelegate-markerless");
+        let storage = Arc::new(Storage::new(Config::new(storage_path.clone())).unwrap());
+        let delegator = [0x11; 20];
+        let validator = [0x22; 20];
+        let snapshot = sample_dpos_snapshot_with_undelegations();
+        let legacy_snapshot = encode_legacy_dpos_snapshot_with_undelegations(&snapshot);
+        let decoded_snapshot = decode_dpos_snapshot_rlp(&legacy_snapshot).unwrap();
+        assert!(!decoded_snapshot.redelegate_same_validator_history_complete);
+        let mut decoded_snapshot =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&decoded_snapshot)).unwrap();
+        assert!(!decoded_snapshot.redelegate_same_validator_history_complete);
+        assert!(
+            !decoded_snapshot
+                .redelegate_same_validator_corruption
+                .contains(&validator)
+        );
+        let rewards_config = FinalChainRewardsConfig {
+            fix_redelegate_block_num: 10,
+            ..Default::default()
+        };
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            0,
+            0,
+            vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(1_000u64))],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::zero()),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(10_000u64)),
+                validator_maximum_stake: Vec::new(),
+                ..Default::default()
+            },
+            rewards_config,
+        )
+        .unwrap();
+        let mut accounts = final_chain.current_account_snapshot().unwrap();
+        let snapshot_before = decoded_snapshot.clone();
+        let accounts_before = accounts.clone();
+        let err = final_chain
+            .apply_dpos_redelegate(
+                &mut decoded_snapshot,
+                &mut accounts,
+                delegator,
+                validator,
+                validator,
+                u256_to_big_endian(U256::zero()),
+                1,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot replay repeated reward-bearing same-validator redelegation")
+        );
+        assert_eq!(decoded_snapshot, snapshot_before);
+        assert_eq!(accounts, accounts_before);
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(storage_path);
+    }
+
+    #[test]
+    fn apply_dpos_redelegate_rejects_markerless_principal_exceeding_validator_stake() {
+        let path = temp_db_path("dpos-redelegate-principal-exceeds-stake");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage,
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                fix_redelegate_block_num: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let delegator = [0x11; 20];
+        let validator = [0x22; 20];
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot
+            .total_stakes
+            .insert(validator, u256_to_big_endian(U256::from(5_000u64)));
+        assert!(snapshot.redelegate_same_validator_history_complete);
+        assert!(snapshot.redelegate_same_validator_corruption.is_empty());
+        let mut accounts = final_chain.current_account_snapshot().unwrap();
+        let snapshot_before = snapshot.clone();
+        let accounts_before = accounts.clone();
+
+        let err = final_chain
+            .apply_dpos_redelegate(
+                &mut snapshot,
+                &mut accounts,
+                delegator,
+                validator,
+                validator,
+                u256_to_big_endian(U256::zero()),
+                1,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot replay repeated reward-bearing same-validator redelegation")
+        );
+        assert_eq!(snapshot, snapshot_before);
+        assert_eq!(accounts, accounts_before);
+
+        drop(final_chain);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_redelegate_marks_pre_fix_zero_amount_same_validator_and_blocks_repeat() {
+        let path = temp_db_path("dpos-redelegate-pre-fix-zero-amount-marker");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            0,
+            0,
+            vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(1_000u64))],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::zero()),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(10_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+                ..Default::default()
+            },
+            FinalChainRewardsConfig {
+                fix_redelegate_block_num: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let delegator = [0x11; 20];
+        let validator = [0x22; 20];
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot.vote_counts.insert(validator, 1);
+        snapshot.total_vote_count = 1;
+        snapshot
+            .delegation_reward_cursors
+            .get_mut(&validator)
+            .expect("missing validator reward cursors")
+            .insert(delegator, u256_to_big_endian(U256::from(30_000u64)));
+        let mut accounts = final_chain.current_account_snapshot().unwrap();
+        final_chain
+            .apply_dpos_redelegate(
+                &mut snapshot,
+                &mut accounts,
+                delegator,
+                validator,
+                validator,
+                u256_to_big_endian(U256::zero()),
+                1,
+            )
+            .unwrap();
+        assert!(
+            snapshot
+                .redelegate_same_validator_corruption
+                .contains(&validator)
+        );
+        let snapshot_before_repeat = snapshot.clone();
+        let accounts_before_repeat = accounts.clone();
+
+        let err = final_chain
+            .apply_dpos_redelegate(
+                &mut snapshot,
+                &mut accounts,
+                delegator,
+                validator,
+                validator,
+                u256_to_big_endian(U256::zero()),
+                1,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("cannot replay repeated reward-bearing same-validator redelegation")
+        );
+        assert_eq!(snapshot, snapshot_before_repeat);
+        assert_eq!(accounts, accounts_before_repeat);
+
+        drop(final_chain);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn apply_dpos_redelegate_allows_pre_fix_same_validator_without_reward_pool() {
+        let path = temp_db_path("dpos-redelegate-pre-fix-without-reward-pool");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            0,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::zero()),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(10_000u64)),
+                validator_maximum_stake: Vec::new(),
+                ..Default::default()
+            },
+            FinalChainRewardsConfig {
+                fix_redelegate_block_num: 10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let delegator = [0x11; 20];
+        let validator = [0x22; 20];
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot.vote_counts.insert(validator, 1);
+        snapshot.total_vote_count = 1;
+        snapshot.delegator_rewards.remove(&validator);
+        snapshot
+            .delegation_reward_cursors
+            .get_mut(&validator)
+            .expect("missing validator reward cursors")
+            .insert(delegator, u256_to_big_endian(U256::from(30_000u64)));
+        let mut accounts = final_chain.current_account_snapshot().unwrap();
+        let outcome = final_chain
+            .apply_dpos_redelegate(
+                &mut snapshot,
+                &mut accounts,
+                delegator,
+                validator,
+                validator,
+                u256_to_big_endian(U256::from(1_000u64)),
+                1,
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 1);
+        assert!(
+            snapshot
+                .redelegate_same_validator_corruption
+                .contains(&validator)
+        );
+        let repeated_outcome = final_chain
+            .apply_dpos_redelegate(
+                &mut snapshot,
+                &mut accounts,
+                delegator,
+                validator,
+                validator,
+                u256_to_big_endian(U256::from(1_000u64)),
+                2,
+            )
+            .unwrap();
+        assert_eq!(repeated_outcome.status_code, 1);
+
+        drop(final_chain);
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -18457,6 +18833,28 @@ mod tests {
         assert_eq!(
             balance_of(&final_chain, validator),
             validator_balance_before + U256::from(1_332u64)
+        );
+        let mut snapshot_one_after_restart = final_chain.dpos_snapshot(period_one).unwrap();
+        let mut accounts_after_restart = final_chain.current_account_snapshot().unwrap();
+        let err = final_chain
+            .apply_dpos_redelegate(
+                &mut snapshot_one_after_restart,
+                &mut accounts_after_restart,
+                validator,
+                validator,
+                validator,
+                u256_to_big_endian(U256::from(1_000u64)),
+                period_one,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("repeated reward-bearing same-validator redelegation")
+        );
+        assert!(
+            snapshot_three_after_restart
+                .redelegate_same_validator_corruption
+                .contains(&validator)
         );
 
         drop(storage);

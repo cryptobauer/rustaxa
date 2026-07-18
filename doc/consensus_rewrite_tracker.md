@@ -399,9 +399,14 @@ ordered configured corrections after rewards and transaction effects and before 
 subtract only the configured amounts, derive each validator's vote count from resulting stake, and preserve the legacy
 global eligible-vote total even when another same-validator call at the fix block leaves an unconfigured gap; later
 same-validator calls persist status-zero receipts.
-Repeated reward-bearing same-validator calls after a snapshot already contains the stale-write gap require the legacy
-reward-state reference graph, which the current scalar reward snapshot cannot represent. That topology now fails
-finalization explicitly instead of publishing an approximate payout and remains active `CRW-08` work.
+Repeated reward-bearing same-validator calls after a snapshot already contains stale reference state require the legacy
+reward-state reference graph, which the current scalar reward snapshot cannot represent. Rust now persists a
+complete-history bit plus an explicit validator corruption marker on every successful pre-fix same-validator call,
+including zero-amount calls that leave no stake gap, and recognizes every older stake/principal mismatch. Markerless
+5-through-21-item snapshots remain history-incomplete across re-encoding: a reward-bearing pre-fix same-validator call
+requires rebuild/replay instead of silently assuming no zero-amount history. Ambiguous, marked, or mismatched calls fail
+finalization before mutation; representable repeated zero-pool calls on complete-history snapshots remain available for
+the configured correction transcript. Full graph replay remains active `CRW-08` work.
 Restart-backed Rust and dual-mode coverage protect exact action gas, receipt/log/bloom behavior, rollback, source
 deletion, fix-1/fix/fix+1 state, configured-versus-new fix-block gaps, duplicate reward-pool payouts, Aspen zero handling,
 below-minimum/new-pair behavior, maximum handling, and correction persistence. `FinalChainRewardsConfig` gains the fix

@@ -409,11 +409,16 @@ reference builds retain the untouched legacy RewardsStats header and source.
     restored reward-pool writes required to replay old blocks; at the exact fix block it applies the configured ordered
     corrections after reward distribution and transaction effects but before snapshot publication, and later
     same-validator calls fail normally.
-    A repeated reward-bearing same-validator call after an already corrupted pre-fix snapshot remains an explicit hard
-    unsupported history until Rust owns the legacy reward-state reference graph; Rust must not publish an approximate
-    cumulative-reward result for that topology.
-    The extended 21-item snapshot codec still decodes the prior 20-item form, but rollback to a pre-slice binary is unsafe
-    after any post-slice DPoS snapshot is finalized because that binary cannot decode the appended queue item. Snapshots
+    Every successful pre-fix same-validator call records restart-durable complete-history state and a corruption marker,
+    including zero-amount calls that do not leave an inferable stake gap. A reward-bearing call from an ambiguous older
+    snapshot, or a repeated call for a marked or stake/principal-mismatched validator, remains an explicit hard unsupported
+    history until Rust owns the legacy reward-state reference graph; Rust must not publish an approximate cumulative-reward
+    result for that topology. Repeated zero-pool calls remain representable on complete-history snapshots.
+    Databases finalized by the immediately preceding unreleased redelegation build require rebuild/replay if they contain
+    a markerless zero-amount same-validator call, because scalar stake state cannot reveal that reference corruption.
+    The extended 22-item snapshot codec still decodes the prior 21-item form as history-incomplete, but rollback to a
+    pre-slice binary is unsafe after any post-slice DPoS snapshot is finalized because that binary cannot decode the
+    appended marker item. Snapshots
     are persisted atomically with finalized block indexes, executed DAG/transaction status counters, and `lastBlockNumber`. Startup reloads persisted historical DPoS
     snapshots so PBFT, DAG, and pillar reads can reuse block-scoped Rust FinalChain facts after restart.
   - Rust finalization persists account snapshots atomically with finalized block indexes plus `lastBlockNumber`.
