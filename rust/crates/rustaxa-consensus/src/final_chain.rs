@@ -1201,7 +1201,8 @@ impl FinalChain {
 
         if (is_dpos_mutation_selector(selector)
             || is_dpos_eligibility_read_selector(selector)
-            || is_dpos_fixed_singleton_read_selector(selector))
+            || is_dpos_fixed_singleton_read_selector(selector)
+            || is_dpos_validator_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
             && !u256_from_big_endian(&request.value).is_zero()
             && !dpos_selector_is_payable(selector)
@@ -1329,17 +1330,31 @@ impl FinalChain {
                 }
             }
             DPOS_GET_VALIDATORS_SELECTOR => {
-                let batch = decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)")?;
+                let batch =
+                    match decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)") {
+                        Ok(batch) => batch,
+                        Err(error) => {
+                            return Ok(FinalChainCallOutcome {
+                                gas_used,
+                                code_err: error.to_string(),
+                                ..Default::default()
+                            });
+                        }
+                    };
                 self.encode_dpos_validators(request.block_number, batch)?
             }
             DPOS_GET_VALIDATORS_FOR_SELECTOR => {
-                let owner = decode_abi_address_argument_with_offset(
-                    &request.input,
-                    4,
-                    "getValidatorsFor owner",
-                )?;
-                let batch = decode_abi_u32_argument(&request.input, 36, "getValidatorsFor batch")?;
-                self.encode_dpos_validators_for(request.block_number, owner, batch)?
+                let read = match decode_dpos_validators_for_read(&request.input) {
+                    Ok(read) => read,
+                    Err(error) => {
+                        return Ok(FinalChainCallOutcome {
+                            gas_used,
+                            code_err: error.to_string(),
+                            ..Default::default()
+                        });
+                    }
+                };
+                self.encode_dpos_validators_for(request.block_number, read.owner, read.batch)?
             }
             DPOS_GET_TOTAL_DELEGATION_SELECTOR => {
                 let delegator =
@@ -2998,6 +3013,8 @@ impl FinalChain {
                     | DposTransaction::GetTotalEligibleVotesCount
                     | DposTransaction::GetValidatorEligibleVotesCount(_)
                     | DposTransaction::GetValidator(_)
+                    | DposTransaction::GetValidators(_)
+                    | DposTransaction::GetValidatorsFor(_)
                     | DposTransaction::GetUndelegationV2(_)
                     | DposTransaction::PhalaenopsisEscrowTransfer
                     | DposTransaction::MalformedMutation { .. }
@@ -3036,12 +3053,20 @@ impl FinalChain {
             } else if let Some(contract_transaction) = contract_transaction.as_ref() {
                 match contract_transaction {
                     NativeContractTransaction::Dpos(dpos_transaction) => {
+                        let gas_snapshot = if matches!(
+                            dpos_transaction,
+                            DposTransaction::ClaimAllRewards { .. }
+                        ) {
+                            &dpos_gas_snapshot
+                        } else {
+                            &dpos_snapshot
+                        };
                         dpos_transaction_required_gas(
                             dpos_transaction,
                             block_number,
                             self.rewards_config.fix_claim_all_block_num,
                             self.dpos_cornus_period,
-                            Some(&dpos_gas_snapshot),
+                            Some(gas_snapshot),
                         )?
                     }
                     NativeContractTransaction::Slashing(slashing_transaction) => {
@@ -3161,6 +3186,13 @@ impl FinalChain {
                                     &dpos_snapshot,
                                     block_number,
                                     singleton_tx,
+                                )?,
+                            page_tx @ (DposTransaction::GetValidators(_)
+                            | DposTransaction::GetValidatorsFor(_)) => self
+                                .apply_dpos_validator_page_read(
+                                    &dpos_snapshot,
+                                    block_number,
+                                    page_tx,
                                 )?,
                             DposTransaction::IsValidatorEligible(Err(_))
                             | DposTransaction::GetValidatorEligibleVotesCount(Err(_)) => {
@@ -3679,7 +3711,8 @@ impl FinalChain {
         selector: [u8; 4],
     ) -> Result<u64, anyhow::Error> {
         if (is_dpos_eligibility_read_selector(selector)
-            || is_dpos_fixed_singleton_read_selector(selector))
+            || is_dpos_fixed_singleton_read_selector(selector)
+            || is_dpos_validator_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
             && !u256_from_big_endian(&request.value).is_zero()
         {
@@ -3721,7 +3754,10 @@ impl FinalChain {
             DPOS_GET_VALIDATOR_SELECTOR => Ok(DPOS_GET_METHOD_GAS),
             DPOS_GET_VALIDATORS_SELECTOR => {
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
-                let batch = decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)")?;
+                let Ok(batch) = decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)")
+                else {
+                    return Ok(0);
+                };
                 let items = dpos_batch_items_count(
                     snapshot.validator_order.len() as u64,
                     batch,
@@ -3733,12 +3769,9 @@ impl FinalChain {
             }
             DPOS_GET_VALIDATORS_FOR_SELECTOR => {
                 self.dpos_snapshot_at_finalized_block(request.block_number)?;
-                decode_abi_address_argument_with_offset(
-                    &request.input,
-                    4,
-                    "getValidatorsFor owner",
-                )?;
-                decode_abi_u32_argument(&request.input, 36, "getValidatorsFor batch")?;
+                if decode_dpos_validators_for_read(&request.input).is_err() {
+                    return Ok(0);
+                }
                 (DPOS_GET_VALIDATORS_MAX_COUNT as u64)
                     .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
                     .ok_or_else(|| anyhow::anyhow!("getValidatorsFor gas multiplication overflow"))
@@ -3973,6 +4006,35 @@ impl FinalChain {
         })
     }
 
+    /// Executes one validator-page read against the live block-local DPoS state.
+    ///
+    /// Expected ABI failures become status-zero contract outcomes. Successful
+    /// reads return ABI bytes without logs or state mutation; snapshot
+    /// inconsistencies and encoding faults remain hard execution errors.
+    fn apply_dpos_validator_page_read(
+        &self,
+        snapshot: &DposSnapshot,
+        block_number: u64,
+        transaction: DposTransaction,
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        Ok(match transaction {
+            DposTransaction::GetValidators(Ok(batch)) => DposApplyOutcome::success_with_return(
+                self.encode_dpos_validators_from_snapshot(snapshot, batch, block_number)?,
+            ),
+            DposTransaction::GetValidators(Err(_)) => DposApplyOutcome::contract_failure(),
+            DposTransaction::GetValidatorsFor(Ok(read)) => DposApplyOutcome::success_with_return(
+                self.encode_dpos_validators_for_from_snapshot(
+                    snapshot,
+                    read.owner,
+                    read.batch,
+                    block_number,
+                )?,
+            ),
+            DposTransaction::GetValidatorsFor(Err(_)) => DposApplyOutcome::contract_failure(),
+            _ => anyhow::bail!("non-validator-page transaction routed to page reader"),
+        })
+    }
+
     fn dpos_effective_total_vote_count(
         &self,
         snapshot: &DposSnapshot,
@@ -4129,27 +4191,32 @@ impl FinalChain {
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
-        let start = usize::try_from(batch)
-            .map_err(|_| anyhow::anyhow!("getValidators batch does not fit into usize"))?
-            .checked_mul(DPOS_GET_VALIDATORS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getValidators batch offset overflow"))?;
-        let end_index = start
-            .checked_add(DPOS_GET_VALIDATORS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getValidators batch end overflow"))?;
+        self.encode_dpos_validators_from_snapshot(&snapshot, batch, block_number)
+    }
+
+    fn encode_dpos_validators_from_snapshot(
+        &self,
+        snapshot: &DposSnapshot,
+        batch: u32,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let page_size = DPOS_GET_VALIDATORS_MAX_COUNT as u32;
+        let start = batch.wrapping_mul(page_size) as usize;
         let page = snapshot
             .validator_order
             .iter()
-            .filter(|validator| snapshot.total_stakes.contains_key(*validator))
             .skip(start)
             .take(DPOS_GET_VALIDATORS_MAX_COUNT)
             .copied()
             .collect::<Vec<_>>();
-        self.encode_dpos_validator_page(
-            &snapshot,
-            &page,
-            end_index >= snapshot.validator_order.len(),
-            block_number,
-        )
+        for validator in &page {
+            self.validate_dpos_validator_page_entry(snapshot, *validator)?;
+        }
+        let is_end = start >= snapshot.validator_order.len()
+            || snapshot.validator_order.len()
+                <= usize::try_from((start as u32).wrapping_add(page_size))
+                    .map_err(|_| anyhow::anyhow!("getValidators end offset does not fit usize"))?;
+        self.encode_dpos_validator_page(snapshot, &page, is_end, block_number)
     }
 
     fn encode_dpos_validators_for(
@@ -4159,17 +4226,25 @@ impl FinalChain {
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
-        let to_skip = usize::try_from(batch)
-            .map_err(|_| anyhow::anyhow!("getValidatorsFor batch does not fit into usize"))?
-            .checked_mul(DPOS_GET_VALIDATORS_MAX_COUNT)
-            .ok_or_else(|| anyhow::anyhow!("getValidatorsFor batch offset overflow"))?;
+        self.encode_dpos_validators_for_from_snapshot(&snapshot, owner, batch, block_number)
+    }
+
+    fn encode_dpos_validators_for_from_snapshot(
+        &self,
+        snapshot: &DposSnapshot,
+        owner: [u8; 20],
+        batch: u32,
+        block_number: u64,
+    ) -> Result<Vec<u8>, anyhow::Error> {
+        let to_skip = batch.wrapping_mul(DPOS_GET_VALIDATORS_MAX_COUNT as u32) as usize;
         let mut skipped = 0usize;
         let mut page = Vec::new();
         let mut is_end = true;
         for validator in &snapshot.validator_order {
-            let Some(metadata) = snapshot.validator_metadata.get(validator) else {
-                continue;
-            };
+            self.validate_dpos_validator_page_entry(snapshot, *validator)?;
+            let metadata = snapshot.validator_metadata.get(validator).ok_or_else(|| {
+                anyhow::anyhow!("Rust FinalChain::call DPoS validator metadata is missing")
+            })?;
             if metadata.owner != owner {
                 continue;
             }
@@ -4183,7 +4258,23 @@ impl FinalChain {
             }
             page.push(*validator);
         }
-        self.encode_dpos_validator_page(&snapshot, &page, is_end, block_number)
+        self.encode_dpos_validator_page(snapshot, &page, is_end, block_number)
+    }
+
+    fn validate_dpos_validator_page_entry(
+        &self,
+        snapshot: &DposSnapshot,
+        validator: [u8; 20],
+    ) -> Result<(), anyhow::Error> {
+        anyhow::ensure!(
+            snapshot.total_stakes.contains_key(&validator),
+            "Rust FinalChain::call DPoS validator order contains a missing validator"
+        );
+        anyhow::ensure!(
+            snapshot.validator_metadata.contains_key(&validator),
+            "Rust FinalChain::call DPoS validator order contains missing metadata"
+        );
+        Ok(())
     }
 
     fn encode_dpos_validator_page(
@@ -4208,9 +4299,9 @@ impl FinalChain {
             validators.len(),
             "validator page length",
         )?);
-        let mut next_offset = 32usize
-            .checked_add(offsets_len)
-            .ok_or_else(|| anyhow::anyhow!("validator page first offset overflow"))?;
+        // ABI offsets inside a dynamic array of dynamic tuples are relative to
+        // the element-head start immediately after the array length word.
+        let mut next_offset = offsets_len;
         for payload in &payloads {
             array_tail.extend_from_slice(&abi_word_from_usize(
                 next_offset,
@@ -7249,7 +7340,9 @@ fn remove_dpos_validator(
         .iter()
         .position(|address| *address == validator)
     {
-        snapshot.validator_order.remove(position);
+        // Legacy IterableMap removal moves the final address into the deleted
+        // slot, so this order change is consensus-visible through paged reads.
+        snapshot.validator_order.swap_remove(position);
     }
     snapshot
         .redelegate_same_validator_corruption
@@ -8122,6 +8215,24 @@ fn dpos_transaction_required_gas(
         | DposTransaction::GetTotalEligibleVotesCount
         | DposTransaction::GetValidatorEligibleVotesCount(_) => DPOS_DEFAULT_METHOD_GAS,
         DposTransaction::GetValidator(_) => DPOS_GET_METHOD_GAS,
+        DposTransaction::GetValidators(Ok(batch)) => {
+            let snapshot = snapshot.ok_or_else(|| {
+                anyhow::anyhow!("getValidators gas snapshot is required for gas estimation")
+            })?;
+            let items = dpos_batch_items_count(
+                snapshot.validator_order.len() as u64,
+                *batch,
+                DPOS_GET_VALIDATORS_MAX_COUNT as u64,
+            )?;
+            items
+                .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+                .ok_or_else(|| anyhow::anyhow!("getValidators gas multiplication overflow"))?
+        }
+        DposTransaction::GetValidators(Err(_)) => 0,
+        DposTransaction::GetValidatorsFor(Ok(_)) => (DPOS_GET_VALIDATORS_MAX_COUNT as u64)
+            .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
+            .ok_or_else(|| anyhow::anyhow!("getValidatorsFor gas multiplication overflow"))?,
+        DposTransaction::GetValidatorsFor(Err(_)) => 0,
         DposTransaction::GetUndelegationV2(_) if block_number >= cornus_period => {
             DPOS_GET_METHOD_GAS
         }
@@ -8207,6 +8318,14 @@ fn is_dpos_fixed_singleton_read_selector(selector: [u8; 4]) -> bool {
     )
 }
 
+/// Returns whether a selector belongs to the dynamic validator-page read family.
+fn is_dpos_validator_page_read_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        DPOS_GET_VALIDATORS_SELECTOR | DPOS_GET_VALIDATORS_FOR_SELECTOR
+    )
+}
+
 /// Returns the temporary Rust gas estimate for native non-DPoS read calls.
 ///
 /// Native value transfers use the fixed transfer cost. Contract creation keeps
@@ -8251,6 +8370,17 @@ fn decode_abi_u32_argument(
     function_name: &str,
 ) -> Result<u32, anyhow::Error> {
     decode_abi_word_as_u32(input, start, function_name)
+}
+
+/// Decodes `getValidatorsFor(address,uint32)` with legacy narrow-word behavior.
+///
+/// The legacy Go ABI reader ignores the address word's high twelve bytes,
+/// truncates the batch word to its low four bytes, and accepts trailing data.
+fn decode_dpos_validators_for_read(input: &[u8]) -> Result<DposValidatorsForRead, anyhow::Error> {
+    Ok(DposValidatorsForRead {
+        owner: decode_abi_address_argument_with_offset(input, 4, "getValidatorsFor owner")?,
+        batch: decode_abi_u32_argument(input, 36, "getValidatorsFor batch")?,
+    })
 }
 
 fn decode_abi_word_as_u32(input: &[u8], offset: usize, field: &str) -> Result<u32, anyhow::Error> {
@@ -8670,6 +8800,13 @@ fn decode_dpos_transaction_for_execution(
         DPOS_GET_VALIDATOR_SELECTOR => DposTransaction::GetValidator(
             decode_abi_address_argument(input, "getValidator(address)")
                 .map_err(|error| error.to_string()),
+        ),
+        DPOS_GET_VALIDATORS_SELECTOR => DposTransaction::GetValidators(
+            decode_abi_u32_argument(input, 4, "getValidators(uint32)")
+                .map_err(|error| error.to_string()),
+        ),
+        DPOS_GET_VALIDATORS_FOR_SELECTOR => DposTransaction::GetValidatorsFor(
+            decode_dpos_validators_for_read(input).map_err(|error| error.to_string()),
         ),
         DPOS_GET_UNDELEGATION_V2_SELECTOR => {
             let decoded = (|| -> Result<DposUndelegationV2Read, anyhow::Error> {
@@ -9118,6 +9255,8 @@ fn update_dpos_claim_gas_snapshot(
         | DposTransaction::GetTotalEligibleVotesCount
         | DposTransaction::GetValidatorEligibleVotesCount(_)
         | DposTransaction::GetValidator(_)
+        | DposTransaction::GetValidators(_)
+        | DposTransaction::GetValidatorsFor(_)
         | DposTransaction::GetUndelegationV2(_)
         | DposTransaction::PhalaenopsisEscrowTransfer
         | DposTransaction::MalformedMutation { .. }
@@ -9286,6 +9425,10 @@ enum DposTransaction {
     GetValidatorEligibleVotesCount(std::result::Result<[u8; 20], String>),
     /// Fixed-gas exact-state validator record read.
     GetValidator(std::result::Result<[u8; 20], String>),
+    /// Variable-gas exact-state validator page read.
+    GetValidators(std::result::Result<u32, String>),
+    /// Fixed-maximum-gas exact-state owner-filtered validator page read.
+    GetValidatorsFor(std::result::Result<DposValidatorsForRead, String>),
     /// Cornus-gated fixed-gas exact-state V2 undelegation record read.
     GetUndelegationV2(std::result::Result<DposUndelegationV2Read, String>),
     Register(DposRegistration),
@@ -9366,6 +9509,13 @@ struct DposUndelegationV2Read {
     delegator: [u8; 20],
     validator: [u8; 20],
     id: u64,
+}
+
+/// Arguments for one owner-filtered validator page lookup.
+#[derive(Clone)]
+struct DposValidatorsForRead {
+    owner: [u8; 20],
+    batch: u32,
 }
 
 #[derive(Clone)]
@@ -10008,7 +10158,8 @@ mod tests {
             let offset_start = array_start + 32 + index * 32;
             let payload_offset =
                 u256_from_big_endian(&output[offset_start..offset_start + 32]).as_usize();
-            let payload_start = array_start + payload_offset;
+            let element_head_start = array_start + 32;
+            let payload_start = element_head_start + payload_offset;
             let mut address = [0u8; 20];
             address.copy_from_slice(&output[payload_start + 12..payload_start + 32]);
             addresses.push(address);
@@ -11794,6 +11945,237 @@ mod tests {
     }
 
     #[test]
+    fn validator_page_calls_preserve_legacy_paging_decode_and_corruption_rules() {
+        let path = temp_db_path("validator-page-call-parity");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let first_owner = [0xa1; 20];
+        let second_owner = [0xa2; 20];
+        let validators = (1u8..=22)
+            .map(|index| {
+                let owner = if index % 2 == 0 {
+                    first_owner
+                } else {
+                    second_owner
+                };
+                genesis_validator_with_metadata(
+                    [index; 20],
+                    U256::from(10_000u64),
+                    owner,
+                    u16::from(index),
+                    &format!("validator {index}"),
+                    &format!("endpoint {index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            ..Default::default()
+        };
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000,
+            0,
+            vec![],
+            validators.clone(),
+            dpos_config.clone(),
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let first_page = final_chain
+            .call(dpos_call_request(0, get_validators_input(0)))
+            .unwrap();
+        assert_eq!(first_page.gas_used, 100_000);
+        assert_eq!(
+            u256_from_big_endian(&first_page.code_retval[96..128]),
+            U256::from(640u64),
+            "the first tuple offset is relative to the element-head start"
+        );
+        let first_payload_start = 96usize + 640;
+        assert_eq!(
+            &first_page.code_retval[first_payload_start + 12..first_payload_start + 32],
+            &[1; 20],
+            "raw legacy ABI bytes must locate the first validator independently of the decoder"
+        );
+        assert_eq!(
+            validator_page_addresses(&first_page.code_retval),
+            ((1u8..=20).map(|index| [index; 20]).collect(), false)
+        );
+        let partial_page = final_chain
+            .call(dpos_call_request(0, get_validators_input(1)))
+            .unwrap();
+        assert_eq!(partial_page.gas_used, 10_000);
+        assert_eq!(
+            u256_from_big_endian(&partial_page.code_retval[96..128]),
+            U256::from(64u64)
+        );
+        assert_eq!(
+            validator_page_addresses(&partial_page.code_retval),
+            (vec![[21; 20], [22; 20]], true)
+        );
+        let out_of_range = final_chain
+            .call(dpos_call_request(0, get_validators_input(2)))
+            .unwrap();
+        assert_eq!(out_of_range.gas_used, 5_000);
+        assert_eq!(
+            validator_page_addresses(&out_of_range.code_retval),
+            (vec![], true)
+        );
+
+        let owner_page = final_chain
+            .call(dpos_call_request(
+                0,
+                get_validators_for_input(first_owner, 0),
+            ))
+            .unwrap();
+        assert_eq!(owner_page.gas_used, 100_000);
+        assert_eq!(
+            validator_page_addresses(&owner_page.code_retval),
+            (
+                (2u8..=22).step_by(2).map(|index| [index; 20]).collect(),
+                true,
+            )
+        );
+        let empty_owner_page = final_chain
+            .call(dpos_call_request(
+                0,
+                get_validators_for_input([0xff; 20], 0),
+            ))
+            .unwrap();
+        assert_eq!(empty_owner_page.gas_used, 100_000);
+        assert_eq!(
+            validator_page_addresses(&empty_owner_page.code_retval),
+            (vec![], true)
+        );
+
+        let overflow_batch = 0xcccc_cccdu32;
+        let mut overflow_input = get_validators_input(overflow_batch);
+        overflow_input[4] = 0x77;
+        overflow_input.extend_from_slice(&[0xee; 17]);
+        let overflow_page = final_chain
+            .call(dpos_call_request(0, overflow_input))
+            .unwrap();
+        assert_eq!(overflow_page.gas_used, 5_000);
+        assert_eq!(
+            validator_page_addresses(&overflow_page.code_retval),
+            ((5u8..=22).map(|index| [index; 20]).collect(), true)
+        );
+        let mut overflow_owner_input = get_validators_for_input(first_owner, overflow_batch);
+        overflow_owner_input[4] = 0x66;
+        overflow_owner_input[36] = 0x55;
+        overflow_owner_input.extend_from_slice(&[0xdd; 9]);
+        let overflow_owner_page = final_chain
+            .call(dpos_call_request(0, overflow_owner_input))
+            .unwrap();
+        assert_eq!(overflow_owner_page.gas_used, 100_000);
+        assert_eq!(
+            validator_page_addresses(&overflow_owner_page.code_retval),
+            (
+                (10u8..=22).step_by(2).map(|index| [index; 20]).collect(),
+                true,
+            )
+        );
+
+        let malformed = final_chain
+            .call(dpos_call_request(0, DPOS_GET_VALIDATORS_SELECTOR.to_vec()))
+            .unwrap();
+        assert_eq!(malformed.gas_used, 0);
+        assert!(!malformed.code_err.is_empty());
+        let malformed_for = final_chain
+            .call(dpos_call_request(
+                0,
+                DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec(),
+            ))
+            .unwrap();
+        assert_eq!(malformed_for.gas_used, 0);
+        assert!(!malformed_for.code_err.is_empty());
+        let mut pre_cornus_value = dpos_call_request(0, get_validators_input(0));
+        pre_cornus_value.value = vec![1];
+        assert_eq!(final_chain.call(pre_cornus_value).unwrap().code_err, "");
+
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut empty_snapshot = snapshot.clone();
+        empty_snapshot.validator_order.clear();
+        let empty_page = final_chain
+            .encode_dpos_validators_from_snapshot(&empty_snapshot, 0, 0)
+            .unwrap();
+        assert_eq!(
+            validator_page_addresses(&empty_page),
+            (Vec::<[u8; 20]>::new(), true)
+        );
+        assert_eq!(
+            dpos_transaction_required_gas(
+                &DposTransaction::GetValidators(Ok(0)),
+                0,
+                u64::MAX,
+                1,
+                Some(&empty_snapshot),
+            )
+            .unwrap(),
+            DPOS_BATCH_GET_REWARDS_GAS
+        );
+        snapshot
+            .total_stakes
+            .insert([2; 20], u256_to_big_endian(U256::zero()));
+        snapshot
+            .commission_rewards
+            .insert([2; 20], u256_to_big_endian(U256::zero()));
+        remove_dpos_validator(&mut snapshot, [2; 20]).unwrap();
+        assert_eq!(snapshot.validator_order[1], [22; 20]);
+        assert_eq!(snapshot.validator_order.len(), 21);
+        let swapped_page = final_chain
+            .encode_dpos_validators_from_snapshot(&snapshot, 0, 0)
+            .unwrap();
+        assert_eq!(validator_page_addresses(&swapped_page).0[1], [22; 20]);
+        let restarted_snapshot =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot)).unwrap();
+        let restarted_page = final_chain
+            .encode_dpos_validators_from_snapshot(&restarted_snapshot, 0, 0)
+            .unwrap();
+        assert_eq!(restarted_page, swapped_page);
+
+        let mut corrupt_snapshot = restarted_snapshot;
+        corrupt_snapshot.validator_metadata.remove(&[1; 20]);
+        let corruption = final_chain
+            .encode_dpos_validators_from_snapshot(&corrupt_snapshot, 0, 0)
+            .unwrap_err();
+        assert!(corruption.to_string().contains("missing metadata"));
+
+        let cornus_path = temp_db_path("validator-page-call-cornus");
+        let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
+        let cornus_chain = FinalChain::new_with_rewards_config(
+            cornus_storage.clone(),
+            1_000_000,
+            0,
+            vec![],
+            validators,
+            dpos_config,
+            FinalChainRewardsConfig {
+                cornus_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut nonpayable = dpos_call_request(0, DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec());
+        nonpayable.value = vec![1];
+        let nonpayable = cornus_chain.call(nonpayable).unwrap();
+        assert_eq!(nonpayable.gas_used, 0);
+        assert_eq!(nonpayable.code_err, "DPoS method is not payable");
+
+        drop(final_chain);
+        drop(storage);
+        drop(cornus_chain);
+        drop(cornus_storage);
+        let _ = std::fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(cornus_path);
+    }
+
+    #[test]
     fn call_reads_genesis_dpos_precompile_methods() {
         let path = temp_db_path("call-genesis-dpos");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -12790,6 +13172,372 @@ mod tests {
             )
             .unwrap();
         assert_eq!(restarted_read, undelegation_read);
+
+        drop(pre_chain);
+        drop(pre_storage);
+        drop(cornus_chain);
+        drop(cornus_storage);
+        let _ = std::fs::remove_dir_all(pre_path);
+        let _ = std::fs::remove_dir_all(cornus_path);
+    }
+
+    #[test]
+    fn native_validator_page_reads_preserve_live_gas_value_and_failure_rules() {
+        let validators = (1u8..=3)
+            .map(|index| {
+                genesis_validator_with_metadata(
+                    [index; 20],
+                    U256::from(10_000u64),
+                    [index; 20],
+                    0,
+                    &format!("validator {index}"),
+                    &format!("endpoint {index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        let dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            ..Default::default()
+        };
+        let reader = [0x71; 20];
+        let initial_reader_balance = U256::from(2_000_000u64);
+
+        let pre_path = temp_db_path("native-validator-pages-pre-cornus");
+        let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
+        let pre_chain = FinalChain::new_with_rewards_config(
+            pre_storage.clone(),
+            1_000_000,
+            0,
+            vec![
+                genesis_account(reader, initial_reader_balance),
+                genesis_account([2; 20], U256::from(1_000_000u64)),
+            ],
+            validators.clone(),
+            dpos_config.clone(),
+            FinalChainRewardsConfig {
+                cornus_period: 2,
+                magnolia_period: 2,
+                dpos_delegation_locking_period: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let undelegate = undelegate_input([2; 20], U256::from(10_000u64));
+        let page = get_validators_input(0);
+        let owner_page = get_validators_for_input([1; 20], 0);
+        let malformed = DPOS_GET_VALIDATORS_SELECTOR.to_vec();
+        let page_intrinsic = intrinsic_gas(&page, false).unwrap();
+        let pre_transactions = vec![
+            test_transaction(
+                0x91,
+                [2; 20],
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                undelegate,
+                vec![0xc1, 0x91],
+            ),
+            test_transaction(
+                0x92,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::from(7u64),
+                U256::one(),
+                200_000,
+                page.clone(),
+                vec![0xc1, 0x92],
+            ),
+            test_transaction(
+                0x93,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::from(9u64),
+                U256::one(),
+                200_000,
+                owner_page.clone(),
+                vec![0xc1, 0x93],
+            ),
+            test_transaction(
+                0x94,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::from(11u64),
+                U256::one(),
+                200_000,
+                malformed.clone(),
+                vec![0xc1, 0x94],
+            ),
+            test_transaction(
+                0x95,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::zero(),
+                U256::one(),
+                page_intrinsic - 1,
+                page.clone(),
+                vec![0xc1, 0x95],
+            ),
+            test_transaction(
+                0x96,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::zero(),
+                U256::one(),
+                page_intrinsic,
+                page.clone(),
+                vec![0xc1, 0x96],
+            ),
+            test_transaction(
+                0x97,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                4,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                page.clone(),
+                vec![0xc1, 0x97],
+            ),
+        ];
+        let pre_execution = pre_chain
+            .execute_native_transactions(1, &pre_transactions)
+            .unwrap();
+        assert_eq!(
+            pre_execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 1, 0, 0, 0, 1]
+        );
+        assert_eq!(
+            pre_execution.receipts[1].gas_used,
+            page_intrinsic + 2 * DPOS_BATCH_GET_REWARDS_GAS,
+            "the read must price the post-deletion live validator count"
+        );
+        assert_eq!(
+            pre_execution.receipts[2].gas_used,
+            intrinsic_gas(&owner_page, false).unwrap()
+                + DPOS_GET_VALIDATORS_MAX_COUNT as u64 * DPOS_BATCH_GET_REWARDS_GAS
+        );
+        assert_eq!(
+            pre_execution.receipts[3].gas_used,
+            intrinsic_gas(&malformed, false).unwrap()
+        );
+        assert_eq!(pre_execution.receipts[4].gas_used, page_intrinsic - 1);
+        assert_eq!(pre_execution.receipts[5].gas_used, page_intrinsic);
+        assert_eq!(pre_execution.accounts.get(&reader).unwrap().nonce, 5);
+        assert_eq!(
+            u256_from_big_endian(
+                &pre_execution
+                    .accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance
+            ),
+            U256::from(30_016u64)
+        );
+        assert_eq!(
+            pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .nonce,
+            1
+        );
+        assert!(
+            pre_execution.receipts[1..]
+                .iter()
+                .all(|receipt| receipt.logs.is_empty())
+        );
+        assert_eq!(
+            pre_execution.dpos_snapshot.validator_order,
+            vec![[1; 20], [3; 20]]
+        );
+        let live_page = pre_chain
+            .apply_dpos_validator_page_read(
+                &pre_execution.dpos_snapshot,
+                1,
+                DposTransaction::GetValidators(Ok(0)),
+            )
+            .unwrap();
+        assert_eq!(live_page.status_code, 1);
+        assert_eq!(
+            validator_page_addresses(&live_page.code_retval),
+            (vec![[1; 20], [3; 20]], true)
+        );
+        let restarted_snapshot =
+            decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&pre_execution.dpos_snapshot))
+                .unwrap();
+        let restarted_page = pre_chain
+            .apply_dpos_validator_page_read(
+                &restarted_snapshot,
+                1,
+                DposTransaction::GetValidators(Ok(0)),
+            )
+            .unwrap();
+        assert_eq!(restarted_page, live_page);
+
+        let cornus_path = temp_db_path("native-validator-pages-cornus");
+        let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
+        let cornus_chain = FinalChain::new_with_rewards_config(
+            cornus_storage.clone(),
+            1_000_000,
+            0,
+            vec![genesis_account(reader, initial_reader_balance)],
+            validators,
+            dpos_config,
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let overflow = get_validators_input(0xcccc_cccd);
+        let malformed_for = DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec();
+        let cornus_transactions = vec![
+            test_transaction(
+                0xa1,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::one(),
+                U256::one(),
+                200_000,
+                page.clone(),
+                vec![0xc1, 0xa1],
+            ),
+            test_transaction(
+                0xa2,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                1,
+                U256::one(),
+                U256::one(),
+                200_000,
+                malformed_for,
+                vec![0xc1, 0xa2],
+            ),
+            test_transaction(
+                0xa3,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                2,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                malformed.clone(),
+                vec![0xc1, 0xa3],
+            ),
+            test_transaction(
+                0xa4,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                3,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                overflow.clone(),
+                vec![0xc1, 0xa4],
+            ),
+            test_transaction(
+                0xa5,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                4,
+                U256::zero(),
+                U256::one(),
+                page_intrinsic - 1,
+                page.clone(),
+                vec![0xc1, 0xa5],
+            ),
+            test_transaction(
+                0xa6,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                5,
+                U256::zero(),
+                U256::one(),
+                page_intrinsic,
+                page.clone(),
+                vec![0xc1, 0xa6],
+            ),
+            test_transaction(
+                0xa7,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                6,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                page.clone(),
+                vec![0xc1, 0xa7],
+            ),
+            test_transaction(
+                0xa8,
+                reader,
+                Some(DPOS_CONTRACT_ADDRESS),
+                7,
+                U256::zero(),
+                U256::one(),
+                200_000,
+                owner_page.clone(),
+                vec![0xc1, 0xa8],
+            ),
+        ];
+        let cornus_execution = cornus_chain
+            .execute_native_transactions(1, &cornus_transactions)
+            .unwrap();
+        assert_eq!(
+            cornus_execution
+                .receipts
+                .iter()
+                .map(|receipt| receipt.status_code)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 0, 1, 0, 0, 1, 1]
+        );
+        assert_eq!(cornus_execution.receipts[0].gas_used, page_intrinsic);
+        assert_eq!(
+            cornus_execution.receipts[1].gas_used,
+            intrinsic_gas(&DPOS_GET_VALIDATORS_FOR_SELECTOR, false).unwrap()
+        );
+        assert_eq!(
+            cornus_execution.receipts[2].gas_used,
+            intrinsic_gas(&malformed, false).unwrap()
+        );
+        assert_eq!(
+            cornus_execution.receipts[3].gas_used,
+            intrinsic_gas(&overflow, false).unwrap() + DPOS_BATCH_GET_REWARDS_GAS
+        );
+        assert_eq!(cornus_execution.receipts[4].gas_used, page_intrinsic - 1);
+        assert_eq!(cornus_execution.receipts[5].gas_used, page_intrinsic);
+        assert_eq!(cornus_execution.accounts.get(&reader).unwrap().nonce, 8);
+        assert!(
+            cornus_execution
+                .receipts
+                .iter()
+                .all(|receipt| receipt.logs.is_empty())
+        );
+        assert_eq!(
+            u256_from_big_endian(
+                &cornus_execution
+                    .accounts
+                    .get(&DPOS_CONTRACT_ADDRESS)
+                    .unwrap()
+                    .balance
+            ),
+            U256::from(30_000u64)
+        );
 
         drop(pre_chain);
         drop(pre_storage);

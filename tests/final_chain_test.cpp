@@ -862,6 +862,56 @@ bytes u256_to_padded_bytes32(const u256& value) {
   return encoded;
 }
 
+u256 u256_from_bytes32_be(const bytes& data, const size_t offset) {
+  if (offset + 32 > data.size()) {
+    return 0;
+  }
+  return u256("0x" + dev::toHex(bytes(data.begin() + offset, data.begin() + offset + 32)));
+}
+
+struct DposValidatorPage {
+  bool is_end;
+  std::vector<addr_t> validators;
+};
+
+bytes make_dpos_get_validators_input(uint32_t batch) {
+  bytes input = {0x19, 0xd8, 0x02, 0x4f};
+  const auto batch_word = u256_to_padded_bytes32(u256(batch));
+  input.insert(input.end(), batch_word.begin(), batch_word.end());
+  return input;
+}
+
+bytes make_dpos_get_validators_for_input(const addr_t& owner, uint32_t batch) {
+  bytes input = {0x72, 0x4a, 0xc6, 0xb0};
+  input.insert(input.end(), 12, 0);
+  input.insert(input.end(), owner.begin(), owner.end());
+  const auto batch_word = u256_to_padded_bytes32(u256(batch));
+  input.insert(input.end(), batch_word.begin(), batch_word.end());
+  return input;
+}
+
+DposValidatorPage decode_dpos_validator_page(const bytes& data) {
+  DposValidatorPage page{false, {}};
+  if (data.size() < 64) {
+    return page;
+  }
+
+  EXPECT_EQ(u256_from_bytes32_be(data, 0), u256(64));
+  page.is_end = u256_from_bytes32_be(data, 32) == 1;
+  const auto count = u256_from_bytes32_be(data, 64).convert_to<size_t>();
+  page.validators.reserve(count);
+
+  for (size_t index = 0; index < count; ++index) {
+    const auto pointer_pos = 96 + index * 32;
+    const auto payload_offset = u256_from_bytes32_be(data, pointer_pos).convert_to<size_t>();
+    const auto payload_pos = 96 + payload_offset;
+    EXPECT_GE(data.size(), payload_pos + 32u);
+    page.validators.emplace_back(bytes(data.begin() + payload_pos + 12, data.begin() + payload_pos + 32));
+  }
+
+  return page;
+}
+
 std::shared_ptr<Transaction> make_redelegate_tx(const FullNodeConfig& sender_cfg, const dev::KeyPair& sender,
                                                 uint64_t nonce, const addr_t& from_validator,
                                                 const addr_t& to_validator, const u256& amount, const u256& gas_price,
@@ -1430,6 +1480,288 @@ TEST_F(FinalChainTest, native_dpos_singleton_reads_match_live_state_gas_and_corn
   SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_persisted_state(SUT);
+}
+
+TEST_F(FinalChainTest, native_dpos_validator_page_reads_cover_gas_cornus_boundary_and_swap_remove) {
+  constexpr uint64_t kGasPrice = 0;
+  constexpr uint64_t kGasLimit = 300'000;
+  constexpr uint64_t kSenderInitialBalance = 20'000'000;
+  constexpr uint64_t kReadableValue = 111;
+  constexpr uint64_t kTransferValue = 777;
+  constexpr uint64_t kStake = 10'000;
+  constexpr size_t kValidatorCount = 21;
+  constexpr size_t kDeleteIndex = 10;
+
+  const dev::KeyPair sender{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair missing_owner{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.minimum_deposit = 1'000;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 3;
+  cfg.genesis.state.hardforks.cacti_hf.block_num = 1;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 2;
+  cfg.genesis.state.hardforks.cornus_hf.delegation_locking_period = 1;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  std::vector<dev::KeyPair> validator_keys;
+  validator_keys.reserve(kValidatorCount);
+  std::vector<addr_t> initial_order;
+  initial_order.reserve(kValidatorCount);
+  for (size_t i = 0; i < kValidatorCount; ++i) {
+    const auto validator = dev::KeyPair::create();
+    state_api::ValidatorInfo info{validator.address(), sender.address(), vrf_public_key, 0, "", "", {}};
+    info.delegations.emplace(sender.address(), kStake);
+    cfg.genesis.state.dpos.initial_validators.push_back(info);
+    validator_keys.push_back(validator);
+    initial_order.push_back(validator.address());
+  }
+
+  const auto expected_before_delete = initial_order;
+  EXPECT_LT(kDeleteIndex, expected_before_delete.size());
+  auto expected_after_delete = expected_before_delete;
+  const auto removed_validator = expected_after_delete[kDeleteIndex];
+  expected_after_delete[kDeleteIndex] = expected_after_delete.back();
+  expected_after_delete.pop_back();
+  std::vector<addr_t> expected_page0_before_delete(expected_before_delete.begin(), expected_before_delete.begin() + 20);
+  std::vector<addr_t> expected_page0_after_delete(expected_after_delete.begin(), expected_after_delete.begin() + 20);
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto query_page = [&](const bytes& input) {
+    const auto response = SUT->call({
+        addr_t{},
+        0,
+        kDposContractAddress,
+        0,
+        0,
+        1'000'000,
+        input,
+    });
+    EXPECT_TRUE(response.code_err.empty());
+    return decode_dpos_validator_page(response.code_retval);
+  };
+
+  auto read_input = make_dpos_get_validators_input(0);
+  auto read_input_with_trailing = read_input;
+  read_input_with_trailing.push_back(0xaa);
+
+  auto wrapped_overflow_input = make_dpos_get_validators_input(0xcccc'cccd);
+  wrapped_overflow_input[4] = 0x77;
+  wrapped_overflow_input.insert(wrapped_overflow_input.end(), 17, 0xdd);
+
+  auto for_input = make_dpos_get_validators_for_input(sender.address(), 0);
+  for_input[4] = 0x77;
+  for (size_t i = 36; i < 64; ++i) {
+    for_input[i] = 0xff;
+  }
+  for (size_t i = 64; i < 68; ++i) {
+    for_input[i] = 0;
+  }
+
+  const auto block1_txs = SharedTransactions{
+      std::make_shared<Transaction>(0, kReadableValue, kGasPrice, kGasLimit, read_input_with_trailing, sender.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, for_input, sender.secret(), kDposContractAddress,
+                                    cfg.genesis.chain_id),
+      std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, make_dpos_get_validators_input(1), sender.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(3, 0, kGasPrice, kGasLimit, wrapped_overflow_input, sender.secret(),
+                                    kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(4, 0, kGasPrice, kGasLimit, bytes{}, sender.secret(), sender.address(),
+                                    cfg.genesis.chain_id)};
+
+  const auto block1_result = advance(block1_txs);
+  ASSERT_EQ(block1_result->trx_receipts.size(), block1_txs.size());
+
+  const auto read_gas = IntrinsicGas(read_input_with_trailing, false) + 100'000;
+  const auto for_gas = IntrinsicGas(for_input, false) + 100'000;
+  const auto get_validators_page1_gas = IntrinsicGas(make_dpos_get_validators_input(1), false) + 5'000;
+  const auto overflow_page_gas = IntrinsicGas(wrapped_overflow_input, false) + 5'000;
+  const auto continuation_gas = IntrinsicGas(bytes{}, false);
+  const std::array<uint64_t, 5> block1_expected_gas = {read_gas, for_gas, get_validators_page1_gas, overflow_page_gas,
+                                                       continuation_gas};
+  const std::array<uint8_t, 5> block1_expected_status = {1, 1, 1, 1, 1};
+
+  uint64_t block1_cumulative = 0;
+  for (size_t i = 0; i < block1_txs.size(); ++i) {
+    block1_cumulative += block1_expected_gas[i];
+    EXPECT_EQ(block1_result->trx_receipts[i].status_code, block1_expected_status[i]);
+    EXPECT_EQ(block1_result->trx_receipts[i].gas_used, block1_expected_gas[i]);
+    EXPECT_EQ(block1_result->trx_receipts[i].cumulative_gas_used, block1_cumulative);
+    EXPECT_EQ(block1_result->trx_receipts[i].logs.size(), 0);
+    EXPECT_EQ(block1_result->trx_receipts[i].bloom(), LogBloom());
+    TransactionReceipt expected_receipt;
+    expected_receipt.status_code = block1_expected_status[i];
+    expected_receipt.gas_used = block1_expected_gas[i];
+    expected_receipt.cumulative_gas_used = block1_cumulative;
+    EXPECT_EQ(util::rlp_enc(block1_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+  }
+  EXPECT_EQ(block1_result->final_chain_blk->gas_used, block1_cumulative);
+  EXPECT_EQ(block1_result->final_chain_blk->log_bloom, LogBloom());
+
+  const auto read_after_delete_page0 = query_page(make_dpos_get_validators_input(0));
+  const auto read_after_delete_page1 = query_page(make_dpos_get_validators_input(1));
+  const auto for_after_delete_page0 = query_page(make_dpos_get_validators_for_input(sender.address(), 0));
+  const auto for_missing_owner_page0 = query_page(make_dpos_get_validators_for_input(missing_owner.address(), 0));
+
+  EXPECT_FALSE(read_after_delete_page0.is_end);
+  EXPECT_TRUE(read_after_delete_page1.is_end);
+  EXPECT_FALSE(for_after_delete_page0.is_end);
+  EXPECT_TRUE(for_missing_owner_page0.is_end);
+  EXPECT_EQ(read_after_delete_page0.validators, expected_page0_before_delete);
+  ASSERT_EQ(read_after_delete_page1.validators.size(), 1u);
+  EXPECT_EQ(read_after_delete_page1.validators[0], expected_before_delete.back());
+  EXPECT_EQ(for_after_delete_page0.validators, expected_page0_before_delete);
+  EXPECT_TRUE(for_missing_owner_page0.validators.empty());
+
+  const auto malformed_get_validators_input = bytes{0x72, 0x4a, 0xc6, 0xb0};
+  auto truncated_owner_input = make_dpos_get_validators_for_input(sender.address(), 0);
+  truncated_owner_input.resize(36);
+  const auto malformed_selectors =
+      SUT->call({addr_t{}, 0, kDposContractAddress, 0, 0, 1'000'000, malformed_get_validators_input});
+  EXPECT_FALSE(malformed_selectors.code_err.empty());
+  const auto malformed_owner = SUT->call({addr_t{}, 0, kDposContractAddress, 0, 0, 1'000'000, truncated_owner_input});
+  EXPECT_FALSE(malformed_owner.code_err.empty());
+
+  const auto wrapped_overflow_response =
+      SUT->call({addr_t{}, 0, kDposContractAddress, 0, 0, 1'000'000, wrapped_overflow_input});
+  EXPECT_TRUE(wrapped_overflow_response.code_err.empty());
+  const auto wrapped_overflow_page = decode_dpos_validator_page(wrapped_overflow_response.code_retval);
+  EXPECT_TRUE(wrapped_overflow_page.is_end);
+  EXPECT_FALSE(wrapped_overflow_page.validators.empty());
+
+  auto wrapped_for_overflow_input = make_dpos_get_validators_for_input(sender.address(), 0xcccc'cccd);
+  wrapped_for_overflow_input[4] = 0x66;
+  wrapped_for_overflow_input[36] = 0x55;
+  wrapped_for_overflow_input.insert(wrapped_for_overflow_input.end(), 9, 0xdd);
+  const auto wrapped_for_overflow_response =
+      SUT->call({addr_t{}, 0, kDposContractAddress, 0, 0, 1'000'000, wrapped_for_overflow_input});
+  EXPECT_TRUE(wrapped_for_overflow_response.code_err.empty());
+  const auto wrapped_for_overflow_page = decode_dpos_validator_page(wrapped_for_overflow_response.code_retval);
+  EXPECT_TRUE(wrapped_for_overflow_page.is_end);
+  EXPECT_FALSE(wrapped_for_overflow_page.validators.empty());
+
+  const auto out_of_range_input = make_dpos_get_validators_input(2);
+  const auto out_of_range_response =
+      SUT->call({addr_t{}, 0, kDposContractAddress, 0, 0, 1'000'000, out_of_range_input});
+  EXPECT_TRUE(out_of_range_response.code_err.empty());
+  const auto out_of_range_page = decode_dpos_validator_page(out_of_range_response.code_retval);
+  EXPECT_TRUE(out_of_range_page.is_end);
+  EXPECT_TRUE(out_of_range_page.validators.empty());
+
+  const auto low_width_input = make_dpos_get_validators_for_input(sender.address(), 0);
+  const auto low_width_response = query_page(low_width_input);
+  EXPECT_EQ(low_width_response.validators, expected_page0_before_delete);
+  EXPECT_FALSE(low_width_response.is_end);
+
+  const auto undelegate_input =
+      util::EncodingSolidity::packFunctionCall("undelegateV2(address,uint256)", removed_validator, u256(kStake));
+  const auto cornus_block_txs = SharedTransactions{
+      std::make_shared<Transaction>(5, 0, kGasPrice, kGasLimit, undelegate_input, sender.secret(), kDposContractAddress,
+                                    cfg.genesis.chain_id),
+      std::make_shared<Transaction>(6, kReadableValue, kGasPrice, kGasLimit, make_dpos_get_validators_input(0),
+                                    sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(
+          7, 0, kGasPrice, IntrinsicGas(make_dpos_get_validators_for_input(sender.address(), 0), false) + 100'000 - 1,
+          make_dpos_get_validators_for_input(sender.address(), 0), sender.secret(), kDposContractAddress,
+          cfg.genesis.chain_id),
+      std::make_shared<Transaction>(8, 0, kGasPrice, kGasLimit, make_dpos_get_validators_for_input(sender.address(), 0),
+                                    sender.secret(), kDposContractAddress, cfg.genesis.chain_id),
+      std::make_shared<Transaction>(9, kTransferValue, kGasPrice, kGasLimit, bytes{}, sender.secret(),
+                                    missing_owner.address(), cfg.genesis.chain_id)};
+
+  const auto block2_result =
+      advance(cornus_block_txs, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(block2_result->trx_receipts.size(), cornus_block_txs.size());
+
+  const auto undelegate_gas = IntrinsicGas(undelegate_input, false) + 60'000;
+  const auto cornus_reject_gas = IntrinsicGas(make_dpos_get_validators_input(0), false);
+  const auto low_gas_failure = IntrinsicGas(make_dpos_get_validators_for_input(sender.address(), 0), false);
+  const auto cornus_get_success_gas =
+      IntrinsicGas(make_dpos_get_validators_for_input(sender.address(), 0), false) + 100'000;
+  const auto cornus_transfer_gas = IntrinsicGas(bytes{}, false);
+  const std::array<uint64_t, 5> block2_expected_gas = {undelegate_gas, cornus_reject_gas, low_gas_failure,
+                                                       cornus_get_success_gas, cornus_transfer_gas};
+  const std::array<uint8_t, 5> block2_expected_status = {1, 0, 0, 1, 1};
+
+  uint64_t block2_cumulative = 0;
+  for (size_t i = 0; i < cornus_block_txs.size(); ++i) {
+    block2_cumulative += block2_expected_gas[i];
+    EXPECT_EQ(block2_result->trx_receipts[i].status_code, block2_expected_status[i]);
+    EXPECT_EQ(block2_result->trx_receipts[i].gas_used, block2_expected_gas[i]);
+    EXPECT_EQ(block2_result->trx_receipts[i].cumulative_gas_used, block2_cumulative);
+    if (i == 0) {
+      EXPECT_EQ(block2_result->trx_receipts[i].logs.size(), 1);
+    } else {
+      EXPECT_EQ(block2_result->trx_receipts[i].logs.size(), 0);
+      EXPECT_EQ(block2_result->trx_receipts[i].bloom(), LogBloom());
+      TransactionReceipt expected_receipt;
+      expected_receipt.status_code = block2_expected_status[i];
+      expected_receipt.gas_used = block2_expected_gas[i];
+      expected_receipt.cumulative_gas_used = block2_cumulative;
+      EXPECT_EQ(util::rlp_enc(block2_result->trx_receipts[i]), util::rlp_enc(expected_receipt));
+    }
+  }
+  EXPECT_EQ(block2_result->final_chain_blk->gas_used, block2_cumulative);
+  EXPECT_EQ(block2_result->final_chain_blk->log_bloom, block2_result->trx_receipts[0].bloom());
+  EXPECT_EQ(SUT->getAccount(sender.address())->nonce, 10);
+
+  const auto persisted_after_block1 = block1_result->trx_receipts;
+  const auto persisted_after_block2 = block2_result->trx_receipts;
+  for (size_t i = 0; i < persisted_after_block1.size(); ++i) {
+    const auto persisted = SUT->transactionReceipt(1, i);
+    ASSERT_TRUE(persisted);
+    EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(persisted_after_block1[i]));
+  }
+  for (size_t i = 0; i < persisted_after_block2.size(); ++i) {
+    const auto persisted = SUT->transactionReceipt(2, i);
+    ASSERT_TRUE(persisted);
+    EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(persisted_after_block2[i]));
+  }
+
+  EXPECT_EQ(SUT->dposValidatorsTotalStakes(2).size(), expected_after_delete.size());
+  EXPECT_EQ(query_page(make_dpos_get_validators_input(0)).validators, expected_page0_after_delete);
+
+  const auto assert_accounts = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto sender_account = chain->getAccount(sender.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, 10);
+    EXPECT_EQ(sender_account->balance,
+              u256(kSenderInitialBalance - kValidatorCount * kStake - kReadableValue - kTransferValue));
+    const auto dpos_account = chain->getAccount(kDposContractAddress);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, u256(kValidatorCount * kStake + kReadableValue));
+    const auto receiver_account = chain->getAccount(missing_owner.address());
+    ASSERT_TRUE(receiver_account);
+    EXPECT_EQ(receiver_account->nonce, 0);
+    EXPECT_EQ(receiver_account->balance, u256(kTransferValue));
+  };
+  assert_accounts(SUT);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  EXPECT_EQ(SUT->getAccount(sender.address())->nonce, 10);
+  for (size_t i = 0; i < persisted_after_block1.size(); ++i) {
+    const auto persisted = SUT->transactionReceipt(1, i);
+    ASSERT_TRUE(persisted);
+    EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(persisted_after_block1[i]));
+  }
+  for (size_t i = 0; i < persisted_after_block2.size(); ++i) {
+    const auto persisted = SUT->transactionReceipt(2, i);
+    ASSERT_TRUE(persisted);
+    EXPECT_EQ(util::rlp_enc(*persisted), util::rlp_enc(persisted_after_block2[i]));
+  }
+  EXPECT_EQ(query_page(make_dpos_get_validators_input(0)).validators, expected_page0_after_delete);
+  assert_accounts(SUT);
 }
 
 TEST_F(FinalChainTest, native_dpos_delegate_persists_receipt_and_state) {

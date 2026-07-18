@@ -537,7 +537,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     exact finalized-block snapshot. The fixed-gas eligibility family is also executable as native finalized
     transactions with its Cornus nonpayability behavior. Native finalization additionally executes the two fixed-5,000
     singleton reads, `getValidator(address)` and Cornus-gated `getUndelegationV2(address,address,uint64)`, against live
-    block-local DPoS state so they observe successful earlier same-block mutations.
+    block-local DPoS state so they observe successful earlier same-block mutations. The dynamic validator-page family,
+    `getValidators(uint32)` and `getValidatorsFor(address,uint32)`, is likewise native-executed against live state with
+    legacy page gas, Cornus nonpayability, wrapping `uint32` page offsets, and swap-remove validator ordering.
 - Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or

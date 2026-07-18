@@ -3612,6 +3612,40 @@ transaction or a separately designed migration rather than inferred account repa
 dynamic validator pages, delegation and undelegation reads, remaining DPoS method/failure families, and the explicit
 historical reward reference graph.
 
+### CRW-08 Dynamic Validator Pages
+
+This bounded follow-up executes the two validator-list page reads through native Rust finalization while retaining the
+existing direct-call ABI surface.
+
+- `getValidators(uint32)` charges 5,000 action gas for each returned validator, up to 20, and preserves the legacy
+  single-read 5,000 charge for empty or out-of-range pages. `getValidatorsFor(address,uint32)` retains its fixed 100,000
+  action-gas charge because legacy execution scans the validator list even when no validator matches the owner.
+- Both selectors use the exact live block-local DPoS snapshot. Successful registration or terminal deletion earlier in
+  the same block is therefore visible to output and gas calculation. They do not use the delayed eligibility snapshot
+  or claim-all gas projection.
+- Execution preserves legacy narrow ABI decoding, trailing calldata, and wrapping `uint32 batch * 20` offsets. Gas
+  estimation intentionally widens the batch first, so an overflow batch can select a wrapped nonempty page while still
+  receiving the one-read out-of-range `getValidators` action charge.
+- Validator deletion now uses swap-remove ordering: the last validator replaces a deleted middle entry, matching the
+  legacy iterable map and its persisted page order. Missing validator stake or metadata referenced by that order is a
+  hard snapshot inconsistency rather than a silently filtered page entry.
+- Before Cornus, successful value-bearing reads retain value in the DPoS account. At Cornus and later, value is rejected
+  before ABI decoding with intrinsic gas only. Malformed recognized inputs have zero action gas, action out-of-gas
+  charges intrinsic gas, and successful reads emit no logs or state changes.
+
+Validation passed the three focused validator-page Rust tests, all 713 `rustaxa-consensus` tests, the restart-backed
+fixture in Rust-enabled and pure-C++ builds, `rewrite-validate-fast`, `rewrite-validate-final-chain`,
+`rewrite-validate-final-chain-parity`, the bridge inventory guard, skill validation, the repository pre-commit hook,
+changed-line C++ formatting, Rust formatting, and whitespace validation.
+
+No CXX carrier, bridge handle/export, shim, module flag, compatibility-only surface, or DPoS snapshot schema changes are
+needed, so `CRW-07` has no inventory delta. Previously finalized Rust page transactions and snapshots containing
+stable-shift order after non-tail deletion can differ in status, gas, receipt roots, value custody, balance, ordering,
+and later affordability. Correction requires replay/rebuild from the first affected read or deletion, or a separately
+designed migration; current snapshot order is insufficient to reconstruct the original legacy order reliably.
+`CRW-08` remains active for delegation and undelegation reads, the remaining DPoS method/failure families, and the
+explicit historical reward graph.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

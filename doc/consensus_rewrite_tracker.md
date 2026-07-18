@@ -546,6 +546,24 @@ balances, and later affordability; recovery requires replay/rebuild from the fir
 designed migration rather than inferred account repairs. `CRW-08` remains active for dynamic validator pages,
 delegation and undelegation reads, remaining DPoS method/failure families, and the explicit historical reward graph.
 
+The next bounded `CRW-08` slice executes the dynamic validator-page family natively:
+`getValidators(uint32)` and `getValidatorsFor(address,uint32)`. Both read exact live block-local DPoS state, so a page
+observes successful registration or terminal deletion earlier in the same block. `getValidators` charges 5,000 action
+gas per returned entry, capped at 20, with one 5,000-gas storage read for an empty or out-of-range page;
+`getValidatorsFor` retains the legacy fixed 100,000 action-gas scan charge regardless of matches. Recognized malformed
+calldata has zero action gas. Before Cornus, successful value-bearing reads retain value in the DPoS account; from
+Cornus onward both selectors reject value before ABI decoding. Execution preserves legacy narrow ABI behavior and
+wrapping `uint32 batch * 20` page offsets even though gas calculation widens the batch before multiplication. Validator
+deletion now mirrors the legacy iterable map by moving the last validator into a removed middle slot, making durable
+page order match after terminal deletion. Partially deleted validator-order entries remain hard snapshot corruption
+rather than disappearing from output. Successful reads emit no logs and do not mutate DPoS state. No carrier, bridge
+handle/export, shim, module flag, or snapshot schema changes are required, so `CRW-07` has no inventory delta.
+Historical Rust native page transactions were finalized as unsupported, and Rust snapshots after a non-tail deletion
+may retain stable-shift rather than legacy swap-remove order. Status, gas, receipt roots, value custody, balances,
+ordering, and later affordability can therefore differ; exact recovery requires replay/rebuild from the first affected
+read or deletion, or a separately designed migration rather than inferred repair. `CRW-08` remains active for
+delegation and undelegation reads, remaining DPoS method/failure families, and the explicit historical reward graph.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,
