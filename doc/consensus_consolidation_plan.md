@@ -3163,6 +3163,42 @@ Tier 1, the FinalChain Tier 2 gate, and `make rewrite-validate-final-chain-parit
 focused three-fixture native DPoS preflight and the complete Rust-enabled and isolated pure-C++ FinalChain suites.
 Pre-existing Clippy and dependency-build warnings remain warnings; this slice introduces no new warning.
 
+### CRW-08 Native DPoS Validator-Registration Business-Failure Parity
+
+This bounded follow-up closes current-ABI `registerValidator(address,bytes,bytes,uint16,string,string)` validation while
+keeping arbitrary EVM execution outside the Rust FinalChain boundary.
+
+- Legacy validates a 65-byte recoverable proof over the validator address, minimum stake, endpoint/description byte
+  limits, 32-byte VRF key, maximum commission, duplicate registration, and maximum stake before creating contract state.
+  These are contract errors: FinalChain charges intrinsic plus 80,000 action gas, advances nonce, rolls back payable value,
+  emits no logs, records status zero, and continues the block.
+- Rust previously discarded proof bytes, hard-failed non-32-byte VRF payloads during decoding, omitted proof/minimum/
+  metadata/commission checks, and propagated duplicate or over-maximum registration as `anyhow`, aborting finalization.
+  The decoded registration now retains proof and VRF bytes. A contract-facing validator normalizes legacy recovery IDs
+  27/28, recovers secp256k1 over `keccak256(validator_address)`, and rejects the selected business family before mutation.
+  Orphaned registration-owned rows, vote-count overflow, storage, and codec faults remain hard invariants.
+- Successful state now matches the funding relationship: the transaction caller owns the initial delegation even when
+  caller and validator differ. Zero-value registration with a zero minimum creates the validator but no phantom
+  delegation, delegator index, or reward cursor. The staged payable value still moves only after status one.
+- Rust coverage uses valid deterministic proofs for every successful registration path and covers wrong signer, proof
+  length/recovery/signature failures, minimum and maximum boundaries, endpoint/description byte boundaries including
+  multibyte UTF-8, VRF 31/32/33, commission 10,000/10,001, duplicate state, orphan-state hard failure, zero-value success,
+  same-sender affordability after rollback, persisted receipts/header, and restart.
+- The dual-mode C++ fixture executes one valid registration, nine otherwise-valid business failures, and a final
+  same-sender transfer in one block. Every expected gas value is independently computed as intrinsic plus 80,000; exact
+  receipt RLP/status/log/bloom/cumulative gas, balances, nonce, DPoS facts, continuation affordability, and restart are
+  checked. The isolated pure-C++ focused filter includes this fixture.
+
+Malformed ABI heads/offsets/tails, noncanonical typed words, and invalid-UTF-8 ABI strings still abort before native
+gas/nonce staging. They remain a cross-method DPoS decode-failure family under active `CRW-08`; fixing only registration
+would create inconsistent selector behavior. No CXX handle, carrier, export, shim, module flag, or compatibility-only test
+changed, so the `CRW-07` bridge inventory is unchanged. Undelegation, broader redelegation, and remaining reward/method
+failure families also remain active follow-up work.
+
+Validation passed the workspace fast gate, the FinalChain Tier 2 gate, the Tier 3 Rust-enabled/pure-C++ parity gate, and
+the bridge-inventory guard. The complete `rustaxa-consensus` package suite passed 672 tests across its library and boundary
+test binaries. Gate output contained only the repository's existing compiler, clippy, CMake, and Conan warnings.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

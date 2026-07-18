@@ -2,6 +2,7 @@
 
 #include <libdevcore/CommonData.h>
 
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -1110,6 +1111,338 @@ TEST_F(FinalChainTest, native_dpos_delegate_to_missing_validator_rolls_back_stat
   assert_failed_delegate_persists(SUT);
 }
 
+TEST_F(FinalChainTest, native_dpos_register_validator_business_failures_roll_back_state) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kMinimumDeposit = 1'000;
+  constexpr uint64_t kMaximumStake = 30'000;
+  constexpr uint64_t kEligibilityThreshold = 1'000;
+  constexpr uint64_t kVoteStep = 1'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kContinuationGas = 21'000;
+  constexpr uint64_t kSuccessValue = 5'000;
+  constexpr uint64_t kOverMaximumStakeValue = 30'001;
+  constexpr uint64_t kOwnerInitialBalance = 11'000;
+  constexpr uint64_t kSenderInitialBalance = 20'000'000;
+  constexpr uint16_t kInvalidCommission = 10'001;
+  constexpr uint64_t kRegisterActionGas = 80'000;
+  constexpr uint64_t kWrongProofValue = kMinimumDeposit;
+  constexpr uint64_t kLowDepositValue = kMinimumDeposit - 1;
+  constexpr uint64_t kLongEndpointValue = kMinimumDeposit;
+  constexpr uint64_t kLongDescriptionValue = kMinimumDeposit;
+  constexpr uint64_t kShortVrfValue = kMinimumDeposit;
+  constexpr uint64_t kLongVrfValue = kMinimumDeposit;
+  constexpr uint64_t kInvalidCommissionValue = kMinimumDeposit;
+  constexpr uint64_t kDuplicateValue = kMinimumDeposit;
+  constexpr uint64_t kOverMaximumStakeValueForGas = kOverMaximumStakeValue;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair sender{dev::Secret("3333331111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair existing_validator{
+      dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair register_success_validator{
+      dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+  const dev::KeyPair register_wrong_proof_validator{
+      dev::Secret("5555555555555555555555555555555555555555555555555555555555555555")};
+  const dev::KeyPair register_low_deposit_validator{
+      dev::Secret("6666666666666666666666666666666666666666666666666666666666666666")};
+  const dev::KeyPair register_long_endpoint_validator{
+      dev::Secret("7777777777777777777777777777777777777777777777777777777777777777")};
+  const dev::KeyPair register_long_description_validator{
+      dev::Secret("8888888888888888888888888888888888888888888888888888888888888888")};
+  const dev::KeyPair register_short_vrf_validator{
+      dev::Secret("9999999999999999999999999999999999999999999999999999999999999999")};
+  const dev::KeyPair register_long_vrf_validator{
+      dev::Secret("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")};
+  const dev::KeyPair register_invalid_commission_validator{
+      dev::Secret("cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")};
+  const dev::KeyPair register_duplicate_validator = register_success_validator;
+  const dev::KeyPair register_over_maximum_stake_validator{
+      dev::Secret("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = kEligibilityThreshold;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = kVoteStep;
+  cfg.genesis.state.dpos.validator_maximum_stake = kMaximumStake;
+  cfg.genesis.state.dpos.minimum_deposit = kMinimumDeposit;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+
+  const auto existing_vrf = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo existing_validator_info{
+      existing_validator.address(), owner.address(), existing_vrf, 0, "", "", {}};
+  existing_validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {existing_validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto initial_dpos_account = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(initial_dpos_account);
+  const auto initial_dpos_balance = initial_dpos_account->balance;
+  EXPECT_EQ(initial_dpos_account->nonce, 1);
+  EXPECT_EQ(initial_dpos_balance, u256(kInitialStake));
+  const auto initial_block_votes = SUT->dposEligibleTotalVoteCount(0);
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  ASSERT_EQ(initial_stakes.size(), 1);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(0), u256(kInitialStake));
+  EXPECT_EQ(initial_stakes[0].addr, existing_validator.address());
+  EXPECT_EQ(initial_stakes[0].stake, u256(kInitialStake));
+
+  const auto default_vrf_hash = vrf_wrapper::getVrfKeyPair().first;
+  const bytes default_vrf_key(default_vrf_hash.begin(), default_vrf_hash.end());
+  const bytes wrong_vrf_key(default_vrf_key.begin(), default_vrf_key.begin() + 31);
+  auto long_vrf_key = default_vrf_key;
+  long_vrf_key.push_back(0x11);
+
+  const auto make_proof = [](const dev::KeyPair& validator, bool wrong) {
+    auto proof = dev::sign(validator.secret(), dev::sha3(validator.address())).asBytes();
+    proof[64] += 27;
+    if (wrong) {
+      proof[0] ^= 0x01;
+    }
+    return proof;
+  };
+
+  auto make_register_validator_tx = [&](uint64_t nonce, const dev::KeyPair& tx_sender, const dev::KeyPair& validator,
+                                        bytes proof, const bytes& vrf_key, uint16_t commission,
+                                        const std::string& description, const std::string& endpoint, uint64_t value) {
+    const auto calldata = util::EncodingSolidity::packFunctionCall(
+        "registerValidator(address,bytes,bytes,uint16,string,string)", validator.address(), proof, vrf_key, commission,
+        dev::asBytes(description), dev::asBytes(endpoint));
+    return std::make_shared<Transaction>(nonce, value, kGasPrice, kGasLimit, calldata, tx_sender.secret(),
+                                         kDposContract, cfg.genesis.chain_id);
+  };
+  auto make_continuation_tx = [&](uint64_t nonce, const addr_t& receiver, uint64_t value) {
+    return std::make_shared<Transaction>(nonce, value, kGasPrice, kContinuationGas, dev::bytes(), sender.secret(),
+                                         receiver, cfg.genesis.chain_id);
+  };
+
+  auto success_tx =
+      make_register_validator_tx(0, sender, register_success_validator, make_proof(register_success_validator, false),
+                                 default_vrf_key, 4'000, "test", "test", kSuccessValue);
+  auto wrong_proof_tx = make_register_validator_tx(1, sender, register_wrong_proof_validator,
+                                                   make_proof(register_wrong_proof_validator, true), default_vrf_key,
+                                                   4'000, "test", "test", kWrongProofValue);
+  auto low_deposit_tx = make_register_validator_tx(2, sender, register_low_deposit_validator,
+                                                   make_proof(register_low_deposit_validator, false), default_vrf_key,
+                                                   4'000, "test", "test", kLowDepositValue);
+  auto long_endpoint_tx = make_register_validator_tx(
+      3, sender, register_long_endpoint_validator, make_proof(register_long_endpoint_validator, false), default_vrf_key,
+      4'000, "test", std::string(51, 'e'), kLongEndpointValue);
+  auto long_description_tx = make_register_validator_tx(
+      4, sender, register_long_description_validator, make_proof(register_long_description_validator, false),
+      default_vrf_key, 4'000, std::string(101, 'd'), "test", kLongDescriptionValue);
+  auto short_vrf_tx = make_register_validator_tx(5, sender, register_short_vrf_validator,
+                                                 make_proof(register_short_vrf_validator, false), wrong_vrf_key, 4'000,
+                                                 "test", "test", kShortVrfValue);
+  auto long_vrf_tx =
+      make_register_validator_tx(6, sender, register_long_vrf_validator, make_proof(register_long_vrf_validator, false),
+                                 long_vrf_key, 4'000, "test", "test", kLongVrfValue);
+  auto invalid_commission_tx = make_register_validator_tx(
+      7, sender, register_invalid_commission_validator, make_proof(register_invalid_commission_validator, false),
+      default_vrf_key, kInvalidCommission, "test", "test", kInvalidCommissionValue);
+  auto duplicate_tx = make_register_validator_tx(8, sender, register_duplicate_validator,
+                                                 make_proof(register_duplicate_validator, false), default_vrf_key,
+                                                 4'000, "test", "test", kDuplicateValue);
+  auto overmax_tx = make_register_validator_tx(9, sender, register_over_maximum_stake_validator,
+                                               make_proof(register_over_maximum_stake_validator, false),
+                                               default_vrf_key, 4'000, "test", "test", kOverMaximumStakeValueForGas);
+  const uint64_t success_gas = IntrinsicGas(success_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t wrong_proof_gas = IntrinsicGas(wrong_proof_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t low_deposit_gas = IntrinsicGas(low_deposit_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t long_endpoint_gas = IntrinsicGas(long_endpoint_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t long_description_gas = IntrinsicGas(long_description_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t short_vrf_gas = IntrinsicGas(short_vrf_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t long_vrf_gas = IntrinsicGas(long_vrf_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t invalid_commission_gas = IntrinsicGas(invalid_commission_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t duplicate_gas = IntrinsicGas(duplicate_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t overmax_gas = IntrinsicGas(overmax_tx->getData(), false) + kRegisterActionGas;
+  const uint64_t register_gas = success_gas + wrong_proof_gas + low_deposit_gas + long_endpoint_gas +
+                                long_description_gas + short_vrf_gas + long_vrf_gas + invalid_commission_gas +
+                                duplicate_gas + overmax_gas;
+  const uint64_t committed_cost_before_continuation = (register_gas + kContinuationGas) * kGasPrice + kSuccessValue;
+  ASSERT_GT(kSenderInitialBalance, committed_cost_before_continuation + 1);
+  const uint64_t continuation_value = kSenderInitialBalance - committed_cost_before_continuation - 1;
+  ASSERT_GT(continuation_value, kLowDepositValue);
+  auto continuation_tx = make_continuation_tx(10, owner.address(), continuation_value);
+  const uint64_t expected_block_gas = success_gas + wrong_proof_gas + low_deposit_gas + long_endpoint_gas +
+                                      long_description_gas + short_vrf_gas + long_vrf_gas + invalid_commission_gas +
+                                      duplicate_gas + overmax_gas + kContinuationGas;
+
+  const auto result =
+      advance({success_tx, wrong_proof_tx, low_deposit_tx, long_endpoint_tx, long_description_tx, short_vrf_tx,
+               long_vrf_tx, invalid_commission_tx, duplicate_tx, overmax_tx, continuation_tx},
+              {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(result->trx_receipts.size(), 10 + 1);
+  const auto& receipts = result->trx_receipts;
+
+  std::array<uint64_t, 11> expected_gas_used{
+      success_gas,  wrong_proof_gas,        low_deposit_gas, long_endpoint_gas, long_description_gas, short_vrf_gas,
+      long_vrf_gas, invalid_commission_gas, duplicate_gas,   overmax_gas,       kContinuationGas};
+  std::array<uint64_t, 11> expected_cumulative_gas{};
+  const uint64_t expected_receipt0_cumulative = success_gas;
+  const uint64_t expected_receipt1_cumulative = expected_receipt0_cumulative + wrong_proof_gas;
+  const uint64_t expected_receipt2_cumulative = expected_receipt1_cumulative + low_deposit_gas;
+  const uint64_t expected_receipt3_cumulative = expected_receipt2_cumulative + long_endpoint_gas;
+  const uint64_t expected_receipt4_cumulative = expected_receipt3_cumulative + long_description_gas;
+  const uint64_t expected_receipt5_cumulative = expected_receipt4_cumulative + short_vrf_gas;
+  const uint64_t expected_receipt6_cumulative = expected_receipt5_cumulative + long_vrf_gas;
+  const uint64_t expected_receipt7_cumulative = expected_receipt6_cumulative + invalid_commission_gas;
+  const uint64_t expected_receipt8_cumulative = expected_receipt7_cumulative + duplicate_gas;
+  const uint64_t expected_receipt9_cumulative = expected_receipt8_cumulative + overmax_gas;
+  const uint64_t expected_receipt10_cumulative = expected_receipt9_cumulative + kContinuationGas;
+  expected_cumulative_gas = {expected_receipt0_cumulative, expected_receipt1_cumulative, expected_receipt2_cumulative,
+                             expected_receipt3_cumulative, expected_receipt4_cumulative, expected_receipt5_cumulative,
+                             expected_receipt6_cumulative, expected_receipt7_cumulative, expected_receipt8_cumulative,
+                             expected_receipt9_cumulative, expected_receipt10_cumulative};
+  for (size_t idx = 0; idx < receipts.size(); ++idx) {
+    EXPECT_EQ(receipts[idx].gas_used, expected_gas_used[idx]);
+    EXPECT_EQ(receipts[idx].cumulative_gas_used, expected_cumulative_gas[idx]);
+  }
+
+  bytes delegated_amount(32, 0);
+  delegated_amount[30] = 0x13;
+  delegated_amount[31] = 0x88;
+  const LogEntry registered_log{kDposContract,
+                                {dev::sha3(dev::asBytes("ValidatorRegistered(address)")),
+                                 h256(register_success_validator.address(), h256::AlignRight)},
+                                bytes()};
+  const LogEntry delegated_log{
+      kDposContract,
+      {dev::sha3(dev::asBytes("Delegated(address,address,uint256)")), h256(sender.address(), h256::AlignRight),
+       h256(register_success_validator.address(), h256::AlignRight)},
+      delegated_amount};
+
+  TransactionReceipt expected_success;
+  expected_success.status_code = 1;
+  expected_success.gas_used = expected_gas_used[0];
+  expected_success.cumulative_gas_used = expected_receipt0_cumulative;
+  expected_success.logs = {registered_log, delegated_log};
+
+  TransactionReceipt expected_failed;
+  expected_failed.status_code = 0;
+  expected_failed.logs = {};
+  expected_failed.cumulative_gas_used = expected_receipt0_cumulative;
+  expected_failed.gas_used = expected_gas_used[1];
+  const auto expected_registered_bloom = expected_success.bloom();
+  TransactionReceipt expected_continuation;
+  expected_continuation.status_code = 1;
+  expected_continuation.gas_used = expected_gas_used[10];
+  expected_continuation.cumulative_gas_used = expected_cumulative_gas[10];
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[0]), util::rlp_enc(expected_success));
+  EXPECT_EQ(receipts[0].status_code, expected_success.status_code);
+  EXPECT_EQ(receipts[0].logs.size(), 2);
+  EXPECT_EQ(receipts[0].gas_used, expected_success.gas_used);
+  EXPECT_EQ(receipts[0].cumulative_gas_used, expected_success.cumulative_gas_used);
+  EXPECT_EQ(result->final_chain_blk->log_bloom, expected_registered_bloom);
+
+  for (size_t idx = 1; idx < receipts.size(); ++idx) {
+    if (idx == 10) {
+      EXPECT_EQ(util::rlp_enc(receipts[idx]), util::rlp_enc(expected_continuation));
+      EXPECT_EQ(receipts[idx].status_code, expected_continuation.status_code);
+      EXPECT_EQ(receipts[idx].logs.size(), 0);
+      EXPECT_EQ(receipts[idx].gas_used, expected_continuation.gas_used);
+      EXPECT_EQ(receipts[idx].cumulative_gas_used, expected_continuation.cumulative_gas_used);
+      EXPECT_EQ(receipts[idx].bloom(), expected_continuation.bloom());
+    } else {
+      expected_failed.gas_used = expected_gas_used[idx];
+      expected_failed.cumulative_gas_used = expected_cumulative_gas[idx];
+      EXPECT_EQ(util::rlp_enc(receipts[idx]), util::rlp_enc(expected_failed));
+      EXPECT_EQ(receipts[idx].status_code, expected_failed.status_code);
+      EXPECT_EQ(receipts[idx].logs.size(), 0);
+      EXPECT_EQ(receipts[idx].bloom(), expected_failed.bloom());
+      EXPECT_EQ(receipts[idx].gas_used, expected_failed.gas_used);
+      EXPECT_EQ(receipts[idx].cumulative_gas_used, expected_failed.cumulative_gas_used);
+    }
+  }
+
+  EXPECT_EQ(result->final_chain_blk->gas_used, expected_block_gas);
+  EXPECT_EQ(result->final_chain_blk->gas_used, expected_cumulative_gas[10]);
+
+  auto assert_failed_persists = [&](const std::shared_ptr<FinalChain>& chain, uint64_t block_num) {
+    for (size_t idx : {1, 2, 3, 4, 5, 6, 7, 8, 9}) {
+      const auto receipt = chain->transactionReceipt(block_num, idx);
+      ASSERT_TRUE(receipt);
+      EXPECT_EQ(receipt->status_code, 0);
+      EXPECT_EQ(receipt->logs.size(), 0);
+    }
+    const auto continuation_receipt = chain->transactionReceipt(block_num, 10);
+    ASSERT_TRUE(continuation_receipt);
+    EXPECT_EQ(continuation_receipt->status_code, expected_continuation.status_code);
+    EXPECT_EQ(continuation_receipt->gas_used, expected_continuation.gas_used);
+    EXPECT_EQ(continuation_receipt->cumulative_gas_used, expected_continuation.cumulative_gas_used);
+    EXPECT_EQ(continuation_receipt->logs.size(), 0);
+
+    const auto success_receipt = chain->transactionReceipt(block_num, 0);
+    ASSERT_TRUE(success_receipt);
+    EXPECT_EQ(util::rlp_enc(*success_receipt), util::rlp_enc(expected_success));
+    EXPECT_EQ(success_receipt->status_code, 1);
+    EXPECT_EQ(success_receipt->gas_used, receipts[0].gas_used);
+    ASSERT_EQ(success_receipt->logs.size(), 2);
+    EXPECT_EQ(success_receipt->logs[0].address, registered_log.address);
+    EXPECT_EQ(success_receipt->logs[0].topics, registered_log.topics);
+    EXPECT_EQ(success_receipt->logs[0].data, registered_log.data);
+    EXPECT_EQ(success_receipt->logs[1].address, delegated_log.address);
+    EXPECT_EQ(success_receipt->logs[1].topics, delegated_log.topics);
+    EXPECT_EQ(success_receipt->logs[1].data, delegated_log.data);
+
+    EXPECT_EQ(success_receipt->cumulative_gas_used, receipts[0].gas_used);
+    EXPECT_EQ(success_receipt->bloom(), expected_registered_bloom);
+    EXPECT_EQ(success_receipt->gas_used, success_gas);
+    EXPECT_EQ(success_receipt->cumulative_gas_used, expected_receipt0_cumulative);
+
+    const auto header = chain->blockHeader(block_num);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(header->gas_used, expected_block_gas);
+    EXPECT_EQ(header->log_bloom, expected_registered_bloom);
+
+    const auto sender_account = chain->getAccount(sender.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, 11);
+    const auto total_tx_gas = expected_block_gas;
+    EXPECT_EQ(sender_account->balance,
+              u256(kSenderInitialBalance - total_tx_gas * kGasPrice - (kSuccessValue + continuation_value)));
+
+    const auto owner_account = chain->getAccount(owner.address());
+    ASSERT_TRUE(owner_account);
+    EXPECT_EQ(owner_account->balance, u256(kOwnerInitialBalance - kInitialStake + continuation_value));
+
+    const auto dpos_account = chain->getAccount(kDposContract);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, 1);
+    EXPECT_EQ(dpos_account->balance, u256(kInitialStake + kSuccessValue));
+
+    EXPECT_EQ(chain->dposTotalAmountDelegated(block_num), u256(kInitialStake + kSuccessValue));
+    const auto stakes = chain->dposValidatorsTotalStakes(block_num);
+    EXPECT_EQ(stakes.size(), 2);
+    auto find_stake = [&](const addr_t& target) {
+      for (const auto& item : stakes) {
+        if (item.addr == target) {
+          return item.stake;
+        }
+      }
+      ADD_FAILURE() << "validator stake not found";
+      return u256(0);
+    };
+    EXPECT_EQ(find_stake(existing_validator.address()), u256(kInitialStake));
+    EXPECT_EQ(find_stake(register_success_validator.address()), u256(kSuccessValue));
+    EXPECT_EQ(chain->dposEligibleVoteCount(block_num, existing_validator.address()), initial_block_votes);
+    EXPECT_EQ(chain->dposEligibleVoteCount(block_num, register_success_validator.address()), kSuccessValue / kVoteStep);
+    EXPECT_EQ(chain->dposEligibleTotalVoteCount(block_num), initial_block_votes + (kSuccessValue / kVoteStep));
+  };
+
+  assert_failed_persists(SUT, 1);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+  assert_failed_persists(SUT, 1);
+}
+
 TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_rolls_back_state) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kEligibilityThreshold = 1'000;
@@ -1155,19 +1488,18 @@ TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_
   ASSERT_EQ(initial_stakes.size(), 1u);
   const auto initial_total_delegated = SUT->dposTotalAmountDelegated(0);
 
-  const auto calldata =
-      dev::fromHex("ef5cfb8c0000000000000000000000000000000000000000000000000000000000000001");
+  const auto calldata = dev::fromHex("ef5cfb8c0000000000000000000000000000000000000000000000000000000000000001");
   ASSERT_EQ(calldata.size(), 36);
   EXPECT_EQ(bytes(calldata.begin(), calldata.begin() + 4), dev::fromHex("ef5cfb8c"));
   EXPECT_EQ(bytes(calldata.begin() + 4, calldata.end()),
             dev::fromHex("0000000000000000000000000000000000000000000000000000000000000001"));
 
   auto claim_trx = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, calldata, sender.secret(), kDposContract,
-                                                cfg.genesis.chain_id);
-  auto continuation_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(),
-                                                       sender.address());
-  const auto claim_result = advance(
-      {claim_trx, continuation_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+                                                 cfg.genesis.chain_id);
+  auto continuation_tx =
+      std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(), sender.address());
+  const auto claim_result =
+      advance({claim_trx, continuation_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
   ASSERT_EQ(claim_result->trx_receipts.size(), 2);
 
   TransactionReceipt expected_receipt;
@@ -1180,9 +1512,9 @@ TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_
   continuation_receipt_expected.gas_used = kContinuationGas;
   continuation_receipt_expected.cumulative_gas_used = kExpectedGas + continuation_receipt_expected.gas_used;
 
-  const auto assert_failed_claim_state =
-      [&](const std::shared_ptr<FinalChain>& chain, const u256& expected_sender_balance, uint64_t block_num,
-          uint64_t expected_sender_nonce, uint64_t expected_block_gas) {
+  const auto assert_failed_claim_state = [&](const std::shared_ptr<FinalChain>& chain,
+                                             const u256& expected_sender_balance, uint64_t block_num,
+                                             uint64_t expected_sender_nonce, uint64_t expected_block_gas) {
     const auto claim_receipt = chain->transactionReceipt(block_num, 0);
     ASSERT_TRUE(claim_receipt);
     EXPECT_EQ(util::rlp_enc(*claim_receipt), util::rlp_enc(expected_receipt));
@@ -1226,8 +1558,8 @@ TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_
     EXPECT_EQ(chain->dposEligibleTotalVoteCount(block_num), initial_total_votes);
   };
 
-  const auto sender_expected_balance_after_block = u256(
-      kSenderInitialBalance - (kExpectedGas + continuation_receipt_expected.gas_used) * kGasPrice);
+  const auto sender_expected_balance_after_block =
+      u256(kSenderInitialBalance - (kExpectedGas + continuation_receipt_expected.gas_used) * kGasPrice);
   const auto block_gas = kExpectedGas + continuation_receipt_expected.gas_used;
 
   EXPECT_EQ(util::rlp_enc(claim_result->trx_receipts[0]), util::rlp_enc(expected_receipt));
@@ -1243,8 +1575,8 @@ TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_
   SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
   EXPECT_EQ(SUT->lastBlockNumber(), 1);
   assert_failed_claim_state(
-      SUT, u256(kSenderInitialBalance - kExpectedGas * kGasPrice - continuation_receipt_expected.gas_used * kGasPrice), 1,
-      2, block_gas);
+      SUT, u256(kSenderInitialBalance - kExpectedGas * kGasPrice - continuation_receipt_expected.gas_used * kGasPrice),
+      1, 2, block_gas);
 }
 
 // This test should be last as state_api isn't destructed correctly because of exception

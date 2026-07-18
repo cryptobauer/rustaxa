@@ -325,6 +325,22 @@ continuation by the sender, and restart persistence. The reusable pure-C++ parit
 bridge/export surface changes, so `CRW-07` again has no inventory delta.
 `CRW-08` remains active for registration, undelegation, redelegation, and remaining reward/method failure families.
 
+The next bounded `CRW-08` slice closes current-ABI native `registerValidator(address,bytes,bytes,uint16,string,string)`
+business validation. Legacy validates the validator-address proof, minimum stake, endpoint and description byte lengths,
+VRF-key length, commission, duplicate registration, and maximum stake before mutation; each rejection is a normal
+status-zero contract outcome. Rust previously discarded the proof, rejected some well-formed business-invalid payloads
+during ABI decoding, omitted several checks, and aborted finalization for duplicate or over-maximum registrations. Rust
+now preserves proof and VRF bytes through decoding, verifies the legacy 27/28 recoverable proof over the validator
+address, classifies the full selected family before mutation, and keeps inconsistent snapshot rows and arithmetic/codec
+faults hard. Successful registration now records the funding caller as delegator, and zero-value registration no longer
+creates a phantom delegation or reward cursor. Focused Rust boundaries and the dual-mode 11-transaction C++ fixture
+cover valid success, wrong proof, below-minimum stake, 50/51-byte endpoint, 100/101-byte description, 31/33-byte VRF,
+10,000/10,001 commission, duplicate validator, exact/over maximum stake, exact gas and receipt RLP, log/bloom ordering,
+gas-only failure charges, nonce, value rollback, same-sender continuation, state facts, and restart. Structurally malformed
+ABI and invalid-UTF-8 string handling remain an explicit cross-method DPoS decode-failure family. No bridge/export surface
+changes, so `CRW-07` again has no inventory delta. `CRW-08` remains active for that decoder family plus undelegation,
+redelegation, and remaining reward/method failure families.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

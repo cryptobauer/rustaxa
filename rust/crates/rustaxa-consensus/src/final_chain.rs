@@ -28,6 +28,7 @@ use crate::slashing::{
 };
 use anyhow::Result;
 use ethereum_types::{H256, U256};
+use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use keccak_hasher::KeccakHasher;
 use rlp::Rlp;
 use rustaxa_storage::{
@@ -2944,13 +2945,12 @@ impl FinalChain {
 
                     contract_outcome = Some(match contract_tx {
                         NativeContractTransaction::Dpos(dpos_tx) => match dpos_tx {
-                            DposTransaction::Register(registration) => {
-                                DposApplyOutcome::success(self.apply_dpos_registration(
+                            DposTransaction::Register(registration) => self
+                                .apply_dpos_registration(
                                     &mut dpos_snapshot,
                                     registration,
                                     block_number,
-                                )?)
-                            }
+                                )?,
                             DposTransaction::Delegate {
                                 delegator,
                                 validator,
@@ -4294,19 +4294,75 @@ impl FinalChain {
         )?]))
     }
 
+    /// Applies a register-validator transaction into the DPoS snapshot.
+    ///
+    /// Inputs:
+    /// - `registration`: parsed `registerValidator` payload (validator, proof, VRF key, metadata,
+    ///   caller-funded initial delegation amount).
+    /// - `block_number`: block height used as the validator metadata commission-change timestamp.
+    ///
+    /// Output:
+    /// - `Ok(DposApplyOutcome)` with `status_code == 1` for successful registration, or
+    ///   `status_code == 0` for Solidity-level contract failure.
+    ///
+    /// Edge behavior:
+    /// - Replays duplicate or malformed registrations as contract failures and does not alter the
+    ///   snapshot.
+    /// - Treats orphaned registration-owned rows as hard corruption when canonical `total_stakes`
+    ///   is missing, returning an explicit `Err`.
+    /// - Performs all proof/stake/metadata checks and log construction before first mutation so the
+    ///   success write path is infallible.
     fn apply_dpos_registration(
         &self,
         snapshot: &mut DposSnapshot,
         registration: DposRegistration,
         block_number: u64,
-    ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
-        if snapshot.total_stakes.contains_key(&registration.validator) {
-            anyhow::bail!("Rust FinalChain::finalize DPoS validator is already registered");
+    ) -> Result<DposApplyOutcome, anyhow::Error> {
+        if !verify_dpos_registration_proof(&registration.proof, registration.validator) {
+            return Ok(DposApplyOutcome::contract_failure());
         }
-        if u256_from_big_endian(&registration.stake)
-            > u256_from_big_endian(&self.dpos_validator_maximum_stake)
+
+        let validator = registration.validator;
+        let owner = registration.metadata.owner;
+        let stake = u256_from_big_endian(&registration.stake);
+
+        let minimum_stake = u256_from_big_endian(&self.dpos_minimum_deposit);
+        if stake < minimum_stake {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if registration.metadata.endpoint.len() > DPOS_MAX_ENDPOINT_LENGTH {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if registration.metadata.description.len() > DPOS_MAX_DESCRIPTION_LENGTH {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if registration.vrf_key.len() != 32 {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if registration.metadata.commission > DPOS_MAX_COMMISSION {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if snapshot.total_stakes.contains_key(&validator) {
+            return Ok(DposApplyOutcome::contract_failure());
+        }
+        if snapshot.commission_rewards.contains_key(&validator)
+            || snapshot.delegator_rewards.contains_key(&validator)
+            || snapshot.validator_metadata.contains_key(&validator)
+            || snapshot.vrf_keys.contains_key(&validator)
+            || snapshot.vote_counts.contains_key(&validator)
+            || snapshot.delegations.contains_key(&validator)
+            || snapshot.validator_order.contains(&validator)
+            || snapshot.delegation_reward_cursors.contains_key(&validator)
+            || snapshot.validator_reward_per_stake.contains_key(&validator)
         {
-            anyhow::bail!("Rust FinalChain::finalize DPoS validator stake exceeds maximum");
+            return Err(anyhow::anyhow!(
+                "DPoS registration snapshot inconsistency: orphan rows found without stake row"
+            ));
+        }
+
+        let maximum_stake = u256_from_big_endian(&self.dpos_validator_maximum_stake);
+        if stake > maximum_stake {
+            return Ok(DposApplyOutcome::contract_failure());
         }
 
         let vote_count = dpos_vote_count(
@@ -4315,10 +4371,18 @@ impl FinalChain {
             &self.dpos_vote_eligibility_balance_step,
             &self.dpos_validator_maximum_stake,
         )?;
-        snapshot.total_vote_count = snapshot
+        let total_vote_count = snapshot
             .total_vote_count
             .checked_add(vote_count)
             .ok_or_else(|| anyhow::anyhow!("DPoS total vote count overflow"))?;
+
+        let mut logs = Vec::with_capacity(if stake.is_zero() { 1 } else { 2 });
+        logs.push(dpos_validator_registered_log(validator));
+        if !stake.is_zero() {
+            logs.push(dpos_delegated_log(owner, validator, stake)?);
+        }
+
+        snapshot.total_vote_count = total_vote_count;
         snapshot
             .total_stakes
             .insert(registration.validator, registration.stake.clone());
@@ -4330,47 +4394,40 @@ impl FinalChain {
             .delegator_rewards
             .entry(registration.validator)
             .or_default();
-        let owner = registration.metadata.owner;
         let mut metadata = registration.metadata;
         metadata.last_commission_change = block_number;
         snapshot
             .validator_metadata
             .insert(registration.validator, metadata);
         snapshot.validator_order.push(registration.validator);
-        snapshot
-            .vrf_keys
-            .insert(registration.validator, registration.vrf_key);
+        let mut vrf_key = [0u8; 32];
+        vrf_key.copy_from_slice(&registration.vrf_key);
+        snapshot.vrf_keys.insert(registration.validator, vrf_key);
         snapshot
             .vote_counts
             .insert(registration.validator, vote_count);
-        let mut delegations = BTreeMap::new();
-        delegations.insert(registration.validator, registration.stake.clone());
-        snapshot
-            .delegations
-            .insert(registration.validator, delegations);
-        add_delegator_validator(
-            &mut snapshot.delegator_validators,
-            registration.validator,
-            registration.validator,
-        );
-        let mut reward_cursors = BTreeMap::new();
-        reward_cursors.insert(registration.validator, Vec::new());
-        snapshot
-            .delegation_reward_cursors
-            .insert(registration.validator, reward_cursors);
+        if !stake.is_zero() {
+            let mut delegations = BTreeMap::new();
+            delegations.insert(owner, registration.stake.clone());
+            snapshot
+                .delegations
+                .insert(registration.validator, delegations);
+            add_delegator_validator(
+                &mut snapshot.delegator_validators,
+                owner,
+                registration.validator,
+            );
+            let mut reward_cursors = BTreeMap::new();
+            reward_cursors.insert(owner, Vec::new());
+            snapshot
+                .delegation_reward_cursors
+                .insert(registration.validator, reward_cursors);
+        }
         snapshot
             .validator_reward_per_stake
             .entry(registration.validator)
             .or_default();
-        let mut logs = vec![dpos_validator_registered_log(registration.validator)];
-        if !u256_from_big_endian(&registration.stake).is_zero() {
-            logs.push(dpos_delegated_log(
-                owner,
-                registration.validator,
-                u256_from_big_endian(&registration.stake),
-            )?);
-        }
-        Ok(logs)
+        Ok(DposApplyOutcome::success(logs))
     }
 
     fn apply_dpos_delegate(
@@ -6955,9 +7012,9 @@ fn decode_slashing_transaction(input: &[u8]) -> Result<SlashingTransaction, anyh
 /// Decodes Rust-supported DPoS contract method payloads.
 ///
 /// The function validates Solidity ABI shape and extracts the fields that affect
-/// consensus-visible DPoS snapshots. Signature proof validation remains outside
-/// this slice, so malformed proofs are rejected only by ABI shape while the
-/// registered validator address and caller-owned stake are kept explicit.
+/// consensus-visible DPoS snapshots. Signature proof validation occurs in
+/// apply, so malformed proofs are accepted here by ABI shape and turned into
+/// contract-failure outcomes later during execution.
 fn decode_dpos_transaction(
     input: &[u8],
     owner: [u8; 20],
@@ -7149,23 +7206,13 @@ fn decode_dpos_register_validator(
     let endpoint_offset =
         decode_abi_word_as_usize(input, 4 + 5 * 32, "registerValidator endpoint offset")?;
     let proof = decode_abi_dynamic_bytes(input, proof_offset, "registerValidator proof")?;
-    if proof.is_empty() {
-        anyhow::bail!("registerValidator proof cannot be empty");
-    }
     let vrf_key = decode_abi_dynamic_bytes(input, vrf_key_offset, "registerValidator VRF key")?;
-    if vrf_key.len() != 32 {
-        anyhow::bail!(
-            "registerValidator VRF key must be 32 bytes, got {}",
-            vrf_key.len()
-        );
-    }
-    let mut vrf_key_bytes = [0u8; 32];
-    vrf_key_bytes.copy_from_slice(&vrf_key);
 
     Ok(DposRegistration {
         validator,
         stake: vec![],
-        vrf_key: vrf_key_bytes,
+        vrf_key,
+        proof,
         metadata: DposValidatorMetadata {
             owner,
             commission,
@@ -7182,6 +7229,51 @@ fn decode_dpos_register_validator(
             )?,
         },
     })
+}
+
+fn verify_dpos_registration_proof(proof: &[u8], validator: [u8; 20]) -> bool {
+    if proof.len() != 65 {
+        return false;
+    }
+    let adjusted_recovery_id = match proof[64] {
+        27 => 0,
+        28 => 1,
+        _ => return false,
+    };
+    let mut message = [0u8; 32];
+    {
+        use tiny_keccak::{Hasher, Keccak};
+        let mut hasher = Keccak::v256();
+        hasher.update(&validator);
+        hasher.finalize(&mut message);
+    }
+
+    let recovery_id = match RecoveryId::try_from(adjusted_recovery_id) {
+        Ok(recovery_id) => recovery_id,
+        Err(_) => return false,
+    };
+    let signature = match Signature::try_from(&proof[..64]) {
+        Ok(signature) => signature,
+        Err(_) => return false,
+    };
+
+    let recovered =
+        match VerifyingKey::recover_from_prehash(message.as_ref(), &signature, recovery_id) {
+            Ok(recovered) => recovered,
+            Err(_) => return false,
+        };
+    let uncompressed = recovered.to_encoded_point(false);
+    let mut recovered_address = [0u8; 20];
+    {
+        let mut pubkey_hash = [0u8; 32];
+        use tiny_keccak::{Hasher, Keccak};
+        let mut hasher = Keccak::v256();
+        hasher.update(&uncompressed.as_bytes()[1..]);
+        hasher.finalize(&mut pubkey_hash);
+        recovered_address.copy_from_slice(&pubkey_hash[12..]);
+    }
+
+    validator == recovered_address
 }
 
 fn decode_dpos_set_validator_info(
@@ -7329,14 +7421,14 @@ fn update_dpos_claim_gas_snapshot(
             if !u256_from_big_endian(&registration.stake).is_zero() {
                 add_delegator_validator(
                     &mut snapshot.delegator_validators,
-                    registration.validator,
+                    registration.metadata.owner,
                     registration.validator,
                 );
                 snapshot
                     .delegations
                     .entry(registration.validator)
                     .or_default()
-                    .insert(registration.validator, registration.stake.clone());
+                    .insert(registration.metadata.owner, registration.stake.clone());
             }
         }
         DposTransaction::Delegate {
@@ -7622,13 +7714,14 @@ enum SlashingTransaction {
 
 /// DPoS validator registration decoded from the Rust-supported contract subset.
 ///
-/// This carries only the deterministic state mutation needed by FinalChain:
-/// validator identity, owner metadata, VRF key, and initial self-delegated stake.
+/// This carries the deterministic validation and state inputs needed by FinalChain:
+/// validator identity and proof, owner metadata, VRF key, and the caller-funded initial stake.
 #[derive(Clone)]
 struct DposRegistration {
     validator: [u8; 20],
     stake: Vec<u8>,
-    vrf_key: [u8; 32],
+    vrf_key: Vec<u8>,
+    proof: Vec<u8>,
     metadata: DposValidatorMetadata,
 }
 
@@ -7766,6 +7859,60 @@ mod tests {
         let public_key = signing_key.verifying_key().to_encoded_point(false);
         let public_key_hash = keccak256(&public_key.as_bytes()[1..]);
         H160::from_slice(&public_key_hash.as_bytes()[12..])
+    }
+
+    fn register_validator_proof(
+        signing_key: &SigningKey,
+        validator: [u8; 20],
+        recovery_id: Option<u8>,
+    ) -> Vec<u8> {
+        let mut message = [0u8; 32];
+        {
+            use tiny_keccak::{Hasher, Keccak};
+            let mut hasher = Keccak::v256();
+            hasher.update(&validator);
+            hasher.finalize(&mut message);
+        }
+        let (signature, signature_recovery_id) = signing_key
+            .sign_prehash_recoverable(&message)
+            .expect("register validator proof signing should succeed");
+        let mut proof = signature.to_bytes().to_vec();
+        proof.push(
+            recovery_id.unwrap_or_else(|| signature_recovery_id.to_byte().checked_add(27).unwrap()),
+        );
+        proof
+    }
+
+    fn register_validator_input_with_raw_vrf(
+        validator: [u8; 20],
+        proof: &[u8],
+        vrf_key: &[u8],
+        commission: u16,
+        description: &str,
+        endpoint: &str,
+    ) -> Vec<u8> {
+        let proof_offset = 6 * 32;
+        let vrf_offset = proof_offset + 32 + abi_padded_len(proof.len()).unwrap();
+        let description_offset = vrf_offset + 32 + abi_padded_len(vrf_key.len()).unwrap();
+        let endpoint_offset =
+            description_offset + abi_dynamic_string_tail_len(description).unwrap();
+        let mut input = DPOS_REGISTER_VALIDATOR_SELECTOR.to_vec();
+        input.extend_from_slice(&abi_word_from_address(validator));
+        input.extend_from_slice(&abi_word_from_bytes_offset(proof_offset));
+        input.extend_from_slice(&abi_word_from_bytes_offset(vrf_offset));
+        input.extend_from_slice(&abi_word_from_u64(u64::from(commission)));
+        input.extend_from_slice(&abi_word_from_bytes_offset(description_offset));
+        input.extend_from_slice(&abi_word_from_bytes_offset(endpoint_offset));
+        input.extend_from_slice(&abi_word_from_usize(proof.len(), "test proof length").unwrap());
+        input.extend_from_slice(proof);
+        input.resize(4 + vrf_offset, 0);
+        input
+            .extend_from_slice(&abi_word_from_usize(vrf_key.len(), "test VRF key length").unwrap());
+        input.extend_from_slice(vrf_key);
+        input.resize(4 + description_offset, 0);
+        input.extend_from_slice(&abi_string_tail(description).unwrap());
+        input.extend_from_slice(&abi_string_tail(endpoint).unwrap());
+        input
     }
 
     fn period_data_rlp(pbft_block_rlp: &[u8], transaction_rlps: &[Vec<u8>]) -> Vec<u8> {
@@ -8196,28 +8343,14 @@ mod tests {
         description: &str,
         endpoint: &str,
     ) -> Vec<u8> {
-        let proof_offset = 6 * 32;
-        let vrf_offset = proof_offset + 32 + abi_padded_len(proof.len()).unwrap();
-        let description_offset = vrf_offset + 32 + abi_padded_len(vrf_key.len()).unwrap();
-        let endpoint_offset =
-            description_offset + abi_dynamic_string_tail_len(description).unwrap();
-        let mut input = DPOS_REGISTER_VALIDATOR_SELECTOR.to_vec();
-        input.extend_from_slice(&abi_word_from_address(validator));
-        input.extend_from_slice(&abi_word_from_bytes_offset(proof_offset));
-        input.extend_from_slice(&abi_word_from_bytes_offset(vrf_offset));
-        input.extend_from_slice(&abi_word_from_u64(u64::from(commission)));
-        input.extend_from_slice(&abi_word_from_bytes_offset(description_offset));
-        input.extend_from_slice(&abi_word_from_bytes_offset(endpoint_offset));
-        input.extend_from_slice(&abi_word_from_usize(proof.len(), "test proof length").unwrap());
-        input.extend_from_slice(proof);
-        input.resize(4 + vrf_offset, 0);
-        input
-            .extend_from_slice(&abi_word_from_usize(vrf_key.len(), "test VRF key length").unwrap());
-        input.extend_from_slice(&vrf_key);
-        input.resize(4 + description_offset, 0);
-        input.extend_from_slice(&abi_string_tail(description).unwrap());
-        input.extend_from_slice(&abi_string_tail(endpoint).unwrap());
-        input
+        register_validator_input_with_raw_vrf(
+            validator,
+            proof,
+            &vrf_key,
+            commission,
+            description,
+            endpoint,
+        )
     }
 
     fn delegate_input(validator: [u8; 20]) -> Vec<u8> {
@@ -12381,8 +12514,9 @@ mod tests {
         let period_two = 2u64;
         let period_three = 3u64;
         let owner = [0x01; 20];
-        let validator = [0x02; 20];
         let signing_key = SigningKey::from_slice(&[0x77; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proof = register_validator_proof(&signing_key, validator, None);
         let genesis_dpos_config = GenesisDposConfig {
             eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
             vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
@@ -12400,7 +12534,7 @@ mod tests {
 
         let register_input = register_validator_input(
             validator,
-            &[0xCC; 65],
+            &proof,
             [0xA5; 32],
             10,
             "delegation delay validator",
@@ -12558,7 +12692,9 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let period = 1u64;
         let owner = [0x31; 20];
-        let validator = [0x32; 20];
+        let signing_key = SigningKey::from_slice(&[15u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proof = register_validator_proof(&signing_key, validator, None);
         let vrf_key = [0xA5; 32];
         let stake = U256::from(5_000u64);
         let genesis_dpos_config = GenesisDposConfig {
@@ -12571,12 +12707,11 @@ mod tests {
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
-        let signing_key = SigningKey::from_slice(&[15u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 140);
         let transaction_rlp = vec![0xc1, 0x91];
         let input = register_validator_input(
             validator,
-            &[0xCC; 65],
+            &proof,
             vrf_key,
             10,
             "test validator",
@@ -12689,7 +12824,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            300_000,
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -12735,12 +12870,1415 @@ mod tests {
     }
 
     #[test]
+    fn finalize_block_registers_dpos_validator_with_wrong_proof_is_contract_failure() {
+        let path = temp_db_path("finalize-dpos-register-validator-wrong-proof");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x31; 20];
+        let pbft_signing_key = SigningKey::from_slice(&[15u8; 32]).unwrap();
+        let proof_signing_key = SigningKey::from_slice(&[16u8; 32]).unwrap();
+        let validator = address_from_signing_key(&pbft_signing_key).into();
+        let proof = register_validator_proof(&proof_signing_key, validator, None);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&pbft_signing_key, period, 140);
+        let transaction = test_transaction(
+            0xA7,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                validator,
+                &proof,
+                [0xA5; 32],
+                10,
+                "wrong proof validator",
+                "endpoint",
+            ),
+            vec![0xc1, 0x91],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction.rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction.clone()], vec![])
+            .unwrap();
+
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
+        assert_eq!(receipt_logs(&receipts[0]).len(), 0);
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert!(snapshot.total_stakes.is_empty());
+        assert_eq!(
+            u256_from_big_endian(&final_chain.account(owner).unwrap().unwrap().balance,),
+            U256::from(1_000_000u64) - U256::from(2u64) * U256::from(tx_gas)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_with_invalid_proof_length_is_contract_failure() {
+        let period = 1u64;
+        let owner = [0x32; 20];
+        let signing_key = SigningKey::from_slice(&[17u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proofs = vec![vec![0x11u8; 64], vec![0x11u8; 66], vec![]];
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&signing_key, period, 141);
+        let gas_price = U256::from(2u64);
+
+        for (case, proof) in proofs.into_iter().enumerate() {
+            let path = temp_db_path(&format!(
+                "finalize-dpos-register-validator-invalid-proof-length-{case}"
+            ));
+            let transaction = test_transaction(
+                0xA7,
+                owner,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::from(5_000u64),
+                gas_price,
+                150_000,
+                register_validator_input_with_raw_vrf(
+                    validator,
+                    &proof,
+                    &[0xA5; 32],
+                    10,
+                    "invalid proof length",
+                    "endpoint",
+                ),
+                vec![0xc1, 0x91],
+            );
+
+            let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+            write_period_data(
+                &storage,
+                period,
+                &pbft_block,
+                std::slice::from_ref(&transaction.rlp),
+            );
+            let final_chain = FinalChain::new(
+                storage.clone(),
+                200_000,
+                0,
+                vec![genesis_account(owner, U256::from(1_000_000u64))],
+                vec![],
+                genesis_dpos_config.clone(),
+            )
+            .unwrap();
+            let (_header_rlp, receipts) = final_chain
+                .finalize_block(pbft_block.clone(), vec![transaction.clone()], vec![])
+                .unwrap();
+            let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
+            assert_eq!(receipt_logs(&receipts[0]).len(), 0);
+            let snapshot = final_chain.dpos_snapshot(period).unwrap();
+            assert!(
+                snapshot.total_stakes.is_empty(),
+                "proof len {} should not insert stake",
+                proof.len()
+            );
+            assert_eq!(
+                final_chain.account(owner).unwrap().unwrap().balance,
+                u256_to_big_endian(
+                    U256::from(1_000_000u64) - U256::from(2u64) * U256::from(tx_gas),
+                ),
+            );
+
+            drop(final_chain);
+            drop(storage);
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_with_invalid_recovery_id_is_contract_failure() {
+        let period = 1u64;
+        let owner = [0x33; 20];
+        let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&signing_key, period, 142);
+
+        for recovery_id in [26u8, 29u8] {
+            let path = temp_db_path(&format!(
+                "finalize-dpos-register-validator-invalid-recovery-id-{recovery_id}"
+            ));
+            let proof = register_validator_proof(&signing_key, validator, Some(recovery_id));
+            let tx = test_transaction(
+                0xA7,
+                owner,
+                Some(DPOS_CONTRACT_ADDRESS),
+                0,
+                U256::from(5_000u64),
+                U256::from(2u64),
+                150_000,
+                register_validator_input(
+                    validator,
+                    &proof,
+                    [0xA5; 32],
+                    10,
+                    "invalid recovery id",
+                    "endpoint",
+                ),
+                vec![0xc1, 0x91],
+            );
+            let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+            write_period_data(&storage, period, &pbft_block, std::slice::from_ref(&tx.rlp));
+            let final_chain = FinalChain::new(
+                storage.clone(),
+                200_000,
+                0,
+                vec![genesis_account(owner, U256::from(1_000_000u64))],
+                vec![],
+                genesis_dpos_config.clone(),
+            )
+            .unwrap();
+            let (_header_rlp, receipts) = final_chain
+                .finalize_block(pbft_block.clone(), vec![tx.clone()], vec![])
+                .unwrap();
+            let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &tx);
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(
+                receipt_fields(&receipts[0]),
+                (0, tx_gas, tx_gas),
+                "v-byte {recovery_id} should fail"
+            );
+            assert!(receipt_logs(&receipts[0]).is_empty());
+            assert!(
+                final_chain
+                    .dpos_snapshot(period)
+                    .unwrap()
+                    .total_stakes
+                    .is_empty(),
+                "v-byte {recovery_id} should leave zero stake rows"
+            );
+            drop(final_chain);
+            drop(storage);
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_duplicate_in_same_block_is_contract_failure_and_continues()
+     {
+        let path = temp_db_path("finalize-dpos-register-validator-duplicate");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x34; 20];
+        let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proof = register_validator_proof(&signing_key, validator, None);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&signing_key, period, 143);
+
+        let first = test_transaction(
+            0xA7,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(validator, &proof, [0xA5; 32], 10, "first", "endpoint"),
+            vec![0xc1, 0x91],
+        );
+        let second = test_transaction(
+            0xA8,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(1_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(validator, &proof, [0xA6; 32], 10, "second", "endpoint"),
+            vec![0xc1, 0x92],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[first.rlp.clone(), second.rlp.clone()],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+
+        let first_gas = expected_native_contract_tx_gas(&final_chain, period, &first);
+        let second_gas = expected_native_contract_tx_gas(&final_chain, period, &second);
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![first, second], vec![])
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipt_fields(&receipts[0]), (1, first_gas, first_gas));
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (0, second_gas, first_gas + second_gas)
+        );
+        assert_eq!(
+            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            5
+        );
+
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .total_stakes
+                    .get(&validator)
+                    .expect("validator should be present")
+            ),
+            U256::from(5_000u64)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_rejects_stake_boundaries_and_allows_zero_when_min_is_zero()
+     {
+        let path = temp_db_path("finalize-dpos-register-validator-stake-boundaries-below-min");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x35; 20];
+        let signing_key = SigningKey::from_slice(&[20u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proof = register_validator_proof(&signing_key, validator, None);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(5_000u64)),
+            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&signing_key, period, 144);
+
+        let below_minimum = test_transaction(
+            0xA7,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(500u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(validator, &proof, [0xA5; 32], 10, "below min", "endpoint"),
+            vec![0xc1, 0x91],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&below_minimum.rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config.clone(),
+        )
+        .unwrap();
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &below_minimum);
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block.clone(), vec![below_minimum.clone()], vec![])
+            .unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
+        assert!(
+            final_chain
+                .dpos_snapshot(period)
+                .unwrap()
+                .total_stakes
+                .is_empty(),
+            "below minimum deposit should not insert validator"
+        );
+
+        drop(final_chain);
+        drop(storage);
+
+        let zero_stake_path =
+            temp_db_path("finalize-dpos-register-validator-stake-boundaries-zero");
+        let storage = Arc::new(Storage::new(Config::new(zero_stake_path.clone())).unwrap());
+        let genesis_dpos_config = GenesisDposConfig {
+            minimum_deposit: vec![],
+            ..genesis_dpos_config
+        };
+        let zero_stake = test_transaction(
+            0xA8,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(validator, &proof, [0xA6; 32], 10, "zero stake", "endpoint"),
+            vec![0xc1, 0x92],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&zero_stake.rlp),
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            500_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![zero_stake.clone()], vec![])
+            .unwrap();
+        let zero_gas = expected_native_contract_tx_gas(&final_chain, period, &zero_stake);
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipt_fields(&receipts[0]), (1, zero_gas, zero_gas));
+        assert_eq!(receipt_logs(&receipts[0]).len(), 1);
+        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        assert!(!snapshot.delegations.contains_key(&validator));
+        assert!(!snapshot.delegation_reward_cursors.contains_key(&validator));
+        assert!(!snapshot.delegator_validators.contains_key(&owner));
+        assert_eq!(
+            final_chain
+                .dpos_eligible_vote_count(period, validator)
+                .unwrap(),
+            0
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+        let _ = std::fs::remove_dir_all(zero_stake_path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_rejects_metadata_and_vrf_length_boundaries() {
+        let path = temp_db_path("finalize-dpos-register-validator-metadata-vrf-boundaries");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x36; 20];
+        let signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proof = register_validator_proof(&signing_key, validator, None);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&signing_key, period, 145);
+        let long_description = "x".repeat(DPOS_MAX_DESCRIPTION_LENGTH + 1);
+        let long_endpoint = "y".repeat(DPOS_MAX_ENDPOINT_LENGTH + 1);
+        let too_long_desc_tx = test_transaction(
+            0xA7,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                validator,
+                &proof,
+                [0xA5; 32],
+                10,
+                &long_description,
+                "endpoint",
+            ),
+            vec![0xc1, 0x91],
+        );
+        let too_long_endpoint_tx = test_transaction(
+            0xA8,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                validator,
+                &proof,
+                [0xA5; 32],
+                10,
+                "description",
+                &long_endpoint,
+            ),
+            vec![0xc1, 0x92],
+        );
+        let bad_vrf_len_tx = test_transaction(
+            0xA9,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            2,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input_with_raw_vrf(
+                validator,
+                &proof,
+                &[0xA6; 31],
+                10,
+                "description",
+                "endpoint",
+            ),
+            vec![0xc1, 0x93],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[
+                too_long_desc_tx.rlp.clone(),
+                too_long_endpoint_tx.rlp.clone(),
+                bad_vrf_len_tx.rlp.clone(),
+            ],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let desc_gas = expected_native_contract_tx_gas(&final_chain, period, &too_long_desc_tx);
+        let endpoint_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &too_long_endpoint_tx);
+        let vrf_gas = expected_native_contract_tx_gas(&final_chain, period, &bad_vrf_len_tx);
+        let transactions = vec![too_long_desc_tx, too_long_endpoint_tx, bad_vrf_len_tx];
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, transactions, vec![])
+            .unwrap();
+        assert_eq!(receipts.len(), 3);
+        assert_eq!(receipt_fields(&receipts[0]), (0, desc_gas, desc_gas));
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (0, endpoint_gas, desc_gas + endpoint_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[2]),
+            (0, vrf_gas, desc_gas + endpoint_gas + vrf_gas)
+        );
+        assert!(
+            final_chain
+                .dpos_snapshot(period)
+                .unwrap()
+                .total_stakes
+                .is_empty()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_rejects_stake_max_plus_one_and_accepts_exact_max() {
+        let path = temp_db_path("finalize-dpos-register-validator-stake-max");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x37; 20];
+        let above_max_key = SigningKey::from_slice(&[23u8; 32]).unwrap();
+        let above_max_validator = address_from_signing_key(&above_max_key).into();
+        let above_max_proof = register_validator_proof(&above_max_key, above_max_validator, None);
+        let exact_max_key = SigningKey::from_slice(&[24u8; 32]).unwrap();
+        let exact_max_validator = address_from_signing_key(&exact_max_key).into();
+        let exact_max_proof = register_validator_proof(&exact_max_key, exact_max_validator, None);
+        let max_stake = U256::from(10_000u64);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&above_max_key, period, 146);
+
+        let too_high_stake_tx = test_transaction(
+            0xC0,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(10_001u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                above_max_validator,
+                &above_max_proof,
+                [0xA5; 32],
+                10,
+                "above max",
+                "endpoint",
+            ),
+            vec![0xc1, 0xc0],
+        );
+        let exact_max_stake_tx = test_transaction(
+            0xC1,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            max_stake,
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                exact_max_validator,
+                &exact_max_proof,
+                [0xA6; 32],
+                10,
+                "exact max",
+                "endpoint",
+            ),
+            vec![0xc1, 0xc1],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[
+                too_high_stake_tx.rlp.clone(),
+                exact_max_stake_tx.rlp.clone(),
+            ],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let txs = vec![too_high_stake_tx, exact_max_stake_tx];
+        let high_stake_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[0]);
+        let exact_stake_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[1]);
+        let (_header_rlp, receipts) = final_chain.finalize_block(pbft_block, txs, vec![]).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, high_stake_gas, high_stake_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, exact_stake_gas, high_stake_gas + exact_stake_gas)
+        );
+        assert_eq!(
+            u256_from_big_endian(
+                final_chain
+                    .dpos_snapshot(period)
+                    .unwrap()
+                    .total_stakes
+                    .get(&exact_max_validator)
+                    .expect("exact max stake validator should be present")
+            ),
+            max_stake
+        );
+        assert!(
+            final_chain
+                .dpos_snapshot(period)
+                .unwrap()
+                .total_stakes
+                .get(&above_max_validator)
+                .is_none()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_rejects_commission_above_maximum_and_accepts_boundary()
+     {
+        let path = temp_db_path("finalize-dpos-register-validator-commission-boundary");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x38; 20];
+        let too_high_commission_key = SigningKey::from_slice(&[25u8; 32]).unwrap();
+        let too_high_commission_validator =
+            address_from_signing_key(&too_high_commission_key).into();
+        let too_high_commission_proof = register_validator_proof(
+            &too_high_commission_key,
+            too_high_commission_validator,
+            None,
+        );
+        let max_commission_key = SigningKey::from_slice(&[26u8; 32]).unwrap();
+        let max_commission_validator = address_from_signing_key(&max_commission_key).into();
+        let max_commission_proof =
+            register_validator_proof(&max_commission_key, max_commission_validator, None);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&too_high_commission_key, period, 147);
+
+        let too_high_commission_tx = test_transaction(
+            0xC2,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                too_high_commission_validator,
+                &too_high_commission_proof,
+                [0xA5; 32],
+                10001,
+                "commission too high",
+                "endpoint",
+            ),
+            vec![0xc1, 0xc2],
+        );
+        let max_commission_tx = test_transaction(
+            0xC3,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                max_commission_validator,
+                &max_commission_proof,
+                [0xA6; 32],
+                10000,
+                "commission max",
+                "endpoint",
+            ),
+            vec![0xc1, 0xc3],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[
+                too_high_commission_tx.rlp.clone(),
+                max_commission_tx.rlp.clone(),
+            ],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let too_high_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &too_high_commission_tx);
+        let max_gas = expected_native_contract_tx_gas(&final_chain, period, &max_commission_tx);
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![too_high_commission_tx, max_commission_tx],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, too_high_gas, too_high_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, max_gas, too_high_gas + max_gas)
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_vrf_endpoint_description_boundaries_and_malformed_65_signature()
+     {
+        let path = temp_db_path("finalize-dpos-register-validator-bounds-metadata");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x39; 20];
+        let endpoint_key = SigningKey::from_slice(&[27u8; 32]).unwrap();
+        let endpoint_validator = address_from_signing_key(&endpoint_key).into();
+        let endpoint_proof = register_validator_proof(&endpoint_key, endpoint_validator, None);
+        let description_key = SigningKey::from_slice(&[28u8; 32]).unwrap();
+        let description_validator = address_from_signing_key(&description_key).into();
+        let description_proof =
+            register_validator_proof(&description_key, description_validator, None);
+        let malformed_signature_key = SigningKey::from_slice(&[29u8; 32]).unwrap();
+        let malformed_signature_validator =
+            address_from_signing_key(&malformed_signature_key).into();
+        let vrf33_key = SigningKey::from_slice(&[30u8; 32]).unwrap();
+        let vrf33_validator = address_from_signing_key(&vrf33_key).into();
+        let vrf33_proof = register_validator_proof(&vrf33_key, vrf33_validator, None);
+        let utf8_boundary_key = SigningKey::from_slice(&[31u8; 32]).unwrap();
+        let utf8_boundary_validator = address_from_signing_key(&utf8_boundary_key).into();
+        let utf8_boundary_proof =
+            register_validator_proof(&utf8_boundary_key, utf8_boundary_validator, None);
+        let utf8_over_key = SigningKey::from_slice(&[32u8; 32]).unwrap();
+        let utf8_over_validator = address_from_signing_key(&utf8_over_key).into();
+        let utf8_over_proof = register_validator_proof(&utf8_over_key, utf8_over_validator, None);
+        let utf8_boundary_description = "é".repeat(DPOS_MAX_DESCRIPTION_LENGTH / 2);
+        let utf8_over_description = format!("{utf8_boundary_description}x");
+        let malformed_65_signature = {
+            let mut bytes = [0u8; 65];
+            bytes[64] = 27;
+            bytes.to_vec()
+        };
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&endpoint_key, period, 148);
+
+        let endpoint_too_long = "e".repeat(DPOS_MAX_ENDPOINT_LENGTH + 1);
+        let endpoint_ok = "e".repeat(DPOS_MAX_ENDPOINT_LENGTH);
+        let description_too_long = "d".repeat(DPOS_MAX_DESCRIPTION_LENGTH + 1);
+        let description_ok = "d".repeat(DPOS_MAX_DESCRIPTION_LENGTH);
+        let long_vrf_key = vec![0x11u8; 33];
+
+        let malformed_signature_tx = test_transaction(
+            0xC4,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                malformed_signature_validator,
+                &malformed_65_signature,
+                [0xA5; 32],
+                10,
+                "malformed signature",
+                "endpoint",
+            ),
+            vec![0xc1, 0xc4],
+        );
+        let endpoint_too_long_tx = test_transaction(
+            0xC5,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            1,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                endpoint_validator,
+                &endpoint_proof,
+                [0xA5; 32],
+                10,
+                "endpoint too long",
+                &endpoint_too_long,
+            ),
+            vec![0xc1, 0xc5],
+        );
+        let endpoint_ok_tx = test_transaction(
+            0xC6,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            2,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                endpoint_validator,
+                &endpoint_proof,
+                [0xA6; 32],
+                10,
+                "endpoint max",
+                &endpoint_ok,
+            ),
+            vec![0xc1, 0xc6],
+        );
+        let description_too_long_tx = test_transaction(
+            0xC7,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            3,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                endpoint_validator,
+                &endpoint_proof,
+                [0xA7; 32],
+                10,
+                &description_too_long,
+                "endpoint",
+            ),
+            vec![0xc1, 0xc7],
+        );
+        let description_ok_tx = test_transaction(
+            0xC8,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            4,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                description_validator,
+                &description_proof,
+                [0xA8; 32],
+                10,
+                &description_ok,
+                &endpoint_ok,
+            ),
+            vec![0xc1, 0xc8],
+        );
+        let description_utf8_ok_tx = test_transaction(
+            0xC9,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            5,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                utf8_boundary_validator,
+                &utf8_boundary_proof,
+                [0xA9; 32],
+                10,
+                &utf8_boundary_description,
+                &endpoint_ok,
+            ),
+            vec![0xc1, 0xc9],
+        );
+        let description_utf8_fail_tx = test_transaction(
+            0xCA,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            6,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(
+                utf8_over_validator,
+                &utf8_over_proof,
+                [0xAA; 32],
+                10,
+                &utf8_over_description,
+                &endpoint_ok,
+            ),
+            vec![0xc1, 0xca],
+        );
+        let vrf33_tx = test_transaction(
+            0xCB,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            7,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input_with_raw_vrf(
+                vrf33_validator,
+                &vrf33_proof,
+                &long_vrf_key,
+                10,
+                "vrf 33",
+                &endpoint_ok,
+            ),
+            vec![0xc1, 0xcb],
+        );
+
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[
+                malformed_signature_tx.rlp.clone(),
+                endpoint_too_long_tx.rlp.clone(),
+                endpoint_ok_tx.rlp.clone(),
+                description_too_long_tx.rlp.clone(),
+                description_ok_tx.rlp.clone(),
+                description_utf8_ok_tx.rlp.clone(),
+                description_utf8_fail_tx.rlp.clone(),
+                vrf33_tx.rlp.clone(),
+            ],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            1_200_000,
+            0,
+            vec![genesis_account(owner, U256::from(5_000_000u64))],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        let txs = vec![
+            malformed_signature_tx,
+            endpoint_too_long_tx,
+            endpoint_ok_tx,
+            description_too_long_tx,
+            description_ok_tx,
+            description_utf8_ok_tx,
+            description_utf8_fail_tx,
+            vrf33_tx,
+        ];
+        let malformed_signature_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &txs[0]);
+        let endpoint_too_long_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[1]);
+        let endpoint_ok_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[2]);
+        let description_too_long_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &txs[3]);
+        let description_ok_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[4]);
+        let description_utf8_ok_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &txs[5]);
+        let description_utf8_fail_gas =
+            expected_native_contract_tx_gas(&final_chain, period, &txs[6]);
+        let vrf33_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[7]);
+        let (_header_rlp, receipts) = final_chain.finalize_block(pbft_block, txs, vec![]).unwrap();
+        assert_eq!(receipts.len(), 8);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, malformed_signature_gas, malformed_signature_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (
+                0,
+                endpoint_too_long_gas,
+                malformed_signature_gas + endpoint_too_long_gas
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[2]),
+            (
+                1,
+                endpoint_ok_gas,
+                malformed_signature_gas + endpoint_too_long_gas + endpoint_ok_gas
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[3]),
+            (
+                0,
+                description_too_long_gas,
+                malformed_signature_gas
+                    + endpoint_too_long_gas
+                    + endpoint_ok_gas
+                    + description_too_long_gas
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[4]),
+            (
+                1,
+                description_ok_gas,
+                malformed_signature_gas
+                    + endpoint_too_long_gas
+                    + endpoint_ok_gas
+                    + description_too_long_gas
+                    + description_ok_gas
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[5]),
+            (
+                1,
+                description_utf8_ok_gas,
+                malformed_signature_gas
+                    + endpoint_too_long_gas
+                    + endpoint_ok_gas
+                    + description_too_long_gas
+                    + description_ok_gas
+                    + description_utf8_ok_gas
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[6]),
+            (
+                0,
+                description_utf8_fail_gas,
+                malformed_signature_gas
+                    + endpoint_too_long_gas
+                    + endpoint_ok_gas
+                    + description_too_long_gas
+                    + description_ok_gas
+                    + description_utf8_ok_gas
+                    + description_utf8_fail_gas
+            )
+        );
+        assert_eq!(
+            receipt_fields(&receipts[7]),
+            (
+                0,
+                vrf33_gas,
+                malformed_signature_gas
+                    + endpoint_too_long_gas
+                    + endpoint_ok_gas
+                    + description_too_long_gas
+                    + description_ok_gas
+                    + description_utf8_ok_gas
+                    + description_utf8_fail_gas
+                    + vrf33_gas
+            )
+        );
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_with_orphan_rows_returns_internal_error() {
+        let path = temp_db_path("finalize-dpos-register-validator-orphan-rows");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let owner = [0x3A; 20];
+        let signing_key = SigningKey::from_slice(&[40u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proof = register_validator_proof(&signing_key, validator, None);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let pbft_block = signed_pbft_block(&signing_key, period, 149);
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(owner, U256::from(1_000_000u64))],
+            vec![],
+            genesis_dpos_config.clone(),
+        )
+        .unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        snapshot.commission_rewards.insert(validator, Vec::new());
+        snapshot.delegator_rewards.insert(validator, Vec::new());
+        final_chain.insert_dpos_snapshot(0, snapshot).unwrap();
+
+        let tx = test_transaction(
+            0xCC,
+            owner,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::from(5_000u64),
+            U256::from(2u64),
+            150_000,
+            register_validator_input(validator, &proof, [0xA5; 32], 10, "orphan rows", "endpoint"),
+            vec![0xc1, 0xcc],
+        );
+        write_period_data(&storage, period, &pbft_block, &[tx.rlp.clone()]);
+        let err = final_chain
+            .finalize_block(pbft_block, vec![tx], vec![])
+            .unwrap_err();
+        assert!(err.to_string().contains("orphan rows found"));
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_registers_dpos_validator_failed_registration_then_transfer_reflects_value_rollback_on_restart()
+     {
+        let path = temp_db_path("finalize-dpos-register-validator-failed-registration-transfer");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0x3B; 20];
+        let recipient = [0x3C; 20];
+        let gas_price = U256::from(2u64);
+        let initial_sender_balance = U256::from(400_000u64);
+        let failed_value = U256::from(5_000u64);
+        let failed_signing_key = SigningKey::from_slice(&[41u8; 32]).unwrap();
+        let successful_signing_key = SigningKey::from_slice(&[42u8; 32]).unwrap();
+        let failed_validator = address_from_signing_key(&successful_signing_key).into();
+        let failed_proof =
+            register_validator_proof(&successful_signing_key, failed_validator, Some(30));
+        let pbft_block = signed_pbft_block(&failed_signing_key, period, 150);
+        let genesis_dpos_config = GenesisDposConfig {
+            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        let failed_tx = test_transaction(
+            0xCD,
+            sender,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            failed_value,
+            gas_price,
+            150_000,
+            register_validator_input(
+                failed_validator,
+                &failed_proof,
+                [0xA5; 32],
+                10,
+                "failed registration",
+                "endpoint",
+            ),
+            vec![0xc1, 0xcd],
+        );
+        let transfer_probe = test_transaction(
+            0xCE,
+            sender,
+            Some(recipient),
+            1,
+            U256::zero(),
+            gas_price,
+            50_000,
+            vec![],
+            vec![0xc1, 0xce],
+        );
+        let failed_tx_gas =
+            intrinsic_gas(&failed_tx.data, false).unwrap() + DPOS_REGISTER_VALIDATOR_GAS;
+        let transfer_tx_gas = intrinsic_gas(&transfer_probe.data, false).unwrap();
+        let total_gas_cost = U256::from(failed_tx_gas + transfer_tx_gas) * gas_price;
+        let transfer_value = initial_sender_balance
+            .checked_sub(total_gas_cost)
+            .and_then(|balance| balance.checked_sub(U256::one()))
+            .expect("test sender balance must cover gas and continuation");
+        assert!(transfer_value > failed_value);
+        let transfer_tx = test_transaction(
+            0xCE,
+            sender,
+            Some(recipient),
+            1,
+            transfer_value,
+            gas_price,
+            50_000,
+            vec![],
+            vec![0xc1, 0xce],
+        );
+        let final_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(sender, initial_sender_balance)],
+            vec![],
+            genesis_dpos_config,
+        )
+        .unwrap();
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[failed_tx.rlp.clone(), transfer_tx.rlp.clone()],
+        );
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![failed_tx.clone(), transfer_tx.clone()],
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, failed_tx_gas, failed_tx_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, transfer_tx_gas, failed_tx_gas + transfer_tx_gas)
+        );
+
+        let expected_sender_balance = initial_sender_balance - total_gas_cost - transfer_value;
+        assert_eq!(balance_of(&final_chain, sender), expected_sender_balance);
+        assert_eq!(expected_sender_balance, U256::one());
+        assert_eq!(balance_of(&final_chain, recipient), transfer_value);
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            U256::zero()
+        );
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 2);
+        assert!(
+            final_chain
+                .dpos_snapshot(period)
+                .unwrap()
+                .total_stakes
+                .is_empty()
+        );
+        assert_eq!(
+            final_chain
+                .transaction_receipt_rlp(period, 0)
+                .unwrap()
+                .expect("missing failed registration receipt"),
+            receipts[0].clone()
+        );
+        assert_eq!(
+            final_chain
+                .transaction_receipt_rlp(period, 1)
+                .unwrap()
+                .expect("missing transfer receipt"),
+            receipts[1].clone()
+        );
+        let header_rlp = final_chain
+            .block_header(period)
+            .unwrap()
+            .expect("missing finalized header");
+        let header = Rlp::new(&header_rlp);
+        assert_eq!(
+            header.val_at::<u64>(9).unwrap(),
+            failed_tx_gas + transfer_tx_gas
+        );
+
+        let header_before_restart = final_chain.block_header(period).unwrap().unwrap();
+        drop(final_chain);
+        drop(storage);
+
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let restart_chain = FinalChain::new(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(sender, initial_sender_balance)],
+            vec![],
+            GenesisDposConfig {
+                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
+                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
+                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            restart_chain.block_header(period).unwrap().unwrap(),
+            header_before_restart
+        );
+        assert_eq!(
+            restart_chain
+                .transaction_receipt_rlp(period, 0)
+                .unwrap()
+                .expect("missing failed registration receipt after restart"),
+            receipts[0].clone()
+        );
+        assert_eq!(
+            restart_chain
+                .transaction_receipt_rlp(period, 1)
+                .unwrap()
+                .expect("missing transfer receipt after restart"),
+            receipts[1].clone()
+        );
+        assert_eq!(restart_chain.account(sender).unwrap().unwrap().nonce, 2);
+        assert_eq!(balance_of(&restart_chain, sender), U256::one());
+        assert_eq!(balance_of(&restart_chain, recipient), transfer_value);
+        assert!(
+            restart_chain
+                .dpos_snapshot(period)
+                .unwrap()
+                .total_stakes
+                .is_empty()
+        );
+
+        drop(restart_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_supports_delegate_action() {
         let path = temp_db_path("finalize-dpos-delegate");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let period = 1u64;
         let owner = [0x41; 20];
-        let validator = [0x42; 20];
+        let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
+        let validator = address_from_signing_key(&signing_key).into();
+        let proof = register_validator_proof(&signing_key, validator, None);
         let owner_balance_before = U256::from(1_000_000u64);
         let genesis_dpos_config = GenesisDposConfig {
             eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
@@ -12752,12 +14290,11 @@ mod tests {
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
-        let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 151);
 
         let register_input = register_validator_input(
             validator,
-            &[0xCC; 65],
+            &proof,
             [0xA5; 32],
             10,
             "delegate vote",
@@ -13784,8 +15321,15 @@ mod tests {
         let path = temp_db_path("finalize-dpos-redelegate");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let period = 1u64;
-        let first_validator = [0x44; 20];
-        let second_validator = [0x45; 20];
+        let first_validator_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
+        let second_validator_key = SigningKey::from_slice(&[20u8; 32]).unwrap();
+        let pbft_signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let first_validator = address_from_signing_key(&first_validator_key).into();
+        let second_validator = address_from_signing_key(&second_validator_key).into();
+        let first_validator_proof =
+            register_validator_proof(&first_validator_key, first_validator, None);
+        let second_validator_proof =
+            register_validator_proof(&second_validator_key, second_validator, None);
         let owner = first_validator;
         let genesis_dpos_config = GenesisDposConfig {
             eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
@@ -13797,14 +15341,13 @@ mod tests {
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
-        let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
-        let pbft_block = signed_pbft_block(&signing_key, period, 152);
+        let pbft_block = signed_pbft_block(&pbft_signing_key, period, 152);
 
         let mut txs = Vec::new();
         let tx_rlps = vec![vec![0xc1, 0xa1], vec![0xc1, 0xa2], vec![0xc1, 0xa3]];
         let register_input = register_validator_input(
             first_validator,
-            &[0xCC; 65],
+            &first_validator_proof,
             [0xA5; 32],
             10,
             "first",
@@ -13831,7 +15374,7 @@ mod tests {
             150_000,
             register_validator_input(
                 second_validator,
-                &[0xDD; 65],
+                &second_validator_proof,
                 [0xA6; 32],
                 10,
                 "second",
@@ -13897,8 +15440,15 @@ mod tests {
         let path = temp_db_path("finalize-dpos-redelegate-maxed-destination-failure");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let period = 1u64;
-        let first_validator = [0x44; 20];
-        let second_validator = [0x45; 20];
+        let first_validator_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
+        let second_validator_key = SigningKey::from_slice(&[20u8; 32]).unwrap();
+        let pbft_signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let first_validator = address_from_signing_key(&first_validator_key).into();
+        let second_validator = address_from_signing_key(&second_validator_key).into();
+        let first_validator_proof =
+            register_validator_proof(&first_validator_key, first_validator, None);
+        let second_validator_proof =
+            register_validator_proof(&second_validator_key, second_validator, None);
         let transfer_receiver = [0x46; 20];
         let owner = first_validator;
         let gas_price = U256::from(2u64);
@@ -13913,8 +15463,7 @@ mod tests {
             delegation_delay: 0,
             dag_vdf_sortition_total_vote_count_until_period: 0,
         };
-        let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
-        let pbft_block = signed_pbft_block(&signing_key, period, 152);
+        let pbft_block = signed_pbft_block(&pbft_signing_key, period, 152);
 
         let register_first_tx = test_transaction(
             0xB0,
@@ -13926,7 +15475,7 @@ mod tests {
             150_000,
             register_validator_input(
                 first_validator,
-                &[0xCC; 65],
+                &first_validator_proof,
                 [0xA5; 32],
                 10,
                 "first",
@@ -13944,7 +15493,7 @@ mod tests {
             150_000,
             register_validator_input(
                 second_validator,
-                &[0xDD; 65],
+                &second_validator_proof,
                 [0xA6; 32],
                 10,
                 "second",
@@ -14089,13 +15638,17 @@ mod tests {
             ),
             expected_snapshot_first_stake
         );
-        assert!(
-            snapshot
-                .delegations
-                .get(&second_validator)
-                .and_then(|delegations| delegations.get(&first_validator))
-                .is_none(),
-            "redelegation must not record source delegation when destination path rejects"
+        assert_eq!(
+            u256_from_big_endian(
+                snapshot
+                    .delegations
+                    .get(&second_validator)
+                    .expect("missing second validator delegations")
+                    .get(&owner)
+                    .expect("missing second registration owner delegation"),
+            ),
+            expected_snapshot_second_stake,
+            "failed redelegation must restore the destination registration delegation"
         );
         assert_eq!(snapshot.total_vote_count, 40);
 

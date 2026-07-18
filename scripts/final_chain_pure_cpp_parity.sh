@@ -145,11 +145,11 @@ if [[ ! -x "${FINAL_CHAIN_TEST}" ]]; then
   exit 1
 fi
 
-echo "[4/5] Running focused native DPoS delegate parity fixtures..."
+echo "[4/5] Running focused native DPoS delegate/register parity fixtures..."
 (
   cd "${CPP_BUILD_DIR}"
   "${FINAL_CHAIN_TEST}" \
-    --gtest_filter=FinalChainTest.native_dpos_delegate_persists_receipt_and_state:FinalChainTest.native_dpos_delegate_to_missing_validator_rolls_back_state:FinalChainTest.native_dpos_claim_rewards_from_sender_without_delegation_rolls_back_state
+    --gtest_filter=FinalChainTest.native_dpos_delegate_persists_receipt_and_state:FinalChainTest.native_dpos_delegate_to_missing_validator_rolls_back_state:FinalChainTest.native_dpos_register_validator_business_failures_roll_back_state:FinalChainTest.native_dpos_claim_rewards_from_sender_without_delegation_rolls_back_state
 )
 
 echo "[5/5] Running complete pure-C++ final_chain_test..."
