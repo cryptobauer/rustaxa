@@ -4012,6 +4012,23 @@ Rust-enabled and pure-C++ modes, existing payable-success and typed-failure roll
 redelegation-correction dangling-cursor failure remains confined to the broad Rust-enabled FinalChain run; the complete
 pure-C++ suite and parity target pass.
 
+### CRW-08 Cornus Underfunded-Gas Nonce Parity
+
+Native FinalChain now applies the legacy full-gas-cap affordability decision before native precompile decoding and
+state-dependent gas calculation. The comparison preserves legacy arbitrary-precision semantics: a `U256` product
+overflow is necessarily unaffordable, not a hard finalization error. Failed transactions charge only the affordable gas
+quotient, retain the gas-price remainder, transfer no value, emit no logs, and continue the block. Pre-Cornus and stale
+transactions preserve the sender nonce; at Cornus and later, equal or skipped nonces advance to
+`transaction_nonce + 1`. Newly materialized empty pre-Cornus senders are removed under EIP-161, while Cornus nonce
+advancement makes the account durable.
+
+The standalone dual-mode FinalChain fixture covers pre-Cornus, Cornus equal-nonce, and Cornus skipped-nonce senders with
+exact receipt RLP, affordable gas, balances, absent receiver, and restart persistence. Rust tests extend the matrix to
+stale nonces, overflowing gas-cap multiplication, absent accounts, malformed nested slashing calldata that must be
+masked by the earlier affordability failure, and a later successful transaction proving continuation. This slice adds
+no CXX carrier, bridge handle/export, shim, module flag, snapshot schema, migration, or `CRW-07` inventory delta. The
+remaining `u64` nonce ceiling belongs to the broader FinalChain domain-type work tracked by `CRW-09`.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

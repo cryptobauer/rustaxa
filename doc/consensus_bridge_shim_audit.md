@@ -474,6 +474,9 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The follow-up restart-durable same-validator history-completeness bit and corruption marker set are private DPoS
   snapshot state. They reuse the retained FinalChain handle and existing snapshot publication path, so they add no CXX
   carrier, export, shim, or module flag.
+- The `CRW-08` Cornus underfunded-gas nonce correction is private to Rust FinalChain transaction execution and reuses
+  the existing finalization request/result carriers. It changes no CXX handle, export, shim, module flag, or inventory
+  deletion condition; the standalone C++ fixture is behavior-parity coverage rather than compatibility scaffolding.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

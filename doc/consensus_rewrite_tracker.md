@@ -895,6 +895,20 @@ existing payable-success and typed-failure rollback fixtures, `rewrite-validate-
 `rewrite-validate-final-chain-parity` gate. The broad Rust-enabled FinalChain phase retains only the documented unrelated
 redelegation-correction dangling-cursor failure; the full pure-C++ suite and parity target pass.
 
+The next bounded `CRW-08` slice closes native full-gas-cap affordability and Cornus nonce parity. Legacy checks the
+arbitrary-precision `gas_limit * gas_price` reservation before nonce, intrinsic-gas, or precompile decoding. An
+underfunded sender is charged only `floor(balance / gas_price)` gas; value and contract state remain untouched. Before
+Cornus the nonce does not advance, while Cornus advances every non-stale transaction to `transaction_nonce + 1`,
+including skipped nonces; stale nonces remain unchanged. Rust now preserves that ordering for native DPoS/slashing
+calls, treats a bounded `U256` multiplication overflow as unaffordable instead of aborting finalization, skips malformed
+or state-dependent precompile decoding on the earlier failure, continues the transaction stream, and removes a newly
+created empty pre-Cornus sender in line with EIP-161. The standalone dual-mode fixture proves pre-Cornus, equal-nonce,
+and skipped-nonce receipts, affordable gas charging, no receiver mutation, persisted receipt RLP, and restart state.
+Focused Rust coverage additionally proves stale nonce, multiplication overflow, absent-sender cleanup/materialization,
+malformed-slashing precedence, and same-block continuation. No bridge, carrier, handle, export, shim, module flag,
+snapshot schema, migration, or `CRW-07` inventory changes. `CRW-08` remains active for the next demonstrated parity
+family; arbitrary-width account/transaction nonce domain types remain `CRW-09` debt.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

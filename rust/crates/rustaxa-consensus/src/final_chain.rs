@@ -3254,7 +3254,26 @@ impl FinalChain {
         };
 
         for transaction in transactions.iter() {
-            let mut contract_transaction = if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
+            let sender_was_present = accounts.contains_key(&transaction.sender);
+            let gas_price = u256_from_big_endian(&transaction.gas_price);
+            let value = u256_from_big_endian(&transaction.value);
+            // Legacy transaction admission checks sender nonce and the complete
+            // gas cap before decoding native-precompile calldata.  Preserve that
+            // precedence so malformed/state-dependent calls cannot abort a block
+            // when their sender cannot fund the cap (or the nonce is stale).
+            let (sender_nonce, sender_balance) = accounts
+                .get(&transaction.sender)
+                .map(|sender| (sender.nonce, u256_from_big_endian(&sender.balance)))
+                .unwrap_or((0, U256::zero()));
+            let full_gas_affordable = gas_price
+                .checked_mul(U256::from(transaction.gas_limit))
+                .is_some_and(|cost| sender_balance >= cost);
+            let skip_native_decode = (transaction.receiver == Some(DPOS_CONTRACT_ADDRESS)
+                || transaction.receiver == Some(SLASHING_CONTRACT_ADDRESS))
+                && (sender_nonce > transaction.nonce || !full_gas_affordable);
+            let mut contract_transaction = if skip_native_decode {
+                None
+            } else if transaction.receiver == Some(DPOS_CONTRACT_ADDRESS) {
                 Some(NativeContractTransaction::Dpos(
                     decode_dpos_transaction_for_execution(
                         &transaction.data,
@@ -3284,8 +3303,6 @@ impl FinalChain {
             } else {
                 None
             };
-            let gas_price = u256_from_big_endian(&transaction.gas_price);
-            let value = u256_from_big_endian(&transaction.value);
             if let Some(NativeContractTransaction::Dpos(dpos_tx)) = contract_transaction.as_mut() {
                 Self::inject_dpos_transaction_value(dpos_tx, &transaction.value);
             }
@@ -3356,7 +3373,7 @@ impl FinalChain {
                 .ok_or_else(|| anyhow::anyhow!("required gas overflow"))?;
 
             let mut status_code;
-            let mut advance_nonce = false;
+            let advance_nonce;
             let mut contract_outcome = None;
             let mut staged_contract_payment: Option<([u8; 20], U256, bool)> = None;
             let gas_used;
@@ -3366,13 +3383,25 @@ impl FinalChain {
                     .entry(transaction.sender)
                     .or_insert_with(empty_account);
                 let sender_balance = u256_from_big_endian(&sender.balance);
-                let full_gas_cost = gas_price
-                    .checked_mul(U256::from(transaction.gas_limit))
-                    .ok_or_else(|| anyhow::anyhow!("transaction gas limit cost overflow"))?;
-                if sender.nonce > transaction.nonce || sender_balance < full_gas_cost {
+                // Legacy execution treats an unaffordable full gas cap as a failed
+                // transaction, but still consumes the affordable portion of the
+                // gas budget.  The big-int implementation also has no overflow
+                // failure for this comparison: a wrapped/overflowing cap is simply
+                // unaffordable.  Keep the full-cap value optional so U256 overflow
+                // follows that same path instead of aborting finalization.
+                let full_gas_cost = gas_price.checked_mul(U256::from(transaction.gas_limit));
+                let full_gas_affordable = full_gas_cost.is_some_and(|cost| sender_balance >= cost);
+                if sender.nonce > transaction.nonce || !full_gas_affordable {
                     status_code = 0;
                     gas_used = affordable_gas(sender, gas_price, transaction.gas_limit);
+                    // Cornus advances a sender nonce for every non-stale
+                    // transaction, including one that cannot afford its full gas
+                    // cap.  Earlier hardforks retain the legacy no-advance rule.
+                    advance_nonce = sender.nonce <= transaction.nonce
+                        && block_number >= self.dpos_cornus_period;
                 } else {
+                    let full_gas_cost = full_gas_cost
+                        .expect("full gas cost must exist when affordability was established");
                     if transaction.gas_limit < intrinsic_gas {
                         status_code = 0;
                         gas_used = transaction.gas_limit;
@@ -3605,9 +3634,10 @@ impl FinalChain {
                     let receiver_address = transaction.receiver.ok_or_else(|| {
                         anyhow::anyhow!("native value transfer missing receiver after validation")
                     })?;
-                    if receiver_address == DPOS_CONTRACT_ADDRESS
-                        || (receiver_address == SLASHING_CONTRACT_ADDRESS
-                            && self.magnolia_active(block_number))
+                    if !skip_native_decode
+                        && (receiver_address == DPOS_CONTRACT_ADDRESS
+                            || (receiver_address == SLASHING_CONTRACT_ADDRESS
+                                && self.magnolia_active(block_number)))
                     {
                         anyhow::bail!(
                             "Rust FinalChain::finalize unsupported native precompile transaction selector"
@@ -3653,6 +3683,17 @@ impl FinalChain {
                     logs: Vec::new(),
                     new_contract_address: None,
                 });
+            }
+            // EIP-161 removes an account created only to process a failed
+            // pre-Cornus transaction when it remains completely empty. Keep
+            // Cornus materialization (nonce advancement) intact.
+            if !sender_was_present
+                && block_number < self.dpos_cornus_period
+                && accounts
+                    .get(&transaction.sender)
+                    .is_some_and(|sender| sender == &empty_account())
+            {
+                accounts.remove(&transaction.sender);
             }
             transaction_fees.push((transaction.hash, gas_cost));
         }
@@ -28786,13 +28827,22 @@ mod tests {
             &pbft_block,
             std::slice::from_ref(&transaction_rlp),
         );
-        let final_chain = new_final_chain(
+        // This fixture asserts the historical pre-Cornus no-nonce-advance rule;
+        // keep the hardfork boundary explicit instead of inheriting the current
+        // network default.
+        let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             100_000,
             0,
             vec![genesis_account(sender, U256::from(100_001u64))],
             vec![],
-        );
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                cornus_period: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![transaction], vec![])
@@ -28864,6 +28914,371 @@ mod tests {
         assert_eq!(balance_of(&final_chain, sender), U256::from(110_000u64));
         assert!(final_chain.account(receiver).unwrap().is_none());
         assert_eq!(balance_of(&final_chain, beneficiary), U256::zero());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_underfunded_gas_cap_preserves_cornus_nonce_rules() {
+        let path = temp_db_path("finalize-underfunded-gas-cap-cornus");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let signing_key = SigningKey::from_slice(&[0xA1; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 121);
+        let receiver = [0xA4; 20];
+        let equal_sender = [0xA2; 20];
+        let skipped_sender = [0xA3; 20];
+        let low_sender = [0xA5; 20];
+        let overflow_sender = [0xA9; 20];
+        let gas_price = U256::one();
+        let gas_limit = 30_000;
+        let equal_tx = test_transaction(
+            0xE1,
+            equal_sender,
+            Some(receiver),
+            0,
+            U256::from(50u64),
+            gas_price,
+            gas_limit,
+            vec![],
+            vec![0xc1, 0xe1],
+        );
+        let skipped_tx = test_transaction(
+            0xE2,
+            skipped_sender,
+            Some(receiver),
+            2,
+            U256::from(50u64),
+            gas_price,
+            gas_limit,
+            vec![],
+            vec![0xc1, 0xe2],
+        );
+        let low_tx = test_transaction(
+            0xE3,
+            low_sender,
+            Some(receiver),
+            0,
+            U256::from(50u64),
+            gas_price,
+            gas_limit,
+            vec![],
+            vec![0xc1, 0xe3],
+        );
+        let overflow_tx = test_transaction(
+            0xE5,
+            overflow_sender,
+            Some(receiver),
+            0,
+            U256::from(50u64),
+            U256::MAX,
+            2,
+            vec![],
+            vec![0xc1, 0xe5],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[
+                equal_tx.rlp.clone(),
+                skipped_tx.rlp.clone(),
+                low_tx.rlp.clone(),
+                overflow_tx.rlp.clone(),
+            ],
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![
+                genesis_account(equal_sender, U256::from(100u64)),
+                genesis_account(skipped_sender, U256::from(100u64)),
+                genesis_account(low_sender, U256::from(100u64)),
+                genesis_account(overflow_sender, U256::MAX),
+            ],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        final_chain
+            .accounts
+            .lock()
+            .unwrap()
+            .get_mut(&low_sender)
+            .unwrap()
+            .nonce = 1;
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                pbft_block,
+                vec![equal_tx, skipped_tx, low_tx, overflow_tx],
+                vec![],
+            )
+            .unwrap();
+
+        assert_eq!(receipts.len(), 4);
+        assert_eq!(receipt_fields(&receipts[0]), (0, 100, 100));
+        assert_eq!(receipt_fields(&receipts[1]), (0, 100, 200));
+        assert_eq!(receipt_fields(&receipts[2]), (0, 100, 300));
+        assert_eq!(receipt_fields(&receipts[3]), (0, 1, 301));
+        assert_eq!(final_chain.account(equal_sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(
+            final_chain.account(skipped_sender).unwrap().unwrap().nonce,
+            3
+        );
+        assert_eq!(final_chain.account(low_sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(balance_of(&final_chain, equal_sender), U256::zero());
+        assert_eq!(balance_of(&final_chain, skipped_sender), U256::zero());
+        assert_eq!(balance_of(&final_chain, low_sender), U256::zero());
+        assert_eq!(
+            final_chain.account(overflow_sender).unwrap().unwrap().nonce,
+            1
+        );
+        assert_eq!(balance_of(&final_chain, overflow_sender), U256::zero());
+        assert!(final_chain.account(receiver).unwrap().is_none());
+
+        drop(final_chain);
+        drop(storage);
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let restarted = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                magnolia_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(restarted.account(equal_sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(restarted.account(skipped_sender).unwrap().unwrap().nonce, 3);
+        assert_eq!(restarted.account(low_sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(
+            restarted.account(overflow_sender).unwrap().unwrap().nonce,
+            1
+        );
+        assert_eq!(balance_of(&restarted, receiver), U256::zero());
+
+        drop(restarted);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_underfunded_gas_cap_does_not_advance_nonce_before_cornus() {
+        let path = temp_db_path("finalize-underfunded-gas-cap-pre-cornus");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let sender = [0xA6; 20];
+        let receiver = [0xA7; 20];
+        let signing_key = SigningKey::from_slice(&[0xA8; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 122);
+        let transaction = test_transaction(
+            0xE4,
+            sender,
+            Some(receiver),
+            0,
+            U256::from(50u64),
+            U256::one(),
+            30_000,
+            vec![],
+            vec![0xc1, 0xe4],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction.rlp),
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(100u64))],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                cornus_period: 2,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction], vec![])
+            .unwrap();
+        assert_eq!(receipt_fields(&receipts[0]), (0, 100, 100));
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 0);
+        assert_eq!(balance_of(&final_chain, sender), U256::zero());
+        assert!(final_chain.account(receiver).unwrap().is_none());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_underfunded_absent_sender_obeys_eip161_and_cornus() {
+        let path = temp_db_path("finalize-underfunded-absent-sender");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0xAE; 20];
+        let receiver = [0xAF; 20];
+        let signing_key = SigningKey::from_slice(&[0xB0; 32]).unwrap();
+        let period_one = 1u64;
+        let period_two = 2u64;
+        let pbft_one = signed_pbft_block(&signing_key, period_one, 124);
+        let pbft_two = signed_pbft_block(&signing_key, period_two, 125);
+        let tx_one = test_transaction(
+            0xE8,
+            sender,
+            Some(receiver),
+            0,
+            U256::zero(),
+            U256::one(),
+            30_000,
+            vec![],
+            vec![0xc1, 0xe8],
+        );
+        let tx_two = test_transaction(
+            0xE9,
+            sender,
+            Some(receiver),
+            0,
+            U256::zero(),
+            U256::one(),
+            30_000,
+            vec![],
+            vec![0xc1, 0xe9],
+        );
+        write_period_data(&storage, period_one, &pbft_one, &[tx_one.rlp.clone()]);
+        write_period_data(&storage, period_two, &pbft_two, &[tx_two.rlp.clone()]);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                cornus_period: period_two,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header_one, receipts_one) = final_chain
+            .finalize_block(pbft_one, vec![tx_one], vec![])
+            .unwrap();
+        assert_eq!(receipt_fields(&receipts_one[0]), (0, 0, 0));
+        assert!(final_chain.account(sender).unwrap().is_none());
+
+        let (_header_two, receipts_two) = final_chain
+            .finalize_block(pbft_two, vec![tx_two], vec![])
+            .unwrap();
+        assert_eq!(receipt_fields(&receipts_two[0]), (0, 0, 0));
+        assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 1);
+        assert_eq!(balance_of(&final_chain, sender), U256::zero());
+        assert!(final_chain.account(receiver).unwrap().is_none());
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_underfunded_malformed_slashing_skips_decode_and_continues() {
+        let path = temp_db_path("finalize-underfunded-malformed-slashing");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let malformed_sender = [0xAA; 20];
+        let transfer_sender = [0xAB; 20];
+        let receiver = [0xAC; 20];
+        let signing_key = SigningKey::from_slice(&[0xAD; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 123);
+        let malformed_tx = test_transaction(
+            0xE6,
+            malformed_sender,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::one(),
+            30_000,
+            vec![0xde, 0xad],
+            vec![0xc1, 0xe6],
+        );
+        let transfer_tx = test_transaction(
+            0xE7,
+            transfer_sender,
+            Some(receiver),
+            0,
+            U256::one(),
+            U256::one(),
+            30_000,
+            vec![],
+            vec![0xc1, 0xe7],
+        );
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            &[malformed_tx.rlp.clone(), transfer_tx.rlp.clone()],
+        );
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![
+                genesis_account(malformed_sender, U256::from(100u64)),
+                genesis_account(transfer_sender, U256::from(100_000u64)),
+            ],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                cornus_period: 1,
+                magnolia_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![malformed_tx, transfer_tx], vec![])
+            .unwrap();
+        let transfer_gas = intrinsic_gas(&[], false).unwrap();
+        assert_eq!(receipt_fields(&receipts[0]), (0, 100, 100));
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, transfer_gas, 100 + transfer_gas)
+        );
+        assert_eq!(
+            final_chain
+                .account(malformed_sender)
+                .unwrap()
+                .unwrap()
+                .nonce,
+            1
+        );
+        assert_eq!(balance_of(&final_chain, malformed_sender), U256::zero());
+        assert_eq!(
+            final_chain.account(transfer_sender).unwrap().unwrap().nonce,
+            1
+        );
+        assert_eq!(
+            balance_of(&final_chain, transfer_sender),
+            U256::from(100_000u64) - U256::from(transfer_gas) - U256::one()
+        );
+        assert_eq!(balance_of(&final_chain, receiver), U256::one());
 
         drop(final_chain);
         drop(storage);

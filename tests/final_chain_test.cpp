@@ -519,6 +519,85 @@ TEST_F(FinalChainTest, failed_transaction_fee) {
   }
 }
 
+TEST_F(FinalChainTest, cornus_underfunded_gas_cap_advances_equal_and_skipped_nonce_without_value_mutation) {
+  constexpr uint64_t kGasLimit = 100'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kInitialBalance = 500'000;
+  constexpr uint64_t kTransferValue = 123;
+
+  const dev::KeyPair pre_cornus_sender{
+      dev::Secret("7777777777777777777777777777777777777777777777777777777777777777")};
+  const dev::KeyPair cornus_equal_sender{
+      dev::Secret("9999999999999999999999999999999999999999999999999999999999999999")};
+  const dev::KeyPair cornus_skipped_sender{
+      dev::Secret("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")};
+  const dev::KeyPair receiver{dev::Secret("8888888888888888888888888888888888888888888888888888888888888888")};
+  cfg.genesis.state.initial_balances.clear();
+  for (const auto& sender : {pre_cornus_sender, cornus_equal_sender, cornus_skipped_sender}) {
+    cfg.genesis.state.initial_balances[sender.address()] = kInitialBalance;
+  }
+  // Block 1 is pre-Cornus; blocks 2 and 3 exercise equal and skipped nonce
+  // transactions after Cornus activation. Keep the post-hardfork limits
+  // explicit so this fixture is independent of config defaults.
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 2;
+  cfg.genesis.state.hardforks.cornus_hf.dag_gas_limit = cfg.genesis.dag.gas_limit;
+  cfg.genesis.state.hardforks.cornus_hf.pbft_gas_limit = cfg.genesis.pbft.gas_limit;
+  init();
+
+  const auto underfunded = [&](const dev::KeyPair& sender, uint64_t nonce) {
+    return std::make_shared<Transaction>(nonce, kTransferValue, kGasPrice, kGasLimit, bytes{}, sender.secret(),
+                                          receiver.address(), cfg.genesis.chain_id);
+  };
+
+  const auto pre_cornus = advance({underfunded(pre_cornus_sender, 0)}, {.expect_to_fail = true});
+  ASSERT_EQ(pre_cornus->trx_receipts.size(), 1u);
+  EXPECT_EQ(pre_cornus->trx_receipts[0].status_code, 0);
+  EXPECT_EQ(pre_cornus->trx_receipts[0].gas_used, kInitialBalance / kGasPrice);
+  EXPECT_EQ(pre_cornus->trx_receipts[0].cumulative_gas_used, kInitialBalance / kGasPrice);
+  ASSERT_TRUE(SUT->getAccount(pre_cornus_sender.address()));
+  EXPECT_EQ(SUT->getAccount(pre_cornus_sender.address())->nonce, 0);
+  EXPECT_EQ(SUT->getAccount(pre_cornus_sender.address())->balance, u256(kInitialBalance % kGasPrice));
+  EXPECT_FALSE(SUT->getAccount(receiver.address()));
+
+  const auto cornus_equal = advance({underfunded(cornus_equal_sender, 0)}, {.expect_to_fail = true});
+  ASSERT_EQ(cornus_equal->trx_receipts.size(), 1u);
+  EXPECT_EQ(cornus_equal->trx_receipts[0].status_code, 0);
+  EXPECT_EQ(cornus_equal->trx_receipts[0].gas_used, kInitialBalance / kGasPrice);
+  EXPECT_EQ(cornus_equal->trx_receipts[0].cumulative_gas_used, kInitialBalance / kGasPrice);
+  EXPECT_EQ(SUT->getAccount(cornus_equal_sender.address())->nonce, 1);
+  EXPECT_EQ(SUT->getAccount(cornus_equal_sender.address())->balance, u256(kInitialBalance % kGasPrice));
+  EXPECT_FALSE(SUT->getAccount(receiver.address()));
+
+  const auto cornus_skipped = advance({underfunded(cornus_skipped_sender, 2)}, {.expect_to_fail = true});
+  ASSERT_EQ(cornus_skipped->trx_receipts.size(), 1u);
+  EXPECT_EQ(cornus_skipped->trx_receipts[0].status_code, 0);
+  EXPECT_EQ(cornus_skipped->trx_receipts[0].gas_used, kInitialBalance / kGasPrice);
+  EXPECT_EQ(cornus_skipped->trx_receipts[0].cumulative_gas_used, kInitialBalance / kGasPrice);
+  EXPECT_EQ(SUT->getAccount(cornus_skipped_sender.address())->nonce, 3);
+  EXPECT_EQ(SUT->getAccount(cornus_skipped_sender.address())->balance, u256(kInitialBalance % kGasPrice));
+  EXPECT_FALSE(SUT->getAccount(receiver.address()));
+
+  const auto pre_receipt = pre_cornus->trx_receipts.front();
+  const auto equal_receipt = cornus_equal->trx_receipts.front();
+  const auto skipped_receipt = cornus_skipped->trx_receipts.front();
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 3);
+  EXPECT_EQ(SUT->getAccount(pre_cornus_sender.address())->nonce, 0);
+  EXPECT_EQ(SUT->getAccount(pre_cornus_sender.address())->balance, u256(kInitialBalance % kGasPrice));
+  EXPECT_EQ(SUT->getAccount(cornus_equal_sender.address())->nonce, 1);
+  EXPECT_EQ(SUT->getAccount(cornus_equal_sender.address())->balance, u256(kInitialBalance % kGasPrice));
+  EXPECT_EQ(SUT->getAccount(cornus_skipped_sender.address())->nonce, 3);
+  EXPECT_EQ(SUT->getAccount(cornus_skipped_sender.address())->balance, u256(kInitialBalance % kGasPrice));
+  EXPECT_FALSE(SUT->getAccount(receiver.address()));
+  ASSERT_TRUE(SUT->transactionReceipt(1, 0));
+  ASSERT_TRUE(SUT->transactionReceipt(2, 0));
+  ASSERT_TRUE(SUT->transactionReceipt(3, 0));
+  EXPECT_EQ(util::rlp_enc(*SUT->transactionReceipt(1, 0)), util::rlp_enc(pre_receipt));
+  EXPECT_EQ(util::rlp_enc(*SUT->transactionReceipt(2, 0)), util::rlp_enc(equal_receipt));
+  EXPECT_EQ(util::rlp_enc(*SUT->transactionReceipt(3, 0)), util::rlp_enc(skipped_receipt));
+}
+
 TEST_F(FinalChainTest, revert_reason) {
   // contract TestRevert {
   //   function test(bool arg) public pure {
