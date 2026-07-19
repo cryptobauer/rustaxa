@@ -3358,6 +3358,7 @@ impl FinalChain {
             let mut status_code;
             let mut advance_nonce = false;
             let mut contract_outcome = None;
+            let mut staged_contract_payment: Option<([u8; 20], U256, bool)> = None;
             let gas_used;
             let gas_cost;
             {
@@ -3379,6 +3380,14 @@ impl FinalChain {
                         // intrinsic gas validation fails. Earlier periods leave
                         // the nonce unchanged while still consuming the limit.
                         advance_nonce = block_number >= self.dpos_cornus_period;
+                    } else if contract_payment_recipient.is_some()
+                        && !value.is_zero()
+                        && sender_balance - full_gas_cost < value
+                    {
+                        // Legacy reserves the complete gas cap before trying the value transfer.
+                        status_code = 0;
+                        gas_used = transaction.gas_limit;
+                        advance_nonce = true;
                     } else if transaction.gas_limit < required_gas {
                         status_code = 0;
                         gas_used = intrinsic_gas;
@@ -3434,16 +3443,30 @@ impl FinalChain {
                             SlashingTransaction::CommitDoubleVotingProof(_)
                         )
                     );
-                    if !value.is_zero() {
-                        let sender_balance = accounts
-                            .get(&transaction.sender)
-                            .map(|sender| u256_from_big_endian(&sender.balance))
-                            .unwrap_or_default();
-                        if sender_balance < value {
-                            anyhow::bail!(
-                                "Rust FinalChain::finalize cannot apply underfunded native transfer"
-                            );
-                        }
+                    if let Some(contract_recipient) = contract_payment_recipient
+                        && !value.is_zero()
+                    {
+                        let recipient_existed = accounts.contains_key(&contract_recipient);
+                        let sender = accounts
+                            .entry(transaction.sender)
+                            .or_insert_with(empty_account);
+                        let sender_balance = u256_from_big_endian(&sender.balance);
+                        sender.balance = u256_to_big_endian(
+                            sender_balance
+                                .checked_sub(value)
+                                .ok_or_else(|| anyhow::anyhow!("contract payment underflow"))?,
+                        );
+                        let contract = accounts
+                            .entry(contract_recipient)
+                            .or_insert_with(empty_account);
+                        let contract_balance = u256_from_big_endian(&contract.balance);
+                        contract.balance = u256_to_big_endian(
+                            contract_balance
+                                .checked_add(value)
+                                .ok_or_else(|| anyhow::anyhow!("contract balance overflow"))?,
+                        );
+                        staged_contract_payment =
+                            Some((contract_recipient, value, recipient_existed));
                     }
 
                     contract_outcome = Some(match contract_tx {
@@ -3543,40 +3566,6 @@ impl FinalChain {
                             if let NativeContractTransaction::Dpos(dpos_tx) = &contract_tx_for_gas {
                                 update_dpos_claim_gas_snapshot(&mut dpos_gas_snapshot, dpos_tx)?;
                             }
-                            if let Some(contract_recipient) = contract_payment_recipient {
-                                let sender_balance = accounts
-                                    .get(&transaction.sender)
-                                    .map(|sender| u256_from_big_endian(&sender.balance))
-                                    .unwrap_or_default();
-                                if !value.is_zero() {
-                                    if sender_balance < value {
-                                        anyhow::bail!(
-                                            "Rust FinalChain::finalize cannot apply underfunded native transfer"
-                                        );
-                                    }
-                                    let sender = accounts
-                                        .entry(transaction.sender)
-                                        .or_insert_with(empty_account);
-                                    let sender_balance = u256_from_big_endian(&sender.balance);
-                                    sender.balance = u256_to_big_endian(
-                                        sender_balance.checked_sub(value).ok_or_else(|| {
-                                            anyhow::anyhow!(
-                                                "Rust FinalChain::finalize contract payment underflow"
-                                            )
-                                        })?,
-                                    );
-                                }
-                                let contract_account = accounts
-                                    .entry(contract_recipient)
-                                    .or_insert_with(empty_account);
-                                let contract_balance =
-                                    u256_from_big_endian(&contract_account.balance);
-                                contract_account.balance = u256_to_big_endian(
-                                    contract_balance.checked_add(value).ok_or_else(|| {
-                                        anyhow::anyhow!("contract balance overflow")
-                                    })?,
-                                );
-                            }
                             if slashing_proof_call {
                                 let slashing_account = accounts
                                     .entry(SLASHING_CONTRACT_ADDRESS)
@@ -3587,6 +3576,30 @@ impl FinalChain {
                             }
                         }
                         status_code = outcome.status_code;
+                        if outcome.status_code == 0
+                            && let Some((recipient, staged_value, recipient_existed)) =
+                                staged_contract_payment.take()
+                        {
+                            let sender = accounts
+                                .entry(transaction.sender)
+                                .or_insert_with(empty_account);
+                            let sender_balance = u256_from_big_endian(&sender.balance);
+                            sender.balance = u256_to_big_endian(
+                                sender_balance.checked_add(staged_value).ok_or_else(|| {
+                                    anyhow::anyhow!("contract payment rollback overflow")
+                                })?,
+                            );
+                            let contract = accounts.entry(recipient).or_insert_with(empty_account);
+                            let contract_balance = u256_from_big_endian(&contract.balance);
+                            contract.balance = u256_to_big_endian(
+                                contract_balance.checked_sub(staged_value).ok_or_else(|| {
+                                    anyhow::anyhow!("contract payment rollback underflow")
+                                })?,
+                            );
+                            if !recipient_existed {
+                                accounts.remove(&recipient);
+                            }
+                        }
                     }
                 } else {
                     let receiver_address = transaction.receiver.ok_or_else(|| {
@@ -19266,6 +19279,68 @@ mod tests {
         assert_eq!(
             final_chain.dpos_eligible_total_vote_count(period).unwrap(),
             10
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_max_value_affordability_failure_consumes_full_gas_without_overflow() {
+        let path = temp_db_path("finalize-slashing-max-value-affordability");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let submitter = [0x75; 20];
+        let period = 1u64;
+        let block_signing_key = SigningKey::from_slice(&[0x76; 32]).unwrap();
+        let pbft = signed_pbft_block(&block_signing_key, period, 246);
+        let gas_price = U256::from(2u64);
+        let gas_limit = 100_000u64;
+        let transaction = test_transaction(
+            0xD7,
+            submitter,
+            Some(SLASHING_CONTRACT_ADDRESS),
+            0,
+            U256::MAX,
+            gas_price,
+            gas_limit,
+            SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR.to_vec(),
+            vec![0xc1, 0xd7],
+        );
+        write_period_data(&storage, period, &pbft, &[transaction.rlp.clone()]);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            300_000,
+            0,
+            vec![genesis_account(submitter, U256::MAX)],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 1,
+                cacti_period: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let full_gas_cost = U256::from(gas_limit).checked_mul(gas_price).unwrap();
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft, vec![transaction], vec![])
+            .unwrap();
+
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipt_fields(&receipts[0]), (0, gas_limit, gas_limit));
+        let submitter_account = final_chain.account(submitter).unwrap().unwrap();
+        assert_eq!(submitter_account.nonce, 1);
+        assert_eq!(
+            u256_from_big_endian(&submitter_account.balance),
+            U256::MAX - full_gas_cost
+        );
+        assert!(
+            final_chain
+                .account(SLASHING_CONTRACT_ADDRESS)
+                .unwrap()
+                .is_none()
         );
 
         drop(final_chain);

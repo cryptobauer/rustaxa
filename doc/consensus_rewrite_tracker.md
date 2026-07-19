@@ -874,6 +874,27 @@ Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, and the Tier 3
 pre-existing unrelated `native_dpos_redelegate_correction_applies_only_at_fix_block` dangling-cursor failure; the new
 commission fixture and the complete pure-C++ suite pass.
 
+The next bounded `CRW-08` slice closes the generic native payable-contract envelope divergence exposed by that audit.
+After intrinsic validation, Rust now matches legacy EVM reservation ordering: a sender that can fund the full gas cap
+but not the cap plus call value receives a status-zero receipt, consumes the full gas limit, advances its nonce, and
+never enters the DPoS/slashing kernel. Executable calls stage sender-to-contract value before kernel dispatch so balance
+checks observe the same state as the legacy precompile; an ordinary typed contract failure rolls back only that staged
+payment while retaining nonce and gas effects. Hard errors remain block-atomic through the existing local snapshots.
+
+A standalone dual-mode `delegate(address)` transcript fixes the marginal boundary at exactly
+`gas_limit * gas_price + value - 1`. It proves full-cap gas and cumulative/header accounting, empty logs/bloom, no value
+or delegation/stake mutation, nonce continuation, sender/recipient balances, durable receipt RLP, and restart state in
+both Rust-enabled and pure-C++ modes. Existing payable-success and business-failure rollback fixtures continue to cover
+the other two envelope branches. A Rust maximum-value case proves the affordability comparison cannot overflow into a
+hard finalization error. No bridge, carrier, handle, export, shim, module flag, snapshot schema, migration, or
+`CRW-07` inventory change is introduced. `CRW-08` remains active for any other required failed-receipt boundary found by
+the canonical audit.
+
+Validation passed all 777 `rustaxa-consensus` tests, the standalone fixture in Rust-enabled and pure-C++ binaries,
+existing payable-success and typed-failure rollback fixtures, `rewrite-validate-fast`, and the Tier 3
+`rewrite-validate-final-chain-parity` gate. The broad Rust-enabled FinalChain phase retains only the documented unrelated
+redelegation-correction dangling-cursor failure; the full pure-C++ suite and parity target pass.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

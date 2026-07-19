@@ -3988,6 +3988,30 @@ Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, and the Tier 3
 `rewrite-validate-final-chain-parity` target. Its broad Rust-enabled FinalChain phase retains the pre-existing unrelated
 redelegation-correction dangling-cursor failure; the commission fixture and full pure-C++ suite pass.
 
+### CRW-08 Native Payable-Contract Envelope Parity
+
+Native DPoS and slashing transaction execution now preserves the legacy EVM payment envelope. Once intrinsic gas is
+valid, combined affordability is measured against the complete gas-cap reservation plus call value. Marginally
+underfunded calls consume the full limit, advance the nonce, emit a status-zero receipt, and skip contract execution.
+For executable payable calls, Rust stages sender-to-contract value before the shared kernel so reward and custody checks
+see the legacy balance; typed contract failure reverses only that payment, while successful execution retains it. The
+existing block-local account and DPoS snapshots still provide hard-error atomicity, and the shared mutation kernel keeps
+transaction-envelope concerns out of its interface.
+
+The standalone dual-mode pre-Cornus `delegate(address)` transcript starts the sender at
+`gas_limit * gas_price + value - 1`, then verifies the full-cap failure and a same-sender continuation across restart.
+Together with existing payable-success and typed-failure rollback fixtures, it covers all three ordering branches:
+marginal affordability, value-visible execution, and payment rollback. Focused Rust coverage additionally proves that
+maximum call value produces the same normal failure without bounded-arithmetic overflow and that failure rollback
+removes a payment recipient absent before staging. The slice changes no bridge, carrier, handle, export, shim, module
+flag, snapshot schema, migration, or `CRW-07` inventory.
+
+Validation passed all 777 `rustaxa-consensus` tests, focused Rust recipient-absence rollback, the standalone fixture in
+Rust-enabled and pure-C++ modes, existing payable-success and typed-failure rollback fixtures,
+`rewrite-validate-fast`, and the Tier 3 `rewrite-validate-final-chain-parity` gate. The known unrelated
+redelegation-correction dangling-cursor failure remains confined to the broad Rust-enabled FinalChain run; the complete
+pure-C++ suite and parity target pass.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

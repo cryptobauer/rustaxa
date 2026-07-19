@@ -2654,6 +2654,94 @@ TEST_F(FinalChainTest, native_dpos_undelegations_page_reads_cover_cornus_gated_s
   EXPECT_EQ(restarted_post_cornus_v2.code_retval, post_cornus_v2_read.code_retval);
 }
 
+TEST_F(FinalChainTest, native_dpos_delegate_pre_cornus_value_affordability_charges_full_gas_without_mutation) {
+  constexpr uint64_t kInitialStake = 10'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 100'000;
+  constexpr uint64_t kDelegationValue = 123;
+  constexpr uint64_t kOwnerInitialBalance = kInitialStake + 1'000;
+  constexpr uint64_t kRemainingBalance = kDelegationValue - 1;
+
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair sender{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair receiver{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kOwnerInitialBalance;
+  cfg.genesis.state.initial_balances[sender.address()] = kGasLimit * kGasPrice + kDelegationValue - 1;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.minimum_deposit = 1'000;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  // Keep both transactions before Cornus: value affordability is handled by the
+  // pre-Cornus native DPoS path, while the continuation proves nonce progression.
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 100;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kInitialStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  assume_only_toplevel_transfers = false;
+  init();
+
+  const auto initial_dpos_balance = SUT->getAccount(kDposContractAddress)->balance;
+  const auto initial_total_delegated = SUT->dposTotalAmountDelegated(0);
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto expect_same_stakes = [&](const std::vector<state_api::ValidatorStake>& actual) {
+    ASSERT_EQ(actual.size(), initial_stakes.size());
+    for (size_t i = 0; i < actual.size(); ++i) {
+      EXPECT_EQ(actual[i].addr, initial_stakes[i].addr);
+      EXPECT_EQ(actual[i].stake, initial_stakes[i].stake);
+    }
+  };
+  const auto delegate_input = util::EncodingSolidity::packFunctionCall("delegate(address)", validator.address());
+  const auto delegate_tx = std::make_shared<Transaction>(0, kDelegationValue, kGasPrice, kGasLimit, delegate_input,
+                                                          sender.secret(), kDposContractAddress, cfg.genesis.chain_id);
+
+  const auto failed_result = advance({delegate_tx}, {.dont_assume_all_trx_success = true});
+  ASSERT_EQ(failed_result->trx_receipts.size(), 1u);
+  const auto& failed_receipt = failed_result->trx_receipts.front();
+  EXPECT_EQ(failed_receipt.status_code, 0);
+  EXPECT_EQ(failed_receipt.gas_used, kGasLimit);
+  EXPECT_TRUE(failed_receipt.logs.empty());
+  EXPECT_EQ(failed_receipt.bloom(), LogBloom());
+  EXPECT_EQ(SUT->getAccount(kDposContractAddress)->balance, initial_dpos_balance);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(1), initial_total_delegated);
+  expect_same_stakes(SUT->dposValidatorsTotalStakes(1));
+  ASSERT_EQ(SUT->getAccount(sender.address())->nonce, 1);
+  EXPECT_EQ(SUT->getAccount(sender.address())->balance, u256(kRemainingBalance));
+
+  // The failed delegate consumed the complete gas cap, leaving exactly the value
+  // remainder. A zero-fee continuation confirms that the sender can proceed at nonce 1.
+  const auto continuation_tx = std::make_shared<Transaction>(1, kRemainingBalance, 0, 21'000, bytes{},
+                                                              sender.secret(), receiver.address(), cfg.genesis.chain_id);
+  const auto continuation_result = advance({continuation_tx});
+  ASSERT_EQ(continuation_result->trx_receipts.size(), 1u);
+  EXPECT_EQ(continuation_result->trx_receipts.front().status_code, 1);
+  EXPECT_EQ(SUT->getAccount(sender.address())->nonce, 2);
+  EXPECT_EQ(SUT->getAccount(sender.address())->balance, u256(0));
+  EXPECT_EQ(SUT->getAccount(receiver.address())->balance, u256(kRemainingBalance));
+  EXPECT_EQ(SUT->getAccount(kDposContractAddress)->balance, initial_dpos_balance);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(2), initial_total_delegated);
+  expect_same_stakes(SUT->dposValidatorsTotalStakes(2));
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 2);
+  EXPECT_EQ(SUT->getAccount(sender.address())->nonce, 2);
+  EXPECT_EQ(SUT->getAccount(sender.address())->balance, u256(0));
+  EXPECT_EQ(SUT->getAccount(receiver.address())->balance, u256(kRemainingBalance));
+  EXPECT_EQ(SUT->getAccount(kDposContractAddress)->balance, initial_dpos_balance);
+  EXPECT_EQ(SUT->dposTotalAmountDelegated(2), initial_total_delegated);
+  expect_same_stakes(SUT->dposValidatorsTotalStakes(2));
+  ASSERT_TRUE(SUT->transactionReceipt(1, 0));
+  EXPECT_EQ(util::rlp_enc(*SUT->transactionReceipt(1, 0)), util::rlp_enc(failed_receipt));
+}
+
 TEST_F(FinalChainTest, native_dpos_get_total_delegation_reads_cover_cornus_gated_selector_and_mutation_visibility) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kOwnerInitialBalance = 21'000;
