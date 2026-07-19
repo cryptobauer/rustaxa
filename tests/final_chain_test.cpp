@@ -5320,6 +5320,143 @@ TEST_F(FinalChainTest, native_dpos_claim_rewards_from_sender_without_delegation_
       1, 2, block_gas);
 }
 
+TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_failures_charge_gas_only_and_persist) {
+  constexpr uint64_t kStake = 10'000;
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 100'000;
+  constexpr uint64_t kClaimValue = 0;
+  constexpr uint64_t kInitialBalance = 10'000'000;
+  constexpr uint64_t kContinuationGas = 21'000;
+  const addr_t kDposContract("0x00000000000000000000000000000000000000FE");
+  const addr_t kAbsentValidator("0x00000000000000000000000000000000000000AA");
+  const dev::KeyPair owner{dev::Secret("1111111111111111111111111111111111111111111111111111111111111111")};
+  const dev::KeyPair validator{dev::Secret("2222222222222222222222222222222222222222222222222222222222222222")};
+  const dev::KeyPair wrong_owner{dev::Secret("3333333333333333333333333333333333333333333333333333333333333333")};
+  const dev::KeyPair sender{dev::Secret("4444444444444444444444444444444444444444444444444444444444444444")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[owner.address()] = kInitialBalance;
+  cfg.genesis.state.initial_balances[wrong_owner.address()] = kInitialBalance;
+  cfg.genesis.state.initial_balances[sender.address()] = kInitialBalance;
+  cfg.genesis.state.dpos.eligibility_balance_threshold = 1'000;
+  cfg.genesis.state.dpos.vote_eligibility_balance_step = 1'000;
+  cfg.genesis.state.dpos.validator_maximum_stake = 30'000;
+  cfg.genesis.state.dpos.minimum_deposit = 1'000;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  cfg.genesis.state.dpos.yield_percentage = 0;
+  cfg.genesis.state.hardforks.cornus_hf.block_num = 1;
+
+  const auto vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
+  state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
+  validator_info.delegations.emplace(owner.address(), kStake);
+  cfg.genesis.state.dpos.initial_validators = {validator_info};
+
+  init();
+  assume_only_toplevel_transfers = false;
+
+  const auto claim_input = [&](const addr_t& target) {
+    return util::EncodingSolidity::packFunctionCall("claimCommissionRewards(address)", target);
+  };
+  const auto action_gas = [](const bytes& input) { return IntrinsicGas(input, false) + 20'000; };
+  const auto query_validator = [&](const std::shared_ptr<FinalChain>& chain) {
+    return chain->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000,
+                        util::EncodingSolidity::packFunctionCall("getValidator(address)", validator.address())});
+  };
+
+  const auto initial_dpos = SUT->getAccount(kDposContract);
+  ASSERT_TRUE(initial_dpos);
+  const auto initial_dpos_balance = initial_dpos->balance;
+  const auto initial_dpos_nonce = initial_dpos->nonce;
+  const auto initial_validator = query_validator(SUT).code_retval;
+  const auto initial_stakes = SUT->dposValidatorsTotalStakes(0);
+  const auto initial_total_delegated = SUT->dposTotalAmountDelegated(0);
+  const auto absent_input = claim_input(kAbsentValidator);
+  const auto wrong_owner_input = claim_input(validator.address());
+  const bytes malformed_input(absent_input.begin(), absent_input.begin() + 4);
+  const auto absent_gas = action_gas(absent_input);
+  const auto wrong_owner_gas = action_gas(wrong_owner_input);
+  const auto malformed_gas = action_gas(malformed_input);
+
+  const auto absent_tx = std::make_shared<Transaction>(0, kClaimValue, kGasPrice, kGasLimit, absent_input,
+                                                        sender.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto wrong_owner_tx = std::make_shared<Transaction>(0, kClaimValue, kGasPrice, kGasLimit, wrong_owner_input,
+                                                             wrong_owner.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto malformed_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, malformed_input,
+                                                           sender.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto continuation_tx =
+      std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(), sender.address());
+  const auto result = advance({absent_tx, wrong_owner_tx, malformed_tx, continuation_tx},
+                              {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(result->trx_receipts.size(), 4);
+
+  const auto cumulative_absent = absent_gas;
+  const auto cumulative_wrong_owner = cumulative_absent + wrong_owner_gas;
+  const auto cumulative_malformed = cumulative_wrong_owner + malformed_gas;
+  const auto cumulative_continuation = cumulative_malformed + kContinuationGas;
+  TransactionReceipt expected_failed;
+  expected_failed.status_code = 0;
+  expected_failed.logs = {};
+  const auto assert_failed_receipt = [&](const TransactionReceipt& receipt, uint64_t gas, uint64_t cumulative) {
+    expected_failed.gas_used = gas;
+    expected_failed.cumulative_gas_used = cumulative;
+    EXPECT_EQ(util::rlp_enc(receipt), util::rlp_enc(expected_failed));
+    EXPECT_EQ(receipt.status_code, 0);
+    EXPECT_EQ(receipt.gas_used, gas);
+    EXPECT_EQ(receipt.cumulative_gas_used, cumulative);
+    EXPECT_TRUE(receipt.logs.empty());
+    EXPECT_EQ(receipt.bloom(), LogBloom());
+  };
+  assert_failed_receipt(result->trx_receipts[0], absent_gas, cumulative_absent);
+  assert_failed_receipt(result->trx_receipts[1], wrong_owner_gas, cumulative_wrong_owner);
+  assert_failed_receipt(result->trx_receipts[2], malformed_gas, cumulative_malformed);
+
+  TransactionReceipt expected_continuation;
+  expected_continuation.status_code = 1;
+  expected_continuation.gas_used = kContinuationGas;
+  expected_continuation.cumulative_gas_used = cumulative_continuation;
+  EXPECT_EQ(util::rlp_enc(result->trx_receipts[3]), util::rlp_enc(expected_continuation));
+  EXPECT_EQ(result->trx_receipts[3].bloom(), LogBloom());
+  EXPECT_EQ(result->final_chain_blk->gas_used, cumulative_continuation);
+  EXPECT_EQ(result->final_chain_blk->log_bloom, LogBloom());
+
+  const auto assert_state = [&](const std::shared_ptr<FinalChain>& chain) {
+    const auto sender_account = chain->getAccount(sender.address());
+    ASSERT_TRUE(sender_account);
+    EXPECT_EQ(sender_account->nonce, 3);
+    EXPECT_EQ(sender_account->balance,
+              u256(kInitialBalance - (absent_gas + malformed_gas + kContinuationGas) * kGasPrice));
+    const auto wrong_owner_account = chain->getAccount(wrong_owner.address());
+    ASSERT_TRUE(wrong_owner_account);
+    EXPECT_EQ(wrong_owner_account->nonce, 1);
+    EXPECT_EQ(wrong_owner_account->balance, u256(kInitialBalance - wrong_owner_gas * kGasPrice));
+    const auto dpos_account = chain->getAccount(kDposContract);
+    ASSERT_TRUE(dpos_account);
+    EXPECT_EQ(dpos_account->nonce, initial_dpos_nonce);
+    EXPECT_EQ(dpos_account->balance, initial_dpos_balance);
+    EXPECT_EQ(query_validator(chain).code_retval, initial_validator);
+    EXPECT_EQ(chain->dposTotalAmountDelegated(1), initial_total_delegated);
+    const auto stakes = chain->dposValidatorsTotalStakes(1);
+    ASSERT_EQ(stakes.size(), initial_stakes.size());
+    EXPECT_EQ(stakes[0].addr, initial_stakes[0].addr);
+    EXPECT_EQ(stakes[0].stake, initial_stakes[0].stake);
+    for (size_t i = 0; i < 4; ++i) {
+      const auto receipt = chain->transactionReceipt(1, i);
+      ASSERT_TRUE(receipt);
+      EXPECT_EQ(util::rlp_enc(*receipt), util::rlp_enc(result->trx_receipts[i]));
+    }
+    const auto header = chain->blockHeader(1);
+    ASSERT_TRUE(header);
+    EXPECT_EQ(header->gas_used, cumulative_continuation);
+    EXPECT_EQ(header->log_bloom, LogBloom());
+  };
+
+  assert_state(SUT);
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  EXPECT_EQ(SUT->lastBlockNumber(), 1);
+  assert_state(SUT);
+}
+
 TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_pays_and_retains_pending_validator) {
   constexpr uint64_t kInitialStake = 10'000;
   constexpr uint64_t kEligibilityThreshold = 1'000;

@@ -846,6 +846,34 @@ Rust-enabled FinalChain fixture, the standalone pure-C++ legacy death test, `rew
 reference test uses GoogleTest re-exec mode and constructs its database and FinalChain only inside the child, preserving
 the legacy process-abort assertion without forking live RocksDB or executor threads.
 
+The next bounded `CRW-08` evidence slice closes the finalized `claimCommissionRewards(address)` ordinary-failure
+transcript without changing production logic. A missing validator and a registered validator called by the wrong owner
+both retain the legacy `This account is not owner of specified validator` contract failure. At Cornus and later,
+zero-value well-formed calls reach those business checks and consume calldata intrinsic gas plus the fixed 20,000 action
+gas; positive value is rejected earlier by the already-covered nonpayable boundary and therefore is not used to prove
+owner-check ordering.
+
+The dual-mode restart fixture submits both failures, selector-only malformed calldata, and a same-sender continuation.
+The malformed recognized method also consumes intrinsic plus 20,000 action gas. Together they prove exact status-zero
+receipt RLP, cumulative and header gas, gas-only balance changes, nonce advancement, empty logs and bloom, unchanged
+DPoS account/validator/stake/delegation state, durable receipts, and restart-stable state. Focused Rust assertions
+preserve the typed `WrongOwnerAcc` result for both owner branches, prove absent metadata takes precedence over a missing
+stake row, verify staged account/DPoS rollback, and protect malformed-call continuation.
+
+There is no production, bridge, carrier, handle, export, module-flag, snapshot, migration, or `CRW-07` inventory delta.
+The audit separately identifies a generic pre-Cornus payable-envelope risk: legacy reserves the full gas cap and credits
+call value before executing a payable DPoS mutation, while Rust currently checks value after used-gas charging and
+applies commission-claim business logic before crediting incoming value. Normal fully backed state is equivalent, but
+marginal affordability or undercollateralized/corrupt state needs its own bounded parity decision. `CRW-08` remains
+active for that demonstrated envelope boundary or another older failed-contract family established by canonical audit;
+all current-ABI methods are already Rust-routed.
+
+Validation passed all six focused Rust commission-claim tests, all 776 `rustaxa-consensus` tests, the focused fixture in
+Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, and the Tier 3
+`rewrite-validate-final-chain-parity` target. The broad Rust-enabled `final_chain_test` phase continues to report the
+pre-existing unrelated `native_dpos_redelegate_correction_applies_only_at_fix_block` dangling-cursor failure; the new
+commission fixture and the complete pure-C++ suite pass.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

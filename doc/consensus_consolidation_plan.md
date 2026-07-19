@@ -3963,6 +3963,31 @@ Rust-enabled FinalChain fixture, the standalone pure-C++ legacy death test, `rew
 reference test uses GoogleTest re-exec mode and constructs its database and FinalChain only inside the child, so the
 legacy process-abort assertion does not fork live RocksDB or executor threads.
 
+### CRW-08 Commission-Claim Failure Receipt Evidence
+
+Finalized `claimCommissionRewards(address)` now has an exact dual-mode failure transcript for the two ordinary owner
+validation branches already implemented in Rust. Missing validator metadata and a caller different from the registered
+owner both return the typed `WrongOwnerAcc` contract failure before stake-row validation and leave staged account and
+DPoS state unchanged. Zero-value Cornus calls are used deliberately: a positive value is rejected at the earlier
+nonpayable boundary and would consume intrinsic gas only instead of exercising the fixed-20,000-gas owner checks.
+
+The restart-backed fixture proves byte-identical status-zero receipt RLP, intrinsic plus action gas, cumulative/header
+gas, empty logs/bloom, gas-only balances, nonce continuation, unchanged DPoS account/validator/stake/delegation state,
+and durable receipts for missing-validator, wrong-owner, and selector-only malformed calls in Rust-enabled and pure-C++
+modes. This is evidence-only production closeout: no bridge handle, carrier, export, shim, module flag, snapshot schema,
+migration, or `CRW-07` inventory changes.
+
+The audit leaves a separate generic pre-Cornus payable-envelope risk visible for a future bounded slice. Legacy reserves
+the full gas cap and credits call value before DPoS execution; Rust currently checks value after used-gas charging and
+applies commission-claim logic before crediting incoming value. Fully backed normal state is equivalent, but marginal
+sender affordability and undercollateralized/corrupt DPoS state require an explicit parity decision before broader
+pre-Cornus payable-envelope closeout.
+
+Validation passed all six focused Rust commission-claim tests, all 776 `rustaxa-consensus` tests, the focused fixture in
+Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, and the Tier 3
+`rewrite-validate-final-chain-parity` target. Its broad Rust-enabled FinalChain phase retains the pre-existing unrelated
+redelegation-correction dangling-cursor failure; the commission fixture and full pure-C++ suite pass.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

@@ -21224,6 +21224,8 @@ mod tests {
         let mut accounts = HashMap::new();
         accounts.insert(DPOS_CONTRACT_ADDRESS, empty_account());
 
+        let snapshot_before_wrong_owner = snapshot.clone();
+        let accounts_before_wrong_owner = accounts.clone();
         let outcome = final_chain
             .apply_dpos_commission_reward_claim(
                 &mut snapshot,
@@ -21235,6 +21237,36 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.status_code, 0);
         assert!(outcome.logs.is_empty());
+        assert_eq!(
+            outcome.contract_error,
+            Some(DposContractError::WrongOwnerAcc)
+        );
+        assert_eq!(snapshot, snapshot_before_wrong_owner);
+        assert_eq!(accounts, accounts_before_wrong_owner);
+
+        let mut snapshot_without_metadata = snapshot.clone();
+        snapshot_without_metadata
+            .validator_metadata
+            .remove(&validator);
+        let snapshot_without_metadata_before = snapshot_without_metadata.clone();
+        let accounts_before_missing_metadata = accounts.clone();
+        let outcome = final_chain
+            .apply_dpos_commission_reward_claim(
+                &mut snapshot_without_metadata,
+                &mut accounts,
+                owner,
+                validator,
+                1,
+            )
+            .unwrap();
+        assert_eq!(outcome.status_code, 0);
+        assert!(outcome.logs.is_empty());
+        assert_eq!(
+            outcome.contract_error,
+            Some(DposContractError::WrongOwnerAcc)
+        );
+        assert_eq!(snapshot_without_metadata, snapshot_without_metadata_before);
+        assert_eq!(accounts, accounts_before_missing_metadata);
 
         let error = final_chain
             .apply_dpos_commission_reward_claim(&mut snapshot, &mut accounts, owner, validator, 1)
@@ -21366,6 +21398,8 @@ mod tests {
             .reward_reference_graph
             .next_block(second_period)
             .unwrap();
+        let sender_balance_before = balance_of(&final_chain, sender);
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
         let (_header_rlp, receipts) = final_chain
             .finalize_block(
                 second_pbft,
@@ -21387,6 +21421,134 @@ mod tests {
         assert_eq!(
             snapshot_before,
             final_chain.dpos_snapshot(second_period).unwrap()
+        );
+        let sender_account = final_chain.account(sender).unwrap().unwrap();
+        assert_eq!(sender_account.nonce, 2);
+        assert_eq!(
+            u256_from_big_endian(&sender_account.balance),
+            sender_balance_before
+                - U256::from(failed_claim_gas + transfer_gas)
+                - U256::from(5_000u64)
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_fails_malformed_claim_commission_calldata_with_fixed_gas_and_continues() {
+        let path = temp_db_path("finalize-dpos-claim-commission-malformed-calldata");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let sender = [0xC8; 20];
+        let recipient = [0xC9; 20];
+        let signing_key = SigningKey::from_slice(&[58u8; 32]).unwrap();
+        let first_period = 1u64;
+        let second_period = 2u64;
+        let first_pbft = signed_pbft_block(&signing_key, first_period, 263);
+        write_period_data(&storage, first_period, &first_pbft, &[]);
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            100_000,
+            0,
+            vec![genesis_account(sender, U256::from(1_000_000u64))],
+            vec![],
+            GenesisDposConfig::default(),
+            FinalChainRewardsConfig {
+                magnolia_period: 0,
+                aspen_part_one_period: u64::MAX,
+                rewards_distribution_frequency: vec![(0, 1)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        final_chain
+            .finalize_block(first_pbft, vec![], vec![])
+            .unwrap();
+
+        let second_pbft = signed_pbft_block(&signing_key, second_period, 264);
+        let malformed_claim_tx = test_transaction(
+            0xD3,
+            sender,
+            Some(DPOS_CONTRACT_ADDRESS),
+            0,
+            U256::zero(),
+            U256::one(),
+            100_000,
+            DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR.to_vec(),
+            vec![0xc1, 0xD3],
+        );
+        let transfer_tx = test_transaction(
+            0xD4,
+            sender,
+            Some(recipient),
+            1,
+            U256::from(5_000u64),
+            U256::one(),
+            50_000,
+            vec![],
+            vec![0xc1, 0xD4],
+        );
+        let malformed_claim_gas =
+            expected_native_contract_tx_gas(&final_chain, second_period, &malformed_claim_tx);
+        assert_eq!(
+            malformed_claim_gas,
+            intrinsic_gas(&malformed_claim_tx.data, false).unwrap()
+                + DPOS_CLAIM_COMMISSION_REWARDS_GAS
+        );
+        let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
+        write_period_data(
+            &storage,
+            second_period,
+            &second_pbft,
+            &[malformed_claim_tx.rlp.clone(), transfer_tx.rlp.clone()],
+        );
+
+        let mut snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        snapshot_before
+            .reward_reference_graph
+            .next_block(second_period)
+            .unwrap();
+        let sender_balance_before = balance_of(&final_chain, sender);
+        let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(
+                second_pbft,
+                vec![malformed_claim_tx.clone(), transfer_tx.clone()],
+                vec![],
+            )
+            .unwrap();
+
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipt_fields(&receipts[0]),
+            (0, malformed_claim_gas, malformed_claim_gas)
+        );
+        assert_eq!(
+            receipt_fields(&receipts[1]),
+            (1, transfer_gas, malformed_claim_gas + transfer_gas)
+        );
+        assert!(receipt_logs(&receipts[0]).is_empty());
+        assert!(receipt_logs(&receipts[1]).is_empty());
+        assert_eq!(
+            snapshot_before,
+            final_chain.dpos_snapshot(second_period).unwrap()
+        );
+        let sender_account = final_chain.account(sender).unwrap().unwrap();
+        assert_eq!(sender_account.nonce, 2);
+        assert_eq!(
+            u256_from_big_endian(&sender_account.balance),
+            sender_balance_before
+                - U256::from(malformed_claim_gas + transfer_gas)
+                - U256::from(5_000u64)
+        );
+        assert_eq!(
+            balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
+            dpos_contract_balance_before
         );
 
         drop(final_chain);
