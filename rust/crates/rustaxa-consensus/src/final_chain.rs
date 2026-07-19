@@ -28,7 +28,8 @@ use crate::rewards_stats::{
     RewardsStatsRuntime, RewardsStatsStatus, decode_rewards_block_distributions,
 };
 use crate::slashing::{
-    VerifiedLegacyDoubleVotingProof, verify_legacy_double_voting_proof_call_data,
+    LegacyDoubleVotingProofDecodeError, VerifiedLegacyDoubleVotingProof,
+    verify_legacy_double_voting_proof_call_data,
 };
 use anyhow::Result;
 use ethereum_types::{H256, U256};
@@ -9539,9 +9540,10 @@ fn encode_slashing_jailed_validators(snapshot: &DposSnapshot) -> Vec<u8> {
 /// Decodes Rust-supported slashing contract method payloads.
 ///
 /// The slashing precompile exposes read methods plus
-/// `commitDoubleVotingProof(bytes,bytes)`. Finalization stores malformed proof
-/// payloads as contract-failure transactions so ordinary bad user input cannot
-/// abort block execution.
+/// `commitDoubleVotingProof(bytes,bytes)`. Outer ABI and semantic/signature
+/// failures are ordinary contract-failure transactions. Malformed nested vote
+/// or sortition RLP is a hard decode error and aborts finalization before any
+/// publication side effects.
 fn decode_slashing_transaction(input: &[u8]) -> Result<SlashingTransaction, anyhow::Error> {
     if input.len() < 4 {
         return Ok(SlashingTransaction::MethodNotSupported);
@@ -9550,9 +9552,20 @@ fn decode_slashing_transaction(input: &[u8]) -> Result<SlashingTransaction, anyh
     selector.copy_from_slice(&input[..4]);
     match selector {
         SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR => {
-            Ok(SlashingTransaction::CommitDoubleVotingProof(Box::new(
-                verify_legacy_double_voting_proof_call_data(input).map_err(|err| err.to_string()),
-            )))
+            match verify_legacy_double_voting_proof_call_data(input) {
+                Ok(proof) => Ok(SlashingTransaction::CommitDoubleVotingProof(Box::new(Ok(
+                    proof,
+                )))),
+                Err(LegacyDoubleVotingProofDecodeError::NestedRlp(message)) => {
+                    anyhow::bail!(
+                        "Rust FinalChain::finalize malformed nested slashing proof RLP: {message}"
+                    )
+                }
+                Err(LegacyDoubleVotingProofDecodeError::OuterAbi(message))
+                | Err(LegacyDoubleVotingProofDecodeError::Semantic(message)) => Ok(
+                    SlashingTransaction::CommitDoubleVotingProof(Box::new(Err(message))),
+                ),
+            }
         }
         SLASHING_GET_JAIL_BLOCK_SELECTOR => Ok(SlashingTransaction::GetJailBlock(
             decode_abi_address_argument(input, "getJailBlock(address)")

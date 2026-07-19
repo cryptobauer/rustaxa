@@ -49,7 +49,8 @@ pub struct LegacyPbftVoteMetadata {
     pub round: u32,
     /// PBFT step extracted from the embedded sortition payload.
     pub step: u32,
-    /// Optional vote weight present in some persisted legacy vote RLPs.
+    /// Reserved compatibility field; Go `NewVote` rejects vote lists carrying
+    /// an extra weight item, so successful decodes always leave this unset.
     pub weight: Option<u64>,
 }
 
@@ -68,35 +69,74 @@ pub struct VerifiedLegacyDoubleVotingProof {
     pub vote_b: LegacyPbftVoteMetadata,
 }
 
+/// Classification for a legacy slashing proof decode.
+///
+/// Outer ABI framing failures and semantic/signature rejection are ordinary
+/// contract failures (status zero). Malformed nested vote/sortition RLP is a
+/// hard input error: finalization must propagate it before publishing any
+/// receipt, head, account, or DPoS state.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum LegacyDoubleVotingProofDecodeError {
+    /// The selector, offsets, or dynamic-byte framing is malformed.
+    OuterAbi(String),
+    /// Nested PbftVote/VrfPbftSortition RLP is malformed or non-canonical.
+    NestedRlp(String),
+    /// The payload decodes but violates ordinary contract checks.
+    Semantic(String),
+}
+
+macro_rules! semantic_ensure {
+    ($condition:expr, $message:literal) => {
+        if !$condition {
+            return Err(LegacyDoubleVotingProofDecodeError::Semantic(
+                $message.to_string(),
+            ));
+        }
+    };
+}
+
+impl std::fmt::Display for LegacyDoubleVotingProofDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OuterAbi(message) | Self::NestedRlp(message) | Self::Semantic(message) => {
+                f.write_str(message)
+            }
+        }
+    }
+}
+
 /// Verifies one legacy `commitDoubleVotingProof(bytes,bytes)` calldata payload.
 ///
 /// It performs ABI decoding, legacy PbftVote parsing, signature recovery,
 /// and the same slot/hash/sanity checks that the contract enforces.
 pub fn verify_legacy_double_voting_proof_call_data(
     calldata: &[u8],
-) -> Result<VerifiedLegacyDoubleVotingProof> {
-    let (vote_a_rlp, vote_b_rlp) = decode_commit_double_voting_call_data(calldata)?;
-    let vote_a = decode_legacy_pbft_vote(vote_a_rlp)?;
-    let vote_b = decode_legacy_pbft_vote(vote_b_rlp)?;
+) -> std::result::Result<VerifiedLegacyDoubleVotingProof, LegacyDoubleVotingProofDecodeError> {
+    let (vote_a_rlp, vote_b_rlp) = decode_commit_double_voting_call_data(calldata)
+        .map_err(|err| LegacyDoubleVotingProofDecodeError::OuterAbi(err.to_string()))?;
+    let vote_a = decode_legacy_pbft_vote(vote_a_rlp)
+        .map_err(|err| LegacyDoubleVotingProofDecodeError::NestedRlp(err.to_string()))?;
+    let vote_b = decode_legacy_pbft_vote(vote_b_rlp)
+        .map_err(|err| LegacyDoubleVotingProofDecodeError::NestedRlp(err.to_string()))?;
 
-    ensure!(
+    semantic_ensure!(
         vote_a.metadata.vote_hash != vote_b.metadata.vote_hash,
         "votes are identical"
     );
-    ensure!(
+    semantic_ensure!(
         vote_a.metadata.period == vote_b.metadata.period,
         "invalid votes period/round/step"
     );
-    ensure!(
+    semantic_ensure!(
         vote_a.metadata.round == vote_b.metadata.round,
         "invalid votes period/round/step"
     );
-    ensure!(
+    semantic_ensure!(
         vote_a.metadata.step == vote_b.metadata.step,
         "invalid votes period/round/step"
     );
 
-    ensure!(
+    semantic_ensure!(
         vote_a.metadata.block_hash != vote_b.metadata.block_hash,
         "invalid votes block hash"
     );
@@ -104,18 +144,22 @@ pub fn verify_legacy_double_voting_proof_call_data(
     if vote_a.metadata.step >= 5 && vote_a.metadata.step % 2 == 1 {
         let vote_a_zero = vote_a.metadata.block_hash.is_zero();
         let vote_b_zero = vote_b.metadata.block_hash.is_zero();
-        ensure!(
+        semantic_ensure!(
             vote_a_zero == vote_b_zero,
             "invalid mixed zero/non-zero next-vote block hashes"
         );
     }
 
     let vote_a_offender = recover_validator_address(&vote_a.metadata.vote_hash, &vote_a.signature)
-        .ok_or_else(|| anyhow!("invalid vote signature"))?;
+        .ok_or_else(|| {
+            LegacyDoubleVotingProofDecodeError::Semantic("invalid vote signature".into())
+        })?;
     let vote_b_offender = recover_validator_address(&vote_b.metadata.vote_hash, &vote_b.signature)
-        .ok_or_else(|| anyhow!("invalid vote signature"))?;
+        .ok_or_else(|| {
+            LegacyDoubleVotingProofDecodeError::Semantic("invalid vote signature".into())
+        })?;
 
-    ensure!(
+    semantic_ensure!(
         vote_a_offender == vote_b_offender,
         "invalid votes validator"
     );
@@ -182,10 +226,7 @@ fn decode_call_data_bytes<'a>(calldata: &'a [u8], offset: usize, field: &str) ->
     let header = offset
         .checked_add(WORD_SIZE)
         .ok_or_else(|| anyhow!("{field} offset overflow"))?;
-    ensure!(
-        offset >= 4 + WORD_SIZE * 2 && header <= calldata.len(),
-        "{field} offset out of bounds"
-    );
+    ensure!(header <= calldata.len(), "{field} offset out of bounds");
 
     let length = decode_call_data_offset(&calldata[offset..header], &format!("{field} length"))?;
     let end = header
@@ -201,11 +242,8 @@ fn decode_call_data_bytes<'a>(calldata: &'a [u8], offset: usize, field: &str) ->
 
 fn decode_legacy_pbft_vote(vote_rlp: &[u8]) -> Result<DecodedLegacyPbftVote> {
     let vote = Rlp::new(vote_rlp);
-    let item_count = vote.item_count()?;
-    ensure!(
-        item_count == 3 || item_count == 4,
-        "legacy PbftVote must contain block_hash, vrf_sortition and signature"
-    );
+    ensure_single_rlp_value(&vote, vote_rlp, "legacy PbftVote")?;
+    ensure_exact_list_items(&vote, 3, "legacy PbftVote")?;
 
     let block_hash: H256 = vote.val_at(0)?;
     let vrf_sortition = vote.val_at::<Vec<u8>>(1)?;
@@ -220,12 +258,6 @@ fn decode_legacy_pbft_vote(vote_rlp: &[u8]) -> Result<DecodedLegacyPbftVote> {
 
     let sortition = decode_legacy_vrf_sortition(&vrf_sortition)?;
     let vote_hash = legacy_pbft_vote_hash(block_hash, &vrf_sortition);
-    let weight = if item_count == 4 {
-        Some(vote.val_at(3)?)
-    } else {
-        None
-    };
-
     Ok(DecodedLegacyPbftVote {
         metadata: LegacyPbftVoteMetadata {
             block_hash,
@@ -233,7 +265,7 @@ fn decode_legacy_pbft_vote(vote_rlp: &[u8]) -> Result<DecodedLegacyPbftVote> {
             period: sortition.period,
             round: sortition.round,
             step: sortition.step,
-            weight,
+            weight: None,
         },
         signature: signature_bytes,
     })
@@ -241,10 +273,8 @@ fn decode_legacy_pbft_vote(vote_rlp: &[u8]) -> Result<DecodedLegacyPbftVote> {
 
 fn decode_legacy_vrf_sortition(vrf_sortition: &[u8]) -> Result<LegacyVrfPbftSortition> {
     let vrf = Rlp::new(vrf_sortition);
-    ensure!(
-        vrf.item_count()? == 4,
-        "VrfPbftSortition RLP must contain period, round, step, proof"
-    );
+    ensure_single_rlp_value(&vrf, vrf_sortition, "VrfPbftSortition")?;
+    ensure_exact_list_items(&vrf, 4, "VrfPbftSortition")?;
 
     let period = vrf.val_at(0)?;
     let round = vrf.val_at(1)?;
@@ -263,6 +293,41 @@ fn decode_legacy_vrf_sortition(vrf_sortition: &[u8]) -> Result<LegacyVrfPbftSort
         step,
         proof: proof_bytes,
     })
+}
+
+fn ensure_single_rlp_value(rlp: &Rlp<'_>, encoded: &[u8], field: &str) -> Result<()> {
+    let payload = rlp.payload_info()?;
+    let encoded_len = payload
+        .header_len
+        .checked_add(payload.value_len)
+        .ok_or_else(|| anyhow!("{field} RLP length overflows"))?;
+    ensure!(
+        encoded_len == encoded.len(),
+        "{field} RLP has trailing bytes or incomplete payload"
+    );
+    Ok(())
+}
+
+/// Requires a list to contain exactly `expected` fully framed RLP values.
+///
+/// `Rlp::item_count` stops at the first malformed child. Summing the raw
+/// framing of every expected child and comparing it with the declared list
+/// payload also rejects an incomplete child prefix hidden after those values.
+fn ensure_exact_list_items(rlp: &Rlp<'_>, expected: usize, field: &str) -> Result<()> {
+    ensure!(rlp.is_list(), "{field} must be an RLP list");
+    let payload = rlp.payload_info()?;
+    let mut decoded_len = 0usize;
+    for index in 0..expected {
+        let child = rlp.at(index)?;
+        decoded_len = decoded_len
+            .checked_add(child.as_raw().len())
+            .ok_or_else(|| anyhow!("{field} child length overflows"))?;
+    }
+    ensure!(
+        decoded_len == payload.value_len,
+        "{field} must contain exactly {expected} complete items"
+    );
+    Ok(())
 }
 
 fn recover_validator_address(hash: &H256, signature: &[u8; SIGNATURE_SIZE]) -> Option<H160> {
@@ -728,7 +793,7 @@ mod tests {
             H256::from_low_u64_be(8),
             &sortition_b,
             None,
-            Some(3),
+            None,
         );
         let calldata = commit_double_voting_proof_call_data(&vote_a, &vote_b);
 
@@ -747,6 +812,171 @@ mod tests {
                 legacy_pbft_vote_hash(H256::from_low_u64_be(8), &sortition_b),
             )
         );
+    }
+
+    #[test]
+    fn classifies_outer_nested_and_semantic_slashing_decode_failures() {
+        let outer = verify_legacy_double_voting_proof_call_data(&[
+            DOUBLE_VOTING_PROOF_FUNCTION.as_bytes()[0]
+        ])
+        .unwrap_err();
+        assert!(matches!(
+            outer,
+            LegacyDoubleVotingProofDecodeError::OuterAbi(_)
+        ));
+
+        let nested = commit_double_voting_proof_call_data(&[0xc1, 0x00], &[0xc1, 0x00]);
+        let nested = verify_legacy_double_voting_proof_call_data(&nested).unwrap_err();
+        assert!(matches!(
+            nested,
+            LegacyDoubleVotingProofDecodeError::NestedRlp(_)
+        ));
+
+        let signing_key = SigningKey::from_slice(&[0x12; 32]).unwrap();
+        let sortition = encode_vrf_sortition(10, 2, 4, 0x5a);
+        let (vote_a, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(1),
+            &sortition,
+            None,
+            None,
+        );
+        let (vote_b, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(1),
+            &sortition,
+            None,
+            None,
+        );
+        let semantic = verify_legacy_double_voting_proof_call_data(
+            &commit_double_voting_proof_call_data(&vote_a, &vote_b),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            semantic,
+            LegacyDoubleVotingProofDecodeError::Semantic(_)
+        ));
+    }
+
+    #[test]
+    fn classifies_each_nested_shape_failure_as_hard_decode_error() {
+        let signing_key = SigningKey::from_slice(&[0x13; 32]).unwrap();
+        let valid_sortition = encode_vrf_sortition(10, 2, 4, 0x5a);
+        let (valid_vote, _) = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(2),
+            &valid_sortition,
+            None,
+            None,
+        );
+        let valid_vote_b = sign_vote(
+            &signing_key,
+            H256::from_low_u64_be(3),
+            &valid_sortition,
+            None,
+            None,
+        )
+        .0;
+        let assert_nested = |vote_a: Vec<u8>| {
+            let err = verify_legacy_double_voting_proof_call_data(
+                &commit_double_voting_proof_call_data(&vote_a, &valid_vote_b),
+            )
+            .unwrap_err();
+            assert!(matches!(
+                err,
+                LegacyDoubleVotingProofDecodeError::NestedRlp(_)
+            ));
+        };
+
+        let mut too_few_vote = RlpStream::new_list(2);
+        too_few_vote.append(&H256::from_low_u64_be(2));
+        too_few_vote.append(&valid_sortition);
+        assert_nested(too_few_vote.out().to_vec());
+
+        let mut too_many_vote = RlpStream::new_list(4);
+        too_many_vote.append(&H256::from_low_u64_be(2));
+        too_many_vote.append(&valid_sortition);
+        too_many_vote.append(&vec![0u8; SIGNATURE_SIZE]);
+        too_many_vote.append(&3u64);
+        assert_nested(too_many_vote.out().to_vec());
+
+        let mut trailing_vote = valid_vote.clone();
+        trailing_vote.push(0);
+        assert_nested(trailing_vote);
+
+        let append_in_declared_list = |mut encoded: Vec<u8>| {
+            assert_eq!(encoded[0], 0xf8);
+            encoded[1] = encoded[1].checked_add(1).unwrap();
+            encoded.push(0xb8);
+            encoded
+        };
+        assert_nested(append_in_declared_list(valid_vote.clone()));
+
+        let mut wrong_width_signature = RlpStream::new_list(3);
+        wrong_width_signature.append(&H256::from_low_u64_be(2));
+        wrong_width_signature.append(&valid_sortition);
+        wrong_width_signature.append(&vec![0u8; SIGNATURE_SIZE - 1]);
+        assert_nested(wrong_width_signature.out().to_vec());
+
+        for sortition in [
+            {
+                let mut stream = RlpStream::new_list(3);
+                stream.append(&10u64);
+                stream.append(&2u32);
+                stream.append(&4u32);
+                stream.out().to_vec()
+            },
+            {
+                let mut stream = RlpStream::new_list(5);
+                stream.append(&10u64);
+                stream.append(&2u32);
+                stream.append(&4u32);
+                stream.append(&vec![0x5a; VRF_SORTITION_PROOF_SIZE]);
+                stream.append(&0u8);
+                stream.out().to_vec()
+            },
+            {
+                let mut bytes = valid_sortition.clone();
+                bytes.push(0);
+                bytes
+            },
+            append_in_declared_list(valid_sortition.clone()),
+            {
+                let mut stream = RlpStream::new_list(4);
+                stream.append(&10u64);
+                stream.append(&2u32);
+                stream.append(&4u32);
+                stream.append(&vec![0x5a; VRF_SORTITION_PROOF_SIZE - 1]);
+                stream.out().to_vec()
+            },
+        ] {
+            assert_nested(
+                sign_vote(
+                    &signing_key,
+                    H256::from_low_u64_be(2),
+                    &sortition,
+                    None,
+                    None,
+                )
+                .0,
+            );
+        }
+
+        // Go's ABI unpacker permits offsets that alias the argument head. Those
+        // aliases produce empty byte payloads here and therefore fail at the
+        // nested RLP boundary, rather than being rejected as outer ABI shape.
+        let mut calldata = function_selector(DOUBLE_VOTING_PROOF_FUNCTION).to_vec();
+        calldata.extend_from_slice(&[0u8; WORD_SIZE * 2]);
+        let err = verify_legacy_double_voting_proof_call_data(&calldata).unwrap_err();
+        assert!(matches!(
+            err,
+            LegacyDoubleVotingProofDecodeError::NestedRlp(_)
+        ));
+
+        // An incomplete long-string prefix must be classified as malformed
+        // nested RLP, not accepted as a short value or as an outer ABI error.
+        assert_nested(vec![0xb8]);
+        assert_nested(sign_vote(&signing_key, H256::from_low_u64_be(2), &[0xb8], None, None).0);
     }
 
     #[test]

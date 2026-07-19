@@ -1130,10 +1130,8 @@ TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_res
 
   const dev::KeyPair owner{dev::Secret("1212121212121212121212121212121212121212121212121212121212121212")};
   const dev::KeyPair validator{dev::Secret("2323232323232323232323232323232323232323232323232323232323232323")};
-  const dev::KeyPair other_validator{
-      dev::Secret("3434343434343434343434343434343434343434343434343434343434343434")};
-  const dev::KeyPair absent_validator{
-      dev::Secret("4545454545454545454545454545454545454545454545454545454545454545")};
+  const dev::KeyPair other_validator{dev::Secret("3434343434343434343434343434343434343434343434343434343434343434")};
+  const dev::KeyPair absent_validator{dev::Secret("4545454545454545454545454545454545454545454545454545454545454545")};
   const dev::KeyPair sender{dev::Secret("5656565656565656565656565656565656565656565656565656565656565656")};
   const dev::KeyPair receiver{dev::Secret("6767676767676767676767676767676767676767676767676767676767676767")};
 
@@ -1214,8 +1212,7 @@ TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_res
       {"validator absent from delayed view", absent_a->rlp(), absent_b->rlp()},
   };
 
-  const auto jail_block_input =
-      util::EncodingSolidity::packFunctionCall("getJailBlock(address)", validator.address());
+  const auto jail_block_input = util::EncodingSolidity::packFunctionCall("getJailBlock(address)", validator.address());
   const auto jailed_validators_input = util::EncodingSolidity::packFunctionCall("getJailedValidators()");
   const auto call_slashing = [&](const std::shared_ptr<FinalChain>& chain, const bytes& input) {
     return chain->call({sender.address(), kGasPrice, kSlashingContract, 0, 0, kGasLimit, input});
@@ -1238,9 +1235,8 @@ TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_res
   proof_inputs.reserve(invalid_proofs.size());
   transactions.reserve(invalid_proofs.size() + 1);
   for (size_t idx = 0; idx < invalid_proofs.size(); ++idx) {
-    proof_inputs.push_back(util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)",
-                                                                    invalid_proofs[idx].vote_a,
-                                                                    invalid_proofs[idx].vote_b));
+    proof_inputs.push_back(util::EncodingSolidity::packFunctionCall(
+        "commitDoubleVotingProof(bytes,bytes)", invalid_proofs[idx].vote_a, invalid_proofs[idx].vote_b));
     transactions.push_back(std::make_shared<Transaction>(idx, kFailureValue, kGasPrice, kGasLimit, proof_inputs.back(),
                                                          sender.secret(), kSlashingContract, cfg.genesis.chain_id));
   }
@@ -1248,8 +1244,7 @@ TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_res
                                                        bytes{}, sender.secret(), receiver.address(),
                                                        cfg.genesis.chain_id));
 
-  const auto result =
-      advance(transactions, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  const auto result = advance(transactions, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
   ASSERT_EQ(result->trx_receipts.size(), transactions.size());
 
   std::vector<TransactionReceipt> expected_receipts;
@@ -1298,8 +1293,7 @@ TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_res
   ASSERT_TRUE(sender_account);
   ASSERT_TRUE(receiver_account);
   EXPECT_EQ(sender_account->nonce, invalid_proofs.size() + 1);
-  EXPECT_EQ(sender_account->balance,
-            u256(kSenderInitialBalance - cumulative_gas * kGasPrice - kTransferValue));
+  EXPECT_EQ(sender_account->balance, u256(kSenderInitialBalance - cumulative_gas * kGasPrice - kTransferValue));
   EXPECT_EQ(receiver_account->nonce, 0);
   EXPECT_EQ(receiver_account->balance, u256(kTransferValue));
 
@@ -1359,6 +1353,191 @@ TEST_F(FinalChainTest, native_slashing_semantic_invalid_double_voting_proofs_res
   EXPECT_EQ(SUT->lastBlockNumber(), 2);
   assert_persisted_state(SUT);
 }
+
+#ifndef RUSTAXA_ENABLE
+TEST(FinalChainLegacyDeathTest, native_slashing_malformed_nested_proof_aborts_finalization) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  EXPECT_DEATH(
+      ([] {
+        constexpr uint64_t kGasPrice = 7;
+        constexpr uint64_t kGasLimit = 200'000;
+        const addr_t slashing_contract("0x00000000000000000000000000000000000000EE");
+        const dev::KeyPair sender{dev::Secret("7878787878787878787878787878787878787878787878787878787878787878")};
+        const auto data_dir = std::filesystem::temp_directory_path() / "taraxa_node_tests" /
+                              "FinalChainLegacyDeathTest" / "native_slashing_malformed_nested_proof";
+        std::filesystem::remove_all(data_dir);
+        std::filesystem::create_directories(data_dir);
+        auto db = std::make_shared<DbStorage>(data_dir / "db");
+        auto cfg = FullNodeConfig();
+        cfg.genesis.state.initial_balances.clear();
+        cfg.genesis.state.initial_balances[sender.address()] = 10'000'000;
+        cfg.genesis.state.hardforks.magnolia_hf.block_num = 1;
+        cfg.genesis.state.dpos.delegation_delay = 0;
+        auto chain = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+
+        const auto [vrf_key, vrf_secret] = vrf_wrapper::getVrfKeyPair();
+        (void)vrf_key;
+        VrfPbftSortition sortition(vrf_secret, {PbftVoteTypes::propose_vote, 1, 1, 1});
+        auto vote = std::make_shared<PbftVote>(sender.secret(), sortition, blk_hash_t(1));
+        dev::RLPStream malformed_stream(2);
+        malformed_stream << vote->getBlockHash() << vote->getVrfSortition().getRlpBytes();
+        auto input = util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)",
+                                                              malformed_stream.invalidate(), vote->rlp());
+        // Dynamic offset zero aliases the ABI head; legacy extraction then hard-fails
+        // while decoding the nested vote payload.
+        std::fill(input.begin() + 4, input.begin() + 36, 0);
+        auto transaction = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, input, sender.secret(),
+                                                         slashing_contract, cfg.genesis.chain_id);
+        const auto dag_keys = dev::KeyPair::create();
+        const auto pbft_keys = dev::KeyPair::create();
+        const auto dag_blk =
+            std::make_shared<DagBlock>(blk_hash_t{}, level_t{}, vec_blk_t(), std::vector<h256>{transaction->getHash()},
+                                       0, VdfSortition{}, dag_keys.secret());
+        db->saveDagBlock(dag_blk);
+        auto pbft_block = std::make_shared<PbftBlock>(kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 1,
+                                                      addr_t::random(), pbft_keys.secret(), std::vector<vote_hash_t>{},
+                                                      PbftBlockExtraData(1, 0, 0, 1, "", blk_hash_t(123)));
+        PeriodData period_data(pbft_block, std::vector<std::shared_ptr<PbftVote>>{});
+        period_data.dag_blocks.push_back(dag_blk);
+        period_data.transactions = {transaction};
+        chain->finalize(std::move(period_data), {dag_blk->getHash()}, cfg.genesis.state.dpos.blocks_per_year).get();
+      })(),
+      "EOF");
+}
+#else
+TEST_F(FinalChainTest, native_slashing_malformed_nested_proof_aborts_finalization) {
+  constexpr uint64_t kGasPrice = 7;
+  constexpr uint64_t kGasLimit = 200'000;
+  constexpr uint64_t kSenderBalance = 10'000'000;
+  const addr_t kSlashingContract("0x00000000000000000000000000000000000000EE");
+  const dev::KeyPair sender{dev::Secret("7878787878787878787878787878787878787878787878787878787878787878")};
+
+  cfg.genesis.state.initial_balances.clear();
+  cfg.genesis.state.initial_balances[sender.address()] = kSenderBalance;
+  cfg.genesis.state.hardforks.magnolia_hf.block_num = 1;
+  cfg.genesis.state.dpos.delegation_delay = 0;
+  init();
+  advance({});
+
+  const auto [vote_vrf_key, vote_vrf_secret] = vrf_wrapper::getVrfKeyPair();
+  (void)vote_vrf_key;
+  VrfPbftSortition sortition(vote_vrf_secret, {PbftVoteTypes::propose_vote, 1, 1, 1});
+  auto vote = std::make_shared<PbftVote>(sender.secret(), sortition, blk_hash_t(1));
+  const auto selector_input =
+      util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)", vote->rlp(), vote->rlp());
+
+  const auto make_vote_with_sortition = [&](const bytes& sortition_rlp) {
+    dev::RLPStream stream(3);
+    stream << vote->getBlockHash() << sortition_rlp << vote->getVoteSignature();
+    return stream.invalidate();
+  };
+  const auto valid_sortition = vote->getVrfSortition().getRlpBytes();
+  const auto append_in_declared_list = [](bytes encoded) {
+    EXPECT_EQ(encoded.at(0), 0xf8);
+    encoded.at(1)++;
+    encoded.push_back(0xb8);
+    return encoded;
+  };
+  std::vector<std::pair<const char*, bytes>> malformed_votes;
+  {
+    dev::RLPStream stream(2);
+    stream << vote->getBlockHash() << valid_sortition;
+    malformed_votes.emplace_back("vote shape", stream.invalidate());
+  }
+  {
+    dev::RLPStream sortition_stream(3);
+    sortition_stream << uint64_t{1} << uint64_t{1} << uint64_t{1};
+    malformed_votes.emplace_back("sortition shape", make_vote_with_sortition(sortition_stream.invalidate()));
+  }
+  {
+    bytes short_proof(79, 0);
+    dev::RLPStream sortition_stream(4);
+    sortition_stream << uint64_t{1} << uint64_t{1} << uint64_t{1} << short_proof;
+    malformed_votes.emplace_back("sortition proof width", make_vote_with_sortition(sortition_stream.invalidate()));
+  }
+  {
+    auto trailing_sortition = valid_sortition;
+    trailing_sortition.push_back(0);
+    malformed_votes.emplace_back("sortition trailing data", make_vote_with_sortition(trailing_sortition));
+  }
+  malformed_votes.emplace_back("vote malformed suffix inside declared list", append_in_declared_list(vote->rlp()));
+  malformed_votes.emplace_back("sortition malformed suffix inside declared list",
+                               make_vote_with_sortition(append_in_declared_list(valid_sortition)));
+  malformed_votes.emplace_back("vote incomplete trailing RLP prefix", bytes{0xb8});
+  malformed_votes.emplace_back("sortition incomplete trailing RLP prefix", make_vote_with_sortition(bytes{0xb8}));
+
+  // A malformed outer ABI envelope remains an ordinary contract failure.
+  auto malformed_outer = selector_input;
+  malformed_outer.resize(4);
+  auto outer_tx = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, malformed_outer, sender.secret(),
+                                                kSlashingContract, cfg.genesis.chain_id);
+  auto outer_result = advance({outer_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  ASSERT_EQ(outer_result->trx_receipts.size(), 1);
+  EXPECT_EQ(outer_result->trx_receipts.front().status_code, 0);
+  EXPECT_TRUE(outer_result->trx_receipts.front().logs.empty());
+  ASSERT_EQ(SUT->lastBlockNumber(), 2);
+
+  const auto sender_before = SUT->getAccount(sender.address());
+  const auto slashing_before = SUT->getAccount(kSlashingContract);
+  ASSERT_TRUE(sender_before);
+  const auto jail_before =
+      SUT->call({sender.address(), kGasPrice, kSlashingContract, 0, 0, kGasLimit,
+                 util::EncodingSolidity::packFunctionCall("getJailBlock(address)", sender.address())});
+  const auto jailed_before = SUT->call({sender.address(), kGasPrice, kSlashingContract, 0, 0, kGasLimit,
+                                        util::EncodingSolidity::packFunctionCall("getJailedValidators()")});
+
+  std::vector<std::pair<const char*, bytes>> malformed_inputs;
+  malformed_inputs.reserve(malformed_votes.size() + 1);
+  for (const auto& [name, malformed_vote] : malformed_votes) {
+    malformed_inputs.emplace_back(
+        name, util::EncodingSolidity::packFunctionCall("commitDoubleVotingProof(bytes,bytes)", malformed_vote,
+                                                       vote->rlp()));
+  }
+  // A zero dynamic offset aliases the ABI head. Legacy extraction reaches nested
+  // vote decoding; Rust and C++ must both reject the malformed nested payload.
+  auto aliased_offset = selector_input;
+  std::fill(aliased_offset.begin() + 4, aliased_offset.begin() + 36, 0);
+  malformed_inputs.emplace_back("ABI dynamic offset aliases head", std::move(aliased_offset));
+
+  for (const auto& [name, input] : malformed_inputs) {
+    SCOPED_TRACE(name);
+    auto transaction = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, input, sender.secret(),
+                                                     kSlashingContract, cfg.genesis.chain_id);
+    const auto dag_blk =
+        std::make_shared<DagBlock>(blk_hash_t{}, level_t{}, vec_blk_t(), std::vector<h256>{transaction->getHash()}, 0,
+                                   VdfSortition{}, dag_proposer_keys.secret());
+    db->saveDagBlock(dag_blk);
+    auto pbft_block = std::make_shared<PbftBlock>(
+        kNullBlockHash, kNullBlockHash, kNullBlockHash, kNullBlockHash, 3, addr_t::random(),
+        pbft_proposer_keys.secret(), std::vector<vote_hash_t>{}, PbftBlockExtraData(1, 0, 0, 1, "", blk_hash_t(123)));
+    PeriodData period_data(pbft_block, std::vector<std::shared_ptr<PbftVote>>{});
+    period_data.dag_blocks.push_back(dag_blk);
+    period_data.transactions = {transaction};
+    EXPECT_THROW(
+        SUT->finalize(std::move(period_data), {dag_blk->getHash()}, cfg.genesis.state.dpos.blocks_per_year).get(),
+        std::exception);
+
+    EXPECT_EQ(SUT->lastBlockNumber(), 2);
+    EXPECT_FALSE(SUT->blockHeader(3));
+    EXPECT_FALSE(SUT->transactionReceipt(3, 0));
+    const auto sender_after = SUT->getAccount(sender.address());
+    const auto slashing_after = SUT->getAccount(kSlashingContract);
+    ASSERT_TRUE(sender_after);
+    EXPECT_EQ(util::rlp_enc(*sender_after), util::rlp_enc(*sender_before));
+    ASSERT_EQ(slashing_after.has_value(), slashing_before.has_value());
+    if (slashing_before) {
+      EXPECT_EQ(util::rlp_enc(*slashing_after), util::rlp_enc(*slashing_before));
+    }
+    const auto jail_after =
+        SUT->call({sender.address(), kGasPrice, kSlashingContract, 0, 0, kGasLimit,
+                   util::EncodingSolidity::packFunctionCall("getJailBlock(address)", sender.address())});
+    const auto jailed_after = SUT->call({sender.address(), kGasPrice, kSlashingContract, 0, 0, kGasLimit,
+                                         util::EncodingSolidity::packFunctionCall("getJailedValidators()")});
+    EXPECT_EQ(jail_after.code_retval, jail_before.code_retval);
+    EXPECT_EQ(jailed_after.code_retval, jailed_before.code_retval);
+  }
+}
+#endif
 
 TEST_F(FinalChainTest, native_slashing_reads_preserve_value_gas_and_nonce_semantics) {
   constexpr uint64_t kGasPrice = 7;
@@ -3809,35 +3988,36 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v1_pre_mutation_failures_roll_back
   ASSERT_TRUE(owner_account_after_init);
   const auto owner_balance_after_init = owner_account_after_init->balance;
 
-  const auto missing_validator_calldata = util::EncodingSolidity::packFunctionCall(
-      "undelegate(address,uint256)", missing_validator, u256(1'000));
-  auto tx_missing_validator = std::make_shared<Transaction>(
-      0, kFailureValue, kGasPrice, kGasLimit, missing_validator_calldata, delegator.secret(), kDposContract,
-      cfg.genesis.chain_id);
+  const auto missing_validator_calldata =
+      util::EncodingSolidity::packFunctionCall("undelegate(address,uint256)", missing_validator, u256(1'000));
+  auto tx_missing_validator =
+      std::make_shared<Transaction>(0, kFailureValue, kGasPrice, kGasLimit, missing_validator_calldata,
+                                    delegator.secret(), kDposContract, cfg.genesis.chain_id);
 
-  const auto non_delegator_calldata = util::EncodingSolidity::packFunctionCall(
-      "undelegate(address,uint256)", validator.address(), u256(1));
-  auto tx_non_delegator = std::make_shared<Transaction>(
-      0, 0, kGasPrice, kGasLimit, non_delegator_calldata, non_delegator.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto non_delegator_calldata =
+      util::EncodingSolidity::packFunctionCall("undelegate(address,uint256)", validator.address(), u256(1));
+  auto tx_non_delegator = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, non_delegator_calldata,
+                                                        non_delegator.secret(), kDposContract, cfg.genesis.chain_id);
 
-  const auto tx_too_big_calldata = util::EncodingSolidity::packFunctionCall(
-      "undelegate(address,uint256)", validator.address(), u256(1'001));
-  auto tx_too_big = std::make_shared<Transaction>(
-      1, 0, kGasPrice, kGasLimit, tx_too_big_calldata, delegator.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto tx_too_big_calldata =
+      util::EncodingSolidity::packFunctionCall("undelegate(address,uint256)", validator.address(), u256(1'001));
+  auto tx_too_big = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, tx_too_big_calldata, delegator.secret(),
+                                                  kDposContract, cfg.genesis.chain_id);
 
-  const auto tx_below_min_remainder_calldata = util::EncodingSolidity::packFunctionCall(
-      "undelegate(address,uint256)", validator.address(), u256(1));
+  const auto tx_below_min_remainder_calldata =
+      util::EncodingSolidity::packFunctionCall("undelegate(address,uint256)", validator.address(), u256(1));
   auto tx_below_min_remainder =
       std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, tx_below_min_remainder_calldata, delegator.secret(),
-                                   kDposContract, cfg.genesis.chain_id);
-  auto continuation = std::make_shared<Transaction>(
-      3, kContinuationValue, kGasPrice, kGasLimit, bytes(), delegator.secret(), owner.address(), cfg.genesis.chain_id);
+                                    kDposContract, cfg.genesis.chain_id);
+  auto continuation = std::make_shared<Transaction>(3, kContinuationValue, kGasPrice, kGasLimit, bytes(),
+                                                    delegator.secret(), owner.address(), cfg.genesis.chain_id);
 
   const auto tx1_failure_gas = IntrinsicGas(missing_validator_calldata, false) + 60'000;
   const auto tx2_failure_gas = IntrinsicGas(non_delegator_calldata, false) + 60'000;
   const auto tx3_failure_gas = IntrinsicGas(tx_too_big_calldata, false) + 60'000;
   const auto tx4_failure_gas = IntrinsicGas(tx_below_min_remainder_calldata, false) + 60'000;
-  const auto expected_block_gas = tx1_failure_gas + tx2_failure_gas + tx3_failure_gas + tx4_failure_gas + kContinuationGas;
+  const auto expected_block_gas =
+      tx1_failure_gas + tx2_failure_gas + tx3_failure_gas + tx4_failure_gas + kContinuationGas;
 
   std::array<TransactionReceipt, 5> expected_receipts{};
   expected_receipts[0].status_code = 0;
@@ -3860,9 +4040,9 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v1_pre_mutation_failures_roll_back
   expected_receipts[4].gas_used = kContinuationGas;
   expected_receipts[4].cumulative_gas_used = expected_receipts[3].cumulative_gas_used + kContinuationGas;
 
-  const auto result = advance(
-      {tx_missing_validator, tx_non_delegator, tx_too_big, tx_below_min_remainder, continuation},
-      {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  const auto result =
+      advance({tx_missing_validator, tx_non_delegator, tx_too_big, tx_below_min_remainder, continuation},
+              {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
 
   ASSERT_EQ(result->trx_receipts.size(), expected_receipts.size());
   EXPECT_EQ(result->final_chain_blk->number, 1);
@@ -4227,14 +4407,9 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_confirm_cancel_failures_restart
     return chain->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000, get_pending_v2_input});
   };
   const auto get_request_v2 = [&](const std::shared_ptr<FinalChain>& chain, uint64_t request_id) {
-    return chain->call({addr_t{},
-                       kGasPrice,
-                       kDposContract,
-                       0,
-                       0,
-                       1'000'000,
-                       util::EncodingSolidity::packFunctionCall("getUndelegationV2(address,address,uint64)",
-                                                              owner.address(), validator.address(), request_id)});
+    return chain->call({addr_t{}, kGasPrice, kDposContract, 0, 0, 1'000'000,
+                        util::EncodingSolidity::packFunctionCall("getUndelegationV2(address,address,uint64)",
+                                                                 owner.address(), validator.address(), request_id)});
   };
   const auto validator_exists = [&](const std::shared_ptr<FinalChain>& chain) {
     try {
@@ -4255,10 +4430,9 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_confirm_cancel_failures_restart
 
   const auto undelegate_input =
       util::EncodingSolidity::packFunctionCall("undelegateV2(address,uint256)", validator.address(), u256(kOwnerStake));
-  const auto block1 = advance(
-      {std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, undelegate_input, owner.secret(), kDposContract,
-                                     cfg.genesis.chain_id)},
-      {.dont_assume_no_logs = true});
+  const auto block1 = advance({std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, undelegate_input,
+                                                             owner.secret(), kDposContract, cfg.genesis.chain_id)},
+                              {.dont_assume_no_logs = true});
   ASSERT_EQ(block1->trx_receipts.size(), 1);
   const auto undelegate_gas = IntrinsicGas(undelegate_input, false) + 60'000;
   EXPECT_EQ(block1->final_chain_blk->number, 1);
@@ -4270,8 +4444,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_confirm_cancel_failures_restart
   ASSERT_EQ(block1->trx_receipts[0].logs.size(), 1u);
   const auto& undelegate_log = block1->trx_receipts[0].logs[0];
   EXPECT_EQ(undelegate_log.topics.size(), 4u);
-  EXPECT_EQ(undelegate_log.topics[0],
-            dev::sha3(dev::asBytes("UndelegatedV2(address,address,uint64,uint256)")));
+  EXPECT_EQ(undelegate_log.topics[0], dev::sha3(dev::asBytes("UndelegatedV2(address,address,uint64,uint256)")));
   EXPECT_EQ(to_u256(undelegate_log.data, 0), u256(kOwnerStake));
 
   const auto owner_balance_after_undelegate = SUT->getAccount(owner.address())->balance;
@@ -4301,18 +4474,17 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_confirm_cancel_failures_restart
       util::EncodingSolidity::packFunctionCall("cancelUndelegateV2(address,uint64)", validator.address(), uint64_t{2});
   const auto cancel_existing_input =
       util::EncodingSolidity::packFunctionCall("cancelUndelegateV2(address,uint64)", validator.address(), uint64_t{1});
-  const auto block2 = advance(
-      {std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, confirm_missing_input, owner.secret(), kDposContract,
-                                    cfg.genesis.chain_id),
-       std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, confirm_locked_input, owner.secret(), kDposContract,
-                                    cfg.genesis.chain_id),
-       std::make_shared<Transaction>(3, 0, kGasPrice, kGasLimit, cancel_missing_input, owner.secret(), kDposContract,
-                                    cfg.genesis.chain_id),
-       std::make_shared<Transaction>(4, 0, kGasPrice, kGasLimit, cancel_existing_input, owner.secret(), kDposContract,
-                                    cfg.genesis.chain_id),
-       std::make_shared<Transaction>(5, kTransferValue, kGasPrice, kGasLimit, bytes(), owner.secret(), receiver.address(),
-                                    cfg.genesis.chain_id)},
-      {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
+  const auto block2 = advance({std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, confirm_missing_input,
+                                                             owner.secret(), kDposContract, cfg.genesis.chain_id),
+                               std::make_shared<Transaction>(2, 0, kGasPrice, kGasLimit, confirm_locked_input,
+                                                             owner.secret(), kDposContract, cfg.genesis.chain_id),
+                               std::make_shared<Transaction>(3, 0, kGasPrice, kGasLimit, cancel_missing_input,
+                                                             owner.secret(), kDposContract, cfg.genesis.chain_id),
+                               std::make_shared<Transaction>(4, 0, kGasPrice, kGasLimit, cancel_existing_input,
+                                                             owner.secret(), kDposContract, cfg.genesis.chain_id),
+                               std::make_shared<Transaction>(5, kTransferValue, kGasPrice, kGasLimit, bytes(),
+                                                             owner.secret(), receiver.address(), cfg.genesis.chain_id)},
+                              {.dont_assume_no_logs = true, .dont_assume_all_trx_success = true});
   ASSERT_EQ(block2->trx_receipts.size(), 5);
 
   const auto confirm_missing_gas = IntrinsicGas(confirm_missing_input, false) + 20'000;
@@ -4321,8 +4493,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_confirm_cancel_failures_restart
   const auto cancel_existing_gas = IntrinsicGas(cancel_existing_input, false) + 60'000;
   const auto transfer_gas = IntrinsicGas(bytes(), false);
   const std::array<uint64_t, 5> block2_cumulative_gas = {
-      confirm_missing_gas,
-      confirm_missing_gas + confirm_locked_gas,
+      confirm_missing_gas, confirm_missing_gas + confirm_locked_gas,
       confirm_missing_gas + confirm_locked_gas + cancel_missing_gas,
       confirm_missing_gas + confirm_locked_gas + cancel_missing_gas + cancel_existing_gas,
       confirm_missing_gas + confirm_locked_gas + cancel_missing_gas + cancel_existing_gas + transfer_gas};
@@ -5187,8 +5358,8 @@ TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_pays_and_retains_pen
   state_api::ValidatorInfo validator_info{validator.address(), owner.address(), vrf_public_key, 0, "", "", {}};
   validator_info.delegations.emplace(owner.address(), kInitialStake);
   const auto pbft_vrf_public_key = vrf_wrapper::getVrfKeyPair().first;
-  state_api::ValidatorInfo pbft_validator_info{pbft_proposer_keys.address(), owner.address(), pbft_vrf_public_key, 0,
-                                               "", "", {}};
+  state_api::ValidatorInfo pbft_validator_info{
+      pbft_proposer_keys.address(), owner.address(), pbft_vrf_public_key, 0, "", "", {}};
   pbft_validator_info.delegations.emplace(owner.address(), kInitialStake);
   cfg.genesis.state.dpos.initial_validators = {validator_info, pbft_validator_info};
 
@@ -5222,17 +5393,17 @@ TEST_F(FinalChainTest, native_dpos_claim_commission_rewards_pays_and_retains_pen
     if (response.code_retval.size() < 96) {
       return 0;
     }
-    const auto hex_commission = "0x" + dev::toHex(bytes(response.code_retval.begin() + 64, response.code_retval.begin() + 96));
+    const auto hex_commission =
+        "0x" + dev::toHex(bytes(response.code_retval.begin() + 64, response.code_retval.begin() + 96));
     return u256(hex_commission);
   };
   const auto reward_tx = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(),
-                                                      receiver.address(), cfg.genesis.chain_id);
+                                                       receiver.address(), cfg.genesis.chain_id);
   const auto reward_result = advance({reward_tx});
   EXPECT_EQ(reward_result->trx_receipts.size(), 1);
   EXPECT_EQ(reward_result->trx_receipts[0].status_code, 1);
-  const auto magnolia_reward_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, dev::bytes(),
-                                                               sender.secret(), receiver.address(),
-                                                               cfg.genesis.chain_id);
+  const auto magnolia_reward_tx = std::make_shared<Transaction>(
+      1, 0, kGasPrice, kGasLimit, dev::bytes(), sender.secret(), receiver.address(), cfg.genesis.chain_id);
   const auto magnolia_reward_result = advance({magnolia_reward_tx});
   ASSERT_EQ(magnolia_reward_result->trx_receipts.size(), 1);
   ASSERT_EQ(magnolia_reward_result->trx_receipts[0].status_code, 1);
@@ -5547,8 +5718,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_premagnolia_deletes_validator_a
   EXPECT_EQ(undelegate_result->trx_receipts[0].gas_used, undelegate_gas);
   ASSERT_EQ(undelegate_result->trx_receipts[0].logs.size(), 1u);
   const auto& undelegate_log = undelegate_result->trx_receipts[0].logs[0];
-  EXPECT_EQ(undelegate_log.topics[0],
-            dev::sha3(dev::asBytes("UndelegatedV2(address,address,uint64,uint256)")));
+  EXPECT_EQ(undelegate_log.topics[0], dev::sha3(dev::asBytes("UndelegatedV2(address,address,uint64,uint256)")));
   EXPECT_EQ(undelegate_log.topics[1], h256(owner.address(), h256::AlignRight));
   EXPECT_EQ(undelegate_log.topics[2], h256(validator.address(), h256::AlignRight));
   EXPECT_EQ(u256("0x" + dev::toHex(undelegate_log.topics[3].asBytes())), u256(1));
@@ -5589,8 +5759,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_premagnolia_deletes_validator_a
   EXPECT_EQ(confirm_result->trx_receipts[0].gas_used, confirm_gas);
   ASSERT_EQ(confirm_result->trx_receipts[0].logs.size(), 1u);
   const auto& confirm_log = confirm_result->trx_receipts[0].logs[0];
-  EXPECT_EQ(confirm_log.topics[0],
-            dev::sha3(dev::asBytes("UndelegateConfirmedV2(address,address,uint64,uint256)")));
+  EXPECT_EQ(confirm_log.topics[0], dev::sha3(dev::asBytes("UndelegateConfirmedV2(address,address,uint64,uint256)")));
   EXPECT_EQ(confirm_log.topics[1], h256(owner.address(), h256::AlignRight));
   EXPECT_EQ(confirm_log.topics[2], h256(validator.address(), h256::AlignRight));
   EXPECT_EQ(u256("0x" + dev::toHex(confirm_log.topics[3].asBytes())), u256(1));
@@ -5664,9 +5833,8 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_cancel_and_claim_all_rewards_sa
     });
   };
 
-  const auto reward_tx =
-      std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, dev::bytes(), delegator.secret(), receiver.address(),
-                                   cfg.genesis.chain_id);
+  const auto reward_tx = std::make_shared<Transaction>(0, 0, kGasPrice, kGasLimit, dev::bytes(), delegator.secret(),
+                                                       receiver.address(), cfg.genesis.chain_id);
   const auto reward_result = advance({reward_tx});
   ASSERT_EQ(reward_result->trx_receipts.size(), 1);
   EXPECT_EQ(reward_result->trx_receipts[0].status_code, 1);
@@ -5684,11 +5852,11 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_cancel_and_claim_all_rewards_sa
       2, 0, kGasPrice, kGasLimit,
       util::EncodingSolidity::packFunctionCall("cancelUndelegateV2(address,uint64)", validator.address(), uint64_t{1}),
       delegator.secret(), kDposContract, cfg.genesis.chain_id);
-  const auto claim_tx = std::make_shared<Transaction>(
-      3, 0, kGasPrice, kGasLimit, util::EncodingSolidity::packFunctionCall("claimAllRewards()"),
-      delegator.secret(), kDposContract, cfg.genesis.chain_id);
-  const auto lifecycle_result =
-      advance({undelegate_tx, cancel_tx, claim_tx}, {.dont_assume_no_logs = true, .dont_assume_all_trx_success = false});
+  const auto claim_tx = std::make_shared<Transaction>(3, 0, kGasPrice, kGasLimit,
+                                                      util::EncodingSolidity::packFunctionCall("claimAllRewards()"),
+                                                      delegator.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto lifecycle_result = advance({undelegate_tx, cancel_tx, claim_tx},
+                                        {.dont_assume_no_logs = true, .dont_assume_all_trx_success = false});
   ASSERT_EQ(lifecycle_result->trx_receipts.size(), 3);
   for (const auto& receipt : lifecycle_result->trx_receipts) {
     EXPECT_EQ(receipt.status_code, 1);
@@ -5709,8 +5877,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_cancel_and_claim_all_rewards_sa
   EXPECT_EQ(undelegate_log.topics[0], dev::sha3(dev::asBytes("UndelegatedV2(address,address,uint64,uint256)")));
   EXPECT_EQ(undelegate_log.topics[1], h256(delegator.address(), h256::AlignRight));
   EXPECT_EQ(undelegate_log.topics[2], h256(validator.address(), h256::AlignRight));
-  const auto undelegation_id =
-      u256("0x" + dev::toHex(undelegate_log.topics[3].asBytes())).convert_to<uint64_t>();
+  const auto undelegation_id = u256("0x" + dev::toHex(undelegate_log.topics[3].asBytes())).convert_to<uint64_t>();
   EXPECT_EQ(undelegation_id, 1u);
 
   EXPECT_GT(lifecycle_result->trx_receipts[1].logs.size(), 0u);
@@ -5746,8 +5913,7 @@ TEST_F(FinalChainTest, native_dpos_undelegate_v2_cancel_and_claim_all_rewards_sa
   EXPECT_EQ(lifecycle_result->final_chain_blk->log_bloom, expected_bloom);
 
   const auto block_gas = lifecycle_result->final_chain_blk->gas_used;
-  const auto expected_delegator_balance =
-      pre_claim_delegator_balance + claimed_rewards - u256(block_gas * kGasPrice);
+  const auto expected_delegator_balance = pre_claim_delegator_balance + claimed_rewards - u256(block_gas * kGasPrice);
   const auto expected_contract_balance = pre_claim_dpos_balance + u256(block_gas * kGasPrice) - claimed_rewards;
   EXPECT_EQ(SUT->getAccount(delegator.address())->balance, expected_delegator_balance);
   EXPECT_EQ(SUT->getAccount(kDposContract)->balance, expected_contract_balance);
@@ -5800,10 +5966,10 @@ TEST_F(FinalChainTest, native_dpos_claim_all_rewards_gas_uses_live_membership_wi
   init();
   assume_only_toplevel_transfers = false;
 
-  const auto delegate_tx = std::make_shared<Transaction>(
-      0, kDelegation, kGasPrice, kGasLimit,
-      util::EncodingSolidity::packFunctionCall("delegate(address)", validator.address()), delegator.secret(),
-      kDposContract, cfg.genesis.chain_id);
+  const auto delegate_tx =
+      std::make_shared<Transaction>(0, kDelegation, kGasPrice, kGasLimit,
+                                    util::EncodingSolidity::packFunctionCall("delegate(address)", validator.address()),
+                                    delegator.secret(), kDposContract, cfg.genesis.chain_id);
   const auto delegate_result = advance({delegate_tx}, {.dont_assume_no_logs = true});
   ASSERT_EQ(delegate_result->trx_receipts.size(), 1);
   const auto delegate_gas = IntrinsicGas(delegate_tx->getData(), false) + 40'000;
@@ -5812,9 +5978,9 @@ TEST_F(FinalChainTest, native_dpos_claim_all_rewards_gas_uses_live_membership_wi
   EXPECT_EQ(delegate_result->trx_receipts[0].cumulative_gas_used, delegate_gas);
   EXPECT_EQ(SUT->dposTotalAmountDelegated(1), u256(kInitialStake + kDelegation));
 
-  const auto claim_tx = std::make_shared<Transaction>(
-      1, 0, kGasPrice, kGasLimit, util::EncodingSolidity::packFunctionCall("claimAllRewards()"), delegator.secret(),
-      kDposContract, cfg.genesis.chain_id);
+  const auto claim_tx = std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit,
+                                                      util::EncodingSolidity::packFunctionCall("claimAllRewards()"),
+                                                      delegator.secret(), kDposContract, cfg.genesis.chain_id);
   const auto claim_result = advance({claim_tx});
   ASSERT_EQ(claim_result->trx_receipts.size(), 1);
   const auto claim_gas = IntrinsicGas(claim_tx->getData(), false) + 45'000;
@@ -6195,12 +6361,11 @@ TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_
     }
   };
 
-  const auto pre_fork_tx = std::make_shared<Transaction>(
-      0, kTransferAmount, kGasPrice, kGasLimit, transfer_selector, sender.secret(), kDposContract,
-      cfg.genesis.chain_id);
-  const auto pre_fork_trailing_tx = std::make_shared<Transaction>(
-      1, 0, kGasPrice, kGasLimit, transfer_selector_with_trailing, sender.secret(), kDposContract,
-      cfg.genesis.chain_id);
+  const auto pre_fork_tx = std::make_shared<Transaction>(0, kTransferAmount, kGasPrice, kGasLimit, transfer_selector,
+                                                         sender.secret(), kDposContract, cfg.genesis.chain_id);
+  const auto pre_fork_trailing_tx =
+      std::make_shared<Transaction>(1, 0, kGasPrice, kGasLimit, transfer_selector_with_trailing, sender.secret(),
+                                    kDposContract, cfg.genesis.chain_id);
 
   const auto pre_fork_selector_gas = IntrinsicGas(transfer_selector, false);
   const auto pre_fork_trailing_gas = IntrinsicGas(transfer_selector_with_trailing, false);
@@ -6239,9 +6404,8 @@ TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_
   EXPECT_EQ(post_block1_dpos->balance, expected_dpos_after_block1);
   assert_no_dpos_mutation(SUT, 1);
 
-  const auto activation_tx = std::make_shared<Transaction>(
-      2, kTransferAmount, kGasPrice, kGasLimit, transfer_selector, sender.secret(), kDposContract,
-      cfg.genesis.chain_id);
+  const auto activation_tx = std::make_shared<Transaction>(2, kTransferAmount, kGasPrice, kGasLimit, transfer_selector,
+                                                           sender.secret(), kDposContract, cfg.genesis.chain_id);
   const auto block2 = advance({activation_tx});
   ASSERT_EQ(block2->trx_receipts.size(), 1);
   EXPECT_EQ(block2->final_chain_blk->number, 2);
@@ -6268,9 +6432,9 @@ TEST_F(FinalChainTest, native_dpos_transfer_into_contract_selector_phalaenopsis_
   EXPECT_EQ(post_block2_dpos->balance, expected_dpos_after_block2);
   assert_no_dpos_mutation(SUT, 2);
 
-  const auto cornus_block_tx = std::make_shared<Transaction>(
-      3, kTransferAmount, kGasPrice, kGasLimit, transfer_selector, sender.secret(), kDposContract,
-      cfg.genesis.chain_id);
+  const auto cornus_block_tx =
+      std::make_shared<Transaction>(3, kTransferAmount, kGasPrice, kGasLimit, transfer_selector, sender.secret(),
+                                    kDposContract, cfg.genesis.chain_id);
   const auto block3 = advance({cornus_block_tx});
   ASSERT_EQ(block3->trx_receipts.size(), 1);
   EXPECT_EQ(block3->final_chain_blk->number, 3);

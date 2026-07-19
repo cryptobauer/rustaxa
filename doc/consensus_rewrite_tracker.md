@@ -821,6 +821,31 @@ Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, `rewrite-validate-f
 `rewrite-validate-final-chain-parity` differential gate, `rewrite-bridge-inventory-guard`, skill validation, whitespace
 validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` for the final scoped diff.
 
+The next bounded `CRW-08` slice restores the legacy must-decode boundary for malformed nested
+`commitDoubleVotingProof(bytes,bytes)` payloads. The outer Solidity ABI envelope remains ordinary user input: malformed
+offsets, lengths, or tails consume the recognized method gas and publish a status-zero receipt. Once both dynamic byte
+arguments are extracted, however, legacy Go constructs each three-field `Vote` and its four-field embedded
+`VrfPbftSortition` through `rlp.MustDecodeBytes`; malformed list shape, fixed-width signature or proof fields,
+noncanonical framing, and trailing nested bytes panic across the EVM boundary and abort FinalChain without publishing a
+receipt or block state. Rust now preserves that distinction through a typed `OuterAbi` / `NestedRlp` / `Semantic`
+classification. Only `NestedRlp` propagates from the native transaction decoder as a hard finalization error; valid-RLP
+slot, hash, signature, signer, and validator-membership failures remain ordinary status-zero contract outcomes.
+
+Focused Rust tables cover outer framing, too-short and too-long vote and sortition lists, four-item weighted votes,
+signature/proof widths, nested trailing bytes, and semantic rejection. The dual-mode FinalChain fixture proves an outer
+failure receipt plus hard nested failures leave the finalized head, header, receipt, sender/slashing accounts, jail
+block, and jailed-validator list unchanged. Exact duplicate-versus-semantic diagnostic precedence remains excluded:
+legacy checks the durable duplicate key earlier, but both orders publish the same status, gas, empty logs/bloom, and
+unchanged state, and diagnostics are not receipt data. No bridge handle, carrier, export, shim, module flag, snapshot
+schema, migration, or `CRW-07` inventory delta is introduced. `CRW-08` remains active for any other required
+FinalChain/DPoS family established by the canonical audit.
+
+Validation passed both focused Rust classification tables, all 775 `rustaxa-consensus` tests, the focused
+Rust-enabled FinalChain fixture, the standalone pure-C++ legacy death test, `rewrite-validate-fast`,
+`rewrite-validate-final-chain`, and the Tier 3 `rewrite-validate-final-chain-parity` differential gate. The standalone
+reference test uses GoogleTest re-exec mode and constructs its database and FinalChain only inside the child, preserving
+the legacy process-abort assertion without forking live RocksDB or executor threads.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

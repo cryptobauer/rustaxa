@@ -3936,6 +3936,33 @@ Rust-enabled and pure-C++ binaries, `rewrite-validate-fast`, `rewrite-validate-f
 `rewrite-validate-final-chain-parity` differential gate, `rewrite-bridge-inventory-guard`, skill validation, whitespace
 validation, and the repository pre-commit hook. The configured `reviewer` returned `APPROVED` for the final scoped diff.
 
+### CRW-08 Malformed Nested Slashing-Proof Hard Boundary
+
+Native `commitDoubleVotingProof(bytes,bytes)` now distinguishes malformed outer ABI framing from malformed nested
+legacy RLP. Solidity selector/offset/length/tail failures remain ordinary status-zero contract execution. After the two
+byte arguments decode, Rust requires exactly the legacy three-field `Vote` and four-field `VrfPbftSortition` shapes,
+their fixed 65-byte signature and 80-byte proof, canonical full-value consumption, and no trailing bytes. This matches
+the legacy Go `rlp.MustDecodeBytes` boundary: a nested decode failure aborts FinalChain before receipt, head, account,
+DPoS, proof, or jail publication rather than continuing the block with a failed receipt.
+
+The verifier exposes a typed `OuterAbi`, `NestedRlp`, or `Semantic` result. Native FinalChain maps outer and semantic
+failures to the existing contract-failure outcome and propagates only nested RLP failures through the transaction-loop
+hard-error boundary. Valid-RLP slot/hash/signature/signer/validator failures and successful proofs retain their existing
+behavior. Focused Rust tables cover every nested shape and width class, including the legacy rejection of four-item
+weighted vote rows, while a dual-mode FinalChain fixture proves the outer-failure control and atomic no-publication
+behavior for malformed vote shape, sortition shape, proof width, and nested trailing bytes.
+
+Duplicate-versus-semantic diagnostic precedence remains intentionally unchanged because diagnostics are not published
+in receipts and both paths have identical status, gas, log/bloom, value rollback, and state results. No CXX carrier,
+bridge handle/export, shim, module flag, compatibility-only surface, snapshot schema, migration, or `CRW-07` inventory
+change is required.
+
+Validation passed both focused Rust classification tables, all 775 `rustaxa-consensus` tests, the focused
+Rust-enabled FinalChain fixture, the standalone pure-C++ legacy death test, `rewrite-validate-fast`,
+`rewrite-validate-final-chain`, and the Tier 3 `rewrite-validate-final-chain-parity` differential gate. The standalone
+reference test uses GoogleTest re-exec mode and constructs its database and FinalChain only inside the child, so the
+legacy process-abort assertion does not fork live RocksDB or executor threads.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript
