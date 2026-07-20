@@ -16,6 +16,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use ethereum_types::{H160, H256, U256};
 use rlp::{Rlp, RlpStream};
 use rustaxa_storage::{Column, Storage, StorageWriteBatch};
+use rustaxa_types::FinalChainGas;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Hardfork and committee configuration used by reward-stat planning.
@@ -44,12 +45,12 @@ pub struct RewardsFrequencyRule {
 /// Transaction fee fact for one finalized transaction in a PBFT period.
 ///
 /// `gas_price` is the canonical transaction gas price and `gas_used` is the
-/// post-execution gas usage supplied by the still-C++ FinalChain execution path.
+/// typed post-execution gas usage supplied by FinalChain execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RewardTransactionFact {
     pub hash: H256,
     pub gas_price: U256,
-    pub gas_used: u64,
+    pub gas_used: FinalChainGas,
 }
 
 /// Finalized DAG block fact needed for reward-stat calculation.
@@ -924,7 +925,7 @@ mod tests {
         RewardTransactionFact {
             hash: hash(id),
             gas_price: U256::from(gas_price),
-            gas_used,
+            gas_used: gas_used.into(),
         }
     }
 

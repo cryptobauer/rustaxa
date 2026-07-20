@@ -7,6 +7,56 @@ use std::cmp::Ordering;
 /// Canonical byte width of an Ethereum/FinalChain log bloom.
 pub const FINAL_CHAIN_LOG_BLOOM_BYTES: usize = 256;
 
+/// Gas quantity used throughout FinalChain execution and persistence.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainGas(u64);
+impl FinalChainGas {
+    /// Zero gas.
+    pub const ZERO: Self = Self(0);
+    /// Wraps a gas quantity.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+    /// Returns the underlying gas quantity.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+    /// Reports whether this quantity is zero.
+    pub const fn is_zero(self) -> bool {
+        self.0 == 0
+    }
+    /// Adds gas, returning `None` on overflow.
+    pub const fn checked_add(self, rhs: Self) -> Option<Self> {
+        match self.0.checked_add(rhs.0) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+    /// Subtracts gas, returning `None` on underflow.
+    pub const fn checked_sub(self, rhs: Self) -> Option<Self> {
+        match self.0.checked_sub(rhs.0) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+}
+impl From<u64> for FinalChainGas {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+impl From<FinalChainGas> for u64 {
+    fn from(value: FinalChainGas) -> Self {
+        value.as_u64()
+    }
+}
+impl From<FinalChainGas> for U256 {
+    fn from(value: FinalChainGas) -> Self {
+        U256::from(value.as_u64())
+    }
+}
+
 /// Error returned when a FinalChain gas price exceeds the EVM `u256` domain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FinalChainGasPriceLengthError {
@@ -75,8 +125,8 @@ impl FinalChainGasPrice {
         self.0.to_big_endian()
     }
     /// Computes `gas_price * gas_used`, returning `None` on `u256` overflow.
-    pub fn checked_fee(self, gas_used: u64) -> Option<U256> {
-        self.0.checked_mul(U256::from(gas_used))
+    pub fn checked_fee(self, gas_used: FinalChainGas) -> Option<U256> {
+        self.0.checked_mul(U256::from(gas_used.as_u64()))
     }
 }
 
@@ -846,7 +896,7 @@ pub struct FinalChainCallRequest {
     /// Gas price in the EVM `u256` domain.
     pub gas_price: FinalChainGasPrice,
     /// Gas limit supplied by the caller.
-    pub gas_limit: u64,
+    pub gas_limit: FinalChainGas,
     /// Call input data.
     pub input: Vec<u8>,
 }
@@ -864,7 +914,7 @@ pub struct FinalChainCallOutcome {
     /// caller but are never persisted as finalized receipts.
     pub logs: Vec<FinalChainCallLog>,
     /// Gas used by the transient call.
-    pub gas_used: u64,
+    pub gas_used: FinalChainGas,
     /// EVM/code-level error text, if any.
     pub code_err: String,
     /// Consensus/account-level error text, if any.
@@ -957,7 +1007,7 @@ pub struct FinalizationTransaction {
     /// Gas price in the EVM `u256` domain.
     pub gas_price: FinalChainGasPrice,
     /// Gas limit supplied by the transaction.
-    pub gas_limit: u64,
+    pub gas_limit: FinalChainGas,
     /// Transaction input data.
     pub data: Vec<u8>,
     /// Canonical transaction RLP.
@@ -971,7 +1021,7 @@ pub struct StoredFinalChainBlockHeader {
     pub transactions_root: H256,
     pub receipts_root: H256,
     pub log_bloom: FinalChainLogBloom,
-    pub gas_used: u64,
+    pub gas_used: FinalChainGas,
     pub total_reward: U256,
 }
 
@@ -991,7 +1041,7 @@ impl StoredFinalChainBlockHeader {
 pub struct BlockHeaderContext<'a> {
     pub hash: H256,
     pub pbft: Option<&'a PbftBlockMetadata>,
-    pub block_gas_limit: u64,
+    pub block_gas_limit: FinalChainGas,
     pub genesis_timestamp: u64,
 }
 
@@ -1005,8 +1055,8 @@ pub struct FinalChainBlockHeader {
     pub receipts_root: H256,
     pub log_bloom: FinalChainLogBloom,
     pub number: u64,
-    pub gas_limit: u64,
-    pub gas_used: u64,
+    pub gas_limit: FinalChainGas,
+    pub gas_used: FinalChainGas,
     pub timestamp: u64,
     pub total_reward: U256,
     pub extra_data: Vec<u8>,
@@ -1017,7 +1067,7 @@ pub struct FinalChainBlockHeaderBuilder<'a> {
     stored_header: &'a StoredFinalChainBlockHeader,
     hash: Option<H256>,
     pbft: Option<&'a PbftBlockMetadata>,
-    block_gas_limit: Option<u64>,
+    block_gas_limit: Option<FinalChainGas>,
     genesis_timestamp: Option<u64>,
 }
 
@@ -1042,7 +1092,7 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
         self
     }
 
-    pub fn block_gas_limit(mut self, block_gas_limit: u64) -> Self {
+    pub fn block_gas_limit(mut self, block_gas_limit: FinalChainGas) -> Self {
         self.block_gas_limit = Some(block_gas_limit);
         self
     }
@@ -1131,14 +1181,27 @@ mod tests {
     #[test]
     fn gas_price_checked_fee_handles_zero_success_and_overflow() {
         assert_eq!(
-            FinalChainGasPrice::zero().checked_fee(u64::MAX),
+            FinalChainGasPrice::zero().checked_fee(u64::MAX.into()),
             Some(U256::zero())
         );
         assert_eq!(
-            FinalChainGasPrice::from(U256::from(3)).checked_fee(7),
+            FinalChainGasPrice::from(U256::from(3)).checked_fee(7.into()),
             Some(U256::from(21))
         );
-        assert_eq!(FinalChainGasPrice::from(U256::MAX).checked_fee(2), None);
+        assert_eq!(
+            FinalChainGasPrice::from(U256::MAX).checked_fee(2.into()),
+            None
+        );
+    }
+
+    #[test]
+    fn final_chain_gas_checked_arithmetic_preserves_boundaries() {
+        assert!(FinalChainGas::ZERO.is_zero());
+        assert_eq!(FinalChainGas::new(7).as_u64(), 7);
+        assert_eq!(FinalChainGas::new(7).checked_add(5.into()), Some(12.into()));
+        assert_eq!(FinalChainGas::new(7).checked_sub(5.into()), Some(2.into()));
+        assert_eq!(FinalChainGas::new(u64::MAX).checked_add(1.into()), None);
+        assert_eq!(FinalChainGas::ZERO.checked_sub(1.into()), None);
     }
 
     #[test]
@@ -1225,13 +1288,13 @@ mod tests {
             transactions_root: H256::from_low_u64_be(3),
             receipts_root: H256::from_low_u64_be(4),
             log_bloom: FinalChainLogBloom::ZERO,
-            gas_used: 5,
+            gas_used: 5.into(),
             total_reward: U256::from(6u64),
         };
 
         let header = FinalChainBlockHeaderBuilder::new(&stored_header)
             .hash(H256::from_low_u64_be(99))
-            .block_gas_limit(1000)
+            .block_gas_limit(1000.into())
             .genesis_timestamp(1234)
             .build()
             .unwrap();
@@ -1239,7 +1302,7 @@ mod tests {
         assert_eq!(header.parent_hash, stored_header.parent_hash);
         assert_eq!(header.author, H160::zero());
         assert_eq!(header.number, 0);
-        assert_eq!(header.gas_limit, 1000);
+        assert_eq!(header.gas_limit.as_u64(), 1000);
         assert_eq!(header.gas_used, stored_header.gas_used);
         assert_eq!(header.timestamp, 1234);
         assert_eq!(header.total_reward, stored_header.total_reward);
@@ -1254,12 +1317,12 @@ mod tests {
             transactions_root: H256::from_low_u64_be(3),
             receipts_root: H256::from_low_u64_be(4),
             log_bloom: FinalChainLogBloom::ZERO,
-            gas_used: 5,
+            gas_used: 5.into(),
             total_reward: U256::from(6u64),
         };
 
         let err = FinalChainBlockHeaderBuilder::new(&stored_header)
-            .block_gas_limit(1000)
+            .block_gas_limit(1000.into())
             .genesis_timestamp(1234)
             .build()
             .unwrap_err();

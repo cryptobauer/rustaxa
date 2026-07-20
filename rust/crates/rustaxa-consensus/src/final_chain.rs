@@ -54,9 +54,10 @@ use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::transaction::intrinsic_gas;
 use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount, FinalChainCallLog,
-    FinalChainCallOutcome, FinalChainCallRequest, FinalChainNonce, FinalChainRewardsConfig,
-    FinalChainTransactionPosition, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
-    GenesisDposConfig, GenesisValidator, RedelegationCorrection, StoredFinalChainBlockHeader,
+    FinalChainCallOutcome, FinalChainCallRequest, FinalChainGas, FinalChainNonce,
+    FinalChainRewardsConfig, FinalChainTransactionPosition, FinalizationDagBlock,
+    FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
+    RedelegationCorrection, StoredFinalChainBlockHeader,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -223,7 +224,7 @@ const ASPEN_YIELD_PRECISION: u64 = 1_000_000;
 /// Rust final-chain domain surface used by the C++ shim.
 pub struct FinalChain {
     storage: Arc<Storage>,
-    block_gas_limit: u64,
+    block_gas_limit: rustaxa_types::FinalChainGas,
     genesis_timestamp: u64,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
@@ -426,7 +427,7 @@ impl FinalChain {
 
     pub fn new(
         storage: Arc<Storage>,
-        block_gas_limit: u64,
+        block_gas_limit: FinalChainGas,
         genesis_timestamp: u64,
         genesis_accounts: Vec<GenesisAccount>,
         genesis_validators: Vec<GenesisValidator>,
@@ -449,7 +450,7 @@ impl FinalChain {
     /// The value is immutable for the runtime. External-EVM publication
     /// planning uses it to derive header RLP and hash bytes without taking
     /// ownership of EVM execution or storage commit.
-    pub(crate) fn block_gas_limit(&self) -> u64 {
+    pub(crate) fn block_gas_limit(&self) -> rustaxa_types::FinalChainGas {
         self.block_gas_limit
     }
 
@@ -473,7 +474,7 @@ impl FinalChain {
     /// the genesis escrow is not credited a second time.
     pub fn new_with_rewards_config(
         storage: Arc<Storage>,
-        block_gas_limit: u64,
+        block_gas_limit: FinalChainGas,
         genesis_timestamp: u64,
         genesis_accounts: Vec<GenesisAccount>,
         genesis_validators: Vec<GenesisValidator>,
@@ -882,7 +883,7 @@ impl FinalChain {
         };
         let mut header_input = LegacyBlockHeaderRlpInput::new(
             StoredBlockHeaderRlp::new(&raw_header),
-            self.block_gas_limit,
+            self.block_gas_limit.as_u64(),
             self.genesis_timestamp,
         );
         if let Some(pbft_block) = pbft_block.as_deref() {
@@ -1207,7 +1208,10 @@ impl FinalChain {
             .collect())
     }
 
-    pub fn estimate_call_gas(&self, gas_limit: u64) -> Result<u64, anyhow::Error> {
+    pub fn estimate_call_gas(
+        &self,
+        gas_limit: FinalChainGas,
+    ) -> Result<FinalChainGas, anyhow::Error> {
         Ok(gas_limit)
     }
 
@@ -1255,7 +1259,7 @@ impl FinalChain {
 
         if request.input.len() < 4 {
             return Ok(FinalChainCallOutcome {
-                gas_used: 0,
+                gas_used: rustaxa_types::FinalChainGas::ZERO,
                 code_err: "Rust FinalChain::call DPoS input is missing selector".to_string(),
                 ..Default::default()
             });
@@ -1576,7 +1580,7 @@ impl FinalChain {
             balance_after_gas_cap = Some(remaining_balance);
         }
 
-        let intrinsic_gas = intrinsic_gas(&request.input, false)?;
+        let intrinsic_gas: FinalChainGas = intrinsic_gas(&request.input, false)?.into();
         if request.gas_limit < intrinsic_gas {
             return Ok(FinalChainCallOutcome {
                 gas_used: request.gas_limit,
@@ -1603,7 +1607,7 @@ impl FinalChain {
         let value_transfer_allowed =
             request.block_number < self.dpos_cornus_period || dpos_transaction_is_payable(&dpos_tx);
         let action_gas = if !value.is_zero() && !value_transfer_allowed {
-            0
+            FinalChainGas::ZERO
         } else {
             dpos_transaction_required_gas(
                 &dpos_tx,
@@ -1715,7 +1719,7 @@ impl FinalChain {
     ) -> Result<FinalChainCallOutcome, anyhow::Error> {
         if request.input.len() < 4 {
             return Ok(FinalChainCallOutcome {
-                gas_used: 0,
+                gas_used: rustaxa_types::FinalChainGas::ZERO,
                 code_err: "Rust FinalChain::call slashing input is missing selector".to_string(),
                 ..Default::default()
             });
@@ -1729,7 +1733,7 @@ impl FinalChain {
             SLASHING_COMMIT_DOUBLE_VOTING_PROOF_SELECTOR => SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS,
             _ => 0,
         };
-        if request.gas_limit < gas_used {
+        if request.gas_limit.as_u64() < gas_used {
             return Ok(FinalChainCallOutcome {
                 gas_used: request.gas_limit,
                 code_err: "out of gas".to_string(),
@@ -1746,7 +1750,7 @@ impl FinalChain {
             SLASHING_GET_JAILED_VALIDATORS_SELECTOR => encode_slashing_jailed_validators(&snapshot),
             _ => {
                 return Ok(FinalChainCallOutcome {
-                    gas_used,
+                    gas_used: gas_used.into(),
                     code_err: format!(
                         "Rust FinalChain::call unsupported slashing selector 0x{}",
                         selector_hex(selector)
@@ -1757,7 +1761,7 @@ impl FinalChain {
         };
         Ok(FinalChainCallOutcome {
             code_retval,
-            gas_used,
+            gas_used: gas_used.into(),
             ..Default::default()
         })
     }
@@ -2484,7 +2488,7 @@ impl FinalChain {
         let full_header = LegacyBlockHeaderRlp::try_from(
             LegacyBlockHeaderRlpInput::new(
                 StoredBlockHeaderRlp::new(stored_header_rlp.as_bytes()),
-                self.block_gas_limit,
+                self.block_gas_limit.as_u64(),
                 self.genesis_timestamp,
             )
             .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block_rlp)),
@@ -3193,13 +3197,13 @@ impl FinalChain {
             transactions_root: empty_trie_root(),
             receipts_root: empty_trie_root(),
             log_bloom: FinalChainLogBloom::ZERO,
-            gas_used: 0,
+            gas_used: rustaxa_types::FinalChainGas::ZERO,
             total_reward: ethereum_types::U256::zero(),
         };
         let stored_header_rlp = StoredBlockHeaderRlpOwned::from(&stored_header);
         let full_header = LegacyBlockHeaderRlp::try_from(LegacyBlockHeaderRlpInput::new(
             StoredBlockHeaderRlp::new(stored_header_rlp.as_bytes()),
-            self.block_gas_limit,
+            self.block_gas_limit.as_u64(),
             self.genesis_timestamp,
         ))?;
         self.storage.final_chain().write_block_header(
@@ -3218,7 +3222,7 @@ impl FinalChain {
         let mut accounts = self.current_account_snapshot()?;
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
-        let mut cumulative_gas_used = 0u64;
+        let mut cumulative_gas_used = FinalChainGas::ZERO;
         let head_block_number = self.last_block_number()?;
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head_block_number)?;
         self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
@@ -3325,9 +3329,9 @@ impl FinalChain {
             let contract_nonpayable_value_failure = !value.is_zero()
                 && contract_transaction.is_some()
                 && contract_payment_recipient.is_none();
-            let intrinsic_gas = intrinsic_gas(&transaction.data, false)?;
+            let intrinsic_gas: FinalChainGas = intrinsic_gas(&transaction.data, false)?.into();
             let required_gas = if contract_nonpayable_value_failure {
-                0
+                FinalChainGas::ZERO
             } else if let Some(contract_transaction) = contract_transaction.as_ref() {
                 match contract_transaction {
                     NativeContractTransaction::Dpos(dpos_transaction) => {
@@ -3350,16 +3354,18 @@ impl FinalChain {
                     NativeContractTransaction::Slashing(slashing_transaction) => {
                         match slashing_transaction {
                             SlashingTransaction::CommitDoubleVotingProof(_) => {
-                                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS
+                                SLASHING_COMMIT_DOUBLE_VOTING_PROOF_GAS.into()
                             }
                             SlashingTransaction::GetJailBlock(_)
-                            | SlashingTransaction::GetJailedValidators => SLASHING_GET_METHOD_GAS,
-                            SlashingTransaction::MethodNotSupported => 0,
+                            | SlashingTransaction::GetJailedValidators => {
+                                SLASHING_GET_METHOD_GAS.into()
+                            }
+                            SlashingTransaction::MethodNotSupported => FinalChainGas::ZERO,
                         }
                     }
                 }
             } else {
-                0
+                FinalChainGas::ZERO
             };
             let required_gas = intrinsic_gas
                 .checked_add(required_gas)
@@ -3421,8 +3427,9 @@ impl FinalChain {
                     }
                 }
 
-                gas_cost = gas_price
-                    .checked_mul(U256::from(gas_used))
+                gas_cost = transaction
+                    .gas_price
+                    .checked_fee(gas_used)
                     .ok_or_else(|| anyhow::anyhow!("transaction gas cost overflow"))?;
                 if status_code == 1 || advance_nonce {
                     let charged_value = if status_code == 0
@@ -4052,7 +4059,7 @@ impl FinalChain {
         &self,
         request: &FinalChainCallRequest,
     ) -> Result<Option<FinalChainCallOutcome>, anyhow::Error> {
-        if request.gas_limit < VALUE_TRANSFER_GAS {
+        if request.gas_limit.as_u64() < VALUE_TRANSFER_GAS {
             return Ok(Some(FinalChainCallOutcome {
                 gas_used: request.gas_limit,
                 code_err: "intrinsic gas too low".to_string(),
@@ -4071,7 +4078,7 @@ impl FinalChain {
         let value = request.value.as_u256();
         if balance < value {
             return Ok(Some(FinalChainCallOutcome {
-                gas_used: VALUE_TRANSFER_GAS,
+                gas_used: VALUE_TRANSFER_GAS.into(),
                 consensus_err: "insufficient balance for transfer".to_string(),
                 ..Default::default()
             }));
@@ -4083,7 +4090,7 @@ impl FinalChain {
             .ok_or_else(|| anyhow::anyhow!("call gas limit cost overflow"))?;
         if balance < gas_cost {
             return Ok(Some(FinalChainCallOutcome {
-                gas_used: VALUE_TRANSFER_GAS,
+                gas_used: VALUE_TRANSFER_GAS.into(),
                 consensus_err: "insufficient balance to pay for gas".to_string(),
                 ..Default::default()
             }));
@@ -4096,7 +4103,7 @@ impl FinalChain {
         &self,
         request: &FinalChainCallRequest,
         selector: [u8; 4],
-    ) -> Result<u64, anyhow::Error> {
+    ) -> Result<FinalChainGas, anyhow::Error> {
         if (is_dpos_eligibility_read_selector(selector)
             || is_dpos_fixed_singleton_read_selector(selector)
             || is_dpos_total_delegation_read_selector(selector)
@@ -4106,14 +4113,14 @@ impl FinalChain {
             && request.block_number >= self.dpos_cornus_period
             && !request.value.is_zero()
         {
-            return Ok(0);
+            return Ok(FinalChainGas::ZERO);
         }
         if is_dpos_mutation_selector(selector) {
             if request.block_number >= self.dpos_cornus_period
                 && !request.value.is_zero()
                 && !dpos_selector_is_payable(selector)
             {
-                return Ok(0);
+                return Ok(FinalChainGas::ZERO);
             }
             let dpos_tx = decode_dpos_transaction_for_execution(
                 &request.input,
@@ -4137,7 +4144,7 @@ impl FinalChain {
                 .as_ref(),
             );
         }
-        match selector {
+        let gas = match selector {
             DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR
             | DPOS_GET_TOTAL_ELIGIBLE_VOTES_SELECTOR
             | DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR => Ok(DPOS_DEFAULT_METHOD_GAS),
@@ -4146,7 +4153,7 @@ impl FinalChain {
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
                 let Ok(batch) = decode_abi_u32_argument(&request.input, 4, "getValidators(uint32)")
                 else {
-                    return Ok(0);
+                    return Ok(FinalChainGas::ZERO);
                 };
                 let items = dpos_batch_items_count(
                     snapshot.validator_order.len() as u64,
@@ -4160,7 +4167,7 @@ impl FinalChain {
             DPOS_GET_VALIDATORS_FOR_SELECTOR => {
                 self.dpos_snapshot_at_finalized_block(request.block_number)?;
                 if decode_dpos_validators_for_read(&request.input).is_err() {
-                    return Ok(0);
+                    return Ok(FinalChainGas::ZERO);
                 }
                 (DPOS_GET_VALIDATORS_MAX_COUNT as u64)
                     .checked_mul(DPOS_BATCH_GET_REWARDS_GAS)
@@ -4171,7 +4178,7 @@ impl FinalChain {
                 let Ok(delegator) =
                     decode_abi_address_argument(&request.input, "getTotalDelegation(address)")
                 else {
-                    return Ok(0);
+                    return Ok(FinalChainGas::ZERO);
                 };
                 let count = dpos_total_delegation_storage_read_count(&snapshot, delegator)?;
                 count
@@ -4187,7 +4194,7 @@ impl FinalChain {
                     "getDelegations(address,uint32)",
                 ) {
                     Ok(read) => read,
-                    Err(_) => return Ok(0),
+                    Err(_) => return Ok(FinalChainGas::ZERO),
                 };
                 let count =
                     dpos_delegations_storage_read_count(&snapshot, read.delegator, read.batch)?;
@@ -4197,14 +4204,14 @@ impl FinalChain {
             }
             DPOS_GET_UNDELEGATIONS_V2_SELECTOR => {
                 if !self.is_on_cornus(request.block_number) {
-                    return Ok(0);
+                    return Ok(FinalChainGas::ZERO);
                 }
                 let snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
                 let Ok(read) = decode_dpos_undelegation_page_read(
                     &request.input,
                     "getUndelegationsV2(address,uint32)",
                 ) else {
-                    return Ok(0);
+                    return Ok(FinalChainGas::ZERO);
                 };
                 let storage_reads = dpos_undelegations_v2_storage_read_count(
                     &snapshot,
@@ -4223,7 +4230,7 @@ impl FinalChain {
                     &request.input,
                     "getUndelegations(address,uint32)",
                 ) else {
-                    return Ok(0);
+                    return Ok(FinalChainGas::ZERO);
                 };
                 let storage_reads =
                     dpos_undelegations_storage_read_count(&snapshot, read.delegator, read.batch)?;
@@ -4239,7 +4246,8 @@ impl FinalChain {
                 }
             }
             _ => Ok(0),
-        }
+        }?;
+        Ok(gas.into())
     }
 
     fn is_on_cornus(&self, block_number: u64) -> bool {
@@ -6981,7 +6989,9 @@ impl FinalChain {
                 .map(|transaction| RewardTransactionFact {
                     hash: H256::from(transaction.hash),
                     gas_price: transaction.gas_price.as_u256(),
-                    gas_used: *gas_used_by_hash.get(&transaction.hash).unwrap_or(&0),
+                    gas_used: *gas_used_by_hash
+                        .get(&transaction.hash)
+                        .unwrap_or(&FinalChainGas::ZERO),
                 })
                 .collect(),
             dag_blocks: finalized_dag_blocks
@@ -8669,8 +8679,8 @@ fn encode_native_receipts(receipts: &[NativeReceipt]) -> Vec<Vec<u8>> {
 fn encode_receipt_rlp(receipt: &NativeReceipt) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(5);
     stream.append(&receipt.status_code);
-    stream.append(&receipt.gas_used);
-    stream.append(&receipt.cumulative_gas_used);
+    stream.append(&receipt.gas_used.as_u64());
+    stream.append(&receipt.cumulative_gas_used.as_u64());
     stream.begin_list(receipt.logs.len());
     for log in &receipt.logs {
         stream.begin_list(3);
@@ -8952,13 +8962,13 @@ fn u256_from_big_endian(bytes: &[u8]) -> U256 {
     U256::from_big_endian(bytes)
 }
 
-fn gas_used_from_fee(fee: U256, gas_price: U256) -> Result<u64, anyhow::Error> {
+fn gas_used_from_fee(fee: U256, gas_price: U256) -> Result<FinalChainGas, anyhow::Error> {
     if gas_price.is_zero() {
         anyhow::ensure!(
             fee.is_zero(),
             "transaction fee is nonzero while gas price is zero"
         );
-        return Ok(0);
+        return Ok(FinalChainGas::ZERO);
     }
     let gas_used = fee / gas_price;
     anyhow::ensure!(
@@ -8969,7 +8979,7 @@ fn gas_used_from_fee(fee: U256, gas_price: U256) -> Result<u64, anyhow::Error> {
         gas_used <= U256::from(u64::MAX),
         "transaction gas used does not fit into u64"
     );
-    Ok(gas_used.as_u64())
+    Ok(gas_used.as_u64().into())
 }
 
 fn u256_to_big_endian(value: U256) -> Vec<u8> {
@@ -9107,25 +9117,27 @@ fn dpos_mutation_action_gas(
     block_number: u64,
     fix_claim_all_block_num: u64,
     cornus_period: u64,
-) -> Option<u64> {
+) -> Option<FinalChainGas> {
     match selector {
-        DPOS_REGISTER_VALIDATOR_SELECTOR => Some(DPOS_REGISTER_VALIDATOR_GAS),
-        DPOS_DELEGATE_SELECTOR => Some(DPOS_DELEGATE_GAS),
-        DPOS_UNDELEGATE_SELECTOR => Some(DPOS_UNDELEGATE_GAS),
-        DPOS_CONFIRM_UNDELEGATE_SELECTOR => Some(DPOS_DEFAULT_METHOD_GAS),
-        DPOS_CANCEL_UNDELEGATE_SELECTOR => Some(DPOS_UNDELEGATE_GAS),
-        DPOS_UNDELEGATE_V2_SELECTOR if block_number >= cornus_period => Some(DPOS_UNDELEGATE_GAS),
+        DPOS_REGISTER_VALIDATOR_SELECTOR => Some(DPOS_REGISTER_VALIDATOR_GAS.into()),
+        DPOS_DELEGATE_SELECTOR => Some(DPOS_DELEGATE_GAS.into()),
+        DPOS_UNDELEGATE_SELECTOR => Some(DPOS_UNDELEGATE_GAS.into()),
+        DPOS_CONFIRM_UNDELEGATE_SELECTOR => Some(DPOS_DEFAULT_METHOD_GAS.into()),
+        DPOS_CANCEL_UNDELEGATE_SELECTOR => Some(DPOS_UNDELEGATE_GAS.into()),
+        DPOS_UNDELEGATE_V2_SELECTOR if block_number >= cornus_period => {
+            Some(DPOS_UNDELEGATE_GAS.into())
+        }
         DPOS_CONFIRM_UNDELEGATE_V2_SELECTOR if block_number >= cornus_period => {
-            Some(DPOS_DEFAULT_METHOD_GAS)
+            Some(DPOS_DEFAULT_METHOD_GAS.into())
         }
         DPOS_CANCEL_UNDELEGATE_V2_SELECTOR if block_number >= cornus_period => {
-            Some(DPOS_UNDELEGATE_GAS)
+            Some(DPOS_UNDELEGATE_GAS.into())
         }
-        DPOS_REDELEGATE_SELECTOR => Some(DPOS_REDELEGATE_GAS),
-        DPOS_CLAIM_REWARDS_SELECTOR => Some(DPOS_CLAIM_REWARDS_GAS),
-        DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR => Some(DPOS_CLAIM_COMMISSION_REWARDS_GAS),
-        DPOS_SET_VALIDATOR_INFO_SELECTOR => Some(DPOS_SET_VALIDATOR_INFO_GAS),
-        DPOS_SET_COMMISSION_SELECTOR => Some(DPOS_SET_COMMISSION_GAS),
+        DPOS_REDELEGATE_SELECTOR => Some(DPOS_REDELEGATE_GAS.into()),
+        DPOS_CLAIM_REWARDS_SELECTOR => Some(DPOS_CLAIM_REWARDS_GAS.into()),
+        DPOS_CLAIM_COMMISSION_REWARDS_SELECTOR => Some(DPOS_CLAIM_COMMISSION_REWARDS_GAS.into()),
+        DPOS_SET_VALIDATOR_INFO_SELECTOR => Some(DPOS_SET_VALIDATOR_INFO_GAS.into()),
+        DPOS_SET_COMMISSION_SELECTOR => Some(DPOS_SET_COMMISSION_GAS.into()),
         DPOS_CLAIM_ALL_REWARDS_SELECTOR => None,
         DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR if block_number < fix_claim_all_block_num => None,
         _ => None,
@@ -9145,8 +9157,8 @@ fn dpos_transaction_required_gas(
     fix_claim_all_block_num: u64,
     cornus_period: u64,
     snapshot: Option<&DposSnapshot>,
-) -> Result<u64, anyhow::Error> {
-    Ok(match dpos_tx {
+) -> Result<FinalChainGas, anyhow::Error> {
+    let gas = match dpos_tx {
         DposTransaction::ClaimAllRewards { delegator, batch } => {
             let snapshot = snapshot.ok_or_else(|| {
                 anyhow::anyhow!("claimAllRewards gas snapshot is required for gas estimation")
@@ -9165,6 +9177,7 @@ fn dpos_transaction_required_gas(
             fix_claim_all_block_num,
             cornus_period,
         )
+        .map(FinalChainGas::as_u64)
         .unwrap_or(0),
         DposTransaction::UnrecognizedInput | DposTransaction::MethodNotSupported => 0,
         DposTransaction::IsValidatorEligible(_)
@@ -9244,7 +9257,8 @@ fn dpos_transaction_required_gas(
         DposTransaction::ClaimCommissionRewards { .. } => DPOS_CLAIM_COMMISSION_REWARDS_GAS,
         DposTransaction::SetValidatorInfo { .. } => DPOS_SET_VALIDATOR_INFO_GAS,
         DposTransaction::SetCommission { .. } => DPOS_SET_COMMISSION_GAS,
-    })
+    };
+    Ok(gas.into())
 }
 
 /// Returns whether the DPoS mutation accepts value under the current ABI.
@@ -9342,11 +9356,11 @@ fn is_dpos_undelegation_page_read_selector(selector: [u8; 4]) -> bool {
 /// Native value transfers use the fixed transfer cost. Contract creation keeps
 /// the existing RPC estimate test covered until broader EVM execution is ported
 /// into Rust.
-fn native_call_gas_used(request: &FinalChainCallRequest) -> u64 {
+fn native_call_gas_used(request: &FinalChainCallRequest) -> FinalChainGas {
     if request.receiver.is_none() && !request.input.is_empty() {
-        return CONTRACT_CREATION_ESTIMATE_GAS;
+        return CONTRACT_CREATION_ESTIMATE_GAS.into();
     }
-    VALUE_TRANSFER_GAS
+    VALUE_TRANSFER_GAS.into()
 }
 
 /// Decodes a single Solidity ABI address argument after a four-byte selector.
@@ -10599,12 +10613,12 @@ fn dpos_vdf_sortition_max_vote_count(
     Ok(votes.as_u64())
 }
 
-fn affordable_gas(account: &Account, gas_price: U256, gas_limit: u64) -> u64 {
+fn affordable_gas(account: &Account, gas_price: U256, gas_limit: FinalChainGas) -> FinalChainGas {
     if gas_price.is_zero() {
         return gas_limit;
     }
     let affordable = *account.balance.as_u256() / gas_price;
-    affordable.min(U256::from(gas_limit)).as_u64()
+    affordable.min(U256::from(gas_limit)).as_u64().into()
 }
 
 fn synthetic_state_root(period: u64) -> ethereum_types::H256 {
@@ -10622,7 +10636,7 @@ fn synthetic_state_root(period: u64) -> ethereum_types::H256 {
 struct NativeExecution {
     accounts: HashMap<[u8; 20], Account>,
     receipts: Vec<NativeReceipt>,
-    gas_used: u64,
+    gas_used: FinalChainGas,
     transaction_fees: Vec<([u8; 32], U256)>,
     dpos_snapshot: DposSnapshot,
 }
@@ -10630,8 +10644,8 @@ struct NativeExecution {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NativeReceipt {
     status_code: u8,
-    gas_used: u64,
-    cumulative_gas_used: u64,
+    gas_used: FinalChainGas,
+    cumulative_gas_used: FinalChainGas,
     logs: Vec<ReceiptLog>,
     new_contract_address: Option<[u8; 20]>,
 }
@@ -11503,7 +11517,7 @@ mod tests {
             };
             let mut final_chain = FinalChain::new_with_rewards_config(
                 storage.clone(),
-                200_000,
+                200_000.into(),
                 0,
                 vec![genesis_account(case.sender, U256::from(1_000_000u64))],
                 vec![genesis_validator(
@@ -12050,7 +12064,7 @@ mod tests {
             nonce: nonce.into(),
             value: value.into(),
             gas_price: gas_price.into(),
-            gas_limit,
+            gas_limit: gas_limit.into(),
             data,
             rlp,
         }
@@ -12144,6 +12158,7 @@ mod tests {
                     snapshot.as_ref(),
                 )
                 .unwrap()
+                .as_u64()
             }
             Some(SLASHING_CONTRACT_ADDRESS) => {
                 if !final_chain.magnolia_active(block_number) {
@@ -12232,7 +12247,7 @@ mod tests {
             receiver: Some(DPOS_CONTRACT_ADDRESS),
             value: U256::zero().into(),
             gas_price: U256::zero().into(),
-            gas_limit: 1_000_000,
+            gas_limit: 1_000_000.into(),
             input,
         }
     }
@@ -12244,7 +12259,7 @@ mod tests {
             receiver: Some(SLASHING_CONTRACT_ADDRESS),
             value: U256::zero().into(),
             gas_price: U256::zero().into(),
-            gas_limit: 1_000_000,
+            gas_limit: 1_000_000.into(),
             input,
         }
     }
@@ -12570,7 +12585,8 @@ mod tests {
                 cornus_period,
                 None,
             )
-            .unwrap(),
+            .unwrap()
+            .as_u64(),
             DPOS_PHALA_ESCROW_TRANSFER_GAS
         );
         assert!(dpos_transaction_is_payable(&at_fork));
@@ -13088,7 +13104,7 @@ mod tests {
         let direct = final_chain
             .call(dpos_call_request(0, input.clone()))
             .unwrap();
-        assert_eq!(direct.gas_used, 2 * DPOS_BATCH_GET_REWARDS_GAS);
+        assert_eq!(direct.gas_used.as_u64(), 2 * DPOS_BATCH_GET_REWARDS_GAS);
         assert_eq!(
             u256_from_big_endian(&direct.code_retval),
             U256::from(17_000u64)
@@ -13096,7 +13112,7 @@ mod tests {
         let empty = final_chain
             .call(dpos_call_request(0, get_total_delegation_input([0xff; 20])))
             .unwrap();
-        assert_eq!(empty.gas_used, 0);
+        assert_eq!(empty.gas_used.as_u64(), 0);
         assert_eq!(u256_from_big_endian(&empty.code_retval), U256::zero());
 
         let mut high_address_and_trailing = input;
@@ -13106,7 +13122,7 @@ mod tests {
             .call(dpos_call_request(0, high_address_and_trailing))
             .unwrap();
         assert_eq!(permissive.code_retval, direct.code_retval);
-        assert_eq!(permissive.gas_used, direct.gas_used);
+        assert_eq!(permissive.gas_used.as_u64(), direct.gas_used.as_u64());
 
         let malformed = final_chain
             .call(dpos_call_request(
@@ -13114,7 +13130,7 @@ mod tests {
                 DPOS_GET_TOTAL_DELEGATION_SELECTOR.to_vec(),
             ))
             .unwrap();
-        assert_eq!(malformed.gas_used, 0);
+        assert_eq!(malformed.gas_used.as_u64(), 0);
         assert!(!malformed.code_err.is_empty());
 
         let mut duplicate = snapshot.clone();
@@ -13195,7 +13211,7 @@ mod tests {
             .collect::<Vec<_>>();
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(delegator, U256::from(1_000_000u64))],
             validators,
@@ -13217,7 +13233,7 @@ mod tests {
             .call(dpos_call_request(0, page_zero_input.clone()))
             .unwrap();
         let (entries, is_end) = delegation_page_entries(&page_zero.code_retval);
-        assert_eq!(page_zero.gas_used, 100_000);
+        assert_eq!(page_zero.gas_used.as_u64(), 100_000);
         assert!(!is_end);
         assert_eq!(
             entries
@@ -13235,7 +13251,7 @@ mod tests {
         let page_one = final_chain
             .call(dpos_call_request(0, get_delegations_input(delegator, 1)))
             .unwrap();
-        assert_eq!(page_one.gas_used, 5_000);
+        assert_eq!(page_one.gas_used.as_u64(), 5_000);
         assert_eq!(
             delegation_page_entries(&page_one.code_retval),
             (
@@ -13246,7 +13262,7 @@ mod tests {
         let out_of_range = final_chain
             .call(dpos_call_request(0, get_delegations_input(delegator, 2)))
             .unwrap();
-        assert_eq!(out_of_range.gas_used, 5_000);
+        assert_eq!(out_of_range.gas_used.as_u64(), 5_000);
         assert_eq!(
             delegation_page_entries(&out_of_range.code_retval),
             (vec![], true)
@@ -13258,7 +13274,7 @@ mod tests {
                 get_delegations_input(delegator, 0x8000_0000),
             ))
             .unwrap();
-        assert_eq!(high_batch.gas_used, 5_000);
+        assert_eq!(high_batch.gas_used.as_u64(), 5_000);
         assert_eq!(high_batch.code_retval, page_zero.code_retval);
 
         let mut permissive = page_zero_input.clone();
@@ -13276,7 +13292,7 @@ mod tests {
         let malformed = final_chain
             .call(dpos_call_request(0, DPOS_GET_DELEGATIONS_SELECTOR.to_vec()))
             .unwrap();
-        assert_eq!(malformed.gas_used, 0);
+        assert_eq!(malformed.gas_used.as_u64(), 0);
         assert!(!malformed.code_err.is_empty());
         assert!(malformed.code_retval.is_empty());
         let mut pre_cornus_value = dpos_call_request(0, page_zero_input.clone());
@@ -13291,7 +13307,7 @@ mod tests {
         let mut cornus_value = dpos_call_request(1, page_zero_input.clone());
         cornus_value.value = U256::one().into();
         let cornus_value = final_chain.call(cornus_value).unwrap();
-        assert_eq!(cornus_value.gas_used, 0);
+        assert_eq!(cornus_value.gas_used.as_u64(), 0);
         assert_eq!(cornus_value.code_err, "DPoS method is not payable");
 
         let native_read_input = page_zero_input.clone();
@@ -13344,7 +13360,7 @@ mod tests {
             vec![1, 1, 1]
         );
         assert_eq!(
-            native.receipts[2].gas_used,
+            native.receipts[2].gas_used.as_u64(),
             intrinsic_gas(&native_read_input, false).unwrap() + 95_000
         );
 
@@ -13486,7 +13502,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage,
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -13563,7 +13579,7 @@ mod tests {
         };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(1_000u64))],
             vec![],
@@ -13604,7 +13620,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage,
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -13655,7 +13671,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(1_000u64))],
             vec![],
@@ -13737,7 +13753,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -13834,7 +13850,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage,
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -14009,7 +14025,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -14162,7 +14178,7 @@ mod tests {
         };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -14345,7 +14361,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            claim_all_gas,
+            claim_all_gas.as_u64(),
             DPOS_CLAIM_REWARDS_GAS + DPOS_BATCH_GET_REWARDS_GAS
         );
 
@@ -14420,7 +14436,7 @@ mod tests {
     ) -> FinalChain {
         FinalChain::new(
             storage,
-            block_gas_limit,
+            block_gas_limit.into(),
             genesis_timestamp,
             genesis_accounts,
             genesis_validators,
@@ -14607,7 +14623,7 @@ mod tests {
 
         FinalChain::new(
             storage,
-            0,
+            0.into(),
             0,
             vec![],
             genesis_validators,
@@ -14646,7 +14662,7 @@ mod tests {
 
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(3u64))],
             vec![first_validator, second_validator],
@@ -14674,7 +14690,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let error = FinalChain::new(
             storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::one())],
             vec![genesis_validator([0x33; 20], U256::MAX)],
@@ -14705,7 +14721,7 @@ mod tests {
         let zero_storage = Arc::new(Storage::new(Config::new(zero_path.clone())).unwrap());
         let zero_activation = FinalChain::new_with_rewards_config(
             zero_storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -14729,7 +14745,7 @@ mod tests {
         let boundary_storage = Arc::new(Storage::new(Config::new(boundary_path.clone())).unwrap());
         let boundary = FinalChain::new_with_rewards_config(
             boundary_storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -15031,7 +15047,7 @@ mod tests {
         let all_validators = final_chain
             .call(dpos_call_request(0, get_validators_input(0)))
             .unwrap();
-        assert_eq!(all_validators.gas_used, 15_000);
+        assert_eq!(all_validators.gas_used.as_u64(), 15_000);
         assert_eq!(
             validator_page_addresses(&all_validators.code_retval),
             (
@@ -15043,7 +15059,7 @@ mod tests {
         let out_of_range = final_chain
             .call(dpos_call_request(0, get_validators_input(1)))
             .unwrap();
-        assert_eq!(out_of_range.gas_used, 5_000);
+        assert_eq!(out_of_range.gas_used.as_u64(), 5_000);
         assert_eq!(
             validator_page_addresses(&out_of_range.code_retval),
             (vec![], true)
@@ -15055,7 +15071,7 @@ mod tests {
                 get_validators_for_input(first_owner, 0),
             ))
             .unwrap();
-        assert_eq!(owner_validators.gas_used, 100_000);
+        assert_eq!(owner_validators.gas_used.as_u64(), 100_000);
         assert_eq!(
             validator_page_addresses(&owner_validators.code_retval),
             (vec![first_validator, third_validator], true)
@@ -15097,7 +15113,7 @@ mod tests {
         };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![],
             validators.clone(),
@@ -15112,7 +15128,7 @@ mod tests {
         let first_page = final_chain
             .call(dpos_call_request(0, get_validators_input(0)))
             .unwrap();
-        assert_eq!(first_page.gas_used, 100_000);
+        assert_eq!(first_page.gas_used.as_u64(), 100_000);
         assert_eq!(
             u256_from_big_endian(&first_page.code_retval[96..128]),
             U256::from(640u64),
@@ -15131,7 +15147,7 @@ mod tests {
         let partial_page = final_chain
             .call(dpos_call_request(0, get_validators_input(1)))
             .unwrap();
-        assert_eq!(partial_page.gas_used, 10_000);
+        assert_eq!(partial_page.gas_used.as_u64(), 10_000);
         assert_eq!(
             u256_from_big_endian(&partial_page.code_retval[96..128]),
             U256::from(64u64)
@@ -15143,7 +15159,7 @@ mod tests {
         let out_of_range = final_chain
             .call(dpos_call_request(0, get_validators_input(2)))
             .unwrap();
-        assert_eq!(out_of_range.gas_used, 5_000);
+        assert_eq!(out_of_range.gas_used.as_u64(), 5_000);
         assert_eq!(
             validator_page_addresses(&out_of_range.code_retval),
             (vec![], true)
@@ -15155,7 +15171,7 @@ mod tests {
                 get_validators_for_input(first_owner, 0),
             ))
             .unwrap();
-        assert_eq!(owner_page.gas_used, 100_000);
+        assert_eq!(owner_page.gas_used.as_u64(), 100_000);
         assert_eq!(
             validator_page_addresses(&owner_page.code_retval),
             (
@@ -15169,7 +15185,7 @@ mod tests {
                 get_validators_for_input([0xff; 20], 0),
             ))
             .unwrap();
-        assert_eq!(empty_owner_page.gas_used, 100_000);
+        assert_eq!(empty_owner_page.gas_used.as_u64(), 100_000);
         assert_eq!(
             validator_page_addresses(&empty_owner_page.code_retval),
             (vec![], true)
@@ -15182,7 +15198,7 @@ mod tests {
         let overflow_page = final_chain
             .call(dpos_call_request(0, overflow_input))
             .unwrap();
-        assert_eq!(overflow_page.gas_used, 5_000);
+        assert_eq!(overflow_page.gas_used.as_u64(), 5_000);
         assert_eq!(
             validator_page_addresses(&overflow_page.code_retval),
             ((5u8..=22).map(|index| [index; 20]).collect(), true)
@@ -15194,7 +15210,7 @@ mod tests {
         let overflow_owner_page = final_chain
             .call(dpos_call_request(0, overflow_owner_input))
             .unwrap();
-        assert_eq!(overflow_owner_page.gas_used, 100_000);
+        assert_eq!(overflow_owner_page.gas_used.as_u64(), 100_000);
         assert_eq!(
             validator_page_addresses(&overflow_owner_page.code_retval),
             (
@@ -15206,7 +15222,7 @@ mod tests {
         let malformed = final_chain
             .call(dpos_call_request(0, DPOS_GET_VALIDATORS_SELECTOR.to_vec()))
             .unwrap();
-        assert_eq!(malformed.gas_used, 0);
+        assert_eq!(malformed.gas_used.as_u64(), 0);
         assert!(!malformed.code_err.is_empty());
         let malformed_for = final_chain
             .call(dpos_call_request(
@@ -15214,7 +15230,7 @@ mod tests {
                 DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec(),
             ))
             .unwrap();
-        assert_eq!(malformed_for.gas_used, 0);
+        assert_eq!(malformed_for.gas_used.as_u64(), 0);
         assert!(!malformed_for.code_err.is_empty());
         let mut pre_cornus_value = dpos_call_request(0, get_validators_input(0));
         pre_cornus_value.value = U256::one().into();
@@ -15238,7 +15254,8 @@ mod tests {
                 1,
                 Some(&empty_snapshot),
             )
-            .unwrap(),
+            .unwrap()
+            .as_u64(),
             DPOS_BATCH_GET_REWARDS_GAS
         );
         snapshot
@@ -15286,7 +15303,7 @@ mod tests {
         let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
         let cornus_chain = FinalChain::new_with_rewards_config(
             cornus_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![],
             validators,
@@ -15300,7 +15317,7 @@ mod tests {
         let mut nonpayable = dpos_call_request(0, DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec());
         nonpayable.value = U256::one().into();
         let nonpayable = cornus_chain.call(nonpayable).unwrap();
-        assert_eq!(nonpayable.gas_used, 0);
+        assert_eq!(nonpayable.gas_used.as_u64(), 0);
         assert_eq!(nonpayable.code_err, "DPoS method is not payable");
 
         drop(final_chain);
@@ -15331,7 +15348,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(total_votes.code_err, "");
-        assert_eq!(total_votes.gas_used, DPOS_DEFAULT_METHOD_GAS);
+        assert_eq!(total_votes.gas_used.as_u64(), DPOS_DEFAULT_METHOD_GAS);
         assert_eq!(
             u256_from_big_endian(&total_votes.code_retval),
             U256::from(10u64)
@@ -15344,7 +15361,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(eligible.code_err, "");
-        assert_eq!(eligible.gas_used, DPOS_DEFAULT_METHOD_GAS);
+        assert_eq!(eligible.gas_used.as_u64(), DPOS_DEFAULT_METHOD_GAS);
         assert_eq!(u256_from_big_endian(&eligible.code_retval), U256::one());
 
         let validator_votes = final_chain
@@ -15357,7 +15374,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(validator_votes.code_err, "");
-        assert_eq!(validator_votes.gas_used, DPOS_DEFAULT_METHOD_GAS);
+        assert_eq!(validator_votes.gas_used.as_u64(), DPOS_DEFAULT_METHOD_GAS);
         assert_eq!(
             u256_from_big_endian(&validator_votes.code_retval),
             U256::from(10u64)
@@ -15393,7 +15410,7 @@ mod tests {
             ))
             .unwrap();
         assert!(!malformed.code_err.is_empty());
-        assert_eq!(malformed.gas_used, DPOS_DEFAULT_METHOD_GAS);
+        assert_eq!(malformed.gas_used.as_u64(), DPOS_DEFAULT_METHOD_GAS);
 
         let mut nonpayable = dpos_call_request(
             0,
@@ -15402,7 +15419,7 @@ mod tests {
         nonpayable.value = U256::one().into();
         let nonpayable = final_chain.call(nonpayable).unwrap();
         assert_eq!(nonpayable.code_err, "DPoS method is not payable");
-        assert_eq!(nonpayable.gas_used, 0);
+        assert_eq!(nonpayable.gas_used.as_u64(), 0);
 
         let validator_info = final_chain
             .call(dpos_call_request(0, get_validator_input(validator)))
@@ -15434,7 +15451,7 @@ mod tests {
         let validator = [0x17; 20];
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![],
             vec![genesis_validator(validator, U256::from(1_000u64))],
@@ -15538,7 +15555,7 @@ mod tests {
         };
         let pre_chain = FinalChain::new_with_rewards_config(
             pre_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(sender, initial_balance)],
             vec![genesis_validator(validator, initial_dpos_balance)],
@@ -15637,16 +15654,22 @@ mod tests {
             vec![1, 0, 0, 0, 0, 1]
         );
         assert_eq!(
-            pre_execution.receipts[0].gas_used,
+            pre_execution.receipts[0].gas_used.as_u64(),
             intrinsic_gas(&valid_total_input, false).unwrap() + DPOS_DEFAULT_METHOD_GAS
         );
         assert_eq!(
-            pre_execution.receipts[1].gas_used,
+            pre_execution.receipts[1].gas_used.as_u64(),
             intrinsic_gas(&DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, false).unwrap()
                 + DPOS_DEFAULT_METHOD_GAS
         );
-        assert_eq!(pre_execution.receipts[3].gas_used, intrinsic_oog_limit);
-        assert_eq!(pre_execution.receipts[4].gas_used, action_oog_limit);
+        assert_eq!(
+            pre_execution.receipts[3].gas_used.as_u64(),
+            intrinsic_oog_limit
+        );
+        assert_eq!(
+            pre_execution.receipts[4].gas_used.as_u64(),
+            action_oog_limit
+        );
         assert!(
             pre_execution
                 .receipts
@@ -15676,7 +15699,7 @@ mod tests {
         let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
         let cornus_chain = FinalChain::new_with_rewards_config(
             cornus_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(sender, initial_balance)],
             vec![genesis_validator(validator, initial_dpos_balance)],
@@ -15730,7 +15753,7 @@ mod tests {
             cornus_execution
                 .receipts
                 .iter()
-                .map(|receipt| (receipt.status_code, receipt.gas_used))
+                .map(|receipt| (receipt.status_code, receipt.gas_used.as_u64()))
                 .collect::<Vec<_>>(),
             vec![
                 (0, cornus_intrinsic),
@@ -15779,7 +15802,7 @@ mod tests {
         };
         let pre_chain = FinalChain::new_with_rewards_config(
             pre_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -15795,19 +15818,19 @@ mod tests {
         payable_validator.value = U256::from(7).into();
         let payable_validator = pre_chain.call(payable_validator).unwrap();
         assert_eq!(payable_validator.code_err, "");
-        assert_eq!(payable_validator.gas_used, DPOS_GET_METHOD_GAS);
+        assert_eq!(payable_validator.gas_used.as_u64(), DPOS_GET_METHOD_GAS);
 
         let missing_validator = pre_chain
             .call(dpos_call_request(0, get_validator_input([0x99; 20])))
             .unwrap();
         assert_eq!(missing_validator.code_err, "Validator does not exist");
-        assert_eq!(missing_validator.gas_used, DPOS_GET_METHOD_GAS);
+        assert_eq!(missing_validator.gas_used.as_u64(), DPOS_GET_METHOD_GAS);
 
         let malformed_validator = pre_chain
             .call(dpos_call_request(0, DPOS_GET_VALIDATOR_SELECTOR.to_vec()))
             .unwrap();
         assert!(!malformed_validator.code_err.is_empty());
-        assert_eq!(malformed_validator.gas_used, DPOS_GET_METHOD_GAS);
+        assert_eq!(malformed_validator.gas_used.as_u64(), DPOS_GET_METHOD_GAS);
 
         let pre_cornus_v2 = pre_chain
             .call(dpos_call_request(
@@ -15816,7 +15839,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(pre_cornus_v2.code_err, "Method not supported");
-        assert_eq!(pre_cornus_v2.gas_used, 0);
+        assert_eq!(pre_cornus_v2.gas_used.as_u64(), 0);
         let malformed_pre_cornus_v2 = pre_chain
             .call(dpos_call_request(
                 0,
@@ -15824,13 +15847,13 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(malformed_pre_cornus_v2.code_err, "Method not supported");
-        assert_eq!(malformed_pre_cornus_v2.gas_used, 0);
+        assert_eq!(malformed_pre_cornus_v2.gas_used.as_u64(), 0);
 
         let cornus_path = temp_db_path("fixed-singleton-call-cornus");
         let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
         let cornus_chain = FinalChain::new_with_rewards_config(
             cornus_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -15864,7 +15887,7 @@ mod tests {
             .call(dpos_call_request(0, permissive_v2))
             .unwrap();
         assert_eq!(existing.code_err, "");
-        assert_eq!(existing.gas_used, DPOS_GET_METHOD_GAS);
+        assert_eq!(existing.gas_used.as_u64(), DPOS_GET_METHOD_GAS);
         assert_eq!(existing.code_retval.len(), 5 * 32);
         assert_eq!(
             u256_from_big_endian(&existing.code_retval[0..32]),
@@ -15894,7 +15917,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(missing_v2.code_err, "Undelegation does not exist");
-        assert_eq!(missing_v2.gas_used, DPOS_GET_METHOD_GAS);
+        assert_eq!(missing_v2.gas_used.as_u64(), DPOS_GET_METHOD_GAS);
         let malformed_v2 = cornus_chain
             .call(dpos_call_request(
                 0,
@@ -15902,14 +15925,14 @@ mod tests {
             ))
             .unwrap();
         assert!(!malformed_v2.code_err.is_empty());
-        assert_eq!(malformed_v2.gas_used, DPOS_GET_METHOD_GAS);
+        assert_eq!(malformed_v2.gas_used.as_u64(), DPOS_GET_METHOD_GAS);
 
         let mut nonpayable_v2 =
             dpos_call_request(0, get_undelegation_v2_input(delegator, validator, 1));
         nonpayable_v2.value = U256::one().into();
         let nonpayable_v2 = cornus_chain.call(nonpayable_v2).unwrap();
         assert_eq!(nonpayable_v2.code_err, "DPoS method is not payable");
-        assert_eq!(nonpayable_v2.gas_used, 0);
+        assert_eq!(nonpayable_v2.gas_used.as_u64(), 0);
 
         let mut corrupt_snapshot = pre_chain.dpos_snapshot(0).unwrap();
         corrupt_snapshot.total_stakes.remove(&validator);
@@ -16000,7 +16023,7 @@ mod tests {
         let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
         let pre_chain = FinalChain::new_with_rewards_config(
             pre_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(sender, initial_balance)],
             vec![genesis_validator(validator, initial_stake)],
@@ -16082,18 +16105,21 @@ mod tests {
             vec![1, 0, 0, 0, 1]
         );
         assert_eq!(
-            pre_execution.receipts[0].gas_used,
+            pre_execution.receipts[0].gas_used.as_u64(),
             validator_intrinsic + DPOS_GET_METHOD_GAS
         );
         assert_eq!(
-            pre_execution.receipts[1].gas_used,
+            pre_execution.receipts[1].gas_used.as_u64(),
             intrinsic_gas(&DPOS_GET_VALIDATOR_SELECTOR, false).unwrap() + DPOS_GET_METHOD_GAS
         );
         assert_eq!(
-            pre_execution.receipts[2].gas_used,
+            pre_execution.receipts[2].gas_used.as_u64(),
             intrinsic_gas(&get_undelegation_v2_input(sender, validator, 1), false,).unwrap()
         );
-        assert_eq!(pre_execution.receipts[3].gas_used, validator_intrinsic);
+        assert_eq!(
+            pre_execution.receipts[3].gas_used.as_u64(),
+            validator_intrinsic
+        );
         assert!(
             pre_execution
                 .receipts
@@ -16123,7 +16149,7 @@ mod tests {
         let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
         let cornus_chain = FinalChain::new_with_rewards_config(
             cornus_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(validator, initial_balance)],
             vec![genesis_validator(validator, initial_stake)],
@@ -16241,16 +16267,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 1, 1, 0, 0, 0, 0, 1]
         );
-        assert_eq!(cornus_execution.receipts[3].gas_used, validator_intrinsic);
         assert_eq!(
-            cornus_execution.receipts[4].gas_used,
+            cornus_execution.receipts[3].gas_used.as_u64(),
+            validator_intrinsic
+        );
+        assert_eq!(
+            cornus_execution.receipts[4].gas_used.as_u64(),
             intrinsic_gas(&malformed_v2, false).unwrap() + DPOS_GET_METHOD_GAS
         );
         assert_eq!(
-            cornus_execution.receipts[5].gas_used,
+            cornus_execution.receipts[5].gas_used.as_u64(),
             intrinsic_gas(&missing_v2, false).unwrap() + DPOS_GET_METHOD_GAS
         );
-        assert_eq!(cornus_execution.receipts[6].gas_used, validator_intrinsic);
+        assert_eq!(
+            cornus_execution.receipts[6].gas_used.as_u64(),
+            validator_intrinsic
+        );
         assert_eq!(cornus_execution.accounts.get(&validator).unwrap().nonce, 8);
         assert!(
             cornus_execution.receipts[1..]
@@ -16538,7 +16570,7 @@ mod tests {
         let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
         let pre_chain = FinalChain::new_with_rewards_config(
             pre_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(validator, initial_balance)],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -16647,19 +16679,22 @@ mod tests {
             vec![1, 1, 0, 0, 0, 0, 1]
         );
         assert_eq!(
-            pre_execution.receipts[1].gas_used,
+            pre_execution.receipts[1].gas_used.as_u64(),
             v1_intrinsic + DPOS_BATCH_GET_REWARDS_GAS
         );
         assert_eq!(
-            pre_execution.receipts[2].gas_used,
+            pre_execution.receipts[2].gas_used.as_u64(),
             intrinsic_gas(&malformed_v1, false).unwrap()
         );
         assert_eq!(
-            pre_execution.receipts[3].gas_used,
+            pre_execution.receipts[3].gas_used.as_u64(),
             intrinsic_gas(&v2_page, false).unwrap()
         );
-        assert_eq!(pre_execution.receipts[4].gas_used, v1_intrinsic);
-        assert_eq!(pre_execution.receipts[5].gas_used, v1_intrinsic - 1);
+        assert_eq!(pre_execution.receipts[4].gas_used.as_u64(), v1_intrinsic);
+        assert_eq!(
+            pre_execution.receipts[5].gas_used.as_u64(),
+            v1_intrinsic - 1
+        );
         assert_eq!(pre_execution.accounts.get(&validator).unwrap().nonce, 6);
         assert_eq!(
             (*pre_execution
@@ -16695,7 +16730,7 @@ mod tests {
         let malformed_call = pre_chain
             .call(dpos_call_request(0, malformed_v1.clone()))
             .unwrap();
-        assert_eq!(malformed_call.gas_used, 0);
+        assert_eq!(malformed_call.gas_used.as_u64(), 0);
         assert!(!malformed_call.code_err.is_empty());
         let pre_v2_call = pre_chain
             .call(dpos_call_request(
@@ -16703,14 +16738,14 @@ mod tests {
                 DPOS_GET_UNDELEGATIONS_V2_SELECTOR.to_vec(),
             ))
             .unwrap();
-        assert_eq!(pre_v2_call.gas_used, 0);
+        assert_eq!(pre_v2_call.gas_used.as_u64(), 0);
         assert_eq!(pre_v2_call.code_err, "Method not supported");
 
         let cornus_path = temp_db_path("native-undelegation-pages-cornus");
         let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
         let cornus_chain = FinalChain::new_with_rewards_config(
             cornus_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(validator, initial_balance)],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -16871,20 +16906,23 @@ mod tests {
             vec![1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1]
         );
         assert_eq!(
-            cornus_execution.receipts[1].gas_used,
+            cornus_execution.receipts[1].gas_used.as_u64(),
             v2_intrinsic + 4 * DPOS_BATCH_GET_REWARDS_GAS
         );
-        assert_eq!(cornus_execution.receipts[3].gas_used, v2_intrinsic);
+        assert_eq!(cornus_execution.receipts[3].gas_used.as_u64(), v2_intrinsic);
         assert_eq!(
-            cornus_execution.receipts[5].gas_used,
+            cornus_execution.receipts[5].gas_used.as_u64(),
             v2_intrinsic + 4 * DPOS_BATCH_GET_REWARDS_GAS
         );
-        assert_eq!(cornus_execution.receipts[7].gas_used, v2_intrinsic);
+        assert_eq!(cornus_execution.receipts[7].gas_used.as_u64(), v2_intrinsic);
         assert_eq!(
-            cornus_execution.receipts[8].gas_used,
+            cornus_execution.receipts[8].gas_used.as_u64(),
             intrinsic_gas(&malformed_v2, false).unwrap()
         );
-        assert_eq!(cornus_execution.receipts[10].gas_used, v1_intrinsic - 1);
+        assert_eq!(
+            cornus_execution.receipts[10].gas_used.as_u64(),
+            v1_intrinsic - 1
+        );
         assert_eq!(cornus_execution.accounts.get(&validator).unwrap().nonce, 12);
         assert_eq!(
             (*cornus_execution
@@ -16930,7 +16968,7 @@ mod tests {
         let mut cornus_nonpayable = dpos_call_request(1, malformed_v1);
         cornus_nonpayable.value = U256::one().into();
         let cornus_nonpayable = cornus_chain.call(cornus_nonpayable).unwrap();
-        assert_eq!(cornus_nonpayable.gas_used, 0);
+        assert_eq!(cornus_nonpayable.gas_used.as_u64(), 0);
         assert_eq!(cornus_nonpayable.code_err, "DPoS method is not payable");
 
         drop(pre_chain);
@@ -16961,7 +16999,7 @@ mod tests {
         let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
         let pre_chain = FinalChain::new_with_rewards_config(
             pre_storage.clone(),
-            2_000_000,
+            2_000_000.into(),
             0,
             vec![genesis_account(delegator, initial_balance)],
             vec![
@@ -17168,18 +17206,21 @@ mod tests {
         );
         for (index, count) in [(0, 1u64), (5, 2), (7, 1), (9, 2), (11, 1), (13, 0), (15, 0)] {
             assert_eq!(
-                pre_execution.receipts[index].gas_used,
+                pre_execution.receipts[index].gas_used.as_u64(),
                 read_intrinsic + count * DPOS_BATCH_GET_REWARDS_GAS,
                 "read at transaction {index} must price live membership"
             );
             assert!(pre_execution.receipts[index].logs.is_empty());
         }
         assert_eq!(
-            pre_execution.receipts[1].gas_used,
+            pre_execution.receipts[1].gas_used.as_u64(),
             intrinsic_gas(&malformed, false).unwrap()
         );
-        assert_eq!(pre_execution.receipts[2].gas_used, read_intrinsic);
-        assert_eq!(pre_execution.receipts[3].gas_used, read_intrinsic - 1);
+        assert_eq!(pre_execution.receipts[2].gas_used.as_u64(), read_intrinsic);
+        assert_eq!(
+            pre_execution.receipts[3].gas_used.as_u64(),
+            read_intrinsic - 1
+        );
         assert_eq!(pre_execution.accounts.get(&delegator).unwrap().nonce, 15);
         assert_eq!(
             (*pre_execution
@@ -17222,7 +17263,7 @@ mod tests {
         let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
         let cornus_chain = FinalChain::new_with_rewards_config(
             cornus_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(delegator, initial_balance)],
             vec![genesis_validator(delegator, U256::from(10_000u64))],
@@ -17304,14 +17345,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 1]
         );
-        assert_eq!(cornus_execution.receipts[0].gas_used, read_intrinsic);
         assert_eq!(
-            cornus_execution.receipts[1].gas_used,
+            cornus_execution.receipts[0].gas_used.as_u64(),
+            read_intrinsic
+        );
+        assert_eq!(
+            cornus_execution.receipts[1].gas_used.as_u64(),
             intrinsic_gas(&malformed, false).unwrap(),
             "Cornus value rejection must precede malformed-address handling"
         );
-        assert_eq!(cornus_execution.receipts[2].gas_used, read_intrinsic - 1);
-        assert_eq!(cornus_execution.receipts[3].gas_used, read_intrinsic);
+        assert_eq!(
+            cornus_execution.receipts[2].gas_used.as_u64(),
+            read_intrinsic - 1
+        );
+        assert_eq!(
+            cornus_execution.receipts[3].gas_used.as_u64(),
+            read_intrinsic
+        );
         assert_eq!(cornus_execution.accounts.get(&delegator).unwrap().nonce, 5);
         assert_eq!(
             (*cornus_execution
@@ -17325,7 +17375,7 @@ mod tests {
         let mut malformed_nonpayable = dpos_call_request(1, malformed);
         malformed_nonpayable.value = U256::one().into();
         let malformed_nonpayable = cornus_chain.call(malformed_nonpayable).unwrap();
-        assert_eq!(malformed_nonpayable.gas_used, 0);
+        assert_eq!(malformed_nonpayable.gas_used.as_u64(), 0);
         assert_eq!(malformed_nonpayable.code_err, "DPoS method is not payable");
 
         drop(pre_chain);
@@ -17364,7 +17414,7 @@ mod tests {
         let pre_storage = Arc::new(Storage::new(Config::new(pre_path.clone())).unwrap());
         let pre_chain = FinalChain::new_with_rewards_config(
             pre_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![
                 genesis_account(reader, initial_reader_balance),
@@ -17476,21 +17526,24 @@ mod tests {
             vec![1, 1, 1, 0, 0, 0, 1]
         );
         assert_eq!(
-            pre_execution.receipts[1].gas_used,
+            pre_execution.receipts[1].gas_used.as_u64(),
             page_intrinsic + 2 * DPOS_BATCH_GET_REWARDS_GAS,
             "the read must price the post-deletion live validator count"
         );
         assert_eq!(
-            pre_execution.receipts[2].gas_used,
+            pre_execution.receipts[2].gas_used.as_u64(),
             intrinsic_gas(&owner_page, false).unwrap()
                 + DPOS_GET_VALIDATORS_MAX_COUNT as u64 * DPOS_BATCH_GET_REWARDS_GAS
         );
         assert_eq!(
-            pre_execution.receipts[3].gas_used,
+            pre_execution.receipts[3].gas_used.as_u64(),
             intrinsic_gas(&malformed, false).unwrap()
         );
-        assert_eq!(pre_execution.receipts[4].gas_used, page_intrinsic - 1);
-        assert_eq!(pre_execution.receipts[5].gas_used, page_intrinsic);
+        assert_eq!(
+            pre_execution.receipts[4].gas_used.as_u64(),
+            page_intrinsic - 1
+        );
+        assert_eq!(pre_execution.receipts[5].gas_used.as_u64(), page_intrinsic);
         assert_eq!(pre_execution.accounts.get(&reader).unwrap().nonce, 5);
         assert_eq!(
             (*pre_execution
@@ -17547,7 +17600,7 @@ mod tests {
         let cornus_storage = Arc::new(Storage::new(Config::new(cornus_path.clone())).unwrap());
         let cornus_chain = FinalChain::new_with_rewards_config(
             cornus_storage.clone(),
-            1_000_000,
+            1_000_000.into(),
             0,
             vec![genesis_account(reader, initial_reader_balance)],
             validators,
@@ -17661,21 +17714,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 0, 0, 1, 0, 0, 1, 1]
         );
-        assert_eq!(cornus_execution.receipts[0].gas_used, page_intrinsic);
         assert_eq!(
-            cornus_execution.receipts[1].gas_used,
+            cornus_execution.receipts[0].gas_used.as_u64(),
+            page_intrinsic
+        );
+        assert_eq!(
+            cornus_execution.receipts[1].gas_used.as_u64(),
             intrinsic_gas(&DPOS_GET_VALIDATORS_FOR_SELECTOR, false).unwrap()
         );
         assert_eq!(
-            cornus_execution.receipts[2].gas_used,
+            cornus_execution.receipts[2].gas_used.as_u64(),
             intrinsic_gas(&malformed, false).unwrap()
         );
         assert_eq!(
-            cornus_execution.receipts[3].gas_used,
+            cornus_execution.receipts[3].gas_used.as_u64(),
             intrinsic_gas(&overflow, false).unwrap() + DPOS_BATCH_GET_REWARDS_GAS
         );
-        assert_eq!(cornus_execution.receipts[4].gas_used, page_intrinsic - 1);
-        assert_eq!(cornus_execution.receipts[5].gas_used, page_intrinsic);
+        assert_eq!(
+            cornus_execution.receipts[4].gas_used.as_u64(),
+            page_intrinsic - 1
+        );
+        assert_eq!(
+            cornus_execution.receipts[5].gas_used.as_u64(),
+            page_intrinsic
+        );
         assert_eq!(cornus_execution.accounts.get(&reader).unwrap().nonce, 8);
         assert!(
             cornus_execution
@@ -17799,7 +17861,7 @@ mod tests {
         assert_eq!(register.code_err, "calculated Rx is larger than curve P");
         assert!(register.logs.is_empty());
         assert_eq!(
-            register.gas_used,
+            register.gas_used.as_u64(),
             intrinsic_gas(
                 &register_validator_input(
                     new_validator,
@@ -17825,7 +17887,7 @@ mod tests {
         assert_eq!(delegate.logs.len(), 1);
         assert_eq!(delegate.logs[0].address, DPOS_CONTRACT_ADDRESS);
         assert_eq!(
-            delegate.gas_used,
+            delegate.gas_used.as_u64(),
             intrinsic_gas(&delegate_input, false).unwrap() + DPOS_DELEGATE_GAS
         );
 
@@ -17884,7 +17946,7 @@ mod tests {
             input
         };
         assert_eq!(
-            malformed.gas_used,
+            malformed.gas_used.as_u64(),
             intrinsic_gas(&malformed_input, false).unwrap() + DPOS_DELEGATE_GAS
         );
         assert_eq!(malformed.code_retval, Vec::<u8>::new());
@@ -17895,7 +17957,7 @@ mod tests {
         let nonpayable = final_chain.call(nonpayable).unwrap();
         assert_eq!(nonpayable.code_err, "Method is not payable");
         assert_eq!(
-            nonpayable.gas_used,
+            nonpayable.gas_used.as_u64(),
             intrinsic_gas(&claim_rewards_input(validator), false).unwrap()
         );
 
@@ -17955,7 +18017,7 @@ mod tests {
                 .call(dpos_call_request(0, selector.to_vec()))
                 .unwrap();
             assert_eq!(
-                outcome.gas_used,
+                outcome.gas_used.as_u64(),
                 intrinsic_gas(&selector, false).unwrap() + action_gas,
                 "selector 0x{} did not use the transient mutation envelope",
                 selector_hex(selector)
@@ -17983,7 +18045,7 @@ mod tests {
         let retired_batch = final_chain.call(retired_batch_request).unwrap();
         assert_eq!(retired_batch.code_err, "no method with id: 0x09b72e00");
         assert_eq!(
-            retired_batch.gas_used,
+            retired_batch.gas_used.as_u64(),
             intrinsic_gas(&DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR, false).unwrap()
         );
 
@@ -17994,7 +18056,7 @@ mod tests {
         let inactive_phala = final_chain.call(inactive_phala_request).unwrap();
         assert_eq!(inactive_phala.code_err, "no method with id: 0x44df8e70");
         assert_eq!(
-            inactive_phala.gas_used,
+            inactive_phala.gas_used.as_u64(),
             intrinsic_gas(&DPOS_PHALA_ESCROW_TRANSFER_SELECTOR, false).unwrap()
         );
 
@@ -18041,7 +18103,7 @@ mod tests {
             request.sender = sender;
             request.value = request_value.into();
             request.gas_price = U256::one().into();
-            request.gas_limit = gas_limit;
+            request.gas_limit = gas_limit.into();
             request
         };
 
@@ -18051,7 +18113,7 @@ mod tests {
             gas_short.consensus_err,
             "insufficient balance to pay for gas"
         );
-        assert_eq!(gas_short.gas_used, required - 1);
+        assert_eq!(gas_short.gas_used.as_u64(), required - 1);
 
         set_sender_balance(U256::MAX);
         let mut overflowing_gas_cap = request(2, U256::zero());
@@ -18061,7 +18123,7 @@ mod tests {
             overflowing_gas_cap.consensus_err,
             "insufficient balance to pay for gas"
         );
-        assert_eq!(overflowing_gas_cap.gas_used, 1);
+        assert_eq!(overflowing_gas_cap.gas_used.as_u64(), 1);
 
         set_sender_balance(U256::from(required) + value - U256::one());
         let value_short = final_chain.call(request(required, value)).unwrap();
@@ -18069,7 +18131,7 @@ mod tests {
             value_short.consensus_err,
             "insufficient balance for transfer"
         );
-        assert_eq!(value_short.gas_used, required);
+        assert_eq!(value_short.gas_used.as_u64(), required);
 
         set_sender_balance(U256::from(intrinsic - 1));
         let intrinsic_precedes_value = final_chain
@@ -18079,25 +18141,25 @@ mod tests {
             intrinsic_precedes_value.consensus_err,
             "intrinsic gas too low"
         );
-        assert_eq!(intrinsic_precedes_value.gas_used, intrinsic - 1);
+        assert_eq!(intrinsic_precedes_value.gas_used.as_u64(), intrinsic - 1);
 
         set_sender_balance(U256::from(required) + value);
         let intrinsic_short = final_chain
             .call(request(intrinsic - 1, U256::zero()))
             .unwrap();
         assert_eq!(intrinsic_short.consensus_err, "intrinsic gas too low");
-        assert_eq!(intrinsic_short.gas_used, intrinsic - 1);
+        assert_eq!(intrinsic_short.gas_used.as_u64(), intrinsic - 1);
 
         let action_short = final_chain
             .call(request(required - 1, U256::zero()))
             .unwrap();
         assert_eq!(action_short.code_err, "out of gas");
-        assert_eq!(action_short.gas_used, intrinsic);
+        assert_eq!(action_short.gas_used.as_u64(), intrinsic);
 
         let accounts_before = final_chain.account_snapshot_map_at_block(0).unwrap();
         let dpos_before = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
         let success = final_chain.call(request(required, value)).unwrap();
-        assert_eq!(success.gas_used, required);
+        assert_eq!(success.gas_used.as_u64(), required);
         assert!(success.code_err.is_empty());
         assert!(success.consensus_err.is_empty());
         assert_eq!(success.logs.len(), 1);
@@ -18531,7 +18593,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -18684,7 +18746,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -18752,7 +18814,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let restart_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -18886,7 +18948,7 @@ mod tests {
         let initial_balance = U256::from(2_000_000u64);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            500_000,
+            500_000.into(),
             0,
             vec![genesis_account(sender, initial_balance)],
             vec![],
@@ -18996,7 +19058,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(sender, initial_balance)],
             vec![],
@@ -19071,7 +19133,7 @@ mod tests {
         };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(sender, initial_balance)],
             vec![],
@@ -19093,7 +19155,7 @@ mod tests {
         drop(final_chain);
         let restart_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(sender, initial_balance)],
             vec![],
@@ -19121,7 +19183,7 @@ mod tests {
         let validator = [0x86; 20];
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![],
             vec![],
@@ -19187,7 +19249,7 @@ mod tests {
         dpos_config.delegation_delay = 1;
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -19282,7 +19344,7 @@ mod tests {
         write_period_data(&storage, period, &pbft, &[malformed_tx.rlp.clone()]);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -19373,7 +19435,7 @@ mod tests {
         write_period_data(&storage, period, &pbft, &[transaction.rlp.clone()]);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(submitter, U256::MAX)],
             vec![],
@@ -19421,7 +19483,7 @@ mod tests {
         validator.copy_from_slice(validator_h160.as_bytes());
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -19489,7 +19551,7 @@ mod tests {
 
         let err = match FinalChain::new(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![genesis_validator(
@@ -19524,7 +19586,7 @@ mod tests {
 
         let err = match FinalChain::new(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![genesis_validator([0x50; 20], U256::from(10_001u64))],
@@ -19556,7 +19618,7 @@ mod tests {
 
         let err = match FinalChain::new(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -19798,7 +19860,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
@@ -19878,7 +19940,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -19967,7 +20029,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -20066,7 +20128,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator.clone()],
@@ -20152,7 +20214,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
@@ -20255,7 +20317,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
@@ -20388,7 +20450,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
@@ -20473,7 +20535,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(failed_path.clone())).unwrap());
         let failed_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -20621,7 +20683,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
@@ -20764,7 +20826,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![
                 genesis_account(tx_sender, U256::from(1_000_000u64)),
@@ -20902,7 +20964,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![
                 genesis_account(tx_sender, U256::from(1_000_000u64)),
@@ -21031,7 +21093,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![
                 genesis_account(sender, U256::from(1_000_000u64)),
@@ -21213,7 +21275,7 @@ mod tests {
         };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![
                 genesis_account(sender, U256::from(1_000_000u64)),
@@ -21342,7 +21404,7 @@ mod tests {
         let validator = [0xD3; 20];
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -21491,7 +21553,7 @@ mod tests {
         };
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
@@ -21606,7 +21668,7 @@ mod tests {
         write_period_data(&storage, first_period, &first_pbft, &[]);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
@@ -21731,7 +21793,7 @@ mod tests {
         );
         let tx_intrinsic_gas = intrinsic_gas(&action_tx.data, false).unwrap();
         let action_insufficient_tx_gas_limit = tx_intrinsic_gas;
-        action_tx.gas_limit = action_insufficient_tx_gas_limit;
+        action_tx.gas_limit = action_insufficient_tx_gas_limit.into();
 
         write_period_data(
             &storage,
@@ -21741,7 +21803,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
@@ -21848,7 +21910,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![
                 genesis_account(owner, U256::from(1_000_000u64)),
@@ -21931,7 +21993,7 @@ mod tests {
         drop(final_chain);
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![
                 genesis_account(owner, U256::from(1_000_000u64)),
@@ -21962,7 +22024,7 @@ mod tests {
         let validator = [0xD5; 20];
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -22023,7 +22085,7 @@ mod tests {
         let validator = [0xD7; 20];
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -22079,7 +22141,7 @@ mod tests {
         let validator = [0xA3; 20];
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -22198,7 +22260,7 @@ mod tests {
         let validator = [0xB3; 20];
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -22407,7 +22469,7 @@ mod tests {
         let validator = [0xC2; 20];
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -22486,7 +22548,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -22621,7 +22683,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -22783,7 +22845,7 @@ mod tests {
 
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -22889,7 +22951,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -23026,7 +23088,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -23143,7 +23205,7 @@ mod tests {
 
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -23268,7 +23330,7 @@ mod tests {
 
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(2_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -23424,7 +23486,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(2_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -23523,7 +23585,7 @@ mod tests {
         let delegator = [0x77; 20];
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -23713,7 +23775,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator_with_metadata(
@@ -23867,7 +23929,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator.clone()],
@@ -23909,7 +23971,7 @@ mod tests {
 
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
@@ -24007,7 +24069,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![
                 genesis_account(sender, U256::from(1_000_000u64)),
@@ -24087,7 +24149,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[]);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![],
             vec![genesis_validator],
@@ -24170,7 +24232,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
@@ -24285,7 +24347,7 @@ mod tests {
 
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -24335,7 +24397,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -24442,7 +24504,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -24530,7 +24592,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -24622,7 +24684,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -24707,7 +24769,7 @@ mod tests {
             );
             let final_chain = FinalChain::new(
                 storage.clone(),
-                200_000,
+                200_000.into(),
                 0,
                 vec![genesis_account(owner, U256::from(1_000_000u64))],
                 vec![],
@@ -24788,7 +24850,7 @@ mod tests {
             write_period_data(&storage, period, &pbft_block, std::slice::from_ref(&tx.rlp));
             let final_chain = FinalChain::new(
                 storage.clone(),
-                200_000,
+                200_000.into(),
                 0,
                 vec![genesis_account(owner, U256::from(1_000_000u64))],
                 vec![],
@@ -24872,7 +24934,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -24953,7 +25015,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -25004,7 +25066,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            500_000,
+            500_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -25123,7 +25185,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -25233,7 +25295,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -25356,7 +25418,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -25602,7 +25664,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            1_200_000,
+            1_200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(5_000_000u64))],
             vec![],
@@ -25752,7 +25814,7 @@ mod tests {
         let pbft_block = signed_pbft_block(&signing_key, period, 149);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
@@ -25864,7 +25926,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(sender, initial_sender_balance)],
             vec![],
@@ -25941,7 +26003,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let restart_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(sender, initial_sender_balance)],
             vec![],
@@ -26053,7 +26115,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, owner_balance_before)],
             vec![],
@@ -26164,7 +26226,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, owner_balance_before)],
             vec![],
@@ -26264,7 +26326,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, owner_balance_before)],
             vec![],
@@ -26339,7 +26401,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, owner_balance_before)],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -26429,7 +26491,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[delegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, owner_balance_before)],
             vec![genesis_validator(validator, U256::from(29_500u64))],
@@ -26535,7 +26597,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            300_000,
+            300_000.into(),
             0,
             vec![genesis_account(owner, owner_balance_before)],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -26636,7 +26698,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -26707,7 +26769,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(delegator, delegator_balance_before)],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -26787,7 +26849,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(delegator, delegator_balance_before)],
             vec![genesis_validator(validator, U256::from(5_000u64))],
@@ -26866,7 +26928,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, validator_balance_before)],
             vec![genesis_validator(validator, U256::from(6_000u64))],
@@ -26950,7 +27012,7 @@ mod tests {
         write_period_data(&storage, period, &pbft_block, &[undelegate_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, validator_balance_before)],
             vec![genesis_validator(validator, U256::from(3_000u64))],
@@ -27024,7 +27086,7 @@ mod tests {
         write_period_data(&storage, 1, &pbft_block, &[transfer_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(3_000u64))],
@@ -27137,7 +27199,7 @@ mod tests {
         write_period_data(&storage, 1, &period_one_block, &[transfer_tx.rlp.clone()]);
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(3_000u64))],
@@ -27253,7 +27315,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![
                 genesis_account(validator, U256::from(1_000_000u64)),
@@ -27301,7 +27363,7 @@ mod tests {
                 get_undelegations_v2_input(validator, 0),
             ))
             .unwrap();
-        assert_eq!(pending.gas_used, 20_000);
+        assert_eq!(pending.gas_used.as_u64(), 20_000);
         assert_eq!(
             u256_from_big_endian(&pending.code_retval[32..64]),
             U256::one()
@@ -27331,7 +27393,7 @@ mod tests {
         drop(final_chain);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![
                 genesis_account(validator, U256::from(1_000_000u64)),
@@ -27437,7 +27499,7 @@ mod tests {
                 get_undelegations_v2_input(validator, 0),
             ))
             .unwrap();
-        assert_eq!(empty_page.gas_used, 0);
+        assert_eq!(empty_page.gas_used.as_u64(), 0);
         assert_eq!(
             u256_from_big_endian(&empty_page.code_retval[64..96]),
             U256::zero()
@@ -27504,7 +27566,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -27612,7 +27674,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![
                 genesis_account(validator, U256::from(1_000_000u64)),
@@ -27715,7 +27777,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![
                 genesis_account(validator, U256::from(1_000_000u64)),
@@ -27807,7 +27869,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
@@ -27918,7 +27980,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![
                 genesis_account(validator, U256::from(1_000_000u64)),
@@ -27970,7 +28032,7 @@ mod tests {
                 get_undelegations_input(validator, 0),
             ))
             .unwrap();
-        assert_eq!(pending.gas_used, DPOS_BATCH_GET_REWARDS_GAS);
+        assert_eq!(pending.gas_used.as_u64(), DPOS_BATCH_GET_REWARDS_GAS);
         assert_eq!(
             u256_from_big_endian(&pending.code_retval[32..64]),
             U256::one()
@@ -28028,7 +28090,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![
                 genesis_account(validator, U256::from(1_000_000u64)),
@@ -28102,7 +28164,7 @@ mod tests {
                 get_undelegations_v2_input(validator, 0),
             ))
             .unwrap();
-        assert_eq!(empty_page.gas_used, 0);
+        assert_eq!(empty_page.gas_used.as_u64(), 0);
 
         drop(final_chain);
         drop(storage);
@@ -28195,7 +28257,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            400_000,
+            400_000.into(),
             0,
             vec![genesis_account(owner, U256::from(2_000_000u64))],
             vec![],
@@ -28263,7 +28325,7 @@ mod tests {
         };
         let final_chain = FinalChain::new(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(first_validator, U256::from(2_000_000u64))],
             vec![
@@ -28410,7 +28472,7 @@ mod tests {
         );
         let final_chain = FinalChain::new(
             storage.clone(),
-            400_000,
+            400_000.into(),
             0,
             vec![genesis_account(owner, owner_balance_before)],
             vec![],
@@ -28658,7 +28720,7 @@ mod tests {
         let genesis_validator_clone = genesis_validator.clone();
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![
                 genesis_account(owner, U256::from(11_000u64)),
@@ -28769,7 +28831,7 @@ mod tests {
         drop(final_chain);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(validator, U256::from(2_000_000u64))],
             vec![genesis_validator],
@@ -28840,7 +28902,7 @@ mod tests {
 
         let err = match FinalChain::new(
             storage.clone(),
-            0,
+            0.into(),
             0,
             vec![],
             vec![],
@@ -28853,6 +28915,20 @@ mod tests {
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn gas_used_from_fee_returns_typed_gas_and_preserves_errors() {
+        assert_eq!(
+            gas_used_from_fee(U256::from(21), U256::from(3)).unwrap(),
+            FinalChainGas::new(7)
+        );
+        assert_eq!(
+            gas_used_from_fee(U256::zero(), U256::zero()).unwrap(),
+            FinalChainGas::ZERO
+        );
+        assert!(gas_used_from_fee(U256::one(), U256::zero()).is_err());
+        assert!(gas_used_from_fee(U256::from(5), U256::from(2)).is_err());
     }
 
     #[test]
@@ -29012,7 +29088,7 @@ mod tests {
         // network default.
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(100_001u64))],
             vec![],
@@ -29173,7 +29249,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![
                 genesis_account(equal_sender, U256::from(100u64)),
@@ -29231,7 +29307,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let restarted = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![],
             vec![],
@@ -29274,7 +29350,7 @@ mod tests {
             nonce: max_u256_nonce.clone(),
             value: U256::one().into(),
             gas_price: U256::one().into(),
-            gas_limit: 21_000,
+            gas_limit: 21_000.into(),
             data: Vec::new(),
             rlp: vec![0xc1, 0xe7],
         };
@@ -29288,7 +29364,7 @@ mod tests {
         rewards.cornus_period = 0;
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(sender, U256::from(100_000u64))],
             vec![],
@@ -29320,7 +29396,7 @@ mod tests {
         drop(final_chain);
         let restarted = FinalChain::new_with_rewards_config(
             storage.clone(),
-            200_000,
+            200_000.into(),
             0,
             vec![genesis_account(sender, U256::from(100_000u64))],
             vec![],
@@ -29362,7 +29438,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![genesis_account(sender, U256::from(100u64))],
             vec![],
@@ -29424,7 +29500,7 @@ mod tests {
         write_period_data(&storage, period_two, &pbft_two, &[tx_two.rlp.clone()]);
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![],
             vec![],
@@ -29495,7 +29571,7 @@ mod tests {
         );
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
-            100_000,
+            100_000.into(),
             0,
             vec![
                 genesis_account(malformed_sender, U256::from(100u64)),

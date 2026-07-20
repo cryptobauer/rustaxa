@@ -3017,7 +3017,7 @@ mod tests {
                         transaction.gas_price.as_slice(),
                     )
                     .expect("transaction-manager test gas price should fit u256"),
-                    gas_limit: transaction.gas_limit,
+                    gas_limit: transaction.gas_limit.into(),
                     data: transaction.data,
                     rlp: transaction.rlp,
                 }],

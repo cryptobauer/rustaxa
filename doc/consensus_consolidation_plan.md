@@ -4199,6 +4199,26 @@ Validation passed all 1,192 tests across `rustaxa-types`, `rustaxa-consensus`, a
 check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, and the FinalChain Tier 3 Rust-enabled/pure-C++ parity gate.
 Rust formatting and whitespace validation also passed; existing normal-policy clippy warnings remain outside this slice.
 
+### CRW-09 Typed FinalChain Gas Lifecycle
+
+This domain slice introduces `FinalChainGas(u64)` across the complete Rust FinalChain gas lifecycle: transaction and call
+limits, native execution, external-EVM requests and reports, cumulative-gas validation, rewards inputs, receipts, stored
+and full headers, publication, audit, and restart. The type exposes only checked addition/subtraction, and
+`FinalChainGasPrice::checked_fee` accepts typed gas, preventing unrelated `u64` counters from entering fee arithmetic.
+Existing overflow checks, failure ordering, affordability behavior, nonce/account mutation order, and staged rollback
+semantics remain unchanged.
+
+CXX execution/report and public query carriers remain `u64`. Header and receipt codecs, Ethereum hashing, and request-ID
+construction explicitly unwrap the same inner value, preserving RLP shapes, hashes, eight-byte identity preimages, and
+RPC output. No schema/domain version, migration, carrier, handle, export, shim, module flag, compatibility-only test, or
+`CRW-07` inventory delta is introduced. Focused tests cover newtype boundaries and checked arithmetic; existing request-
+identity, header/hash, receipt/root, native gas, external cumulative-report, reward-fee, publication, and restart suites
+provide byte-compatibility and behavioral regression coverage.
+
+Validation passed all 1,193 tests across `rustaxa-types`, `rustaxa-consensus`, and `rustaxa-bridge`, the workspace compile
+check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, and the FinalChain Tier 3 Rust-enabled/pure-C++ parity gate.
+Rust formatting and whitespace validation also passed; existing normal-policy clippy warnings remain outside this slice.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

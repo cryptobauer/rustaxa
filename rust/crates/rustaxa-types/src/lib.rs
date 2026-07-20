@@ -10,7 +10,7 @@ pub use final_chain::{
     Account, BlockHeaderContext, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
     FINAL_CHAIN_LOG_BLOOM_BYTES, FinalChainAccountBalance, FinalChainBlockHeader,
     FinalChainBlockHeaderBuilder, FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest,
-    FinalChainGasPrice, FinalChainGasPriceLengthError, FinalChainLogBloom,
+    FinalChainGas, FinalChainGasPrice, FinalChainGasPriceLengthError, FinalChainLogBloom,
     FinalChainLogBloomLengthError, FinalChainNonce, FinalChainRewardsConfig,
     FinalChainTransactionPosition, FinalChainTransactionValue,
     FinalChainTransactionValueLengthError, FinalizationDagBlock, FinalizationTransaction,

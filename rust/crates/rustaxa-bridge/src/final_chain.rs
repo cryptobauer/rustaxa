@@ -61,7 +61,7 @@ fn finalization_transaction_from_ffi(
             .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"))?,
         gas_price: rustaxa_types::FinalChainGasPrice::try_from(transaction.gas_price.as_slice())
             .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
-        gas_limit: transaction.gas_limit,
+        gas_limit: transaction.gas_limit.into(),
         data: transaction.data,
         rlp: transaction.rlp,
     })
@@ -87,7 +87,7 @@ fn final_chain_call_request_from_ffi(
             .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"))?,
         gas_price: rustaxa_types::FinalChainGasPrice::try_from(request.gas_price.as_slice())
             .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
-        gas_limit: request.gas_limit,
+        gas_limit: request.gas_limit.into(),
         input: request.input,
     })
 }
@@ -137,7 +137,7 @@ fn final_chain_execution_request_from_ffi(
             .into_iter()
             .map(reward_cert_vote_from_ffi)
             .collect(),
-        block_gas_limit: request.block_gas_limit,
+        block_gas_limit: request.block_gas_limit.into(),
         mode: request.mode,
     })
 }
@@ -162,7 +162,7 @@ fn evm_transaction_input_to_ffi(
             transaction.value.to_fixed_be_bytes().to_vec()
         },
         gas_price: transaction.gas_price.to_fixed_be_bytes().to_vec(),
-        gas_limit: transaction.gas_limit,
+        gas_limit: transaction.gas_limit.as_u64(),
         data: transaction.data,
         rlp: transaction.rlp,
         kind: transaction.kind,
@@ -220,7 +220,7 @@ fn system_transaction_plan_fact_from_ffi(
         bridge_contract_has_code: fact.bridge_contract_has_code,
         should_finalize_epoch: fact.should_finalize_epoch,
         system_account_nonce: FinalChainNonce::from_bytes(&fact.system_account_nonce)?,
-        block_gas_limit: fact.block_gas_limit,
+        block_gas_limit: fact.block_gas_limit.into(),
     })
 }
 
@@ -246,7 +246,7 @@ fn evm_request_to_ffi(
         period: request.period,
         block_author: request.block_author,
         timestamp: request.timestamp,
-        block_gas_limit: request.block_gas_limit,
+        block_gas_limit: request.block_gas_limit.as_u64(),
         transactions: request
             .transactions
             .into_iter()
@@ -262,8 +262,12 @@ fn evm_rewards_request_to_ffi(
         request_id: request.request_id,
         period: request.period,
         block_author: request.block_author,
-        block_gas_used: request.block_gas_used,
-        transaction_gas_used: request.transaction_gas_used,
+        block_gas_used: request.block_gas_used.as_u64(),
+        transaction_gas_used: request
+            .transaction_gas_used
+            .into_iter()
+            .map(|gas| gas.as_u64())
+            .collect(),
         transaction_fees: request
             .transaction_fees
             .into_iter()
@@ -305,7 +309,7 @@ fn evm_report_from_ffi(
         request_id: report.request_id,
         status: report.status,
         state_root: report.state_root,
-        cumulative_gas_used: report.cumulative_gas_used,
+        cumulative_gas_used: report.cumulative_gas_used.into(),
         results: report
             .results
             .into_iter()
@@ -314,8 +318,8 @@ fn evm_report_from_ffi(
                     position: evm_report_position_from_ffi(result.position)?,
                     hash: result.hash,
                     status: result.status,
-                    gas_used: result.gas_used,
-                    cumulative_gas_used: result.cumulative_gas_used,
+                    gas_used: result.gas_used.into(),
+                    cumulative_gas_used: result.cumulative_gas_used.into(),
                     receipt_rlp: result.receipt_rlp,
                     logs: result
                         .logs
@@ -441,7 +445,7 @@ fn commit_report_to_ffi(
             .into_iter()
             .map(|data| rustaxa_ffi::ReceiptRlp { data })
             .collect(),
-        gas_used: report.gas_used,
+        gas_used: report.gas_used.as_u64(),
         executed_dag_blocks: report.executed_dag_blocks,
         executed_transactions: report.executed_transactions,
         error_code: report.error_code,
@@ -459,7 +463,7 @@ pub(crate) fn create_final_chain(
 ) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
     create_final_chain_with_rewards_config(
         storage,
-        block_gas_limit,
+        block_gas_limit.into(),
         genesis_timestamp,
         genesis_accounts,
         genesis_validators,
@@ -537,7 +541,7 @@ pub fn create_final_chain_with_rewards_config(
         .collect();
     let final_chain = FinalChain::new_with_rewards_config(
         storage.0.clone(),
-        block_gas_limit,
+        block_gas_limit.into(),
         genesis_timestamp,
         genesis_accounts,
         genesis_validators,
@@ -1004,7 +1008,7 @@ impl BridgeFinalChain {
                     data: log.data,
                 })
                 .collect(),
-            gas_used: outcome.gas_used,
+            gas_used: outcome.gas_used.as_u64(),
             code_err: outcome.code_err,
             consensus_err: outcome.consensus_err,
         })
@@ -1325,7 +1329,7 @@ mod tests {
             nonce: FinalChainNonce::from_bytes(&high_nonce).expect("nonce should be canonical"),
             value: ethereum_types::U256::zero().into(),
             gas_price: ethereum_types::U256::zero().into(),
-            gas_limit: 21_000,
+            gas_limit: 21_000.into(),
             data: vec![],
             rlp: vec![],
             kind: rustaxa_consensus::FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL,
@@ -1384,7 +1388,7 @@ mod tests {
             nonce: FinalChainNonce::zero(),
             value: ethereum_types::U256::zero().into(),
             gas_price: ethereum_types::U256::one().into(),
-            gas_limit: 0,
+            gas_limit: 0.into(),
             data: Vec::new(),
             rlp: Vec::new(),
             kind: 0,
@@ -1430,7 +1434,7 @@ mod tests {
             nonce: FinalChainNonce::zero(),
             value: ethereum_types::U256::zero().into(),
             gas_price: ethereum_types::U256::zero().into(),
-            gas_limit: 0,
+            gas_limit: 0.into(),
             data: Vec::new(),
             rlp: vec![0xaa],
             kind: 0,
@@ -2634,7 +2638,7 @@ mod tests {
         assert_eq!(plan.post_execution_state_root, [0x11; 32]);
         assert_eq!(plan.state_root, [0x22; 32]);
         assert_eq!(plan.total_reward, vec![0x33]);
-        assert_eq!(plan.gas_used, 2);
+        assert_eq!(plan.gas_used.as_u64(), 2);
         assert_eq!(plan.executed_transactions, 2);
         assert_eq!(plan.regular_transaction_count, 2);
         assert_eq!(plan.system_transaction_count, 0);
@@ -2830,7 +2834,7 @@ mod tests {
         );
         assert_eq!(commit_plan.post_execution_state_root, [0x41; 32]);
         assert_eq!(commit_plan.state_root, [0x42; 32]);
-        assert_eq!(commit_plan.gas_used, 35);
+        assert_eq!(commit_plan.gas_used.as_u64(), 35);
         assert_eq!(commit_plan.executed_dag_blocks, 2);
         assert_eq!(commit_plan.executed_transactions, 3);
         assert_eq!(commit_plan.regular_transaction_count, 3);
@@ -2871,7 +2875,7 @@ mod tests {
             H256::from(commit_plan.receipts_root)
         );
         assert_eq!(stored_header.log_bloom, commit_plan.header_log_bloom);
-        assert_eq!(stored_header.gas_used, 35);
+        assert_eq!(stored_header.gas_used.as_u64(), 35);
         assert_eq!(stored_header.total_reward, U256::from(0x99));
         let full_header = rustaxa_types::codec::rlp::final_chain::LegacyBlockHeaderRlp::try_from(
             rustaxa_types::codec::rlp::final_chain::LegacyBlockHeaderRlpInput::new(
@@ -3778,7 +3782,7 @@ mod tests {
             nonce: FinalChainNonce::zero(),
             value: ethereum_types::U256::zero().into(),
             gas_price: ethereum_types::U256::zero().into(),
-            gas_limit: 0,
+            gas_limit: 0.into(),
             data: Vec::new(),
             rlp: Vec::new(),
             kind: 0,

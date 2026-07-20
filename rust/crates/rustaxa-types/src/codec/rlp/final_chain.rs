@@ -115,7 +115,7 @@ fn decode_stored_block_header_rlp(rlp: &Rlp<'_>) -> Result<StoredFinalChainBlock
             .map_err(|error| {
                 anyhow::anyhow!("FINAL_CHAIN_STORED_HEADER_LOG_BLOOM_INVALID_LENGTH: {error}")
             })?,
-        gas_used: rlp.val_at(STORED_HEADER_GAS_USED_POS)?,
+        gas_used: rlp.val_at::<u64>(STORED_HEADER_GAS_USED_POS)?.into(),
         total_reward: rlp.val_at(STORED_HEADER_TOTAL_REWARD_POS)?,
     })
 }
@@ -127,7 +127,7 @@ fn encode_stored_block_header_rlp(header: &StoredFinalChainBlockHeader) -> Vec<u
     stream.append(&header.transactions_root);
     stream.append(&header.receipts_root);
     stream.append(&header.log_bloom.as_ref());
-    stream.append(&header.gas_used);
+    stream.append(&header.gas_used.as_u64());
     stream.append(&header.total_reward);
     stream.out().to_vec()
 }
@@ -148,8 +148,8 @@ fn encode_legacy_block_header(header: &FinalChainBlockHeader) -> Vec<u8> {
     stream.append(&header.receipts_root);
     stream.append(&header.log_bloom.as_ref());
     stream.append(&header.number);
-    stream.append(&header.gas_limit);
-    stream.append(&header.gas_used);
+    stream.append(&header.gas_limit.as_u64());
+    stream.append(&header.gas_used.as_u64());
     stream.append(&header.timestamp);
     stream.append(&header.total_reward);
     stream.append(&header.extra_data.as_slice());
@@ -176,7 +176,7 @@ impl TryFrom<LegacyBlockHeaderRlpInput<'_>> for LegacyBlockHeaderRlp {
             BlockHeaderContext {
                 hash,
                 pbft: pbft.as_ref(),
-                block_gas_limit: value.block_gas_limit,
+                block_gas_limit: value.block_gas_limit.into(),
                 genesis_timestamp: value.genesis_timestamp,
             },
         )))
@@ -227,7 +227,7 @@ fn encode_ethereum_header_hash_input(
     stream.append(&U256::zero());
     stream.append(&number);
     stream.append(&gas_limit);
-    stream.append(&stored_header.gas_used);
+    stream.append(&stored_header.gas_used.as_u64());
     stream.append(&timestamp);
     stream.append(&extra_data);
     stream.append(&zero_hash);

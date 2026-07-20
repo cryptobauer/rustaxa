@@ -271,7 +271,7 @@ fn transaction_fact_from_ffi(value: FfiRewardsTransactionFact) -> Result<RewardT
     Ok(RewardTransactionFact {
         hash: H256::from(value.hash),
         gas_price: U256::from_big_endian(&value.gas_price_be),
-        gas_used: value.gas_used,
+        gas_used: value.gas_used.into(),
     })
 }
 

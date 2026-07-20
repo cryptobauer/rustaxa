@@ -1383,5 +1383,7 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    FinalChain transaction/call values now use their own `U256` domain through native, payable, transient, and external
    execution while preserving fixed regular, legacy-minimal system, and canonical transaction-RLP bytes. FinalChain
    account balances now use a distinct `U256` domain with fixed/minimal encoding provenance so untouched genesis and
-   mutated/new account snapshots remain byte-compatible across lookup, persistence, and restart.
+   mutated/new account snapshots remain byte-compatible across lookup, persistence, and restart. FinalChain gas limits,
+   usage, cumulative validation, rewards inputs, receipts, headers, and publication now share a checked `u64` domain
+   while preserving CXX carriers, RLP, hashes, request identities, and error ordering.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

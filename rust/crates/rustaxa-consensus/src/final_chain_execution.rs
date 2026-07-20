@@ -15,10 +15,10 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    FinalChainGasPrice, FinalChainLogBloom, FinalChainNonce, FinalChainTransactionPosition,
-    FinalChainTransactionValue, FinalizationDagBlock, FinalizationTransaction,
-    LegacySystemTransactionInput, LegacyTransactionEnvelope, StoredFinalChainBlockHeader,
-    encode_legacy_system_transaction,
+    FinalChainGas, FinalChainGasPrice, FinalChainLogBloom, FinalChainNonce,
+    FinalChainTransactionPosition, FinalChainTransactionValue, FinalizationDagBlock,
+    FinalizationTransaction, LegacySystemTransactionInput, LegacyTransactionEnvelope,
+    StoredFinalChainBlockHeader, encode_legacy_system_transaction,
 };
 use triehash::ordered_trie_root;
 
@@ -154,7 +154,7 @@ pub struct FinalChainExecutionRequest {
     pub finalized_dag_blocks: Vec<FinalizationDagBlock>,
     pub blocks_per_year: u32,
     pub cert_votes: Vec<RewardCertVoteFact>,
-    pub block_gas_limit: u64,
+    pub block_gas_limit: FinalChainGas,
     pub mode: u8,
 }
 
@@ -176,7 +176,7 @@ pub struct FinalChainEvmTransactionInput {
     pub nonce: FinalChainNonce,
     pub value: FinalChainTransactionValue,
     pub gas_price: FinalChainGasPrice,
-    pub gas_limit: u64,
+    pub gas_limit: FinalChainGas,
     pub data: Vec<u8>,
     pub rlp: Vec<u8>,
     pub kind: u8,
@@ -223,7 +223,7 @@ pub struct FinalChainSystemTransactionPlanFact {
     pub bridge_contract_has_code: bool,
     pub should_finalize_epoch: bool,
     pub system_account_nonce: FinalChainNonce,
-    pub block_gas_limit: u64,
+    pub block_gas_limit: FinalChainGas,
 }
 
 /// Rust-planned system transaction RLPs for an external-EVM session.
@@ -251,7 +251,7 @@ pub struct FinalChainEvmExecutionRequest {
     pub period: u64,
     pub block_author: [u8; 20],
     pub timestamp: u64,
-    pub block_gas_limit: u64,
+    pub block_gas_limit: FinalChainGas,
     pub transactions: Vec<FinalChainEvmTransactionInput>,
 }
 
@@ -285,8 +285,8 @@ pub struct FinalChainEvmTransactionResult {
     pub position: FinalChainTransactionPosition,
     pub hash: [u8; 32],
     pub status: u8,
-    pub gas_used: u64,
-    pub cumulative_gas_used: u64,
+    pub gas_used: FinalChainGas,
+    pub cumulative_gas_used: FinalChainGas,
     pub receipt_rlp: Vec<u8>,
     pub logs: Vec<FinalChainEvmLog>,
     pub new_contract_address: Option<[u8; 20]>,
@@ -304,7 +304,7 @@ pub struct FinalChainEvmExecutionReport {
     pub request_id: [u8; 32],
     pub status: u8,
     pub state_root: [u8; 32],
-    pub cumulative_gas_used: u64,
+    pub cumulative_gas_used: FinalChainGas,
     pub results: Vec<FinalChainEvmTransactionResult>,
 }
 
@@ -318,8 +318,8 @@ pub struct FinalChainEvmRewardsRequest {
     pub request_id: [u8; 32],
     pub period: u64,
     pub block_author: [u8; 20],
-    pub block_gas_used: u64,
-    pub transaction_gas_used: Vec<u64>,
+    pub block_gas_used: FinalChainGas,
+    pub transaction_gas_used: Vec<FinalChainGas>,
     pub transaction_fees: Vec<Vec<u8>>,
     pub finalized_dag_block_count: u64,
     /// Legacy-compatible per-period `BlockStats` RLP selected by the
@@ -376,7 +376,7 @@ pub struct FinalChainExternalEvmCommitPlan {
     pub indexed_log_bloom: FinalChainLogBloom,
     pub receipts_rlp: Vec<u8>,
     pub encoded_receipts: Vec<Vec<u8>>,
-    pub gas_used: u64,
+    pub gas_used: FinalChainGas,
     pub executed_dag_blocks: u64,
     pub executed_transactions: u64,
     pub regular_transaction_count: u64,
@@ -621,7 +621,7 @@ pub struct FinalChainExecutionCommitReport {
     pub period: u64,
     pub block_header_rlp: Vec<u8>,
     pub receipts: Vec<Vec<u8>>,
-    pub gas_used: u64,
+    pub gas_used: FinalChainGas,
     pub executed_dag_blocks: u64,
     pub executed_transactions: u64,
     pub error_code: String,
@@ -859,7 +859,7 @@ pub fn plan_external_evm_system_transactions(
         nonce: U256::from_big_endian(&system_nonce_bytes),
         value: U256::zero(),
         gas_price: U256::zero(),
-        gas: fact.block_gas_limit,
+        gas: fact.block_gas_limit.as_u64(),
         data: solidity_no_arg_call("finalizeEpoch()"),
         receiver: Some(H160::from(fact.bridge_contract_address)),
         chain_id: 0,
@@ -1004,7 +1004,7 @@ fn final_chain_execution_session_report_evm_inner(
         session.error_code = "FINAL_CHAIN_EVM_REPORT_REJECTED".to_string();
         return final_chain_execution_session_next(session);
     }
-    let mut cumulative_gas_used = 0u64;
+    let mut cumulative_gas_used = FinalChainGas::ZERO;
     for (expected, actual) in request.transactions.iter().zip(report.results.iter()) {
         if expected.position != actual.position || expected.hash != actual.hash {
             session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
@@ -1841,7 +1841,7 @@ pub fn commit_final_chain_execution_session(
         period: session.metadata.period,
         block_header_rlp,
         receipts,
-        gas_used: 0,
+        gas_used: FinalChainGas::ZERO,
         executed_dag_blocks,
         executed_transactions,
         error_code: String::new(),
@@ -1994,7 +1994,7 @@ fn decode_system_transaction_inputs(
                 nonce: FinalChainNonce::from_bytes(&u256_to_nonce_bytes(envelope.nonce))?,
                 value: envelope.value.into(),
                 gas_price: envelope.gas_price.into(),
-                gas_limit: envelope.gas,
+                gas_limit: envelope.gas.into(),
                 data: envelope.data,
                 rlp: envelope.rlp,
                 kind: FINAL_CHAIN_EXECUTION_TX_KIND_SYSTEM,
@@ -2180,7 +2180,7 @@ fn build_external_evm_publication_plan(
     let full_header = LegacyBlockHeaderRlp::try_from(
         LegacyBlockHeaderRlpInput::new(
             StoredBlockHeaderRlp::new(stored_header_rlp.as_bytes()),
-            final_chain.block_gas_limit(),
+            final_chain.block_gas_limit().as_u64(),
             final_chain.genesis_timestamp(),
         )
         .signed_pbft_block(SignedPbftBlockRlp::new(pbft_block_rlp)),
@@ -2319,8 +2319,8 @@ fn validate_and_clone_external_evm_receipt(
 fn encode_external_evm_receipt(result: &FinalChainEvmTransactionResult) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(5);
     stream.append(&result.status);
-    stream.append(&result.gas_used);
-    stream.append(&result.cumulative_gas_used);
+    stream.append(&result.gas_used.as_u64());
+    stream.append(&result.cumulative_gas_used.as_u64());
     stream.begin_list(result.logs.len());
     for log in &result.logs {
         stream.begin_list(3);
@@ -2558,7 +2558,7 @@ fn transaction_kind(transaction: &FinalizationTransaction) -> u8 {
 
 fn system_transaction_request_id(
     metadata: &rustaxa_types::PbftBlockMetadata,
-    block_gas_limit: u64,
+    block_gas_limit: FinalChainGas,
     transactions: &[FinalChainEvmTransactionInput],
 ) -> [u8; 32] {
     use tiny_keccak::{Hasher, Keccak};
@@ -2568,7 +2568,7 @@ fn system_transaction_request_id(
     hasher.update(&metadata.period.to_be_bytes());
     hasher.update(metadata.author.as_bytes());
     hasher.update(&metadata.timestamp.to_be_bytes());
-    hasher.update(&block_gas_limit.to_be_bytes());
+    hasher.update(&block_gas_limit.as_u64().to_be_bytes());
     for transaction in transactions {
         hasher.update(&u64::from(transaction.position.as_u32()).to_be_bytes());
         hasher.update(&transaction.hash);
@@ -2581,7 +2581,7 @@ fn system_transaction_request_id(
 
 fn execution_request_id(
     metadata: &rustaxa_types::PbftBlockMetadata,
-    block_gas_limit: u64,
+    block_gas_limit: FinalChainGas,
     transactions: &[FinalChainEvmTransactionInput],
 ) -> [u8; 32] {
     use tiny_keccak::{Hasher, Keccak};
@@ -2593,7 +2593,7 @@ fn execution_request_id(
     hasher.update(&metadata.period.to_be_bytes());
     hasher.update(metadata.author.as_bytes());
     hasher.update(&metadata.timestamp.to_be_bytes());
-    hasher.update(&block_gas_limit.to_be_bytes());
+    hasher.update(&block_gas_limit.as_u64().to_be_bytes());
     for transaction in transactions {
         hasher.update(&u64::from(transaction.position.as_u32()).to_be_bytes());
         hasher.update(&transaction.hash);
@@ -2618,7 +2618,7 @@ fn execution_request_id(
         } else {
             hasher.update(&transaction.gas_price.to_fixed_be_bytes());
         }
-        hasher.update(&transaction.gas_limit.to_be_bytes());
+        hasher.update(&transaction.gas_limit.as_u64().to_be_bytes());
         hasher.update(&transaction.data);
         hasher.update(&transaction.rlp);
         hasher.update(&[transaction.kind]);
@@ -2646,7 +2646,7 @@ mod tests {
             finalized_dag_blocks: Vec::new(),
             blocks_per_year: 0,
             cert_votes: Vec::new(),
-            block_gas_limit: 1_000_000,
+            block_gas_limit: 1_000_000.into(),
             mode,
         }
     }
@@ -2672,7 +2672,7 @@ mod tests {
             nonce: FinalChainNonce::zero(),
             value: U256::zero().into(),
             gas_price: U256::zero().into(),
-            gas_limit: 21_000,
+            gas_limit: 21_000.into(),
             data,
             rlp: vec![hash_byte],
         }
@@ -2689,8 +2689,8 @@ mod tests {
             position: tx.position,
             hash: tx.hash,
             status,
-            gas_used,
-            cumulative_gas_used,
+            gas_used: gas_used.into(),
+            cumulative_gas_used: cumulative_gas_used.into(),
             receipt_rlp,
             logs: vec![FinalChainEvmLog {
                 address: [0x44; 20],
@@ -2758,7 +2758,7 @@ mod tests {
             bridge_contract_has_code: true,
             should_finalize_epoch: true,
             system_account_nonce: FinalChainNonce::from_u64(4),
-            block_gas_limit: 1_000_000,
+            block_gas_limit: 1_000_000.into(),
         }
     }
 
@@ -2877,7 +2877,7 @@ mod tests {
             U256::from_big_endian(&fact.system_account_nonce.to_bytes())
         );
         assert_eq!(envelope.gas_price, U256::zero());
-        assert_eq!(envelope.gas, fact.block_gas_limit);
+        assert_eq!(envelope.gas, fact.block_gas_limit.as_u64());
         assert_eq!(
             envelope.receiver,
             Some(H160::from(fact.bridge_contract_address))
@@ -2929,7 +2929,7 @@ mod tests {
             nonce: FinalChainNonce::from_u64(u64::MAX),
             value: U256::zero().into(),
             gas_price: U256::zero().into(),
-            gas_limit: 21_000,
+            gas_limit: 21_000.into(),
             data: Vec::new(),
             rlp: Vec::new(),
             kind: 0,
@@ -2937,7 +2937,8 @@ mod tests {
         };
         transaction.gas_price = FinalChainGasPrice::try_from(&[1][..]).unwrap();
         transaction.value = FinalChainTransactionValue::try_from(&[2][..]).unwrap();
-        let legacy_width_id = execution_request_id(&metadata, 1_000_000, &[transaction.clone()]);
+        let legacy_width_id =
+            execution_request_id(&metadata, 1_000_000.into(), &[transaction.clone()]);
         assert_eq!(
             legacy_width_id,
             [
@@ -2954,10 +2955,10 @@ mod tests {
         fixed_width.value = FinalChainTransactionValue::try_from(fixed_value.as_slice()).unwrap();
         assert_eq!(
             legacy_width_id,
-            execution_request_id(&metadata, 1_000_000, &[fixed_width])
+            execution_request_id(&metadata, 1_000_000.into(), &[fixed_width])
         );
         transaction.nonce = transaction.nonce.next();
-        let widened_id = execution_request_id(&metadata, 1_000_000, &[transaction]);
+        let widened_id = execution_request_id(&metadata, 1_000_000.into(), &[transaction]);
         assert_ne!(legacy_width_id, widened_id);
     }
 
@@ -2977,14 +2978,14 @@ mod tests {
             nonce: FinalChainNonce::from_u64(4),
             value: U256::zero().into(),
             gas_price: FinalChainGasPrice::zero(),
-            gas_limit: 100_000,
+            gas_limit: 100_000.into(),
             data: vec![7, 6],
             rlp: vec![5],
             kind: FINAL_CHAIN_EXECUTION_TX_KIND_SYSTEM,
             is_system: true,
         };
         assert_eq!(
-            execution_request_id(&metadata, 1_000_000, &[transaction]),
+            execution_request_id(&metadata, 1_000_000.into(), &[transaction]),
             [
                 90, 76, 93, 113, 145, 192, 173, 31, 4, 216, 240, 230, 23, 235, 240, 15, 84, 116,
                 68, 209, 160, 185, 34, 246, 15, 54, 235, 249, 218, 168, 223, 153,
@@ -3175,7 +3176,7 @@ mod tests {
             FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
         );
         assert_eq!(step.period, 7);
-        assert_eq!(step.evm_request.block_gas_limit, 1_000_000);
+        assert_eq!(step.evm_request.block_gas_limit.as_u64(), 1_000_000);
         assert_eq!(step.external_evm_transaction_count, 2);
         assert_eq!(step.evm_request.transactions.len(), 4);
         assert_eq!(step.evm_request.transactions[0].position.as_u32(), 0);
@@ -3217,7 +3218,7 @@ mod tests {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
-            cumulative_gas_used: 1,
+            cumulative_gas_used: 1.into(),
             results: vec![evm_result(&tx, 1, 1, 1, vec![0xc0])],
         };
 
@@ -3245,7 +3246,7 @@ mod tests {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
-            cumulative_gas_used: 1,
+            cumulative_gas_used: 1.into(),
             results: vec![mismatched_result],
         };
 
@@ -3274,7 +3275,7 @@ mod tests {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
-            cumulative_gas_used: 1,
+            cumulative_gas_used: 1.into(),
             results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
         };
 
@@ -3293,8 +3294,16 @@ mod tests {
             step.evm_request.request_id
         );
         assert_eq!(rewards.evm_rewards_request.period, 7);
-        assert_eq!(rewards.evm_rewards_request.block_gas_used, 1);
-        assert_eq!(rewards.evm_rewards_request.transaction_gas_used, vec![1]);
+        assert_eq!(rewards.evm_rewards_request.block_gas_used.as_u64(), 1);
+        assert_eq!(
+            rewards
+                .evm_rewards_request
+                .transaction_gas_used
+                .iter()
+                .map(|gas| gas.as_u64())
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
         assert_eq!(rewards.evm_rewards_request.transaction_fees, vec![vec![0]]);
     }
 
@@ -3313,7 +3322,7 @@ mod tests {
                 request_id: step.evm_request.request_id,
                 status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
                 state_root: [0x11; 32],
-                cumulative_gas_used: 1,
+                cumulative_gas_used: 1.into(),
                 results: vec![evm_result_with_encoded_receipt(&tx, 1, 1, 1)],
             },
         );
@@ -3353,7 +3362,7 @@ mod tests {
                 request_id: step.evm_request.request_id,
                 status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
                 state_root: [0x10; 32],
-                cumulative_gas_used: 5,
+                cumulative_gas_used: 5.into(),
                 results: vec![first.clone(), second.clone()],
             },
         );
@@ -3379,7 +3388,7 @@ mod tests {
         assert_eq!(plan.post_execution_state_root, [0x10; 32]);
         assert_eq!(plan.state_root, [0x22; 32]);
         assert_eq!(plan.total_reward, vec![0x33]);
-        assert_eq!(plan.gas_used, 5);
+        assert_eq!(plan.gas_used.as_u64(), 5);
         assert_eq!(plan.executed_dag_blocks, 0);
         assert_eq!(plan.executed_transactions, 2);
         assert_eq!(
@@ -3626,7 +3635,7 @@ mod tests {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
-            cumulative_gas_used: 2,
+            cumulative_gas_used: 2.into(),
             results: vec![evm_result(&tx, 1, 1, 2, vec![0xc0])],
         };
 
@@ -3652,7 +3661,7 @@ mod tests {
             request_id: step.evm_request.request_id,
             status: FINAL_CHAIN_EVM_REPORT_STATUS_SUCCESS,
             state_root: [0x11; 32],
-            cumulative_gas_used: 1,
+            cumulative_gas_used: 1.into(),
             results: vec![evm_result(&tx, 2, 1, 1, vec![0xc0])],
         };
 
