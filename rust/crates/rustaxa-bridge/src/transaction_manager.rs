@@ -72,6 +72,8 @@ use rustaxa_consensus::transaction_storage::{
     STORED_TRANSACTION_SOURCE_MISSING, STORED_TRANSACTION_SOURCE_PENDING,
 };
 use rustaxa_storage::{StatusField, Storage, StorageWriteBatch};
+#[cfg(test)]
+use rustaxa_types::FinalChainNonce;
 use rustaxa_types::LegacyTransactionEnvelope;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -3005,7 +3007,8 @@ mod tests {
                     } else {
                         None
                     },
-                    nonce: transaction.nonce,
+                    nonce: FinalChainNonce::from_bytes(&transaction.nonce)
+                        .expect("transaction-manager test nonce should be canonical"),
                     value: transaction.value,
                     gas_price: transaction.gas_price,
                     gas_limit: transaction.gas_limit,
@@ -3118,7 +3121,7 @@ mod tests {
                 sender: sender_bytes,
                 receiver_found: true,
                 receiver: [0x44u8; 20],
-                nonce: 0,
+                nonce: vec![],
                 value: U256::from(3u64).to_big_endian().to_vec(),
                 gas_price: U256::from(2u64).to_big_endian().to_vec(),
                 gas_limit: 21_000,
@@ -3407,7 +3410,7 @@ mod tests {
                 sender: sender_bytes,
                 receiver_found: true,
                 receiver: [0x55u8; 20],
-                nonce: 2,
+                nonce: vec![2],
                 value: U256::from(3u64).to_big_endian().to_vec(),
                 gas_price: U256::from(2u64).to_big_endian().to_vec(),
                 gas_limit: 21_000,

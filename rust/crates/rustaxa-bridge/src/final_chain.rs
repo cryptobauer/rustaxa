@@ -4,6 +4,7 @@ use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeFinalChainExecutionSession;
 use crate::ffi::BridgeStorage;
 use rustaxa_consensus::{Account, FinalChain};
+use rustaxa_types::FinalChainNonce;
 
 const PBFT_FINAL_CHAIN_FACT_STATUS_READY: u8 = 0;
 const PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE: u8 = 1;
@@ -13,7 +14,7 @@ fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
     match account {
         Some(account) => rustaxa_ffi::AccountLookup {
             found: true,
-            nonce: account.nonce,
+            nonce: account.nonce.to_bytes(),
             balance: account.balance,
             storage_root_hash: account.storage_root_hash,
             code_hash: account.code_hash,
@@ -21,7 +22,7 @@ fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
         },
         None => rustaxa_ffi::AccountLookup {
             found: false,
-            nonce: 0,
+            nonce: vec![],
             balance: vec![],
             storage_root_hash: [0; 32],
             code_hash: [0; 32],
@@ -46,8 +47,8 @@ fn pbft_final_chain_hash_result(
 
 fn finalization_transaction_from_ffi(
     transaction: rustaxa_ffi::FinalizationTransaction,
-) -> rustaxa_consensus::FinalizationTransaction {
-    rustaxa_consensus::FinalizationTransaction {
+) -> Result<rustaxa_consensus::FinalizationTransaction, anyhow::Error> {
+    Ok(rustaxa_consensus::FinalizationTransaction {
         hash: transaction.hash,
         sender: transaction.sender,
         receiver: if transaction.receiver_found {
@@ -55,13 +56,13 @@ fn finalization_transaction_from_ffi(
         } else {
             None
         },
-        nonce: transaction.nonce,
+        nonce: FinalChainNonce::from_bytes(&transaction.nonce)?,
         value: transaction.value,
         gas_price: transaction.gas_price,
         gas_limit: transaction.gas_limit,
         data: transaction.data,
         rlp: transaction.rlp,
-    }
+    })
 }
 
 fn finalized_dag_block_from_ffi(
@@ -90,14 +91,14 @@ fn reward_cert_vote_from_ffi(
 
 fn final_chain_execution_request_from_ffi(
     request: rustaxa_ffi::FinalChainExecutionRequest,
-) -> rustaxa_consensus::FinalChainExecutionRequest {
-    rustaxa_consensus::FinalChainExecutionRequest {
+) -> Result<rustaxa_consensus::FinalChainExecutionRequest, anyhow::Error> {
+    Ok(rustaxa_consensus::FinalChainExecutionRequest {
         pbft_block_rlp: request.pbft_block_rlp,
         transactions: request
             .transactions
             .into_iter()
             .map(finalization_transaction_from_ffi)
-            .collect(),
+            .collect::<Result<_, _>>()?,
         finalized_dag_blocks: request
             .finalized_dag_blocks
             .into_iter()
@@ -111,23 +112,23 @@ fn final_chain_execution_request_from_ffi(
             .collect(),
         block_gas_limit: request.block_gas_limit,
         mode: request.mode,
-    }
+    })
 }
 
 fn evm_transaction_input_to_ffi(
     transaction: rustaxa_consensus::FinalChainEvmTransactionInput,
-) -> rustaxa_ffi::FinalChainEvmTransactionInput {
+) -> Result<rustaxa_ffi::FinalChainEvmTransactionInput, anyhow::Error> {
     let (receiver_found, receiver) = match transaction.receiver {
         Some(receiver) => (true, receiver),
         None => (false, [0; 20]),
     };
-    rustaxa_ffi::FinalChainEvmTransactionInput {
+    Ok(rustaxa_ffi::FinalChainEvmTransactionInput {
         position: transaction.position,
         hash: transaction.hash,
         sender: transaction.sender,
         receiver_found,
         receiver,
-        nonce: transaction.nonce,
+        nonce: transaction.nonce.to_bytes(),
         value: transaction.value,
         gas_price: transaction.gas_price,
         gas_limit: transaction.gas_limit,
@@ -135,7 +136,7 @@ fn evm_transaction_input_to_ffi(
         rlp: transaction.rlp,
         kind: transaction.kind,
         is_system: transaction.is_system,
-    }
+    })
 }
 
 fn system_transaction_request_to_ffi(
@@ -164,8 +165,8 @@ fn system_transaction_report_from_ffi(
 
 fn system_transaction_plan_fact_from_ffi(
     fact: rustaxa_ffi::FinalChainSystemTransactionPlanFact,
-) -> rustaxa_consensus::FinalChainSystemTransactionPlanFact {
-    rustaxa_consensus::FinalChainSystemTransactionPlanFact {
+) -> Result<rustaxa_consensus::FinalChainSystemTransactionPlanFact, anyhow::Error> {
+    Ok(rustaxa_consensus::FinalChainSystemTransactionPlanFact {
         request_id: fact.request_id,
         period: fact.period,
         is_pillar_block_period: fact.is_pillar_block_period,
@@ -173,9 +174,9 @@ fn system_transaction_plan_fact_from_ffi(
         bridge_contract_found: fact.bridge_contract_found,
         bridge_contract_has_code: fact.bridge_contract_has_code,
         should_finalize_epoch: fact.should_finalize_epoch,
-        system_account_nonce: fact.system_account_nonce,
+        system_account_nonce: FinalChainNonce::from_bytes(&fact.system_account_nonce)?,
         block_gas_limit: fact.block_gas_limit,
-    }
+    })
 }
 
 fn system_transaction_plan_to_ffi(
@@ -194,8 +195,8 @@ fn system_transaction_plan_to_ffi(
 
 fn evm_request_to_ffi(
     request: rustaxa_consensus::FinalChainEvmExecutionRequest,
-) -> rustaxa_ffi::FinalChainEvmExecutionRequest {
-    rustaxa_ffi::FinalChainEvmExecutionRequest {
+) -> Result<rustaxa_ffi::FinalChainEvmExecutionRequest, anyhow::Error> {
+    Ok(rustaxa_ffi::FinalChainEvmExecutionRequest {
         request_id: request.request_id,
         period: request.period,
         block_author: request.block_author,
@@ -205,8 +206,8 @@ fn evm_request_to_ffi(
             .transactions
             .into_iter()
             .map(evm_transaction_input_to_ffi)
-            .collect(),
-    }
+            .collect::<Result<_, _>>()?,
+    })
 }
 
 fn evm_rewards_request_to_ffi(
@@ -237,19 +238,19 @@ fn evm_rewards_request_to_ffi(
 
 fn execution_step_to_ffi(
     step: rustaxa_consensus::FinalChainExecutionStep,
-) -> rustaxa_ffi::FinalChainExecutionStep {
-    rustaxa_ffi::FinalChainExecutionStep {
+) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
+    Ok(rustaxa_ffi::FinalChainExecutionStep {
         status: step.status,
         action: step.action,
         period: step.period,
         external_evm_transaction_count: step.external_evm_transaction_count,
-        evm_request: evm_request_to_ffi(step.evm_request),
+        evm_request: evm_request_to_ffi(step.evm_request)?,
         evm_rewards_request: evm_rewards_request_to_ffi(step.evm_rewards_request),
         system_transaction_request: system_transaction_request_to_ffi(
             step.system_transaction_request,
         ),
         error_code: step.error_code,
-    }
+    })
 }
 
 fn evm_report_from_ffi(
@@ -553,7 +554,7 @@ pub fn create_final_chain_execution_session(
 ) -> Result<Box<BridgeFinalChainExecutionSession>, anyhow::Error> {
     Ok(Box::new(BridgeFinalChainExecutionSession {
         state: rustaxa_consensus::create_final_chain_execution_session(
-            final_chain_execution_request_from_ffi(request),
+            final_chain_execution_request_from_ffi(request)?,
         ),
     }))
 }
@@ -589,7 +590,7 @@ impl BridgeConsensusExecutionApi {
         fact: rustaxa_ffi::FinalChainSystemTransactionPlanFact,
     ) -> Result<rustaxa_ffi::FinalChainSystemTransactionPlan, anyhow::Error> {
         self.0
-            .plan_system_transactions(system_transaction_plan_fact_from_ffi(fact))
+            .plan_system_transactions(system_transaction_plan_fact_from_ffi(fact)?)
             .map(system_transaction_plan_to_ffi)
     }
 
@@ -602,9 +603,7 @@ impl BridgeConsensusExecutionApi {
         &self,
         session: &mut BridgeFinalChainExecutionSession,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
-        Ok(execution_step_to_ffi(
-            self.0.next_execution_request(&mut session.state),
-        ))
+        execution_step_to_ffi(self.0.next_execution_request(&mut session.state))
     }
 
     /// Reports arbitrary EVM transaction execution results to Rust.
@@ -618,11 +617,11 @@ impl BridgeConsensusExecutionApi {
         session: &mut BridgeFinalChainExecutionSession,
         report: rustaxa_ffi::FinalChainEvmExecutionReport,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
-        Ok(execution_step_to_ffi(self.0.report_execution_result(
+        execution_step_to_ffi(self.0.report_execution_result(
             &final_chain.0,
             &mut session.state,
             evm_report_from_ffi(report),
-        )))
+        ))
     }
 
     /// Reports Rust-planned system transaction RLPs back to the execution session.
@@ -631,10 +630,10 @@ impl BridgeConsensusExecutionApi {
         session: &mut BridgeFinalChainExecutionSession,
         report: rustaxa_ffi::FinalChainSystemTransactionReport,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
-        Ok(execution_step_to_ffi(self.0.report_system_transactions(
+        execution_step_to_ffi(self.0.report_system_transactions(
             &mut session.state,
             system_transaction_report_from_ffi(report),
-        )))
+        ))
     }
 
     /// Reports external reward execution and returns the Rust commit plan.
@@ -1254,7 +1253,7 @@ mod tests {
             sender: [1; 20],
             receiver_found,
             receiver,
-            nonce: 0,
+            nonce: vec![],
             value: vec![0],
             gas_price: vec![0],
             gas_limit: 21_000,
@@ -1276,6 +1275,42 @@ mod tests {
         transaction.gas_limit = gas_limit;
         transaction.rlp = vec![0xc0 | (hash_byte & 0x0f), hash_byte, gas_price as u8];
         transaction
+    }
+
+    #[test]
+    fn bridge_preserves_arbitrary_width_nonce_and_rejects_noncanonical_ingress() {
+        let high_nonce = vec![1, 0, 0, 0, 0, 0, 0, 0, 1];
+        let mut transaction = ffi_transaction(0x42, true, [2; 20], vec![]);
+        transaction.nonce = high_nonce.clone();
+        let converted = finalization_transaction_from_ffi(transaction)
+            .expect("arbitrary-width nonce should cross the bridge");
+        assert_eq!(converted.nonce.to_bytes(), high_nonce);
+        let evm_input = rustaxa_consensus::FinalChainEvmTransactionInput {
+            position: 0,
+            hash: [0x42; 32],
+            sender: [1; 20],
+            receiver: Some([2; 20]),
+            nonce: FinalChainNonce::from_bytes(&high_nonce).expect("nonce should be canonical"),
+            value: vec![],
+            gas_price: vec![],
+            gas_limit: 21_000,
+            data: vec![],
+            rlp: vec![],
+            kind: rustaxa_consensus::FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL,
+            is_system: false,
+        };
+        assert_eq!(
+            evm_transaction_input_to_ffi(evm_input)
+                .expect("EVM nonce should cross the bridge")
+                .nonce,
+            high_nonce
+        );
+
+        let mut noncanonical = ffi_transaction(0x43, true, [2; 20], vec![]);
+        noncanonical.nonce = vec![0];
+        let error = finalization_transaction_from_ffi(noncanonical)
+            .expect_err("leading-zero nonce must be rejected");
+        assert!(error.to_string().contains("non-canonical"));
     }
 
     fn ffi_evm_log(
@@ -1437,8 +1472,8 @@ mod tests {
     fn execution_session_next(
         session: &mut BridgeFinalChainExecutionSession,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
-        Ok(execution_step_to_ffi(
-            rustaxa_consensus::final_chain_execution_session_next(&mut session.state),
+        execution_step_to_ffi(rustaxa_consensus::final_chain_execution_session_next(
+            &mut session.state,
         ))
     }
 
@@ -1446,23 +1481,21 @@ mod tests {
         session: &mut BridgeFinalChainExecutionSession,
         report: rustaxa_ffi::FinalChainSystemTransactionReport,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
-        Ok(execution_step_to_ffi(
+        execution_step_to_ffi(
             rustaxa_consensus::final_chain_execution_session_report_system_transactions(
                 &mut session.state,
                 system_transaction_report_from_ffi(report),
             ),
-        ))
+        )
     }
 
     fn execution_session_report_evm(
         session: &mut BridgeFinalChainExecutionSession,
         report: rustaxa_ffi::FinalChainEvmExecutionReport,
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
-        Ok(execution_step_to_ffi(
-            rustaxa_consensus::final_chain_execution_session_report_evm(
-                &mut session.state,
-                evm_report_from_ffi(report),
-            ),
+        execution_step_to_ffi(rustaxa_consensus::final_chain_execution_session_report_evm(
+            &mut session.state,
+            evm_report_from_ffi(report),
         ))
     }
 
@@ -2340,7 +2373,7 @@ mod tests {
                     bridge_contract_found: true,
                     bridge_contract_has_code: true,
                     should_finalize_epoch: true,
-                    system_account_nonce: 4,
+                    system_account_nonce: vec![4],
                     block_gas_limit: 1_000_000,
                 },
             )
@@ -2788,7 +2821,7 @@ mod tests {
                     bridge_contract_found: true,
                     bridge_contract_has_code: true,
                     should_finalize_epoch: true,
-                    system_account_nonce: 6,
+                    system_account_nonce: vec![6],
                     block_gas_limit: 1_000_000,
                 },
             )

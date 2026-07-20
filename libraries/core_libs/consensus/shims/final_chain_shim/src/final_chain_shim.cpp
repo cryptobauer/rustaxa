@@ -73,6 +73,38 @@ rust::Vec<uint8_t> into_big_endian_vec(const u256& value) {
   return vec;
 }
 
+// Nonces cross the Rust boundary as canonical minimal big-endian bytes. Keep
+// the legacy C++ API's u256 surface intact, but never truncate a value that
+// cannot be represented by that API.
+rust::Vec<uint8_t> into_canonical_nonce_vec(const u256& value) {
+  auto encoded = into_big_endian_vec(value);
+  size_t first_nonzero = 0;
+  while (first_nonzero < encoded.size() && encoded[first_nonzero] == 0) {
+    ++first_nonzero;
+  }
+  rust::Vec<uint8_t> canonical;
+  canonical.reserve(encoded.size() - first_nonzero);
+  for (size_t index = first_nonzero; index < encoded.size(); ++index) {
+    canonical.push_back(encoded[index]);
+  }
+  return canonical;
+}
+
+u256 nonce_from_canonical_vec(const rust::Vec<uint8_t>& nonce) {
+  if (nonce.size() > 32) {
+    throw std::runtime_error("FINAL_CHAIN_NONCE_EXCEEDS_CPP_U256");
+  }
+  if (!nonce.empty() && nonce[0] == 0) {
+    throw std::runtime_error("FINAL_CHAIN_NONCE_NON_CANONICAL");
+  }
+  dev::bytes bytes;
+  bytes.reserve(nonce.size());
+  for (auto const byte : nonce) {
+    bytes.push_back(byte);
+  }
+  return dev::fromBigEndian<u256>(bytes);
+}
+
 rust::Vec<rustaxa::FinalizationTransaction> make_finalization_transactions(const SharedTransactions& transactions) {
   rust::Vec<rustaxa::FinalizationTransaction> rust_transactions;
   rust_transactions.reserve(transactions.size());
@@ -87,7 +119,7 @@ rust::Vec<rustaxa::FinalizationTransaction> make_finalization_transactions(const
       rust_transaction.receiver_found = false;
       rust_transaction.receiver = {};
     }
-    rust_transaction.nonce = transaction->getNonce().convert_to<uint64_t>();
+    rust_transaction.nonce = into_canonical_nonce_vec(transaction->getNonce());
     rust_transaction.value = into_big_endian_vec(transaction->getValue());
     rust_transaction.gas_price = into_big_endian_vec(transaction->getGasPrice());
     rust_transaction.gas_limit = transaction->getGas();
@@ -407,7 +439,7 @@ rustaxa::FinalChainSystemTransactionPlanFact FinalChain::ExternalEvmStateApiClie
   state_api::StateDescriptor state_descriptor;
   std::optional<state_api::Account> bridge_contract;
   bool should_finalize = false;
-  uint64_t system_account_nonce = 0;
+  u256 system_account_nonce = 0;
   {
     std::lock_guard lock(state_api_mutex_);
     state_descriptor = state_api_.get_last_committed_state_descriptor();
@@ -434,7 +466,7 @@ rustaxa::FinalChainSystemTransactionPlanFact FinalChain::ExternalEvmStateApiClie
       if (should_finalize) {
         system_account_nonce = state_api_.get_account(last_committed_evm_block, kTaraxaSystemAccount)
                                    .value_or(state_api::ZeroAccount)
-                                   .nonce.convert_to<uint64_t>();
+                                   .nonce;
       }
     }
   }
@@ -448,7 +480,7 @@ rustaxa::FinalChainSystemTransactionPlanFact FinalChain::ExternalEvmStateApiClie
   fact.bridge_contract_found = bridge_contract.has_value();
   fact.bridge_contract_has_code = bridge_contract_has_code;
   fact.should_finalize_epoch = should_finalize;
-  fact.system_account_nonce = system_account_nonce;
+  fact.system_account_nonce = into_canonical_nonce_vec(system_account_nonce);
   fact.block_gas_limit = block_gas_limit;
   return fact;
 }
@@ -916,7 +948,7 @@ std::optional<state_api::Account> FinalChain::getAccount(addr_t const& addr,
   }
 
   state_api::Account account;
-  account.nonce = rust_account.nonce;
+  account.nonce = nonce_from_canonical_vec(rust_account.nonce);
   account.balance = dev::fromBigEndian<u256>(dev::bytes(rust_account.balance.begin(), rust_account.balance.end()));
   account.storage_root_hash =
       h256(dev::bytes(rust_account.storage_root_hash.begin(), rust_account.storage_root_hash.end()));

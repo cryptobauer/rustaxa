@@ -4050,6 +4050,44 @@ Validation passed all 782 `rustaxa-consensus` tests, all 24 reward-graph tests, 
 integration, the standalone fixture in Rust-enabled and pure-C++ modes, `rewrite-validate-fast`, the Tier 3
 `rewrite-validate-final-chain-parity` gate, the repository pre-commit hook, and independent configured review.
 
+### CRW-08 Current-ABI Closeout
+
+The completion audit reconciled the current implementation, all 25 DPoS ABI methods, both slashing reads, supported
+slashing execution, all 16 mutation selectors, the failed-receipt history, and the dual-mode fixture inventory. No
+demonstrated current-ABI method, receipt, log, bloom, persistence, restart, or transient-call parity family remains.
+The earlier roadmap statement naming `getDelegations(address,uint32)` as future work was stale: that route already uses
+the persisted reward-reference graph for native transactions and direct calls, with paging, corruption, restart, and
+pure-C++ parity coverage.
+
+`CRW-08` is therefore complete for current-ABI FinalChain/DPoS execution. Historical databases without complete Rust
+account, DPoS, and reward-graph snapshots continue to fail closed and require replay/rebuild or a separately designed
+hybrid migration. This closeout does not claim that deployment migration is implemented and does not introduce a
+legacy execution fallback. The next dependency-ready work is `CRW-09` FinalChain domain types and external-executor
+adapter contraction.
+
+### CRW-09 Arbitrary-Width FinalChain Nonces
+
+The first FinalChain domain-type slice introduces `FinalChainNonce(BigUint)` with canonical minimal big-endian encoding:
+zero is empty, nonzero values reject a leading zero, increment is unbounded, and comparisons never narrow. `Account`,
+`FinalizationTransaction`, external-EVM transaction input, and system-account facts use the domain type. Account snapshot
+RLP retains the six-item schema and byte-identical integer encoding for existing values while round-tripping state above
+U256. Native execution now accepts a transaction at `u256::MAX`, advances the account to the reachable 257-bit successor,
+and reloads it after restart.
+
+The existing CXX request/result carriers now transport canonical nonce bytes for finalization transactions, account
+lookups, system facts, and Rust-planned EVM transcripts. C++ transaction ingress remains U256-compatible without
+truncation. The unchanged public C++ account API materializes values through U256 and throws
+`FINAL_CHAIN_NONCE_EXCEEDS_CPP_U256` for wider Rust state. System-transaction encoding likewise returns the typed
+`FINAL_CHAIN_SYSTEM_NONCE_EXCEEDS_U256` boundary instead of panicking or truncating. Execution request identities use a
+new version domain plus length-prefixed canonical nonce bytes; they are in-process session identities and no cross-version
+in-flight session compatibility is claimed.
+
+This slice changes four fields on retained CXX carriers from `u64` to `Vec<u8>`, recorded as a `CRW-07` carrier delta.
+It adds no bridge handle, export, constructor, shim, module flag, schema migration, or legacy fallback. The standalone
+fixture covers >u64 execution, account state, receipt lookup, and restart in Rust-enabled and pure-C++ modes. Rust domain,
+snapshot, native-execution, bridge, system-planner, and request-identity tests cover zero, leading-zero rejection, values
+above u64 and U256, maximum-nonce advancement, persistence, transcript preservation, and explicit adapter limits.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

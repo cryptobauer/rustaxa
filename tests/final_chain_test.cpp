@@ -391,6 +391,30 @@ TEST_F(FinalChainTest, nonce_skipping) {
   ASSERT_EQ(SUT->getAccount(addr)->nonce.convert_to<uint64_t>(), 4);
 }
 
+TEST_F(FinalChainTest, nonce_above_u64_round_trips_account_receipt_and_restart) {
+  const auto sender_keys = dev::KeyPair::create();
+  const auto receiver = dev::KeyPair::create().address();
+  const auto high_nonce = u256("0x10000000000000001");
+  cfg.genesis.state.initial_balances = {{sender_keys.address(), u256("10000000000000000000000")}};
+  init();
+
+  auto transaction = std::make_shared<Transaction>(high_nonce, 100, 1'000'000'000, 100'000, dev::bytes(),
+                                                    sender_keys.secret(), receiver, cfg.genesis.chain_id);
+  const auto result = advance({transaction});
+  ASSERT_EQ(result->trx_receipts.size(), 1u);
+  EXPECT_EQ(result->trx_receipts.front().status_code, 1);
+  EXPECT_EQ(SUT->getAccount(sender_keys.address())->nonce, high_nonce + 1);
+  ASSERT_TRUE(SUT->transactionReceipt(1, 0));
+  EXPECT_EQ(SUT->transactionReceipt(1, 0)->status_code, result->trx_receipts.front().status_code);
+
+  SUT.reset();
+  SUT = std::make_shared<final_chain::FinalChain>(db, cfg, addr_t{});
+  ASSERT_TRUE(SUT->getAccount(sender_keys.address()));
+  EXPECT_EQ(SUT->getAccount(sender_keys.address())->nonce, high_nonce + 1);
+  ASSERT_TRUE(SUT->transactionReceipt(1, 0));
+  EXPECT_EQ(SUT->transactionReceipt(1, 0)->status_code, 1);
+}
+
 TEST_F(FinalChainTest, exec_trx_with_nonce_from_api) {
   auto sender_keys = dev::KeyPair::create();
   const auto& addr = sender_keys.address();

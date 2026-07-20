@@ -15,7 +15,7 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    FinalizationDagBlock, FinalizationTransaction, LegacySystemTransactionInput,
+    FinalChainNonce, FinalizationDagBlock, FinalizationTransaction, LegacySystemTransactionInput,
     LegacyTransactionEnvelope, StoredFinalChainBlockHeader, encode_legacy_system_transaction,
 };
 use triehash::ordered_trie_root;
@@ -171,7 +171,7 @@ pub struct FinalChainEvmTransactionInput {
     pub hash: [u8; 32],
     pub sender: [u8; 20],
     pub receiver: Option<[u8; 20]>,
-    pub nonce: u64,
+    pub nonce: FinalChainNonce,
     pub value: Vec<u8>,
     pub gas_price: Vec<u8>,
     pub gas_limit: u64,
@@ -220,7 +220,7 @@ pub struct FinalChainSystemTransactionPlanFact {
     pub bridge_contract_found: bool,
     pub bridge_contract_has_code: bool,
     pub should_finalize_epoch: bool,
-    pub system_account_nonce: u64,
+    pub system_account_nonce: FinalChainNonce,
     pub block_gas_limit: u64,
 }
 
@@ -846,8 +846,13 @@ pub fn plan_external_evm_system_transactions(
         });
     }
 
+    let system_nonce_bytes = fact.system_account_nonce.to_bytes();
+    if system_nonce_bytes.len() > 32 {
+        anyhow::bail!("FINAL_CHAIN_SYSTEM_NONCE_EXCEEDS_U256");
+    }
+
     let transaction = encode_legacy_system_transaction(&LegacySystemTransactionInput {
-        nonce: U256::from(fact.system_account_nonce),
+        nonce: U256::from_big_endian(&system_nonce_bytes),
         value: U256::zero(),
         gas_price: U256::zero(),
         gas: fact.block_gas_limit,
@@ -1943,7 +1948,7 @@ fn decode_system_transaction_inputs(
                 hash: envelope.hash.into(),
                 sender: sender.into(),
                 receiver: envelope.receiver.map(Into::into),
-                nonce: u256_to_u64(envelope.nonce, "system transaction nonce")?,
+                nonce: FinalChainNonce::from_bytes(&u256_to_nonce_bytes(envelope.nonce))?,
                 value: u256_to_big_endian(envelope.value),
                 gas_price: u256_to_big_endian(envelope.gas_price),
                 gas_limit: envelope.gas,
@@ -2349,11 +2354,12 @@ fn u256_to_big_endian(value: U256) -> Vec<u8> {
     bytes[first_nonzero..].to_vec()
 }
 
-fn u256_to_u64(value: U256, field: &str) -> Result<u64, anyhow::Error> {
-    if value > U256::from(u64::MAX) {
-        anyhow::bail!("{field} exceeds u64");
+fn u256_to_nonce_bytes(value: U256) -> Vec<u8> {
+    if value.is_zero() {
+        Vec::new()
+    } else {
+        u256_to_big_endian(value)
     }
-    Ok(value.low_u64())
 }
 
 fn h256_from_slice(bytes: &[u8], field: &str) -> Result<H256, anyhow::Error> {
@@ -2451,7 +2457,7 @@ fn classify_ordered_execution_transactions(
                 hash: transaction.hash,
                 sender: transaction.sender,
                 receiver: transaction.receiver,
-                nonce: transaction.nonce,
+                nonce: transaction.nonce.clone(),
                 value: transaction.value.clone(),
                 gas_price: transaction.gas_price.clone(),
                 gas_limit: transaction.gas_limit,
@@ -2522,6 +2528,9 @@ fn execution_request_id(
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hasher = Keccak::v256();
+    // Version the identity domain because nonce encoding changed from fixed
+    // eight-byte integers to length-prefixed canonical arbitrary-width bytes.
+    hasher.update(b"rustaxa-final-chain-evm-execution-v2");
     hasher.update(&metadata.period.to_be_bytes());
     hasher.update(metadata.author.as_bytes());
     hasher.update(&metadata.timestamp.to_be_bytes());
@@ -2537,7 +2546,9 @@ fn execution_request_id(
             }
             None => hasher.update(&[0]),
         }
-        hasher.update(&transaction.nonce.to_be_bytes());
+        let nonce_bytes = transaction.nonce.to_bytes();
+        hasher.update(&(nonce_bytes.len() as u32).to_be_bytes());
+        hasher.update(&nonce_bytes);
         hasher.update(&transaction.value);
         hasher.update(&transaction.gas_price);
         hasher.update(&transaction.gas_limit.to_be_bytes());
@@ -2591,7 +2602,7 @@ mod tests {
             hash: [hash_byte; 32],
             sender: [1; 20],
             receiver,
-            nonce: 0,
+            nonce: FinalChainNonce::zero(),
             value: vec![0],
             gas_price: vec![0],
             gas_limit: 21_000,
@@ -2679,7 +2690,7 @@ mod tests {
             bridge_contract_found: true,
             bridge_contract_has_code: true,
             should_finalize_epoch: true,
-            system_account_nonce: 4,
+            system_account_nonce: FinalChainNonce::from_u64(4),
             block_gas_limit: 1_000_000,
         }
     }
@@ -2782,7 +2793,10 @@ mod tests {
             envelope.sender,
             Some(H160::from(rustaxa_types::TARAXA_SYSTEM_ACCOUNT))
         );
-        assert_eq!(envelope.nonce, U256::from(fact.system_account_nonce));
+        assert_eq!(
+            envelope.nonce,
+            U256::from_big_endian(&fact.system_account_nonce.to_bytes())
+        );
         assert_eq!(envelope.gas_price, U256::zero());
         assert_eq!(envelope.gas, fact.block_gas_limit);
         assert_eq!(
@@ -2810,6 +2824,49 @@ mod tests {
             let plan = plan_external_evm_system_transactions(fact).unwrap();
             assert!(plan.transactions.is_empty());
         }
+    }
+
+    #[test]
+    fn external_evm_system_transaction_planner_rejects_nonce_above_u256() {
+        let mut fact = system_transaction_plan_fact();
+        fact.system_account_nonce = FinalChainNonce::from_bytes(&[0xff; 32]).unwrap().next();
+        let err = plan_external_evm_system_transactions(fact).unwrap_err();
+        assert_eq!(err.to_string(), "FINAL_CHAIN_SYSTEM_NONCE_EXCEEDS_U256");
+    }
+
+    #[test]
+    fn execution_request_id_versions_and_covers_canonical_nonce_bytes() {
+        let metadata = rustaxa_types::PbftBlockMetadata {
+            author: H160::from_low_u64_be(1),
+            period: 2,
+            timestamp: 3,
+            extra_data: Vec::new(),
+        };
+        let mut transaction = FinalChainEvmTransactionInput {
+            position: 0,
+            hash: [4; 32],
+            sender: [5; 20],
+            receiver: None,
+            nonce: FinalChainNonce::from_u64(u64::MAX),
+            value: Vec::new(),
+            gas_price: Vec::new(),
+            gas_limit: 21_000,
+            data: Vec::new(),
+            rlp: Vec::new(),
+            kind: 0,
+            is_system: false,
+        };
+        let legacy_width_id = execution_request_id(&metadata, 1_000_000, &[transaction.clone()]);
+        assert_eq!(
+            legacy_width_id,
+            [
+                230, 125, 128, 203, 26, 205, 221, 203, 211, 171, 224, 246, 4, 80, 8, 90, 226, 237,
+                103, 7, 57, 30, 216, 126, 239, 225, 222, 226, 173, 73, 101, 208,
+            ]
+        );
+        transaction.nonce = transaction.nonce.next();
+        let widened_id = execution_request_id(&metadata, 1_000_000, &[transaction]);
+        assert_ne!(legacy_width_id, widened_id);
     }
 
     fn append_pbft_block_fields(stream: &mut RlpStream, period: u64, timestamp: u64) {

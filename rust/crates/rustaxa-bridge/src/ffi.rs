@@ -3319,7 +3319,8 @@ pub mod rustaxa_ffi {
 
     struct AccountLookup {
         found: bool,
-        nonce: u64,
+        /// Canonical minimal big-endian account nonce (empty means zero).
+        nonce: Vec<u8>,
         balance: Vec<u8>,
         storage_root_hash: [u8; 32],
         code_hash: [u8; 32],
@@ -3360,7 +3361,8 @@ pub mod rustaxa_ffi {
         sender: [u8; 20],
         receiver_found: bool,
         receiver: [u8; 20],
-        nonce: u64,
+        /// Canonical minimal big-endian transaction nonce (empty means zero).
+        nonce: Vec<u8>,
         value: Vec<u8>,
         gas_price: Vec<u8>,
         gas_limit: u64,
@@ -3388,7 +3390,8 @@ pub mod rustaxa_ffi {
         sender: [u8; 20],
         receiver_found: bool,
         receiver: [u8; 20],
-        nonce: u64,
+        /// Canonical minimal big-endian transaction nonce (empty means zero).
+        nonce: Vec<u8>,
         value: Vec<u8>,
         gas_price: Vec<u8>,
         gas_limit: u64,
@@ -3418,7 +3421,8 @@ pub mod rustaxa_ffi {
         bridge_contract_found: bool,
         bridge_contract_has_code: bool,
         should_finalize_epoch: bool,
-        system_account_nonce: u64,
+        /// Canonical minimal big-endian system-account nonce (empty means zero).
+        system_account_nonce: Vec<u8>,
         block_gas_limit: u64,
     }
 

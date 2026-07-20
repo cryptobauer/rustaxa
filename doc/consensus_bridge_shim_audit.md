@@ -480,6 +480,15 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The `CRW-08` redelegation-correction ordering repair is private to Rust FinalChain and its persisted reward-reference
   graph. It reuses the existing hardfork configuration and finalization carriers, adding no bridge handle, CXX export,
   shim route, module flag, compatibility test surface, or inventory deletion condition.
+- The `CRW-08` current-ABI completion audit found no remaining DPoS/slashing bridge or shim route to add or remove.
+  Historical snapshots without the complete Rust account/DPoS/reward graph remain a fail-closed replay/rebuild boundary;
+  they do not authorize fallback to legacy FinalChain execution. The next bridge audit delta belongs to `CRW-09` domain
+  types or external-executor adapter contraction.
+- The first `CRW-09` slice widens nonce fields on the retained `AccountLookup`, `FinalizationTransaction`,
+  `FinalChainEvmTransactionInput`, and `FinalChainSystemTransactionPlanFact` CXX carriers from `u64` to canonical minimal
+  big-endian `Vec<u8>`. This removes FinalChain shim/bridge truncation and preserves arbitrary-width Rust account state
+  plus executor transcripts. The unchanged C++ account surface rejects values above U256 explicitly. This is a
+  `CRW-07` carrier-field delta only: no handle, export, constructor, shim route, module flag, or deletion condition changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

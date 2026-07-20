@@ -1,6 +1,115 @@
 use crate::pbft::PbftBlockMetadata;
 use anyhow::{Result, anyhow};
 use ethereum_types::{H160, H256, U256};
+use num_bigint::BigUint;
+use std::cmp::Ordering;
+
+/// Canonical arbitrary-width FinalChain account/transaction nonce.
+///
+/// Nonces are encoded as minimal unsigned big-endian bytes: zero is the empty
+/// byte string and non-zero values may not begin with `0`. This keeps existing
+/// RLP snapshots byte-identical for values representable by `u64`, while also
+/// preserving account state above the EVM `u256` range.
+#[repr(transparent)]
+#[derive(Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainNonce(BigUint);
+
+impl FinalChainNonce {
+    /// Returns the zero nonce.
+    pub fn zero() -> Self {
+        Self(BigUint::default())
+    }
+
+    /// Constructs a nonce from a machine-width value.
+    pub fn from_u64(value: u64) -> Self {
+        Self(BigUint::from(value))
+    }
+
+    /// Decodes canonical minimal big-endian bytes. Empty bytes represent zero.
+    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        if bytes.first() == Some(&0) {
+            anyhow::bail!("non-canonical FinalChain nonce with leading zero")
+        }
+        Ok(Self(BigUint::from_bytes_be(bytes)))
+    }
+
+    /// Returns canonical minimal big-endian bytes. Zero is encoded as empty.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        if self.is_zero() {
+            Vec::new()
+        } else {
+            self.0.to_bytes_be()
+        }
+    }
+
+    /// Returns the nonce as `u64`, or `None` when it does not fit.
+    pub fn as_u64(&self) -> Option<u64> {
+        self.0.clone().try_into().ok()
+    }
+
+    /// Returns the successor nonce. Big integer growth is unbounded.
+    pub fn next(&self) -> Self {
+        Self(&self.0 + BigUint::from(1u8))
+    }
+
+    /// Returns whether this nonce is zero.
+    pub fn is_zero(&self) -> bool {
+        self.0 == BigUint::default()
+    }
+}
+
+impl From<u64> for FinalChainNonce {
+    fn from(value: u64) -> Self {
+        Self::from_u64(value)
+    }
+}
+
+impl PartialEq<u64> for FinalChainNonce {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == BigUint::from(*other)
+    }
+}
+
+impl PartialOrd<u64> for FinalChainNonce {
+    fn partial_cmp(&self, other: &u64) -> Option<Ordering> {
+        Some(self.0.cmp(&BigUint::from(*other)))
+    }
+}
+
+#[cfg(test)]
+mod nonce_tests {
+    use super::FinalChainNonce;
+
+    #[test]
+    fn nonce_encoding_is_minimal_and_unbounded() {
+        assert_eq!(FinalChainNonce::zero().to_bytes(), Vec::<u8>::new());
+        assert_eq!(
+            FinalChainNonce::from_bytes(&[]).unwrap(),
+            FinalChainNonce::zero()
+        );
+        assert!(FinalChainNonce::from_bytes(&[0]).is_err());
+        assert_eq!(
+            FinalChainNonce::from_u64(u64::MAX).to_bytes(),
+            u64::MAX.to_be_bytes()
+        );
+        let max_u256 = vec![0xff; 32];
+        let nonce = FinalChainNonce::from_bytes(&max_u256).unwrap();
+        assert_eq!(nonce.to_bytes(), max_u256);
+        assert_eq!(
+            nonce.next().to_bytes(),
+            vec![1].into_iter().chain([0u8; 32]).collect::<Vec<_>>()
+        );
+        assert!(nonce.as_u64().is_none());
+    }
+
+    #[test]
+    fn nonce_preserves_legacy_u64_ordering() {
+        let nonce = FinalChainNonce::from_u64(7);
+        assert_eq!(nonce, 7);
+        assert!(nonce > 6);
+        assert!(nonce < 8);
+    }
+}
 
 /// Genesis account input passed from C++ configuration into the Rust final-chain domain.
 ///
@@ -337,7 +446,7 @@ pub struct DposValidatorVoteCount {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Account {
     /// Account nonce.
-    pub nonce: u64,
+    pub nonce: FinalChainNonce,
     /// Account balance as an unsigned big-endian integer byte string.
     pub balance: Vec<u8>,
     /// State storage root hash bytes.
@@ -359,7 +468,7 @@ pub struct FinalizationTransaction {
     /// Receiver address bytes for calls and value transfers.
     pub receiver: Option<[u8; 20]>,
     /// Transaction nonce.
-    pub nonce: u64,
+    pub nonce: FinalChainNonce,
     /// Transaction value as unsigned big-endian integer bytes.
     pub value: Vec<u8>,
     /// Gas price as unsigned big-endian integer bytes.

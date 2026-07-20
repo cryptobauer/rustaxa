@@ -547,8 +547,14 @@ reference builds retain the untouched legacy RewardsStats header and source.
     delayed headers or DPoS snapshots are returned to PBFT as typed Rust facts instead of re-centering those consensus
     decisions in C++ FinalChain orchestration.
   - non-genesis DPoS queries still return typed errors or throw when the queried block has not been finalized through
-    Rust snapshot maintenance; shared ephemeral DPoS mutation simulation through `FinalChain::call` and legacy databases
-    without Rust account snapshots remain explicit gaps.
+    Rust snapshot maintenance. All current-ABI DPoS mutations execute transiently through `FinalChain::call`; historical
+    databases without complete Rust account/DPoS/reward-graph snapshots remain fail-closed pending replay/rebuild or an
+    explicitly designed hybrid migration.
+  - `rustaxa-types::FinalChainNonce` owns arbitrary-width FinalChain account and transaction nonce semantics. Account
+    snapshots retain their existing schema and canonical RLP for historical values, while native execution may persist
+    state above U256 after a maximum transaction nonce. Finalization, account lookup, system-account facts, and
+    Rust-planned external-EVM transcript carriers use canonical minimal big-endian bytes. The legacy public C++ account
+    API remains U256 and fails explicitly when Rust state cannot be represented; it never truncates.
   - selected DPoS precompile reads through `FinalChain::call` are Rust-backed for `isValidatorEligible(address)`,
     `getTotalEligibleVotesCount()`, `getValidatorEligibleVotesCount(address)`, `getValidator(address)`,
     `getValidators(uint32)`, `getValidatorsFor(address,uint32)`,
@@ -571,7 +577,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     correction. It preserves arbitrary-width reward-per-stake, explicit validator heads and delegation cursors, exact
     counts including legacy inflation/orphans, incomplete-history provenance, stale live-or-missing heads, and exact
     reward arithmetic. Schemas through 23 fail closed for graph-dependent behavior pending replay/rebuild. Native and
-    direct `getDelegations(address,uint32)` routing is the next bounded `CRW-08` work.
+    direct `getDelegations(address,uint32)` routing, including paging, graph rewards, corruption handling, and restart
+    parity, is complete. `CRW-08` current-ABI FinalChain/DPoS parity is closed; historical snapshot replay/rebuild remains
+    an explicit deployment boundary rather than a legacy execution fallback.
 - Unimplemented public shim methods never fall back to legacy FinalChain behavior. `getAccountStorage`, `getCode`, `call`,
   `getBridgeRoot`, `getBridgeEpoch`, and `trace` route to C++ `StateAPI` only for blocks whose external-EVM state has
   been committed by the Rust-mode executor adapter; otherwise they use the Rust FinalChain path where implemented or

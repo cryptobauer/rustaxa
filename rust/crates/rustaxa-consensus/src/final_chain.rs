@@ -54,9 +54,9 @@ use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::transaction::intrinsic_gas;
 use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount, FinalChainCallLog,
-    FinalChainCallOutcome, FinalChainCallRequest, FinalChainRewardsConfig, FinalizationDagBlock,
-    FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
-    RedelegationCorrection, StoredFinalChainBlockHeader,
+    FinalChainCallOutcome, FinalChainCallRequest, FinalChainNonce, FinalChainRewardsConfig,
+    FinalizationDagBlock, FinalizationTransaction, GenesisAccount, GenesisDposConfig,
+    GenesisValidator, RedelegationCorrection, StoredFinalChainBlockHeader,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -487,7 +487,7 @@ impl FinalChain {
                 (
                     account.address,
                     Account {
-                        nonce: 0,
+                        nonce: FinalChainNonce::zero(),
                         balance: account.balance,
                         storage_root_hash: [0; 32],
                         code_hash: [0; 32],
@@ -614,7 +614,7 @@ impl FinalChain {
         genesis_accounts.insert(
             DPOS_CONTRACT_ADDRESS,
             Account {
-                nonce: 1,
+                nonce: FinalChainNonce::from_u64(1),
                 balance: u256_to_big_endian(dpos_contract_balance),
                 storage_root_hash: [0; 32],
                 code_hash: [0; 32],
@@ -3263,8 +3263,8 @@ impl FinalChain {
             // when their sender cannot fund the cap (or the nonce is stale).
             let (sender_nonce, sender_balance) = accounts
                 .get(&transaction.sender)
-                .map(|sender| (sender.nonce, u256_from_big_endian(&sender.balance)))
-                .unwrap_or((0, U256::zero()));
+                .map(|sender| (sender.nonce.clone(), u256_from_big_endian(&sender.balance)))
+                .unwrap_or((FinalChainNonce::zero(), U256::zero()));
             let full_gas_affordable = gas_price
                 .checked_mul(U256::from(transaction.gas_limit))
                 .is_some_and(|cost| sender_balance >= cost);
@@ -3449,10 +3449,7 @@ impl FinalChain {
                         );
                     }
                     sender.balance = u256_to_big_endian(sender_balance - total_cost);
-                    sender.nonce = transaction
-                        .nonce
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow::anyhow!("transaction nonce overflow"))?;
+                    sender.nonce = transaction.nonce.next();
                 } else {
                     sender.balance = u256_to_big_endian(sender_balance.saturating_sub(gas_cost));
                 }
@@ -3599,8 +3596,8 @@ impl FinalChain {
                                 let slashing_account = accounts
                                     .entry(SLASHING_CONTRACT_ADDRESS)
                                     .or_insert_with(empty_account);
-                                if slashing_account.nonce == 0 {
-                                    slashing_account.nonce = 1;
+                                if slashing_account.nonce.is_zero() {
+                                    slashing_account.nonce = FinalChainNonce::from_u64(1);
                                 }
                             }
                         }
@@ -7780,7 +7777,7 @@ fn encode_account_snapshot_rlp(accounts: &HashMap<[u8; 20], Account>) -> Vec<u8>
     for (address, account) in sorted_accounts {
         stream.begin_list(6);
         stream.append(&address.as_slice());
-        stream.append(&account.nonce);
+        stream.append(&account.nonce.to_bytes().as_slice());
         stream.append(&account.balance.as_slice());
         stream.append(&account.storage_root_hash.as_slice());
         stream.append(&account.code_hash.as_slice());
@@ -7805,7 +7802,7 @@ fn decode_account_snapshot_rlp(raw: &[u8]) -> Result<HashMap<[u8; 20], Account>,
         accounts.insert(
             address,
             Account {
-                nonce: item.val_at(1)?,
+                nonce: FinalChainNonce::from_bytes(item.at(1)?.data()?)?,
                 balance: item.val_at(2)?,
                 storage_root_hash: decode_fixed_hash(&item.at(3)?, "account storage root")?,
                 code_hash: decode_fixed_hash(&item.at(4)?, "account code hash")?,
@@ -8978,7 +8975,7 @@ fn u256_to_big_endian(value: U256) -> Vec<u8> {
 
 fn empty_account() -> Account {
     Account {
-        nonce: 0,
+        nonce: FinalChainNonce::zero(),
         balance: vec![],
         storage_root_hash: [0; 32],
         code_hash: [0; 32],
@@ -12042,7 +12039,7 @@ mod tests {
             hash: [hash_byte; 32],
             sender,
             receiver,
-            nonce,
+            nonce: nonce.into(),
             value: u256_to_big_endian(value),
             gas_price: u256_to_big_endian(gas_price),
             gas_limit,
@@ -28833,6 +28830,49 @@ mod tests {
     }
 
     #[test]
+    fn account_snapshot_round_trips_nonce_above_u256() {
+        let address = [0xabu8; 20];
+        let nonce = FinalChainNonce::from_bytes(&[0xff; 32]).unwrap().next();
+        let account = Account {
+            nonce: nonce.clone(),
+            balance: vec![],
+            storage_root_hash: [0; 32],
+            code_hash: [0; 32],
+            code_size: 0,
+        };
+        let encoded = encode_account_snapshot_rlp(&HashMap::from([(address, account)]));
+        let decoded = decode_account_snapshot_rlp(&encoded).unwrap();
+        assert_eq!(decoded.get(&address).unwrap().nonce, nonce);
+        assert_eq!(decoded.get(&address).unwrap().nonce.to_bytes().len(), 33);
+    }
+
+    #[test]
+    fn account_snapshot_preserves_legacy_u64_nonce_bytes() {
+        let address = [0xabu8; 20];
+        for nonce in [0, 1, 127, 128, u64::MAX] {
+            let account = Account {
+                nonce: FinalChainNonce::from_u64(nonce),
+                balance: vec![1, 2, 3],
+                storage_root_hash: [4; 32],
+                code_hash: [5; 32],
+                code_size: 6,
+            };
+            let encoded = encode_account_snapshot_rlp(&HashMap::from([(address, account)]));
+
+            let mut legacy = RlpStream::new_list(1);
+            legacy.begin_list(6);
+            legacy.append(&address.as_slice());
+            legacy.append(&nonce);
+            legacy.append(&[1, 2, 3].as_slice());
+            legacy.append(&[4; 32].as_slice());
+            legacy.append(&[5; 32].as_slice());
+            legacy.append(&6u64);
+
+            assert_eq!(encoded, legacy.out().to_vec(), "nonce {nonce}");
+        }
+    }
+
+    #[test]
     fn finalize_block_failed_transfer_charges_affordable_gas_without_nonce_or_receiver_change() {
         let path = temp_db_path("finalize-failed-transfer");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -28936,7 +28976,7 @@ mod tests {
             .unwrap()
             .get_mut(&sender)
             .unwrap()
-            .nonce = 3;
+            .nonce = 3.into();
 
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![transaction], vec![])
@@ -29046,7 +29086,7 @@ mod tests {
             .unwrap()
             .get_mut(&low_sender)
             .unwrap()
-            .nonce = 1;
+            .nonce = 1.into();
 
         let (_header_rlp, receipts) = final_chain
             .finalize_block(
@@ -29103,6 +29143,83 @@ mod tests {
         );
         assert_eq!(balance_of(&restarted, receiver), U256::zero());
 
+        drop(restarted);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn finalize_block_advances_max_u256_nonce_without_overflow_and_restarts() {
+        let path = temp_db_path("finalize-max-u256-nonce");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let period = 1u64;
+        let signing_key = SigningKey::from_slice(&[0xB1; 32]).unwrap();
+        let pbft_block = signed_pbft_block(&signing_key, period, 122);
+        let sender = [0xB2; 20];
+        let receiver = [0xB3; 20];
+        let max_u256_nonce = FinalChainNonce::from_bytes(&[0xff; 32]).unwrap();
+        let transaction = FinalizationTransaction {
+            hash: [0xE7; 32],
+            sender,
+            receiver: Some(receiver),
+            nonce: max_u256_nonce.clone(),
+            value: u256_to_big_endian(U256::from(1u64)),
+            gas_price: u256_to_big_endian(U256::one()),
+            gas_limit: 21_000,
+            data: Vec::new(),
+            rlp: vec![0xc1, 0xe7],
+        };
+        write_period_data(
+            &storage,
+            period,
+            &pbft_block,
+            std::slice::from_ref(&transaction.rlp),
+        );
+        let mut rewards = FinalChainRewardsConfig::default();
+        rewards.cornus_period = 0;
+        let final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(sender, U256::from(100_000u64))],
+            vec![],
+            GenesisDposConfig::default(),
+            rewards.clone(),
+        )
+        .unwrap();
+        final_chain
+            .accounts
+            .lock()
+            .unwrap()
+            .get_mut(&sender)
+            .unwrap()
+            .nonce = max_u256_nonce;
+
+        let (_header_rlp, receipts) = final_chain
+            .finalize_block(pbft_block, vec![transaction], vec![])
+            .unwrap();
+        assert_eq!(receipt_fields(&receipts[0]), (1, 21_000, 21_000));
+        let expected = FinalChainNonce::from_bytes(
+            &[0x01; 1].into_iter().chain([0u8; 32]).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(
+            final_chain.account(sender).unwrap().unwrap().nonce,
+            expected
+        );
+
+        drop(final_chain);
+        let restarted = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            200_000,
+            0,
+            vec![genesis_account(sender, U256::from(100_000u64))],
+            vec![],
+            GenesisDposConfig::default(),
+            rewards,
+        )
+        .unwrap();
+        assert_eq!(restarted.account(sender).unwrap().unwrap().nonce, expected);
         drop(restarted);
         drop(storage);
         let _ = std::fs::remove_dir_all(path);
