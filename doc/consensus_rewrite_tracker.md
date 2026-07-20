@@ -282,7 +282,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-06` | `complete` | Delete storage compatibility scaffolding after runtime consumers move: `BridgeStorage`, `BridgeStorageBatch`, storage query-family handles, broad storage-shim calls, and related `DbStorage` compatibility access. | Relevant consumer migrations in `CRW-02` through `CRW-05` | No production consensus route uses broad storage handles or C++/bridge batch authority. Retained admin, migration, test, network, and public-query behavior is narrow, explicitly classified, or explicitly unsupported in Rust mode. |
 | `CRW-07` | `active` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, `BridgeConsensusExecutionApi`, application/bootstrap handles, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
 | `CRW-08` | `complete` | Close remaining FinalChain/DPoS behavior parity: required contract methods outside the previously supported mutation subset and full failed-contract receipt parity for older supported paths. | Completed bounded method/receipt families and canonical legacy evidence | All 25 current-ABI DPoS methods, both slashing reads, supported slashing execution, and all 16 mutation selectors execute through Rust account/DPoS state with byte-compatible outputs, receipts, logs, blooms, persistence, restart behavior, and targeted legacy-vs-Rust parity coverage. Historical databases without complete Rust snapshots remain an explicit replay/rebuild deployment boundary rather than a current-ABI execution fallback. |
-| `CRW-09` | `active` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | Active slice: arbitrary-width FinalChain nonce domain and executor transcript | Consensus-internal request, recovery, publication, and audit data remains Rust-owned; C++ `StateAPI` supplies only the external execution/committed-state operations allowed by `PLAN.md`, with byte-compatible codec and transcript coverage. |
+| `CRW-09` | `active` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | Active slice: typed FinalChain transaction positions and pre-execution bounds | Consensus-internal request, recovery, publication, and audit data remains Rust-owned; C++ `StateAPI` supplies only the external execution/committed-state operations allowed by `PLAN.md`, with byte-compatible codec and transcript coverage. |
 | `CRW-10` | `blocked` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-09`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 
 `CRW-08` current slice closes native DPoS delegate transaction receipt/state parity. Rust now charges top-level
@@ -948,6 +948,17 @@ The standalone dual-mode fixture proves a nonce above `u64` through transaction 
 materialization, and restart; Rust tests cover canonical encoding, leading-zero rejection, old snapshot byte identity,
 state above U256, maximum-nonce advancement, system-transaction limits, and request-ID sensitivity. `CRW-09` remains
 active for the remaining P0 FinalChain domain families and external-executor adapter contraction.
+
+The next bounded `CRW-09` slice introduces `FinalChainTransactionPosition(u32)` for Rust-owned execution, publication,
+receipt, location, audit, and transaction-index semantics. Regular transaction counts are checked when the execution
+session is constructed, and the combined regular/system count is checked before the session can emit
+`EXECUTE_EXTERNAL_EVM`; unrepresentable positions therefore reject before `StateAPI` side effects rather than during
+later publication. Existing CXX execution/report and receipt-query positions remain `u64`, while persisted index and
+location fields remain `u32`, with checked ingress and infallible widening at bridge edges. Request identities retain
+their established eight-byte widened position
+preimage, and persisted location/publication RLP retains its existing `u32` schema. This changes no CXX carrier, handle,
+export, shim, module flag, compatibility test, or `CRW-07` inventory entry. `CRW-09` remains active for the other P0
+FinalChain domain families and the temporary external-executor adapter contraction.
 
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned

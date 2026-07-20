@@ -489,6 +489,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   big-endian `Vec<u8>`. This removes FinalChain shim/bridge truncation and preserves arbitrary-width Rust account state
   plus executor transcripts. The unchanged C++ account surface rejects values above U256 explicitly. This is a
   `CRW-07` carrier-field delta only: no handle, export, constructor, shim route, module flag, or deletion condition changes.
+- The typed transaction-position `CRW-09` slice keeps all retained CXX carrier widths unchanged. Rust-owned execution,
+  publication, receipt, location, audit, and index paths use `FinalChainTransactionPosition(u32)`; bridge ingress checks
+  the retained `u64` executor/result boundary and outbound conversion widens the inner `u32`. Count overflow rejects
+  before external execution, while request-ID and persisted RLP widths remain byte-compatible. No handle, export,
+  constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

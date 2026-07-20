@@ -4095,6 +4095,27 @@ coverage. Normal-policy clippy retained the 46-warning baseline; `rewrite-valida
 `rewrite-validate-final-chain`, the bridge inventory guard, skill validator, repository pre-commit hook, Rust formatting,
 whitespace validation, and independent configured review also passed.
 
+### CRW-09 Typed FinalChain Transaction Positions
+
+The second FinalChain domain-type slice introduces `FinalChainTransactionPosition(u32)`, matching the durable
+transaction-location and receipt schemas while preventing unchecked narrowing from executor-facing collection indices.
+Rust-owned external-EVM inputs and results, publication plans, receipt lookup, location/audit encoding, and transaction
+index construction use the type. CXX execution/report and receipt-query positions remain plain `u64`, while persisted
+index and location fields remain `u32`; bridge conversion rejects oversized executor reports and receipt positions with
+stable error codes and widens valid outbound positions infallibly.
+
+Execution sessions reject a regular transaction count above `u32::MAX` during construction, before emitting any
+external action. After system-transaction planning, the combined count is checked before `EXECUTE_EXTERNAL_EVM` can be
+returned. Request identities continue hashing positions as widened eight-byte values, and durable location/publication
+RLP continues encoding the inner `u32`, so no request-domain version or storage migration is required. Focused tests
+cover exact domain bounds, both pre-execution rejection points, bridge overflow, request-ID stability, maximum-position
+codec round trips, publication, receipt lookup, audit, and restart paths. No CXX carrier, handle, export, shim, module
+flag, compatibility-only test, or `CRW-07` inventory entry changes.
+
+Validation passed all 43 `rustaxa-types`, 790 `rustaxa-consensus`, and 340 `rustaxa-bridge` tests, the workspace compile
+check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, Rust formatting, and whitespace validation. The existing
+normal-policy clippy warnings remain outside this slice.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

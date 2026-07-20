@@ -123,7 +123,7 @@ fn evm_transaction_input_to_ffi(
         None => (false, [0; 20]),
     };
     Ok(rustaxa_ffi::FinalChainEvmTransactionInput {
-        position: transaction.position,
+        position: u64::from(transaction.position.as_u32()),
         hash: transaction.hash,
         sender: transaction.sender,
         receiver_found,
@@ -137,6 +137,20 @@ fn evm_transaction_input_to_ffi(
         kind: transaction.kind,
         is_system: transaction.is_system,
     })
+}
+
+fn evm_report_position_from_ffi(
+    position: u64,
+) -> Result<rustaxa_types::FinalChainTransactionPosition, anyhow::Error> {
+    rustaxa_types::FinalChainTransactionPosition::try_from(position)
+        .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_EVM_REPORT_POSITION_EXCEEDS_U32"))
+}
+
+fn transaction_receipt_position_from_ffi(
+    position: u64,
+) -> Result<rustaxa_types::FinalChainTransactionPosition, anyhow::Error> {
+    rustaxa_types::FinalChainTransactionPosition::try_from(position)
+        .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_POSITION_EXCEEDS_U32"))
 }
 
 fn system_transaction_request_to_ffi(
@@ -255,8 +269,8 @@ fn execution_step_to_ffi(
 
 fn evm_report_from_ffi(
     report: rustaxa_ffi::FinalChainEvmExecutionReport,
-) -> rustaxa_consensus::FinalChainEvmExecutionReport {
-    rustaxa_consensus::FinalChainEvmExecutionReport {
+) -> Result<rustaxa_consensus::FinalChainEvmExecutionReport, anyhow::Error> {
+    Ok(rustaxa_consensus::FinalChainEvmExecutionReport {
         request_id: report.request_id,
         status: report.status,
         state_root: report.state_root,
@@ -264,38 +278,40 @@ fn evm_report_from_ffi(
         results: report
             .results
             .into_iter()
-            .map(|result| rustaxa_consensus::FinalChainEvmTransactionResult {
-                position: result.position,
-                hash: result.hash,
-                status: result.status,
-                gas_used: result.gas_used,
-                cumulative_gas_used: result.cumulative_gas_used,
-                receipt_rlp: result.receipt_rlp,
-                logs: result
-                    .logs
-                    .into_iter()
-                    .map(|log| rustaxa_consensus::FinalChainEvmLog {
-                        address: log.address,
-                        topics: log
-                            .topics
-                            .into_iter()
-                            .map(|topic| rustaxa_consensus::FinalChainEvmLogTopic {
-                                topic: topic.topic,
-                            })
-                            .collect(),
-                        data: log.data,
-                    })
-                    .collect(),
-                new_contract_address: if result.new_contract_address_found {
-                    Some(result.new_contract_address)
-                } else {
-                    None
-                },
-                code_error: result.code_error,
-                consensus_error: result.consensus_error,
+            .map(|result| {
+                Ok(rustaxa_consensus::FinalChainEvmTransactionResult {
+                    position: evm_report_position_from_ffi(result.position)?,
+                    hash: result.hash,
+                    status: result.status,
+                    gas_used: result.gas_used,
+                    cumulative_gas_used: result.cumulative_gas_used,
+                    receipt_rlp: result.receipt_rlp,
+                    logs: result
+                        .logs
+                        .into_iter()
+                        .map(|log| rustaxa_consensus::FinalChainEvmLog {
+                            address: log.address,
+                            topics: log
+                                .topics
+                                .into_iter()
+                                .map(|topic| rustaxa_consensus::FinalChainEvmLogTopic {
+                                    topic: topic.topic,
+                                })
+                                .collect(),
+                            data: log.data,
+                        })
+                        .collect(),
+                    new_contract_address: if result.new_contract_address_found {
+                        Some(result.new_contract_address)
+                    } else {
+                        None
+                    },
+                    code_error: result.code_error,
+                    consensus_error: result.consensus_error,
+                })
             })
-            .collect(),
-    }
+            .collect::<Result<Vec<_>, anyhow::Error>>()?,
+    })
 }
 
 fn evm_rewards_report_from_ffi(
@@ -620,7 +636,7 @@ impl BridgeConsensusExecutionApi {
         execution_step_to_ffi(self.0.report_execution_result(
             &final_chain.0,
             &mut session.state,
-            evm_report_from_ffi(report),
+            evm_report_from_ffi(report)?,
         ))
     }
 
@@ -997,7 +1013,7 @@ impl BridgeFinalChain {
     ) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .0
-            .transaction_receipt_rlp(period, position)?
+            .transaction_receipt_rlp(period, transaction_receipt_position_from_ffi(position)?)?
             .unwrap_or_default())
     }
 
@@ -1286,7 +1302,7 @@ mod tests {
             .expect("arbitrary-width nonce should cross the bridge");
         assert_eq!(converted.nonce.to_bytes(), high_nonce);
         let evm_input = rustaxa_consensus::FinalChainEvmTransactionInput {
-            position: 0,
+            position: 0.into(),
             hash: [0x42; 32],
             sender: [1; 20],
             receiver: Some([2; 20]),
@@ -1495,7 +1511,7 @@ mod tests {
     ) -> Result<rustaxa_ffi::FinalChainExecutionStep, anyhow::Error> {
         execution_step_to_ffi(rustaxa_consensus::final_chain_execution_session_report_evm(
             &mut session.state,
-            evm_report_from_ffi(report),
+            evm_report_from_ffi(report)?,
         ))
     }
 
@@ -2735,7 +2751,7 @@ mod tests {
         for (index, expected_receipt) in expected_receipts.iter().enumerate() {
             assert_eq!(
                 publication.transaction_publications[index].position,
-                index as u32
+                (index as u32).into()
             );
             assert!(!publication.transaction_publications[index].is_system);
             assert_eq!(
@@ -2762,12 +2778,12 @@ mod tests {
                 &final_chain,
                 &publication.transaction_hash,
                 1,
-                publication.position,
+                publication.position.as_u32(),
                 publication.is_system,
             );
             assert_eq!(
                 final_chain
-                    .get_transaction_receipt(1, publication.position as u64)
+                    .get_transaction_receipt(1, u64::from(publication.position.as_u32()))
                     .unwrap(),
                 publication.receipt_rlp
             );
@@ -2953,7 +2969,7 @@ mod tests {
                 .expect("publication plan should convert");
         assert_eq!(publication.transaction_publications.len(), 3);
         assert!(publication.transaction_publications[2].is_system);
-        assert_eq!(publication.transaction_publications[2].position, 2);
+        assert_eq!(publication.transaction_publications[2].position.as_u32(), 2);
         assert_eq!(
             publication.system_transaction_hashes_rlp,
             hashes_list_rlp([system_transaction.hash])
@@ -3603,5 +3619,55 @@ mod tests {
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn bridge_transaction_positions_widen_outbound_and_reject_inbound_overflow() {
+        let input = rustaxa_consensus::FinalChainEvmTransactionInput {
+            position: rustaxa_types::FinalChainTransactionPosition::new(u32::MAX),
+            hash: [1; 32],
+            sender: [2; 20],
+            receiver: None,
+            nonce: FinalChainNonce::zero(),
+            value: Vec::new(),
+            gas_price: Vec::new(),
+            gas_limit: 0,
+            data: Vec::new(),
+            rlp: Vec::new(),
+            kind: 0,
+            is_system: false,
+        };
+        let ffi_input = evm_transaction_input_to_ffi(input).unwrap();
+        assert_eq!(ffi_input.position, u64::from(u32::MAX));
+
+        let report = rustaxa_ffi::FinalChainEvmExecutionReport {
+            request_id: [0; 32],
+            status: 0,
+            state_root: [0; 32],
+            cumulative_gas_used: 0,
+            results: vec![rustaxa_ffi::FinalChainEvmTransactionResult {
+                position: u64::from(u32::MAX) + 1,
+                hash: [0; 32],
+                status: 0,
+                gas_used: 0,
+                cumulative_gas_used: 0,
+                receipt_rlp: Vec::new(),
+                logs: Vec::new(),
+                new_contract_address_found: false,
+                new_contract_address: [0; 20],
+                code_error: String::new(),
+                consensus_error: String::new(),
+            }],
+        };
+        assert_eq!(
+            evm_report_from_ffi(report).unwrap_err().to_string(),
+            "FINAL_CHAIN_EVM_REPORT_POSITION_EXCEEDS_U32"
+        );
+        assert_eq!(
+            transaction_receipt_position_from_ffi(u64::from(u32::MAX) + 1)
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_TRANSACTION_POSITION_EXCEEDS_U32"
+        );
     }
 }

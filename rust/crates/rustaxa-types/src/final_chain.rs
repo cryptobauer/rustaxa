@@ -4,6 +4,57 @@ use ethereum_types::{H160, H256, U256};
 use num_bigint::BigUint;
 use std::cmp::Ordering;
 
+/// Zero-based position of a transaction in one finalized FinalChain block.
+///
+/// The domain is exactly `u32`, matching durable transaction-location and
+/// receipt schemas. Construction from wider collection or FFI indices is
+/// checked so no position can be silently truncated. The type intentionally
+/// exposes no arithmetic or dereference operations; callers must name a
+/// checked conversion at boundaries.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainTransactionPosition(u32);
+
+impl FinalChainTransactionPosition {
+    /// Constructs a position already proven to be in the `u32` domain.
+    pub const fn new(position: u32) -> Self {
+        Self(position)
+    }
+
+    /// Returns the schema-width position for persistence and query carriers.
+    pub const fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+impl From<u32> for FinalChainTransactionPosition {
+    fn from(position: u32) -> Self {
+        Self::new(position)
+    }
+}
+
+impl From<FinalChainTransactionPosition> for u32 {
+    fn from(position: FinalChainTransactionPosition) -> Self {
+        position.as_u32()
+    }
+}
+
+impl TryFrom<u64> for FinalChainTransactionPosition {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(position: u64) -> Result<Self, Self::Error> {
+        Ok(Self::new(u32::try_from(position)?))
+    }
+}
+
+impl TryFrom<usize> for FinalChainTransactionPosition {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(position: usize) -> Result<Self, Self::Error> {
+        Ok(Self::new(u32::try_from(position)?))
+    }
+}
+
 /// Canonical arbitrary-width FinalChain account/transaction nonce.
 ///
 /// Nonces are encoded as minimal unsigned big-endian bytes: zero is the empty
@@ -108,6 +159,27 @@ mod nonce_tests {
         assert_eq!(nonce, 7);
         assert!(nonce > 6);
         assert!(nonce < 8);
+    }
+}
+
+#[cfg(test)]
+mod transaction_position_tests {
+    use super::FinalChainTransactionPosition;
+
+    #[test]
+    fn position_accepts_exact_u32_domain() {
+        let maximum = FinalChainTransactionPosition::try_from(u64::from(u32::MAX)).unwrap();
+        assert_eq!(maximum.as_u32(), u32::MAX);
+        assert_eq!(u32::from(maximum), u32::MAX);
+        assert_eq!(FinalChainTransactionPosition::from(7u32).as_u32(), 7);
+    }
+
+    #[test]
+    fn position_rejects_wider_values() {
+        assert!(FinalChainTransactionPosition::try_from(u64::from(u32::MAX) + 1).is_err());
+        if usize::BITS > u32::BITS {
+            assert!(FinalChainTransactionPosition::try_from(u32::MAX as usize + 1).is_err());
+        }
     }
 }
 

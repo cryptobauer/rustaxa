@@ -1374,5 +1374,7 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    persisted FinalChain rows through the normal `rustaxa-bridge` test suite. Next slices should reduce temporary C++
    `StateAPI` fact collection and, if needed for pre-merge confidence, add a live legacy-vs-Rust external-EVM transcript
    fixture without moving EVM ownership into FinalChain.
-4. Introduce missing P0 FinalChain domain types with byte-compatible codecs.
+4. Introduce missing P0 FinalChain domain types with byte-compatible codecs. FinalChain nonces are arbitrary-width
+   canonical values, and transaction positions are now an exact `u32` domain checked before external execution while
+   retaining existing request-identity and persisted-location bytes.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

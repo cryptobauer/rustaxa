@@ -15,8 +15,9 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    FinalChainNonce, FinalizationDagBlock, FinalizationTransaction, LegacySystemTransactionInput,
-    LegacyTransactionEnvelope, StoredFinalChainBlockHeader, encode_legacy_system_transaction,
+    FinalChainNonce, FinalChainTransactionPosition, FinalizationDagBlock, FinalizationTransaction,
+    LegacySystemTransactionInput, LegacyTransactionEnvelope, StoredFinalChainBlockHeader,
+    encode_legacy_system_transaction,
 };
 use triehash::ordered_trie_root;
 
@@ -167,7 +168,7 @@ pub struct FinalChainExecutionRequest {
 /// EVM request is emitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainEvmTransactionInput {
-    pub position: u64,
+    pub position: FinalChainTransactionPosition,
     pub hash: [u8; 32],
     pub sender: [u8; 20],
     pub receiver: Option<[u8; 20]>,
@@ -280,7 +281,7 @@ pub struct FinalChainEvmLog {
 /// commit path and deliberately do not alter storage until EVM parity is wired.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainEvmTransactionResult {
-    pub position: u64,
+    pub position: FinalChainTransactionPosition,
     pub hash: [u8; 32],
     pub status: u8,
     pub gas_used: u64,
@@ -391,7 +392,7 @@ pub struct FinalChainExternalEvmCommitPlan {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmTransactionPublication {
     pub transaction_hash: [u8; 32],
-    pub position: u32,
+    pub position: FinalChainTransactionPosition,
     pub is_system: bool,
     pub receipt_rlp: Vec<u8>,
 }
@@ -725,7 +726,8 @@ pub fn final_chain_execution_session_next(
             action: FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS,
             period: session.metadata.period,
             external_evm_transaction_count: count_external_evm_transactions(
-                &classify_ordered_execution_transactions(&session.request.transactions),
+                &classify_ordered_execution_transactions(&session.request.transactions)
+                    .expect("session constructor validates transaction positions"),
             ),
             system_transaction_request: session
                 .system_transaction_request
@@ -782,7 +784,8 @@ pub fn final_chain_execution_session_next(
             if let Some(system_request) = session.system_transaction_request.clone() {
                 session.status = FINAL_CHAIN_EXECUTION_STATUS_WAITING_SYSTEM_TRANSACTIONS;
                 let external_evm_transaction_count = count_external_evm_transactions(
-                    &classify_ordered_execution_transactions(&session.request.transactions),
+                    &classify_ordered_execution_transactions(&session.request.transactions)
+                        .expect("session constructor validates transaction positions"),
                 );
                 FinalChainExecutionStep {
                     status: session.status,
@@ -879,6 +882,19 @@ pub fn final_chain_execution_session_report_system_transactions(
     session: &mut FinalChainExecutionSession,
     report: FinalChainSystemTransactionReport,
 ) -> FinalChainExecutionStep {
+    let system_transaction_count = report.transactions.len();
+    final_chain_execution_session_report_system_transactions_with_count(
+        session,
+        report,
+        system_transaction_count,
+    )
+}
+
+fn final_chain_execution_session_report_system_transactions_with_count(
+    session: &mut FinalChainExecutionSession,
+    report: FinalChainSystemTransactionReport,
+    system_transaction_count: usize,
+) -> FinalChainExecutionStep {
     if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_SYSTEM_TRANSACTIONS {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_SYSTEM_TRANSACTIONS_UNEXPECTED".to_string();
@@ -900,8 +916,17 @@ pub fn final_chain_execution_session_report_system_transactions(
         return final_chain_execution_session_next(session);
     }
 
+    if let Err(error_code) = validate_combined_transaction_count(
+        session.request.transactions.len(),
+        system_transaction_count,
+    ) {
+        session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
+        session.error_code = error_code.to_string();
+        return final_chain_execution_session_next(session);
+    }
     let regular_transactions =
-        classify_ordered_execution_transactions(&session.request.transactions);
+        classify_ordered_execution_transactions(&session.request.transactions)
+            .expect("session constructor validates transaction positions");
     let system_transactions =
         match decode_system_transaction_inputs(regular_transactions.len(), &report.transactions) {
             Ok(transactions) => transactions,
@@ -1827,7 +1852,20 @@ impl FinalChainExecutionSession {
         request: FinalChainExecutionRequest,
         metadata: rustaxa_types::PbftBlockMetadata,
     ) -> Self {
-        let ordered_transactions = classify_ordered_execution_transactions(&request.transactions);
+        let regular_transaction_count = request.transactions.len();
+        Self::new_with_regular_transaction_count(request, metadata, regular_transaction_count)
+    }
+
+    fn new_with_regular_transaction_count(
+        request: FinalChainExecutionRequest,
+        metadata: rustaxa_types::PbftBlockMetadata,
+        regular_transaction_count: usize,
+    ) -> Self {
+        if let Err(error_code) = validate_regular_transaction_count(regular_transaction_count) {
+            return Self::rejected(request, metadata, error_code.to_string());
+        }
+        let ordered_transactions = classify_ordered_execution_transactions(&request.transactions)
+            .expect("regular transaction count was validated");
         let external_evm_transaction_count = count_external_evm_transactions(&ordered_transactions);
         if external_evm_transaction_count == 0 {
             return Self {
@@ -1942,9 +1980,13 @@ fn decode_system_transaction_inputs(
                 .ok_or_else(|| anyhow::anyhow!("system transaction sender missing"))?;
             let position = regular_transaction_count
                 .checked_add(index)
-                .ok_or_else(|| anyhow::anyhow!("system transaction position overflow"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("FINAL_CHAIN_SYSTEM_TRANSACTION_POSITION_EXCEEDS_U32")
+                })?;
             Ok(FinalChainEvmTransactionInput {
-                position: position as u64,
+                position: FinalChainTransactionPosition::try_from(position).map_err(|_| {
+                    anyhow::anyhow!("FINAL_CHAIN_SYSTEM_TRANSACTION_POSITION_EXCEEDS_U32")
+                })?,
                 hash: envelope.hash.into(),
                 sender: sender.into(),
                 receiver: envelope.receiver.map(Into::into),
@@ -2150,11 +2192,9 @@ fn build_external_evm_publication_plan(
         .iter()
         .zip(commit_plan.encoded_receipts.iter())
         .map(|(transaction, receipt)| {
-            let position = u32::try_from(transaction.position)
-                .map_err(|_| anyhow::anyhow!("external EVM transaction position overflow"))?;
             Ok(FinalChainExternalEvmTransactionPublication {
                 transaction_hash: transaction.hash,
-                position,
+                position: transaction.position,
                 is_system: transaction.is_system,
                 receipt_rlp: receipt.clone(),
             })
@@ -2396,7 +2436,7 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
     hasher.update(&(plan.transaction_publications.len() as u64).to_be_bytes());
     for publication in &plan.transaction_publications {
         hasher.update(&publication.transaction_hash);
-        hasher.update(&publication.position.to_be_bytes());
+        hasher.update(&publication.position.as_u32().to_be_bytes());
         hasher.update(&[u8::from(publication.is_system)]);
         hash_bytes_with_len(&mut hasher, &publication.receipt_rlp);
     }
@@ -2444,16 +2484,36 @@ fn hash_bytes_with_len(hasher: &mut impl tiny_keccak::Hasher, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
+fn validate_regular_transaction_count(count: usize) -> Result<(), &'static str> {
+    u32::try_from(count)
+        .map(|_| ())
+        .map_err(|_| "FINAL_CHAIN_REGULAR_TRANSACTION_COUNT_EXCEEDS_U32")
+}
+
+fn validate_combined_transaction_count(
+    regular_count: usize,
+    system_count: usize,
+) -> Result<(), &'static str> {
+    let count = regular_count
+        .checked_add(system_count)
+        .ok_or("FINAL_CHAIN_COMBINED_TRANSACTION_COUNT_EXCEEDS_U32")?;
+    u32::try_from(count)
+        .map(|_| ())
+        .map_err(|_| "FINAL_CHAIN_COMBINED_TRANSACTION_COUNT_EXCEEDS_U32")
+}
+
 fn classify_ordered_execution_transactions(
     transactions: &[FinalizationTransaction],
-) -> Vec<FinalChainEvmTransactionInput> {
+) -> Result<Vec<FinalChainEvmTransactionInput>, anyhow::Error> {
     transactions
         .iter()
         .enumerate()
         .map(|(position, transaction)| {
             let kind = transaction_kind(transaction);
-            FinalChainEvmTransactionInput {
-                position: position as u64,
+            Ok(FinalChainEvmTransactionInput {
+                position: FinalChainTransactionPosition::try_from(position).map_err(|_| {
+                    anyhow::anyhow!("FINAL_CHAIN_REGULAR_TRANSACTION_COUNT_EXCEEDS_U32")
+                })?,
                 hash: transaction.hash,
                 sender: transaction.sender,
                 receiver: transaction.receiver,
@@ -2465,7 +2525,7 @@ fn classify_ordered_execution_transactions(
                 rlp: transaction.rlp.clone(),
                 kind,
                 is_system: false,
-            }
+            })
         })
         .collect()
 }
@@ -2511,7 +2571,7 @@ fn system_transaction_request_id(
     hasher.update(&metadata.timestamp.to_be_bytes());
     hasher.update(&block_gas_limit.to_be_bytes());
     for transaction in transactions {
-        hasher.update(&transaction.position.to_be_bytes());
+        hasher.update(&u64::from(transaction.position.as_u32()).to_be_bytes());
         hasher.update(&transaction.hash);
         hasher.update(&[transaction.kind]);
     }
@@ -2536,7 +2596,7 @@ fn execution_request_id(
     hasher.update(&metadata.timestamp.to_be_bytes());
     hasher.update(&block_gas_limit.to_be_bytes());
     for transaction in transactions {
-        hasher.update(&transaction.position.to_be_bytes());
+        hasher.update(&u64::from(transaction.position.as_u32()).to_be_bytes());
         hasher.update(&transaction.hash);
         hasher.update(&transaction.sender);
         match transaction.receiver {
@@ -2843,7 +2903,7 @@ mod tests {
             extra_data: Vec::new(),
         };
         let mut transaction = FinalChainEvmTransactionInput {
-            position: 0,
+            position: 0.into(),
             hash: [4; 32],
             sender: [5; 20],
             receiver: None,
@@ -2867,6 +2927,87 @@ mod tests {
         transaction.nonce = transaction.nonce.next();
         let widened_id = execution_request_id(&metadata, 1_000_000, &[transaction]);
         assert_ne!(legacy_width_id, widened_id);
+    }
+
+    #[test]
+    fn transaction_count_bounds_reject_before_external_session_actions() {
+        assert!(validate_regular_transaction_count(u32::MAX as usize).is_ok());
+        assert!(validate_combined_transaction_count(u32::MAX as usize, 0).is_ok());
+        assert_eq!(
+            validate_combined_transaction_count(u32::MAX as usize, 1),
+            Err("FINAL_CHAIN_COMBINED_TRANSACTION_COUNT_EXCEEDS_U32")
+        );
+        assert_eq!(
+            validate_combined_transaction_count(usize::MAX, 1),
+            Err("FINAL_CHAIN_COMBINED_TRANSACTION_COUNT_EXCEEDS_U32")
+        );
+
+        let Ok(overflow_count) = usize::try_from(u64::from(u32::MAX) + 1) else {
+            return;
+        };
+        assert_eq!(
+            validate_regular_transaction_count(overflow_count),
+            Err("FINAL_CHAIN_REGULAR_TRANSACTION_COUNT_EXCEEDS_U32")
+        );
+
+        let request =
+            request_with_transactions(Vec::new(), FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED);
+        let metadata = rustaxa_types::PbftBlockMetadata {
+            author: H160::zero(),
+            period: 1,
+            timestamp: 2,
+            extra_data: Vec::new(),
+        };
+        let mut session = FinalChainExecutionSession::new_with_regular_transaction_count(
+            request,
+            metadata,
+            overflow_count,
+        );
+        let step = final_chain_execution_session_next(&mut session);
+        assert_eq!(step.action, FINAL_CHAIN_EXECUTION_ACTION_REJECT);
+        assert_eq!(
+            step.error_code,
+            "FINAL_CHAIN_REGULAR_TRANSACTION_COUNT_EXCEEDS_U32"
+        );
+    }
+
+    #[test]
+    fn combined_transaction_count_overflow_rejects_before_execute_action() {
+        let request = request_with_transactions(
+            vec![transaction(1, Some([9; 20]), vec![0xaa])],
+            FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED,
+        );
+        let metadata = rustaxa_types::PbftBlockMetadata {
+            author: H160::zero(),
+            period: 1,
+            timestamp: 2,
+            extra_data: Vec::new(),
+        };
+        let mut session = FinalChainExecutionSession::new(request, metadata);
+        let provide_step = final_chain_execution_session_next(&mut session);
+        assert_eq!(
+            provide_step.action,
+            FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS
+        );
+        let report = FinalChainSystemTransactionReport {
+            request_id: provide_step.system_transaction_request.request_id,
+            period: provide_step.period,
+            transactions: Vec::new(),
+        };
+        let rejected = final_chain_execution_session_report_system_transactions_with_count(
+            &mut session,
+            report,
+            u32::MAX as usize,
+        );
+        assert_eq!(rejected.action, FINAL_CHAIN_EXECUTION_ACTION_REJECT);
+        assert_ne!(
+            rejected.action,
+            FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
+        );
+        assert_eq!(
+            rejected.error_code,
+            "FINAL_CHAIN_COMBINED_TRANSACTION_COUNT_EXCEEDS_U32"
+        );
     }
 
     fn append_pbft_block_fields(stream: &mut RlpStream, period: u64, timestamp: u64) {
@@ -2974,22 +3115,22 @@ mod tests {
         assert_eq!(step.evm_request.block_gas_limit, 1_000_000);
         assert_eq!(step.external_evm_transaction_count, 2);
         assert_eq!(step.evm_request.transactions.len(), 4);
-        assert_eq!(step.evm_request.transactions[0].position, 0);
+        assert_eq!(step.evm_request.transactions[0].position.as_u32(), 0);
         assert_eq!(
             step.evm_request.transactions[0].kind,
             FINAL_CHAIN_EXECUTION_TX_KIND_NATIVE_VALUE_TRANSFER
         );
-        assert_eq!(step.evm_request.transactions[1].position, 1);
+        assert_eq!(step.evm_request.transactions[1].position.as_u32(), 1);
         assert_eq!(
             step.evm_request.transactions[1].kind,
             FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CALL
         );
-        assert_eq!(step.evm_request.transactions[2].position, 2);
+        assert_eq!(step.evm_request.transactions[2].position.as_u32(), 2);
         assert_eq!(
             step.evm_request.transactions[2].kind,
             FINAL_CHAIN_EXECUTION_TX_KIND_EXTERNAL_EVM_CREATE
         );
-        assert_eq!(step.evm_request.transactions[3].position, 3);
+        assert_eq!(step.evm_request.transactions[3].position.as_u32(), 3);
         assert_eq!(
             step.evm_request.transactions[3].kind,
             FINAL_CHAIN_EXECUTION_TX_KIND_SYSTEM

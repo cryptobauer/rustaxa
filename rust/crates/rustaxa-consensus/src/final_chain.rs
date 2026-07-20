@@ -55,8 +55,8 @@ use rustaxa_types::transaction::intrinsic_gas;
 use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount, FinalChainCallLog,
     FinalChainCallOutcome, FinalChainCallRequest, FinalChainNonce, FinalChainRewardsConfig,
-    FinalizationDagBlock, FinalizationTransaction, GenesisAccount, GenesisDposConfig,
-    GenesisValidator, RedelegationCorrection, StoredFinalChainBlockHeader,
+    FinalChainTransactionPosition, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
+    GenesisDposConfig, GenesisValidator, RedelegationCorrection, StoredFinalChainBlockHeader,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -1778,17 +1778,18 @@ impl FinalChain {
     pub fn transaction_receipt_rlp(
         &self,
         period: u64,
-        position: u64,
+        position: FinalChainTransactionPosition,
     ) -> Result<Option<Vec<u8>>, anyhow::Error> {
         let receipts_rlp = self.storage.period().receipt(period)?;
         if receipts_rlp.is_empty() {
             return Ok(None);
         }
         let receipts = Rlp::new(&receipts_rlp);
-        if position as usize >= receipts.item_count()? {
+        let position = position.as_u32() as usize;
+        if position >= receipts.item_count()? {
             return Ok(None);
         }
-        Ok(Some(receipts.at(position as usize)?.as_raw().to_vec()))
+        Ok(Some(receipts.at(position)?.as_raw().to_vec()))
     }
 
     /// Persists the pending external-EVM publication marker before `StateAPI`
@@ -2113,7 +2114,7 @@ impl FinalChain {
             .iter()
             .map(|publication| FinalChainTransactionIndexUpdate {
                 transaction_hash: H256::from(publication.transaction_hash),
-                position: publication.position,
+                position: publication.position.as_u32(),
                 is_system: publication.is_system,
                 receipt_rlp: publication.receipt_rlp.as_slice(),
             })
@@ -2509,13 +2510,17 @@ impl FinalChain {
         let transaction_index_updates = transactions
             .iter()
             .enumerate()
-            .map(|(position, transaction)| FinalChainTransactionIndexUpdate {
-                transaction_hash: H256::from(transaction.hash),
-                position: position as u32,
-                is_system: false,
-                receipt_rlp: encoded_receipts[position].as_slice(),
+            .map(|(position, transaction)| {
+                let position = FinalChainTransactionPosition::try_from(position)
+                    .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_POSITION_EXCEEDS_U32"))?;
+                Ok(FinalChainTransactionIndexUpdate {
+                    transaction_hash: H256::from(transaction.hash),
+                    position: position.as_u32(),
+                    is_system: false,
+                    receipt_rlp: encoded_receipts[position.as_u32() as usize].as_slice(),
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
         let rewards_stats_storage_update = rewards_stats_plan
             .storage_update
             .as_ref()
@@ -7104,10 +7109,14 @@ fn external_evm_publication_audit_report(
     }
 }
 
-fn external_evm_transaction_location_rlp(period: u64, position: u32, is_system: bool) -> Vec<u8> {
+fn external_evm_transaction_location_rlp(
+    period: u64,
+    position: FinalChainTransactionPosition,
+    is_system: bool,
+) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(2 + usize::from(is_system));
     stream.append(&period);
-    stream.append(&position);
+    stream.append(&position.as_u32());
     if is_system {
         stream.append(&is_system);
     }
@@ -7281,7 +7290,7 @@ fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationP
     for publication in &plan.transaction_publications {
         stream.begin_list(4);
         stream.append(&publication.transaction_hash.as_slice());
-        stream.append(&publication.position);
+        stream.append(&publication.position.as_u32());
         stream.append(&publication.is_system);
         stream.append(&publication.receipt_rlp);
     }
@@ -7322,7 +7331,7 @@ fn decode_external_evm_publication_plan(
                     &publication.at(0)?,
                     "external EVM transaction publication hash",
                 )?,
-                position: publication.val_at(1)?,
+                position: FinalChainTransactionPosition::new(publication.val_at(1)?),
                 is_system: publication.val_at(2)?,
                 receipt_rlp: publication.val_at(3)?,
             },
@@ -18782,7 +18791,7 @@ mod tests {
         );
         assert_eq!(
             restart_chain
-                .transaction_receipt_rlp(period, 1)
+                .transaction_receipt_rlp(period, 1.into())
                 .unwrap()
                 .unwrap(),
             receipts[1].clone()
@@ -19641,11 +19650,15 @@ mod tests {
             (1, VALUE_TRANSFER_GAS, VALUE_TRANSFER_GAS)
         );
         assert_eq!(
-            final_chain.transaction_receipt_rlp(period, 0).unwrap(),
+            final_chain
+                .transaction_receipt_rlp(period, 0.into())
+                .unwrap(),
             Some(receipts[0].clone())
         );
         assert_eq!(
-            final_chain.transaction_receipt_rlp(period, 1).unwrap(),
+            final_chain
+                .transaction_receipt_rlp(period, 1.into())
+                .unwrap(),
             None
         );
         assert_eq!(
@@ -23355,13 +23368,13 @@ mod tests {
         let expected_transfer_receipt = receipts[1].clone();
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 0)
+                .transaction_receipt_rlp(second_period, 0.into())
                 .unwrap(),
             Some(expected_failed_receipt.clone())
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 1)
+                .transaction_receipt_rlp(second_period, 1.into())
                 .unwrap(),
             Some(expected_transfer_receipt.clone())
         );
@@ -23449,13 +23462,13 @@ mod tests {
         assert_eq!(final_chain.last_block_number().unwrap(), second_period);
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 0)
+                .transaction_receipt_rlp(second_period, 0.into())
                 .unwrap(),
             Some(expected_failed_receipt)
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 1)
+                .transaction_receipt_rlp(second_period, 1.into())
                 .unwrap(),
             Some(expected_transfer_receipt)
         );
@@ -25886,14 +25899,14 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(period, 0)
+                .transaction_receipt_rlp(period, 0.into())
                 .unwrap()
                 .expect("missing failed registration receipt"),
             receipts[0].clone()
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(period, 1)
+                .transaction_receipt_rlp(period, 1.into())
                 .unwrap()
                 .expect("missing transfer receipt"),
             receipts[1].clone()
@@ -25937,14 +25950,14 @@ mod tests {
         );
         assert_eq!(
             restart_chain
-                .transaction_receipt_rlp(period, 0)
+                .transaction_receipt_rlp(period, 0.into())
                 .unwrap()
                 .expect("missing failed registration receipt after restart"),
             receipts[0].clone()
         );
         assert_eq!(
             restart_chain
-                .transaction_receipt_rlp(period, 1)
+                .transaction_receipt_rlp(period, 1.into())
                 .unwrap()
                 .expect("missing transfer receipt after restart"),
             receipts[1].clone()
@@ -28844,6 +28857,30 @@ mod tests {
         let decoded = decode_account_snapshot_rlp(&encoded).unwrap();
         assert_eq!(decoded.get(&address).unwrap().nonce, nonce);
         assert_eq!(decoded.get(&address).unwrap().nonce.to_bytes().len(), 33);
+    }
+
+    #[test]
+    fn external_evm_position_codec_preserves_u32_max_schema() {
+        let position = FinalChainTransactionPosition::new(u32::MAX);
+        let location = external_evm_transaction_location_rlp(7, position, true);
+        let location_rlp = Rlp::new(&location);
+        assert_eq!(location_rlp.val_at::<u32>(1).unwrap(), u32::MAX);
+
+        let plan = FinalChainExternalEvmPublicationPlan {
+            transaction_publications: vec![
+                crate::final_chain_execution::FinalChainExternalEvmTransactionPublication {
+                    transaction_hash: [9; 32],
+                    position,
+                    is_system: true,
+                    receipt_rlp: vec![0xc0],
+                },
+            ],
+            ..Default::default()
+        };
+        let encoded = encode_external_evm_publication_plan(&plan);
+        let decoded = decode_external_evm_publication_plan(&Rlp::new(&encoded)).unwrap();
+        assert_eq!(decoded.transaction_publications[0].position, position);
+        assert_eq!(encode_external_evm_publication_plan(&decoded), encoded);
     }
 
     #[test]
