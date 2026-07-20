@@ -15,9 +15,9 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    FinalChainNonce, FinalChainTransactionPosition, FinalizationDagBlock, FinalizationTransaction,
-    LegacySystemTransactionInput, LegacyTransactionEnvelope, StoredFinalChainBlockHeader,
-    encode_legacy_system_transaction,
+    FinalChainLogBloom, FinalChainNonce, FinalChainTransactionPosition, FinalizationDagBlock,
+    FinalizationTransaction, LegacySystemTransactionInput, LegacyTransactionEnvelope,
+    StoredFinalChainBlockHeader, encode_legacy_system_transaction,
 };
 use triehash::ordered_trie_root;
 
@@ -371,8 +371,8 @@ pub struct FinalChainExternalEvmCommitPlan {
     pub total_reward: Vec<u8>,
     pub transactions_root: [u8; 32],
     pub receipts_root: [u8; 32],
-    pub header_log_bloom: Vec<u8>,
-    pub indexed_log_bloom: Vec<u8>,
+    pub header_log_bloom: FinalChainLogBloom,
+    pub indexed_log_bloom: FinalChainLogBloom,
     pub receipts_rlp: Vec<u8>,
     pub encoded_receipts: Vec<Vec<u8>>,
     pub gas_used: u64,
@@ -443,7 +443,7 @@ pub struct FinalChainExternalEvmPublicationPlan {
     pub block_header_rlp: Vec<u8>,
     pub stored_header_rlp: Vec<u8>,
     pub receipts_rlp: Vec<u8>,
-    pub indexed_log_bloom: Vec<u8>,
+    pub indexed_log_bloom: FinalChainLogBloom,
     pub system_transaction_hashes_rlp: Vec<u8>,
     pub transaction_publications: Vec<FinalChainExternalEvmTransactionPublication>,
     pub executed_dag_blocks: u64,
@@ -2103,7 +2103,7 @@ fn build_external_evm_commit_plan(
     let receipts_rlp = encode_receipts_rlp(&encoded_receipts);
     let header_log_bloom =
         block_log_bloom(evm_report.results.iter().flat_map(|result| &result.logs));
-    let mut indexed_log_bloom = header_log_bloom.clone();
+    let mut indexed_log_bloom = header_log_bloom;
     add_bloom_value(&mut indexed_log_bloom, metadata.author.as_bytes());
     Ok(FinalChainExternalEvmCommitPlan {
         request_id: evm_request.request_id,
@@ -2152,9 +2152,6 @@ fn build_external_evm_publication_plan(
     if commit_plan.period != metadata.period {
         anyhow::bail!("external EVM publication period mismatch");
     }
-    if commit_plan.header_log_bloom.len() != 256 || commit_plan.indexed_log_bloom.len() != 256 {
-        anyhow::bail!("external EVM publication bloom must be 256 bytes");
-    }
     if commit_plan.encoded_receipts.len() != evm_request.transactions.len() {
         anyhow::bail!(
             "external EVM publication has {} receipts for {} transaction(s)",
@@ -2173,7 +2170,7 @@ fn build_external_evm_publication_plan(
         state_root: H256::from(commit_plan.state_root),
         transactions_root: H256::from(commit_plan.transactions_root),
         receipts_root: H256::from(commit_plan.receipts_root),
-        log_bloom: commit_plan.header_log_bloom.clone(),
+        log_bloom: commit_plan.header_log_bloom,
         gas_used: commit_plan.gas_used,
         total_reward: u256_from_big_endian(&commit_plan.total_reward),
     };
@@ -2208,7 +2205,7 @@ fn build_external_evm_publication_plan(
         block_header_rlp: full_header.into_vec(),
         stored_header_rlp: stored_header_rlp.into_vec(),
         receipts_rlp: commit_plan.receipts_rlp.clone(),
-        indexed_log_bloom: commit_plan.indexed_log_bloom.clone(),
+        indexed_log_bloom: commit_plan.indexed_log_bloom,
         system_transaction_hashes_rlp: encode_system_transaction_hashes_rlp(
             evm_request
                 .transactions
@@ -2348,8 +2345,8 @@ fn encode_receipts_rlp(receipts: &[Vec<u8>]) -> Vec<u8> {
     stream.out().to_vec()
 }
 
-fn block_log_bloom<'a>(logs: impl Iterator<Item = &'a FinalChainEvmLog>) -> Vec<u8> {
-    let mut bloom = vec![0u8; 256];
+fn block_log_bloom<'a>(logs: impl Iterator<Item = &'a FinalChainEvmLog>) -> FinalChainLogBloom {
+    let mut bloom = FinalChainLogBloom::ZERO;
     for log in logs {
         add_bloom_value(&mut bloom, &log.address);
         for topic in &log.topics {
@@ -2359,7 +2356,7 @@ fn block_log_bloom<'a>(logs: impl Iterator<Item = &'a FinalChainEvmLog>) -> Vec<
     bloom
 }
 
-fn add_bloom_value(bloom: &mut [u8], value: &[u8]) {
+fn add_bloom_value(bloom: &mut FinalChainLogBloom, value: &[u8]) {
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hash = [0u8; 32];
@@ -2369,8 +2366,8 @@ fn add_bloom_value(bloom: &mut [u8], value: &[u8]) {
 
     for offset in [0usize, 2, 4] {
         let bit = (((hash[offset] as usize) << 8) | hash[offset + 1] as usize) & 2047;
-        let byte_index = bloom.len() - 1 - (bit / 8);
-        bloom[byte_index] |= 1u8 << (bit % 8);
+        let byte_index = rustaxa_types::FINAL_CHAIN_LOG_BLOOM_BYTES - 1 - (bit / 8);
+        bloom.as_mut_bytes()[byte_index] |= 1u8 << (bit % 8);
     }
 }
 
@@ -2431,7 +2428,7 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
     hash_bytes_with_len(&mut hasher, &plan.block_header_rlp);
     hash_bytes_with_len(&mut hasher, &plan.stored_header_rlp);
     hash_bytes_with_len(&mut hasher, &plan.receipts_rlp);
-    hash_bytes_with_len(&mut hasher, &plan.indexed_log_bloom);
+    hash_bytes_with_len(&mut hasher, plan.indexed_log_bloom.as_ref());
     hash_bytes_with_len(&mut hasher, &plan.system_transaction_hashes_rlp);
     hasher.update(&(plan.transaction_publications.len() as u64).to_be_bytes());
     for publication in &plan.transaction_publications {
@@ -2784,6 +2781,18 @@ mod tests {
         session.external_evm_commit_plan = Some(commit_plan.clone());
         session.external_evm_publication_plan = Some(publication_plan.clone());
         (session, commit_plan, publication_plan)
+    }
+
+    #[test]
+    fn typed_bloom_preserves_external_evm_publication_plan_id() {
+        let (_session, _commit_plan, publication_plan) = external_evm_state_commit_session();
+        assert_eq!(
+            final_chain_external_evm_publication_plan_id(&publication_plan),
+            [
+                18, 236, 103, 98, 108, 95, 176, 9, 221, 61, 118, 64, 74, 213, 156, 213, 236, 177,
+                126, 165, 0, 183, 163, 157, 189, 136, 62, 110, 114, 218, 93, 207,
+            ]
+        );
     }
 
     fn state_commit_request(
@@ -3339,9 +3348,9 @@ mod tests {
             plan.receipts_rlp,
             encode_receipts_rlp(&plan.encoded_receipts)
         );
-        assert_eq!(plan.header_log_bloom.len(), 256);
-        assert_eq!(plan.indexed_log_bloom.len(), 256);
-        assert!(!plan.header_log_bloom.iter().all(|byte| *byte == 0));
+        assert_eq!(plan.header_log_bloom.as_ref().len(), 256);
+        assert_eq!(plan.indexed_log_bloom.as_ref().len(), 256);
+        assert!(!plan.header_log_bloom.as_ref().iter().all(|byte| *byte == 0));
         assert_eq!(
             session.status,
             FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_PUBLICATION

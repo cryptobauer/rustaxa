@@ -775,7 +775,7 @@ impl BridgeFinalChain {
         from: u64,
         to: u64,
     ) -> Result<Vec<u64>, anyhow::Error> {
-        self.0.with_block_bloom(bloom, from, to)
+        self.0.with_block_bloom(&(*bloom).into(), from, to)
     }
 
     pub fn recover_external_evm_pending_publication(
@@ -1463,7 +1463,9 @@ mod tests {
         bloom
     }
 
-    fn combined_bloom(values: impl IntoIterator<Item = Vec<u8>>) -> Vec<u8> {
+    fn combined_bloom(
+        values: impl IntoIterator<Item = Vec<u8>>,
+    ) -> rustaxa_types::FinalChainLogBloom {
         let mut bloom = [0u8; 256];
         for value in values {
             let value_bloom = bloom_for_value(&value);
@@ -1471,7 +1473,7 @@ mod tests {
                 *target |= *source;
             }
         }
-        bloom.to_vec()
+        bloom.into()
     }
 
     fn bloom_values_for_logs(logs: &[rustaxa_ffi::FinalChainEvmLog]) -> Vec<Vec<u8>> {
@@ -1978,7 +1980,7 @@ mod tests {
         assert_eq!(audit.block_hash, publication.block_hash);
         assert_eq!(
             audit.checked_fields,
-            15 + u64::from(publication.proposal_period_dag_level_update.has_update)
+            14 + u64::from(publication.proposal_period_dag_level_update.has_update)
                 + publication.transaction_publications.len() as u64 * 2
         );
         assert!(audit.error_code.is_empty());
@@ -2492,8 +2494,8 @@ mod tests {
         assert_eq!(plan.regular_transaction_count, 2);
         assert_eq!(plan.system_transaction_count, 0);
         assert_eq!(plan.encoded_receipts.len(), 2);
-        assert_eq!(plan.header_log_bloom.len(), 256);
-        assert_eq!(plan.indexed_log_bloom.len(), 256);
+        assert_eq!(plan.header_log_bloom.as_ref().len(), 256);
+        assert_eq!(plan.indexed_log_bloom.as_ref().len(), 256);
 
         let publication_step =
             execution_session_next(&mut session).expect("publication planning step should convert");

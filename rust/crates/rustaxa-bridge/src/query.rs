@@ -841,7 +841,7 @@ mod tests {
             state_root: H256::from_low_u64_be(11),
             transactions_root: H256::from_low_u64_be(12),
             receipts_root: H256::from_low_u64_be(13),
-            log_bloom: vec![0xBB; 256],
+            log_bloom: [0xBB; 256].into(),
             gas_used: 99,
             total_reward: U256::from(100u64),
         })
@@ -866,9 +866,9 @@ mod tests {
             bloom
         };
         let mut root_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
-        root_chunk[0] = query_bloom;
+        root_chunk[0] = query_bloom.into();
         let mut leaf_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
-        leaf_chunk[15] = query_bloom;
+        leaf_chunk[15] = query_bloom.into();
 
         storage
             .0
@@ -912,6 +912,8 @@ mod tests {
         assert_eq!(view.state_root, H256::from_low_u64_be(11).0);
         assert_eq!(view.gas_used, 99);
         assert_eq!(view.total_reward, U256::from(100u64).to_big_endian());
+        assert_eq!(view.log_bloom.len(), 256);
+        assert_eq!(view.log_bloom, vec![0xBB; 256]);
         assert!(view.has_pbft_hash);
 
         let lookup = api.consensus_query_pbft_block_hash_by_period(15).unwrap();

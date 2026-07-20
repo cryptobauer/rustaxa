@@ -494,6 +494,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   the retained `u64` executor/result boundary and outbound conversion widens the inner `u32`. Count overflow rejects
   before external execution, while request-ID and persisted RLP widths remain byte-compatible. No handle, export,
   constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
+- The canonical log-bloom `CRW-09` slice replaces the duplicate storage bloom alias and unchecked Rust-domain
+  `Vec<u8>` values with one shared `FinalChainLogBloom([u8; 256])`. CXX and RPC carriers remain unchanged vectors or
+  arrays with explicit edge conversion; valid RLP, hashes, request identities, pending markers, and storage chunks keep
+  identical bytes. No carrier, handle, export, constructor, shim route, module flag, compatibility-only test, or
+  `CRW-07` inventory entry changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

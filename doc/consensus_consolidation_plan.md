@@ -4116,6 +4116,28 @@ Validation passed all 43 `rustaxa-types`, 790 `rustaxa-consensus`, and 340 `rust
 check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, Rust formatting, and whitespace validation. The existing
 normal-policy clippy warnings remain outside this slice.
 
+### CRW-09 Canonical FinalChain Log Blooms
+
+The next domain slice lifts the existing 256-byte storage bloom invariant into
+`rustaxa_types::FinalChainLogBloom([u8; 256])` and re-exports the same type from `rustaxa-storage`. Stored/full headers,
+native and external-EVM bloom construction, commit/publication plans, pending markers, storage chunks/index updates,
+and Rust query paths now share one fixed-size value. The duplicate storage alias and late publication/audit width checks
+are removed. Stored-header and pending-marker decoding validates the width before a malformed value can enter recovery,
+identity verification, audit, or storage mutation.
+
+Valid header RLP and hashes, pending-marker shape, storage chunk bytes, and publication request identities remain
+byte-identical because codecs and hash preimages use the inner 256-byte slice. CXX and RPC compatibility carriers remain
+vectors or arrays and convert explicitly at the bridge/query edge. Malformed historical rows now fail closed earlier;
+no schema migration, CXX ABI change, handle/export/shim/module change, compatibility-only test, or `CRW-07` inventory
+delta is introduced. Focused tests cover 255/256/257-byte construction, zero/mutation/array conversion, legacy stored
+header bytes and hash, malformed header and marker decoding, storage chunk identity, native/external construction,
+publication-ID stability, and bridge/query materialization.
+
+Validation passed all 47 `rustaxa-types`, 96 `rustaxa-storage`, 792 `rustaxa-consensus`, and 340 `rustaxa-bridge` tests,
+the workspace compile check, `rewrite-validate-fast`, the FinalChain and storage Tier 2 gates, the nine-test
+`rust_storage_tests` binary, Rust formatting, and whitespace validation. Existing normal-policy clippy warnings remain
+outside this slice.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

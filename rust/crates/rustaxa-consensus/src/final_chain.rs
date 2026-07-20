@@ -2037,12 +2037,6 @@ impl FinalChain {
                 "FINAL_CHAIN_EVM_PUBLICATION_DECISION_ID_MISMATCH",
             ));
         }
-        if plan.indexed_log_bloom.len() != 256 {
-            return Ok(rejected_external_evm_publication_report(
-                &plan,
-                "FINAL_CHAIN_EVM_PUBLICATION_BLOOM_INVALID",
-            ));
-        }
         let rewards_stats_update =
             match external_evm_rewards_stats_storage_update(&plan.rewards_stats_update) {
                 Ok(update) => update,
@@ -2107,8 +2101,6 @@ impl FinalChain {
         let dpos_snapshot = self.dpos_snapshot_at_finalized_block(last_block)?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot)?;
 
-        let mut indexed_log_bloom = [0u8; 256];
-        indexed_log_bloom.copy_from_slice(&plan.indexed_log_bloom);
         let transaction_index_updates = plan
             .transaction_publications
             .iter()
@@ -2142,7 +2134,7 @@ impl FinalChain {
                 rewards_stats_update,
                 Some(FinalChainLogBloomIndexUpdate {
                     block_number: plan.period,
-                    bloom: &indexed_log_bloom,
+                    bloom: &plan.indexed_log_bloom,
                 }),
                 &transaction_index_updates,
                 Some(FinalChainPeriodSystemTransactionsUpdate {
@@ -2317,19 +2309,13 @@ impl FinalChain {
                 .is_none(),
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PENDING_MARKER_STILL_PRESENT",
         );
-        ensure_audit!(
-            plan.indexed_log_bloom.len() == 256,
-            "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOOM_INVALID",
-        );
-        let mut expected_bloom = [0u8; 256];
-        expected_bloom.copy_from_slice(&plan.indexed_log_bloom);
         let chunk_index = plan.period / FINAL_CHAIN_BLOOM_INDEX_SIZE as u64;
         let chunk_slot = (plan.period % FINAL_CHAIN_BLOOM_INDEX_SIZE as u64) as usize;
         let chunk_id = final_chain_log_bloom_chunk_id(0, chunk_index)?;
         let raw_chunk = self.storage.final_chain().log_blooms_chunk_raw(chunk_id)?;
         let chunk = decode_final_chain_log_bloom_chunk(raw_chunk.as_deref())?;
         ensure_audit!(
-            chunk[chunk_slot] == expected_bloom,
+            chunk[chunk_slot] == plan.indexed_log_bloom,
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOOM_INDEX_MISMATCH",
         );
 
@@ -2476,8 +2462,7 @@ impl FinalChain {
             .transpose()?
             .unwrap_or_default();
         let header_log_bloom = block_log_bloom(&receipts);
-        let mut indexed_log_bloom = [0u8; 256];
-        indexed_log_bloom.copy_from_slice(&header_log_bloom);
+        let mut indexed_log_bloom = header_log_bloom;
         add_bloom_value(&mut indexed_log_bloom, pbft.author.as_bytes());
         let stored_header = StoredFinalChainBlockHeader {
             parent_hash,
@@ -3204,7 +3189,7 @@ impl FinalChain {
             state_root: synthetic_state_root(0),
             transactions_root: empty_trie_root(),
             receipts_root: empty_trie_root(),
-            log_bloom: vec![0; 256],
+            log_bloom: FinalChainLogBloom::ZERO,
             gas_used: 0,
             total_reward: ethereum_types::U256::zero(),
         };
@@ -7284,7 +7269,7 @@ fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationP
     stream.append(&plan.block_header_rlp);
     stream.append(&plan.stored_header_rlp);
     stream.append(&plan.receipts_rlp);
-    stream.append(&plan.indexed_log_bloom);
+    stream.append(&plan.indexed_log_bloom.as_ref());
     stream.append(&plan.system_transaction_hashes_rlp);
     stream.begin_list(plan.transaction_publications.len());
     for publication in &plan.transaction_publications {
@@ -7367,7 +7352,9 @@ fn decode_external_evm_publication_plan(
         block_header_rlp: rlp.val_at(4)?,
         stored_header_rlp: rlp.val_at(5)?,
         receipts_rlp: rlp.val_at(6)?,
-        indexed_log_bloom: rlp.val_at(7)?,
+        indexed_log_bloom: FinalChainLogBloom::try_from(rlp.at(7)?.data()?).map_err(|error| {
+            anyhow::anyhow!("FINAL_CHAIN_EVM_PUBLICATION_INDEXED_LOG_BLOOM_INVALID_LENGTH: {error}")
+        })?,
         system_transaction_hashes_rlp: rlp.val_at(8)?,
         transaction_publications,
         executed_dag_blocks: rlp.val_at(10)?,
@@ -8691,8 +8678,8 @@ fn encode_receipt_rlp(receipt: &NativeReceipt) -> Vec<u8> {
     stream.out().to_vec()
 }
 
-fn block_log_bloom(receipts: &[NativeReceipt]) -> Vec<u8> {
-    let mut bloom = vec![0u8; 256];
+fn block_log_bloom(receipts: &[NativeReceipt]) -> FinalChainLogBloom {
+    let mut bloom = FinalChainLogBloom::ZERO;
     for receipt in receipts {
         for log in &receipt.logs {
             add_bloom_value(&mut bloom, &log.address);
@@ -8716,12 +8703,13 @@ fn final_chain_bloom_index_units(level_count: u64) -> Result<u64, anyhow::Error>
 
 fn log_bloom_contains(stored: &FinalChainLogBloom, query: &FinalChainLogBloom) -> bool {
     stored
+        .as_ref()
         .iter()
-        .zip(query.iter())
+        .zip(query.as_ref())
         .all(|(stored, query)| stored & query == *query)
 }
 
-fn add_bloom_value(bloom: &mut [u8], value: &[u8]) {
+fn add_bloom_value(bloom: &mut FinalChainLogBloom, value: &[u8]) {
     use tiny_keccak::{Hasher, Keccak};
 
     let mut hasher = Keccak::v256();
@@ -8730,7 +8718,7 @@ fn add_bloom_value(bloom: &mut [u8], value: &[u8]) {
     hasher.finalize(&mut hash);
     for offset in [0usize, 2, 4] {
         let index = (((hash[offset] as usize) << 8) | hash[offset + 1] as usize) & 2047;
-        bloom[255 - index / 8] |= 1 << (index % 8);
+        bloom.as_mut_bytes()[255 - index / 8] |= 1 << (index % 8);
     }
 }
 
@@ -11825,7 +11813,7 @@ mod tests {
             plan_id: [0x22; 32],
             period: 7,
             block_hash: [0x33; 32],
-            indexed_log_bloom: vec![0; 256],
+            indexed_log_bloom: FinalChainLogBloom::ZERO,
             ..Default::default()
         };
         let intent = FinalChainExternalEvmStateCommitIntent {
@@ -12191,7 +12179,7 @@ mod tests {
     }
 
     fn bloom_query_for_value(value: &[u8]) -> FinalChainLogBloom {
-        let mut bloom = [0u8; 256];
+        let mut bloom = FinalChainLogBloom::ZERO;
         add_bloom_value(&mut bloom, value);
         bloom
     }
@@ -28881,6 +28869,27 @@ mod tests {
         let decoded = decode_external_evm_publication_plan(&Rlp::new(&encoded)).unwrap();
         assert_eq!(decoded.transaction_publications[0].position, position);
         assert_eq!(encode_external_evm_publication_plan(&decoded), encoded);
+    }
+
+    #[test]
+    fn external_evm_publication_marker_rejects_malformed_bloom_immediately() {
+        let encoded =
+            encode_external_evm_publication_plan(&FinalChainExternalEvmPublicationPlan::default());
+        let encoded_rlp = Rlp::new(&encoded);
+        let mut malformed = RlpStream::new_list(encoded_rlp.item_count().unwrap());
+        for index in 0..encoded_rlp.item_count().unwrap() {
+            if index == 7 {
+                malformed.append(&[0u8; 255].as_slice());
+            } else {
+                malformed.append_raw(encoded_rlp.at(index).unwrap().as_raw(), 1);
+            }
+        }
+        let error = decode_external_evm_publication_plan(&Rlp::new(&malformed.out())).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("FINAL_CHAIN_EVM_PUBLICATION_INDEXED_LOG_BLOOM_INVALID_LENGTH:")
+        );
     }
 
     #[test]

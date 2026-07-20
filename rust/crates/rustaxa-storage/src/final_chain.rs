@@ -1,5 +1,8 @@
 use anyhow::{Result, bail};
 use ethereum_types::{H256, U256};
+#[cfg(test)]
+use rustaxa_types::FINAL_CHAIN_LOG_BLOOM_BYTES;
+use rustaxa_types::FinalChainLogBloom;
 use std::sync::Arc;
 
 use crate::db::{DbReader, DbWriter};
@@ -43,11 +46,6 @@ pub struct FinalChainRewardsStatsUpdate<'a> {
 pub const FINAL_CHAIN_BLOOM_INDEX_SIZE: usize = 16;
 /// Number of recursive bloom-index levels used by legacy FinalChain queries.
 pub const FINAL_CHAIN_BLOOM_INDEX_LEVELS: u64 = 2;
-/// Byte width of one Ethereum log bloom.
-pub const FINAL_CHAIN_LOG_BLOOM_BYTES: usize = 256;
-
-/// Fixed-width FinalChain log bloom stored in index chunks.
-pub type FinalChainLogBloom = [u8; FINAL_CHAIN_LOG_BLOOM_BYTES];
 /// Legacy RLP list of bloom entries for one FinalChain bloom-index chunk.
 pub type FinalChainLogBloomChunk = [FinalChainLogBloom; FINAL_CHAIN_BLOOM_INDEX_SIZE];
 
@@ -141,7 +139,7 @@ pub fn final_chain_log_bloom_chunk_id(level: u64, index: u64) -> Result<H256> {
 
 /// Returns an all-zero legacy bloom-index chunk.
 pub fn zero_final_chain_log_bloom_chunk() -> FinalChainLogBloomChunk {
-    [[0u8; FINAL_CHAIN_LOG_BLOOM_BYTES]; FINAL_CHAIN_BLOOM_INDEX_SIZE]
+    [FinalChainLogBloom::ZERO; FINAL_CHAIN_BLOOM_INDEX_SIZE]
 }
 
 /// Decodes a legacy FinalChain bloom-index chunk.
@@ -168,13 +166,9 @@ pub fn decode_final_chain_log_bloom_chunk(raw: Option<&[u8]>) -> Result<FinalCha
     let mut chunk = zero_final_chain_log_bloom_chunk();
     for (index, bloom) in chunk.iter_mut().enumerate() {
         let data = rlp.at(index)?.data()?;
-        if data.len() != FINAL_CHAIN_LOG_BLOOM_BYTES {
-            bail!(
-                "final-chain bloom chunk entry {index} has {} bytes, expected {FINAL_CHAIN_LOG_BLOOM_BYTES}",
-                data.len()
-            );
-        }
-        bloom.copy_from_slice(data);
+        *bloom = FinalChainLogBloom::try_from(data).map_err(|error| {
+            anyhow::anyhow!("final-chain bloom chunk entry {index} is malformed: {error}")
+        })?;
     }
     Ok(chunk)
 }
@@ -183,7 +177,7 @@ pub fn decode_final_chain_log_bloom_chunk(raw: Option<&[u8]>) -> Result<FinalCha
 pub fn encode_final_chain_log_bloom_chunk(chunk: &FinalChainLogBloomChunk) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(FINAL_CHAIN_BLOOM_INDEX_SIZE);
     for bloom in chunk {
-        stream.append(&bloom.as_slice());
+        stream.append(&bloom.as_ref());
     }
     stream.out().to_vec()
 }
@@ -606,7 +600,7 @@ impl<D: DbReader + DbWriter> FinalChainRepository<D> {
             let raw = self.log_blooms_chunk_raw(chunk_id)?;
             let mut chunk = decode_final_chain_log_bloom_chunk(raw.as_deref())?;
             let slot = (index % FINAL_CHAIN_BLOOM_INDEX_SIZE as u64) as usize;
-            for (stored, added) in chunk[slot].iter_mut().zip(update.bloom.iter()) {
+            for (stored, added) in chunk[slot].as_mut().iter_mut().zip(update.bloom.as_ref()) {
                 *stored |= *added;
             }
             let encoded = encode_final_chain_log_bloom_chunk(&chunk);
@@ -1026,8 +1020,8 @@ mod tests {
     #[test]
     fn test_log_bloom_chunk_codec_round_trips_and_rejects_malformed_entries() {
         let mut chunk = zero_final_chain_log_bloom_chunk();
-        chunk[3][17] = 0x80;
-        chunk[3][99] = 0x02;
+        chunk[3].as_mut_bytes()[17] = 0x80;
+        chunk[3].as_mut_bytes()[99] = 0x02;
 
         let encoded = encode_final_chain_log_bloom_chunk(&chunk);
         let decoded = decode_final_chain_log_bloom_chunk(Some(&encoded)).unwrap();
@@ -1102,9 +1096,9 @@ mod tests {
     fn test_external_evm_publication_batch_clears_marker_and_updates_indexes_before_last_number() {
         let db = Arc::new(MockFinalChainStore::new());
         let repo = FinalChainRepository::new(db.clone());
-        let mut bloom = [0u8; FINAL_CHAIN_LOG_BLOOM_BYTES];
-        bloom[0] = 0x01;
-        bloom[255] = 0x80;
+        let mut bloom = FinalChainLogBloom::ZERO;
+        bloom.as_mut_bytes()[0] = 0x01;
+        bloom.as_mut_bytes()[255] = 0x80;
         repo.write_external_evm_pending_publication(FinalChainExternalEvmPendingPublication {
             payload: b"stale-pending-publication",
         })

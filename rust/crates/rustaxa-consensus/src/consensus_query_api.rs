@@ -491,7 +491,7 @@ impl ConsensusQueryApi {
             state_root: stored_header.state_root.into(),
             transactions_root: stored_header.transactions_root.into(),
             receipts_root: stored_header.receipts_root.into(),
-            log_bloom: stored_header.log_bloom,
+            log_bloom: stored_header.log_bloom.as_ref().to_vec(),
             gas_used: stored_header.gas_used,
             total_reward: stored_header.total_reward.to_big_endian(),
             stored_header_rlp,
@@ -665,7 +665,7 @@ impl ConsensusQueryApi {
         let mut result = Vec::new();
         for index in first_index..=last_index {
             self.final_chain_blocks_with_bloom_at(
-                &bloom,
+                &bloom.into(),
                 from,
                 to,
                 root_level,
@@ -1222,8 +1222,9 @@ fn final_chain_bloom_index_units(level_count: u64) -> Result<u64> {
 
 fn log_bloom_contains(stored: &FinalChainLogBloom, query: &FinalChainLogBloom) -> bool {
     stored
+        .as_ref()
         .iter()
-        .zip(query.iter())
+        .zip(query.as_ref())
         .all(|(stored, query)| stored & query == *query)
 }
 
@@ -1918,7 +1919,7 @@ mod tests {
             state_root: H256::from_low_u64_be(2),
             transactions_root: H256::from_low_u64_be(3),
             receipts_root: H256::from_low_u64_be(4),
-            log_bloom: vec![0xAA; 256],
+            log_bloom: [0xAA; 256].into(),
             gas_used: 55,
             total_reward: U256::from(66u64),
         })
@@ -1937,9 +1938,9 @@ mod tests {
             bloom
         };
         let mut root_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
-        root_chunk[0] = query_bloom;
+        root_chunk[0] = query_bloom.into();
         let mut leaf_chunk = rustaxa_storage::zero_final_chain_log_bloom_chunk();
-        leaf_chunk[9] = query_bloom;
+        leaf_chunk[9] = query_bloom.into();
         storage
             .period()
             .write(9, &period_data_rlp(&pbft_block_rlp))

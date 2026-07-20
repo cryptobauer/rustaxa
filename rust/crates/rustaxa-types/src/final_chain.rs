@@ -4,6 +4,97 @@ use ethereum_types::{H160, H256, U256};
 use num_bigint::BigUint;
 use std::cmp::Ordering;
 
+/// Canonical byte width of an Ethereum/FinalChain log bloom.
+pub const FINAL_CHAIN_LOG_BLOOM_BYTES: usize = 256;
+
+/// Error returned when a byte slice cannot form a fixed-width log bloom.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalChainLogBloomLengthError {
+    actual: usize,
+}
+
+impl FinalChainLogBloomLengthError {
+    /// Returns the rejected slice length.
+    pub const fn actual(self) -> usize {
+        self.actual
+    }
+}
+
+impl std::fmt::Display for FinalChainLogBloomLengthError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "FinalChain log bloom has {} bytes, expected {FINAL_CHAIN_LOG_BLOOM_BYTES}",
+            self.actual
+        )
+    }
+}
+
+impl std::error::Error for FinalChainLogBloomLengthError {}
+
+/// Fixed-width FinalChain log bloom used by headers and bloom indexes.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct FinalChainLogBloom([u8; FINAL_CHAIN_LOG_BLOOM_BYTES]);
+
+impl FinalChainLogBloom {
+    /// All-zero bloom used by empty blocks and uninitialized index chunks.
+    pub const ZERO: Self = Self([0; FINAL_CHAIN_LOG_BLOOM_BYTES]);
+    /// Wraps a bloom whose width is proven by its array type.
+    pub const fn new(bytes: [u8; FINAL_CHAIN_LOG_BLOOM_BYTES]) -> Self {
+        Self(bytes)
+    }
+    /// Borrows the fixed-width bloom bytes.
+    pub const fn as_bytes(&self) -> &[u8; FINAL_CHAIN_LOG_BLOOM_BYTES] {
+        &self.0
+    }
+    /// Mutably borrows the fixed-width bloom bytes.
+    pub const fn as_mut_bytes(&mut self) -> &mut [u8; FINAL_CHAIN_LOG_BLOOM_BYTES] {
+        &mut self.0
+    }
+    /// Consumes the wrapper and returns its byte array.
+    pub const fn into_bytes(self) -> [u8; FINAL_CHAIN_LOG_BLOOM_BYTES] {
+        self.0
+    }
+}
+
+impl Default for FinalChainLogBloom {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+impl From<[u8; FINAL_CHAIN_LOG_BLOOM_BYTES]> for FinalChainLogBloom {
+    fn from(bytes: [u8; FINAL_CHAIN_LOG_BLOOM_BYTES]) -> Self {
+        Self::new(bytes)
+    }
+}
+impl From<FinalChainLogBloom> for [u8; FINAL_CHAIN_LOG_BLOOM_BYTES] {
+    fn from(bloom: FinalChainLogBloom) -> Self {
+        bloom.into_bytes()
+    }
+}
+impl TryFrom<&[u8]> for FinalChainLogBloom {
+    type Error = FinalChainLogBloomLengthError;
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let array = <[u8; FINAL_CHAIN_LOG_BLOOM_BYTES]>::try_from(bytes).map_err(|_| {
+            FinalChainLogBloomLengthError {
+                actual: bytes.len(),
+            }
+        })?;
+        Ok(Self::new(array))
+    }
+}
+impl AsRef<[u8]> for FinalChainLogBloom {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+impl AsMut<[u8]> for FinalChainLogBloom {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.0
+    }
+}
+
 /// Zero-based position of a transaction in one finalized FinalChain block.
 ///
 /// The domain is exactly `u32`, matching durable transaction-location and
@@ -180,6 +271,48 @@ mod transaction_position_tests {
         if usize::BITS > u32::BITS {
             assert!(FinalChainTransactionPosition::try_from(u32::MAX as usize + 1).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod log_bloom_tests {
+    use super::{FINAL_CHAIN_LOG_BLOOM_BYTES, FinalChainLogBloom};
+
+    #[test]
+    fn log_bloom_enforces_exact_width() {
+        let exact = [0xabu8; FINAL_CHAIN_LOG_BLOOM_BYTES];
+        assert_eq!(
+            FinalChainLogBloom::try_from(exact.as_slice())
+                .unwrap()
+                .into_bytes(),
+            exact
+        );
+        assert_eq!(
+            FinalChainLogBloom::try_from(&exact[..FINAL_CHAIN_LOG_BLOOM_BYTES - 1])
+                .unwrap_err()
+                .actual(),
+            255
+        );
+        let oversized = [0u8; FINAL_CHAIN_LOG_BLOOM_BYTES + 1];
+        assert_eq!(
+            FinalChainLogBloom::try_from(oversized.as_slice())
+                .unwrap_err()
+                .actual(),
+            257
+        );
+    }
+
+    #[test]
+    fn log_bloom_zero_array_and_mutation_are_explicit() {
+        assert_eq!(
+            FinalChainLogBloom::ZERO.as_bytes(),
+            &[0; FINAL_CHAIN_LOG_BLOOM_BYTES]
+        );
+        let mut bloom = FinalChainLogBloom::new([0; FINAL_CHAIN_LOG_BLOOM_BYTES]);
+        bloom.as_mut_bytes()[17] = 0x80;
+        assert_eq!(bloom.as_ref()[17], 0x80);
+        let array: [u8; FINAL_CHAIN_LOG_BLOOM_BYTES] = bloom.into();
+        assert_eq!(array[17], 0x80);
     }
 }
 
@@ -559,7 +692,7 @@ pub struct StoredFinalChainBlockHeader {
     pub state_root: H256,
     pub transactions_root: H256,
     pub receipts_root: H256,
-    pub log_bloom: Vec<u8>,
+    pub log_bloom: FinalChainLogBloom,
     pub gas_used: u64,
     pub total_reward: U256,
 }
@@ -592,7 +725,7 @@ pub struct FinalChainBlockHeader {
     pub state_root: H256,
     pub transactions_root: H256,
     pub receipts_root: H256,
-    pub log_bloom: Vec<u8>,
+    pub log_bloom: FinalChainLogBloom,
     pub number: u64,
     pub gas_limit: u64,
     pub gas_used: u64,
@@ -669,7 +802,7 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
             state_root: self.stored_header.state_root,
             transactions_root: self.stored_header.transactions_root,
             receipts_root: self.stored_header.receipts_root,
-            log_bloom: self.stored_header.log_bloom.clone(),
+            log_bloom: self.stored_header.log_bloom,
             number,
             gas_limit: block_gas_limit,
             gas_used: self.stored_header.gas_used,
@@ -691,7 +824,7 @@ mod tests {
             state_root: H256::from_low_u64_be(2),
             transactions_root: H256::from_low_u64_be(3),
             receipts_root: H256::from_low_u64_be(4),
-            log_bloom: vec![0; 256],
+            log_bloom: FinalChainLogBloom::ZERO,
             gas_used: 5,
             total_reward: U256::from(6u64),
         };
@@ -720,7 +853,7 @@ mod tests {
             state_root: H256::from_low_u64_be(2),
             transactions_root: H256::from_low_u64_be(3),
             receipts_root: H256::from_low_u64_be(4),
-            log_bloom: vec![0; 256],
+            log_bloom: FinalChainLogBloom::ZERO,
             gas_used: 5,
             total_reward: U256::from(6u64),
         };

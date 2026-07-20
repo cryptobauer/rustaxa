@@ -1,5 +1,7 @@
 use crate::codec::rlp::pbft::SignedPbftBlockRlp;
-use crate::final_chain::{BlockHeaderContext, FinalChainBlockHeader, StoredFinalChainBlockHeader};
+use crate::final_chain::{
+    BlockHeaderContext, FinalChainBlockHeader, FinalChainLogBloom, StoredFinalChainBlockHeader,
+};
 use crate::pbft::PbftBlockMetadata;
 use anyhow::Result;
 use ethereum_types::{H160, H256, U256};
@@ -109,7 +111,10 @@ fn decode_stored_block_header_rlp(rlp: &Rlp<'_>) -> Result<StoredFinalChainBlock
         state_root: rlp.val_at(STORED_HEADER_STATE_ROOT_POS)?,
         transactions_root: rlp.val_at(STORED_HEADER_TRANSACTIONS_ROOT_POS)?,
         receipts_root: rlp.val_at(STORED_HEADER_RECEIPTS_ROOT_POS)?,
-        log_bloom: rlp.at(STORED_HEADER_LOG_BLOOM_POS)?.data()?.to_vec(),
+        log_bloom: FinalChainLogBloom::try_from(rlp.at(STORED_HEADER_LOG_BLOOM_POS)?.data()?)
+            .map_err(|error| {
+                anyhow::anyhow!("FINAL_CHAIN_STORED_HEADER_LOG_BLOOM_INVALID_LENGTH: {error}")
+            })?,
         gas_used: rlp.val_at(STORED_HEADER_GAS_USED_POS)?,
         total_reward: rlp.val_at(STORED_HEADER_TOTAL_REWARD_POS)?,
     })
@@ -121,7 +126,7 @@ fn encode_stored_block_header_rlp(header: &StoredFinalChainBlockHeader) -> Vec<u
     stream.append(&header.state_root);
     stream.append(&header.transactions_root);
     stream.append(&header.receipts_root);
-    stream.append(&header.log_bloom.as_slice());
+    stream.append(&header.log_bloom.as_ref());
     stream.append(&header.gas_used);
     stream.append(&header.total_reward);
     stream.out().to_vec()
@@ -141,7 +146,7 @@ fn encode_legacy_block_header(header: &FinalChainBlockHeader) -> Vec<u8> {
     stream.append(&header.state_root);
     stream.append(&header.transactions_root);
     stream.append(&header.receipts_root);
-    stream.append(&header.log_bloom.as_slice());
+    stream.append(&header.log_bloom.as_ref());
     stream.append(&header.number);
     stream.append(&header.gas_limit);
     stream.append(&header.gas_used);
@@ -218,7 +223,7 @@ fn encode_ethereum_header_hash_input(
     stream.append(&stored_header.state_root);
     stream.append(&stored_header.transactions_root);
     stream.append(&stored_header.receipts_root);
-    stream.append(&stored_header.log_bloom.as_slice());
+    stream.append(&stored_header.log_bloom.as_ref());
     stream.append(&U256::zero());
     stream.append(&number);
     stream.append(&gas_limit);
@@ -328,6 +333,28 @@ mod tests {
     }
 
     #[test]
+    fn typed_bloom_preserves_stored_header_rlp_and_legacy_hash() {
+        let raw = header_data_rlp(5, U256::from(6u64));
+        let stored =
+            StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&raw)).unwrap();
+        assert_eq!(StoredBlockHeaderRlpOwned::from(&stored).into_vec(), raw);
+        let full = LegacyBlockHeaderRlp::try_from(LegacyBlockHeaderRlpInput::new(
+            StoredBlockHeaderRlp::new(&raw),
+            1000,
+            1234,
+        ))
+        .unwrap();
+        assert_eq!(
+            full.hash().unwrap(),
+            H256::from([
+                0xd4, 0xac, 0x1e, 0x1f, 0xcb, 0x08, 0xb1, 0x23, 0x77, 0xb7, 0xd5, 0x64, 0x4b, 0xc8,
+                0xc6, 0x73, 0x35, 0x10, 0x08, 0xe6, 0x32, 0xb7, 0xd7, 0x1b, 0x06, 0x0c, 0x6e, 0x2c,
+                0x6e, 0xc4, 0x2d, 0xfd,
+            ])
+        );
+    }
+
+    #[test]
     fn reconstructs_non_genesis_pbft_fields() {
         let signing_key = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let expected_author = address_from_signing_key(&signing_key);
@@ -376,6 +403,27 @@ mod tests {
         assert!(
             StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&malformed.out()))
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_stored_header_with_wrong_log_bloom_width() {
+        let mut malformed = RlpStream::new_list(7);
+        malformed.append(&H256::from_low_u64_be(1));
+        malformed.append(&H256::from_low_u64_be(2));
+        malformed.append(&H256::from_low_u64_be(3));
+        malformed.append(&H256::from_low_u64_be(4));
+        malformed.append(&[0u8; 255].as_slice());
+        malformed.append(&5u64);
+        malformed.append(&U256::from(6u64));
+
+        let error =
+            StoredFinalChainBlockHeader::try_from(StoredBlockHeaderRlp::new(&malformed.out()))
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .starts_with("FINAL_CHAIN_STORED_HEADER_LOG_BLOOM_INVALID_LENGTH:")
         );
     }
 

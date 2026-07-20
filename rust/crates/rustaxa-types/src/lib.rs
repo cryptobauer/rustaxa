@@ -8,10 +8,11 @@ pub mod transaction;
 pub use dag::DagBlock;
 pub use final_chain::{
     Account, BlockHeaderContext, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
-    FinalChainBlockHeader, FinalChainBlockHeaderBuilder, FinalChainCallLog, FinalChainCallOutcome,
-    FinalChainCallRequest, FinalChainNonce, FinalChainRewardsConfig, FinalChainTransactionPosition,
-    FinalizationDagBlock, FinalizationTransaction, GenesisAccount, GenesisDposConfig,
-    GenesisValidator, GenesisValidatorMetadata, RedelegationCorrection,
+    FINAL_CHAIN_LOG_BLOOM_BYTES, FinalChainBlockHeader, FinalChainBlockHeaderBuilder,
+    FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest, FinalChainLogBloom,
+    FinalChainLogBloomLengthError, FinalChainNonce, FinalChainRewardsConfig,
+    FinalChainTransactionPosition, FinalizationDagBlock, FinalizationTransaction, GenesisAccount,
+    GenesisDposConfig, GenesisValidator, GenesisValidatorMetadata, RedelegationCorrection,
     StoredFinalChainBlockHeader,
 };
 pub use pbft::PbftBlockMetadata;
