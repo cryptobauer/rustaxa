@@ -15,9 +15,9 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    FinalChainLogBloom, FinalChainNonce, FinalChainTransactionPosition, FinalizationDagBlock,
-    FinalizationTransaction, LegacySystemTransactionInput, LegacyTransactionEnvelope,
-    StoredFinalChainBlockHeader, encode_legacy_system_transaction,
+    FinalChainGasPrice, FinalChainLogBloom, FinalChainNonce, FinalChainTransactionPosition,
+    FinalizationDagBlock, FinalizationTransaction, LegacySystemTransactionInput,
+    LegacyTransactionEnvelope, StoredFinalChainBlockHeader, encode_legacy_system_transaction,
 };
 use triehash::ordered_trie_root;
 
@@ -174,7 +174,7 @@ pub struct FinalChainEvmTransactionInput {
     pub receiver: Option<[u8; 20]>,
     pub nonce: FinalChainNonce,
     pub value: Vec<u8>,
-    pub gas_price: Vec<u8>,
+    pub gas_price: FinalChainGasPrice,
     pub gas_limit: u64,
     pub data: Vec<u8>,
     pub rlp: Vec<u8>,
@@ -1992,7 +1992,7 @@ fn decode_system_transaction_inputs(
                 receiver: envelope.receiver.map(Into::into),
                 nonce: FinalChainNonce::from_bytes(&u256_to_nonce_bytes(envelope.nonce))?,
                 value: u256_to_big_endian(envelope.value),
-                gas_price: u256_to_big_endian(envelope.gas_price),
+                gas_price: envelope.gas_price.into(),
                 gas_limit: envelope.gas,
                 data: envelope.data,
                 rlp: envelope.rlp,
@@ -2019,8 +2019,9 @@ fn build_external_evm_rewards_request(
     let mut transaction_gas_used = Vec::with_capacity(report.results.len());
     let mut transaction_fees = Vec::with_capacity(report.results.len());
     for (transaction, result) in request.transactions.iter().zip(report.results.iter()) {
-        let fee = u256_from_big_endian(&transaction.gas_price)
-            .checked_mul(U256::from(result.gas_used))
+        let fee = transaction
+            .gas_price
+            .checked_fee(result.gas_used)
             .ok_or_else(|| anyhow::anyhow!("external EVM transaction fee overflow"))?;
         transaction_gas_used.push(result.gas_used);
         transaction_fees.push(u256_to_big_endian(fee));
@@ -2059,7 +2060,7 @@ fn build_external_evm_rewards_fact(
             .zip(&report.results)
             .map(|(transaction, result)| RewardTransactionFact {
                 hash: H256::from(transaction.hash),
-                gas_price: u256_from_big_endian(&transaction.gas_price),
+                gas_price: transaction.gas_price.as_u256(),
                 gas_used: result.gas_used,
             })
             .collect(),
@@ -2516,7 +2517,7 @@ fn classify_ordered_execution_transactions(
                 receiver: transaction.receiver,
                 nonce: transaction.nonce.clone(),
                 value: transaction.value.clone(),
-                gas_price: transaction.gas_price.clone(),
+                gas_price: transaction.gas_price,
                 gas_limit: transaction.gas_limit,
                 data: transaction.data.clone(),
                 rlp: transaction.rlp.clone(),
@@ -2607,7 +2608,11 @@ fn execution_request_id(
         hasher.update(&(nonce_bytes.len() as u32).to_be_bytes());
         hasher.update(&nonce_bytes);
         hasher.update(&transaction.value);
-        hasher.update(&transaction.gas_price);
+        if transaction.is_system {
+            hasher.update(&u256_to_big_endian(transaction.gas_price.as_u256()));
+        } else {
+            hasher.update(&transaction.gas_price.to_fixed_be_bytes());
+        }
         hasher.update(&transaction.gas_limit.to_be_bytes());
         hasher.update(&transaction.data);
         hasher.update(&transaction.rlp);
@@ -2661,7 +2666,7 @@ mod tests {
             receiver,
             nonce: FinalChainNonce::zero(),
             value: vec![0],
-            gas_price: vec![0],
+            gas_price: U256::zero().into(),
             gas_limit: 21_000,
             data,
             rlp: vec![hash_byte],
@@ -2904,7 +2909,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_request_id_versions_and_covers_canonical_nonce_bytes() {
+    fn execution_request_id_covers_fixed_gas_price_and_canonical_nonce_bytes() {
         let metadata = rustaxa_types::PbftBlockMetadata {
             author: H160::from_low_u64_be(1),
             period: 2,
@@ -2918,24 +2923,64 @@ mod tests {
             receiver: None,
             nonce: FinalChainNonce::from_u64(u64::MAX),
             value: Vec::new(),
-            gas_price: Vec::new(),
+            gas_price: U256::zero().into(),
             gas_limit: 21_000,
             data: Vec::new(),
             rlp: Vec::new(),
             kind: 0,
             is_system: false,
         };
+        transaction.gas_price = FinalChainGasPrice::try_from(&[1][..]).unwrap();
         let legacy_width_id = execution_request_id(&metadata, 1_000_000, &[transaction.clone()]);
         assert_eq!(
             legacy_width_id,
             [
-                230, 125, 128, 203, 26, 205, 221, 203, 211, 171, 224, 246, 4, 80, 8, 90, 226, 237,
-                103, 7, 57, 30, 216, 126, 239, 225, 222, 226, 173, 73, 101, 208,
+                213, 182, 190, 239, 143, 157, 247, 194, 66, 59, 3, 175, 205, 219, 100, 225, 90, 4,
+                105, 241, 45, 202, 8, 92, 45, 145, 179, 132, 131, 120, 224, 31,
             ]
+        );
+        let mut fixed_width = transaction.clone();
+        let mut fixed_bytes = [0; 32];
+        fixed_bytes[31] = 1;
+        fixed_width.gas_price = FinalChainGasPrice::from_be_bytes(fixed_bytes);
+        assert_eq!(
+            legacy_width_id,
+            execution_request_id(&metadata, 1_000_000, &[fixed_width])
         );
         transaction.nonce = transaction.nonce.next();
         let widened_id = execution_request_id(&metadata, 1_000_000, &[transaction]);
         assert_ne!(legacy_width_id, widened_id);
+    }
+
+    #[test]
+    fn execution_request_id_preserves_minimal_zero_gas_system_preimage() {
+        let metadata = rustaxa_types::PbftBlockMetadata {
+            author: H160::from_low_u64_be(1),
+            period: 2,
+            timestamp: 3,
+            extra_data: Vec::new(),
+        };
+        let transaction = FinalChainEvmTransactionInput {
+            position: 0.into(),
+            hash: [9; 32],
+            sender: rustaxa_types::TARAXA_SYSTEM_ACCOUNT,
+            receiver: Some([8; 20]),
+            nonce: FinalChainNonce::from_u64(4),
+            value: Vec::new(),
+            gas_price: FinalChainGasPrice::zero(),
+            gas_limit: 100_000,
+            data: vec![7, 6],
+            rlp: vec![5],
+            kind: FINAL_CHAIN_EXECUTION_TX_KIND_SYSTEM,
+            is_system: true,
+        };
+        assert_eq!(
+            execution_request_id(&metadata, 1_000_000, &[transaction]),
+            [
+                91, 226, 87, 201, 147, 250, 236, 75, 210, 49, 177, 237, 130, 202, 92, 162, 142,
+                103, 118, 35, 244, 153, 37, 54, 230, 88, 86, 58, 2, 213, 167, 147,
+            ]
+        );
     }
 
     #[test]

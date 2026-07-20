@@ -4138,6 +4138,27 @@ the workspace compile check, `rewrite-validate-fast`, the FinalChain and storage
 `rust_storage_tests` binary, Rust formatting, and whitespace validation. Existing normal-policy clippy warnings remain
 outside this slice.
 
+### CRW-09 Typed FinalChain Gas Prices
+
+The next role-specific monetary slice introduces `FinalChainGasPrice(U256)` for finalization transactions, transient
+calls, external-EVM request inputs, native gas affordability/charging, and external fee/reward derivation. It deliberately
+does not create a generic amount abstraction: transaction value, account balance, DPoS principal, reward pools, supply,
+and arbitrary-width reward-per-stake values retain their distinct domains. The type accepts zero through 32 big-endian
+bytes, including the fixed-width leading-zero representation supplied by C++, rejects wider inputs with a stable bridge
+error, exposes explicit U256 conversion, and centralizes checked `gas_price * gas_used` fee arithmetic.
+
+CXX carriers remain `Vec<u8>`. Rust-to-CXX EVM requests always emit exactly 32 big-endian bytes, matching production
+regular-transaction input. Request identity preserves that fixed regular preimage and the legacy minimal system-price
+preimage without a version bump. Short regular Rust fixtures normalize to the same fixed representation; transaction
+RLP, fee-output encoding, account snapshots, receipts, and storage schemas are unchanged.
+Focused tests cover empty/short/31/32-byte values, leading zeros, U256 maximum, 33-byte rejection, zero/success/overflow
+fees, both bridge ingress routes, fixed-width output, request-ID stability/normalization, and existing native/external fee
+semantics. No carrier, handle, export, shim, module flag, compatibility-only test, or `CRW-07` inventory delta is added.
+
+Validation passed all 50 `rustaxa-types`, 793 `rustaxa-consensus`, and 342 `rustaxa-bridge` tests, the workspace compile
+check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, Rust formatting, and whitespace validation. Existing
+normal-policy clippy warnings remain outside this slice.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

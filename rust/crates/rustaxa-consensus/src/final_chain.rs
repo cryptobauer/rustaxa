@@ -1548,7 +1548,7 @@ impl FinalChain {
         selector.copy_from_slice(&request.input[..4]);
         let mut accounts = self.account_snapshot_map_at_block(request.block_number)?;
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
-        let gas_price = u256_from_big_endian(&request.gas_price);
+        let gas_price = request.gas_price.as_u256();
         let value = u256_from_big_endian(&request.value);
 
         let mut balance_after_gas_cap = None;
@@ -3245,7 +3245,7 @@ impl FinalChain {
 
         for transaction in transactions.iter() {
             let sender_was_present = accounts.contains_key(&transaction.sender);
-            let gas_price = u256_from_big_endian(&transaction.gas_price);
+            let gas_price = transaction.gas_price.as_u256();
             let value = u256_from_big_endian(&transaction.value);
             // Legacy transaction admission checks sender nonce and the complete
             // gas cap before decoding native-precompile calldata.  Preserve that
@@ -4066,7 +4066,7 @@ impl FinalChain {
             }));
         }
 
-        let gas_price = u256_from_big_endian(&request.gas_price);
+        let gas_price = request.gas_price.as_u256();
         let gas_cost = gas_price
             .checked_mul(U256::from(request.gas_limit))
             .ok_or_else(|| anyhow::anyhow!("call gas limit cost overflow"))?;
@@ -6951,7 +6951,7 @@ impl FinalChain {
                     .iter()
                     .find(|transaction| transaction.hash == *hash)
                     .ok_or_else(|| anyhow::anyhow!("missing transaction for executed fee hash"))?;
-                let gas_price = u256_from_big_endian(&transaction.gas_price);
+                let gas_price = transaction.gas_price.as_u256();
                 let gas_used = gas_used_from_fee(*fee, gas_price)?;
                 Ok((*hash, gas_used))
             })
@@ -6971,7 +6971,7 @@ impl FinalChain {
                 .iter()
                 .map(|transaction| RewardTransactionFact {
                     hash: H256::from(transaction.hash),
-                    gas_price: u256_from_big_endian(&transaction.gas_price),
+                    gas_price: transaction.gas_price.as_u256(),
                     gas_used: *gas_used_by_hash.get(&transaction.hash).unwrap_or(&0),
                 })
                 .collect(),
@@ -12038,7 +12038,7 @@ mod tests {
             receiver,
             nonce: nonce.into(),
             value: u256_to_big_endian(value),
-            gas_price: u256_to_big_endian(gas_price),
+            gas_price: gas_price.into(),
             gas_limit,
             data,
             rlp,
@@ -12217,7 +12217,7 @@ mod tests {
             sender: [0u8; 20],
             receiver: Some(DPOS_CONTRACT_ADDRESS),
             value: vec![],
-            gas_price: vec![],
+            gas_price: U256::zero().into(),
             gas_limit: 1_000_000,
             input,
         }
@@ -12229,7 +12229,7 @@ mod tests {
             sender: [0u8; 20],
             receiver: Some(SLASHING_CONTRACT_ADDRESS),
             value: vec![],
-            gas_price: vec![],
+            gas_price: U256::zero().into(),
             gas_limit: 1_000_000,
             input,
         }
@@ -18038,7 +18038,7 @@ mod tests {
             let mut request = dpos_call_request(0, input.clone());
             request.sender = sender;
             request.value = u256_to_big_endian(request_value);
-            request.gas_price = vec![1];
+            request.gas_price = U256::one().into();
             request.gas_limit = gas_limit;
             request
         };
@@ -18053,7 +18053,7 @@ mod tests {
 
         set_sender_balance(U256::MAX);
         let mut overflowing_gas_cap = request(2, U256::zero());
-        overflowing_gas_cap.gas_price = u256_to_big_endian(U256::MAX);
+        overflowing_gas_cap.gas_price = U256::MAX.into();
         let overflowing_gas_cap = final_chain.call(overflowing_gas_cap).unwrap();
         assert_eq!(
             overflowing_gas_cap.consensus_err,
@@ -29210,7 +29210,7 @@ mod tests {
             receiver: Some(receiver),
             nonce: max_u256_nonce.clone(),
             value: u256_to_big_endian(U256::from(1u64)),
-            gas_price: u256_to_big_endian(U256::one()),
+            gas_price: U256::one().into(),
             gas_limit: 21_000,
             data: Vec::new(),
             rlp: vec![0xc1, 0xe7],

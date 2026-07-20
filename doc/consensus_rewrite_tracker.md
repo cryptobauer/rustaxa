@@ -282,7 +282,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-06` | `complete` | Delete storage compatibility scaffolding after runtime consumers move: `BridgeStorage`, `BridgeStorageBatch`, storage query-family handles, broad storage-shim calls, and related `DbStorage` compatibility access. | Relevant consumer migrations in `CRW-02` through `CRW-05` | No production consensus route uses broad storage handles or C++/bridge batch authority. Retained admin, migration, test, network, and public-query behavior is narrow, explicitly classified, or explicitly unsupported in Rust mode. |
 | `CRW-07` | `active` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, `BridgeConsensusExecutionApi`, application/bootstrap handles, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
 | `CRW-08` | `complete` | Close remaining FinalChain/DPoS behavior parity: required contract methods outside the previously supported mutation subset and full failed-contract receipt parity for older supported paths. | Completed bounded method/receipt families and canonical legacy evidence | All 25 current-ABI DPoS methods, both slashing reads, supported slashing execution, and all 16 mutation selectors execute through Rust account/DPoS state with byte-compatible outputs, receipts, logs, blooms, persistence, restart behavior, and targeted legacy-vs-Rust parity coverage. Historical databases without complete Rust snapshots remain an explicit replay/rebuild deployment boundary rather than a current-ABI execution fallback. |
-| `CRW-09` | `active` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | Active slice: canonical fixed-width FinalChain log blooms | Consensus-internal request, recovery, publication, and audit data remains Rust-owned; C++ `StateAPI` supplies only the external execution/committed-state operations allowed by `PLAN.md`, with byte-compatible codec and transcript coverage. |
+| `CRW-09` | `active` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | Active slice: typed FinalChain gas prices and fee arithmetic | Consensus-internal request, recovery, publication, and audit data remains Rust-owned; C++ `StateAPI` supplies only the external execution/committed-state operations allowed by `PLAN.md`, with byte-compatible codec and transcript coverage. |
 | `CRW-10` | `blocked` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-09`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 
 `CRW-08` current slice closes native DPoS delegate transaction receipt/state parity. Rust now charges top-level
@@ -968,6 +968,17 @@ arbitrary `Vec<u8>` values to reach late commit/audit checks. Valid historical h
 marker and chunk bytes remain unchanged. CXX and RPC carriers remain vectors or arrays with explicit edge conversion.
 This changes no CXX carrier, handle, export, shim, module flag, compatibility-only test, or `CRW-07` inventory entry.
 `CRW-09` remains active for role-specific monetary and scalar domains plus any bounded external-executor contraction.
+
+The next bounded `CRW-09` slice introduces `FinalChainGasPrice(U256)` for finalization transactions, transient calls,
+external-EVM inputs, native affordability/charging, and external fee/reward derivation. Bridge ingress accepts the
+existing zero-to-32-byte big-endian shape, including fixed-width leading zeros, and rejects wider values with
+`FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256`. Rust-to-CXX execution requests always emit the production-compatible fixed 32-byte
+shape. Request IDs retain fixed 32-byte regular-transaction prices and the legacy minimal system-transaction price
+preimage, so no domain-version change is required; short regular Rust fixtures and equivalent fixed-width input normalize
+to one identity. Transaction value, account balance, stake, reward, supply, and
+reward-per-stake remain separate roles. This changes no CXX carrier, handle, export, shim, module flag,
+compatibility-only test, or `CRW-07` inventory entry. `CRW-09` remains active for the remaining role-specific monetary
+and scalar domains plus any bounded external-executor contraction.
 
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned

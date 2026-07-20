@@ -499,6 +499,12 @@ Current snapshot after DAG manager verify-result API cleanup:
   arrays with explicit edge conversion; valid RLP, hashes, request identities, pending markers, and storage chunks keep
   identical bytes. No carrier, handle, export, constructor, shim route, module flag, compatibility-only test, or
   `CRW-07` inventory entry changes.
+- The typed gas-price `CRW-09` slice keeps finalization, transient-call, and external-EVM CXX fields as `Vec<u8>` while
+  converting once at the bridge edge to `FinalChainGasPrice(U256)`. Oversized inputs fail with a stable error and
+  outbound execution requests retain the fixed 32-byte C++ shape. Request identity keeps fixed regular-transaction
+  prices and the prior minimal system-transaction price bytes, so identities and ABI remain compatible. No
+  carrier, handle, export, constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry
+  changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

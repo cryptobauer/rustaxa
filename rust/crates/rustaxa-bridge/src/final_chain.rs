@@ -58,10 +58,26 @@ fn finalization_transaction_from_ffi(
         },
         nonce: FinalChainNonce::from_bytes(&transaction.nonce)?,
         value: transaction.value,
-        gas_price: transaction.gas_price,
+        gas_price: rustaxa_types::FinalChainGasPrice::try_from(transaction.gas_price.as_slice())
+            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
         gas_limit: transaction.gas_limit,
         data: transaction.data,
         rlp: transaction.rlp,
+    })
+}
+
+fn final_chain_call_request_from_ffi(
+    request: rustaxa_ffi::FinalChainCall,
+) -> Result<rustaxa_consensus::FinalChainCallRequest, anyhow::Error> {
+    Ok(rustaxa_consensus::FinalChainCallRequest {
+        block_number: request.block_number,
+        sender: request.sender,
+        receiver: request.receiver_found.then_some(request.receiver),
+        value: request.value,
+        gas_price: rustaxa_types::FinalChainGasPrice::try_from(request.gas_price.as_slice())
+            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
+        gas_limit: request.gas_limit,
+        input: request.input,
     })
 }
 
@@ -130,7 +146,7 @@ fn evm_transaction_input_to_ffi(
         receiver,
         nonce: transaction.nonce.to_bytes(),
         value: transaction.value,
-        gas_price: transaction.gas_price,
+        gas_price: transaction.gas_price.to_fixed_be_bytes().to_vec(),
         gas_limit: transaction.gas_limit,
         data: transaction.data,
         rlp: transaction.rlp,
@@ -960,19 +976,7 @@ impl BridgeFinalChain {
         self: &BridgeFinalChain,
         request: rustaxa_ffi::FinalChainCall,
     ) -> Result<rustaxa_ffi::FinalChainCallOutcome, anyhow::Error> {
-        let outcome = self.0.call(rustaxa_consensus::FinalChainCallRequest {
-            block_number: request.block_number,
-            sender: request.sender,
-            receiver: if request.receiver_found {
-                Some(request.receiver)
-            } else {
-                None
-            },
-            value: request.value,
-            gas_price: request.gas_price,
-            gas_limit: request.gas_limit,
-            input: request.input,
-        })?;
+        let outcome = self.0.call(final_chain_call_request_from_ffi(request)?)?;
         Ok(rustaxa_ffi::FinalChainCallOutcome {
             code_retval: outcome.code_retval,
             logs: outcome
@@ -1308,7 +1312,7 @@ mod tests {
             receiver: Some([2; 20]),
             nonce: FinalChainNonce::from_bytes(&high_nonce).expect("nonce should be canonical"),
             value: vec![],
-            gas_price: vec![],
+            gas_price: ethereum_types::U256::zero().into(),
             gas_limit: 21_000,
             data: vec![],
             rlp: vec![],
@@ -1327,6 +1331,56 @@ mod tests {
         let error = finalization_transaction_from_ffi(noncanonical)
             .expect_err("leading-zero nonce must be rejected");
         assert!(error.to_string().contains("non-canonical"));
+    }
+
+    #[test]
+    fn bridge_rejects_oversized_finalization_and_call_gas_prices() {
+        let mut transaction = ffi_transaction(0x44, true, [2; 20], vec![]);
+        transaction.gas_price = vec![1; 33];
+        assert_eq!(
+            finalization_transaction_from_ffi(transaction)
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"
+        );
+
+        let call = rustaxa_ffi::FinalChainCall {
+            block_number: 0,
+            sender: [0; 20],
+            receiver_found: false,
+            receiver: [0; 20],
+            value: Vec::new(),
+            gas_price: vec![1; 33],
+            gas_limit: 0,
+            input: Vec::new(),
+        };
+        assert_eq!(
+            final_chain_call_request_from_ffi(call)
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"
+        );
+    }
+
+    #[test]
+    fn bridge_emits_fixed_width_evm_gas_price() {
+        let input = rustaxa_consensus::FinalChainEvmTransactionInput {
+            position: 0.into(),
+            hash: [0; 32],
+            sender: [0; 20],
+            receiver: None,
+            nonce: FinalChainNonce::zero(),
+            value: Vec::new(),
+            gas_price: ethereum_types::U256::one().into(),
+            gas_limit: 0,
+            data: Vec::new(),
+            rlp: Vec::new(),
+            kind: 0,
+            is_system: false,
+        };
+        let gas_price = evm_transaction_input_to_ffi(input).unwrap().gas_price;
+        assert_eq!(gas_price.len(), 32);
+        assert_eq!(gas_price[31], 1);
     }
 
     fn ffi_evm_log(
@@ -3632,7 +3686,7 @@ mod tests {
             receiver: None,
             nonce: FinalChainNonce::zero(),
             value: Vec::new(),
-            gas_price: Vec::new(),
+            gas_price: ethereum_types::U256::zero().into(),
             gas_limit: 0,
             data: Vec::new(),
             rlp: Vec::new(),

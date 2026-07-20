@@ -7,6 +7,96 @@ use std::cmp::Ordering;
 /// Canonical byte width of an Ethereum/FinalChain log bloom.
 pub const FINAL_CHAIN_LOG_BLOOM_BYTES: usize = 256;
 
+/// Error returned when a FinalChain gas price exceeds the EVM `u256` domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalChainGasPriceLengthError {
+    actual: usize,
+}
+
+impl FinalChainGasPriceLengthError {
+    /// Returns the rejected slice length.
+    pub const fn actual(self) -> usize {
+        self.actual
+    }
+}
+
+impl std::fmt::Display for FinalChainGasPriceLengthError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "FinalChain gas price has {} bytes, expected at most 32",
+            self.actual
+        )
+    }
+}
+
+impl std::error::Error for FinalChainGasPriceLengthError {}
+
+/// Canonical `u256` gas price used by FinalChain execution boundaries.
+///
+/// Big-endian boundary inputs may contain zero through 32 bytes, including
+/// leading zeroes. Fixed-width output is always exactly 32 bytes.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainGasPrice(U256);
+
+impl FinalChainGasPrice {
+    /// Returns a zero gas price.
+    pub fn zero() -> Self {
+        Self(U256::zero())
+    }
+    /// Wraps a gas price already represented in the EVM integer domain.
+    pub const fn from_u256(value: U256) -> Self {
+        Self(value)
+    }
+    /// Decodes an exactly 32-byte big-endian gas price.
+    pub fn from_be_bytes(bytes: [u8; 32]) -> Self {
+        Self(U256::from_big_endian(&bytes))
+    }
+    /// Decodes zero through 32 big-endian bytes, rejecting wider values.
+    pub fn try_from_be_slice(bytes: &[u8]) -> Result<Self, FinalChainGasPriceLengthError> {
+        if bytes.len() > 32 {
+            return Err(FinalChainGasPriceLengthError {
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(U256::from_big_endian(bytes)))
+    }
+    /// Returns the wrapped `u256` value.
+    pub const fn as_u256(self) -> U256 {
+        self.0
+    }
+    /// Consumes the gas price and returns its `u256` value.
+    pub const fn into_u256(self) -> U256 {
+        self.0
+    }
+    /// Encodes the gas price as exactly 32 big-endian bytes.
+    pub fn to_fixed_be_bytes(self) -> [u8; 32] {
+        self.0.to_big_endian()
+    }
+    /// Computes `gas_price * gas_used`, returning `None` on `u256` overflow.
+    pub fn checked_fee(self, gas_used: u64) -> Option<U256> {
+        self.0.checked_mul(U256::from(gas_used))
+    }
+}
+
+impl From<U256> for FinalChainGasPrice {
+    fn from(value: U256) -> Self {
+        Self::from_u256(value)
+    }
+}
+impl From<FinalChainGasPrice> for U256 {
+    fn from(value: FinalChainGasPrice) -> Self {
+        value.into_u256()
+    }
+}
+impl TryFrom<&[u8]> for FinalChainGasPrice {
+    type Error = FinalChainGasPriceLengthError;
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::try_from_be_slice(bytes)
+    }
+}
+
 /// Error returned when a byte slice cannot form a fixed-width log bloom.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FinalChainLogBloomLengthError {
@@ -565,8 +655,8 @@ pub struct FinalChainCallRequest {
     pub receiver: Option<[u8; 20]>,
     /// Transaction value as an unsigned big-endian integer byte string.
     pub value: Vec<u8>,
-    /// Gas price as an unsigned big-endian integer byte string.
-    pub gas_price: Vec<u8>,
+    /// Gas price in the EVM `u256` domain.
+    pub gas_price: FinalChainGasPrice,
     /// Gas limit supplied by the caller.
     pub gas_limit: u64,
     /// Call input data.
@@ -676,8 +766,8 @@ pub struct FinalizationTransaction {
     pub nonce: FinalChainNonce,
     /// Transaction value as unsigned big-endian integer bytes.
     pub value: Vec<u8>,
-    /// Gas price as unsigned big-endian integer bytes.
-    pub gas_price: Vec<u8>,
+    /// Gas price in the EVM `u256` domain.
+    pub gas_price: FinalChainGasPrice,
     /// Gas limit supplied by the transaction.
     pub gas_limit: u64,
     /// Transaction input data.
@@ -816,6 +906,52 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gas_price_accepts_zero_through_32_bytes_and_preserves_value() {
+        for length in [0, 1, 31, 32] {
+            let mut bytes = vec![0; length];
+            if let Some(last) = bytes.last_mut() {
+                *last = 7;
+            }
+            let price = FinalChainGasPrice::try_from(bytes.as_slice()).unwrap();
+            assert_eq!(
+                price.as_u256(),
+                if length == 0 {
+                    U256::zero()
+                } else {
+                    U256::from(7)
+                }
+            );
+            assert_eq!(price.to_fixed_be_bytes().len(), 32);
+        }
+        let leading_zero = FinalChainGasPrice::try_from(&[0, 1][..]).unwrap();
+        assert_eq!(leading_zero.as_u256(), U256::one());
+        let maximum = FinalChainGasPrice::from_u256(U256::MAX);
+        assert_eq!(
+            FinalChainGasPrice::from_be_bytes(maximum.to_fixed_be_bytes()),
+            maximum
+        );
+    }
+
+    #[test]
+    fn gas_price_rejects_33_bytes_with_actual_length() {
+        let error = FinalChainGasPrice::try_from(&[0; 33][..]).unwrap_err();
+        assert_eq!(error.actual(), 33);
+    }
+
+    #[test]
+    fn gas_price_checked_fee_handles_zero_success_and_overflow() {
+        assert_eq!(
+            FinalChainGasPrice::zero().checked_fee(u64::MAX),
+            Some(U256::zero())
+        );
+        assert_eq!(
+            FinalChainGasPrice::from(U256::from(3)).checked_fee(7),
+            Some(U256::from(21))
+        );
+        assert_eq!(FinalChainGasPrice::from(U256::MAX).checked_fee(2), None);
+    }
 
     #[test]
     fn builder_materializes_genesis_header_defaults() {
