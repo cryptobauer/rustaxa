@@ -4029,6 +4029,27 @@ masked by the earlier affordability failure, and a later successful transaction 
 no CXX carrier, bridge handle/export, shim, module flag, snapshot schema, migration, or `CRW-07` inventory delta. The
 remaining `u64` nonce ceiling belongs to the broader FinalChain domain-type work tracked by `CRW-09`.
 
+### CRW-08 Redelegation Correction EndBlock Ordering
+
+The configured redelegation correction now preserves the exact legacy activation order. A same-validator transaction at
+the fix block first reproduces the historical aggregate-stake inflation, then EndBlock subtracts the configured amount.
+Reward-graph checkpointing no longer consumes a stale validator-head reference twice when an unrelated delegation cursor
+still retains that node. Correction rebinds only the validator head; it does not move the retained cursor, synthesize a
+checkpoint, or alter stored reference counts.
+
+The activation replay can create a lower reward-per-stake checkpoint than the affected delegation's previous cursor.
+Legacy signed subtraction treats that negative delta as a zero payout and still advances the cursor. Rust applies that
+policy only to a previously corrupted same-validator replay at the configured fix block; all ordinary claims,
+undelegations, and redelegations retain strict unsigned-regression errors. Rust integration coverage uses distinct owner
+and redelegator cursors with a nonzero pool and proves payouts of `333`, `0`, and `312`, stake inflation and correction
+from `16,000` through `17,000` back to `16,000`, post-fix rejection, and restart. The existing standalone FinalChain
+fixture provides current-source Rust-enabled versus pure-C++ parity. No bridge, carrier, handle, shim, flag, schema, or
+`CRW-07` inventory changes are introduced.
+
+Validation passed all 782 `rustaxa-consensus` tests, all 24 reward-graph tests, the focused Rust activation/restart
+integration, the standalone fixture in Rust-enabled and pure-C++ modes, `rewrite-validate-fast`, the Tier 3
+`rewrite-validate-final-chain-parity` gate, the repository pre-commit hook, and independent configured review.
+
 Foundation validation passed all 20 focused reward-graph tests and all 738 then-current `rustaxa-consensus` tests.
 Integration validation passed 23 focused graph tests and all 746 `rustaxa-consensus` tests, including schema/restart,
 corruption, checkpoint, reward-delta, terminal-deletion, same-block re-registration, and same-validator transcript

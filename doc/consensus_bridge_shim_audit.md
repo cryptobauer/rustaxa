@@ -477,6 +477,9 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The `CRW-08` Cornus underfunded-gas nonce correction is private to Rust FinalChain transaction execution and reuses
   the existing finalization request/result carriers. It changes no CXX handle, export, shim, module flag, or inventory
   deletion condition; the standalone C++ fixture is behavior-parity coverage rather than compatibility scaffolding.
+- The `CRW-08` redelegation-correction ordering repair is private to Rust FinalChain and its persisted reward-reference
+  graph. It reuses the existing hardfork configuration and finalization carriers, adding no bridge handle, CXX export,
+  shim route, module flag, compatibility test surface, or inventory deletion condition.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

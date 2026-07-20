@@ -909,6 +909,21 @@ malformed-slashing precedence, and same-block continuation. No bridge, carrier, 
 snapshot schema, migration, or `CRW-07` inventory changes. `CRW-08` remains active for the next demonstrated parity
 family; arbitrary-width account/transaction nonce domain types remain `CRW-09` debt.
 
+The next bounded `CRW-08` slice closes the configured redelegation correction at its exact EndBlock activation order.
+The activation-block same-validator transaction now executes against the still-corrupt legacy state before the
+configured correction subtracts the historical inflation. Rust reward-graph checkpointing retains a stale-head node
+when another delegation cursor still references it, then rebinds the validator head without moving that unrelated
+cursor or changing stored reward counts. The one canonical activation replay may observe a regressed reward-per-stake
+delta; matching legacy signed arithmetic, that transaction pays zero reward and still advances its affected cursor,
+while every normal reward path continues to reject unsigned reward regression.
+
+The existing standalone dual-mode fixture proves the pre-fix success, activation-block transaction-before-correction,
+post-fix typed failure, corrected stake/votes, and restart persistence. Rust integration coverage adds a nonzero reward
+pool plus distinct owner and redelegator cursors, proving the exact `333`, `0`, and `312` reward sequence and durable
+reward-graph topology. This slice changes no CXX carrier, bridge handle/export, shim, module flag, snapshot schema,
+migration, or `CRW-07` inventory. `CRW-08` remains active pending the broader failed-contract receipt and historical
+snapshot/replay completion audit.
+
 `CRW-04` completion record: the transaction/gas composition slice embedded the native gas-price
 oracle and proposal gas limit in private transaction state. Production pool bids now inspect the Rust-owned
 queue directly, storage-backed construction restores transaction count and gas history before publishing the service,

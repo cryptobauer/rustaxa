@@ -258,8 +258,10 @@ impl DposRewardGraph {
     /// Atomically inserts a checkpoint node and assigns the requested references.
     ///
     /// Existing requested references are moved from their prior nodes, whose
-    /// counts are decremented first. `node.count` must already include every
-    /// requested reference at the new checkpoint; it is not incremented here.
+    /// counts are decremented first. A stale validator head is retained when
+    /// another cursor still references its node. `node.count` must already
+    /// include every requested reference at the new checkpoint; it is not
+    /// incremented here.
     /// Extra positive count is preserved as legacy orphan bookkeeping, while
     /// duplicate nodes and undercounted references fail
     /// without changing the graph.
@@ -289,6 +291,7 @@ impl DposRewardGraph {
 
             if validator_head
                 && let Some(previous_block) = graph.validator_heads.get(&key.validator).copied()
+                && !graph.stale_validator_heads.contains(&key.validator)
             {
                 graph.decrement_count(&NodeKey {
                     validator: key.validator,
@@ -392,8 +395,9 @@ impl DposRewardGraph {
     }
 
     /// Corrects a stale validator head without changing stored counts.
-    /// The old head must name a deleted node and the affected delegation cursor
-    /// must identify `head_block`, preventing rebinding to an arbitrary orphan.
+    /// The stale head may remain live when another delegation cursor retains
+    /// it; the affected delegation cursor must identify `head_block`, and the
+    /// target node must exist, preventing rebinding to an arbitrary orphan.
     pub fn rebind_stale_validator_head(
         &mut self,
         validator: Validator,
@@ -412,8 +416,17 @@ impl DposRewardGraph {
             if graph.nodes.contains_key(&NodeKey {
                 validator,
                 block: stale_block,
-            }) {
+            }) && !graph
+                .delegation_cursors
+                .iter()
+                .any(|((cursor_validator, _), block)| {
+                    *cursor_validator == validator && *block == stale_block
+                })
+            {
                 return Err(DposRewardGraphError::StaleHeadConflict { validator });
+            }
+            if stale_block == head_block {
+                return Err(DposRewardGraphError::MissingStaleHead { validator });
             }
             if !graph.nodes.contains_key(&NodeKey {
                 validator,
@@ -423,9 +436,6 @@ impl DposRewardGraph {
                     validator,
                     block: head_block,
                 });
-            }
-            if stale_block == head_block {
-                return Err(DposRewardGraphError::MissingStaleHead { validator });
             }
             if graph
                 .delegation_cursors
@@ -1599,6 +1609,11 @@ mod tests {
             conflict.rebind_stale_validator_head(addr(21), addr(22), 2),
             Err(DposRewardGraphError::StaleHeadConflict { .. })
         ));
+        conflict.delegation_cursors.insert((addr(21), addr(22)), 2);
+        assert!(matches!(
+            conflict.rebind_stale_validator_head(addr(21), addr(22), 2),
+            Err(DposRewardGraphError::MissingStaleHead { .. })
+        ));
         assert!(conflict.validator_heads.remove(&addr(21)).is_some());
         assert!(matches!(
             encode_dpos_reward_graph(&conflict),
@@ -1702,6 +1717,112 @@ mod tests {
 
         assert_eq!(graph.load_node(&key).unwrap().count, 3);
         assert_eq!(graph.read_cursor(&validator, &delegator).unwrap(), 7);
+    }
+
+    #[test]
+    fn bootstrap_live_head_keeps_stale_node_for_other_cursor() {
+        let validator = addr(45);
+        let owner = addr(46);
+        let redelegator = addr(47);
+        let mut graph = DposRewardGraph::new();
+        graph
+            .bootstrap_node(
+                NodeKey {
+                    validator,
+                    block: 0,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(1_u8),
+                    count: 3,
+                },
+                true,
+                &[owner, redelegator],
+            )
+            .unwrap();
+        graph
+            .bootstrap_node(
+                NodeKey {
+                    validator,
+                    block: 1,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(2_u8),
+                    count: 2,
+                },
+                true,
+                &[redelegator],
+            )
+            .unwrap();
+        graph.stale_validator_heads.insert(validator);
+        graph.validator_heads.insert(validator, 0);
+        graph
+            .nodes
+            .get_mut(&NodeKey {
+                validator,
+                block: 0,
+            })
+            .unwrap()
+            .count = 1;
+        graph
+            .nodes
+            .get_mut(&NodeKey {
+                validator,
+                block: 1,
+            })
+            .unwrap()
+            .count = 1;
+        graph.delegation_cursors.insert((validator, owner), 0);
+        graph.delegation_cursors.insert((validator, redelegator), 1);
+
+        graph
+            .bootstrap_node(
+                NodeKey {
+                    validator,
+                    block: 2,
+                },
+                Node {
+                    reward_per_stake: BigUint::from(3_u8),
+                    count: 2,
+                },
+                true,
+                &[redelegator],
+            )
+            .unwrap();
+
+        assert!(graph.nodes.contains_key(&NodeKey {
+            validator,
+            block: 0
+        }));
+        assert_eq!(
+            graph
+                .nodes
+                .get(&NodeKey {
+                    validator,
+                    block: 0,
+                })
+                .unwrap()
+                .count,
+            1
+        );
+        assert!(!graph.nodes.contains_key(&NodeKey {
+            validator,
+            block: 1,
+        }));
+        assert_eq!(
+            graph
+                .nodes
+                .get(&NodeKey {
+                    validator,
+                    block: 2,
+                })
+                .unwrap()
+                .count,
+            2
+        );
+        assert_eq!(graph.read_cursor(&validator, &owner).unwrap(), 0);
+        assert_eq!(graph.read_cursor(&validator, &redelegator).unwrap(), 2);
+        assert_eq!(graph.read_validator_head(&validator).unwrap(), 2);
+        assert!(!graph.is_stale_head(&validator).unwrap());
     }
 
     #[test]
