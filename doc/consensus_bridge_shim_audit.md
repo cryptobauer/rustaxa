@@ -516,6 +516,9 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The typed gas-lifecycle `CRW-09` slice keeps all FinalChain CXX gas fields and public query DTOs as `u64`, converting
   infallibly at bridge ingress and explicitly unwrapping at egress. It adds no carrier, handle, export, constructor, shim
   route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
+- The typed DPoS-policy `CRW-09` slice keeps the four genesis/config CXX amount fields as `Vec<u8>`, validates their U256
+  width at bridge ingress, and passes `DposTokenAmount` through Rust policy arithmetic. It adds no carrier, handle,
+  export, constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

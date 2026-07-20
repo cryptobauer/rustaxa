@@ -739,14 +739,13 @@ impl From<&GenesisValidator> for DposValidatorMetadata {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GenesisDposConfig {
     /// Minimum stake required for a validator to be eligible.
-    pub eligibility_balance_threshold: Vec<u8>,
+    pub eligibility_balance_threshold: DposTokenAmount,
     /// Stake amount represented by one vote.
-    pub vote_eligibility_balance_step: Vec<u8>,
+    pub vote_eligibility_balance_step: DposTokenAmount,
     /// Maximum allowed effective stake for a genesis validator.
-    pub validator_maximum_stake: Vec<u8>,
-    /// Minimum delegation amount accepted by the DPoS contract, encoded as an
-    /// unsigned big-endian integer byte string.
-    pub minimum_deposit: Vec<u8>,
+    pub validator_maximum_stake: DposTokenAmount,
+    /// Minimum delegation amount accepted by the DPoS contract.
+    pub minimum_deposit: DposTokenAmount,
     /// Maximum absolute commission change accepted by `setCommission`.
     pub commission_change_delta: u16,
     /// Minimum block distance between accepted commission changes.
@@ -757,6 +756,103 @@ pub struct GenesisDposConfig {
     /// Exclusive period boundary below which legacy DAG VDF sortition uses the
     /// total eligible vote count as denominator.
     pub dag_vdf_sortition_total_vote_count_until_period: u64,
+}
+
+/// A fungible DPoS token quantity represented within the `U256` domain.
+///
+/// Ingress accepts unsigned big-endian byte strings no wider than 32 bytes. The
+/// type deliberately exposes only checked arithmetic used by DPoS operations. Persisted
+/// stake, delegation, reward, and supply values remain byte-backed until their complete
+/// state-machine and encoding-provenance migrations land.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct DposTokenAmount(U256);
+
+/// Reports an oversized unsigned big-endian DPoS configuration amount.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DposTokenAmountLengthError {
+    actual: usize,
+}
+
+impl std::fmt::Display for DposTokenAmountLengthError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "DPoS token amount has {} bytes; maximum is 32",
+            self.actual
+        )
+    }
+}
+
+impl std::error::Error for DposTokenAmountLengthError {}
+
+impl DposTokenAmount {
+    /// Returns the additive identity.
+    pub const fn zero() -> Self {
+        Self(U256::zero())
+    }
+
+    /// Decodes an unsigned big-endian amount, rejecting values wider than `U256`.
+    pub fn try_from_be_slice(bytes: &[u8]) -> Result<Self, DposTokenAmountLengthError> {
+        if bytes.len() > 32 {
+            return Err(DposTokenAmountLengthError {
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(U256::from_big_endian(bytes)))
+    }
+
+    /// Returns whether this amount is zero.
+    pub fn is_zero(self) -> bool {
+        self.0.is_zero()
+    }
+
+    /// Returns the underlying integer explicitly.
+    pub const fn as_u256(self) -> U256 {
+        self.0
+    }
+
+    /// Consumes this amount and returns the underlying integer.
+    pub const fn into_u256(self) -> U256 {
+        self.0
+    }
+
+    /// Encodes this amount as a fixed-width ABI-compatible big-endian value.
+    pub fn to_fixed_be_bytes(self) -> [u8; 32] {
+        self.0.to_big_endian()
+    }
+
+    /// Adds two amounts, returning `None` on `U256` overflow.
+    pub fn checked_add(self, rhs: Self) -> Option<Self> {
+        self.0.checked_add(rhs.0).map(Self)
+    }
+
+    /// Subtracts two amounts, returning `None` on underflow.
+    pub fn checked_sub(self, rhs: Self) -> Option<Self> {
+        self.0.checked_sub(rhs.0).map(Self)
+    }
+
+    /// Multiplies an amount by a count, returning `None` on overflow.
+    pub fn checked_mul_u64(self, rhs: u64) -> Option<Self> {
+        self.0.checked_mul(U256::from(rhs)).map(Self)
+    }
+
+    /// Divides by another amount, returning `None` for a zero divisor.
+    pub fn checked_div(self, rhs: Self) -> Option<U256> {
+        (!rhs.is_zero()).then(|| self.0 / rhs.0)
+    }
+}
+
+impl From<U256> for DposTokenAmount {
+    fn from(value: U256) -> Self {
+        Self(value)
+    }
+}
+
+impl From<DposTokenAmount> for U256 {
+    fn from(value: DposTokenAmount) -> Self {
+        value.into_u256()
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1144,6 +1240,39 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dpos_token_amount_checks_ingress_and_arithmetic_boundaries() {
+        assert_eq!(
+            DposTokenAmount::try_from_be_slice(&[]).unwrap(),
+            DposTokenAmount::zero()
+        );
+        assert_eq!(
+            DposTokenAmount::try_from_be_slice(&[0, 1])
+                .unwrap()
+                .as_u256(),
+            U256::one()
+        );
+        assert_eq!(
+            DposTokenAmount::try_from_be_slice(&[0xff; 32])
+                .unwrap()
+                .into_u256(),
+            U256::MAX
+        );
+        assert!(DposTokenAmount::try_from_be_slice(&[0; 33]).is_err());
+
+        let one = DposTokenAmount::from(U256::one());
+        let two = DposTokenAmount::from(U256::from(2));
+        assert_eq!(one.checked_add(one), Some(two));
+        assert_eq!(two.checked_sub(one), Some(one));
+        assert_eq!(one.checked_mul_u64(2), Some(two));
+        assert_eq!(two.checked_div(one), Some(U256::from(2)));
+        assert_eq!(two.checked_div(DposTokenAmount::zero()), None);
+        assert_eq!(DposTokenAmount::from(U256::MAX).checked_add(one), None);
+        assert_eq!(DposTokenAmount::zero().checked_sub(one), None);
+        assert_eq!(DposTokenAmount::from(U256::MAX).checked_mul_u64(2), None);
+        assert_eq!(one.to_fixed_be_bytes()[31], 1);
+    }
 
     #[test]
     fn gas_price_accepts_zero_through_32_bytes_and_preserves_value() {

@@ -1385,5 +1385,7 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    account balances now use a distinct `U256` domain with fixed/minimal encoding provenance so untouched genesis and
    mutated/new account snapshots remain byte-compatible across lookup, persistence, and restart. FinalChain gas limits,
    usage, cumulative validation, rewards inputs, receipts, headers, and publication now share a checked `u64` domain
-   while preserving CXX carriers, RLP, hashes, request identities, and error ordering.
+   while preserving CXX carriers, RLP, hashes, request identities, and error ordering. DPoS eligibility threshold, vote
+   step, maximum stake, and minimum deposit now use the shared `DposTokenAmount(U256)` semantic domain; persisted
+   principal/custody, reward pools, supply, and arbitrary-width reward-per-stake remain dependency-ordered follow-ups.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

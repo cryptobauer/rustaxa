@@ -4199,6 +4199,25 @@ Validation passed all 1,192 tests across `rustaxa-types`, `rustaxa-consensus`, a
 check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, and the FinalChain Tier 3 Rust-enabled/pure-C++ parity gate.
 Rust formatting and whitespace validation also passed; existing normal-policy clippy warnings remain outside this slice.
 
+### CRW-09 Typed DPoS Policy Amounts
+
+This prerequisite domain slice introduces `DposTokenAmount(U256)` and applies it to the four non-persisted DPoS policy
+amounts: eligibility threshold, vote-eligibility step, validator maximum stake, and minimum deposit. Bridge ingress
+accepts zero through 32 big-endian bytes and rejects wider values with a stable error. Eligibility division, maximum-
+stake checks, and minimum-deposit comparisons now consume the semantic amount type rather than reparsing byte vectors.
+Checked arithmetic and fixed-width output helpers establish the shared token-unit API for later vertical migrations.
+
+CXX configuration carriers remain `Vec<u8>`. Persisted validator/delegator principal, V1/V2 custody, corrections,
+reward pools, minted/supply state, and arbitrary-width reward-per-stake graph values deliberately remain outside this
+slice. Their future migration must preserve mixed fixed/minimal snapshot provenance privately and keep reward-per-stake
+unbounded. No snapshot/RLP/schema, carrier, handle, export, shim, module flag, compatibility-only test, or `CRW-07`
+inventory delta is introduced. Focused coverage exercises 0/32/33-byte ingress, U256 arithmetic boundaries, fixed-width
+output, all four bridge conversions, and existing eligibility/max/minimum behavior.
+
+Validation passed all 1,196 tests across `rustaxa-types`, `rustaxa-consensus`, and `rustaxa-bridge`, the workspace compile
+check, `rewrite-validate-fast`, and the FinalChain Tier 2 gate. Rust formatting and whitespace validation also passed;
+existing normal-policy clippy warnings remain outside this slice.
+
 ### CRW-09 Typed FinalChain Gas Lifecycle
 
 This domain slice introduces `FinalChainGas(u64)` across the complete Rust FinalChain gas lifecycle: transaction and call

@@ -7,10 +7,11 @@ pub mod transaction;
 
 pub use dag::DagBlock;
 pub use final_chain::{
-    Account, BlockHeaderContext, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
-    FINAL_CHAIN_LOG_BLOOM_BYTES, FinalChainAccountBalance, FinalChainBlockHeader,
-    FinalChainBlockHeaderBuilder, FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest,
-    FinalChainGas, FinalChainGasPrice, FinalChainGasPriceLengthError, FinalChainLogBloom,
+    Account, BlockHeaderContext, DposTokenAmount, DposTokenAmountLengthError,
+    DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount, FINAL_CHAIN_LOG_BLOOM_BYTES,
+    FinalChainAccountBalance, FinalChainBlockHeader, FinalChainBlockHeaderBuilder,
+    FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest, FinalChainGas,
+    FinalChainGasPrice, FinalChainGasPriceLengthError, FinalChainLogBloom,
     FinalChainLogBloomLengthError, FinalChainNonce, FinalChainRewardsConfig,
     FinalChainTransactionPosition, FinalChainTransactionValue,
     FinalChainTransactionValueLengthError, FinalizationDagBlock, FinalizationTransaction,

@@ -53,9 +53,9 @@ use rustaxa_types::codec::rlp::final_chain::{
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::transaction::intrinsic_gas;
 use rustaxa_types::{
-    Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount, FinalChainCallLog,
-    FinalChainCallOutcome, FinalChainCallRequest, FinalChainGas, FinalChainNonce,
-    FinalChainRewardsConfig, FinalChainTransactionPosition, FinalizationDagBlock,
+    Account, DposTokenAmount, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
+    FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest, FinalChainGas,
+    FinalChainNonce, FinalChainRewardsConfig, FinalChainTransactionPosition, FinalizationDagBlock,
     FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
     RedelegationCorrection, StoredFinalChainBlockHeader,
 };
@@ -228,10 +228,10 @@ pub struct FinalChain {
     genesis_timestamp: u64,
     accounts: Mutex<HashMap<[u8; 20], Account>>,
     genesis_vrf_keys: HashMap<[u8; 20], [u8; 32]>,
-    dpos_eligibility_balance_threshold: Vec<u8>,
-    dpos_vote_eligibility_balance_step: Vec<u8>,
-    dpos_validator_maximum_stake: Vec<u8>,
-    dpos_minimum_deposit: Vec<u8>,
+    dpos_eligibility_balance_threshold: DposTokenAmount,
+    dpos_vote_eligibility_balance_step: DposTokenAmount,
+    dpos_validator_maximum_stake: DposTokenAmount,
+    dpos_minimum_deposit: DposTokenAmount,
     dpos_commission_change_delta: u16,
     dpos_commission_change_frequency: u32,
     dpos_delegation_delay: u64,
@@ -508,9 +508,9 @@ impl FinalChain {
                 let metadata = DposValidatorMetadata::from(&validator);
                 let vote_count = dpos_vote_count(
                     &validator.total_stake,
-                    &genesis_dpos_config.eligibility_balance_threshold,
-                    &genesis_dpos_config.vote_eligibility_balance_step,
-                    &genesis_dpos_config.validator_maximum_stake,
+                    genesis_dpos_config.eligibility_balance_threshold,
+                    genesis_dpos_config.vote_eligibility_balance_step,
+                    genesis_dpos_config.validator_maximum_stake,
                 )?;
                 Ok((
                     validator.address,
@@ -658,14 +658,10 @@ impl FinalChain {
             genesis_timestamp,
             accounts: Mutex::new(genesis_accounts.clone()),
             genesis_vrf_keys: genesis_vrf_keys.clone(),
-            dpos_eligibility_balance_threshold: genesis_dpos_config
-                .eligibility_balance_threshold
-                .clone(),
-            dpos_vote_eligibility_balance_step: genesis_dpos_config
-                .vote_eligibility_balance_step
-                .clone(),
-            dpos_validator_maximum_stake: genesis_dpos_config.validator_maximum_stake.clone(),
-            dpos_minimum_deposit: genesis_dpos_config.minimum_deposit.clone(),
+            dpos_eligibility_balance_threshold: genesis_dpos_config.eligibility_balance_threshold,
+            dpos_vote_eligibility_balance_step: genesis_dpos_config.vote_eligibility_balance_step,
+            dpos_validator_maximum_stake: genesis_dpos_config.validator_maximum_stake,
+            dpos_minimum_deposit: genesis_dpos_config.minimum_deposit,
             dpos_commission_change_delta: genesis_dpos_config.commission_change_delta,
             dpos_commission_change_frequency: genesis_dpos_config.commission_change_frequency,
             dpos_delegation_delay: genesis_dpos_config.delegation_delay,
@@ -2993,8 +2989,9 @@ impl FinalChain {
         if pool.iter().all(|byte| *byte == 0) || total_stake.iter().all(|byte| *byte == 0) {
             return Ok(head);
         }
+        let maximum_stake = self.dpos_validator_maximum_stake.to_fixed_be_bytes();
         graph
-            .reward_per_stake(&head, pool, &self.dpos_validator_maximum_stake, total_stake)
+            .reward_per_stake(&head, pool, &maximum_stake, total_stake)
             .map_err(Into::into)
     }
 
@@ -3063,7 +3060,7 @@ impl FinalChain {
             .get(&validator)
             .cloned()
             .unwrap_or_default();
-        let maximum_stake = self.dpos_validator_maximum_stake.clone();
+        let maximum_stake = self.dpos_validator_maximum_stake.to_fixed_be_bytes();
         let reward_per_stake = self.apply_reward_reference_graph(snapshot, |graph| {
             let current_block = graph.current_block()?;
             match graph.load_node(&NodeKey {
@@ -4310,7 +4307,7 @@ impl FinalChain {
             .get(&validator)
             .map(|stake| u256_from_big_endian(stake))
             .unwrap_or_default();
-        stake >= u256_from_big_endian(&self.dpos_eligibility_balance_threshold)
+        stake >= self.dpos_eligibility_balance_threshold.as_u256()
     }
 
     /// Executes one decoded fixed-gas DPoS eligibility read against a frozen snapshot.
@@ -5024,7 +5021,7 @@ impl FinalChain {
             &cursor,
             current_reward_per_stake,
             stake,
-            &self.dpos_validator_maximum_stake,
+            &self.dpos_validator_maximum_stake.to_fixed_be_bytes(),
         )?;
         Ok(u256_from_big_endian(&DposRewardGraph::reward_to_u256_abi(
             &reward,
@@ -5080,7 +5077,7 @@ impl FinalChain {
             &previous_cursor,
             reward_cursor.clone(),
             &delegator_stake,
-            &self.dpos_validator_maximum_stake,
+            &self.dpos_validator_maximum_stake.to_fixed_be_bytes(),
         ) {
             Ok(reward) => reward,
             Err(DposRewardGraphError::ArithmeticUnderflow {
@@ -5573,7 +5570,7 @@ impl FinalChain {
         let owner = registration.metadata.owner;
         let stake = u256_from_big_endian(&registration.stake);
 
-        let minimum_stake = u256_from_big_endian(&self.dpos_minimum_deposit);
+        let minimum_stake = self.dpos_minimum_deposit.as_u256();
         if stake < minimum_stake {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::InsufficientDelegation,
@@ -5610,7 +5607,7 @@ impl FinalChain {
             ));
         }
 
-        let maximum_stake = u256_from_big_endian(&self.dpos_validator_maximum_stake);
+        let maximum_stake = self.dpos_validator_maximum_stake.as_u256();
         if stake > maximum_stake {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::ValidatorsMaxStakeExceeded,
@@ -5619,9 +5616,9 @@ impl FinalChain {
 
         let vote_count = dpos_vote_count(
             &registration.stake,
-            &self.dpos_eligibility_balance_threshold,
-            &self.dpos_vote_eligibility_balance_step,
-            &self.dpos_validator_maximum_stake,
+            self.dpos_eligibility_balance_threshold,
+            self.dpos_vote_eligibility_balance_step,
+            self.dpos_validator_maximum_stake,
         )?;
         let total_vote_count = snapshot
             .total_vote_count
@@ -5720,7 +5717,7 @@ impl FinalChain {
         };
         let current_stake = u256_from_big_endian(stake);
         let add_amount = u256_from_big_endian(&amount);
-        let maximum_stake = u256_from_big_endian(&self.dpos_validator_maximum_stake);
+        let maximum_stake = self.dpos_validator_maximum_stake.as_u256();
         let Some(new_stake) = current_stake.checked_add(add_amount) else {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::ValidatorsMaxStakeExceeded,
@@ -5737,9 +5734,7 @@ impl FinalChain {
             .and_then(|delegations| delegations.get(&delegator))
             .map(|bytes| u256_from_big_endian(bytes))
             .unwrap_or_default();
-        if current_delegation.is_zero()
-            && add_amount < u256_from_big_endian(&self.dpos_minimum_deposit)
-        {
+        if current_delegation.is_zero() && add_amount < self.dpos_minimum_deposit.as_u256() {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::InsufficientDelegation,
             ));
@@ -5786,9 +5781,9 @@ impl FinalChain {
         let previous_vote_count = *snapshot.vote_counts.get(&validator).unwrap_or(&0);
         let new_vote_count = dpos_vote_count(
             &new_stake_bytes,
-            &self.dpos_eligibility_balance_threshold,
-            &self.dpos_vote_eligibility_balance_step,
-            &self.dpos_validator_maximum_stake,
+            self.dpos_eligibility_balance_threshold,
+            self.dpos_vote_eligibility_balance_step,
+            self.dpos_validator_maximum_stake,
         )?;
         snapshot.total_vote_count = if previous_vote_count > new_vote_count {
             snapshot
@@ -6221,7 +6216,7 @@ impl FinalChain {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on undelegate");
         }
         let remaining = current_delegation - amount;
-        if !remaining.is_zero() && remaining < u256_from_big_endian(&self.dpos_minimum_deposit) {
+        if !remaining.is_zero() && remaining < self.dpos_minimum_deposit.as_u256() {
             return Ok(Some(DposContractError::InsufficientDelegation));
         }
         Ok(None)
@@ -6260,7 +6255,7 @@ impl FinalChain {
             "Rust FinalChain::finalize DPoS stake underflows on undelegate V2"
         );
         let remaining = current_delegation - amount;
-        if !remaining.is_zero() && remaining < u256_from_big_endian(&self.dpos_minimum_deposit) {
+        if !remaining.is_zero() && remaining < self.dpos_minimum_deposit.as_u256() {
             return Ok(Some(DposContractError::InsufficientDelegation));
         }
         Ok(None)
@@ -6301,7 +6296,7 @@ impl FinalChain {
         else {
             return Ok(Some(DposContractError::NonExistentValidator));
         };
-        let maximum_stake = u256_from_big_endian(&self.dpos_validator_maximum_stake);
+        let maximum_stake = self.dpos_validator_maximum_stake.as_u256();
         if !maximum_stake.is_zero() {
             let Some(destination_stake) = to_stake.checked_add(amount) else {
                 return Ok(Some(DposContractError::ValidatorsMaxStakeExceeded));
@@ -6328,7 +6323,7 @@ impl FinalChain {
             "DPoS redelegation source aggregate stake underflow"
         );
         let remainder = from_delegation - amount;
-        if !remainder.is_zero() && remainder < u256_from_big_endian(&self.dpos_minimum_deposit) {
+        if !remainder.is_zero() && remainder < self.dpos_minimum_deposit.as_u256() {
             return Ok(Some(DposContractError::InsufficientDelegation));
         }
         Ok(None)
@@ -6403,9 +6398,7 @@ impl FinalChain {
             anyhow::bail!("Rust FinalChain::finalize DPoS stake underflows on undelegate");
         }
         let new_delegation = current_delegation - remove_amount;
-        if !new_delegation.is_zero()
-            && new_delegation < u256_from_big_endian(&self.dpos_minimum_deposit)
-        {
+        if !new_delegation.is_zero() && new_delegation < self.dpos_minimum_deposit.as_u256() {
             anyhow::bail!("Rust FinalChain::finalize DPoS remaining delegation is below minimum");
         }
         let logs = self.apply_dpos_delegator_reward_claim_with_cursor(
@@ -6652,9 +6645,9 @@ impl FinalChain {
             })?;
             let inflated_vote = dpos_vote_count(
                 &u256_to_big_endian(inflated_stake),
-                &self.dpos_eligibility_balance_threshold,
-                &self.dpos_vote_eligibility_balance_step,
-                &self.dpos_validator_maximum_stake,
+                self.dpos_eligibility_balance_threshold,
+                self.dpos_vote_eligibility_balance_step,
+                self.dpos_validator_maximum_stake,
             )?;
             snapshot.total_vote_count = if initial_vote == inflated_vote {
                 total_vote_count_after_source
@@ -6746,9 +6739,9 @@ impl FinalChain {
                 .insert(correction.validator, u256_to_big_endian(new_stake));
             let corrected_vote_count = dpos_vote_count(
                 &u256_to_big_endian(new_stake),
-                &self.dpos_eligibility_balance_threshold,
-                &self.dpos_vote_eligibility_balance_step,
-                &self.dpos_validator_maximum_stake,
+                self.dpos_eligibility_balance_threshold,
+                self.dpos_vote_eligibility_balance_step,
+                self.dpos_validator_maximum_stake,
             )?;
             snapshot
                 .vote_counts
@@ -10223,14 +10216,14 @@ fn decode_abi_dynamic_bytes(
 
 fn dpos_vote_count(
     stake: &[u8],
-    eligibility_balance_threshold: &[u8],
-    vote_eligibility_balance_step: &[u8],
-    validator_maximum_stake: &[u8],
+    eligibility_balance_threshold: DposTokenAmount,
+    vote_eligibility_balance_step: DposTokenAmount,
+    validator_maximum_stake: DposTokenAmount,
 ) -> Result<u64, anyhow::Error> {
     let stake = u256_from_big_endian(stake);
-    let eligibility_balance_threshold = u256_from_big_endian(eligibility_balance_threshold);
-    let vote_eligibility_balance_step = u256_from_big_endian(vote_eligibility_balance_step);
-    let validator_maximum_stake = u256_from_big_endian(validator_maximum_stake);
+    let eligibility_balance_threshold = eligibility_balance_threshold.as_u256();
+    let vote_eligibility_balance_step = vote_eligibility_balance_step.as_u256();
+    let validator_maximum_stake = validator_maximum_stake.as_u256();
     if !validator_maximum_stake.is_zero() && stake > validator_maximum_stake {
         anyhow::bail!("genesis DPoS validator stake exceeds maximum stake");
     }
@@ -10593,10 +10586,8 @@ fn dpos_claim_all_rewards_batch_is_end(
 fn dpos_vdf_sortition_max_vote_count(
     genesis_dpos_config: &GenesisDposConfig,
 ) -> Result<u64, anyhow::Error> {
-    let vote_eligibility_balance_step =
-        u256_from_big_endian(&genesis_dpos_config.vote_eligibility_balance_step);
-    let validator_maximum_stake =
-        u256_from_big_endian(&genesis_dpos_config.validator_maximum_stake);
+    let vote_eligibility_balance_step = genesis_dpos_config.vote_eligibility_balance_step.as_u256();
+    let validator_maximum_stake = genesis_dpos_config.validator_maximum_stake.as_u256();
     if vote_eligibility_balance_step.is_zero() {
         anyhow::ensure!(
             validator_maximum_stake.is_zero(),
@@ -11092,7 +11083,7 @@ mod tests {
             U256::one(),
             U256::from(10u64),
         );
-        final_chain.dpos_minimum_deposit = u256_to_big_endian(U256::from(5u64));
+        final_chain.dpos_minimum_deposit = DposTokenAmount::from(U256::from(5u64));
         let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
         let snapshot_before = snapshot.clone();
         let mut accounts = HashMap::new();
@@ -11237,7 +11228,7 @@ mod tests {
                 U256::from(100_000u64),
             );
             if let Some(deposit) = case.minimum_deposit {
-                final_chain.dpos_minimum_deposit = u256_to_big_endian(U256::from(deposit));
+                final_chain.dpos_minimum_deposit = DposTokenAmount::from(U256::from(deposit));
             }
 
             let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
@@ -11501,10 +11492,10 @@ mod tests {
             );
 
             let config = GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(100_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(100_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -11529,7 +11520,7 @@ mod tests {
             )
             .unwrap();
             if let Some(deposit) = case.minimum_deposit {
-                final_chain.dpos_minimum_deposit = u256_to_big_endian(U256::from(deposit));
+                final_chain.dpos_minimum_deposit = DposTokenAmount::from(U256::from(deposit));
             }
 
             let failed_gas =
@@ -13216,9 +13207,9 @@ mod tests {
             vec![genesis_account(delegator, U256::from(1_000_000u64))],
             validators,
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
                 ..Default::default()
             },
             FinalChainRewardsConfig {
@@ -13584,9 +13575,9 @@ mod tests {
             vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(1_000u64))],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::zero()),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(10_000u64)),
-                validator_maximum_stake: Vec::new(),
+                eligibility_balance_threshold: DposTokenAmount::from(U256::zero()),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(10_000u64)),
+                validator_maximum_stake: DposTokenAmount::zero(),
                 ..Default::default()
             },
             rewards_config,
@@ -13676,9 +13667,9 @@ mod tests {
             vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::from(1_000u64))],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::zero()),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(10_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+                eligibility_balance_threshold: DposTokenAmount::from(U256::zero()),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(10_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(10_000u64)),
                 ..Default::default()
             },
             FinalChainRewardsConfig {
@@ -13758,9 +13749,9 @@ mod tests {
             vec![],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::zero()),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(10_000u64)),
-                validator_maximum_stake: Vec::new(),
+                eligibility_balance_threshold: DposTokenAmount::from(U256::zero()),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(10_000u64)),
+                validator_maximum_stake: DposTokenAmount::zero(),
                 ..Default::default()
             },
             FinalChainRewardsConfig {
@@ -13855,9 +13846,9 @@ mod tests {
             vec![],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: Vec::new(),
-                vote_eligibility_balance_step: Vec::new(),
-                validator_maximum_stake: Vec::new(),
+                eligibility_balance_threshold: DposTokenAmount::zero(),
+                vote_eligibility_balance_step: DposTokenAmount::zero(),
+                validator_maximum_stake: DposTokenAmount::zero(),
                 ..Default::default()
             },
             FinalChainRewardsConfig {
@@ -13872,9 +13863,9 @@ mod tests {
         snapshot.delegator_rewards.remove(&validator);
         let initial_vote = dpos_vote_count(
             snapshot.total_stakes.get(&validator).unwrap(),
-            &final_chain.dpos_eligibility_balance_threshold,
-            &final_chain.dpos_vote_eligibility_balance_step,
-            &final_chain.dpos_validator_maximum_stake,
+            final_chain.dpos_eligibility_balance_threshold,
+            final_chain.dpos_vote_eligibility_balance_step,
+            final_chain.dpos_validator_maximum_stake,
         )
         .unwrap();
         snapshot.vote_counts.insert(validator, initial_vote);
@@ -14611,10 +14602,10 @@ mod tests {
         dag_vdf_sortition_total_vote_count_until_period: u64,
     ) -> FinalChain {
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(threshold),
-            vote_eligibility_balance_step: u256_to_big_endian(vote_step),
-            validator_maximum_stake: u256_to_big_endian(maximum_stake),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(threshold),
+            vote_eligibility_balance_step: DposTokenAmount::from(vote_step),
+            validator_maximum_stake: DposTokenAmount::from(maximum_stake),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -14654,9 +14645,9 @@ mod tests {
         let mut second_validator = genesis_validator([0x32; 20], U256::from(8u64));
         second_validator.delegations.clear();
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(1_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(1_000u64)),
             ..Default::default()
         };
 
@@ -14695,9 +14686,9 @@ mod tests {
             vec![genesis_account(DPOS_CONTRACT_ADDRESS, U256::one())],
             vec![genesis_validator([0x33; 20], U256::MAX)],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::MAX),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::MAX),
-                validator_maximum_stake: u256_to_big_endian(U256::MAX),
+                eligibility_balance_threshold: DposTokenAmount::from(U256::MAX),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::MAX),
+                validator_maximum_stake: DposTokenAmount::from(U256::MAX),
                 ..Default::default()
             },
         )
@@ -15106,9 +15097,9 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
             ..Default::default()
         };
         let final_chain = FinalChain::new_with_rewards_config(
@@ -15456,9 +15447,9 @@ mod tests {
             vec![],
             vec![genesis_validator(validator, U256::from(1_000u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(10_000u64)),
                 delegation_delay: 1,
                 ..Default::default()
             },
@@ -15548,9 +15539,9 @@ mod tests {
         let initial_balance = U256::from(1_000_000u64);
         let initial_dpos_balance = U256::from(10_000u64);
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
             ..Default::default()
         };
         let pre_chain = FinalChain::new_with_rewards_config(
@@ -15795,9 +15786,9 @@ mod tests {
         let validator = [0x51; 20];
         let delegator = [0x52; 20];
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
             ..Default::default()
         };
         let pre_chain = FinalChain::new_with_rewards_config(
@@ -16013,9 +16004,9 @@ mod tests {
         let initial_balance = U256::from(2_000_000u64);
         let initial_stake = U256::from(10_000u64);
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
             ..Default::default()
         };
 
@@ -16559,10 +16550,10 @@ mod tests {
         let validator = [0x61; 20];
         let initial_balance = U256::from(5_000_000u64);
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::from(U256::from(1_000u64)),
             ..Default::default()
         };
 
@@ -16985,10 +16976,10 @@ mod tests {
         let second_validator = [0x62; 20];
         let initial_balance = U256::from(5_000_000u64);
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::from(U256::from(1_000u64)),
             ..Default::default()
         };
         let read = get_total_delegation_input(delegator);
@@ -17401,10 +17392,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::from(U256::from(1_000u64)),
             ..Default::default()
         };
         let reader = [0x71; 20];
@@ -18598,10 +18589,10 @@ mod tests {
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -18751,10 +18742,10 @@ mod tests {
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -18819,10 +18810,10 @@ mod tests {
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -19349,10 +19340,10 @@ mod tests {
             vec![genesis_account(submitter, U256::from(1_000_000u64))],
             vec![genesis_validator(validator, U256::from(10_000u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -19488,9 +19479,9 @@ mod tests {
             vec![],
             vec![genesis_validator(validator, U256::from(10_000u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
                 ..Default::default()
             },
             FinalChainRewardsConfig {
@@ -19559,10 +19550,10 @@ mod tests {
                 U256::from(u64::MAX) + U256::one(),
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: vec![],
-                vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
-                validator_maximum_stake: u256_to_big_endian(U256::MAX),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::zero(),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::one()),
+                validator_maximum_stake: DposTokenAmount::from(U256::MAX),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -19591,10 +19582,10 @@ mod tests {
             vec![],
             vec![genesis_validator([0x50; 20], U256::from(10_001u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: vec![],
-                vote_eligibility_balance_step: u256_to_big_endian(U256::one()),
-                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::zero(),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::one()),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(10_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -19623,10 +19614,10 @@ mod tests {
             vec![],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: vec![],
-                vote_eligibility_balance_step: u256_to_big_endian(U256::zero()),
-                validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::zero(),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::zero()),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(10_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -19865,10 +19856,10 @@ mod tests {
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: vec![],
-                vote_eligibility_balance_step: vec![],
-                validator_maximum_stake: vec![],
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::zero(),
+                vote_eligibility_balance_step: DposTokenAmount::zero(),
+                validator_maximum_stake: DposTokenAmount::zero(),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -19952,10 +19943,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -20041,10 +20032,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -20096,10 +20087,10 @@ mod tests {
         let dag_author = [0x23; 20];
         let genesis_validator = genesis_validator(dag_author, U256::from(10_000u64));
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -20322,10 +20313,10 @@ mod tests {
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -20455,10 +20446,10 @@ mod tests {
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -20547,10 +20538,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -20652,10 +20643,10 @@ mod tests {
             "endpoint",
         );
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -20790,10 +20781,10 @@ mod tests {
         let fourth_period = 4u64;
         let fifth_period = 5u64;
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -21056,10 +21047,10 @@ mod tests {
         let third_period = 3u64;
         let fourth_period = 4u64;
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -21291,10 +21282,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -21416,10 +21407,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -21558,10 +21549,10 @@ mod tests {
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -21854,10 +21845,10 @@ mod tests {
             "old endpoint",
         );
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 500,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -22036,10 +22027,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -22097,10 +22088,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -22153,10 +22144,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -22272,10 +22263,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 500,
                 commission_change_frequency: 1,
                 delegation_delay: 0,
@@ -22481,10 +22472,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 4,
                 delegation_delay: 0,
@@ -22560,10 +22551,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -22695,10 +22686,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -22850,10 +22841,10 @@ mod tests {
             vec![genesis_account(owner, U256::from(1_000_000u64))],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -22963,10 +22954,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -23100,10 +23091,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -23217,10 +23208,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -23342,10 +23333,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -23498,10 +23489,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -23590,10 +23581,10 @@ mod tests {
             vec![],
             vec![genesis_validator(validator, U256::from(10_000u64))],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -23787,10 +23778,10 @@ mod tests {
                 "endpoint",
             )],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -23888,10 +23879,10 @@ mod tests {
         let dag_author = [0x26; 20];
         let genesis_validator = genesis_validator(dag_author, U256::from(10_000u64));
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -24077,10 +24068,10 @@ mod tests {
             ],
             vec![genesis_validator],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -24134,10 +24125,10 @@ mod tests {
         let validator = [0x27; 20];
         let genesis_validator = genesis_validator(validator, U256::from(10_000u64));
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -24237,10 +24228,10 @@ mod tests {
             vec![genesis_account(sender, U256::from(1_000_000u64))],
             vec![genesis_validator],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 5,
@@ -24286,10 +24277,10 @@ mod tests {
         let validator = address_from_signing_key(&signing_key).into();
         let proof = register_validator_proof(&signing_key, validator, None);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 2,
@@ -24466,10 +24457,10 @@ mod tests {
         let vrf_key = [0xA5; 32];
         let stake = U256::from(5_000u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -24648,10 +24639,10 @@ mod tests {
         let validator = address_from_signing_key(&pbft_signing_key).into();
         let proof = register_validator_proof(&proof_signing_key, validator, None);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -24725,10 +24716,10 @@ mod tests {
         let validator = address_from_signing_key(&signing_key).into();
         let proofs = vec![vec![0x11u8; 64], vec![0x11u8; 66], vec![]];
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -24812,10 +24803,10 @@ mod tests {
         let signing_key = SigningKey::from_slice(&[18u8; 32]).unwrap();
         let validator = address_from_signing_key(&signing_key).into();
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -24893,10 +24884,10 @@ mod tests {
         let validator = address_from_signing_key(&signing_key).into();
         let proof = register_validator_proof(&signing_key, validator, None);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -24985,10 +24976,10 @@ mod tests {
         let validator = address_from_signing_key(&signing_key).into();
         let proof = register_validator_proof(&signing_key, validator, None);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(5_000u64)),
-            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(5_000u64)),
+            minimum_deposit: DposTokenAmount::from(U256::from(1_000u64)),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -25044,7 +25035,7 @@ mod tests {
             temp_db_path("finalize-dpos-register-validator-stake-boundaries-zero");
         let storage = Arc::new(Storage::new(Config::new(zero_stake_path.clone())).unwrap());
         let genesis_dpos_config = GenesisDposConfig {
-            minimum_deposit: vec![],
+            minimum_deposit: DposTokenAmount::zero(),
             ..genesis_dpos_config
         };
         let zero_stake = test_transaction(
@@ -25107,10 +25098,10 @@ mod tests {
         let validator = address_from_signing_key(&signing_key).into();
         let proof = register_validator_proof(&signing_key, validator, None);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -25237,10 +25228,10 @@ mod tests {
         let exact_max_proof = register_validator_proof(&exact_max_key, exact_max_validator, None);
         let max_stake = U256::from(10_000u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(10_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(10_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -25360,10 +25351,10 @@ mod tests {
         let max_commission_proof =
             register_validator_proof(&max_commission_key, max_commission_validator, None);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -25485,10 +25476,10 @@ mod tests {
             bytes.to_vec()
         };
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -25802,10 +25793,10 @@ mod tests {
         let validator = address_from_signing_key(&signing_key).into();
         let proof = register_validator_proof(&signing_key, validator, None);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -25866,10 +25857,10 @@ mod tests {
             register_validator_proof(&successful_signing_key, failed_validator, Some(30));
         let pbft_block = signed_pbft_block(&failed_signing_key, period, 150);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26008,10 +25999,10 @@ mod tests {
             vec![genesis_account(sender, initial_sender_balance)],
             vec![],
             GenesisDposConfig {
-                eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-                vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-                validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-                minimum_deposit: vec![],
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+                minimum_deposit: DposTokenAmount::zero(),
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
@@ -26064,10 +26055,10 @@ mod tests {
         let proof = register_validator_proof(&signing_key, validator, None);
         let owner_balance_before = U256::from(1_000_000u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26200,10 +26191,10 @@ mod tests {
         let owner_balance_before = U256::from(1_000_000u64);
         let gas_price = U256::from(3u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26279,10 +26270,10 @@ mod tests {
         let delegate_value = 1_500u64;
         let gas_price = U256::from(1u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26374,10 +26365,10 @@ mod tests {
         let delegate_value = U256::from(500u64);
         let gas_price = U256::from(1u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: u256_to_big_endian(minimum_deposit),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::from(minimum_deposit),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26464,10 +26455,10 @@ mod tests {
         let delegate_value = U256::from(600u64);
         let gas_price = U256::from(2u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::from(U256::from(1_000u64)),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26554,10 +26545,10 @@ mod tests {
         let minimum_deposit = U256::from(1_000u64);
         let gas_price = U256::from(1u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: u256_to_big_endian(minimum_deposit),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::from(minimum_deposit),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26672,10 +26663,10 @@ mod tests {
         let period = 1u64;
         let validator = [0x46; 20];
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26741,10 +26732,10 @@ mod tests {
         let validator = [0x54; 20];
         let missing_validator = [0x55; 20];
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26821,10 +26812,10 @@ mod tests {
         let delegator = [0x56; 20];
         let validator = [0x57; 20];
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26900,10 +26891,10 @@ mod tests {
         let period = 1u64;
         let validator = [0x58; 20];
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -26984,10 +26975,10 @@ mod tests {
         let validator = [0x5A; 20];
         let minimum_deposit = U256::from(1_000u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: u256_to_big_endian(minimum_deposit),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::from(minimum_deposit),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27060,10 +27051,10 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = [0x5C; 20];
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27173,10 +27164,10 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = [0x5D; 20];
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27279,10 +27270,10 @@ mod tests {
         let validator = [0x61; 20];
         let signing_key = SigningKey::from_slice(&[21u8; 32]).unwrap();
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27524,10 +27515,10 @@ mod tests {
         let validator = [0x71; 20];
         let signing_key = SigningKey::from_slice(&[34u8; 32]).unwrap();
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27625,10 +27616,10 @@ mod tests {
             ..Default::default()
         };
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27728,10 +27719,10 @@ mod tests {
             ..Default::default()
         };
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27839,10 +27830,10 @@ mod tests {
         let missing_validator = [0x75; 20];
         let signing_key = SigningKey::from_slice(&[37u8; 32]).unwrap();
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -27931,10 +27922,10 @@ mod tests {
             ..Default::default()
         };
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -28054,10 +28045,10 @@ mod tests {
         let validator = [0x62; 20];
         let signing_key = SigningKey::from_slice(&[22u8; 32]).unwrap();
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -28187,10 +28178,10 @@ mod tests {
             register_validator_proof(&second_validator_key, second_validator, None);
         let owner = first_validator;
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -28314,10 +28305,10 @@ mod tests {
         );
         write_period_data(&storage, period, &pbft_block, &[redelegate_tx.rlp.clone()]);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: vec![],
-            minimum_deposit: u256_to_big_endian(U256::from(1_000u64)),
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::zero(),
+            minimum_deposit: DposTokenAmount::from(U256::from(1_000u64)),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -28389,10 +28380,10 @@ mod tests {
         let gas_price = U256::from(2u64);
         let owner_balance_before = U256::from(1_000_000u64);
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(1_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
@@ -28685,10 +28676,10 @@ mod tests {
             ],
         );
         let genesis_dpos_config = GenesisDposConfig {
-            eligibility_balance_threshold: u256_to_big_endian(U256::from(1_000u64)),
-            vote_eligibility_balance_step: u256_to_big_endian(U256::from(10_000u64)),
-            validator_maximum_stake: u256_to_big_endian(U256::from(30_000u64)),
-            minimum_deposit: vec![],
+            eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+            vote_eligibility_balance_step: DposTokenAmount::from(U256::from(10_000u64)),
+            validator_maximum_stake: DposTokenAmount::from(U256::from(30_000u64)),
+            minimum_deposit: DposTokenAmount::zero(),
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,

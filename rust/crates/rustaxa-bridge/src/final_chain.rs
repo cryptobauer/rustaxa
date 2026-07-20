@@ -496,6 +496,26 @@ pub(crate) fn create_final_chain(
     )
 }
 
+fn genesis_dpos_config_from_ffi(
+    config: rustaxa_ffi::GenesisDposConfig,
+) -> Result<rustaxa_consensus::GenesisDposConfig, anyhow::Error> {
+    let amount = |bytes: &[u8]| {
+        rustaxa_types::DposTokenAmount::try_from_be_slice(bytes)
+            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256"))
+    };
+    Ok(rustaxa_consensus::GenesisDposConfig {
+        eligibility_balance_threshold: amount(&config.eligibility_balance_threshold)?,
+        vote_eligibility_balance_step: amount(&config.vote_eligibility_balance_step)?,
+        validator_maximum_stake: amount(&config.validator_maximum_stake)?,
+        minimum_deposit: amount(&config.minimum_deposit)?,
+        commission_change_delta: config.commission_change_delta,
+        commission_change_frequency: config.commission_change_frequency,
+        delegation_delay: config.delegation_delay,
+        dag_vdf_sortition_total_vote_count_until_period: config
+            .dag_vdf_sortition_total_vote_count_until_period,
+    })
+}
+
 pub fn create_final_chain_with_rewards_config(
     storage: &BridgeStorage,
     block_gas_limit: u64,
@@ -545,17 +565,7 @@ pub fn create_final_chain_with_rewards_config(
         genesis_timestamp,
         genesis_accounts,
         genesis_validators,
-        rustaxa_consensus::GenesisDposConfig {
-            eligibility_balance_threshold: genesis_dpos_config.eligibility_balance_threshold,
-            vote_eligibility_balance_step: genesis_dpos_config.vote_eligibility_balance_step,
-            validator_maximum_stake: genesis_dpos_config.validator_maximum_stake,
-            minimum_deposit: genesis_dpos_config.minimum_deposit,
-            commission_change_delta: genesis_dpos_config.commission_change_delta,
-            commission_change_frequency: genesis_dpos_config.commission_change_frequency,
-            delegation_delay: genesis_dpos_config.delegation_delay,
-            dag_vdf_sortition_total_vote_count_until_period: genesis_dpos_config
-                .dag_vdf_sortition_total_vote_count_until_period,
-        },
+        genesis_dpos_config_from_ffi(genesis_dpos_config)?,
         rustaxa_consensus::FinalChainRewardsConfig {
             committee_size: rewards_config.committee_size,
             magnolia_period: rewards_config.magnolia_period,
@@ -1210,6 +1220,26 @@ mod tests {
             .position(|byte| *byte != 0)
             .unwrap_or(bytes.len());
         bytes[first_nonzero..].to_vec()
+    }
+
+    #[test]
+    fn genesis_dpos_config_rejects_oversized_amounts_with_stable_error() {
+        let config = rustaxa_ffi::GenesisDposConfig {
+            eligibility_balance_threshold: vec![0; 33],
+            vote_eligibility_balance_step: vec![],
+            validator_maximum_stake: vec![],
+            minimum_deposit: vec![],
+            commission_change_delta: 0,
+            commission_change_frequency: 0,
+            delegation_delay: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0,
+        };
+        assert_eq!(
+            genesis_dpos_config_from_ffi(config)
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256"
+        );
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
