@@ -519,6 +519,8 @@ Current snapshot after DAG manager verify-result API cleanup:
 - The typed DPoS-policy `CRW-09` slice keeps the four genesis/config CXX amount fields as `Vec<u8>`, validates their U256
   width at bridge ingress, and passes `DposTokenAmount` through Rust policy arithmetic. It adds no carrier, handle,
   export, constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
+- The standalone DPoS snapshot-provenance characterization adds Rust codec tests only. It changes no carrier, handle,
+  export, constructor, shim route, module flag, compatibility-only bridge test, or `CRW-07` inventory entry.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

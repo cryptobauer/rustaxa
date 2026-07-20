@@ -13020,6 +13020,118 @@ mod tests {
     }
 
     #[test]
+    fn dpos_snapshot_codec_preserves_valid_mixed_amount_encodings_byte_for_byte() {
+        let validator = [0x22; 20];
+        let delegator = [0x11; 20];
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        let total_stake = [vec![0; 30], vec![0x12, 0x34]].concat();
+        let delegation_principal = vec![0x45];
+        let v1_custody = vec![0x56];
+        let v2_custody = vec![0x67];
+        let delegator_reward = Vec::new();
+        let minted_tokens = vec![0x89];
+        let total_supply = vec![0x9a];
+        let reward_per_stake = vec![0xab; 40];
+        let reward_cursor = vec![0xcd; 41];
+
+        snapshot.total_stakes.insert(validator, total_stake.clone());
+        snapshot
+            .delegations
+            .get_mut(&validator)
+            .unwrap()
+            .insert(delegator, delegation_principal.clone());
+        snapshot.undelegations.get_mut(&delegator).unwrap()[0].amount = v1_custody.clone();
+        snapshot.undelegations_v2.get_mut(&delegator).unwrap()[0].entries[0].amount =
+            v2_custody.clone();
+        snapshot
+            .delegator_rewards
+            .insert(validator, delegator_reward.clone());
+        snapshot.minted_tokens = minted_tokens.clone();
+        snapshot.total_supply = total_supply.clone();
+        snapshot
+            .validator_reward_per_stake
+            .insert(validator, reward_per_stake.clone());
+        snapshot
+            .delegation_reward_cursors
+            .get_mut(&validator)
+            .unwrap()
+            .insert(delegator, reward_cursor.clone());
+
+        let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        let decoded = decode_dpos_snapshot_rlp(&encoded).unwrap();
+        assert_eq!(encode_dpos_snapshot_rlp(&decoded).unwrap(), encoded);
+        assert_eq!(decoded.total_stakes[&validator], total_stake);
+        assert_eq!(
+            decoded.delegations[&validator][&delegator],
+            delegation_principal
+        );
+        assert_eq!(decoded.undelegations[&delegator][0].amount, v1_custody);
+        assert_eq!(
+            decoded.undelegations_v2[&delegator][0].entries[0].amount,
+            v2_custody
+        );
+        assert_eq!(decoded.delegator_rewards[&validator], delegator_reward);
+        assert_eq!(decoded.minted_tokens, minted_tokens);
+        assert_eq!(decoded.total_supply, total_supply);
+        assert_eq!(
+            decoded.validator_reward_per_stake[&validator],
+            reward_per_stake
+        );
+        assert_eq!(
+            decoded.delegation_reward_cursors[&validator][&delegator],
+            reward_cursor
+        );
+    }
+
+    #[test]
+    fn legacy_dpos_snapshot_self_delegation_synthesis_preserves_total_stake_bytes() {
+        let validator = [0x22; 20];
+        let cases = [
+            (
+                "schema-5-fixed32",
+                false,
+                [vec![0; 30], vec![1, 2]].concat(),
+            ),
+            ("schema-5-minimal", false, vec![1, 2]),
+            ("schema-6-fixed32", true, [vec![0; 30], vec![1, 2]].concat()),
+            ("schema-6-minimal", true, vec![1, 2]),
+        ];
+        for (name, include_vrf_keys, total_stake) in cases {
+            let mut snapshot = sample_dpos_snapshot_with_undelegations();
+            snapshot.total_stakes.insert(validator, total_stake.clone());
+            let legacy =
+                encode_legacy_dpos_snapshot_before_delegation_ledger(&snapshot, include_vrf_keys);
+            let decoded = decode_dpos_snapshot_rlp(&legacy).unwrap();
+            assert_eq!(
+                decoded.delegations[&validator][&validator], total_stake,
+                "{name}"
+            );
+
+            let upgraded =
+                decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&decoded).unwrap()).unwrap();
+            assert_eq!(
+                upgraded.delegations[&validator][&validator], decoded.total_stakes[&validator],
+                "{name} upgraded current representation"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_dpos_snapshot_decoder_compat_debt_accepts_malformed_u256_amount_bytes() {
+        // CHARACTERIZATION ONLY: this records legacy decoder permissiveness and is not an
+        // endorsement of malformed U256-intended amount encodings.
+        // TODO: replace this test when the compatibility decoder can reject malformed amounts
+        // after all persisted schema-five/six snapshots have been migrated or retired.
+        for malformed in [vec![0, 1], vec![0xee; 33]] {
+            let validator = [0x22; 20];
+            let mut snapshot = sample_dpos_snapshot_with_undelegations();
+            snapshot.total_stakes.insert(validator, malformed);
+            let legacy = encode_legacy_dpos_snapshot_before_delegation_ledger(&snapshot, false);
+            assert!(decode_dpos_snapshot_rlp(&legacy).is_ok());
+        }
+    }
+
+    #[test]
     fn total_delegation_restart_guard_distinguishes_principal_ledger_schemas() {
         let snapshot = sample_dpos_snapshot_with_undelegations();
         let delegator = [0x11; 20];

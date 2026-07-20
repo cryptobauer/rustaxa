@@ -4218,6 +4218,22 @@ Validation passed all 1,196 tests across `rustaxa-types`, `rustaxa-consensus`, a
 check, `rewrite-validate-fast`, and the FinalChain Tier 2 gate. Rust formatting and whitespace validation also passed;
 existing normal-policy clippy warnings remain outside this slice.
 
+### CRW-09 DPoS Snapshot Provenance Characterization
+
+Before persisted DPoS principal typing, standalone codec tests now capture the legacy byte contract. Current-schema
+snapshots preserve mixed fixed-width aggregate stake, canonical-minimal principal and custody, empty-zero rewards,
+minimal supply counters, and arbitrary-width reward-per-stake/cursor values byte-for-byte. Accepted schema 5/6 snapshots
+synthesize self-delegation principal by copying each aggregate-stake byte vector exactly before upgrading to the current
+snapshot envelope.
+
+A separately labeled characterization-only test records existing permissive decoding of short leading-zero and
+greater-than-U256 bytes in fields intended to become U256 token amounts. This is explicit migration debt rather than a
+compatibility promise: the future stored-amount migration must replace that test with stable rejection before live-state
+installation. No production behavior, schema, CXX carrier, bridge surface, or `CRW-07` inventory changes in this slice.
+
+Validation passed all three focused characterization tests, all 798 `rustaxa-consensus` tests, `rewrite-validate-fast`,
+Rust formatting, and whitespace validation. Existing normal-policy clippy warnings remain outside this slice.
+
 ### CRW-09 Typed FinalChain Gas Lifecycle
 
 This domain slice introduces `FinalChainGas(u64)` across the complete Rust FinalChain gas lifecycle: transaction and call

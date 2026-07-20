@@ -304,6 +304,13 @@ Persisted principal, undelegation custody, corrections, rewards, supply, and arb
 outside this slice pending their complete vertical migrations. No carrier, snapshot, handle, export, shim, module flag,
 or `CRW-07` inventory delta is introduced.
 
+Standalone prerequisite coverage now records the DPoS snapshot codec's byte-level contract before persisted principal
+typing: valid mixed fixed/minimal/empty and arbitrary-width reward-index values round-trip exactly, and legacy schema 5/6
+self-delegation synthesis preserves aggregate-stake bytes. A separately labeled characterization-only test records that
+the legacy decoder still accepts short leading-zero and greater-than-U256 principal bytes. That acceptance is migration
+debt, not a compatibility guarantee; the persisted DPoS amount slice must replace it with immediate stable rejection
+before state installation. This test-only slice has no `CRW-07` delta.
+
 `CRW-08` current slice closes native DPoS delegate transaction receipt/state parity. Rust now charges top-level
 transaction intrinsic gas in addition to action gas for every Rust-native DPoS/slashing transaction while preserving
 legacy precompile out-of-gas behavior: insufficient intrinsic gas consumes the gas limit, and insufficient action gas
