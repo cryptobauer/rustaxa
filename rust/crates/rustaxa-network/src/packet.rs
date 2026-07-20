@@ -10,10 +10,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 use rustaxa_types::ethereum::NodeId;
 use rustaxa_types::time::Microseconds;
 
-use crate::{
-    filter::{Flag, PacketFilter},
-    peers::{PeerRef, PeerRegistry, SessionId},
-};
+use crate::peers::{PeerRef, PeerRegistry, SessionId};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, IntoPrimitive, TryFromPrimitive)]
 #[repr(u8)]
@@ -162,12 +159,6 @@ impl Packet {
             PacketPayload::Heap(bytes) => bytes.as_ref(),
             PacketPayload::Inline { len, buf } => &buf[..*len],
         }
-    }
-}
-
-impl PacketFilter for Packet {
-    fn peer_connected(&self, registry: &PeerRegistry) -> Result<bool, anyhow::Error> {
-        Ok(registry.connected(self.peer.node)?.is_some())
     }
 }
 

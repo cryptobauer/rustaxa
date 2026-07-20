@@ -9,8 +9,6 @@
 pub mod egress;
 /// Network event types shared between pipeline stages.
 pub mod events;
-/// Early packet filtering helpers.
-pub mod filter;
 /// Consumer-side ingress worker for queued network events.
 pub mod ingress;
 /// Producer-side network facade for packet ingestion and peer handling.
