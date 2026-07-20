@@ -181,6 +181,110 @@ impl TryFrom<&[u8]> for FinalChainTransactionValue {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FinalChainAccountBalanceEncoding {
+    Fixed32,
+    Minimal,
+}
+
+/// FinalChain account balance with byte-encoding provenance preserved.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FinalChainAccountBalance {
+    value: U256,
+    encoding: FinalChainAccountBalanceEncoding,
+}
+impl FinalChainAccountBalance {
+    /// Decodes the exact 32-byte C++ genesis representation.
+    pub fn from_cpp_genesis_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            bytes.len() == 32,
+            "FINAL_CHAIN_GENESIS_BALANCE_REQUIRES_FIXED32"
+        );
+        Ok(Self {
+            value: U256::from_big_endian(bytes),
+            encoding: FinalChainAccountBalanceEncoding::Fixed32,
+        })
+    }
+    /// Decodes persisted bytes while retaining fixed or canonical-minimal provenance.
+    pub fn from_snapshot_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            bytes.len() <= 32,
+            "FINAL_CHAIN_ACCOUNT_BALANCE_EXCEEDS_U256"
+        );
+        if bytes.len() < 32 {
+            anyhow::ensure!(
+                bytes.first() != Some(&0),
+                "FINAL_CHAIN_ACCOUNT_BALANCE_SHORT_LEADING_ZERO"
+            );
+        }
+        Ok(Self {
+            value: U256::from_big_endian(bytes),
+            encoding: if bytes.len() == 32 {
+                FinalChainAccountBalanceEncoding::Fixed32
+            } else {
+                FinalChainAccountBalanceEncoding::Minimal
+            },
+        })
+    }
+    /// Creates a new account balance using canonical minimal snapshot encoding.
+    pub fn new_account(value: U256) -> Self {
+        Self {
+            value,
+            encoding: FinalChainAccountBalanceEncoding::Minimal,
+        }
+    }
+    /// Creates a new zero-balance account using canonical minimal encoding.
+    pub fn zero_new() -> Self {
+        Self::new_account(U256::zero())
+    }
+    /// Borrows the numeric balance.
+    pub const fn as_u256(&self) -> &U256 {
+        &self.value
+    }
+    /// Consumes the balance and returns its numeric value.
+    pub const fn into_u256(self) -> U256 {
+        self.value
+    }
+    /// Reports whether the balance is zero.
+    pub fn is_zero(&self) -> bool {
+        self.value.is_zero()
+    }
+    /// Re-emits the exact fixed/minimal snapshot representation.
+    pub fn to_snapshot_bytes(&self) -> Vec<u8> {
+        let fixed = self.value.to_big_endian();
+        if self.encoding == FinalChainAccountBalanceEncoding::Fixed32 {
+            return fixed.to_vec();
+        }
+        let first = fixed.iter().position(|byte| *byte != 0).unwrap_or(32);
+        fixed[first..].to_vec()
+    }
+    /// Replaces the balance after mutation and canonicalizes it as minimal.
+    pub fn replace_after_mutation(&mut self, value: U256) {
+        self.value = value;
+        self.encoding = FinalChainAccountBalanceEncoding::Minimal;
+    }
+    /// Adds on success, canonicalizing the result; overflow leaves the balance unchanged.
+    pub fn checked_add(&mut self, delta: U256) -> bool {
+        let Some(value) = self.value.checked_add(delta) else {
+            return false;
+        };
+        self.replace_after_mutation(value);
+        true
+    }
+    /// Subtracts on success, canonicalizing the result; underflow leaves the balance unchanged.
+    pub fn checked_sub(&mut self, delta: U256) -> bool {
+        let Some(value) = self.value.checked_sub(delta) else {
+            return false;
+        };
+        self.replace_after_mutation(value);
+        true
+    }
+    /// Compares numeric values without considering encoding provenance.
+    pub fn same_value(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
 /// Error returned when a byte slice cannot form a fixed-width log bloom.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FinalChainLogBloomLengthError {
@@ -500,7 +604,7 @@ pub struct GenesisAccount {
     /// Account address bytes in canonical Ethereum/Taraxa address order.
     pub address: [u8; 20],
     /// Initial account balance as an unsigned big-endian integer byte string.
-    pub balance: Vec<u8>,
+    pub balance: FinalChainAccountBalance,
 }
 
 /// Genesis validator metadata passed from genesis configuration into Rust.
@@ -827,7 +931,7 @@ pub struct Account {
     /// Account nonce.
     pub nonce: FinalChainNonce,
     /// Account balance as an unsigned big-endian integer byte string.
-    pub balance: Vec<u8>,
+    pub balance: FinalChainAccountBalance,
     /// State storage root hash bytes.
     pub storage_root_hash: [u8; 32],
     /// Contract code hash bytes.
@@ -1066,6 +1170,51 @@ mod tests {
     fn transaction_value_rejects_33_bytes_with_actual_length() {
         let error = FinalChainTransactionValue::try_from(&[0; 33][..]).unwrap_err();
         assert_eq!(error.actual(), 33);
+    }
+
+    #[test]
+    fn account_balance_preserves_provenance_and_canonicalizes_mutations() {
+        let mut fixed = [0; 32];
+        fixed[31] = 7;
+        let mut balance = FinalChainAccountBalance::from_cpp_genesis_bytes(&fixed).unwrap();
+        assert_eq!(balance.to_snapshot_bytes(), fixed);
+        let minimal = FinalChainAccountBalance::from_snapshot_bytes(&[7]).unwrap();
+        assert!(balance.same_value(&minimal));
+        balance.replace_after_mutation(U256::from(7));
+        assert_eq!(balance.to_snapshot_bytes(), vec![7]);
+        assert!(balance.checked_add(U256::zero()));
+        assert_eq!(balance.to_snapshot_bytes(), vec![7]);
+        assert!(balance.checked_sub(U256::from(7)));
+        assert!(balance.to_snapshot_bytes().is_empty());
+    }
+
+    #[test]
+    fn account_balance_rejects_invalid_encodings_and_preserves_failed_mutation() {
+        assert_eq!(
+            FinalChainAccountBalance::from_cpp_genesis_bytes(&[0; 31])
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_GENESIS_BALANCE_REQUIRES_FIXED32"
+        );
+        assert_eq!(
+            FinalChainAccountBalance::from_snapshot_bytes(&[0])
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_ACCOUNT_BALANCE_SHORT_LEADING_ZERO"
+        );
+        assert_eq!(
+            FinalChainAccountBalance::from_snapshot_bytes(&[1; 33])
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_ACCOUNT_BALANCE_EXCEEDS_U256"
+        );
+        let mut maximum = FinalChainAccountBalance::new_account(U256::MAX);
+        let before = maximum.to_snapshot_bytes();
+        assert!(!maximum.checked_add(U256::one()));
+        assert_eq!(maximum.to_snapshot_bytes(), before);
+        let mut zero = FinalChainAccountBalance::zero_new();
+        assert!(!zero.checked_sub(U256::one()));
+        assert!(zero.to_snapshot_bytes().is_empty());
     }
 
     #[test]

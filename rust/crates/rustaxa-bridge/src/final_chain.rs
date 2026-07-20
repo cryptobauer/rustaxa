@@ -15,7 +15,7 @@ fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
         Some(account) => rustaxa_ffi::AccountLookup {
             found: true,
             nonce: account.nonce.to_bytes(),
-            balance: account.balance,
+            balance: account.balance.to_snapshot_bytes(),
             storage_root_hash: account.storage_root_hash,
             code_hash: account.code_hash,
             code_size: account.code_size,
@@ -64,6 +64,15 @@ fn finalization_transaction_from_ffi(
         gas_limit: transaction.gas_limit,
         data: transaction.data,
         rlp: transaction.rlp,
+    })
+}
+
+fn genesis_account_from_ffi(
+    account: rustaxa_ffi::GenesisAccount,
+) -> Result<rustaxa_consensus::GenesisAccount, anyhow::Error> {
+    Ok(rustaxa_consensus::GenesisAccount {
+        address: account.address,
+        balance: rustaxa_types::FinalChainAccountBalance::from_cpp_genesis_bytes(&account.balance)?,
     })
 }
 
@@ -494,11 +503,8 @@ pub fn create_final_chain_with_rewards_config(
 ) -> Result<Box<BridgeFinalChain>, anyhow::Error> {
     let genesis_accounts = genesis_accounts
         .into_iter()
-        .map(|account| rustaxa_consensus::GenesisAccount {
-            address: account.address,
-            balance: account.balance,
-        })
-        .collect();
+        .map(genesis_account_from_ffi)
+        .collect::<Result<Vec<_>, _>>()?;
     let genesis_validators = genesis_validators
         .into_iter()
         .map(|validator| {
@@ -1441,6 +1447,31 @@ mod tests {
             .unwrap();
         assert_eq!(system.value, vec![0]);
         assert_eq!(system.rlp, vec![0xaa]);
+    }
+
+    #[test]
+    fn bridge_requires_fixed_width_genesis_balance_and_preserves_lookup_bytes() {
+        let error = genesis_account_from_ffi(rustaxa_ffi::GenesisAccount {
+            address: [0; 20],
+            balance: vec![1],
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "FINAL_CHAIN_GENESIS_BALANCE_REQUIRES_FIXED32"
+        );
+
+        let mut bytes = [0; 32];
+        bytes[31] = 1;
+        let account = Account {
+            nonce: FinalChainNonce::zero(),
+            balance: rustaxa_types::FinalChainAccountBalance::from_cpp_genesis_bytes(&bytes)
+                .unwrap(),
+            storage_root_hash: [0; 32],
+            code_hash: [0; 32],
+            code_size: 0,
+        };
+        assert_eq!(account_to_lookup(Some(account)).balance, bytes);
     }
 
     fn ffi_evm_log(

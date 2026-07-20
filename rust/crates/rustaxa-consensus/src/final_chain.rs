@@ -607,7 +607,7 @@ impl FinalChain {
                 })?;
         let dpos_contract_balance = genesis_accounts
             .remove(&DPOS_CONTRACT_ADDRESS)
-            .map(|account| u256_from_big_endian(&account.balance))
+            .map(|account| *account.balance.as_u256())
             .unwrap_or_default()
             .checked_add(genesis_dpos_delegated_stakes_sum)
             .ok_or_else(|| anyhow::anyhow!("genesis DPoS contract balance overflow"))?;
@@ -615,7 +615,9 @@ impl FinalChain {
             DPOS_CONTRACT_ADDRESS,
             Account {
                 nonce: FinalChainNonce::from_u64(1),
-                balance: u256_to_big_endian(dpos_contract_balance),
+                balance: rustaxa_types::FinalChainAccountBalance::new_account(
+                    dpos_contract_balance,
+                ),
                 storage_root_hash: [0; 32],
                 code_hash: [0; 32],
                 code_size: 0,
@@ -625,7 +627,7 @@ impl FinalChain {
         let genesis_account_balance_sum = genesis_accounts
             .values()
             .try_fold(U256::zero(), |total, account| {
-                total.checked_add(u256_from_big_endian(&account.balance))
+                total.checked_add(*account.balance.as_u256())
             });
         if rewards_config.genesis_balance_sum.is_empty() {
             if let Some(genesis_account_balance_sum) = genesis_account_balance_sum {
@@ -1554,7 +1556,7 @@ impl FinalChain {
         let mut balance_after_gas_cap = None;
         if request.sender != [0u8; 20] {
             let sender = accounts.entry(request.sender).or_insert_with(empty_account);
-            let sender_balance = u256_from_big_endian(&sender.balance);
+            let sender_balance = *sender.balance.as_u256();
             let Some(gas_cap_cost) = gas_price.checked_mul(U256::from(request.gas_limit)) else {
                 return Ok(FinalChainCallOutcome {
                     gas_used: affordable_gas(sender, gas_price, request.gas_limit),
@@ -1570,7 +1572,7 @@ impl FinalChain {
                 });
             }
             let remaining_balance = sender_balance - gas_cap_cost;
-            sender.balance = u256_to_big_endian(remaining_balance);
+            sender.balance.replace_after_mutation(remaining_balance);
             balance_after_gas_cap = Some(remaining_balance);
         }
 
@@ -1655,17 +1657,18 @@ impl FinalChain {
                 let sender = accounts
                     .get_mut(&request.sender)
                     .ok_or_else(|| anyhow::anyhow!("transient call sender account is missing"))?;
-                let balance = u256_from_big_endian(&sender.balance);
-                sender.balance =
-                    u256_to_big_endian(balance.checked_sub(value).ok_or_else(|| {
+                let balance = *sender.balance.as_u256();
+                sender.balance.replace_after_mutation(
+                    balance.checked_sub(value).ok_or_else(|| {
                         anyhow::anyhow!("transient call value transfer underflow")
-                    })?);
+                    })?,
+                );
             }
             let contract = accounts
                 .entry(DPOS_CONTRACT_ADDRESS)
                 .or_insert_with(empty_account);
-            let contract_balance = u256_from_big_endian(&contract.balance);
-            contract.balance = u256_to_big_endian(
+            let contract_balance = *contract.balance.as_u256();
+            contract.balance.replace_after_mutation(
                 contract_balance
                     .checked_add(value)
                     .ok_or_else(|| anyhow::anyhow!("DPoS contract balance overflow"))?,
@@ -2571,8 +2574,8 @@ impl FinalChain {
             return Ok(());
         }
         let account = accounts.entry(beneficiary).or_insert_with(empty_account);
-        let balance = u256_from_big_endian(&account.balance);
-        account.balance = u256_to_big_endian(
+        let balance = *account.balance.as_u256();
+        account.balance.replace_after_mutation(
             balance
                 .checked_add(reward)
                 .ok_or_else(|| anyhow::anyhow!("pre-Magnolia PBFT beneficiary reward overflow"))?,
@@ -2606,8 +2609,8 @@ impl FinalChain {
         let account = accounts
             .entry(DPOS_CONTRACT_ADDRESS)
             .or_insert_with(empty_account);
-        let balance = u256_from_big_endian(&account.balance);
-        account.balance = u256_to_big_endian(
+        let balance = *account.balance.as_u256();
+        account.balance.replace_after_mutation(
             balance
                 .checked_add(reward)
                 .ok_or_else(|| anyhow::anyhow!("DPoS contract fee reward balance overflow"))?,
@@ -2633,8 +2636,8 @@ impl FinalChain {
         let account = accounts
             .entry(DPOS_CONTRACT_ADDRESS)
             .or_insert_with(empty_account);
-        let balance = u256_from_big_endian(&account.balance);
-        account.balance = u256_to_big_endian(
+        let balance = *account.balance.as_u256();
+        account.balance.replace_after_mutation(
             balance
                 .checked_add(total_minted_reward)
                 .ok_or_else(|| anyhow::anyhow!("DPoS contract minted reward balance overflow"))?,
@@ -3253,7 +3256,7 @@ impl FinalChain {
             // when their sender cannot fund the cap (or the nonce is stale).
             let (sender_nonce, sender_balance) = accounts
                 .get(&transaction.sender)
-                .map(|sender| (sender.nonce.clone(), u256_from_big_endian(&sender.balance)))
+                .map(|sender| (sender.nonce.clone(), *sender.balance.as_u256()))
                 .unwrap_or((FinalChainNonce::zero(), U256::zero()));
             let full_gas_affordable = gas_price
                 .checked_mul(U256::from(transaction.gas_limit))
@@ -3372,7 +3375,7 @@ impl FinalChain {
                 let sender = accounts
                     .entry(transaction.sender)
                     .or_insert_with(empty_account);
-                let sender_balance = u256_from_big_endian(&sender.balance);
+                let sender_balance = *sender.balance.as_u256();
                 // Legacy execution treats an unaffordable full gas cap as a failed
                 // transaction, but still consumes the affordable portion of the
                 // gas budget.  The big-int implementation also has no overflow
@@ -3438,10 +3441,14 @@ impl FinalChain {
                             "Rust FinalChain::finalize cannot apply underfunded native transfer"
                         );
                     }
-                    sender.balance = u256_to_big_endian(sender_balance - total_cost);
+                    sender
+                        .balance
+                        .replace_after_mutation(sender_balance - total_cost);
                     sender.nonce = transaction.nonce.next();
                 } else {
-                    sender.balance = u256_to_big_endian(sender_balance.saturating_sub(gas_cost));
+                    sender
+                        .balance
+                        .replace_after_mutation(sender_balance.saturating_sub(gas_cost));
                 }
             };
             cumulative_gas_used = cumulative_gas_used
@@ -3466,8 +3473,8 @@ impl FinalChain {
                         let sender = accounts
                             .entry(transaction.sender)
                             .or_insert_with(empty_account);
-                        let sender_balance = u256_from_big_endian(&sender.balance);
-                        sender.balance = u256_to_big_endian(
+                        let sender_balance = *sender.balance.as_u256();
+                        sender.balance.replace_after_mutation(
                             sender_balance
                                 .checked_sub(value)
                                 .ok_or_else(|| anyhow::anyhow!("contract payment underflow"))?,
@@ -3475,8 +3482,8 @@ impl FinalChain {
                         let contract = accounts
                             .entry(contract_recipient)
                             .or_insert_with(empty_account);
-                        let contract_balance = u256_from_big_endian(&contract.balance);
-                        contract.balance = u256_to_big_endian(
+                        let contract_balance = *contract.balance.as_u256();
+                        contract.balance.replace_after_mutation(
                             contract_balance
                                 .checked_add(value)
                                 .ok_or_else(|| anyhow::anyhow!("contract balance overflow"))?,
@@ -3599,15 +3606,15 @@ impl FinalChain {
                             let sender = accounts
                                 .entry(transaction.sender)
                                 .or_insert_with(empty_account);
-                            let sender_balance = u256_from_big_endian(&sender.balance);
-                            sender.balance = u256_to_big_endian(
+                            let sender_balance = *sender.balance.as_u256();
+                            sender.balance.replace_after_mutation(
                                 sender_balance.checked_add(staged_value).ok_or_else(|| {
                                     anyhow::anyhow!("contract payment rollback overflow")
                                 })?,
                             );
                             let contract = accounts.entry(recipient).or_insert_with(empty_account);
-                            let contract_balance = u256_from_big_endian(&contract.balance);
-                            contract.balance = u256_to_big_endian(
+                            let contract_balance = *contract.balance.as_u256();
+                            contract.balance.replace_after_mutation(
                                 contract_balance.checked_sub(staged_value).ok_or_else(|| {
                                     anyhow::anyhow!("contract payment rollback underflow")
                                 })?,
@@ -3638,8 +3645,8 @@ impl FinalChain {
                         let receiver = accounts
                             .entry(receiver_address)
                             .or_insert_with(empty_account);
-                        let receiver_balance = u256_from_big_endian(&receiver.balance);
-                        receiver.balance = u256_to_big_endian(
+                        let receiver_balance = *receiver.balance.as_u256();
+                        receiver.balance.replace_after_mutation(
                             receiver_balance
                                 .checked_add(value)
                                 .ok_or_else(|| anyhow::anyhow!("receiver balance overflow"))?,
@@ -4059,7 +4066,7 @@ impl FinalChain {
 
         let balance = self
             .account(request.sender)?
-            .map(|account| u256_from_big_endian(&account.balance))
+            .map(|account| *account.balance.as_u256())
             .unwrap_or_default();
         let value = request.value.as_u256();
         if balance < value {
@@ -5074,13 +5081,11 @@ impl FinalChain {
             }) if allow_reward_regression => BigUint::from(0u8),
             Err(error) => return Err(error.into()),
         };
-        let dpos_contract_balance = u256_from_big_endian(
-            accounts
-                .entry(DPOS_CONTRACT_ADDRESS)
-                .or_insert_with(empty_account)
-                .balance
-                .as_slice(),
-        );
+        let dpos_contract_balance = *accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account)
+            .balance
+            .as_u256();
         if reward_exact > BigUint::from_bytes_be(&u256_to_big_endian(dpos_contract_balance)) {
             anyhow::bail!(
                 "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim"
@@ -5104,14 +5109,14 @@ impl FinalChain {
         let dpos_account = accounts
             .entry(DPOS_CONTRACT_ADDRESS)
             .or_insert_with(empty_account);
-        dpos_account.balance = u256_to_big_endian(
+        dpos_account.balance.replace_after_mutation(
             dpos_contract_balance
                 .checked_sub(reward)
                 .ok_or_else(|| anyhow::anyhow!("DPoS contract reward underflow"))?,
         );
         let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
-        let current_delegator_balance = u256_from_big_endian(&delegator_account.balance);
-        delegator_account.balance = u256_to_big_endian(
+        let current_delegator_balance = *delegator_account.balance.as_u256();
+        delegator_account.balance.replace_after_mutation(
             current_delegator_balance
                 .checked_add(reward)
                 .ok_or_else(|| anyhow::anyhow!("DPoS delegator reward overflow"))?,
@@ -5292,13 +5297,11 @@ impl FinalChain {
             .get(&validator)
             .map(|bytes| u256_from_big_endian(bytes))
             .unwrap_or_default();
-        let dpos_contract_balance = u256_from_big_endian(
-            accounts
-                .entry(DPOS_CONTRACT_ADDRESS)
-                .or_insert_with(empty_account)
-                .balance
-                .as_slice(),
-        );
+        let dpos_contract_balance = *accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account)
+            .balance
+            .as_u256();
         if reward > dpos_contract_balance {
             anyhow::bail!(
                 "Rust FinalChain::finalize DPoS contract balance insufficient for commission reward claim"
@@ -5312,14 +5315,14 @@ impl FinalChain {
             let dpos_account = accounts
                 .entry(DPOS_CONTRACT_ADDRESS)
                 .or_insert_with(empty_account);
-            dpos_account.balance = u256_to_big_endian(
+            dpos_account.balance.replace_after_mutation(
                 dpos_contract_balance
                     .checked_sub(reward)
                     .ok_or_else(|| anyhow::anyhow!("DPoS contract commission reward underflow"))?,
             );
             let owner_account = accounts.entry(owner).or_insert_with(empty_account);
-            let current_owner_balance = u256_from_big_endian(&owner_account.balance);
-            owner_account.balance = u256_to_big_endian(
+            let current_owner_balance = *owner_account.balance.as_u256();
+            owner_account.balance.replace_after_mutation(
                 current_owner_balance
                     .checked_add(reward)
                     .ok_or_else(|| anyhow::anyhow!("DPoS commission reward overflow"))?,
@@ -5871,13 +5874,11 @@ impl FinalChain {
             ));
         }
         let amount = u256_from_big_endian(&entry.amount);
-        let dpos_contract_balance = u256_from_big_endian(
-            accounts
-                .entry(DPOS_CONTRACT_ADDRESS)
-                .or_insert_with(empty_account)
-                .balance
-                .as_slice(),
-        );
+        let dpos_contract_balance = *accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account)
+            .balance
+            .as_u256();
         if dpos_contract_balance < amount {
             anyhow::bail!("DPoS contract balance insufficient for undelegation confirmation");
         }
@@ -5901,10 +5902,14 @@ impl FinalChain {
         let dpos_contract = accounts
             .entry(DPOS_CONTRACT_ADDRESS)
             .or_insert_with(empty_account);
-        dpos_contract.balance = u256_to_big_endian(dpos_contract_balance - amount);
+        dpos_contract
+            .balance
+            .replace_after_mutation(dpos_contract_balance - amount);
         let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
-        delegator_account.balance = u256_to_big_endian(
-            u256_from_big_endian(&delegator_account.balance)
+        delegator_account.balance.replace_after_mutation(
+            delegator_account
+                .balance
+                .as_u256()
                 .checked_add(amount)
                 .ok_or_else(|| {
                     anyhow::anyhow!("DPoS undelegation confirmation balance overflow")
@@ -6064,13 +6069,11 @@ impl FinalChain {
             ));
         }
         let amount = u256_from_big_endian(&entry.amount);
-        let dpos_contract_balance = u256_from_big_endian(
-            accounts
-                .entry(DPOS_CONTRACT_ADDRESS)
-                .or_insert_with(empty_account)
-                .balance
-                .as_slice(),
-        );
+        let dpos_contract_balance = *accounts
+            .entry(DPOS_CONTRACT_ADDRESS)
+            .or_insert_with(empty_account)
+            .balance
+            .as_u256();
         if dpos_contract_balance < amount {
             anyhow::bail!("DPoS contract balance insufficient for undelegation V2 confirmation");
         }
@@ -6092,10 +6095,12 @@ impl FinalChain {
         let dpos_account = accounts
             .entry(DPOS_CONTRACT_ADDRESS)
             .or_insert_with(empty_account);
-        dpos_account.balance = u256_to_big_endian(dpos_contract_balance - amount);
+        dpos_account
+            .balance
+            .replace_after_mutation(dpos_contract_balance - amount);
         let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
-        let delegator_balance = u256_from_big_endian(&delegator_account.balance);
-        delegator_account.balance = u256_to_big_endian(
+        let delegator_balance = *delegator_account.balance.as_u256();
+        delegator_account.balance.replace_after_mutation(
             delegator_balance
                 .checked_add(amount)
                 .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 confirmation overflow"))?,
@@ -7778,7 +7783,7 @@ fn encode_account_snapshot_rlp(accounts: &HashMap<[u8; 20], Account>) -> Vec<u8>
         stream.begin_list(6);
         stream.append(&address.as_slice());
         stream.append(&account.nonce.to_bytes().as_slice());
-        stream.append(&account.balance.as_slice());
+        stream.append(&account.balance.to_snapshot_bytes().as_slice());
         stream.append(&account.storage_root_hash.as_slice());
         stream.append(&account.code_hash.as_slice());
         stream.append(&account.code_size);
@@ -7803,7 +7808,9 @@ fn decode_account_snapshot_rlp(raw: &[u8]) -> Result<HashMap<[u8; 20], Account>,
             address,
             Account {
                 nonce: FinalChainNonce::from_bytes(item.at(1)?.data()?)?,
-                balance: item.val_at(2)?,
+                balance: rustaxa_types::FinalChainAccountBalance::from_snapshot_bytes(
+                    item.at(2)?.data()?,
+                )?,
                 storage_root_hash: decode_fixed_hash(&item.at(3)?, "account storage root")?,
                 code_hash: decode_fixed_hash(&item.at(4)?, "account code hash")?,
                 code_size: item.val_at(5)?,
@@ -8977,7 +8984,7 @@ fn u256_to_big_endian(value: U256) -> Vec<u8> {
 fn empty_account() -> Account {
     Account {
         nonce: FinalChainNonce::zero(),
-        balance: vec![],
+        balance: rustaxa_types::FinalChainAccountBalance::zero_new(),
         storage_root_hash: [0; 32],
         code_hash: [0; 32],
         code_size: 0,
@@ -10596,7 +10603,7 @@ fn affordable_gas(account: &Account, gas_price: U256, gas_limit: u64) -> u64 {
     if gas_price.is_zero() {
         return gas_limit;
     }
-    let affordable = u256_from_big_endian(&account.balance) / gas_price;
+    let affordable = *account.balance.as_u256() / gas_price;
     affordable.min(U256::from(gas_limit)).as_u64()
 }
 
@@ -12052,7 +12059,10 @@ mod tests {
     fn genesis_account(address: [u8; 20], balance: U256) -> GenesisAccount {
         GenesisAccount {
             address,
-            balance: u256_to_big_endian(balance),
+            balance: rustaxa_types::FinalChainAccountBalance::from_cpp_genesis_bytes(
+                &balance.to_big_endian(),
+            )
+            .unwrap(),
         }
     }
 
@@ -12211,7 +12221,7 @@ mod tests {
         final_chain
             .account(address)
             .unwrap()
-            .map(|account| u256_from_big_endian(&account.balance))
+            .map(|account| *account.balance.as_u256())
             .unwrap_or_default()
     }
 
@@ -14647,10 +14657,7 @@ mod tests {
 
         let dpos_account = final_chain.account(DPOS_CONTRACT_ADDRESS).unwrap().unwrap();
         assert_eq!(dpos_account.nonce, 1);
-        assert_eq!(
-            u256_from_big_endian(&dpos_account.balance),
-            U256::from(23u64)
-        );
+        assert_eq!(*dpos_account.balance.as_u256(), U256::from(23u64));
         assert_eq!(
             u256_from_big_endian(&final_chain.rewards_config.genesis_balance_sum),
             U256::from(23u64)
@@ -15648,13 +15655,12 @@ mod tests {
         );
         assert_eq!(pre_execution.accounts.get(&sender).unwrap().nonce, 5);
         assert_eq!(
-            u256_from_big_endian(
-                &pre_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             initial_dpos_balance + U256::from(7u64)
         );
         assert_eq!(
@@ -15734,13 +15740,12 @@ mod tests {
         );
         assert_eq!(cornus_execution.accounts.get(&sender).unwrap().nonce, 3);
         assert_eq!(
-            u256_from_big_endian(
-                &cornus_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*cornus_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             initial_dpos_balance
         );
         assert_eq!(
@@ -16097,13 +16102,12 @@ mod tests {
         );
         assert_eq!(pre_execution.accounts.get(&sender).unwrap().nonce, 5);
         assert_eq!(
-            u256_from_big_endian(
-                &pre_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             initial_stake + U256::from(7u64)
         );
         assert_eq!(
@@ -16658,13 +16662,12 @@ mod tests {
         assert_eq!(pre_execution.receipts[5].gas_used, v1_intrinsic - 1);
         assert_eq!(pre_execution.accounts.get(&validator).unwrap().nonce, 6);
         assert_eq!(
-            u256_from_big_endian(
-                &pre_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(10_007u64),
             "only the successful pre-Cornus V1 read may add call value to escrow"
         );
@@ -16884,13 +16887,12 @@ mod tests {
         assert_eq!(cornus_execution.receipts[10].gas_used, v1_intrinsic - 1);
         assert_eq!(cornus_execution.accounts.get(&validator).unwrap().nonce, 12);
         assert_eq!(
-            u256_from_big_endian(
-                &cornus_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*cornus_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(9_000u64),
             "confirmation releases principal while reads never move custody"
         );
@@ -17180,13 +17182,12 @@ mod tests {
         assert_eq!(pre_execution.receipts[3].gas_used, read_intrinsic - 1);
         assert_eq!(pre_execution.accounts.get(&delegator).unwrap().nonce, 15);
         assert_eq!(
-            u256_from_big_endian(
-                &pre_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(10_007u64),
             "only the successful pre-Cornus read value remains after final principal release"
         );
@@ -17313,13 +17314,12 @@ mod tests {
         assert_eq!(cornus_execution.receipts[3].gas_used, read_intrinsic);
         assert_eq!(cornus_execution.accounts.get(&delegator).unwrap().nonce, 5);
         assert_eq!(
-            u256_from_big_endian(
-                &cornus_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*cornus_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(10_000u64)
         );
         let mut malformed_nonpayable = dpos_call_request(1, malformed);
@@ -17493,13 +17493,12 @@ mod tests {
         assert_eq!(pre_execution.receipts[5].gas_used, page_intrinsic);
         assert_eq!(pre_execution.accounts.get(&reader).unwrap().nonce, 5);
         assert_eq!(
-            u256_from_big_endian(
-                &pre_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*pre_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(30_016u64)
         );
         assert_eq!(
@@ -17685,13 +17684,12 @@ mod tests {
                 .all(|receipt| receipt.logs.is_empty())
         );
         assert_eq!(
-            u256_from_big_endian(
-                &cornus_execution
-                    .accounts
-                    .get(&DPOS_CONTRACT_ADDRESS)
-                    .unwrap()
-                    .balance
-            ),
+            (*cornus_execution
+                .accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(30_000u64)
         );
 
@@ -18035,7 +18033,7 @@ mod tests {
             let mut snapshots = final_chain.account_snapshots.lock().unwrap();
             let snapshot = snapshots.get_mut(&0).unwrap();
             let mut account = snapshot.get(&sender).cloned().unwrap_or_else(empty_account);
-            account.balance = u256_to_big_endian(balance);
+            account.balance.replace_after_mutation(balance);
             snapshot.insert(sender, account);
         };
         let request = |gas_limit: u64, request_value: U256| {
@@ -18745,7 +18743,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(slashing_account.nonce, 1);
-        assert_eq!(slashing_account.balance, u256_to_big_endian(first_value));
+        assert_eq!(*slashing_account.balance.as_u256(), first_value);
 
         let header_before_restart = final_chain.block_header(period).unwrap().unwrap();
         drop(final_chain);
@@ -19398,7 +19396,7 @@ mod tests {
         let submitter_account = final_chain.account(submitter).unwrap().unwrap();
         assert_eq!(submitter_account.nonce, 1);
         assert_eq!(
-            u256_from_big_endian(&submitter_account.balance),
+            *submitter_account.balance.as_u256(),
             U256::MAX - full_gas_cost
         );
         assert!(
@@ -19713,13 +19711,12 @@ mod tests {
         );
         assert!(final_chain.account_at_block(0, receiver).unwrap().is_none());
         assert_eq!(
-            u256_from_big_endian(
-                &final_chain
-                    .account_at_block(period, receiver)
-                    .unwrap()
-                    .unwrap()
-                    .balance
-            ),
+            (*final_chain
+                .account_at_block(period, receiver)
+                .unwrap()
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(13u64)
         );
         assert!(
@@ -19836,13 +19833,12 @@ mod tests {
         );
         assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
         assert_eq!(
-            u256_from_big_endian(
-                &final_chain
-                    .account_at_block(period, sender)
-                    .unwrap()
-                    .unwrap()
-                    .balance
-            ),
+            (*final_chain
+                .account_at_block(period, sender)
+                .unwrap()
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(1_000_000u64) - U256::from(13u64)
         );
 
@@ -19921,7 +19917,12 @@ mod tests {
         assert_eq!(receipt_fields(&receipts[0]), (1, tx_gas, tx_gas));
         assert_eq!(balance_of(&final_chain, beneficiary), tx_fee);
         assert_eq!(
-            u256_from_big_endian(&final_chain.account(sender).unwrap().unwrap().balance),
+            (*final_chain
+                .account(sender)
+                .unwrap()
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(1_000_000u64) - tx_fee
         );
         assert_eq!(
@@ -20005,7 +20006,12 @@ mod tests {
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
         assert_eq!(balance_of(&final_chain, beneficiary), tx_fee);
         assert_eq!(
-            u256_from_big_endian(&final_chain.account(sender).unwrap().unwrap().balance),
+            (*final_chain
+                .account(sender)
+                .unwrap()
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(1_000_000u64) - tx_fee
         );
         assert_eq!(
@@ -21311,12 +21317,15 @@ mod tests {
             contract_balance_before
         );
         assert_eq!(
-            final_chain.account(wrong_owner).unwrap().unwrap().balance,
-            u256_to_big_endian(
-                owner_balance_before
-                    - U256::from(failed_claim_gas + transfer_gas)
-                    - U256::from(5_000u64),
-            )
+            *final_chain
+                .account(wrong_owner)
+                .unwrap()
+                .unwrap()
+                .balance
+                .as_u256(),
+            owner_balance_before
+                - U256::from(failed_claim_gas + transfer_gas)
+                - U256::from(5_000u64)
         );
 
         drop(final_chain);
@@ -21569,7 +21578,7 @@ mod tests {
         let sender_account = final_chain.account(sender).unwrap().unwrap();
         assert_eq!(sender_account.nonce, 2);
         assert_eq!(
-            u256_from_big_endian(&sender_account.balance),
+            *sender_account.balance.as_u256(),
             sender_balance_before
                 - U256::from(failed_claim_gas + transfer_gas)
                 - U256::from(5_000u64)
@@ -21685,7 +21694,7 @@ mod tests {
         let sender_account = final_chain.account(sender).unwrap().unwrap();
         assert_eq!(sender_account.nonce, 2);
         assert_eq!(
-            u256_from_big_endian(&sender_account.balance),
+            *sender_account.balance.as_u256(),
             sender_balance_before
                 - U256::from(malformed_claim_gas + transfer_gas)
                 - U256::from(5_000u64)
@@ -21757,7 +21766,7 @@ mod tests {
         let sender_account = final_chain.account(sender).unwrap().unwrap();
         assert_eq!(sender_account.nonce, 1);
         assert_eq!(
-            u256_from_big_endian(&sender_account.balance),
+            *sender_account.balance.as_u256(),
             U256::from(1_000_000u64) - U256::from(action_insufficient_tx_gas_limit * 2u64)
         );
 
@@ -23553,7 +23562,7 @@ mod tests {
         accounts.insert(
             DPOS_CONTRACT_ADDRESS,
             Account {
-                balance: u256_to_big_endian(U256::from(150u64)),
+                balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(150u64)),
                 ..empty_account()
             },
         );
@@ -23615,15 +23624,19 @@ mod tests {
         );
 
         assert_eq!(
-            u256_from_big_endian(&accounts.get(&validator).unwrap().balance),
+            (*accounts.get(&validator).unwrap().balance.as_u256()),
             U256::from(75u64)
         );
         assert_eq!(
-            u256_from_big_endian(&accounts.get(&delegator).unwrap().balance),
+            (*accounts.get(&delegator).unwrap().balance.as_u256()),
             U256::from(75u64)
         );
         assert_eq!(
-            u256_from_big_endian(&accounts.get(&DPOS_CONTRACT_ADDRESS).unwrap().balance),
+            (*accounts
+                .get(&DPOS_CONTRACT_ADDRESS)
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::zero()
         );
 
@@ -24628,7 +24641,12 @@ mod tests {
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
         assert!(snapshot.total_stakes.is_empty());
         assert_eq!(
-            u256_from_big_endian(&final_chain.account(owner).unwrap().unwrap().balance,),
+            (*final_chain
+                .account(owner)
+                .unwrap()
+                .unwrap()
+                .balance
+                .as_u256()),
             U256::from(1_000_000u64) - U256::from(2u64) * U256::from(tx_gas)
         );
 
@@ -24710,10 +24728,13 @@ mod tests {
                 proof.len()
             );
             assert_eq!(
-                final_chain.account(owner).unwrap().unwrap().balance,
-                u256_to_big_endian(
-                    U256::from(1_000_000u64) - U256::from(2u64) * U256::from(tx_gas),
-                ),
+                *final_chain
+                    .account(owner)
+                    .unwrap()
+                    .unwrap()
+                    .balance
+                    .as_u256(),
+                U256::from(1_000_000u64) - U256::from(2u64) * U256::from(tx_gas),
             );
 
             drop(final_chain);
@@ -26167,7 +26188,7 @@ mod tests {
         let owner_account = final_chain.account(owner).unwrap().unwrap();
         assert_eq!(owner_account.nonce, 1);
         assert_eq!(
-            u256_from_big_endian(&owner_account.balance),
+            *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(tx_gas) * gas_price
         );
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
@@ -26271,7 +26292,7 @@ mod tests {
         let owner_account = final_chain.account(owner).unwrap().unwrap();
         assert_eq!(owner_account.nonce, 2);
         assert_eq!(
-            u256_from_big_endian(&owner_account.balance),
+            *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(delegate_tx_gas + transfer_gas)
         );
 
@@ -26344,7 +26365,7 @@ mod tests {
         let owner_account = final_chain.account(owner).unwrap().unwrap();
         assert_eq!(owner_account.nonce, 1);
         assert_eq!(
-            u256_from_big_endian(&owner_account.balance),
+            *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(delegate_tx_gas)
         );
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
@@ -26434,7 +26455,7 @@ mod tests {
         let owner_account = final_chain.account(owner).unwrap().unwrap();
         assert_eq!(owner_account.nonce, 1);
         assert_eq!(
-            u256_from_big_endian(&owner_account.balance),
+            *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(delegate_tx_gas) * gas_price
         );
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
@@ -26551,7 +26572,7 @@ mod tests {
         let owner_account = final_chain.account(owner).unwrap().unwrap();
         assert_eq!(owner_account.nonce, 2);
         assert_eq!(
-            u256_from_big_endian(&owner_account.balance),
+            *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(2_100u64 + expected_total_gas)
         );
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
@@ -26710,7 +26731,7 @@ mod tests {
         let delegator_account = final_chain.account(delegator).unwrap().unwrap();
         assert_eq!(delegator_account.nonce, 1);
         assert_eq!(
-            u256_from_big_endian(&delegator_account.balance),
+            *delegator_account.balance.as_u256(),
             delegator_balance_before - U256::from(tx_gas) * gas_price
         );
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
@@ -26790,7 +26811,7 @@ mod tests {
         let delegator_account = final_chain.account(delegator).unwrap().unwrap();
         assert_eq!(delegator_account.nonce, 1);
         assert_eq!(
-            u256_from_big_endian(&delegator_account.balance),
+            *delegator_account.balance.as_u256(),
             delegator_balance_before - U256::from(tx_gas) * gas_price
         );
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
@@ -26868,7 +26889,7 @@ mod tests {
         );
         let validator_account = final_chain.account(validator).unwrap().unwrap();
         assert_eq!(
-            u256_from_big_endian(&validator_account.balance),
+            *validator_account.balance.as_u256(),
             validator_balance_before - U256::from(tx_gas) * gas_price
         );
         let snapshot_after = final_chain.dpos_snapshot(period).unwrap();
@@ -26952,7 +26973,7 @@ mod tests {
         );
         let validator_account = final_chain.account(validator).unwrap().unwrap();
         assert_eq!(
-            u256_from_big_endian(&validator_account.balance),
+            *validator_account.balance.as_u256(),
             validator_balance_before - U256::from(tx_gas) * gas_price
         );
         let snapshot = final_chain.dpos_snapshot(period).unwrap();
@@ -27028,7 +27049,7 @@ mod tests {
             .insert(validator, u256_to_big_endian(U256::from(1_000u64)));
         final_chain.insert_dpos_snapshot(1, snapshot).unwrap();
         let pre_fail_validator_account = final_chain.account(validator).unwrap().unwrap();
-        let pre_fail_validator_balance = u256_from_big_endian(&pre_fail_validator_account.balance);
+        let pre_fail_validator_balance = *pre_fail_validator_account.balance.as_u256();
         let pre_fail_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
         let pre_fail_total_stake = u256_from_big_endian(
             final_chain
@@ -27063,7 +27084,7 @@ mod tests {
         let post_fail_validator_account = final_chain.account(validator).unwrap().unwrap();
         assert_eq!(
             pre_fail_validator_balance,
-            u256_from_big_endian(&post_fail_validator_account.balance)
+            *post_fail_validator_account.balance.as_u256()
         );
         let post_fail_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
         assert_eq!(pre_fail_contract_balance, post_fail_contract_balance);
@@ -27133,7 +27154,7 @@ mod tests {
             .insert(validator, u256_to_big_endian(U256::from(1_000u64)));
         final_chain.insert_dpos_snapshot(1, snapshot).unwrap();
         let pre_fail_validator = final_chain.account(validator).unwrap().unwrap();
-        let pre_fail_validator_balance = u256_from_big_endian(&pre_fail_validator.balance);
+        let pre_fail_validator_balance = *pre_fail_validator.balance.as_u256();
         let pre_fail_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
 
         let period_two_block = signed_pbft_block(&signing_key, 2, 181);
@@ -27160,7 +27181,7 @@ mod tests {
         let post_fail_validator = final_chain.account(validator).unwrap().unwrap();
         assert_eq!(post_fail_validator.nonce, pre_fail_validator.nonce);
         assert_eq!(
-            u256_from_big_endian(&post_fail_validator.balance),
+            *post_fail_validator.balance.as_u256(),
             pre_fail_validator_balance
         );
         assert_eq!(
@@ -28840,7 +28861,7 @@ mod tests {
         let nonce = FinalChainNonce::from_bytes(&[0xff; 32]).unwrap().next();
         let account = Account {
             nonce: nonce.clone(),
-            balance: vec![],
+            balance: rustaxa_types::FinalChainAccountBalance::zero_new(),
             storage_root_hash: [0; 32],
             code_hash: [0; 32],
             code_size: 0,
@@ -28849,6 +28870,41 @@ mod tests {
         let decoded = decode_account_snapshot_rlp(&encoded).unwrap();
         assert_eq!(decoded.get(&address).unwrap().nonce, nonce);
         assert_eq!(decoded.get(&address).unwrap().nonce.to_bytes().len(), 33);
+    }
+
+    #[test]
+    fn account_snapshot_preserves_mixed_balance_encodings_and_rejects_corrupt_short_zero() {
+        let mut fixed_bytes = [0; 32];
+        fixed_bytes[31] = 7;
+        let fixed = Account {
+            balance: rustaxa_types::FinalChainAccountBalance::from_cpp_genesis_bytes(&fixed_bytes)
+                .unwrap(),
+            ..empty_account()
+        };
+        let minimal = Account {
+            balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(7)),
+            ..empty_account()
+        };
+        let encoded =
+            encode_account_snapshot_rlp(&HashMap::from([([1; 20], fixed), ([2; 20], minimal)]));
+        let decoded = decode_account_snapshot_rlp(&encoded).unwrap();
+        assert_eq!(decoded[&[1; 20]].balance.to_snapshot_bytes(), fixed_bytes);
+        assert_eq!(decoded[&[2; 20]].balance.to_snapshot_bytes(), vec![7]);
+
+        let mut corrupt = rlp::RlpStream::new_list(1);
+        corrupt.begin_list(6);
+        corrupt.append(&[3u8; 20].as_slice());
+        corrupt.append(&Vec::<u8>::new());
+        corrupt.append(&[0u8].as_slice());
+        corrupt.append(&[0u8; 32].as_slice());
+        corrupt.append(&[0u8; 32].as_slice());
+        corrupt.append(&0u64);
+        assert_eq!(
+            decode_account_snapshot_rlp(&corrupt.out())
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_ACCOUNT_BALANCE_SHORT_LEADING_ZERO"
+        );
     }
 
     #[test]
@@ -28902,7 +28958,8 @@ mod tests {
         for nonce in [0, 1, 127, 128, u64::MAX] {
             let account = Account {
                 nonce: FinalChainNonce::from_u64(nonce),
-                balance: vec![1, 2, 3],
+                balance: rustaxa_types::FinalChainAccountBalance::from_snapshot_bytes(&[1, 2, 3])
+                    .unwrap(),
                 storage_root_hash: [4; 32],
                 code_hash: [5; 32],
                 code_size: 6,
@@ -29016,7 +29073,9 @@ mod tests {
             0,
             vec![GenesisAccount {
                 address: sender,
-                balance: u256_to_big_endian(U256::from(200_000u64)),
+                balance: rustaxa_types::FinalChainAccountBalance::new_account(U256::from(
+                    200_000u64,
+                )),
             }],
             vec![],
         );

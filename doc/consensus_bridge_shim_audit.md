@@ -510,6 +510,9 @@ Current snapshot after DAG manager verify-result API cleanup:
   fixed 32 bytes and system output stays legacy-minimal with zero `[0]`; request identity and canonical transaction RLP
   remain compatible. No carrier, handle, export, constructor, shim route, module flag, compatibility-only test, or
   `CRW-07` inventory entry changes.
+- The encoding-preserving account-balance `CRW-09` slice keeps genesis and account-lookup CXX balance fields as
+  `Vec<u8>` while Rust owns the numeric value and fixed/minimal snapshot provenance. It adds no CXX carrier, handle,
+  export, constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

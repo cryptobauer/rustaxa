@@ -4180,6 +4180,25 @@ Validation passed all 52 `rustaxa-types`, 793 `rustaxa-consensus`, and 343 `rust
 check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, Rust formatting, and whitespace validation. Existing
 normal-policy clippy warnings remain outside this slice.
 
+### CRW-09 Encoding-Preserving FinalChain Account Balances
+
+This domain slice introduces `FinalChainAccountBalance`, pairing a `U256` numeric value with private fixed-32 or minimal
+encoding provenance. Genesis ingress requires exactly 32 bytes. Snapshot ingress accepts empty zero, canonical short
+values, and 32-byte values, while rejecting oversized or short leading-zero encodings before decoded state can be
+installed. Untouched genesis accounts therefore reproduce their fixed-width lookup and snapshot bytes; every successful
+balance write, including a zero-delta write, switches to canonical minimal encoding. Failed checked arithmetic preserves
+both the value and its provenance.
+
+Genesis and account-lookup CXX carriers remain `Vec<u8>`, the six-item account snapshot shape is unchanged, and no
+request identity, transaction RLP, schema version, migration, handle, export, shim, module flag, compatibility-only test,
+or `CRW-07` inventory delta is introduced. Focused coverage exercises constructor boundaries, equal numeric values with
+different observable encodings, mutation and arithmetic provenance, genesis lookup, mixed snapshot round trips,
+corruption rejection, bridge materialization, restart, and the existing native/payable/reward/transient execution paths.
+
+Validation passed all 1,192 tests across `rustaxa-types`, `rustaxa-consensus`, and `rustaxa-bridge`, the workspace compile
+check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, and the FinalChain Tier 3 Rust-enabled/pure-C++ parity gate.
+Rust formatting and whitespace validation also passed; existing normal-policy clippy warnings remain outside this slice.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

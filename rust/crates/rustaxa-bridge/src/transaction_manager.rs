@@ -3801,7 +3801,7 @@ mod tests {
             1,
             vec![crate::ffi::rustaxa_ffi::GenesisAccount {
                 address: sender,
-                balance: vec![1],
+                balance: ethereum_types::U256::one().to_big_endian().to_vec(),
             }],
             Vec::new(),
             crate::ffi::rustaxa_ffi::GenesisDposConfig {
