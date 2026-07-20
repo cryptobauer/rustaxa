@@ -54,10 +54,10 @@ use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::transaction::intrinsic_gas;
 use rustaxa_types::{
     Account, DposTokenAmount, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
-    FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest, FinalChainGas,
-    FinalChainNonce, FinalChainRewardsConfig, FinalChainTransactionPosition, FinalizationDagBlock,
-    FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
-    RedelegationCorrection, StoredFinalChainBlockHeader,
+    FinalChainBlockNumber, FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest,
+    FinalChainGas, FinalChainNonce, FinalChainRewardsConfig, FinalChainTransactionPosition,
+    FinalizationDagBlock, FinalizationTransaction, GenesisAccount, GenesisDposConfig,
+    GenesisValidator, RedelegationCorrection, StoredFinalChainBlockHeader,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -236,10 +236,10 @@ pub struct FinalChain {
     dpos_commission_change_frequency: u32,
     dpos_delegation_delay: u64,
     dpos_delegation_locking_period: u64,
-    dpos_cornus_period: u64,
+    dpos_cornus_period: FinalChainBlockNumber,
     dpos_cornus_delegation_locking_period: u64,
-    dpos_phalaenopsis_period: u64,
-    dpos_cacti_period: u64,
+    dpos_phalaenopsis_period: FinalChainBlockNumber,
+    dpos_cacti_period: FinalChainBlockNumber,
     dpos_cacti_delegation_locking_period: u64,
     /// DAG VDF sortition vote-count ceiling after the configured legacy
     /// total-vote-count compatibility boundary.
@@ -250,7 +250,7 @@ pub struct FinalChain {
     dag_vdf_sortition_max_vote_count: u64,
     /// Exclusive period boundary below which legacy DAG VDF sortition uses the
     /// snapshot total eligible vote count.
-    dag_vdf_sortition_total_vote_count_until_period: u64,
+    dag_vdf_sortition_total_vote_count_until_period: FinalChainBlockNumber,
     /// Hardfork and interval rules used by Rust rewards-stat planning during
     /// native finalization.
     rewards_config: FinalChainRewardsConfig,
@@ -262,12 +262,12 @@ pub struct FinalChain {
     rewards_stats_runtime: Mutex<FinalChainRewardsStatsRuntimeState>,
     /// Account snapshots keyed by finalized block number for proposal-period
     /// account reads. Missing accounts remain absent from each snapshot.
-    account_snapshots: Mutex<HashMap<u64, HashMap<[u8; 20], Account>>>,
+    account_snapshots: Mutex<HashMap<FinalChainBlockNumber, HashMap<[u8; 20], Account>>>,
     /// Highest finalized block whose account snapshot has been loaded into the
     /// latest account map. Latest account reads fail when this lags
     /// LAST_NUMBER, preventing restart paths from silently using genesis state.
-    latest_account_snapshot_block: Mutex<u64>,
-    dpos_snapshots: Mutex<HashMap<u64, DposSnapshot>>,
+    latest_account_snapshot_block: Mutex<FinalChainBlockNumber>,
+    dpos_snapshots: Mutex<HashMap<FinalChainBlockNumber, DposSnapshot>>,
 }
 
 /// Point-in-time DPoS vote-count view keyed by final-chain block number.
@@ -361,13 +361,13 @@ struct NativeRewardsStatsPlan {
     distribution_stats: Vec<RewardsBlockDistribution>,
     storage_update: Option<OwnedRewardsStatsUpdate>,
     runtime_after_commit: RewardsStatsRuntime,
-    expected_prior_head: u64,
+    expected_prior_head: FinalChainBlockNumber,
     expected_runtime_generation: u64,
 }
 
 #[derive(Clone, Debug)]
 struct FinalChainRewardsStatsRuntimeState {
-    durable_head: u64,
+    durable_head: FinalChainBlockNumber,
     generation: u64,
     runtime: RewardsStatsRuntime,
 }
@@ -394,7 +394,7 @@ struct BlockRewardContext {
 }
 
 struct OwnedRewardsStatsUpdate {
-    current_period: u64,
+    current_period: FinalChainBlockNumber,
     cache_current_period: bool,
     clear_cached_stats: bool,
     current_block_stats_rlp: Vec<u8>,
@@ -403,7 +403,7 @@ struct OwnedRewardsStatsUpdate {
 impl OwnedRewardsStatsUpdate {
     fn as_storage_update(&self) -> FinalChainRewardsStatsUpdate<'_> {
         FinalChainRewardsStatsUpdate {
-            current_period: self.current_period,
+            current_period: self.current_period.as_u64(),
             cache_current_period: self.cache_current_period,
             clear_cached_stats: self.clear_cached_stats,
             current_block_stats_rlp: &self.current_block_stats_rlp,
@@ -569,7 +569,7 @@ impl FinalChain {
             reward_reference_graph.bootstrap_node(
                 NodeKey {
                     validator: *validator,
-                    block: 0,
+                    block: FinalChainBlockNumber::GENESIS.as_u64(),
                 },
                 Node {
                     reward_per_stake: BigUint::from(0_u8),
@@ -636,7 +636,7 @@ impl FinalChain {
                     u256_to_big_endian(genesis_account_balance_sum);
             } else {
                 anyhow::ensure!(
-                    rewards_config.aspen_part_two_period == 0,
+                    rewards_config.aspen_part_two_period == 0.into(),
                     "genesis account balance sum overflow"
                 );
             }
@@ -680,10 +680,13 @@ impl FinalChain {
                 generation: 0,
                 runtime: rewards_stats_runtime,
             }),
-            account_snapshots: Mutex::new(HashMap::from([(0, genesis_accounts.clone())])),
-            latest_account_snapshot_block: Mutex::new(0),
+            account_snapshots: Mutex::new(HashMap::from([(
+                FinalChainBlockNumber::GENESIS,
+                genesis_accounts.clone(),
+            )])),
+            latest_account_snapshot_block: Mutex::new(FinalChainBlockNumber::GENESIS),
             dpos_snapshots: Mutex::new(HashMap::from([(
-                0,
+                FinalChainBlockNumber::GENESIS,
                 DposSnapshot {
                     total_stakes: genesis_dpos_total_stakes,
                     commission_rewards: BTreeMap::new(),
@@ -723,17 +726,33 @@ impl FinalChain {
     }
 
     pub fn last_block_number(&self) -> Result<u64, anyhow::Error> {
+        Ok(self.last_block_number_typed()?.as_u64())
+    }
+
+    /// Returns the latest finalized block as a typed lifecycle identity.
+    pub fn last_block_number_typed(&self) -> Result<FinalChainBlockNumber, anyhow::Error> {
         let Some(raw) = self
             .storage
             .final_chain()
             .meta_value(Self::DB_META_LAST_NUMBER)?
         else {
-            return Ok(0);
+            return Ok(FinalChainBlockNumber::GENESIS);
         };
-        decode_u64_le(&raw, "final_chain_meta/LAST_NUMBER")
+        Ok(FinalChainBlockNumber::new(decode_u64_le(
+            &raw,
+            "final_chain_meta/LAST_NUMBER",
+        )?))
     }
 
     pub fn block_number(&self, hash: [u8; 32]) -> Result<Option<u64>, anyhow::Error> {
+        Ok(self.block_number_typed(hash)?.map(Into::into))
+    }
+
+    /// Looks up a finalized block identity without erasing its domain type.
+    pub fn block_number_typed(
+        &self,
+        hash: [u8; 32],
+    ) -> Result<Option<FinalChainBlockNumber>, anyhow::Error> {
         let Some(raw) = self
             .storage
             .final_chain()
@@ -741,11 +760,16 @@ impl FinalChain {
         else {
             return Ok(None);
         };
-        Ok(Some(decode_u64_le(&raw, "final_chain_blk_number_by_hash")?))
+        Ok(Some(FinalChainBlockNumber::new(decode_u64_le(
+            &raw,
+            "final_chain_blk_number_by_hash",
+        )?)))
     }
 
-    pub fn block_hash(&self, num: u64) -> Result<Option<Vec<u8>>, anyhow::Error> {
-        self.storage.final_chain().block_hash_by_number(num)
+    pub fn block_hash(&self, num: FinalChainBlockNumber) -> Result<Option<Vec<u8>>, anyhow::Error> {
+        self.storage
+            .final_chain()
+            .block_hash_by_number(num.as_u64())
     }
 
     /// Returns the FinalChain hash that a PBFT block for `period` must carry.
@@ -762,7 +786,7 @@ impl FinalChain {
         }
 
         let lookup_block = period - self.dpos_delegation_delay;
-        let Some(hash) = self.block_hash(lookup_block)? else {
+        let Some(hash) = self.block_hash(lookup_block.into())? else {
             return Ok(None);
         };
         anyhow::ensure!(
@@ -784,9 +808,11 @@ impl FinalChain {
     pub fn with_block_bloom(
         &self,
         bloom: &FinalChainLogBloom,
-        from: u64,
-        to: u64,
-    ) -> Result<Vec<u64>, anyhow::Error> {
+        from: FinalChainBlockNumber,
+        to: FinalChainBlockNumber,
+    ) -> Result<Vec<FinalChainBlockNumber>, anyhow::Error> {
+        let from = from.as_u64();
+        let to = to.as_u64();
         if from > to {
             return Ok(Vec::new());
         }
@@ -809,7 +835,7 @@ impl FinalChain {
         to: u64,
         level: u64,
         index: u64,
-        result: &mut Vec<u64>,
+        result: &mut Vec<FinalChainBlockNumber>,
     ) -> Result<(), anyhow::Error> {
         let course_units = final_chain_bloom_index_units(level + 1)?;
         let fine_units = final_chain_bloom_index_units(level)?;
@@ -850,7 +876,7 @@ impl FinalChain {
                 .and_then(|value| value.checked_add(offset))
                 .ok_or_else(|| anyhow::anyhow!("final-chain bloom child index overflow"))?;
             if level == 0 {
-                result.push(child_index);
+                result.push(FinalChainBlockNumber::new(child_index));
             } else {
                 self.with_block_bloom_at(bloom, from, to, level - 1, child_index, result)?;
             }
@@ -858,14 +884,18 @@ impl FinalChain {
         Ok(())
     }
 
-    pub fn block_header(&self, num: u64) -> Result<Option<Vec<u8>>, anyhow::Error> {
-        let Some(raw_header) = self.storage.final_chain().block_header_raw(num)? else {
+    pub fn block_header(
+        &self,
+        num: FinalChainBlockNumber,
+    ) -> Result<Option<Vec<u8>>, anyhow::Error> {
+        let num_raw = num.as_u64();
+        let Some(raw_header) = self.storage.final_chain().block_header_raw(num_raw)? else {
             return Ok(None);
         };
-        let pbft_block = if num == 0 {
+        let pbft_block = if num.is_genesis() {
             None
         } else {
-            let period_data = self.storage.period().data_raw(num)?;
+            let period_data = self.storage.period().data_raw(num_raw)?;
             if period_data.is_empty() {
                 return Ok(None);
             }
@@ -881,7 +911,8 @@ impl FinalChain {
             StoredBlockHeaderRlp::new(&raw_header),
             self.block_gas_limit.as_u64(),
             self.genesis_timestamp,
-        );
+        )
+        .block_number(num);
         if let Some(pbft_block) = pbft_block.as_deref() {
             header_input = header_input.signed_pbft_block(SignedPbftBlockRlp::new(pbft_block));
         }
@@ -897,8 +928,8 @@ impl FinalChain {
             .location_rlp(ethereum_types::H256::from(hash))
     }
 
-    pub fn transaction_count(&self, period: u64) -> Result<u64, anyhow::Error> {
-        self.storage.transaction().count(period)
+    pub fn transaction_count(&self, period: FinalChainBlockNumber) -> Result<u64, anyhow::Error> {
+        self.storage.transaction().count(period.as_u64())
     }
 
     /// Returns the persisted FinalChain execution counters from Rust storage.
@@ -913,13 +944,16 @@ impl FinalChain {
 
     /// Returns the latest in-memory account view tracked by Rust finalization.
     pub fn account(&self, address: [u8; 20]) -> Result<Option<Account>, anyhow::Error> {
-        let last_block = self.last_block_number()?;
+        let last_block = self.last_block_number_typed()?;
         let latest_snapshot_block = *self
             .latest_account_snapshot_block
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain latest account snapshot lock poisoned"))?;
         if latest_snapshot_block != last_block {
-            anyhow::bail!("final-chain account snapshot unavailable for latest block {last_block}");
+            anyhow::bail!(
+                "final-chain account snapshot unavailable for latest block {}",
+                last_block.as_u64()
+            );
         }
         Ok(self
             .accounts
@@ -936,7 +970,7 @@ impl FinalChain {
     /// state for historical proposal-period decisions.
     pub fn account_at_block(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         address: [u8; 20],
     ) -> Result<Option<Account>, anyhow::Error> {
         Ok(self
@@ -945,7 +979,10 @@ impl FinalChain {
             .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?
             .get(&block_number)
             .ok_or_else(|| {
-                anyhow::anyhow!("final-chain account snapshot unavailable for block {block_number}")
+                anyhow::anyhow!(
+                    "final-chain account snapshot unavailable for block {}",
+                    block_number.as_u64()
+                )
             })?
             .get(&address)
             .cloned())
@@ -957,7 +994,7 @@ impl FinalChain {
     /// substitute the latest account state for a requested finalized block.
     fn account_snapshot_map_at_block(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<HashMap<[u8; 20], Account>, anyhow::Error> {
         self.account_snapshots
             .lock()
@@ -965,12 +1002,15 @@ impl FinalChain {
             .get(&block_number)
             .cloned()
             .ok_or_else(|| {
-                anyhow::anyhow!("final-chain account snapshot unavailable for block {block_number}")
+                anyhow::anyhow!(
+                    "final-chain account snapshot unavailable for block {}",
+                    block_number.as_u64()
+                )
             })
     }
 
     pub fn vrf_key(&self, address: [u8; 20]) -> Result<Option<[u8; 32]>, anyhow::Error> {
-        let latest_block = self.last_block_number()?;
+        let latest_block = self.last_block_number_typed()?;
         self.vrf_key_at_block(latest_block, address)
     }
 
@@ -982,7 +1022,7 @@ impl FinalChain {
     /// snapshots remain hard errors so callers do not silently use stale keys.
     pub fn vrf_key_at_block(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         address: [u8; 20],
     ) -> Result<Option<[u8; 32]>, anyhow::Error> {
         if let Some(vrf_key) = self.dpos_snapshot(block_number)?.vrf_keys.get(&address) {
@@ -994,7 +1034,7 @@ impl FinalChain {
     /// Returns the DPoS eligible vote count for one validator address at a block.
     pub fn dpos_eligible_vote_count(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         address: [u8; 20],
     ) -> Result<u64, anyhow::Error> {
         let snapshot = self.dpos_snapshot(block_number)?;
@@ -1002,7 +1042,10 @@ impl FinalChain {
     }
 
     /// Returns the total DPoS eligible vote count at a block.
-    pub fn dpos_eligible_total_vote_count(&self, block_number: u64) -> Result<u64, anyhow::Error> {
+    pub fn dpos_eligible_total_vote_count(
+        &self,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<u64, anyhow::Error> {
         let snapshot = self.dpos_snapshot(block_number)?;
         self.dpos_effective_total_vote_count(&snapshot, block_number)
     }
@@ -1023,7 +1066,8 @@ impl FinalChain {
         if !self.pbft_dpos_facts_available(period)? {
             return Ok(None);
         }
-        self.dpos_eligible_vote_count(period, address).map(Some)
+        self.dpos_eligible_vote_count(period.into(), address)
+            .map(Some)
     }
 
     /// Returns the total DPoS eligible vote count for PBFT consensus-period facts.
@@ -1039,13 +1083,13 @@ impl FinalChain {
         if !self.pbft_dpos_facts_available(period)? {
             return Ok(None);
         }
-        self.dpos_eligible_total_vote_count(period).map(Some)
+        self.dpos_eligible_total_vote_count(period.into()).map(Some)
     }
 
     /// Returns whether the validator has nonzero DPoS eligible votes at a block.
     pub fn dpos_is_eligible(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         address: [u8; 20],
     ) -> Result<bool, anyhow::Error> {
         Ok(self.dpos_eligible_vote_count(block_number, address)? > 0)
@@ -1054,7 +1098,8 @@ impl FinalChain {
     fn pbft_dpos_facts_available(&self, period: u64) -> Result<bool, anyhow::Error> {
         Ok(period
             <= self
-                .last_block_number()?
+                .last_block_number_typed()?
+                .as_u64()
                 .saturating_add(self.dpos_delegation_delay))
     }
 
@@ -1072,7 +1117,7 @@ impl FinalChain {
     /// - `eligibility_status` is one of the `DAG_VERIFY_DPOS_STATUS_*` values.
     pub fn dag_dpos_authorization_facts(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         sender: [u8; 20],
     ) -> Result<DagDposAuthorizationFacts, anyhow::Error> {
         let Some(snapshot) = self.dpos_snapshot_optional(block_number)? else {
@@ -1129,7 +1174,7 @@ impl FinalChain {
     /// Returns validator total stakes at a block, sorted by validator address.
     pub fn dpos_validators_total_stakes(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Vec<DposValidatorStake>, anyhow::Error> {
         Ok(self
             .dpos_snapshot(block_number)?
@@ -1146,7 +1191,10 @@ impl FinalChain {
     ///
     /// The value is derived from the Rust DPoS snapshot total-stake map and is
     /// encoded as unsigned big-endian bytes for C++ `u256` conversion.
-    pub fn dpos_total_amount_delegated(&self, block_number: u64) -> Result<Vec<u8>, anyhow::Error> {
+    pub fn dpos_total_amount_delegated(
+        &self,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<Vec<u8>, anyhow::Error> {
         Ok(u256_to_big_endian(
             self.dpos_total_amount_delegated_u256(block_number)?,
         ))
@@ -1157,7 +1205,7 @@ impl FinalChain {
     /// Before Aspen part two this matches the legacy state API and returns
     /// zero. After part two, the value is the persisted yield fraction scaled
     /// by `ASPEN_YIELD_PRECISION`.
-    pub fn dpos_yield(&self, block_number: u64) -> Result<u64, anyhow::Error> {
+    pub fn dpos_yield(&self, block_number: FinalChainBlockNumber) -> Result<u64, anyhow::Error> {
         if !self.aspen_part_two_active(block_number) {
             return Ok(0);
         }
@@ -1171,14 +1219,18 @@ impl FinalChain {
     /// Before Aspen part two this matches the legacy state API and returns
     /// zero. After part two, missing supply is surfaced as an explicit Rust
     /// state error instead of silently falling back to legacy C++.
-    pub fn dpos_total_supply(&self, block_number: u64) -> Result<Vec<u8>, anyhow::Error> {
+    pub fn dpos_total_supply(
+        &self,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<Vec<u8>, anyhow::Error> {
         if !self.aspen_part_two_active(block_number) {
             return Ok(Vec::new());
         }
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
         anyhow::ensure!(
             !snapshot.total_supply.is_empty(),
-            "Rust FinalChain Aspen total supply is missing for block {block_number}"
+            "Rust FinalChain Aspen total supply is missing for block {}",
+            block_number.as_u64()
         );
         Ok(snapshot.total_supply)
     }
@@ -1186,7 +1238,7 @@ impl FinalChain {
     /// Returns nonzero validator eligible vote counts at a block, sorted by validator address.
     pub fn dpos_validators_eligible_vote_counts(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Vec<DposValidatorVoteCount>, anyhow::Error> {
         let snapshot = self.dpos_snapshot(block_number)?;
         Ok(snapshot
@@ -1763,8 +1815,11 @@ impl FinalChain {
     }
 
     /// Returns canonical transaction RLPs for a finalized period.
-    pub fn transaction_rlps(&self, period: u64) -> Result<Vec<Vec<u8>>, anyhow::Error> {
-        let period_data = self.storage.period().data_raw(period)?;
+    pub fn transaction_rlps(
+        &self,
+        period: FinalChainBlockNumber,
+    ) -> Result<Vec<Vec<u8>>, anyhow::Error> {
+        let period_data = self.storage.period().data_raw(period.as_u64())?;
         if period_data.is_empty() {
             return Ok(vec![]);
         }
@@ -1780,10 +1835,10 @@ impl FinalChain {
     /// Returns one finalized transaction receipt RLP by block period and position.
     pub fn transaction_receipt_rlp(
         &self,
-        period: u64,
+        period: FinalChainBlockNumber,
         position: FinalChainTransactionPosition,
     ) -> Result<Option<Vec<u8>>, anyhow::Error> {
-        let receipts_rlp = self.storage.period().receipt(period)?;
+        let receipts_rlp = self.storage.period().receipt(period.as_u64())?;
         if receipts_rlp.is_empty() {
             return Ok(None);
         }
@@ -1863,7 +1918,7 @@ impl FinalChain {
         else {
             return Ok(FinalChainExternalEvmPublicationReport {
                 status: FINAL_CHAIN_EVM_PUBLICATION_STATUS_ALREADY_APPLIED,
-                period: committed_period,
+                period: committed_period.into(),
                 ..Default::default()
             });
         };
@@ -1883,7 +1938,7 @@ impl FinalChain {
             let existing_hash =
                 h256_from_slice(&existing_hash, "external EVM recovery existing block hash")?;
             if existing_hash == H256::from(marker.plan.block_hash)
-                && self.block_number(marker.plan.block_hash)? == Some(marker.plan.period)
+                && self.block_number(marker.plan.block_hash)? == Some(marker.plan.period.as_u64())
             {
                 if !self
                     .verify_external_evm_rewards_stats_update(&marker.plan.rewards_stats_update)?
@@ -1916,7 +1971,7 @@ impl FinalChain {
                 "FINAL_CHAIN_EVM_PENDING_PUBLICATION_EXISTING_BLOCK_CONFLICT",
             ));
         }
-        if committed_period < marker.plan.period {
+        if committed_period < marker.plan.period.as_u64() {
             self.storage
                 .final_chain()
                 .delete_external_evm_pending_publication()?;
@@ -1932,7 +1987,7 @@ impl FinalChain {
                 ..Default::default()
             });
         }
-        if committed_period != marker.plan.period {
+        if committed_period != marker.plan.period.as_u64() {
             return Ok(rejected_external_evm_publication_report(
                 &marker.plan,
                 "FINAL_CHAIN_EVM_PENDING_PUBLICATION_STATE_PERIOD_AHEAD",
@@ -2056,7 +2111,7 @@ impl FinalChain {
         if let Some(existing_hash) = self.block_hash(plan.period)? {
             let existing_hash =
                 h256_from_slice(&existing_hash, "external EVM existing block hash")?;
-            if existing_hash == plan_hash && indexed_period_for_hash == Some(plan.period) {
+            if existing_hash == plan_hash && indexed_period_for_hash == Some(plan.period.as_u64()) {
                 if !self.verify_external_evm_rewards_stats_update(&plan.rewards_stats_update)? {
                     return Ok(rejected_external_evm_publication_report(
                         &plan,
@@ -2091,9 +2146,9 @@ impl FinalChain {
             ));
         }
 
-        let last_block = self.last_block_number()?;
+        let last_block = self.last_block_number_typed()?;
         let expected_period = last_block
-            .checked_add(1)
+            .checked_next()
             .ok_or_else(|| anyhow::anyhow!("final-chain last block overflow"))?;
         if plan.period != expected_period {
             return Ok(rejected_external_evm_publication_report(
@@ -2121,13 +2176,13 @@ impl FinalChain {
             .has_update
             .then_some(FinalChainProposalPeriodDagLevelUpdate {
                 level: plan.proposal_period_dag_level_update.level,
-                period: plan.period,
+                period: plan.period.as_u64(),
             });
 
         self.storage
             .final_chain()
             .write_block_header_with_snapshots_execution_status_and_rewards_stats(
-                plan.period,
+                plan.period.as_u64(),
                 plan_hash,
                 plan.stored_header_rlp.as_slice(),
                 plan.receipts_rlp.as_slice(),
@@ -2136,12 +2191,12 @@ impl FinalChain {
                 Some(execution_status),
                 rewards_stats_update,
                 Some(FinalChainLogBloomIndexUpdate {
-                    block_number: plan.period,
+                    block_number: plan.period.as_u64(),
                     bloom: &plan.indexed_log_bloom,
                 }),
                 &transaction_index_updates,
                 Some(FinalChainPeriodSystemTransactionsUpdate {
-                    period: plan.period,
+                    period: plan.period.as_u64(),
                     hashes_rlp: plan.system_transaction_hashes_rlp.as_slice(),
                 }),
                 proposal_period_dag_level_update,
@@ -2244,13 +2299,13 @@ impl FinalChain {
             );
         }
         ensure_audit!(
-            self.last_block_number()? >= plan.period,
+            self.last_block_number_typed()? >= plan.period,
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_HEAD_BEFORE_PERIOD",
         );
         ensure_audit!(
             self.storage
                 .final_chain()
-                .block_header_raw(plan.period)?
+                .block_header_raw(plan.period.as_u64())?
                 .as_deref()
                 == Some(plan.stored_header_rlp.as_slice()),
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_STORED_HEADER_MISMATCH",
@@ -2260,21 +2315,24 @@ impl FinalChain {
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOCK_HASH_INDEX_MISMATCH",
         );
         ensure_audit!(
-            self.block_number(plan.block_hash)? == Some(plan.period),
+            self.block_number(plan.block_hash)? == Some(plan.period.as_u64()),
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_BLOCK_NUMBER_INDEX_MISMATCH",
         );
         ensure_audit!(
-            self.storage.period().receipt(plan.period)? == plan.receipts_rlp,
+            self.storage.period().receipt(plan.period.as_u64())? == plan.receipts_rlp,
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PERIOD_RECEIPTS_MISMATCH",
         );
         ensure_audit!(
             self.storage
                 .transaction()
-                .period_system_hashes_rlp(plan.period)?
+                .period_system_hashes_rlp(plan.period.as_u64())?
                 == plan.system_transaction_hashes_rlp,
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_SYSTEM_TRANSACTION_HASHES_MISMATCH",
         );
-        let dpos_snapshot_raw = self.storage.final_chain().dpos_snapshot_raw(plan.period)?;
+        let dpos_snapshot_raw = self
+            .storage
+            .final_chain()
+            .dpos_snapshot_raw(plan.period.as_u64())?;
         ensure_audit!(
             dpos_snapshot_raw.is_some(),
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_DPOS_SNAPSHOT_MISSING",
@@ -2288,7 +2346,7 @@ impl FinalChain {
         ensure_audit!(
             self.storage
                 .final_chain()
-                .account_snapshot_raw(plan.period)?
+                .account_snapshot_raw(plan.period.as_u64())?
                 .is_none(),
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_ACCOUNT_SNAPSHOT_UNEXPECTED",
         );
@@ -2297,7 +2355,7 @@ impl FinalChain {
                 self.storage
                     .dag()
                     .proposal_period_at_level(plan.proposal_period_dag_level_update.level)?
-                    == Some(plan.period),
+                    == Some(plan.period.as_u64()),
                 "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PROPOSAL_PERIOD_MAPPING_MISMATCH",
             );
         }
@@ -2312,8 +2370,8 @@ impl FinalChain {
                 .is_none(),
             "FINAL_CHAIN_EVM_PUBLICATION_AUDIT_PENDING_MARKER_STILL_PRESENT",
         );
-        let chunk_index = plan.period / FINAL_CHAIN_BLOOM_INDEX_SIZE as u64;
-        let chunk_slot = (plan.period % FINAL_CHAIN_BLOOM_INDEX_SIZE as u64) as usize;
+        let chunk_index = plan.period.as_u64() / FINAL_CHAIN_BLOOM_INDEX_SIZE as u64;
+        let chunk_slot = (plan.period.as_u64() % FINAL_CHAIN_BLOOM_INDEX_SIZE as u64) as usize;
         let chunk_id = final_chain_log_bloom_chunk_id(0, chunk_index)?;
         let raw_chunk = self.storage.final_chain().log_blooms_chunk_raw(chunk_id)?;
         let chunk = decode_final_chain_log_bloom_chunk(raw_chunk.as_deref())?;
@@ -2396,7 +2454,37 @@ impl FinalChain {
     ) -> Result<(Vec<u8>, Vec<Vec<u8>>), anyhow::Error> {
         let pbft =
             rustaxa_types::PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&pbft_block_rlp))?;
-        let transaction_count = self.transaction_count(pbft.period)?;
+        let block_number = FinalChainBlockNumber::new(pbft.period);
+        self.finalize_block_with_rewards_facts_at(
+            pbft_block_rlp,
+            transactions,
+            finalized_dag_blocks,
+            blocks_per_year,
+            cert_votes,
+            block_number,
+        )
+    }
+
+    /// Finalizes a PBFT block using an already-admitted typed block identity.
+    ///
+    /// The PBFT metadata period must match `block_number`; the typed identity
+    /// then drives all storage keys and header-derived state so callers cannot
+    /// accidentally materialize a header from a second raw period value.
+    pub fn finalize_block_with_rewards_facts_at(
+        &self,
+        pbft_block_rlp: Vec<u8>,
+        transactions: Vec<FinalizationTransaction>,
+        finalized_dag_blocks: Vec<FinalizationDagBlock>,
+        blocks_per_year: u32,
+        cert_votes: Vec<RewardCertVoteFact>,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<(Vec<u8>, Vec<Vec<u8>>), anyhow::Error> {
+        let pbft =
+            rustaxa_types::PbftBlockMetadata::try_from(SignedPbftBlockRlp::new(&pbft_block_rlp))?;
+        if FinalChainBlockNumber::new(pbft.period) != block_number {
+            anyhow::bail!("FINAL_CHAIN_BLOCK_NUMBER_METADATA_MISMATCH");
+        }
+        let transaction_count = self.transaction_count(block_number)?;
         if transaction_count != transactions.len() as u64 {
             anyhow::bail!(
                 "Rust FinalChain::finalize transaction count mismatch: period data has {transaction_count}, bridge provided {}",
@@ -2410,10 +2498,11 @@ impl FinalChain {
             gas_used,
             transaction_fees,
             mut dpos_snapshot,
-        } = self.execute_native_transactions(pbft.period, &transactions)?;
-        let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(pbft.period);
+        } = self.execute_native_transactions(block_number, &transactions)?;
+        let pre_magnolia_fee_reward_period = self.pre_magnolia_fee_reward_period(block_number);
         let rewards_stats_plan = self.native_rewards_stats_plan(
             &pbft,
+            block_number,
             &transactions,
             &finalized_dag_blocks,
             &transaction_fees,
@@ -2426,7 +2515,7 @@ impl FinalChain {
             rewards_stats_plan.fee_rewards_by_validator.clone()
         };
         let minted_reward_plan = self.plan_minted_rewards(
-            pbft.period,
+            block_number,
             &rewards_stats_plan.distribution_stats,
             &dpos_snapshot,
         )?;
@@ -2451,16 +2540,16 @@ impl FinalChain {
         self.apply_dpos_reward_deltas(
             &mut dpos_snapshot,
             dpos_reward_deltas,
-            pbft.period,
+            block_number,
             minted_reward_plan.total_minted_reward,
             minted_reward_plan.total_supply_after,
             minted_reward_plan.current_yield,
         )?;
-        self.apply_redelegate_hardfork_corrections(&mut dpos_snapshot, pbft.period)?;
+        self.apply_redelegate_hardfork_corrections(&mut dpos_snapshot, block_number)?;
         let encoded_receipts = encode_native_receipts(&receipts);
         let receipts_rlp = encode_receipts_rlp(&encoded_receipts);
         let parent_hash = self
-            .block_hash(self.last_block_number()?)?
+            .block_hash(self.last_block_number_typed()?)?
             .map(|bytes| h256_from_slice(&bytes, "parent final-chain hash"))
             .transpose()?
             .unwrap_or_default();
@@ -2469,7 +2558,7 @@ impl FinalChain {
         add_bloom_value(&mut indexed_log_bloom, pbft.author.as_bytes());
         let stored_header = StoredFinalChainBlockHeader {
             parent_hash,
-            state_root: synthetic_state_root(pbft.period),
+            state_root: synthetic_state_root(block_number.as_u64()),
             transactions_root: ordered_root(
                 transactions
                     .iter()
@@ -2487,6 +2576,7 @@ impl FinalChain {
                 self.block_gas_limit.as_u64(),
                 self.genesis_timestamp,
             )
+            .block_number(block_number)
             .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block_rlp)),
         )?;
         let dpos_snapshot_rlp = encode_dpos_snapshot_rlp(&dpos_snapshot)?;
@@ -2516,7 +2606,7 @@ impl FinalChain {
         self.storage
             .final_chain()
             .write_block_header_with_snapshots_execution_status_and_rewards_stats(
-                pbft.period,
+                block_number.as_u64(),
                 full_header.hash()?,
                 stored_header_rlp.as_bytes(),
                 receipts_rlp.as_slice(),
@@ -2525,7 +2615,7 @@ impl FinalChain {
                 Some(execution_status),
                 rewards_stats_storage_update,
                 Some(FinalChainLogBloomIndexUpdate {
-                    block_number: pbft.period,
+                    block_number: block_number.as_u64(),
                     bloom: &indexed_log_bloom,
                 }),
                 &transaction_index_updates,
@@ -2533,10 +2623,10 @@ impl FinalChain {
                 None,
                 false,
             )?;
-        self.insert_account_snapshot(pbft.period, account_snapshot)?;
-        self.insert_dpos_snapshot(pbft.period, dpos_snapshot)?;
+        self.insert_account_snapshot(block_number, account_snapshot)?;
+        self.insert_dpos_snapshot(block_number, dpos_snapshot)?;
         self.commit_rewards_stats_runtime(
-            pbft.period,
+            block_number,
             rewards_stats_plan.runtime_after_commit,
             rewards_stats_plan.expected_prior_head,
             rewards_stats_plan.expected_runtime_generation,
@@ -2553,8 +2643,8 @@ impl FinalChain {
     /// beneficiary, while Magnolia and later periods route fees through DPoS
     /// commission rewards. A zero boundary means Magnolia behavior is active
     /// from genesis.
-    fn pre_magnolia_fee_reward_period(&self, block_number: u64) -> bool {
-        self.rewards_config.magnolia_period != 0
+    fn pre_magnolia_fee_reward_period(&self, block_number: FinalChainBlockNumber) -> bool {
+        !self.rewards_config.magnolia_period.is_genesis()
             && block_number < self.rewards_config.magnolia_period
     }
 
@@ -2653,7 +2743,7 @@ impl FinalChain {
     /// and advances the transient supply after each decoded rewards period.
     fn plan_minted_rewards(
         &self,
-        current_block_number: u64,
+        current_block_number: FinalChainBlockNumber,
         distribution_stats: &[RewardsBlockDistribution],
         snapshot: &DposSnapshot,
     ) -> Result<MintedRewardPlan, anyhow::Error> {
@@ -2797,7 +2887,7 @@ impl FinalChain {
 
     fn minted_block_reward(
         &self,
-        current_block_number: u64,
+        current_block_number: FinalChainBlockNumber,
         stats: &RewardsBlockDistribution,
         snapshot: &DposSnapshot,
         dynamic_total_supply: Option<U256>,
@@ -2883,7 +2973,7 @@ impl FinalChain {
 
     fn aspen_dynamic_block_reward(
         &self,
-        current_block_number: u64,
+        current_block_number: FinalChainBlockNumber,
         stats: &RewardsBlockDistribution,
         snapshot: &DposSnapshot,
         current_yield: u64,
@@ -2904,10 +2994,10 @@ impl FinalChain {
 
     fn reward_blocks_per_year(
         &self,
-        current_block_number: u64,
+        current_block_number: FinalChainBlockNumber,
         stats: &RewardsBlockDistribution,
     ) -> Result<u32, anyhow::Error> {
-        let blocks_per_year = if self.rewards_config.cacti_period != 0
+        let blocks_per_year = if !self.rewards_config.cacti_period.is_genesis()
             && current_block_number >= self.rewards_config.cacti_period
         {
             anyhow::ensure!(
@@ -2925,8 +3015,8 @@ impl FinalChain {
         Ok(blocks_per_year)
     }
 
-    fn aspen_part_two_active(&self, block_number: u64) -> bool {
-        self.rewards_config.aspen_part_two_period != 0
+    fn aspen_part_two_active(&self, block_number: FinalChainBlockNumber) -> bool {
+        !self.rewards_config.aspen_part_two_period.is_genesis()
             && block_number >= self.rewards_config.aspen_part_two_period
     }
 
@@ -3009,9 +3099,11 @@ impl FinalChain {
     fn advance_reward_reference_graph_block(
         &self,
         snapshot: &mut DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<(), anyhow::Error> {
-        self.apply_reward_reference_graph(snapshot, |graph| graph.next_block(block_number))?;
+        self.apply_reward_reference_graph(snapshot, |graph| {
+            graph.next_block(block_number.as_u64())
+        })?;
         Ok(())
     }
 
@@ -3115,7 +3207,7 @@ impl FinalChain {
         &self,
         snapshot: &mut DposSnapshot,
         rewards: DposRewardDeltas,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         total_minted_reward: U256,
         total_supply_after: Option<U256>,
         current_yield: u64,
@@ -3213,14 +3305,14 @@ impl FinalChain {
 
     fn execute_native_transactions(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         transactions: &[FinalizationTransaction],
     ) -> Result<NativeExecution, anyhow::Error> {
         let mut accounts = self.current_account_snapshot()?;
         let mut receipts = Vec::with_capacity(transactions.len());
         let mut transaction_fees = Vec::with_capacity(transactions.len());
         let mut cumulative_gas_used = FinalChainGas::ZERO;
-        let head_block_number = self.last_block_number()?;
+        let head_block_number = self.last_block_number_typed()?;
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(head_block_number)?;
         self.advance_reward_reference_graph_block(&mut dpos_snapshot, block_number)?;
         // Legacy RequiredGas counts live delegator membership. Delegation delay
@@ -3234,7 +3326,11 @@ impl FinalChain {
         // precompile reads use the delayed reader published after the preceding
         // block, so mutations earlier in this block must remain invisible.
         let mut dpos_eligibility_read_snapshot = None;
-        let delayed_snapshot_block = block_number.saturating_sub(self.dpos_delegation_delay);
+        let delayed_snapshot_block = FinalChainBlockNumber::new(
+            block_number
+                .as_u64()
+                .saturating_sub(self.dpos_delegation_delay),
+        );
         let slashing_validator_snapshot = {
             let snapshots = self
                 .dpos_snapshots
@@ -3545,7 +3641,7 @@ impl FinalChain {
                                     )) => {
                                         if dpos_eligibility_read_snapshot.is_none() {
                                             let effective_block = head_block_number
-                                                .saturating_sub(self.dpos_delegation_delay);
+                                                .saturating_sub_distance(self.dpos_delegation_delay);
                                             dpos_eligibility_read_snapshot = Some((
                                                 self.dpos_snapshot(head_block_number)?,
                                                 effective_block,
@@ -3710,20 +3806,27 @@ impl FinalChain {
     ///
     /// Missing snapshots are treated as explicit unsupported historical state
     /// rather than falling back to genesis data or C++ state.
-    fn dpos_snapshot(&self, block_number: u64) -> Result<DposSnapshot, anyhow::Error> {
+    fn dpos_snapshot(
+        &self,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<DposSnapshot, anyhow::Error> {
         self.dpos_snapshot_optional(block_number)?.ok_or_else(|| {
             anyhow::anyhow!(
                 "Rust FinalChain DPoS snapshot for block {} is not implemented",
-                block_number
+                block_number.as_u64()
             )
         })
     }
 
     fn dpos_snapshot_optional(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Option<DposSnapshot>, anyhow::Error> {
-        let snapshot_block_number = block_number.saturating_sub(self.dpos_delegation_delay);
+        let snapshot_block_number = FinalChainBlockNumber::new(
+            block_number
+                .as_u64()
+                .saturating_sub(self.dpos_delegation_delay),
+        );
         Ok(self
             .dpos_snapshots
             .lock()
@@ -3739,9 +3842,13 @@ impl FinalChain {
     /// with historical stake when evaluating validator eligibility.
     fn dpos_eligibility_snapshot(
         &self,
-        block_number: u64,
-    ) -> Result<(DposSnapshot, u64), anyhow::Error> {
-        let effective_block = block_number.saturating_sub(self.dpos_delegation_delay);
+        block_number: FinalChainBlockNumber,
+    ) -> Result<(DposSnapshot, FinalChainBlockNumber), anyhow::Error> {
+        let effective_block = FinalChainBlockNumber::new(
+            block_number
+                .as_u64()
+                .saturating_sub(self.dpos_delegation_delay),
+        );
         Ok((self.dpos_snapshot(block_number)?, effective_block))
     }
 
@@ -3752,7 +3859,7 @@ impl FinalChain {
     /// authorization and explicit DPoS eligibility APIs.
     fn dpos_snapshot_at_finalized_block(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposSnapshot, anyhow::Error> {
         self.dpos_snapshots
             .lock()
@@ -3762,7 +3869,7 @@ impl FinalChain {
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "Rust FinalChain DPoS snapshot for finalized block {} is not implemented",
-                    block_number
+                    block_number.as_u64()
                 )
             })
     }
@@ -3818,7 +3925,7 @@ impl FinalChain {
     /// and output. Payable argument injection must happen before this boundary.
     fn apply_dpos_mutation_transaction(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         dpos_tx: DposTransaction,
         dpos_snapshot: &mut DposSnapshot,
         accounts: &mut HashMap<[u8; 20], Account>,
@@ -3965,7 +4072,10 @@ impl FinalChain {
         }
     }
 
-    fn dpos_total_amount_delegated_u256(&self, block_number: u64) -> Result<U256, anyhow::Error> {
+    fn dpos_total_amount_delegated_u256(
+        &self,
+        block_number: FinalChainBlockNumber,
+    ) -> Result<U256, anyhow::Error> {
         total_staked_amount(&self.dpos_snapshot_at_finalized_block(block_number)?)
     }
 
@@ -3976,8 +4086,8 @@ impl FinalChain {
     /// persisted snapshot payloads are hard errors because they would make
     /// PBFT/pillar DPoS reads nondeterministic.
     fn load_persisted_dpos_snapshots(&self) -> Result<(), anyhow::Error> {
-        let last_block = self.last_block_number()?;
-        if last_block == 0 {
+        let last_block = self.last_block_number_typed()?;
+        if last_block.is_genesis() {
             return Ok(());
         }
 
@@ -3985,12 +4095,15 @@ impl FinalChain {
             .dpos_snapshots
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain DPoS snapshot lock poisoned"))?;
-        for block_number in 1..=last_block {
+        for block_number in 1..=last_block.as_u64() {
             let Some(raw_snapshot) = self.storage.final_chain().dpos_snapshot_raw(block_number)?
             else {
                 continue;
             };
-            snapshots.insert(block_number, decode_dpos_snapshot_rlp(&raw_snapshot)?);
+            snapshots.insert(
+                FinalChainBlockNumber::new(block_number),
+                decode_dpos_snapshot_rlp(&raw_snapshot)?,
+            );
         }
         Ok(())
     }
@@ -4003,18 +4116,18 @@ impl FinalChain {
     /// payloads are hard errors because account facts drive transaction purge,
     /// proposal filtering, and read-only call validation.
     fn load_persisted_account_snapshots(&self) -> Result<(), anyhow::Error> {
-        let last_block = self.last_block_number()?;
-        if last_block == 0 {
+        let last_block = self.last_block_number_typed()?;
+        if last_block.is_genesis() {
             return Ok(());
         }
 
-        let mut loaded_latest = 0u64;
+        let mut loaded_latest = FinalChainBlockNumber::GENESIS;
         let mut loaded_accounts = None;
         let mut snapshots = self
             .account_snapshots
             .lock()
             .map_err(|_| anyhow::anyhow!("final-chain account snapshot lock poisoned"))?;
-        for block_number in 1..=last_block {
+        for block_number in 1..=last_block.as_u64() {
             let Some(raw_snapshot) = self
                 .storage
                 .final_chain()
@@ -4027,6 +4140,7 @@ impl FinalChain {
                     "failed to decode persisted account snapshot for block {block_number}: {err}"
                 )
             })?;
+            let block_number = FinalChainBlockNumber::new(block_number);
             if block_number > loaded_latest {
                 loaded_latest = block_number;
                 loaded_accounts = Some(snapshot.clone());
@@ -4247,35 +4361,35 @@ impl FinalChain {
         Ok(gas.into())
     }
 
-    fn is_on_cornus(&self, block_number: u64) -> bool {
+    fn is_on_cornus(&self, block_number: FinalChainBlockNumber) -> bool {
         block_number >= self.dpos_cornus_period
     }
 
-    fn magnolia_active(&self, block_number: u64) -> bool {
+    fn magnolia_active(&self, block_number: FinalChainBlockNumber) -> bool {
         block_number >= self.rewards_config.magnolia_period
     }
 
-    fn cacti_active(&self, block_number: u64) -> bool {
+    fn cacti_active(&self, block_number: FinalChainBlockNumber) -> bool {
         block_number >= self.rewards_config.cacti_period
     }
 
     fn slashing_is_jailed(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         validator: [u8; 20],
     ) -> bool {
         self.magnolia_active(block_number)
             && snapshot
                 .slashing_jail_blocks
                 .get(&validator)
-                .is_some_and(|jail_block| *jail_block >= block_number)
+                .is_some_and(|jail_block| *jail_block >= block_number.as_u64())
     }
 
     fn dpos_effective_vote_count(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         validator: [u8; 20],
     ) -> u64 {
         if self.cacti_active(block_number)
@@ -4294,7 +4408,7 @@ impl FinalChain {
     fn dpos_validator_is_eligible(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         validator: [u8; 20],
     ) -> bool {
         if self.cacti_active(block_number)
@@ -4318,7 +4432,7 @@ impl FinalChain {
     fn apply_dpos_eligibility_read(
         &self,
         snapshot: &DposSnapshot,
-        effective_block: u64,
+        effective_block: FinalChainBlockNumber,
         transaction: DposTransaction,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         Ok(match transaction {
@@ -4381,7 +4495,7 @@ impl FinalChain {
     fn apply_dpos_fixed_singleton_read(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         transaction: DposTransaction,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         Ok(match transaction {
@@ -4419,7 +4533,7 @@ impl FinalChain {
     fn apply_dpos_validator_page_read(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         transaction: DposTransaction,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         Ok(match transaction {
@@ -4450,7 +4564,7 @@ impl FinalChain {
     fn apply_dpos_undelegation_page_read(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         transaction: DposTransaction,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         Ok(match transaction {
@@ -4495,7 +4609,7 @@ impl FinalChain {
     fn dpos_effective_total_vote_count(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<u64, anyhow::Error> {
         let mut total = snapshot.total_vote_count;
         for validator in &snapshot.slashing_jailed_validators {
@@ -4508,7 +4622,7 @@ impl FinalChain {
         Ok(total)
     }
 
-    fn dpos_delegation_locking_period(&self, block_number: u64) -> u64 {
+    fn dpos_delegation_locking_period(&self, block_number: FinalChainBlockNumber) -> u64 {
         if block_number >= self.dpos_cacti_period {
             self.dpos_cacti_delegation_locking_period
         } else if self.is_on_cornus(block_number) {
@@ -4528,7 +4642,7 @@ impl FinalChain {
     /// delay before selecting a snapshot.
     fn encode_dpos_validator(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         validator: [u8; 20],
     ) -> Result<Option<Vec<u8>>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
@@ -4538,7 +4652,7 @@ impl FinalChain {
     fn encode_dpos_validator_from_snapshot(
         &self,
         snapshot: &DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         validator: [u8; 20],
     ) -> Result<Option<Vec<u8>>, anyhow::Error> {
         if !snapshot.total_stakes.contains_key(&validator) {
@@ -4582,7 +4696,7 @@ impl FinalChain {
         &self,
         snapshot: &DposSnapshot,
         validator: [u8; 20],
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let total_stake = snapshot
             .total_stakes
@@ -4644,7 +4758,7 @@ impl FinalChain {
 
     fn encode_dpos_validators(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
@@ -4655,7 +4769,7 @@ impl FinalChain {
         &self,
         snapshot: &DposSnapshot,
         batch: u32,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let page_size = DPOS_GET_VALIDATORS_MAX_COUNT as u32;
         let start = batch.wrapping_mul(page_size) as usize;
@@ -4678,7 +4792,7 @@ impl FinalChain {
 
     fn encode_dpos_validators_for(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         owner: [u8; 20],
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
@@ -4691,7 +4805,7 @@ impl FinalChain {
         snapshot: &DposSnapshot,
         owner: [u8; 20],
         batch: u32,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let to_skip = batch.wrapping_mul(DPOS_GET_VALIDATORS_MAX_COUNT as u32) as usize;
         let mut skipped = 0usize;
@@ -4739,7 +4853,7 @@ impl FinalChain {
         snapshot: &DposSnapshot,
         validators: &[[u8; 20]],
         is_end: bool,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let payloads = validators
             .iter()
@@ -4783,7 +4897,7 @@ impl FinalChain {
         &self,
         snapshot: &DposSnapshot,
         validator: [u8; 20],
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Vec<u8>, anyhow::Error> {
         let info_payload =
             self.encode_dpos_validator_basic_info_payload(snapshot, validator, block_number)?;
@@ -4796,7 +4910,7 @@ impl FinalChain {
 
     fn encode_dpos_total_delegation(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         delegator: [u8; 20],
     ) -> Result<Vec<u8>, anyhow::Error> {
         let snapshot = self.dpos_snapshot_at_finalized_block(block_number)?;
@@ -4835,7 +4949,7 @@ impl FinalChain {
 
     fn encode_dpos_delegations(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         delegator: [u8; 20],
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
@@ -4893,7 +5007,7 @@ impl FinalChain {
 
     fn encode_dpos_undelegations(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         delegator: [u8; 20],
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
@@ -4932,7 +5046,7 @@ impl FinalChain {
 
     fn encode_dpos_undelegations_v2(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         delegator: [u8; 20],
         batch: u32,
     ) -> Result<Vec<u8>, anyhow::Error> {
@@ -4975,7 +5089,7 @@ impl FinalChain {
 
     fn encode_dpos_undelegation_v2(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         delegator: [u8; 20],
         validator: [u8; 20],
         id: u64,
@@ -5275,7 +5389,7 @@ impl FinalChain {
         accounts: &mut HashMap<[u8; 20], Account>,
         owner: [u8; 20],
         validator: [u8; 20],
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
             return Ok(DposApplyOutcome::mutation_contract_failure(
@@ -5395,7 +5509,7 @@ impl FinalChain {
         owner: [u8; 20],
         validator: [u8; 20],
         commission: u16,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(metadata) = snapshot.validator_metadata.get(&validator) else {
             return Ok(DposApplyOutcome::mutation_contract_failure(
@@ -5412,7 +5526,7 @@ impl FinalChain {
                 DposContractError::CommissionOverflow,
             ));
         }
-        if metadata.last_commission_change > block_number {
+        if metadata.last_commission_change > block_number.as_u64() {
             anyhow::bail!(
                 "DPoS validator snapshot inconsistency: last commission change is in the future"
             );
@@ -5426,7 +5540,7 @@ impl FinalChain {
         }
         let metadata = snapshot.validator_metadata.get_mut(&validator).unwrap();
         if self.dpos_commission_change_frequency != 0
-            && block_number - metadata.last_commission_change
+            && block_number.as_u64() - metadata.last_commission_change
                 < u64::from(self.dpos_commission_change_frequency)
         {
             return Ok(DposApplyOutcome::mutation_contract_failure(
@@ -5442,7 +5556,7 @@ impl FinalChain {
             }
         }
         metadata.commission = commission;
-        metadata.last_commission_change = block_number;
+        metadata.last_commission_change = block_number.as_u64();
         Ok(DposApplyOutcome::success(vec![dpos_commission_set_log(
             validator, commission,
         )?]))
@@ -5453,7 +5567,7 @@ impl FinalChain {
         snapshot: &mut DposSnapshot,
         validator_snapshot: Option<&DposSnapshot>,
         read_snapshot: Option<&DposSnapshot>,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         slashing_tx: SlashingTransaction,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         match slashing_tx {
@@ -5490,7 +5604,7 @@ impl FinalChain {
         &self,
         snapshot: &mut DposSnapshot,
         validator_snapshot: Option<&DposSnapshot>,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         proof: VerifiedLegacyDoubleVotingProof,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         if !self.magnolia_active(block_number) {
@@ -5515,6 +5629,7 @@ impl FinalChain {
             self.rewards_config.magnolia_jail_time
         };
         let jail_block = block_number
+            .as_u64()
             .checked_add(jail_time)
             .ok_or_else(|| anyhow::anyhow!("slashing jail block overflow"))?;
         snapshot.slashing_jail_blocks.insert(offender, jail_block);
@@ -5523,7 +5638,7 @@ impl FinalChain {
         }
         Ok(DposApplyOutcome::success(vec![slashing_jailed_log(
             offender,
-            block_number,
+            block_number.as_u64(),
             jail_block,
         )?]))
     }
@@ -5550,7 +5665,7 @@ impl FinalChain {
         &self,
         snapshot: &mut DposSnapshot,
         registration: DposRegistration,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         match validate_dpos_registration_proof(&registration.proof, registration.validator)? {
             DposRegistrationProofValidation::Valid => {}
@@ -5666,7 +5781,7 @@ impl FinalChain {
             .entry(registration.validator)
             .or_default();
         let mut metadata = registration.metadata;
-        metadata.last_commission_change = block_number;
+        metadata.last_commission_change = block_number.as_u64();
         snapshot
             .validator_metadata
             .insert(registration.validator, metadata);
@@ -5808,7 +5923,7 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let remove_amount = u256_from_big_endian(&amount);
         if find_undelegation(snapshot, delegator, validator).is_some() {
@@ -5825,6 +5940,7 @@ impl FinalChain {
             return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
         let unlock_block = block_number
+            .as_u64()
             .checked_add(self.dpos_delegation_locking_period(block_number))
             .ok_or_else(|| anyhow::anyhow!("DPoS undelegation unlock block overflow"))?;
         let mut logs = self.remove_dpos_delegation_stake(
@@ -5864,14 +5980,14 @@ impl FinalChain {
         accounts: &mut HashMap<[u8; 20], Account>,
         delegator: [u8; 20],
         validator: [u8; 20],
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(entry) = find_undelegation(snapshot, delegator, validator).cloned() else {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::NonExistentUndelegation,
             ));
         };
-        if entry.block > block_number {
+        if entry.block > block_number.as_u64() {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::LockedUndelegation,
             ));
@@ -6000,7 +6116,7 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         amount: Vec<u8>,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let remove_amount = u256_from_big_endian(&amount);
         if let Some(contract_error) = self.dpos_delegation_removal_v2_contract_failure(
@@ -6037,6 +6153,7 @@ impl FinalChain {
             validator,
             u256_to_big_endian(remove_amount),
             block_number
+                .as_u64()
                 .checked_add(self.dpos_delegation_locking_period(block_number))
                 .ok_or_else(|| anyhow::anyhow!("DPoS undelegation unlock block overflow"))?,
         )?;
@@ -6059,14 +6176,14 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         id: u64,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let Some(entry) = find_undelegation_v2(snapshot, delegator, validator, id).cloned() else {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::NonExistentUndelegation,
             ));
         };
-        if entry.block > block_number {
+        if entry.block > block_number.as_u64() {
             return Ok(DposApplyOutcome::mutation_contract_failure(
                 DposContractError::LockedUndelegation,
             ));
@@ -6274,7 +6391,7 @@ impl FinalChain {
         from: [u8; 20],
         to: [u8; 20],
         amount: U256,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<Option<DposContractError>, anyhow::Error> {
         if block_number > self.rewards_config.fix_redelegate_block_num && from == to {
             return Ok(Some(DposContractError::SameValidator));
@@ -6520,7 +6637,7 @@ impl FinalChain {
         from: [u8; 20],
         to: [u8; 20],
         amount: Vec<u8>,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<DposApplyOutcome, anyhow::Error> {
         let amount = u256_from_big_endian(&amount);
         if let Some(contract_error) = self.dpos_redelegate_contract_failure(
@@ -6692,7 +6809,7 @@ impl FinalChain {
     fn apply_redelegate_hardfork_corrections(
         &self,
         snapshot: &mut DposSnapshot,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
     ) -> Result<(), anyhow::Error> {
         if block_number != self.rewards_config.fix_redelegate_block_num {
             return Ok(());
@@ -6762,7 +6879,7 @@ impl FinalChain {
 
     fn insert_dpos_snapshot(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         snapshot: DposSnapshot,
     ) -> Result<(), anyhow::Error> {
         let mut snapshots = self
@@ -6782,7 +6899,7 @@ impl FinalChain {
 
     fn insert_account_snapshot(
         &self,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         accounts: HashMap<[u8; 20], Account>,
     ) -> Result<(), anyhow::Error> {
         let mut live_accounts = self
@@ -6815,12 +6932,17 @@ impl FinalChain {
         request_id: [u8; 32],
         mut fact: FinalizedRewardsPeriodFact,
     ) -> Result<FinalChainPreparedExternalEvmRewardsStatsPlan, anyhow::Error> {
-        let expected_prior_head = self.last_block_number()?;
-        if fact.period != expected_prior_head.saturating_add(1) {
+        let expected_prior_head = self.last_block_number_typed()?;
+        if fact.period
+            != expected_prior_head
+                .checked_next()
+                .ok_or_else(|| anyhow::anyhow!("final-chain last block overflow"))?
+                .as_u64()
+        {
             anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_HEAD_MISMATCH");
         }
         fact.dpos_eligible_total_vote_count = if let Some(vote) = fact.cert_votes.first() {
-            self.dpos_eligible_total_vote_count(vote.period.saturating_sub(1))?
+            self.dpos_eligible_total_vote_count(vote.period.saturating_sub(1).into())?
         } else {
             u64::from(self.rewards_config.committee_size)
         };
@@ -6838,7 +6960,7 @@ impl FinalChain {
         if plan.status != RewardsStatsStatus::Applied {
             anyhow::bail!("{}", plan.error_code);
         }
-        if self.last_block_number()? != expected_prior_head {
+        if self.last_block_number_typed()? != expected_prior_head {
             anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_HEAD_CHANGED");
         }
         let state = self
@@ -6853,12 +6975,12 @@ impl FinalChain {
         }
         Ok(FinalChainPreparedExternalEvmRewardsStatsPlan {
             request_id,
-            period: plan.current_period,
+            period: plan.current_period.into(),
             expected_prior_head,
             expected_runtime_generation,
             distribution_stats: plan.distribution_stats,
             storage_update: FinalChainExternalEvmRewardsStatsUpdate {
-                current_period: plan.current_period,
+                current_period: plan.current_period.into(),
                 cache_current_period: plan.cache_current_period,
                 clear_cached_stats: plan.clear_cached_stats,
                 current_block_stats_rlp: if plan.cache_current_period {
@@ -6876,8 +6998,12 @@ impl FinalChain {
         &self,
         plan: &FinalChainPreparedExternalEvmRewardsStatsPlan,
     ) -> Result<FinalChainExternalEvmRewardsStatsUpdate, anyhow::Error> {
-        if plan.period != plan.expected_prior_head.saturating_add(1)
-            || self.last_block_number()? != plan.expected_prior_head
+        if plan.period
+            != plan
+                .expected_prior_head
+                .checked_next()
+                .ok_or_else(|| anyhow::anyhow!("final-chain last block overflow"))?
+            || self.last_block_number_typed()? != plan.expected_prior_head
         {
             anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_HEAD_MISMATCH");
         }
@@ -6904,7 +7030,7 @@ impl FinalChain {
         }
         if update.cache_current_period {
             return Ok(rows.iter().any(|(period, data)| {
-                *period == update.current_period && *data == update.current_block_stats_rlp
+                *period == update.current_period.as_u64() && *data == update.current_block_stats_rlp
             }));
         }
         Ok(true)
@@ -6919,7 +7045,7 @@ impl FinalChain {
 
     fn install_rewards_stats_runtime_snapshot(
         &self,
-        durable_head: u64,
+        durable_head: FinalChainBlockNumber,
         runtime: RewardsStatsRuntime,
     ) -> Result<bool, anyhow::Error> {
         let mut state = self
@@ -6944,14 +7070,18 @@ impl FinalChain {
     fn native_rewards_stats_plan(
         &self,
         pbft: &rustaxa_types::PbftBlockMetadata,
+        block_number: FinalChainBlockNumber,
         finalized_transactions: &[FinalizationTransaction],
         finalized_dag_blocks: &[FinalizationDagBlock],
         transaction_fees: &[([u8; 32], U256)],
         blocks_per_year: u32,
         cert_votes: Vec<RewardCertVoteFact>,
     ) -> Result<NativeRewardsStatsPlan, anyhow::Error> {
-        let expected_prior_head = self.last_block_number()?;
-        if pbft.period != expected_prior_head.saturating_add(1) {
+        let expected_prior_head = self.last_block_number_typed()?;
+        let expected_next_head = expected_prior_head
+            .checked_next()
+            .ok_or_else(|| anyhow::anyhow!("final-chain last block overflow"))?;
+        if expected_next_head != block_number {
             anyhow::bail!("FINAL_CHAIN_NATIVE_REWARDS_HEAD_MISMATCH");
         }
         let gas_used_by_hash = transaction_fees
@@ -6968,12 +7098,12 @@ impl FinalChain {
             .collect::<Result<HashMap<_, _>>>()?;
 
         let dpos_eligible_total_vote_count = if let Some(vote) = cert_votes.first() {
-            self.dpos_eligible_total_vote_count(vote.period.saturating_sub(1))?
+            self.dpos_eligible_total_vote_count(vote.period.saturating_sub(1).into())?
         } else {
             u64::from(self.rewards_config.committee_size)
         };
         let fact = FinalizedRewardsPeriodFact {
-            period: pbft.period,
+            period: block_number.as_u64(),
             block_author: pbft.author,
             blocks_per_year,
             dpos_eligible_total_vote_count,
@@ -7024,7 +7154,7 @@ impl FinalChain {
         let fee_rewards_by_validator = fee_rewards_from_distribution_stats(&distribution_stats)?;
         let storage_update = (plan.cache_current_period || plan.clear_cached_stats).then(|| {
             OwnedRewardsStatsUpdate {
-                current_period: plan.current_period,
+                current_period: plan.current_period.into(),
                 cache_current_period: plan.cache_current_period,
                 clear_cached_stats: plan.clear_cached_stats,
                 current_block_stats_rlp: plan.current_block_stats_rlp.clone(),
@@ -7045,12 +7175,12 @@ impl FinalChain {
 
     fn commit_rewards_stats_runtime(
         &self,
-        committed_head: u64,
+        committed_head: FinalChainBlockNumber,
         runtime_after_commit: RewardsStatsRuntime,
-        expected_prior_head: u64,
+        expected_prior_head: FinalChainBlockNumber,
         expected_runtime_generation: u64,
     ) -> Result<bool, anyhow::Error> {
-        if self.last_block_number()? != committed_head {
+        if self.last_block_number_typed()? != committed_head {
             anyhow::bail!("FINAL_CHAIN_NATIVE_REWARDS_COMMITTED_HEAD_MISMATCH");
         }
         let mut state = self
@@ -7107,12 +7237,12 @@ fn external_evm_publication_audit_report(
 }
 
 fn external_evm_transaction_location_rlp(
-    period: u64,
+    period: FinalChainBlockNumber,
     position: FinalChainTransactionPosition,
     is_system: bool,
 ) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(2 + usize::from(is_system));
-    stream.append(&period);
+    stream.append(&period.as_u64());
     stream.append(&position.as_u32());
     if is_system {
         stream.append(&is_system);
@@ -7133,11 +7263,11 @@ fn external_evm_pending_publication_marker_id(
     hasher.update(b"rustaxa-final-chain-external-evm-pending-publication-v1");
     hasher.update(&plan.request_id);
     hasher.update(&plan.plan_id);
-    hasher.update(&plan.period.to_be_bytes());
+    hasher.update(&plan.period.as_u64().to_be_bytes());
     hasher.update(&plan.block_hash);
     hasher.update(&intent.request_id);
     hasher.update(&intent.plan_id);
-    hasher.update(&intent.period.to_be_bytes());
+    hasher.update(&intent.period.as_u64().to_be_bytes());
     hasher.update(&intent.publication_block_hash);
     hasher.update(&post_execution_state_root);
     hasher.update(&post_rewards_state_root);
@@ -7159,11 +7289,11 @@ fn legacy_external_evm_pending_publication_marker_id(
     hasher.update(b"rustaxa-final-chain-external-evm-pending-publication-v1");
     hasher.update(&plan.request_id);
     hasher.update(&plan.plan_id);
-    hasher.update(&plan.period.to_be_bytes());
+    hasher.update(&plan.period.as_u64().to_be_bytes());
     hasher.update(&plan.block_hash);
     hasher.update(&intent.request_id);
     hasher.update(&intent.plan_id);
-    hasher.update(&intent.period.to_be_bytes());
+    hasher.update(&intent.period.as_u64().to_be_bytes());
     hasher.update(&intent.publication_block_hash);
     hasher.update(&post_execution_state_root);
     hasher.update(&post_rewards_state_root);
@@ -7276,7 +7406,7 @@ fn encode_external_evm_publication_plan(plan: &FinalChainExternalEvmPublicationP
     let mut stream = rlp::RlpStream::new_list(15);
     stream.append(&plan.request_id.as_slice());
     stream.append(&plan.plan_id.as_slice());
-    stream.append(&plan.period);
+    stream.append(&plan.period.as_u64());
     stream.append(&plan.block_hash.as_slice());
     stream.append(&plan.block_header_rlp);
     stream.append(&plan.stored_header_rlp);
@@ -7359,7 +7489,7 @@ fn decode_external_evm_publication_plan(
     Ok(FinalChainExternalEvmPublicationPlan {
         request_id: decode_fixed_hash(&rlp.at(0)?, "external EVM publication request id")?,
         plan_id: decode_fixed_hash(&rlp.at(1)?, "external EVM publication plan id")?,
-        period: rlp.val_at(2)?,
+        period: FinalChainBlockNumber::from(rlp.val_at::<u64>(2)?),
         block_hash: decode_fixed_hash(&rlp.at(3)?, "external EVM publication block hash")?,
         block_header_rlp: rlp.val_at(4)?,
         stored_header_rlp: rlp.val_at(5)?,
@@ -7381,7 +7511,7 @@ fn encode_external_evm_rewards_stats_update(
     update: &FinalChainExternalEvmRewardsStatsUpdate,
 ) -> Vec<u8> {
     let mut stream = rlp::RlpStream::new_list(4);
-    stream.append(&update.current_period);
+    stream.append(&update.current_period.as_u64());
     stream.append(&update.cache_current_period);
     stream.append(&update.clear_cached_stats);
     stream.append(&update.current_block_stats_rlp);
@@ -7395,7 +7525,7 @@ fn decode_external_evm_rewards_stats_update(
         anyhow::bail!("external EVM rewards stats marker payload must contain four fields");
     }
     Ok(FinalChainExternalEvmRewardsStatsUpdate {
-        current_period: rlp.val_at(0)?,
+        current_period: FinalChainBlockNumber::from(rlp.val_at::<u64>(0)?),
         cache_current_period: rlp.val_at(1)?,
         clear_cached_stats: rlp.val_at(2)?,
         current_block_stats_rlp: rlp.val_at(3)?,
@@ -7408,7 +7538,7 @@ fn encode_external_evm_state_commit_intent(
     let mut stream = rlp::RlpStream::new_list(6);
     stream.append(&intent.request_id.as_slice());
     stream.append(&intent.plan_id.as_slice());
-    stream.append(&intent.period);
+    stream.append(&intent.period.as_u64());
     stream.append(&intent.publication_block_hash.as_slice());
     stream.append(&intent.status);
     stream.append(&intent.error_code);
@@ -7424,7 +7554,7 @@ fn decode_external_evm_state_commit_intent(
     Ok(FinalChainExternalEvmStateCommitIntent {
         request_id: decode_fixed_hash(&rlp.at(0)?, "external EVM state commit request id")?,
         plan_id: decode_fixed_hash(&rlp.at(1)?, "external EVM state commit plan id")?,
-        period: rlp.val_at(2)?,
+        period: FinalChainBlockNumber::from(rlp.val_at::<u64>(2)?),
         publication_block_hash: decode_fixed_hash(
             &rlp.at(3)?,
             "external EVM state commit publication block hash",
@@ -7446,7 +7576,7 @@ fn external_evm_rewards_stats_storage_update(
     {
         return Ok(None);
     }
-    if update.current_period == 0 {
+    if update.current_period == FinalChainBlockNumber::GENESIS {
         anyhow::bail!("external EVM rewards stats period is missing");
     }
     if !update.cache_current_period && !update.current_block_stats_rlp.is_empty() {
@@ -7457,7 +7587,7 @@ fn external_evm_rewards_stats_storage_update(
     }
 
     Ok(Some(FinalChainRewardsStatsUpdate {
-        current_period: update.current_period,
+        current_period: update.current_period.as_u64(),
         cache_current_period: update.cache_current_period,
         clear_cached_stats: update.clear_cached_stats,
         current_block_stats_rlp: update.current_block_stats_rlp.as_slice(),
@@ -7482,7 +7612,7 @@ fn rewards_stats_runtime_from_storage(
     storage: &Arc<Storage>,
     rewards_config: &FinalChainRewardsConfig,
     cleanup_stale_boundary_rows: bool,
-) -> Result<(u64, RewardsStatsRuntime), anyhow::Error> {
+) -> Result<(FinalChainBlockNumber, RewardsStatsRuntime), anyhow::Error> {
     let (last_block_number, mut persisted_rows) = loop {
         let head_before = storage
             .final_chain()
@@ -7501,13 +7631,16 @@ fn rewards_stats_runtime_from_storage(
             break (head_before, rows);
         }
     };
+    let last_block_number = FinalChainBlockNumber::from(last_block_number);
     let frequency = rewards_distribution_frequency(
         &rewards_config.rewards_distribution_frequency,
         last_block_number,
     );
-    if last_block_number != 0
+    if !last_block_number.is_genesis()
         && frequency > 1
-        && last_block_number.is_multiple_of(u64::from(frequency))
+        && last_block_number
+            .as_u64()
+            .is_multiple_of(u64::from(frequency))
     {
         if cleanup_stale_boundary_rows && !persisted_rows.is_empty() {
             storage.metadata().clear_block_rewards_stats()?;
@@ -7517,7 +7650,7 @@ fn rewards_stats_runtime_from_storage(
                 .map(|raw| decode_u64_le(&raw, "final_chain_meta/LAST_NUMBER"))
                 .transpose()?
                 .unwrap_or_default();
-            if head_after_clear != last_block_number {
+            if FinalChainBlockNumber::from(head_after_clear) != last_block_number {
                 anyhow::bail!("FINAL_CHAIN_REWARDS_RUNTIME_STARTUP_HEAD_CHANGED");
             }
         }
@@ -7531,8 +7664,8 @@ fn rewards_stats_runtime_from_storage(
     let runtime = RewardsStatsRuntime::new(
         RewardsStatsConfig {
             committee_size: rewards_config.committee_size,
-            magnolia_period: rewards_config.magnolia_period,
-            aspen_part_one_period: rewards_config.aspen_part_one_period,
+            magnolia_period: rewards_config.magnolia_period.as_u64(),
+            aspen_part_one_period: rewards_config.aspen_part_one_period.as_u64(),
         },
         rewards_frequency_rules(rewards_config),
         persisted_stats,
@@ -7545,13 +7678,16 @@ fn rewards_frequency_rules(rewards_config: &FinalChainRewardsConfig) -> Vec<Rewa
         .rewards_distribution_frequency
         .iter()
         .map(|(from_period, frequency)| RewardsFrequencyRule {
-            from_period: *from_period,
+            from_period: from_period.as_u64(),
             frequency: *frequency,
         })
         .collect()
 }
 
-fn rewards_distribution_frequency(rules: &[(u64, u32)], period: u64) -> u32 {
+fn rewards_distribution_frequency(
+    rules: &[(FinalChainBlockNumber, u32)],
+    period: FinalChainBlockNumber,
+) -> u32 {
     rules
         .iter()
         .rev()
@@ -8414,12 +8550,15 @@ fn remove_undelegation_v2(
     true
 }
 
-fn cleanup_slashing_jailed_validators(snapshot: &mut DposSnapshot, block_number: u64) {
+fn cleanup_slashing_jailed_validators(
+    snapshot: &mut DposSnapshot,
+    block_number: FinalChainBlockNumber,
+) {
     snapshot.slashing_jailed_validators.retain(|validator| {
         snapshot
             .slashing_jail_blocks
             .get(validator)
-            .is_some_and(|jail_block| *jail_block > block_number)
+            .is_some_and(|jail_block| *jail_block > block_number.as_u64())
     });
 }
 
@@ -9107,9 +9246,9 @@ fn total_transaction_fees(transaction_fees: &[([u8; 32], U256)]) -> Result<U256,
 /// also return `None`, which preserves the legacy zero-action-gas failure.
 fn dpos_mutation_action_gas(
     selector: [u8; 4],
-    block_number: u64,
-    fix_claim_all_block_num: u64,
-    cornus_period: u64,
+    block_number: FinalChainBlockNumber,
+    fix_claim_all_block_num: FinalChainBlockNumber,
+    cornus_period: FinalChainBlockNumber,
 ) -> Option<FinalChainGas> {
     match selector {
         DPOS_REGISTER_VALIDATOR_SELECTOR => Some(DPOS_REGISTER_VALIDATOR_GAS.into()),
@@ -9146,9 +9285,9 @@ fn dpos_mutation_action_gas(
 /// failures.
 fn dpos_transaction_required_gas(
     dpos_tx: &DposTransaction,
-    block_number: u64,
-    fix_claim_all_block_num: u64,
-    cornus_period: u64,
+    block_number: FinalChainBlockNumber,
+    fix_claim_all_block_num: FinalChainBlockNumber,
+    cornus_period: FinalChainBlockNumber,
     snapshot: Option<&DposSnapshot>,
 ) -> Result<FinalChainGas, anyhow::Error> {
     let gas = match dpos_tx {
@@ -9679,9 +9818,9 @@ fn decode_slashing_transaction(input: &[u8]) -> Result<SlashingTransaction, anyh
 fn decode_dpos_transaction(
     input: &[u8],
     owner: [u8; 20],
-    block_number: u64,
-    fix_claim_all_block_num: u64,
-    cornus_period: u64,
+    block_number: FinalChainBlockNumber,
+    fix_claim_all_block_num: FinalChainBlockNumber,
+    cornus_period: FinalChainBlockNumber,
 ) -> Result<DposTransaction, anyhow::Error> {
     if input.len() < 4 {
         anyhow::bail!("Rust FinalChain::finalize DPoS transaction input is missing selector");
@@ -9861,10 +10000,10 @@ fn decode_dpos_transaction(
 fn decode_dpos_transaction_for_execution(
     input: &[u8],
     owner: [u8; 20],
-    block_number: u64,
-    fix_claim_all_block_num: u64,
-    cornus_period: u64,
-    phalaenopsis_period: u64,
+    block_number: FinalChainBlockNumber,
+    fix_claim_all_block_num: FinalChainBlockNumber,
+    cornus_period: FinalChainBlockNumber,
+    phalaenopsis_period: FinalChainBlockNumber,
 ) -> DposTransaction {
     if input.len() < 4 {
         return DposTransaction::UnrecognizedInput;
@@ -11084,7 +11223,7 @@ mod tests {
             U256::from(10u64),
         );
         final_chain.dpos_minimum_deposit = DposTokenAmount::from(U256::from(5u64));
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         let snapshot_before = snapshot.clone();
         let mut accounts = HashMap::new();
 
@@ -11122,7 +11261,7 @@ mod tests {
             U256::one(),
             U256::from(100u64),
         );
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot
             .total_stakes
             .insert(validator, u256_to_big_endian(U256::from(5u64)));
@@ -11136,7 +11275,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::from(6u64)),
-                0,
+                0.into(),
             )
             .unwrap_err();
 
@@ -11231,7 +11370,7 @@ mod tests {
                 final_chain.dpos_minimum_deposit = DposTokenAmount::from(U256::from(deposit));
             }
 
-            let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+            let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
             let snapshot_before = snapshot.clone();
             let mut accounts = HashMap::new();
 
@@ -11242,7 +11381,7 @@ mod tests {
                     case.delegator,
                     case.input_validator,
                     u256_to_big_endian(U256::from(case.amount)),
-                    0,
+                    0.into(),
                 )
                 .unwrap();
 
@@ -11270,7 +11409,7 @@ mod tests {
             delegator: [u8; 20],
             validator: [u8; 20],
             request_id: u64,
-            block_number: u64,
+            block_number: FinalChainBlockNumber,
             expected: DposContractError,
             expected_message: &'static str,
         }
@@ -11288,7 +11427,7 @@ mod tests {
             U256::one(),
             U256::from(100u64),
         );
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         let active_request_id = create_undelegation_v2(
             &mut snapshot,
             delegator,
@@ -11314,7 +11453,7 @@ mod tests {
                 delegator,
                 validator: active_validator,
                 request_id: active_request_id + 1,
-                block_number: 9,
+                block_number: 9.into(),
                 expected: DposContractError::NonExistentUndelegation,
                 expected_message: "Undelegation does not exist",
             },
@@ -11324,7 +11463,7 @@ mod tests {
                 delegator: wrong_delegator,
                 validator: active_validator,
                 request_id: active_request_id,
-                block_number: 9,
+                block_number: 9.into(),
                 expected: DposContractError::NonExistentUndelegation,
                 expected_message: "Undelegation does not exist",
             },
@@ -11334,7 +11473,7 @@ mod tests {
                 delegator,
                 validator: active_validator,
                 request_id: active_request_id,
-                block_number: 9,
+                block_number: 9.into(),
                 expected: DposContractError::LockedUndelegation,
                 expected_message: "Undelegation is not yet ready to be withdrawn",
             },
@@ -11344,7 +11483,7 @@ mod tests {
                 delegator,
                 validator: active_validator,
                 request_id: 99,
-                block_number: 0,
+                block_number: 0.into(),
                 expected: DposContractError::NonExistentUndelegation,
                 expected_message: "Undelegation does not exist",
             },
@@ -11354,7 +11493,7 @@ mod tests {
                 delegator,
                 validator: absent_validator,
                 request_id: 2,
-                block_number: 0,
+                block_number: 0.into(),
                 expected: DposContractError::NonExistentValidator,
                 expected_message: "Validator does not exist",
             },
@@ -11483,7 +11622,7 @@ mod tests {
                 0xF2,
                 case.sender,
                 Some(case.recipient),
-                1,
+                1u64.into(),
                 U256::from(5_000u64),
                 U256::one(),
                 intrinsic_gas(&vec![], false).unwrap(),
@@ -11499,11 +11638,11 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             };
             let rewards_config = FinalChainRewardsConfig {
-                magnolia_period: 10,
-                aspen_part_one_period: u64::MAX,
+                magnolia_period: 10.into(),
+                aspen_part_one_period: u64::MAX.into(),
                 ..Default::default()
             };
             let mut final_chain = FinalChain::new_with_rewards_config(
@@ -11523,8 +11662,11 @@ mod tests {
                 final_chain.dpos_minimum_deposit = DposTokenAmount::from(U256::from(deposit));
             }
 
-            let failed_gas =
-                expected_native_contract_tx_gas(&final_chain, second_period, &failed_undelegate_tx);
+            let failed_gas = expected_native_contract_tx_gas(
+                &final_chain,
+                second_period.into(),
+                &failed_undelegate_tx,
+            );
             let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
             write_period_data(&storage, first_period, &first_pbft, &[]);
             write_period_data(
@@ -11537,7 +11679,7 @@ mod tests {
             final_chain
                 .finalize_block(first_pbft, vec![], vec![])
                 .unwrap();
-            let mut snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+            let mut snapshot_before = final_chain.dpos_snapshot(first_period.into()).unwrap();
             snapshot_before
                 .reward_reference_graph
                 .next_block(second_period)
@@ -11552,7 +11694,7 @@ mod tests {
                     vec![],
                 )
                 .unwrap();
-            let snapshot_after = final_chain.dpos_snapshot(second_period).unwrap();
+            let snapshot_after = final_chain.dpos_snapshot(second_period.into()).unwrap();
 
             assert_eq!(receipts.len(), 2);
             assert_eq!(receipt_fields(&receipts[0]), (0, failed_gas, failed_gas));
@@ -11601,7 +11743,7 @@ mod tests {
             U256::one(),
             U256::from(100u64),
         );
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot
             .delegator_validators
             .insert(delegator, vec![validator]);
@@ -11775,17 +11917,24 @@ mod tests {
     fn dpos_dispatch_types_only_named_method_not_supported_failures() {
         let owner = [0x72; 20];
         assert!(matches!(
-            decode_dpos_transaction_for_execution(&[], owner, 0, u64::MAX, 10, 10),
+            decode_dpos_transaction_for_execution(
+                &[],
+                owner,
+                0.into(),
+                u64::MAX.into(),
+                10.into(),
+                10.into()
+            ),
             DposTransaction::UnrecognizedInput
         ));
         assert!(matches!(
             decode_dpos_transaction_for_execution(
                 &[0xde, 0xad, 0xbe, 0xef],
                 owner,
-                0,
-                u64::MAX,
-                10,
-                10,
+                0.into(),
+                u64::MAX.into(),
+                10u64.into(),
+                10u64.into(),
             ),
             DposTransaction::UnrecognizedInput
         ));
@@ -11793,10 +11942,10 @@ mod tests {
             decode_dpos_transaction_for_execution(
                 &DPOS_UNDELEGATE_V2_SELECTOR,
                 owner,
-                0,
-                u64::MAX,
-                10,
-                10,
+                0.into(),
+                u64::MAX.into(),
+                10u64.into(),
+                10u64.into(),
             ),
             DposTransaction::MethodNotSupported
         ));
@@ -11804,10 +11953,10 @@ mod tests {
             decode_dpos_transaction_for_execution(
                 &DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR,
                 owner,
-                10,
-                10,
-                10,
-                10,
+                10.into(),
+                10.into(),
+                10.into(),
+                10.into(),
             ),
             DposTransaction::UnrecognizedInput
         ));
@@ -11827,7 +11976,7 @@ mod tests {
         let plan = FinalChainExternalEvmPublicationPlan {
             request_id: [0x11; 32],
             plan_id: [0x22; 32],
-            period: 7,
+            period: 7.into(),
             block_hash: [0x33; 32],
             indexed_log_bloom: FinalChainLogBloom::ZERO,
             ..Default::default()
@@ -12121,7 +12270,7 @@ mod tests {
 
     fn expected_native_contract_tx_gas(
         final_chain: &FinalChain,
-        block_number: u64,
+        block_number: FinalChainBlockNumber,
         tx: &FinalizationTransaction,
     ) -> u64 {
         let intrinsic = intrinsic_gas(&tx.data, false).unwrap();
@@ -12233,7 +12382,7 @@ mod tests {
 
     fn dpos_call_request(block_number: u64, input: Vec<u8>) -> FinalChainCallRequest {
         FinalChainCallRequest {
-            block_number,
+            block_number: block_number.into(),
             sender: [0u8; 20],
             receiver: Some(DPOS_CONTRACT_ADDRESS),
             value: U256::zero().into(),
@@ -12245,7 +12394,7 @@ mod tests {
 
     fn slashing_call_request(block_number: u64, input: Vec<u8>) -> FinalChainCallRequest {
         FinalChainCallRequest {
-            block_number,
+            block_number: block_number.into(),
             sender: [0u8; 20],
             receiver: Some(SLASHING_CONTRACT_ADDRESS),
             value: U256::zero().into(),
@@ -12549,20 +12698,20 @@ mod tests {
         let pre_fork = decode_dpos_transaction_for_execution(
             &exact,
             owner,
-            phalaenopsis_period - 1,
-            u64::MAX,
-            cornus_period,
-            phalaenopsis_period,
+            (phalaenopsis_period - 1).into(),
+            u64::MAX.into(),
+            cornus_period.into(),
+            phalaenopsis_period.into(),
         );
         assert!(matches!(pre_fork, DposTransaction::UnrecognizedInput));
 
         let at_fork = decode_dpos_transaction_for_execution(
             &exact,
             owner,
-            phalaenopsis_period,
-            u64::MAX,
-            cornus_period,
-            phalaenopsis_period,
+            phalaenopsis_period.into(),
+            u64::MAX.into(),
+            cornus_period.into(),
+            phalaenopsis_period.into(),
         );
         assert!(matches!(
             at_fork,
@@ -12571,9 +12720,9 @@ mod tests {
         assert_eq!(
             dpos_transaction_required_gas(
                 &at_fork,
-                phalaenopsis_period,
-                u64::MAX,
-                cornus_period,
+                phalaenopsis_period.into(),
+                u64::MAX.into(),
+                cornus_period.into(),
                 None,
             )
             .unwrap()
@@ -12587,20 +12736,20 @@ mod tests {
         let trailing = decode_dpos_transaction_for_execution(
             &trailing,
             owner,
-            phalaenopsis_period,
-            u64::MAX,
-            cornus_period,
-            phalaenopsis_period,
+            phalaenopsis_period.into(),
+            u64::MAX.into(),
+            cornus_period.into(),
+            phalaenopsis_period.into(),
         );
         assert!(matches!(trailing, DposTransaction::UnrecognizedInput));
 
         let post_cornus = decode_dpos_transaction_for_execution(
             &exact,
             owner,
-            cornus_period,
-            u64::MAX,
-            cornus_period,
-            phalaenopsis_period,
+            cornus_period.into(),
+            u64::MAX.into(),
+            cornus_period.into(),
+            phalaenopsis_period.into(),
         );
         assert!(matches!(
             post_cornus,
@@ -12612,8 +12761,14 @@ mod tests {
     #[test]
     fn decode_dpos_transaction_gates_legacy_claim_all_batch_selector() {
         let owner = [0x44; 20];
-        let decoded =
-            decode_dpos_transaction(&claim_all_rewards_batch_input(7), owner, 9, 10, 0).unwrap();
+        let decoded = decode_dpos_transaction(
+            &claim_all_rewards_batch_input(7u32),
+            owner,
+            9.into(),
+            10.into(),
+            0.into(),
+        )
+        .unwrap();
         match decoded {
             DposTransaction::ClaimAllRewards {
                 delegator,
@@ -12622,8 +12777,13 @@ mod tests {
             _ => panic!("expected legacy batched claimAllRewards"),
         }
 
-        let err = match decode_dpos_transaction(&claim_all_rewards_batch_input(0), owner, 10, 10, 0)
-        {
+        let err = match decode_dpos_transaction(
+            &claim_all_rewards_batch_input(0u32),
+            owner,
+            10.into(),
+            10.into(),
+            0.into(),
+        ) {
             Ok(_) => {
                 panic!("expected legacy batched claimAllRewards to be rejected at fix boundary")
             }
@@ -12636,7 +12796,9 @@ mod tests {
 
         let mut malformed_batch_input = claim_all_rewards_batch_input(1);
         malformed_batch_input.push(0);
-        let decoded = decode_dpos_transaction(&malformed_batch_input, owner, 9, 10, 0).unwrap();
+        let decoded =
+            decode_dpos_transaction(&malformed_batch_input, owner, 9.into(), 10.into(), 0.into())
+                .unwrap();
         match decoded {
             DposTransaction::ClaimAllRewards {
                 delegator,
@@ -12645,8 +12807,14 @@ mod tests {
             _ => panic!("expected trailing-byte legacy batched claimAllRewards to be accepted"),
         };
 
-        let decoded =
-            decode_dpos_transaction(&claim_all_rewards_input(), owner, 10, 10, 0).unwrap();
+        let decoded = decode_dpos_transaction(
+            &claim_all_rewards_input(),
+            owner,
+            10.into(),
+            10.into(),
+            0.into(),
+        )
+        .unwrap();
         match decoded {
             DposTransaction::ClaimAllRewards {
                 delegator,
@@ -12657,8 +12825,14 @@ mod tests {
 
         let mut malformed_claim_all_input = claim_all_rewards_input();
         malformed_claim_all_input.push(1);
-        let decoded =
-            decode_dpos_transaction(&malformed_claim_all_input, owner, 10, 10, 0).unwrap();
+        let decoded = decode_dpos_transaction(
+            &malformed_claim_all_input,
+            owner,
+            10.into(),
+            10.into(),
+            0.into(),
+        )
+        .unwrap();
         match decoded {
             DposTransaction::ClaimAllRewards {
                 delegator,
@@ -12668,9 +12842,14 @@ mod tests {
         }
 
         let validator = [0x45; 20];
-        let decoded =
-            decode_dpos_transaction(&claim_commission_rewards_input(validator), owner, 10, 10, 0)
-                .unwrap();
+        let decoded = decode_dpos_transaction(
+            &claim_commission_rewards_input(validator),
+            owner,
+            10.into(),
+            10.into(),
+            0.into(),
+        )
+        .unwrap();
         match decoded {
             DposTransaction::ClaimCommissionRewards {
                 owner: decoded_owner,
@@ -12682,9 +12861,14 @@ mod tests {
             _ => panic!("expected claimCommissionRewards"),
         }
 
-        let decoded =
-            decode_dpos_transaction(&set_commission_input(validator, 1250), owner, 10, 10, 0)
-                .unwrap();
+        let decoded = decode_dpos_transaction(
+            &set_commission_input(validator, 1250u16),
+            owner,
+            10.into(),
+            10.into(),
+            0.into(),
+        )
+        .unwrap();
         match decoded {
             DposTransaction::SetCommission {
                 owner: decoded_owner,
@@ -12701,9 +12885,9 @@ mod tests {
         let decoded = decode_dpos_transaction(
             &set_validator_info_input(validator, "new description", "new endpoint"),
             owner,
-            10,
-            10,
-            0,
+            10.into(),
+            10u64.into(),
+            0u64.into(),
         )
         .unwrap();
         match decoded {
@@ -12721,9 +12905,14 @@ mod tests {
             _ => panic!("expected setValidatorInfo"),
         }
 
-        let decoded =
-            decode_dpos_transaction(&confirm_undelegate_input(validator), owner, 10, 10, 0)
-                .unwrap();
+        let decoded = decode_dpos_transaction(
+            &confirm_undelegate_input(validator),
+            owner,
+            10.into(),
+            10.into(),
+            0.into(),
+        )
+        .unwrap();
         match decoded {
             DposTransaction::ConfirmUndelegate {
                 delegator,
@@ -12735,8 +12924,14 @@ mod tests {
             _ => panic!("expected confirmUndelegate"),
         }
 
-        let decoded =
-            decode_dpos_transaction(&cancel_undelegate_input(validator), owner, 10, 10, 0).unwrap();
+        let decoded = decode_dpos_transaction(
+            &cancel_undelegate_input(validator),
+            owner,
+            10.into(),
+            10.into(),
+            0.into(),
+        )
+        .unwrap();
         match decoded {
             DposTransaction::CancelUndelegate {
                 delegator,
@@ -13200,7 +13395,7 @@ mod tests {
             .delegator_validators
             .insert(delegator, vec![second_validator, first_validator]);
         final_chain
-            .insert_dpos_snapshot(0, snapshot.clone())
+            .insert_dpos_snapshot(0.into(), snapshot.clone())
             .unwrap();
 
         let input = get_total_delegation_input(delegator);
@@ -13325,7 +13520,7 @@ mod tests {
                 ..Default::default()
             },
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -13416,7 +13611,7 @@ mod tests {
         let native_read_input = page_zero_input.clone();
         let native = final_chain
             .execute_native_transactions(
-                1,
+                1u64.into(),
                 &[
                     test_transaction(
                         0x8f,
@@ -13468,7 +13663,7 @@ mod tests {
         );
 
         let first_validator = expected_order[0];
-        let mut reward_snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut reward_snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         reward_snapshot
             .delegator_rewards
             .insert(first_validator, u256_to_big_endian(U256::from(100u64)));
@@ -13677,7 +13872,7 @@ mod tests {
                 .contains(&validator)
         );
         let rewards_config = FinalChainRewardsConfig {
-            fix_redelegate_block_num: 10,
+            fix_redelegate_block_num: 10.into(),
             ..Default::default()
         };
         let final_chain = FinalChain::new_with_rewards_config(
@@ -13706,7 +13901,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::zero()),
-                1,
+                1u64.into(),
             )
             .unwrap_err();
         assert!(err.to_string().contains("graph history is incomplete"));
@@ -13729,7 +13924,7 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                fix_redelegate_block_num: 10,
+                fix_redelegate_block_num: 10.into(),
                 ..Default::default()
             },
         )
@@ -13754,7 +13949,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::zero()),
-                1,
+                1u64.into(),
             )
             .unwrap_err();
         assert!(
@@ -13785,7 +13980,7 @@ mod tests {
                 ..Default::default()
             },
             FinalChainRewardsConfig {
-                fix_redelegate_block_num: 10,
+                fix_redelegate_block_num: 10.into(),
                 ..Default::default()
             },
         )
@@ -13817,7 +14012,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::zero()),
-                1,
+                1u64.into(),
             )
             .unwrap();
         assert!(
@@ -13836,7 +14031,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::zero()),
-                1,
+                1u64.into(),
             )
             .unwrap_err();
         assert!(
@@ -13867,7 +14062,7 @@ mod tests {
                 ..Default::default()
             },
             FinalChainRewardsConfig {
-                fix_redelegate_block_num: 10,
+                fix_redelegate_block_num: 10.into(),
                 ..Default::default()
             },
         )
@@ -13901,7 +14096,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::from(1_000u64)),
-                2,
+                2.into(),
             )
             .unwrap();
         assert_eq!(outcome.status_code, 1);
@@ -13930,7 +14125,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::from(1_000u64)),
-                2,
+                2.into(),
             )
             .unwrap();
         assert_eq!(repeated_outcome.status_code, 1);
@@ -13964,7 +14159,7 @@ mod tests {
                 ..Default::default()
             },
             FinalChainRewardsConfig {
-                fix_redelegate_block_num: 10,
+                fix_redelegate_block_num: 10.into(),
                 ..Default::default()
             },
         )
@@ -14002,7 +14197,7 @@ mod tests {
                     validator,
                     validator,
                     u256_to_big_endian(U256::from(10_000u64)),
-                    2,
+                    2.into(),
                 )
                 .unwrap();
             assert_eq!(outcome.status_code, 1);
@@ -14036,7 +14231,9 @@ mod tests {
             U256::from(1_000u64),
             U256::from(30_000u64),
         );
-        let mut snapshot = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let mut snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(0.into())
+            .unwrap();
         let head = snapshot
             .reward_reference_graph
             .read_validator_head(&validator)
@@ -14086,7 +14283,7 @@ mod tests {
         let mut registration = decode_dpos_register_validator(&input, validator).unwrap();
         registration.stake = u256_to_big_endian(U256::from(10_000u64));
         let outcome = final_chain
-            .apply_dpos_registration(&mut snapshot, registration, head)
+            .apply_dpos_registration(&mut snapshot, registration, head.into())
             .unwrap();
 
         assert_eq!(outcome.status_code, 1);
@@ -14134,16 +14331,16 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 10,
+                magnolia_period: 10.into(),
                 ..Default::default()
             },
         )
         .unwrap();
         let pre_magnolia = final_chain
-            .encode_dpos_validator_basic_info_payload(&query_snapshot, query_validator, 9)
+            .encode_dpos_validator_basic_info_payload(&query_snapshot, query_validator, 9.into())
             .unwrap();
         let post_magnolia = final_chain
-            .encode_dpos_validator_basic_info_payload(&query_snapshot, query_validator, 10)
+            .encode_dpos_validator_basic_info_payload(&query_snapshot, query_validator, 10.into())
             .unwrap();
         assert_eq!(u256_from_big_endian(&pre_magnolia[128..160]), U256::zero());
         assert_eq!(
@@ -14276,7 +14473,7 @@ mod tests {
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
         let validator = [0x33; 20];
         let rewards_config = FinalChainRewardsConfig {
-            magnolia_period: 1_000,
+            magnolia_period: 1_000.into(),
             ..Default::default()
         };
         let final_chain = FinalChain::new_with_rewards_config(
@@ -14296,7 +14493,7 @@ mod tests {
             rewards_config.clone(),
         )
         .unwrap();
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot
             .commission_rewards
             .insert(validator, u256_to_big_endian(U256::zero()));
@@ -14310,7 +14507,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::from(10_000u64)),
-                10,
+                10.into(),
             )
             .unwrap();
         assert_eq!(outcome.status_code, 1);
@@ -14457,8 +14654,8 @@ mod tests {
                 delegator,
                 batch: None,
             },
-            10,
-            u64::MAX,
+            10.into(),
+            u64::MAX.into(),
             final_chain.dpos_cornus_period,
             Some(&cancel_snapshot),
         )
@@ -14567,7 +14764,7 @@ mod tests {
             .plan_external_evm_rewards_stats([0x44; 32], fact.clone())
             .unwrap();
         assert_eq!(plan.request_id, [0x44; 32]);
-        assert_eq!(plan.period, 1);
+        assert_eq!(plan.period, 1.into());
         assert!(!plan.distribution_stats.is_empty());
         assert_eq!(
             final_chain.rewards_stats_runtime.lock().unwrap().generation,
@@ -14607,6 +14804,68 @@ mod tests {
     }
 
     #[test]
+    fn rewards_planning_rejects_max_head_before_mutating_runtime() {
+        let path = temp_db_path("rewards-max-head-overflow");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let final_chain = new_final_chain(storage.clone(), 1_000_000, 0, Vec::new(), Vec::new());
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainMeta,
+                &FinalChain::DB_META_LAST_NUMBER.to_le_bytes(),
+                &u64::MAX.to_le_bytes(),
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+        let generation = final_chain.rewards_stats_runtime.lock().unwrap().generation;
+        let fact = FinalizedRewardsPeriodFact {
+            period: u64::MAX,
+            block_author: H160::zero(),
+            blocks_per_year: 1,
+            dpos_eligible_total_vote_count: 0,
+            transactions: Vec::new(),
+            dag_blocks: Vec::new(),
+            cert_votes: Vec::new(),
+        };
+        let error = final_chain
+            .plan_external_evm_rewards_stats([0x66; 32], fact)
+            .unwrap_err();
+        assert_eq!(error.to_string(), "final-chain last block overflow");
+        assert_eq!(
+            final_chain.rewards_stats_runtime.lock().unwrap().generation,
+            generation
+        );
+        assert_eq!(final_chain.last_block_number().unwrap(), u64::MAX);
+
+        let metadata = rustaxa_types::PbftBlockMetadata {
+            author: H160::zero(),
+            period: u64::MAX,
+            timestamp: 0,
+            extra_data: Vec::new(),
+        };
+        let native_error = match final_chain.native_rewards_stats_plan(
+            &metadata,
+            FinalChainBlockNumber::MAX,
+            &[],
+            &[],
+            &[],
+            1,
+            Vec::new(),
+        ) {
+            Ok(_) => panic!("MAX head must reject native rewards planning"),
+            Err(error) => error,
+        };
+        assert_eq!(native_error.to_string(), "final-chain last block overflow");
+        assert_eq!(
+            final_chain.rewards_stats_runtime.lock().unwrap().generation,
+            generation
+        );
+        drop(final_chain);
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
     fn rewards_runtime_rejects_stale_reload_and_durable_head_planning_window() {
         let path = temp_db_path("rewards-runtime-stale-reload");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -14630,12 +14889,12 @@ mod tests {
         storage.commit_write_batch_with_sync(batch, false).unwrap();
         assert!(
             final_chain
-                .install_rewards_stats_runtime_snapshot(2, runtime.clone())
+                .install_rewards_stats_runtime_snapshot(2.into(), runtime.clone())
                 .unwrap()
         );
         assert!(
             !final_chain
-                .install_rewards_stats_runtime_snapshot(1, runtime)
+                .install_rewards_stats_runtime_snapshot(1.into(), runtime)
                 .unwrap(),
             "an older reload snapshot must not overwrite a newer runtime"
         );
@@ -14645,7 +14904,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .durable_head,
-            2
+            2.into()
         );
 
         let mut batch = storage.create_write_batch();
@@ -14679,7 +14938,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .durable_head,
-            2,
+            2.into(),
             "planning must not advance a lagging runtime"
         );
 
@@ -14721,7 +14980,8 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period,
+            dag_vdf_sortition_total_vote_count_until_period:
+                dag_vdf_sortition_total_vote_count_until_period.into(),
         };
 
         FinalChain::new(
@@ -14830,19 +15090,19 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 0,
-                cacti_period: 0,
+                magnolia_period: 0.into(),
+                cacti_period: 0.into(),
                 dpos_delegation_locking_period: 5,
-                cornus_period: 0,
+                cornus_period: 0.into(),
                 cornus_delegation_locking_period: 9,
                 cacti_delegation_locking_period: 17,
                 ..Default::default()
             },
         )
         .unwrap();
-        assert!(zero_activation.magnolia_active(0));
-        assert!(zero_activation.cacti_active(0));
-        assert_eq!(zero_activation.dpos_delegation_locking_period(0), 17);
+        assert!(zero_activation.magnolia_active(0.into()));
+        assert!(zero_activation.cacti_active(0.into()));
+        assert_eq!(zero_activation.dpos_delegation_locking_period(0.into()), 17);
 
         let boundary_path = temp_db_path("hardfork-activation-boundary");
         let boundary_storage = Arc::new(Storage::new(Config::new(boundary_path.clone())).unwrap());
@@ -14854,23 +15114,23 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 2,
+                magnolia_period: 2.into(),
                 dpos_delegation_locking_period: 5,
-                cornus_period: 2,
+                cornus_period: 2.into(),
                 cornus_delegation_locking_period: 9,
-                cacti_period: 3,
+                cacti_period: 3.into(),
                 cacti_delegation_locking_period: 17,
                 ..Default::default()
             },
         )
         .unwrap();
-        assert!(!boundary.magnolia_active(1));
-        assert!(boundary.magnolia_active(2));
-        assert!(!boundary.cacti_active(2));
-        assert!(boundary.cacti_active(3));
-        assert_eq!(boundary.dpos_delegation_locking_period(1), 5);
-        assert_eq!(boundary.dpos_delegation_locking_period(2), 9);
-        assert_eq!(boundary.dpos_delegation_locking_period(3), 17);
+        assert!(!boundary.magnolia_active(1.into()));
+        assert!(boundary.magnolia_active(2.into()));
+        assert!(!boundary.cacti_active(2.into()));
+        assert!(boundary.cacti_active(3.into()));
+        assert_eq!(boundary.dpos_delegation_locking_period(1.into()), 5);
+        assert_eq!(boundary.dpos_delegation_locking_period(2.into()), 9);
+        assert_eq!(boundary.dpos_delegation_locking_period(3.into()), 17);
 
         drop(zero_activation);
         drop(zero_storage);
@@ -14918,7 +15178,7 @@ mod tests {
 
         assert_eq!(final_chain.last_block_number().unwrap(), block_number);
         assert_eq!(
-            final_chain.block_hash(block_number).unwrap(),
+            final_chain.block_hash(block_number.into()).unwrap(),
             Some(block_hash.to_vec())
         );
         assert_eq!(
@@ -15006,7 +15266,10 @@ mod tests {
             vec![],
         );
 
-        let full_header = final_chain.block_header(block_number).unwrap().unwrap();
+        let full_header = final_chain
+            .block_header(block_number.into())
+            .unwrap()
+            .unwrap();
         let full_header_rlp = Rlp::new(&full_header);
         assert_eq!(full_header_rlp.item_count().unwrap(), 13);
         assert_eq!(
@@ -15023,7 +15286,7 @@ mod tests {
             final_chain.transaction_location(tx_hash).unwrap(),
             Some(tx_location)
         );
-        assert_eq!(final_chain.transaction_count(tx_period).unwrap(), 2);
+        assert_eq!(final_chain.transaction_count(tx_period.into()).unwrap(), 2);
 
         drop(final_chain);
         drop(storage);
@@ -15052,33 +15315,42 @@ mod tests {
 
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(0, first_validator)
+                .dpos_eligible_vote_count(0.into(), first_validator)
                 .unwrap(),
             10
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(0, second_validator)
+                .dpos_eligible_vote_count(0.into(), second_validator)
                 .unwrap(),
             25
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(0, ineligible_validator)
+                .dpos_eligible_vote_count(0.into(), ineligible_validator)
                 .unwrap(),
             0
         );
-        assert_eq!(final_chain.dpos_eligible_total_vote_count(0).unwrap(), 35);
-        assert!(final_chain.dpos_is_eligible(0, first_validator).unwrap());
-        assert!(
-            !final_chain
-                .dpos_is_eligible(0, ineligible_validator)
-                .unwrap()
-        );
-        assert!(!final_chain.dpos_is_eligible(0, [0xFF; 20]).unwrap());
         assert_eq!(
             final_chain
-                .dpos_validators_total_stakes(0)
+                .dpos_eligible_total_vote_count(0.into())
+                .unwrap(),
+            35
+        );
+        assert!(
+            final_chain
+                .dpos_is_eligible(0.into(), first_validator)
+                .unwrap()
+        );
+        assert!(
+            !final_chain
+                .dpos_is_eligible(0.into(), ineligible_validator)
+                .unwrap()
+        );
+        assert!(!final_chain.dpos_is_eligible(0.into(), [0xFF; 20]).unwrap());
+        assert_eq!(
+            final_chain
+                .dpos_validators_total_stakes(0.into())
                 .unwrap()
                 .into_iter()
                 .map(|stake| (stake.address, u256_from_big_endian(&stake.stake)))
@@ -15091,7 +15363,7 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_validators_eligible_vote_counts(0)
+                .dpos_validators_eligible_vote_counts(0.into())
                 .unwrap()
                 .into_iter()
                 .map(|vote_count| (vote_count.address, vote_count.vote_count))
@@ -15222,7 +15494,7 @@ mod tests {
             validators.clone(),
             dpos_config.clone(),
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -15339,11 +15611,11 @@ mod tests {
         pre_cornus_value.value = U256::one().into();
         assert_eq!(final_chain.call(pre_cornus_value).unwrap().code_err, "");
 
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         let mut empty_snapshot = snapshot.clone();
         empty_snapshot.validator_order.clear();
         let empty_page = final_chain
-            .encode_dpos_validators_from_snapshot(&empty_snapshot, 0, 0)
+            .encode_dpos_validators_from_snapshot(&empty_snapshot, 0u32, 0.into())
             .unwrap();
         assert_eq!(
             validator_page_addresses(&empty_page),
@@ -15352,9 +15624,9 @@ mod tests {
         assert_eq!(
             dpos_transaction_required_gas(
                 &DposTransaction::GetValidators(Ok(0)),
-                0,
-                u64::MAX,
-                1,
+                0.into(),
+                u64::MAX.into(),
+                1u64.into(),
                 Some(&empty_snapshot),
             )
             .unwrap()
@@ -15385,20 +15657,20 @@ mod tests {
         assert_eq!(snapshot.validator_order[1], [22; 20]);
         assert_eq!(snapshot.validator_order.len(), 21);
         let swapped_page = final_chain
-            .encode_dpos_validators_from_snapshot(&snapshot, 0, 0)
+            .encode_dpos_validators_from_snapshot(&snapshot, 0u32, 0.into())
             .unwrap();
         assert_eq!(validator_page_addresses(&swapped_page).0[1], [22; 20]);
         let restarted_snapshot =
             decode_dpos_snapshot_rlp(&encode_dpos_snapshot_rlp(&snapshot).unwrap()).unwrap();
         let restarted_page = final_chain
-            .encode_dpos_validators_from_snapshot(&restarted_snapshot, 0, 0)
+            .encode_dpos_validators_from_snapshot(&restarted_snapshot, 0u32, 0.into())
             .unwrap();
         assert_eq!(restarted_page, swapped_page);
 
         let mut corrupt_snapshot = restarted_snapshot;
         corrupt_snapshot.validator_metadata.remove(&[1; 20]);
         let corruption = final_chain
-            .encode_dpos_validators_from_snapshot(&corrupt_snapshot, 0, 0)
+            .encode_dpos_validators_from_snapshot(&corrupt_snapshot, 0u32, 0.into())
             .unwrap_err();
         assert!(corruption.to_string().contains("missing metadata"));
 
@@ -15412,7 +15684,7 @@ mod tests {
             validators,
             dpos_config,
             FinalChainRewardsConfig {
-                cornus_period: 0,
+                cornus_period: 0.into(),
                 ..Default::default()
             },
         )
@@ -15566,34 +15838,34 @@ mod tests {
                 ..Default::default()
             },
             FinalChainRewardsConfig {
-                magnolia_period: 0,
-                cacti_period: 0,
-                cornus_period: 0,
+                magnolia_period: 0.into(),
+                cacti_period: 0.into(),
+                cornus_period: 0.into(),
                 ..Default::default()
             },
         )
         .unwrap();
 
-        let mut delayed = final_chain.dpos_snapshot(0).unwrap();
+        let mut delayed = final_chain.dpos_snapshot(0.into()).unwrap();
         delayed.slashing_jail_blocks.insert(validator, 0);
         delayed.slashing_jailed_validators.push(validator);
         let after_expiry = delayed.clone();
         {
             let mut snapshots = final_chain.dpos_snapshots.lock().unwrap();
-            snapshots.insert(0, delayed.clone());
-            snapshots.insert(1, after_expiry);
+            snapshots.insert(0.into(), delayed.clone());
+            snapshots.insert(1.into(), after_expiry);
         }
 
         let jailed = final_chain
             .call(dpos_call_request(
-                1,
+                1u64,
                 dpos_eligibility_address_input(DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, validator),
             ))
             .unwrap();
         assert_eq!(u256_from_big_endian(&jailed.code_retval), U256::zero());
         let jailed_votes = final_chain
             .call(dpos_call_request(
-                1,
+                1u64,
                 dpos_eligibility_address_input(
                     DPOS_GET_VALIDATOR_ELIGIBLE_VOTES_SELECTOR,
                     validator,
@@ -15620,14 +15892,14 @@ mod tests {
         let frozen_read = final_chain
             .apply_dpos_eligibility_read(
                 &delayed,
-                1,
+                1.into(),
                 DposTransaction::GetValidatorEligibleVotesCount(Ok(validator)),
             )
             .unwrap();
         let current_read = final_chain
             .apply_dpos_eligibility_read(
                 &current,
-                1,
+                1.into(),
                 DposTransaction::GetValidatorEligibleVotesCount(Ok(validator)),
             )
             .unwrap();
@@ -15664,7 +15936,7 @@ mod tests {
             vec![genesis_validator(validator, initial_dpos_balance)],
             dpos_config.clone(),
             FinalChainRewardsConfig {
-                cornus_period: 2,
+                cornus_period: 2.into(),
                 ..Default::default()
             },
         )
@@ -15746,7 +16018,7 @@ mod tests {
             ),
         ];
         let pre_execution = pre_chain
-            .execute_native_transactions(1, &pre_transactions)
+            .execute_native_transactions(1.into(), &pre_transactions)
             .unwrap();
         assert_eq!(
             pre_execution
@@ -15808,7 +16080,7 @@ mod tests {
             vec![genesis_validator(validator, initial_dpos_balance)],
             dpos_config,
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -15850,7 +16122,7 @@ mod tests {
             ),
         ];
         let cornus_execution = cornus_chain
-            .execute_native_transactions(1, &cornus_transactions)
+            .execute_native_transactions(1.into(), &cornus_transactions)
             .unwrap();
         assert_eq!(
             cornus_execution
@@ -15911,7 +16183,7 @@ mod tests {
             vec![genesis_validator(validator, U256::from(10_000u64))],
             dpos_config.clone(),
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -15962,12 +16234,12 @@ mod tests {
             vec![genesis_validator(validator, U256::from(10_000u64))],
             dpos_config,
             FinalChainRewardsConfig {
-                cornus_period: 0,
+                cornus_period: 0.into(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let mut snapshot = cornus_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = cornus_chain.dpos_snapshot(0.into()).unwrap();
         assert_eq!(
             create_undelegation_v2(
                 &mut snapshot,
@@ -15979,7 +16251,9 @@ mod tests {
             .unwrap(),
             1
         );
-        cornus_chain.insert_dpos_snapshot(0, snapshot).unwrap();
+        cornus_chain
+            .insert_dpos_snapshot(0.into(), snapshot)
+            .unwrap();
 
         let mut permissive_v2 = get_undelegation_v2_input(delegator, validator, 1);
         permissive_v2[4] = 0xa1;
@@ -16037,10 +16311,10 @@ mod tests {
         assert_eq!(nonpayable_v2.code_err, "DPoS method is not payable");
         assert_eq!(nonpayable_v2.gas_used.as_u64(), 0);
 
-        let mut corrupt_snapshot = pre_chain.dpos_snapshot(0).unwrap();
+        let mut corrupt_snapshot = pre_chain.dpos_snapshot(0.into()).unwrap();
         corrupt_snapshot.total_stakes.remove(&validator);
         pre_chain
-            .insert_dpos_snapshot(0, corrupt_snapshot.clone())
+            .insert_dpos_snapshot(0.into(), corrupt_snapshot.clone())
             .unwrap();
         let direct_error = pre_chain
             .call(dpos_call_request(0, get_validator_input(validator)))
@@ -16049,7 +16323,7 @@ mod tests {
         let native_error = pre_chain
             .apply_dpos_fixed_singleton_read(
                 &corrupt_snapshot,
-                0,
+                0.into(),
                 DposTransaction::GetValidator(Ok(validator)),
             )
             .unwrap_err();
@@ -16062,7 +16336,7 @@ mod tests {
             .redelegate_same_validator_corruption
             .insert(orphan_validator);
         pre_chain
-            .insert_dpos_snapshot(0, marker_only_snapshot.clone())
+            .insert_dpos_snapshot(0.into(), marker_only_snapshot.clone())
             .unwrap();
         let marker_direct_error = pre_chain
             .call(dpos_call_request(0, get_validator_input(orphan_validator)))
@@ -16075,7 +16349,7 @@ mod tests {
         let marker_native_error = pre_chain
             .apply_dpos_fixed_singleton_read(
                 &marker_only_snapshot,
-                0,
+                0.into(),
                 DposTransaction::GetValidator(Ok(orphan_validator)),
             )
             .unwrap_err();
@@ -16097,7 +16371,7 @@ mod tests {
             decode_dpos_register_validator(&registration_input, [0x54; 20]).unwrap();
         registration.stake = u256_to_big_endian(U256::from(10_000u64));
         let registration_error = pre_chain
-            .apply_dpos_registration(&mut marker_only_snapshot, registration, 0)
+            .apply_dpos_registration(&mut marker_only_snapshot, registration, 0.into())
             .unwrap_err();
         assert!(registration_error.to_string().contains("orphan rows found"));
 
@@ -16132,7 +16406,7 @@ mod tests {
             vec![genesis_validator(validator, initial_stake)],
             dpos_config.clone(),
             FinalChainRewardsConfig {
-                cornus_period: 2,
+                cornus_period: 2.into(),
                 ..Default::default()
             },
         )
@@ -16197,7 +16471,7 @@ mod tests {
             ),
         ];
         let pre_execution = pre_chain
-            .execute_native_transactions(1, &pre_transactions)
+            .execute_native_transactions(1.into(), &pre_transactions)
             .unwrap();
         assert_eq!(
             pre_execution
@@ -16258,9 +16532,9 @@ mod tests {
             vec![genesis_validator(validator, initial_stake)],
             dpos_config,
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 cornus_delegation_locking_period: 0,
-                cacti_period: u64::MAX,
+                cacti_period: u64::MAX.into(),
                 ..Default::default()
             },
         )
@@ -16360,7 +16634,7 @@ mod tests {
             ),
         ];
         let cornus_execution = cornus_chain
-            .execute_native_transactions(1, &cornus_transactions)
+            .execute_native_transactions(1.into(), &cornus_transactions)
             .unwrap();
         assert_eq!(
             cornus_execution
@@ -16396,7 +16670,7 @@ mod tests {
         let validator_read = cornus_chain
             .apply_dpos_fixed_singleton_read(
                 &cornus_execution.dpos_snapshot,
-                1,
+                1.into(),
                 DposTransaction::GetValidator(Ok(validator)),
             )
             .unwrap();
@@ -16408,7 +16682,7 @@ mod tests {
         let undelegation_read = cornus_chain
             .apply_dpos_fixed_singleton_read(
                 &cornus_execution.dpos_snapshot,
-                1,
+                1.into(),
                 DposTransaction::GetUndelegationV2(Ok(DposUndelegationV2Read {
                     delegator: validator,
                     validator,
@@ -16432,7 +16706,7 @@ mod tests {
         let restarted_read = cornus_chain
             .apply_dpos_fixed_singleton_read(
                 &restarted_snapshot,
-                1,
+                1.into(),
                 DposTransaction::GetUndelegationV2(Ok(DposUndelegationV2Read {
                     delegator: validator,
                     validator,
@@ -16466,7 +16740,7 @@ mod tests {
             U256::from(1_000u64),
             U256::from(30_000u64),
         );
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot.undelegations.insert(
             delegator,
             (1u8..=22)
@@ -16679,8 +16953,8 @@ mod tests {
             vec![genesis_validator(validator, U256::from(10_000u64))],
             dpos_config.clone(),
             FinalChainRewardsConfig {
-                cornus_period: 2,
-                magnolia_period: 2,
+                cornus_period: 2.into(),
+                magnolia_period: 2.into(),
                 dpos_delegation_locking_period: 0,
                 ..Default::default()
             },
@@ -16771,7 +17045,7 @@ mod tests {
             ),
         ];
         let pre_execution = pre_chain
-            .execute_native_transactions(1, &pre_transactions)
+            .execute_native_transactions(1.into(), &pre_transactions)
             .unwrap();
         assert_eq!(
             pre_execution
@@ -16817,7 +17091,7 @@ mod tests {
         let pre_read = pre_chain
             .apply_dpos_undelegation_page_read(
                 &pre_execution.dpos_snapshot,
-                1,
+                1.into(),
                 DposTransaction::GetUndelegations(Ok(DposUndelegationPageRead {
                     delegator: validator,
                     batch: 0,
@@ -16854,8 +17128,8 @@ mod tests {
             vec![genesis_validator(validator, U256::from(10_000u64))],
             dpos_config,
             FinalChainRewardsConfig {
-                cornus_period: 1,
-                magnolia_period: 1,
+                cornus_period: 1.into(),
+                magnolia_period: 1.into(),
                 cornus_delegation_locking_period: 0,
                 ..Default::default()
             },
@@ -16998,7 +17272,7 @@ mod tests {
             ),
         ];
         let cornus_execution = cornus_chain
-            .execute_native_transactions(1, &cornus_transactions)
+            .execute_native_transactions(1.into(), &cornus_transactions)
             .unwrap();
         assert_eq!(
             cornus_execution
@@ -17040,7 +17314,7 @@ mod tests {
         let final_v2_page = cornus_chain
             .apply_dpos_undelegation_page_read(
                 &cornus_execution.dpos_snapshot,
-                1,
+                1.into(),
                 DposTransaction::GetUndelegationsV2(Ok(DposUndelegationPageRead {
                     delegator: validator,
                     batch: 0,
@@ -17059,7 +17333,7 @@ mod tests {
             cornus_chain
                 .apply_dpos_undelegation_page_read(
                     &restarted,
-                    1,
+                    1.into(),
                     DposTransaction::GetUndelegationsV2(Ok(DposUndelegationPageRead {
                         delegator: validator,
                         batch: 0,
@@ -17111,8 +17385,8 @@ mod tests {
             ],
             dpos_config.clone(),
             FinalChainRewardsConfig {
-                cornus_period: 2,
-                magnolia_period: u64::MAX,
+                cornus_period: 2.into(),
+                magnolia_period: u64::MAX.into(),
                 dpos_delegation_locking_period: 0,
                 ..Default::default()
             },
@@ -17297,7 +17571,7 @@ mod tests {
             ),
         ];
         let pre_execution = pre_chain
-            .execute_native_transactions(1, &pre_transactions)
+            .execute_native_transactions(1.into(), &pre_transactions)
             .unwrap();
         assert_eq!(
             pre_execution
@@ -17372,7 +17646,7 @@ mod tests {
             vec![genesis_validator(delegator, U256::from(10_000u64))],
             dpos_config,
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -17438,7 +17712,7 @@ mod tests {
             ),
         ];
         let cornus_execution = cornus_chain
-            .execute_native_transactions(1, &cornus_transactions)
+            .execute_native_transactions(1.into(), &cornus_transactions)
             .unwrap();
         assert_eq!(
             cornus_execution
@@ -17526,8 +17800,8 @@ mod tests {
             validators.clone(),
             dpos_config.clone(),
             FinalChainRewardsConfig {
-                cornus_period: 2,
-                magnolia_period: 2,
+                cornus_period: 2.into(),
+                magnolia_period: 2.into(),
                 dpos_delegation_locking_period: 0,
                 ..Default::default()
             },
@@ -17618,7 +17892,7 @@ mod tests {
             ),
         ];
         let pre_execution = pre_chain
-            .execute_native_transactions(1, &pre_transactions)
+            .execute_native_transactions(1.into(), &pre_transactions)
             .unwrap();
         assert_eq!(
             pre_execution
@@ -17677,7 +17951,7 @@ mod tests {
         let live_page = pre_chain
             .apply_dpos_validator_page_read(
                 &pre_execution.dpos_snapshot,
-                1,
+                1.into(),
                 DposTransaction::GetValidators(Ok(0)),
             )
             .unwrap();
@@ -17693,7 +17967,7 @@ mod tests {
         let restarted_page = pre_chain
             .apply_dpos_validator_page_read(
                 &restarted_snapshot,
-                1,
+                1.into(),
                 DposTransaction::GetValidators(Ok(0)),
             )
             .unwrap();
@@ -17709,7 +17983,7 @@ mod tests {
             validators,
             dpos_config,
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -17807,7 +18081,7 @@ mod tests {
             ),
         ];
         let cornus_execution = cornus_chain
-            .execute_native_transactions(1, &cornus_transactions)
+            .execute_native_transactions(1.into(), &cornus_transactions)
             .unwrap();
         assert_eq!(
             cornus_execution
@@ -17944,7 +18218,7 @@ mod tests {
             U256::from(1_000u64),
             U256::from(30_000u64),
         );
-        final_chain.rewards_config.fix_claim_all_block_num = u64::MAX;
+        final_chain.rewards_config.fix_claim_all_block_num = u64::MAX.into();
 
         let register = final_chain
             .call(dpos_call_request(
@@ -18020,7 +18294,7 @@ mod tests {
 
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(0, new_validator)
+                .dpos_eligible_vote_count(0.into(), new_validator)
                 .unwrap(),
             0
         );
@@ -18081,7 +18355,7 @@ mod tests {
             U256::from(1_000u64),
             U256::from(30_000u64),
         );
-        final_chain.dpos_phalaenopsis_period = 0;
+        final_chain.dpos_phalaenopsis_period = 0.into();
         let selectors_and_action_gas = [
             (
                 DPOS_REGISTER_VALIDATOR_SELECTOR,
@@ -18112,8 +18386,10 @@ mod tests {
                 DPOS_PHALA_ESCROW_TRANSFER_GAS,
             ),
         ];
-        let accounts_before = final_chain.account_snapshot_map_at_block(0).unwrap();
-        let dpos_before = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let accounts_before = final_chain.account_snapshot_map_at_block(0.into()).unwrap();
+        let dpos_before = final_chain
+            .dpos_snapshot_at_finalized_block(0.into())
+            .unwrap();
 
         for (selector, action_gas) in selectors_and_action_gas {
             let outcome = final_chain
@@ -18141,7 +18417,7 @@ mod tests {
             }
         }
 
-        final_chain.rewards_config.fix_claim_all_block_num = 0;
+        final_chain.rewards_config.fix_claim_all_block_num = 0.into();
         let mut retired_batch_request =
             dpos_call_request(0, DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec());
         retired_batch_request.value = U256::one().into();
@@ -18152,7 +18428,7 @@ mod tests {
             intrinsic_gas(&DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR, false).unwrap()
         );
 
-        final_chain.dpos_phalaenopsis_period = u64::MAX;
+        final_chain.dpos_phalaenopsis_period = u64::MAX.into();
         let mut inactive_phala_request =
             dpos_call_request(0, DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec());
         inactive_phala_request.value = U256::one().into();
@@ -18164,11 +18440,13 @@ mod tests {
         );
 
         assert_eq!(
-            final_chain.account_snapshot_map_at_block(0).unwrap(),
+            final_chain.account_snapshot_map_at_block(0.into()).unwrap(),
             accounts_before
         );
         assert_eq!(
-            final_chain.dpos_snapshot_at_finalized_block(0).unwrap(),
+            final_chain
+                .dpos_snapshot_at_finalized_block(0.into())
+                .unwrap(),
             dpos_before
         );
 
@@ -18196,7 +18474,7 @@ mod tests {
         let value = U256::from(1_000u64);
         let set_sender_balance = |balance: U256| {
             let mut snapshots = final_chain.account_snapshots.lock().unwrap();
-            let snapshot = snapshots.get_mut(&0).unwrap();
+            let snapshot = snapshots.get_mut(&0.into()).unwrap();
             let mut account = snapshot.get(&sender).cloned().unwrap_or_else(empty_account);
             account.balance.replace_after_mutation(balance);
             snapshot.insert(sender, account);
@@ -18259,19 +18537,23 @@ mod tests {
         assert_eq!(action_short.code_err, "out of gas");
         assert_eq!(action_short.gas_used.as_u64(), intrinsic);
 
-        let accounts_before = final_chain.account_snapshot_map_at_block(0).unwrap();
-        let dpos_before = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let accounts_before = final_chain.account_snapshot_map_at_block(0.into()).unwrap();
+        let dpos_before = final_chain
+            .dpos_snapshot_at_finalized_block(0.into())
+            .unwrap();
         let success = final_chain.call(request(required, value)).unwrap();
         assert_eq!(success.gas_used.as_u64(), required);
         assert!(success.code_err.is_empty());
         assert!(success.consensus_err.is_empty());
         assert_eq!(success.logs.len(), 1);
         assert_eq!(
-            final_chain.account_snapshot_map_at_block(0).unwrap(),
+            final_chain.account_snapshot_map_at_block(0.into()).unwrap(),
             accounts_before
         );
         assert_eq!(
-            final_chain.dpos_snapshot_at_finalized_block(0).unwrap(),
+            final_chain
+                .dpos_snapshot_at_finalized_block(0.into())
+                .unwrap(),
             dpos_before
         );
 
@@ -18280,7 +18562,7 @@ mod tests {
                 .account_snapshots
                 .lock()
                 .unwrap()
-                .insert(1, accounts_before.clone());
+                .insert(1.into(), accounts_before.clone());
             let mut block_one_dpos = dpos_before.clone();
             block_one_dpos.total_stakes.remove(&validator);
             block_one_dpos.validator_metadata.remove(&validator);
@@ -18289,16 +18571,20 @@ mod tests {
                 .dpos_snapshots
                 .lock()
                 .unwrap()
-                .insert(1, block_one_dpos);
+                .insert(1.into(), block_one_dpos);
         }
         let mut historical = request(required, value);
-        historical.block_number = 1;
+        historical.block_number = 1.into();
         let historical = final_chain.call(historical).unwrap();
         assert_eq!(historical.code_err, "Validator does not exist");
 
-        final_chain.account_snapshots.lock().unwrap().remove(&1);
+        final_chain
+            .account_snapshots
+            .lock()
+            .unwrap()
+            .remove(&1.into());
         let mut missing_accounts = request(required, value);
-        missing_accounts.block_number = 1;
+        missing_accounts.block_number = 1.into();
         assert!(
             final_chain
                 .call(missing_accounts)
@@ -18311,10 +18597,10 @@ mod tests {
             .account_snapshots
             .lock()
             .unwrap()
-            .insert(1, accounts_before);
-        final_chain.dpos_snapshots.lock().unwrap().remove(&1);
+            .insert(1.into(), accounts_before);
+        final_chain.dpos_snapshots.lock().unwrap().remove(&1.into());
         let mut missing_dpos = request(required, value);
-        missing_dpos.block_number = 1;
+        missing_dpos.block_number = 1.into();
         assert!(
             final_chain
                 .call(missing_dpos)
@@ -18353,10 +18639,10 @@ mod tests {
         let mut registration_tx = match decode_dpos_transaction_for_execution(
             &registration_input,
             owner,
-            1,
-            u64::MAX,
-            0,
-            u64::MAX,
+            1.into(),
+            u64::MAX.into(),
+            0.into(),
+            u64::MAX.into(),
         ) {
             DposTransaction::Register(registration) => DposTransaction::Register(registration),
             _ => panic!("expected register DPoS transaction"),
@@ -18367,7 +18653,12 @@ mod tests {
         FinalChain::inject_dpos_transaction_value(&mut registration_tx, request_value);
 
         let outcome = final_chain
-            .apply_dpos_mutation_transaction(1, registration_tx, &mut dpos_snapshot, &mut accounts)
+            .apply_dpos_mutation_transaction(
+                1.into(),
+                registration_tx,
+                &mut dpos_snapshot,
+                &mut accounts,
+            )
             .unwrap();
 
         assert_eq!(outcome.status_code, 1);
@@ -18419,7 +18710,12 @@ mod tests {
         );
 
         let outcome = final_chain
-            .apply_dpos_mutation_transaction(1, delegate_tx, &mut dpos_snapshot, &mut accounts)
+            .apply_dpos_mutation_transaction(
+                1.into(),
+                delegate_tx,
+                &mut dpos_snapshot,
+                &mut accounts,
+            )
             .unwrap();
 
         assert_eq!(outcome.status_code, 1);
@@ -18471,7 +18767,7 @@ mod tests {
         };
 
         let outcome = final_chain
-            .apply_dpos_mutation_transaction(1, dpos_tx, &mut dpos_snapshot, &mut accounts)
+            .apply_dpos_mutation_transaction(1.into(), dpos_tx, &mut dpos_snapshot, &mut accounts)
             .unwrap();
 
         assert_eq!(outcome.status_code, 0);
@@ -18522,22 +18818,22 @@ mod tests {
         );
 
         let err = final_chain
-            .dpos_is_eligible(1, validator)
+            .dpos_is_eligible(1.into(), validator)
             .expect_err("expected missing non-genesis DPoS snapshot");
         assert!(err.to_string().contains("snapshot for block 1"));
 
         let err = final_chain
-            .dpos_eligible_total_vote_count(1)
+            .dpos_eligible_total_vote_count(1.into())
             .expect_err("expected missing non-genesis DPoS snapshot");
         assert!(err.to_string().contains("snapshot for block 1"));
 
         let err = final_chain
-            .dpos_validators_total_stakes(1)
+            .dpos_validators_total_stakes(1.into())
             .expect_err("expected missing non-genesis DPoS snapshot");
         assert!(err.to_string().contains("snapshot for block 1"));
 
         let err = final_chain
-            .dpos_validators_eligible_vote_counts(1)
+            .dpos_validators_eligible_vote_counts(1.into())
             .expect_err("expected missing non-genesis DPoS snapshot");
         assert!(err.to_string().contains("snapshot for block 1"));
 
@@ -18564,7 +18860,7 @@ mod tests {
         );
 
         let facts = final_chain
-            .dag_dpos_authorization_facts(0, eligible)
+            .dag_dpos_authorization_facts(0.into(), eligible)
             .expect("authorization facts should be available for genesis");
         assert!(facts.vrf_key_found);
         assert_eq!(facts.vrf_key, Some([0x61; 32]));
@@ -18573,7 +18869,7 @@ mod tests {
         assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
 
         let facts = final_chain
-            .dag_dpos_authorization_facts(0, ineligible)
+            .dag_dpos_authorization_facts(0.into(), ineligible)
             .expect("authorization facts should be available for genesis");
         assert!(facts.vrf_key_found);
         assert_eq!(facts.sender_eligible_vote_count, 0);
@@ -18606,7 +18902,7 @@ mod tests {
         );
 
         let facts = final_chain
-            .dag_dpos_authorization_facts(0, validator)
+            .dag_dpos_authorization_facts(0.into(), validator)
             .expect("authorization facts should be available before boundary");
         assert!(facts.vrf_key_found);
         assert_eq!(facts.sender_eligible_vote_count, 10);
@@ -18632,7 +18928,7 @@ mod tests {
         );
 
         let facts = final_chain
-            .dag_dpos_authorization_facts(1, validator)
+            .dag_dpos_authorization_facts(1.into(), validator)
             .expect("authorization facts should return unavailable status instead of error");
         assert!(facts.vrf_key_found);
         assert_eq!(facts.sender_eligible_vote_count, 0);
@@ -18708,11 +19004,11 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period,
-                cacti_period,
+                magnolia_period: magnolia_period.into(),
+                cacti_period: cacti_period.into(),
                 magnolia_jail_time: 2,
                 cacti_jail_time: 2,
                 ..Default::default()
@@ -18723,8 +19019,9 @@ mod tests {
         let (_header, receipts) = final_chain
             .finalize_block(pbft, vec![first_tx.clone(), duplicate_tx.clone()], vec![])
             .unwrap();
-        let first_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &first_tx);
-        let duplicate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &duplicate_tx);
+        let first_tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &first_tx);
+        let duplicate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &duplicate_tx);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
@@ -18752,12 +19049,14 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, validator)
+                .dpos_eligible_vote_count(period.into(), validator)
                 .unwrap(),
             0
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             0
         );
         let jail_block = final_chain
@@ -18861,11 +19160,11 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period: 1,
-                cacti_period: 1,
+                magnolia_period: 1.into(),
+                cacti_period: 1.into(),
                 magnolia_jail_time: 2,
                 cacti_jail_time: 2,
                 ..Default::default()
@@ -18876,8 +19175,9 @@ mod tests {
         let (_header, receipts) = final_chain
             .finalize_block(pbft, vec![first_tx.clone(), duplicate_tx.clone()], vec![])
             .unwrap();
-        let first_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &first_tx);
-        let duplicate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &duplicate_tx);
+        let first_tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &first_tx);
+        let duplicate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &duplicate_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, first_tx_gas, first_tx_gas)
@@ -18910,7 +19210,7 @@ mod tests {
         assert_eq!(slashing_account.nonce, 1);
         assert_eq!(*slashing_account.balance.as_u256(), first_value);
 
-        let header_before_restart = final_chain.block_header(period).unwrap().unwrap();
+        let header_before_restart = final_chain.block_header(period.into()).unwrap().unwrap();
         drop(final_chain);
         drop(storage);
 
@@ -18929,11 +19229,11 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period: 1,
-                cacti_period: 1,
+                magnolia_period: 1.into(),
+                cacti_period: 1.into(),
                 magnolia_jail_time: 2,
                 cacti_jail_time: 2,
                 ..Default::default()
@@ -18941,12 +19241,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            restart_chain.block_header(period).unwrap().unwrap(),
+            restart_chain.block_header(period.into()).unwrap().unwrap(),
             header_before_restart
         );
         assert_eq!(
             restart_chain
-                .transaction_receipt_rlp(period, 1.into())
+                .transaction_receipt_rlp(period.into(), 1.into())
                 .unwrap()
                 .unwrap(),
             receipts[1].clone()
@@ -19057,16 +19357,17 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 0,
-                cacti_period: u64::MAX,
+                magnolia_period: 0.into(),
+                cacti_period: u64::MAX.into(),
                 ..Default::default()
             },
         )
         .unwrap();
 
-        let jail_gas = expected_native_contract_tx_gas(&final_chain, period, &jail_tx);
-        let jailed_gas = expected_native_contract_tx_gas(&final_chain, period, &jailed_tx);
-        let malformed_gas = expected_native_contract_tx_gas(&final_chain, period, &malformed_tx);
+        let jail_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &jail_tx);
+        let jailed_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &jailed_tx);
+        let malformed_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &malformed_tx);
         let (_header, receipts) = final_chain
             .finalize_block(pbft, transactions, vec![])
             .unwrap();
@@ -19167,8 +19468,8 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 2,
-                cacti_period: u64::MAX,
+                magnolia_period: 2.into(),
+                cacti_period: u64::MAX.into(),
                 ..Default::default()
             },
         )
@@ -19185,7 +19486,7 @@ mod tests {
 
         let at_pbft = signed_pbft_block(&signing_key, 2, 247);
         write_period_data(&storage, 2, &at_pbft, std::slice::from_ref(&at_tx.rlp));
-        let at_gas = expected_native_contract_tx_gas(&final_chain, 2, &at_tx);
+        let at_gas = expected_native_contract_tx_gas(&final_chain, 2.into(), &at_tx);
         let (_, at_receipts) = final_chain
             .finalize_block(at_pbft, vec![at_tx], vec![])
             .unwrap();
@@ -19230,8 +19531,8 @@ mod tests {
         write_period_data(&storage, 1, &pbft, std::slice::from_ref(&tx.rlp));
         let initial_balance = U256::from(1_000_000u64);
         let rewards_config = FinalChainRewardsConfig {
-            magnolia_period: 2,
-            cacti_period: u64::MAX,
+            magnolia_period: 2.into(),
+            cacti_period: u64::MAX.into(),
             ..Default::default()
         };
         let final_chain = FinalChain::new_with_rewards_config(
@@ -19292,12 +19593,12 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 0,
+                magnolia_period: 0.into(),
                 ..Default::default()
             },
         )
         .unwrap();
-        let frozen = final_chain.dpos_snapshot(0).unwrap();
+        let frozen = final_chain.dpos_snapshot(0.into()).unwrap();
         let mut current = frozen.clone();
         current.slashing_jail_blocks.insert(validator, 99);
         current.slashing_jailed_validators.push(validator);
@@ -19307,7 +19608,7 @@ mod tests {
                 &mut current,
                 None,
                 Some(&frozen),
-                1,
+                1.into(),
                 SlashingTransaction::GetJailBlock(Ok(validator)),
             )
             .unwrap();
@@ -19321,7 +19622,7 @@ mod tests {
                 &mut current,
                 None,
                 Some(&frozen),
-                1,
+                1.into(),
                 SlashingTransaction::GetJailedValidators,
             )
             .unwrap();
@@ -19358,13 +19659,13 @@ mod tests {
             vec![genesis_validator(validator, U256::from(10_000u64))],
             dpos_config,
             FinalChainRewardsConfig {
-                magnolia_period: 0,
+                magnolia_period: 0.into(),
                 ..Default::default()
             },
         )
         .unwrap();
 
-        let delayed_snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let delayed_snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         let mut current_snapshot = delayed_snapshot.clone();
         current_snapshot.total_stakes.remove(&validator);
         let vote_a = signed_legacy_pbft_vote(
@@ -19384,7 +19685,12 @@ mod tests {
         let proof_key = *proof.proof_key.as_fixed_bytes();
 
         let rejected = final_chain
-            .apply_slashing_double_voting_proof(&mut current_snapshot, None, 2, proof.clone())
+            .apply_slashing_double_voting_proof(
+                &mut current_snapshot,
+                None,
+                2.into(),
+                proof.clone(),
+            )
             .unwrap();
         assert_eq!(rejected.status_code, 0);
         assert!(
@@ -19397,7 +19703,7 @@ mod tests {
             .apply_slashing_double_voting_proof(
                 &mut current_snapshot,
                 Some(&delayed_snapshot),
-                2,
+                2.into(),
                 proof,
             )
             .unwrap();
@@ -19459,18 +19765,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period: 1,
-                cacti_period: 1,
+                magnolia_period: 1.into(),
+                cacti_period: 1.into(),
                 magnolia_jail_time: 2,
                 cacti_jail_time: 2,
                 ..Default::default()
             },
         )
         .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &malformed_tx);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &malformed_tx);
         let gas_cost = U256::from(tx_gas)
             .checked_mul(gas_price)
             .expect("gas usage should fit in balance domain");
@@ -19494,18 +19800,20 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert!(snapshot.slashing_double_voting_proofs.is_empty());
         assert!(snapshot.slashing_jail_blocks.is_empty());
         assert!(snapshot.slashing_jailed_validators.is_empty());
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, validator)
+                .dpos_eligible_vote_count(period.into(), validator)
                 .unwrap(),
             10
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             10
         );
 
@@ -19544,8 +19852,8 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 1,
-                cacti_period: 1,
+                magnolia_period: 1.into(),
+                cacti_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -19597,8 +19905,8 @@ mod tests {
                 ..Default::default()
             },
             FinalChainRewardsConfig {
-                magnolia_period: 1,
-                cacti_period: 3,
+                magnolia_period: 1.into(),
+                cacti_period: 3.into(),
                 magnolia_jail_time: 7,
                 cacti_jail_time: 11,
                 ..Default::default()
@@ -19613,15 +19921,15 @@ mod tests {
                 &signed_legacy_pbft_vote(&validator_key, H256::from_low_u64_be(201), &sortition),
             ))
             .unwrap();
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
 
         let before_cacti = final_chain
-            .apply_slashing_double_voting_proof(&mut snapshot, None, 2, proof_before_cacti)
+            .apply_slashing_double_voting_proof(&mut snapshot, None, 2.into(), proof_before_cacti)
             .unwrap();
         assert_eq!(before_cacti.status_code, 1);
         assert_eq!(snapshot.slashing_jail_blocks[&validator], 2 + 7);
         assert_eq!(
-            final_chain.dpos_effective_vote_count(&snapshot, 2, validator),
+            final_chain.dpos_effective_vote_count(&snapshot, 2.into(), validator),
             10,
             "pre-Cacti jailing must not remove the validator's eligible votes"
         );
@@ -19633,12 +19941,12 @@ mod tests {
             ))
             .unwrap();
         let at_cacti = final_chain
-            .apply_slashing_double_voting_proof(&mut snapshot, None, 3, proof_at_cacti)
+            .apply_slashing_double_voting_proof(&mut snapshot, None, 3.into(), proof_at_cacti)
             .unwrap();
         assert_eq!(at_cacti.status_code, 1);
         assert_eq!(snapshot.slashing_jail_blocks[&validator], 3 + 11);
         assert_eq!(
-            final_chain.dpos_effective_vote_count(&snapshot, 3, validator),
+            final_chain.dpos_effective_vote_count(&snapshot, 3.into(), validator),
             0
         );
 
@@ -19669,7 +19977,7 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         ) {
             Ok(_) => panic!("expected genesis DPoS vote count overflow"),
@@ -19701,7 +20009,7 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         ) {
             Ok(_) => panic!("expected genesis DPoS maximum stake rejection"),
@@ -19733,7 +20041,7 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         ) {
             Ok(_) => panic!("expected zero DPoS vote step rejection"),
@@ -19786,14 +20094,19 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .account_at_block(0, sender)
+                .account_at_block(0.into(), sender)
                 .unwrap()
                 .unwrap()
                 .nonce,
             0
         );
-        assert!(final_chain.account_at_block(0, receiver).unwrap().is_none());
-        let genesis_hash = H256::from_slice(&final_chain.block_hash(0).unwrap().unwrap());
+        assert!(
+            final_chain
+                .account_at_block(0.into(), receiver)
+                .unwrap()
+                .is_none()
+        );
+        let genesis_hash = H256::from_slice(&final_chain.block_hash(0.into()).unwrap().unwrap());
 
         let (header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![transaction.clone()], vec![])
@@ -19806,18 +20119,18 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(period, 0.into())
+                .transaction_receipt_rlp(period.into(), 0.into())
                 .unwrap(),
             Some(receipts[0].clone())
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(period, 1.into())
+                .transaction_receipt_rlp(period.into(), 1.into())
                 .unwrap(),
             None
         );
         assert_eq!(
-            final_chain.transaction_rlps(period).unwrap(),
+            final_chain.transaction_rlps(period.into()).unwrap(),
             vec![transaction_rlp.clone()]
         );
         let header = Rlp::new(&header_rlp);
@@ -19860,7 +20173,7 @@ mod tests {
         assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 1);
         assert_eq!(
             final_chain
-                .account_at_block(0, sender)
+                .account_at_block(0.into(), sender)
                 .unwrap()
                 .unwrap()
                 .nonce,
@@ -19868,16 +20181,21 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .account_at_block(period, sender)
+                .account_at_block(period.into(), sender)
                 .unwrap()
                 .unwrap()
                 .nonce,
             1
         );
-        assert!(final_chain.account_at_block(0, receiver).unwrap().is_none());
+        assert!(
+            final_chain
+                .account_at_block(0.into(), receiver)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             (*final_chain
-                .account_at_block(period, receiver)
+                .account_at_block(period.into(), receiver)
                 .unwrap()
                 .unwrap()
                 .balance
@@ -19886,7 +20204,7 @@ mod tests {
         );
         assert!(
             final_chain
-                .account_at_block(period + 1, sender)
+                .account_at_block((period + 1).into(), sender)
                 .unwrap_err()
                 .to_string()
                 .contains("account snapshot unavailable")
@@ -19914,7 +20232,7 @@ mod tests {
         assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
         assert_eq!(
             final_chain
-                .account_at_block(0, sender)
+                .account_at_block(0.into(), sender)
                 .unwrap()
                 .unwrap()
                 .nonce,
@@ -19922,7 +20240,7 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .account_at_block(period, sender)
+                .account_at_block(period.into(), sender)
                 .unwrap()
                 .unwrap()
                 .nonce,
@@ -19975,10 +20293,10 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 2,
+                dag_vdf_sortition_total_vote_count_until_period: 2.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period: 2,
+                magnolia_period: 2.into(),
                 ..Default::default()
             },
         )
@@ -19999,7 +20317,7 @@ mod tests {
         assert_eq!(balance_of(&final_chain, receiver), U256::from(13u64));
         assert_eq!(
             (*final_chain
-                .account_at_block(period, sender)
+                .account_at_block(period.into(), sender)
                 .unwrap()
                 .unwrap()
                 .balance
@@ -20062,12 +20380,12 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period: 10,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: u64::MAX,
+                magnolia_period: 10.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 ..Default::default()
             },
         )
@@ -20076,7 +20394,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![transaction.clone()], vec![])
             .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &transaction);
         let tx_fee = U256::from(tx_gas) * gas_price;
 
         assert_eq!(receipt_fields(&receipts[0]), (1, tx_gas, tx_gas));
@@ -20151,12 +20469,12 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period: 10,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: u64::MAX,
+                magnolia_period: 10.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: u64::MAX.into(),
                 ..Default::default()
             },
         )
@@ -20165,7 +20483,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![transaction.clone()], vec![])
             .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &transaction);
         let tx_fee = U256::from(tx_gas) * gas_price;
 
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
@@ -20206,7 +20524,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[12u8; 32]).unwrap();
         let beneficiary: [u8; 20] = address_from_signing_key(&signing_key).into();
@@ -20269,18 +20587,24 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, dag_author)
+                .dpos_eligible_vote_count(period.into(), dag_author)
                 .unwrap(),
             10
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             10
         );
-        assert!(final_chain.dpos_is_eligible(period, dag_author).unwrap());
+        assert!(
+            final_chain
+                .dpos_is_eligible(period.into(), dag_author)
+                .unwrap()
+        );
         assert_eq!(
             final_chain
-                .dpos_validators_total_stakes(period)
+                .dpos_validators_total_stakes(period.into())
                 .unwrap()
                 .iter()
                 .map(|stake| (stake.address, u256_from_big_endian(&stake.stake)))
@@ -20289,7 +20613,7 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_validators_eligible_vote_counts(period)
+                .dpos_validators_eligible_vote_counts(period.into())
                 .unwrap()
                 .iter()
                 .map(|vote_count| (vote_count.address, vote_count.vote_count))
@@ -20326,18 +20650,24 @@ mod tests {
         .unwrap();
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, dag_author)
+                .dpos_eligible_vote_count(period.into(), dag_author)
                 .unwrap(),
             10
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             10
         );
-        assert!(final_chain.dpos_is_eligible(period, dag_author).unwrap());
+        assert!(
+            final_chain
+                .dpos_is_eligible(period.into(), dag_author)
+                .unwrap()
+        );
         assert_eq!(
             final_chain
-                .dpos_validators_total_stakes(period)
+                .dpos_validators_total_stakes(period.into())
                 .unwrap()
                 .iter()
                 .map(|stake| (stake.address, u256_from_big_endian(&stake.stake)))
@@ -20346,7 +20676,7 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_validators_eligible_vote_counts(period)
+                .dpos_validators_eligible_vote_counts(period.into())
                 .unwrap()
                 .iter()
                 .map(|vote_count| (vote_count.address, vote_count.vote_count))
@@ -20354,7 +20684,7 @@ mod tests {
             vec![(dag_author, 10)]
         );
         let facts = final_chain
-            .dag_dpos_authorization_facts(period, dag_author)
+            .dag_dpos_authorization_facts(period.into(), dag_author)
             .unwrap();
         assert_eq!(facts.sender_eligible_vote_count, 10);
         assert_eq!(facts.eligibility_status, DAG_VERIFY_DPOS_STATUS_ELIGIBLE);
@@ -20371,7 +20701,7 @@ mod tests {
         );
         assert!(
             final_chain
-                .dpos_eligible_total_vote_count(period + 1)
+                .dpos_eligible_total_vote_count((period + 1).into())
                 .unwrap_err()
                 .to_string()
                 .contains("snapshot for block 2")
@@ -20432,18 +20762,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -20477,7 +20807,7 @@ mod tests {
             U256::from(50u64)
         );
         let snapshot = final_chain
-            .dpos_snapshot_at_finalized_block(period)
+            .dpos_snapshot_at_finalized_block(period.into())
             .unwrap();
         assert_eq!(
             snapshot
@@ -20565,18 +20895,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -20598,12 +20928,12 @@ mod tests {
             receipt_fields(&receipts[0]),
             (
                 1,
-                expected_native_contract_tx_gas(&final_chain, period, &set_commission_tx),
-                expected_native_contract_tx_gas(&final_chain, period, &set_commission_tx)
+                expected_native_contract_tx_gas(&final_chain, period.into(), &set_commission_tx),
+                expected_native_contract_tx_gas(&final_chain, period.into(), &set_commission_tx)
             )
         );
         let updated_snapshot = final_chain
-            .dpos_snapshot_at_finalized_block(period)
+            .dpos_snapshot_at_finalized_block(period.into())
             .unwrap();
         assert_eq!(
             updated_snapshot
@@ -20657,18 +20987,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -20704,7 +21034,7 @@ mod tests {
             .1;
         assert_eq!(receipt_fields(&failed_receipts[0]).0, 0);
         let failed_snapshot = failed_chain
-            .dpos_snapshot_at_finalized_block(period)
+            .dpos_snapshot_at_finalized_block(period.into())
             .unwrap();
         assert_eq!(
             failed_snapshot
@@ -20762,7 +21092,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let first_pbft = signed_pbft_block(&signing_key, first_period, 221);
@@ -20843,7 +21173,8 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(second_pbft, vec![claim_tx.clone()], vec![])
             .unwrap();
-        let claim_tx_gas = expected_native_contract_tx_gas(&final_chain, second_period, &claim_tx);
+        let claim_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &claim_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, claim_tx_gas, claim_tx_gas)
@@ -20900,12 +21231,12 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let rewards_config = FinalChainRewardsConfig {
-            magnolia_period: 0,
-            aspen_part_one_period: u64::MAX,
-            rewards_distribution_frequency: vec![(0, 1)],
+            magnolia_period: 0.into(),
+            aspen_part_one_period: u64::MAX.into(),
+            rewards_distribution_frequency: vec![(0.into(), 1)],
             ..Default::default()
         };
 
@@ -20983,7 +21314,7 @@ mod tests {
             .finalize_block(second_pbft, vec![undelegate_tx.clone()], vec![])
             .unwrap();
         let undelegate_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, second_period, &undelegate_tx);
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &undelegate_tx);
         assert_eq!(
             receipt_fields(&undelegate_receipts[0]),
             (1, undelegate_tx_gas, undelegate_tx_gas)
@@ -21010,8 +21341,11 @@ mod tests {
         let (_header_rlp, claim_receipts) = final_chain
             .finalize_block(third_pbft, vec![commission_claim_tx.clone()], vec![])
             .unwrap();
-        let claim_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, third_period, &commission_claim_tx);
+        let claim_tx_gas = expected_native_contract_tx_gas(
+            &final_chain,
+            third_period.into(),
+            &commission_claim_tx,
+        );
         assert_eq!(
             receipt_fields(&claim_receipts[0]),
             (1, claim_tx_gas, claim_tx_gas)
@@ -21020,7 +21354,7 @@ mod tests {
         assert_eq!(logs.len(), 1);
         assert_eq!(
             dpos_undelegations_count_for_validator(
-                &final_chain.dpos_snapshot(third_period).unwrap(),
+                &final_chain.dpos_snapshot(third_period.into()).unwrap(),
                 validator,
             ),
             1
@@ -21049,14 +21383,14 @@ mod tests {
             .finalize_block(fourth_pbft, vec![confirm_tx.clone()], vec![])
             .unwrap();
         let confirm_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, fourth_period, &confirm_tx);
+            expected_native_contract_tx_gas(&final_chain, fourth_period.into(), &confirm_tx);
         assert_eq!(
             receipt_fields(&confirm_receipts[0]),
             (1, confirm_tx_gas, confirm_tx_gas)
         );
         assert!(
             !final_chain
-                .dpos_snapshot(fourth_period)
+                .dpos_snapshot(fourth_period.into())
                 .unwrap()
                 .total_stakes
                 .contains_key(&validator)
@@ -21082,7 +21416,7 @@ mod tests {
         assert_eq!(final_chain.last_block_number().unwrap(), fourth_period);
         assert!(
             !final_chain
-                .dpos_snapshot(fourth_period)
+                .dpos_snapshot(fourth_period.into())
                 .unwrap()
                 .total_stakes
                 .contains_key(&validator)
@@ -21108,7 +21442,7 @@ mod tests {
             vec![0xc1, 0x95],
         );
         let register_gas =
-            expected_native_contract_tx_gas(&final_chain, fifth_period, &register_tx);
+            expected_native_contract_tx_gas(&final_chain, fifth_period.into(), &register_tx);
         write_period_data(
             &storage,
             fifth_period,
@@ -21124,7 +21458,7 @@ mod tests {
         );
         let register_logs = receipt_logs(&register_receipts[0]);
         assert_eq!(register_logs.len(), 2);
-        let snapshot = final_chain.dpos_snapshot(fifth_period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(fifth_period.into()).unwrap();
         assert!(snapshot.total_stakes.contains_key(&validator));
         assert!(
             !snapshot
@@ -21166,13 +21500,13 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let rewards_config = FinalChainRewardsConfig {
-            magnolia_period: 0,
+            magnolia_period: 0.into(),
             dpos_delegation_locking_period: 0,
-            aspen_part_one_period: u64::MAX,
-            rewards_distribution_frequency: vec![(0, 1)],
+            aspen_part_one_period: u64::MAX.into(),
+            rewards_distribution_frequency: vec![(0.into(), 1)],
             ..Default::default()
         };
 
@@ -21251,7 +21585,7 @@ mod tests {
             .unwrap();
         assert_eq!(undelegate_receipts.len(), 1);
         let undelegate_gas =
-            expected_native_contract_tx_gas(&final_chain, second_period, &undelegate_tx);
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &undelegate_tx);
         let undelegate_fields = receipt_fields(&undelegate_receipts[0]);
         assert_eq!(undelegate_fields, (1, undelegate_gas, undelegate_gas));
 
@@ -21276,14 +21610,15 @@ mod tests {
         let (_header_rlp, confirm_receipts) = final_chain
             .finalize_block(third_pbft, vec![confirm_tx.clone()], vec![])
             .unwrap();
-        let confirm_gas = expected_native_contract_tx_gas(&final_chain, third_period, &confirm_tx);
+        let confirm_gas =
+            expected_native_contract_tx_gas(&final_chain, third_period.into(), &confirm_tx);
         assert_eq!(
             receipt_fields(&confirm_receipts[0]),
             (1, confirm_gas, confirm_gas)
         );
         assert!(
             final_chain
-                .dpos_snapshot(third_period)
+                .dpos_snapshot(third_period.into())
                 .unwrap()
                 .total_stakes
                 .contains_key(&validator)
@@ -21291,7 +21626,7 @@ mod tests {
         assert_eq!(
             u256_from_big_endian(
                 final_chain
-                    .dpos_snapshot(third_period)
+                    .dpos_snapshot(third_period.into())
                     .unwrap()
                     .commission_rewards
                     .get(&validator)
@@ -21322,14 +21657,15 @@ mod tests {
         let (_header_rlp, claim_receipts) = final_chain
             .finalize_block(fourth_pbft, vec![claim_tx.clone()], vec![])
             .unwrap();
-        let claim_gas = expected_native_contract_tx_gas(&final_chain, fourth_period, &claim_tx);
+        let claim_gas =
+            expected_native_contract_tx_gas(&final_chain, fourth_period.into(), &claim_tx);
         assert_eq!(
             receipt_fields(&claim_receipts[0]),
             (1, claim_gas, claim_gas)
         );
         assert!(
             !final_chain
-                .dpos_snapshot(fourth_period)
+                .dpos_snapshot(fourth_period.into())
                 .unwrap()
                 .total_stakes
                 .contains_key(&validator)
@@ -21371,9 +21707,9 @@ mod tests {
             std::slice::from_ref(&transaction.rlp),
         );
         let rewards_config = FinalChainRewardsConfig {
-            magnolia_period: 0,
-            aspen_part_one_period: u64::MAX,
-            rewards_distribution_frequency: vec![(0, 1)],
+            magnolia_period: 0.into(),
+            aspen_part_one_period: u64::MAX.into(),
+            rewards_distribution_frequency: vec![(0.into(), 1)],
             ..Default::default()
         };
         let final_chain = FinalChain::new_with_rewards_config(
@@ -21401,7 +21737,7 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             rewards_config,
         )
@@ -21435,7 +21771,7 @@ mod tests {
             vec![0xc1, 0xC3],
         );
         let failed_claim_gas =
-            expected_native_contract_tx_gas(&final_chain, second_period, &failed_claim_tx);
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
         write_period_data(
             &storage,
@@ -21445,7 +21781,7 @@ mod tests {
         );
 
         let mut snapshot_before = final_chain
-            .dpos_snapshot(second_period.saturating_sub(1))
+            .dpos_snapshot((second_period.saturating_sub(1)).into())
             .unwrap();
         snapshot_before
             .reward_reference_graph
@@ -21475,7 +21811,7 @@ mod tests {
         assert!(receipt_logs(&receipts[1]).is_empty());
         assert_eq!(
             snapshot_before,
-            final_chain.dpos_snapshot(second_period).unwrap()
+            final_chain.dpos_snapshot(second_period.into()).unwrap()
         );
         assert_eq!(
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
@@ -21526,17 +21862,17 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
-                magnolia_period: 10,
-                aspen_part_one_period: u64::MAX,
-                rewards_distribution_frequency: vec![(0, 1)],
+                magnolia_period: 10.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
         .unwrap();
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot.total_stakes.remove(&validator);
 
         let mut accounts = HashMap::new();
@@ -21550,7 +21886,7 @@ mod tests {
                 &mut accounts,
                 wrong_owner,
                 validator,
-                1,
+                1.into(),
             )
             .unwrap();
         assert_eq!(outcome.status_code, 0);
@@ -21574,7 +21910,7 @@ mod tests {
                 &mut accounts,
                 owner,
                 validator,
-                1,
+                1.into(),
             )
             .unwrap();
         assert_eq!(outcome.status_code, 0);
@@ -21587,7 +21923,13 @@ mod tests {
         assert_eq!(accounts, accounts_before_missing_metadata);
 
         let error = final_chain
-            .apply_dpos_commission_reward_claim(&mut snapshot, &mut accounts, owner, validator, 1)
+            .apply_dpos_commission_reward_claim(
+                &mut snapshot,
+                &mut accounts,
+                owner,
+                validator,
+                1.into(),
+            )
             .unwrap_err();
         assert!(
             error
@@ -21624,7 +21966,13 @@ mod tests {
         )
         .unwrap();
         let outcome = final_chain
-            .apply_dpos_commission_reward_claim(&mut snapshot, &mut accounts, owner, validator, 1)
+            .apply_dpos_commission_reward_claim(
+                &mut snapshot,
+                &mut accounts,
+                owner,
+                validator,
+                1.into(),
+            )
             .unwrap();
         assert_eq!(outcome.status_code, 1);
         assert!(!snapshot.validator_metadata.contains_key(&validator));
@@ -21649,9 +21997,9 @@ mod tests {
         let first_pbft = signed_pbft_block(&signing_key, first_period, 261);
         write_period_data(&storage, first_period, &first_pbft, &[]);
         let rewards_config = FinalChainRewardsConfig {
-            magnolia_period: 0,
-            aspen_part_one_period: u64::MAX,
-            rewards_distribution_frequency: vec![(0, 1)],
+            magnolia_period: 0.into(),
+            aspen_part_one_period: u64::MAX.into(),
+            rewards_distribution_frequency: vec![(0.into(), 1)],
             ..Default::default()
         };
         let final_chain = FinalChain::new_with_rewards_config(
@@ -21668,7 +22016,7 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             rewards_config,
         )
@@ -21702,7 +22050,7 @@ mod tests {
             vec![0xc1, 0xD2],
         );
         let failed_claim_gas =
-            expected_native_contract_tx_gas(&final_chain, second_period, &failed_claim_tx);
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
         write_period_data(
             &storage,
@@ -21711,7 +22059,7 @@ mod tests {
             &[failed_claim_tx.rlp.clone(), transfer_tx.rlp.clone()],
         );
 
-        let mut snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        let mut snapshot_before = final_chain.dpos_snapshot(first_period.into()).unwrap();
         snapshot_before
             .reward_reference_graph
             .next_block(second_period)
@@ -21738,7 +22086,7 @@ mod tests {
         assert!(receipt_logs(&receipts[1]).is_empty());
         assert_eq!(
             snapshot_before,
-            final_chain.dpos_snapshot(second_period).unwrap()
+            final_chain.dpos_snapshot(second_period.into()).unwrap()
         );
         let sender_account = final_chain.account(sender).unwrap().unwrap();
         assert_eq!(sender_account.nonce, 2);
@@ -21777,9 +22125,9 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                rewards_distribution_frequency: vec![(0, 1)],
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -21811,8 +22159,11 @@ mod tests {
             vec![],
             vec![0xc1, 0xD4],
         );
-        let malformed_claim_gas =
-            expected_native_contract_tx_gas(&final_chain, second_period, &malformed_claim_tx);
+        let malformed_claim_gas = expected_native_contract_tx_gas(
+            &final_chain,
+            second_period.into(),
+            &malformed_claim_tx,
+        );
         assert_eq!(
             malformed_claim_gas,
             intrinsic_gas(&malformed_claim_tx.data, false).unwrap()
@@ -21826,7 +22177,7 @@ mod tests {
             &[malformed_claim_tx.rlp.clone(), transfer_tx.rlp.clone()],
         );
 
-        let mut snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        let mut snapshot_before = final_chain.dpos_snapshot(first_period.into()).unwrap();
         snapshot_before
             .reward_reference_graph
             .next_block(second_period)
@@ -21854,7 +22205,7 @@ mod tests {
         assert!(receipt_logs(&receipts[1]).is_empty());
         assert_eq!(
             snapshot_before,
-            final_chain.dpos_snapshot(second_period).unwrap()
+            final_chain.dpos_snapshot(second_period.into()).unwrap()
         );
         let sender_account = final_chain.account(sender).unwrap().unwrap();
         assert_eq!(sender_account.nonce, 2);
@@ -21914,7 +22265,7 @@ mod tests {
         )
         .unwrap();
 
-        let required_gas = expected_native_contract_tx_gas(&final_chain, period, &action_tx);
+        let required_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &action_tx);
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft, vec![action_tx], vec![])
             .unwrap();
@@ -21964,7 +22315,7 @@ mod tests {
             commission_change_delta: 500,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[34u8; 32]).unwrap();
         let pbft = signed_pbft_block(&signing_key, period, 231);
@@ -22036,10 +22387,10 @@ mod tests {
             )
             .unwrap();
         let failed_info_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &failed_info_tx);
-        let info_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &info_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &failed_info_tx);
+        let info_tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &info_tx);
         let commission_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &commission_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &commission_tx);
         let info_tx_cumulative_gas = failed_info_tx_gas + info_tx_gas;
         let commission_tx_cumulative_gas = info_tx_cumulative_gas + commission_tx_gas;
         assert_eq!(
@@ -22146,12 +22497,12 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
 
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot.total_stakes.remove(&validator);
 
         let error = final_chain
@@ -22207,16 +22558,16 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
 
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot.total_stakes.remove(&validator);
 
         let error = final_chain
-            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_200, 1)
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_200u16, 1.into())
             .unwrap_err();
         assert!(error.to_string().contains(
             "DPoS validator snapshot inconsistency: orphan rows found without stake row"
@@ -22263,12 +22614,12 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
 
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot.total_stakes.remove(&validator);
 
         let outcome = final_chain
@@ -22382,12 +22733,12 @@ mod tests {
                 commission_change_delta: 500,
                 commission_change_frequency: 1,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
 
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot.total_stakes.remove(&validator);
 
         let outcome = final_chain
@@ -22396,7 +22747,7 @@ mod tests {
                 wrong_owner,
                 validator,
                 DPOS_MAX_COMMISSION + 1,
-                5,
+                5.into(),
             )
             .unwrap();
         assert_eq!(outcome.status_code, 0);
@@ -22415,13 +22766,13 @@ mod tests {
                 owner,
                 validator,
                 DPOS_MAX_COMMISSION + 1,
-                5,
+                5.into(),
             )
             .unwrap();
         assert_eq!(outcome.status_code, 0);
 
         let orphan_error = final_chain
-            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500, 5)
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500u16, 5.into())
             .unwrap_err();
         assert!(orphan_error.to_string().contains(
             "DPoS validator snapshot inconsistency: orphan rows found without stake row"
@@ -22446,7 +22797,7 @@ mod tests {
                 owner,
                 validator,
                 DPOS_MAX_COMMISSION + 1,
-                5,
+                5.into(),
             )
             .unwrap();
         assert_eq!(max_after_orphan.status_code, 0);
@@ -22476,7 +22827,7 @@ mod tests {
             .unwrap()
             .last_commission_change = 10;
         let future_error = final_chain
-            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500, 5)
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500u16, 5.into())
             .unwrap_err();
         assert!(future_error.to_string().contains(
             "DPoS validator snapshot inconsistency: last commission change is in the future"
@@ -22504,7 +22855,7 @@ mod tests {
             .unwrap()
             .last_commission_change = 5;
         let exact_delta = final_chain
-            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500, 6)
+            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_500u16, 6.into())
             .unwrap();
         assert_eq!(exact_delta.status_code, 1);
         assert_eq!(
@@ -22528,7 +22879,7 @@ mod tests {
             6
         );
 
-        let mut exact_max_snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut exact_max_snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         exact_max_snapshot
             .total_stakes
             .insert(validator, u256_to_big_endian(U256::from(10_000u64)));
@@ -22542,7 +22893,7 @@ mod tests {
                 owner,
                 validator,
                 DPOS_MAX_COMMISSION,
-                6,
+                6.into(),
             )
             .unwrap();
         assert_eq!(exact_max.status_code, 1);
@@ -22591,12 +22942,12 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 4,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
 
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot
             .validator_metadata
             .get_mut(&validator)
@@ -22604,7 +22955,13 @@ mod tests {
             .last_commission_change = u64::MAX - 1;
 
         let too_early = final_chain
-            .apply_dpos_commission_update(&mut snapshot, owner, validator, 1_100, u64::MAX)
+            .apply_dpos_commission_update(
+                &mut snapshot,
+                owner,
+                validator,
+                1_100u16,
+                u64::MAX.into(),
+            )
             .unwrap();
         assert_eq!(too_early.status_code, 0);
         assert_eq!(
@@ -22670,18 +23027,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -22805,19 +23162,19 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
-                fix_claim_all_block_num: u64::MAX,
+                rewards_distribution_frequency: vec![(0.into(), 1)],
+                fix_claim_all_block_num: u64::MAX.into(),
                 ..Default::default()
             },
         )
@@ -22867,7 +23224,8 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(second_pbft, vec![claim_tx.clone()], vec![])
             .unwrap();
-        let claim_all_gas = expected_native_contract_tx_gas(&final_chain, second_period, &claim_tx);
+        let claim_all_gas =
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &claim_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, claim_all_gas, claim_all_gas)
@@ -22960,19 +23318,19 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
-                fix_claim_all_block_num: u64::MAX,
+                rewards_distribution_frequency: vec![(0.into(), 1)],
+                fix_claim_all_block_num: u64::MAX.into(),
                 ..Default::default()
             },
         )
@@ -22985,7 +23343,8 @@ mod tests {
                 vec![],
             )
             .unwrap();
-        let register_gas = expected_native_contract_tx_gas(&final_chain, period, &register_tx);
+        let register_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &register_tx);
         let claim_gas = intrinsic_gas(&claim_tx.data, false).unwrap()
             + DPOS_CLAIM_REWARDS_GAS
             + DPOS_BATCH_GET_REWARDS_GAS;
@@ -23001,7 +23360,7 @@ mod tests {
             claim_gas,
             intrinsic_gas(&claim_tx.data, false).unwrap() + 45_000
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot
@@ -23073,18 +23432,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -23134,7 +23493,8 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(second_pbft, vec![claim_tx.clone()], vec![])
             .unwrap();
-        let claim_all_gas = expected_native_contract_tx_gas(&final_chain, second_period, &claim_tx);
+        let claim_all_gas =
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &claim_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, claim_all_gas, claim_all_gas)
@@ -23210,18 +23570,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(0, 1)],
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -23327,18 +23687,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(10_000u64, 1)],
+                rewards_distribution_frequency: vec![(10_000u64.into(), 1)],
                 ..Default::default()
             },
         )
@@ -23350,7 +23710,7 @@ mod tests {
         let gas_price = U256::from(3u64);
         let sender_balance_before = balance_of(&final_chain, validator);
         let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
-        let snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        let snapshot_before = final_chain.dpos_snapshot(first_period.into()).unwrap();
 
         let failed_claim_tx = test_transaction(
             0xE2,
@@ -23364,7 +23724,7 @@ mod tests {
             vec![0xc1, 0xE2],
         );
         let failed_claim_gas =
-            expected_native_contract_tx_gas(&final_chain, second_period, &failed_claim_tx);
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         write_period_data(
             &storage,
             second_period,
@@ -23382,7 +23742,7 @@ mod tests {
             (0, failed_claim_gas, failed_claim_gas)
         );
         assert!(receipt_logs(&receipts[0]).is_empty());
-        let snapshot_after = final_chain.dpos_snapshot(second_period).unwrap();
+        let snapshot_after = final_chain.dpos_snapshot(second_period.into()).unwrap();
         assert_eq!(snapshot_after.total_stakes, snapshot_before.total_stakes);
         assert_eq!(
             snapshot_after.total_vote_count,
@@ -23452,18 +23812,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(10_000u64, 1)],
+                rewards_distribution_frequency: vec![(10_000u64.into(), 1)],
                 ..Default::default()
             },
         )
@@ -23475,7 +23835,7 @@ mod tests {
         let gas_price = U256::from(2u64);
         let sender_balance_before = balance_of(&final_chain, sender);
         let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
-        let snapshot_before = final_chain.dpos_snapshot(first_period).unwrap();
+        let snapshot_before = final_chain.dpos_snapshot(first_period.into()).unwrap();
         let transfer_value = U256::from(5_000u64);
 
         let failed_claim_tx = test_transaction(
@@ -23501,7 +23861,7 @@ mod tests {
             vec![0xc1, 0xe4],
         );
         let failed_claim_gas =
-            expected_native_contract_tx_gas(&final_chain, second_period, &failed_claim_tx);
+            expected_native_contract_tx_gas(&final_chain, second_period.into(), &failed_claim_tx);
         assert_eq!(failed_claim_gas, 61_464);
         let transfer_gas = intrinsic_gas(&transfer_tx.data, false).unwrap();
         write_period_data(
@@ -23534,18 +23894,18 @@ mod tests {
         let expected_transfer_receipt = receipts[1].clone();
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 0.into())
+                .transaction_receipt_rlp(second_period.into(), 0.into())
                 .unwrap(),
             Some(expected_failed_receipt.clone())
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 1.into())
+                .transaction_receipt_rlp(second_period.into(), 1.into())
                 .unwrap(),
             Some(expected_transfer_receipt.clone())
         );
         let header_rlp = final_chain
-            .block_header(second_period)
+            .block_header(second_period.into())
             .unwrap()
             .expect("missing finalized claim-failure header");
         let header = Rlp::new(&header_rlp);
@@ -23563,7 +23923,7 @@ mod tests {
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             dpos_contract_balance_before
         );
-        let snapshot_after = final_chain.dpos_snapshot(second_period).unwrap();
+        let snapshot_after = final_chain.dpos_snapshot(second_period.into()).unwrap();
         assert_eq!(snapshot_after.total_stakes, snapshot_before.total_stakes);
         assert_eq!(
             snapshot_after.total_vote_count,
@@ -23608,18 +23968,18 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                aspen_part_two_period: 0,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                aspen_part_two_period: 0.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 yield_percentage: 20,
                 dpos_blocks_per_year: 10,
-                rewards_distribution_frequency: vec![(10_000u64, 1)],
+                rewards_distribution_frequency: vec![(10_000u64.into(), 1)],
                 ..Default::default()
             },
         )
@@ -23628,18 +23988,18 @@ mod tests {
         assert_eq!(final_chain.last_block_number().unwrap(), second_period);
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 0.into())
+                .transaction_receipt_rlp(second_period.into(), 0.into())
                 .unwrap(),
             Some(expected_failed_receipt)
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(second_period, 1.into())
+                .transaction_receipt_rlp(second_period.into(), 1.into())
                 .unwrap(),
             Some(expected_transfer_receipt)
         );
         let header_rlp = final_chain
-            .block_header(second_period)
+            .block_header(second_period.into())
             .unwrap()
             .expect("missing restarted claim-failure header");
         let header = Rlp::new(&header_rlp);
@@ -23655,7 +24015,7 @@ mod tests {
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             dpos_contract_balance_before
         );
-        let snapshot_reloaded = final_chain.dpos_snapshot(second_period).unwrap();
+        let snapshot_reloaded = final_chain.dpos_snapshot(second_period.into()).unwrap();
         assert_eq!(snapshot_reloaded.total_stakes, snapshot_after.total_stakes);
         assert_eq!(
             snapshot_reloaded.total_vote_count,
@@ -23700,11 +24060,13 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
-        let mut snapshot = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let mut snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(0.into())
+            .unwrap();
         snapshot
             .delegations
             .entry(validator)
@@ -23822,7 +24184,9 @@ mod tests {
             U256::from(1_000u64),
             U256::from(30_000u64),
         );
-        let mut snapshot = final_chain.dpos_snapshot_at_finalized_block(0).unwrap();
+        let mut snapshot = final_chain
+            .dpos_snapshot_at_finalized_block(0.into())
+            .unwrap();
         let graph_before = snapshot.reward_reference_graph.clone();
 
         final_chain
@@ -23832,7 +24196,7 @@ mod tests {
                     commission_rewards: BTreeMap::new(),
                     delegator_rewards: BTreeMap::from([(validator, U256::from(77u64))]),
                 },
-                1,
+                1.into(),
                 U256::from(77u64),
                 None,
                 0,
@@ -23897,19 +24261,19 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: 0,
-                aspen_part_two_period: 1,
+                magnolia_period: 0.into(),
+                aspen_part_one_period: 0.into(),
+                aspen_part_two_period: 1.into(),
                 max_block_author_reward_percent: 0,
                 dag_proposers_reward_percent: 100,
                 dpos_blocks_per_year: 10,
                 genesis_balance_sum: u256_to_big_endian(U256::from(1_000_000u64)),
                 aspen_max_supply: u256_to_big_endian(U256::from(2_000_000u64)),
-                rewards_distribution_frequency: vec![(0, 1)],
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -23936,12 +24300,14 @@ mod tests {
             U256::from(11_000u64)
         );
         assert_eq!(
-            final_chain.dpos_total_amount_delegated(period).unwrap(),
+            final_chain
+                .dpos_total_amount_delegated(period.into())
+                .unwrap(),
             u256_to_big_endian(U256::from(10_000u64))
         );
-        assert_eq!(final_chain.dpos_yield(period).unwrap(), 1_000_000);
+        assert_eq!(final_chain.dpos_yield(period.into()).unwrap(), 1_000_000u64);
         assert_eq!(
-            final_chain.dpos_total_supply(period).unwrap(),
+            final_chain.dpos_total_supply(period.into()).unwrap(),
             u256_to_big_endian(U256::from(1_001_000u64))
         );
         let validator_info = final_chain
@@ -23952,7 +24318,7 @@ mod tests {
             U256::from(250u64)
         );
         let snapshot = final_chain
-            .dpos_snapshot_at_finalized_block(period)
+            .dpos_snapshot_at_finalized_block(period.into())
             .unwrap();
         assert!(snapshot.minted_tokens.is_empty());
         assert_eq!(
@@ -23998,13 +24364,13 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let rewards_config = FinalChainRewardsConfig {
             committee_size: 100,
-            magnolia_period: 0,
-            aspen_part_one_period: u64::MAX,
-            rewards_distribution_frequency: vec![(0, 2)],
+            magnolia_period: 0.into(),
+            aspen_part_one_period: u64::MAX.into(),
+            rewards_distribution_frequency: vec![(0.into(), 2)],
             ..Default::default()
         };
         let signing_key = SigningKey::from_slice(&[14u8; 32]).unwrap();
@@ -24187,13 +24553,13 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                rewards_distribution_frequency: vec![(0, 1)],
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                rewards_distribution_frequency: vec![(0.into(), 1)],
                 ..Default::default()
             },
         )
@@ -24244,7 +24610,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[15u8; 32]).unwrap();
         let period = 1u64;
@@ -24259,9 +24625,9 @@ mod tests {
             genesis_dpos_config,
             FinalChainRewardsConfig {
                 committee_size: 100,
-                magnolia_period: 0,
-                aspen_part_one_period: u64::MAX,
-                rewards_distribution_frequency: vec![(0, 2)],
+                magnolia_period: 0.into(),
+                aspen_part_one_period: u64::MAX.into(),
+                rewards_distribution_frequency: vec![(0.into(), 2)],
                 ..Default::default()
             },
         )
@@ -24347,7 +24713,7 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 5,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
@@ -24396,7 +24762,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 2,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
 
         let block_one = signed_pbft_block(&signing_key, period_one, 101);
@@ -24466,12 +24832,12 @@ mod tests {
             .unwrap();
 
         let period_one_final_snapshot = final_chain
-            .dpos_snapshot_at_finalized_block(period_one)
+            .dpos_snapshot_at_finalized_block(period_one.into())
             .unwrap();
         let period_two_final_snapshot = final_chain
-            .dpos_snapshot_at_finalized_block(period_two)
+            .dpos_snapshot_at_finalized_block(period_two.into())
             .unwrap();
-        let delayed_period_two_snapshot = final_chain.dpos_snapshot(period_two).unwrap();
+        let delayed_period_two_snapshot = final_chain.dpos_snapshot(period_two.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 period_one_final_snapshot
@@ -24510,7 +24876,7 @@ mod tests {
 
         assert_eq!(final_chain.last_block_number().unwrap(), period_two);
         let reloaded_period_two_snapshot = final_chain
-            .dpos_snapshot_at_finalized_block(period_two)
+            .dpos_snapshot_at_finalized_block(period_two.into())
             .unwrap();
         assert_eq!(
             u256_from_big_endian(
@@ -24528,9 +24894,9 @@ mod tests {
             .unwrap();
 
         let persisted_period_three_snapshot = final_chain
-            .dpos_snapshot_at_finalized_block(period_three)
+            .dpos_snapshot_at_finalized_block(period_three.into())
             .unwrap();
-        let delayed_period_three_snapshot = final_chain.dpos_snapshot(period_three).unwrap();
+        let delayed_period_three_snapshot = final_chain.dpos_snapshot(period_three.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 persisted_period_three_snapshot
@@ -24576,7 +24942,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 140);
         let transaction_rlp = vec![0xc1, 0x91];
@@ -24618,7 +24984,8 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![transaction.clone()], vec![])
             .unwrap();
-        let transaction_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+        let transaction_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &transaction);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
@@ -24642,15 +25009,21 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, validator)
+                .dpos_eligible_vote_count(period.into(), validator)
                 .unwrap(),
             5
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             5
         );
-        assert!(final_chain.dpos_is_eligible(period, validator).unwrap());
+        assert!(
+            final_chain
+                .dpos_is_eligible(period.into(), validator)
+                .unwrap()
+        );
         assert_eq!(final_chain.vrf_key(validator).unwrap(), Some(vrf_key));
         let validator_info = final_chain
             .call(dpos_call_request(period, get_validator_input(validator)))
@@ -24670,13 +25043,17 @@ mod tests {
         let register_topic_bloom = bloom_query_for_value(&DPOS_VALIDATOR_REGISTERED_TOPIC);
         assert_eq!(
             final_chain
-                .with_block_bloom(&register_topic_bloom, period, period)
+                .with_block_bloom(&register_topic_bloom, period.into(), period.into())
                 .unwrap(),
-            vec![period]
+            vec![period.into()]
         );
         assert!(
             final_chain
-                .with_block_bloom(&register_topic_bloom, period + 1, period + 1)
+                .with_block_bloom(
+                    &register_topic_bloom,
+                    (period + 1).into(),
+                    (period + 1).into()
+                )
                 .unwrap()
                 .is_empty()
         );
@@ -24684,9 +25061,9 @@ mod tests {
         let author_bloom = bloom_query_for_value(&pbft_author);
         assert_eq!(
             final_chain
-                .with_block_bloom(&author_bloom, period, period)
+                .with_block_bloom(&author_bloom, period.into(), period.into())
                 .unwrap(),
-            vec![period]
+            vec![period.into()]
         );
 
         drop(final_chain);
@@ -24704,13 +25081,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, validator)
+                .dpos_eligible_vote_count(period.into(), validator)
                 .unwrap(),
             5
         );
         assert_eq!(final_chain.vrf_key(validator).unwrap(), Some(vrf_key));
         let facts = final_chain
-            .dag_dpos_authorization_facts(period, validator)
+            .dag_dpos_authorization_facts(period.into(), validator)
             .unwrap();
         assert_eq!(facts.vrf_key, Some(vrf_key));
         assert_eq!(facts.sender_eligible_vote_count, 5);
@@ -24719,14 +25096,14 @@ mod tests {
             final_chain
                 .with_block_bloom(
                     &bloom_query_for_value(&DPOS_VALIDATOR_REGISTERED_TOPIC),
-                    period,
-                    period
+                    period.into(),
+                    period.into()
                 )
                 .unwrap(),
-            vec![period]
+            vec![period.into()]
         );
         let genesis_facts = final_chain
-            .dag_dpos_authorization_facts(0, validator)
+            .dag_dpos_authorization_facts(0.into(), validator)
             .unwrap();
         assert_eq!(genesis_facts.vrf_key, None);
         assert!(!genesis_facts.vrf_key_found);
@@ -24758,7 +25135,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&pbft_signing_key, period, 140);
         let transaction = test_transaction(
@@ -24799,11 +25176,11 @@ mod tests {
             .finalize_block(pbft_block, vec![transaction.clone()], vec![])
             .unwrap();
 
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &transaction);
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
         assert_eq!(receipt_logs(&receipts[0]).len(), 0);
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert!(snapshot.total_stakes.is_empty());
         assert_eq!(
             (*final_chain
@@ -24835,7 +25212,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 141);
         let gas_price = U256::from(2u64);
@@ -24882,11 +25259,11 @@ mod tests {
             let (_header_rlp, receipts) = final_chain
                 .finalize_block(pbft_block.clone(), vec![transaction.clone()], vec![])
                 .unwrap();
-            let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transaction);
+            let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &transaction);
             assert_eq!(receipts.len(), 1);
             assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
             assert_eq!(receipt_logs(&receipts[0]).len(), 0);
-            let snapshot = final_chain.dpos_snapshot(period).unwrap();
+            let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
             assert!(
                 snapshot.total_stakes.is_empty(),
                 "proof len {} should not insert stake",
@@ -24922,7 +25299,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 142);
 
@@ -24963,7 +25340,7 @@ mod tests {
             let (_header_rlp, receipts) = final_chain
                 .finalize_block(pbft_block.clone(), vec![tx.clone()], vec![])
                 .unwrap();
-            let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &tx);
+            let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &tx);
             assert_eq!(receipts.len(), 1);
             assert_eq!(
                 receipt_fields(&receipts[0]),
@@ -24973,7 +25350,7 @@ mod tests {
             assert!(receipt_logs(&receipts[0]).is_empty());
             assert!(
                 final_chain
-                    .dpos_snapshot(period)
+                    .dpos_snapshot(period.into())
                     .unwrap()
                     .total_stakes
                     .is_empty(),
@@ -25003,7 +25380,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 143);
 
@@ -25045,8 +25422,8 @@ mod tests {
         )
         .unwrap();
 
-        let first_gas = expected_native_contract_tx_gas(&final_chain, period, &first);
-        let second_gas = expected_native_contract_tx_gas(&final_chain, period, &second);
+        let first_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &first);
+        let second_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &second);
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![first, second], vec![])
             .unwrap();
@@ -25057,11 +25434,13 @@ mod tests {
             (0, second_gas, first_gas + second_gas)
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             5
         );
 
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot
@@ -25095,7 +25474,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 144);
 
@@ -25125,7 +25504,7 @@ mod tests {
             genesis_dpos_config.clone(),
         )
         .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &below_minimum);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &below_minimum);
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block.clone(), vec![below_minimum.clone()], vec![])
             .unwrap();
@@ -25133,7 +25512,7 @@ mod tests {
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
         assert!(
             final_chain
-                .dpos_snapshot(period)
+                .dpos_snapshot(period.into())
                 .unwrap()
                 .total_stakes
                 .is_empty(),
@@ -25179,17 +25558,17 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![zero_stake.clone()], vec![])
             .unwrap();
-        let zero_gas = expected_native_contract_tx_gas(&final_chain, period, &zero_stake);
+        let zero_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &zero_stake);
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipt_fields(&receipts[0]), (1, zero_gas, zero_gas));
         assert_eq!(receipt_logs(&receipts[0]).len(), 1);
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert!(!snapshot.delegations.contains_key(&validator));
         assert!(!snapshot.delegation_reward_cursors.contains_key(&validator));
         assert!(!snapshot.delegator_validators.contains_key(&owner));
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, validator)
+                .dpos_eligible_vote_count(period.into(), validator)
                 .unwrap(),
             0
         );
@@ -25217,7 +25596,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 145);
         let long_description = "x".repeat(DPOS_MAX_DESCRIPTION_LENGTH + 1);
@@ -25295,10 +25674,11 @@ mod tests {
             genesis_dpos_config,
         )
         .unwrap();
-        let desc_gas = expected_native_contract_tx_gas(&final_chain, period, &too_long_desc_tx);
+        let desc_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &too_long_desc_tx);
         let endpoint_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &too_long_endpoint_tx);
-        let vrf_gas = expected_native_contract_tx_gas(&final_chain, period, &bad_vrf_len_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &too_long_endpoint_tx);
+        let vrf_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &bad_vrf_len_tx);
         let transactions = vec![too_long_desc_tx, too_long_endpoint_tx, bad_vrf_len_tx];
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, transactions, vec![])
@@ -25315,7 +25695,7 @@ mod tests {
         );
         assert!(
             final_chain
-                .dpos_snapshot(period)
+                .dpos_snapshot(period.into())
                 .unwrap()
                 .total_stakes
                 .is_empty()
@@ -25347,7 +25727,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&above_max_key, period, 146);
 
@@ -25406,8 +25786,8 @@ mod tests {
         )
         .unwrap();
         let txs = vec![too_high_stake_tx, exact_max_stake_tx];
-        let high_stake_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[0]);
-        let exact_stake_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[1]);
+        let high_stake_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &txs[0]);
+        let exact_stake_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &txs[1]);
         let (_header_rlp, receipts) = final_chain.finalize_block(pbft_block, txs, vec![]).unwrap();
         assert_eq!(receipts.len(), 2);
         assert_eq!(
@@ -25421,7 +25801,7 @@ mod tests {
         assert_eq!(
             u256_from_big_endian(
                 final_chain
-                    .dpos_snapshot(period)
+                    .dpos_snapshot(period.into())
                     .unwrap()
                     .total_stakes
                     .get(&exact_max_validator)
@@ -25431,7 +25811,7 @@ mod tests {
         );
         assert!(
             final_chain
-                .dpos_snapshot(period)
+                .dpos_snapshot(period.into())
                 .unwrap()
                 .total_stakes
                 .get(&above_max_validator)
@@ -25470,7 +25850,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&too_high_commission_key, period, 147);
 
@@ -25529,8 +25909,9 @@ mod tests {
         )
         .unwrap();
         let too_high_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &too_high_commission_tx);
-        let max_gas = expected_native_contract_tx_gas(&final_chain, period, &max_commission_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &too_high_commission_tx);
+        let max_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &max_commission_tx);
         let (_header_rlp, receipts) = final_chain
             .finalize_block(
                 pbft_block,
@@ -25595,7 +25976,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&endpoint_key, period, 148);
 
@@ -25785,17 +26166,19 @@ mod tests {
             vrf33_tx,
         ];
         let malformed_signature_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &txs[0]);
-        let endpoint_too_long_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[1]);
-        let endpoint_ok_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[2]);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &txs[0]);
+        let endpoint_too_long_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &txs[1]);
+        let endpoint_ok_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &txs[2]);
         let description_too_long_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &txs[3]);
-        let description_ok_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[4]);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &txs[3]);
+        let description_ok_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &txs[4]);
         let description_utf8_ok_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &txs[5]);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &txs[5]);
         let description_invalid_utf8_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &txs[6]);
-        let vrf33_gas = expected_native_contract_tx_gas(&final_chain, period, &txs[7]);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &txs[6]);
+        let vrf33_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &txs[7]);
         let (_header_rlp, receipts) = final_chain.finalize_block(pbft_block, txs, vec![]).unwrap();
         assert_eq!(receipts.len(), 8);
         assert_eq!(
@@ -25883,7 +26266,7 @@ mod tests {
                     + vrf33_gas
             )
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         let metadata = snapshot
             .validator_metadata
             .get(&utf8_over_validator)
@@ -25912,7 +26295,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 149);
         let final_chain = FinalChain::new(
@@ -25924,10 +26307,12 @@ mod tests {
             genesis_dpos_config.clone(),
         )
         .unwrap();
-        let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot.commission_rewards.insert(validator, Vec::new());
         snapshot.delegator_rewards.insert(validator, Vec::new());
-        final_chain.insert_dpos_snapshot(0, snapshot).unwrap();
+        final_chain
+            .insert_dpos_snapshot(0.into(), snapshot)
+            .unwrap();
 
         let tx = test_transaction(
             0xCC,
@@ -25976,7 +26361,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let failed_tx = test_transaction(
             0xCD,
@@ -26070,27 +26455,27 @@ mod tests {
         assert_eq!(final_chain.account(sender).unwrap().unwrap().nonce, 2);
         assert!(
             final_chain
-                .dpos_snapshot(period)
+                .dpos_snapshot(period.into())
                 .unwrap()
                 .total_stakes
                 .is_empty()
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(period, 0.into())
+                .transaction_receipt_rlp(period.into(), 0.into())
                 .unwrap()
                 .expect("missing failed registration receipt"),
             receipts[0].clone()
         );
         assert_eq!(
             final_chain
-                .transaction_receipt_rlp(period, 1.into())
+                .transaction_receipt_rlp(period.into(), 1.into())
                 .unwrap()
                 .expect("missing transfer receipt"),
             receipts[1].clone()
         );
         let header_rlp = final_chain
-            .block_header(period)
+            .block_header(period.into())
             .unwrap()
             .expect("missing finalized header");
         let header = Rlp::new(&header_rlp);
@@ -26099,7 +26484,7 @@ mod tests {
             failed_tx_gas + transfer_tx_gas
         );
 
-        let header_before_restart = final_chain.block_header(period).unwrap().unwrap();
+        let header_before_restart = final_chain.block_header(period.into()).unwrap().unwrap();
         drop(final_chain);
         drop(storage);
 
@@ -26118,24 +26503,24 @@ mod tests {
                 commission_change_delta: 0,
                 commission_change_frequency: 0,
                 delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0.into(),
             },
         )
         .unwrap();
         assert_eq!(
-            restart_chain.block_header(period).unwrap().unwrap(),
+            restart_chain.block_header(period.into()).unwrap().unwrap(),
             header_before_restart
         );
         assert_eq!(
             restart_chain
-                .transaction_receipt_rlp(period, 0.into())
+                .transaction_receipt_rlp(period.into(), 0.into())
                 .unwrap()
                 .expect("missing failed registration receipt after restart"),
             receipts[0].clone()
         );
         assert_eq!(
             restart_chain
-                .transaction_receipt_rlp(period, 1.into())
+                .transaction_receipt_rlp(period.into(), 1.into())
                 .unwrap()
                 .expect("missing transfer receipt after restart"),
             receipts[1].clone()
@@ -26145,7 +26530,7 @@ mod tests {
         assert_eq!(balance_of(&restart_chain, recipient), transfer_value);
         assert!(
             restart_chain
-                .dpos_snapshot(period)
+                .dpos_snapshot(period.into())
                 .unwrap()
                 .total_stakes
                 .is_empty()
@@ -26174,7 +26559,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&signing_key, period, 151);
 
@@ -26234,8 +26619,10 @@ mod tests {
                 vec![],
             )
             .unwrap();
-        let register_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &register_tx);
-        let delegate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+        let register_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &register_tx);
+        let delegate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &delegate_tx);
         let delegate_tx_cumulative_gas = register_tx_gas + delegate_tx_gas;
 
         assert_eq!(receipts.len(), 2);
@@ -26257,12 +26644,14 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, validator)
+                .dpos_eligible_vote_count(period.into(), validator)
                 .unwrap(),
             9
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             9
         );
         assert_eq!(
@@ -26310,7 +26699,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[19u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 153);
@@ -26341,7 +26730,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![delegate_tx.clone()], vec![])
             .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &delegate_tx);
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
@@ -26356,12 +26745,12 @@ mod tests {
             *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(tx_gas) * gas_price
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert!(snapshot.total_stakes.is_empty());
         assert!(snapshot.delegations.is_empty());
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, missing_validator)
+                .dpos_eligible_vote_count(period.into(), missing_validator)
                 .unwrap(),
             0
         );
@@ -26389,7 +26778,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[23u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 167);
@@ -26484,7 +26873,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[24u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 168);
@@ -26512,7 +26901,8 @@ mod tests {
         )
         .unwrap();
         let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
-        let delegate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+        let delegate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &delegate_tx);
 
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![delegate_tx.clone()], vec![])
@@ -26533,7 +26923,7 @@ mod tests {
             *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(delegate_tx_gas)
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot
@@ -26574,7 +26964,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[25u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 169);
@@ -26603,7 +26993,8 @@ mod tests {
         .unwrap();
         let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
 
-        let delegate_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &delegate_tx);
+        let delegate_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &delegate_tx);
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![delegate_tx.clone()], vec![])
             .unwrap();
@@ -26623,7 +27014,7 @@ mod tests {
             *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(delegate_tx_gas) * gas_price
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot
@@ -26664,7 +27055,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[26u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 170);
@@ -26710,8 +27101,8 @@ mod tests {
         let dpos_contract_balance_before = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
 
         let initial_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &initial_delegate_tx);
-        let topup_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &topup_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &initial_delegate_tx);
+        let topup_tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &topup_tx);
         let expected_total_gas = initial_tx_gas + topup_tx_gas;
         let (_header_rlp, receipts) = final_chain
             .finalize_block(
@@ -26740,7 +27131,7 @@ mod tests {
             *owner_account.balance.as_u256(),
             owner_balance_before - U256::from(2_100u64 + expected_total_gas)
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot
@@ -26782,7 +27173,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[20u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 153);
@@ -26813,7 +27204,7 @@ mod tests {
             .finalize_block(pbft_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
         let undelegate_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &undelegate_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &undelegate_tx);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
@@ -26821,12 +27212,14 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, validator)
+                .dpos_eligible_vote_count(period.into(), validator)
                 .unwrap(),
             7
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             7
         );
 
@@ -26851,7 +27244,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[30u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 155);
@@ -26884,7 +27277,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &undelegate_tx);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &undelegate_tx);
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
@@ -26899,7 +27292,7 @@ mod tests {
             *delegator_account.balance.as_u256(),
             delegator_balance_before - U256::from(tx_gas) * gas_price
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         let delegations = snapshot.delegations.get(&validator).unwrap();
         assert_eq!(
             u256_from_big_endian(snapshot.total_stakes.get(&validator).unwrap()),
@@ -26931,7 +27324,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 156);
@@ -26964,7 +27357,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &undelegate_tx);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &undelegate_tx);
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
@@ -26979,7 +27372,7 @@ mod tests {
             *delegator_account.balance.as_u256(),
             delegator_balance_before - U256::from(tx_gas) * gas_price
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         let delegations = snapshot.delegations.get(&validator).unwrap();
         assert_eq!(
             u256_from_big_endian(snapshot.total_stakes.get(&validator).unwrap()),
@@ -27010,7 +27403,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[32u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 157);
@@ -27043,7 +27436,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &undelegate_tx);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &undelegate_tx);
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
@@ -27057,7 +27450,7 @@ mod tests {
             *validator_account.balance.as_u256(),
             validator_balance_before - U256::from(tx_gas) * gas_price
         );
-        let snapshot_after = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot_after = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(snapshot_after.total_stakes.get(&validator).unwrap()),
             U256::from(6_000u64)
@@ -27094,7 +27487,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let pbft_block = signed_pbft_block(&signing_key, period, 158);
@@ -27127,7 +27520,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(pbft_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
-        let tx_gas = expected_native_contract_tx_gas(&final_chain, period, &undelegate_tx);
+        let tx_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &undelegate_tx);
 
         assert_eq!(receipts.len(), 1);
         assert_eq!(receipt_fields(&receipts[0]), (0, tx_gas, tx_gas));
@@ -27141,7 +27534,7 @@ mod tests {
             *validator_account.balance.as_u256(),
             validator_balance_before - U256::from(tx_gas) * gas_price
         );
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(snapshot.total_stakes.get(&validator).unwrap()),
             U256::from(3_000u64)
@@ -27170,7 +27563,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[34u8; 32]).unwrap();
         let mut pbft_block = signed_pbft_block(&signing_key, 1, 159);
@@ -27208,17 +27601,19 @@ mod tests {
                 intrinsic_gas(&[], false).unwrap()
             )
         );
-        let mut snapshot = final_chain.dpos_snapshot(1).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(1.into()).unwrap();
         snapshot
             .total_stakes
             .insert(validator, u256_to_big_endian(U256::from(1_000u64)));
-        final_chain.insert_dpos_snapshot(1, snapshot).unwrap();
+        final_chain
+            .insert_dpos_snapshot(1.into(), snapshot)
+            .unwrap();
         let pre_fail_validator_account = final_chain.account(validator).unwrap().unwrap();
         let pre_fail_validator_balance = *pre_fail_validator_account.balance.as_u256();
         let pre_fail_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
         let pre_fail_total_stake = u256_from_big_endian(
             final_chain
-                .dpos_snapshot(1)
+                .dpos_snapshot(1.into())
                 .unwrap()
                 .total_stakes
                 .get(&validator)
@@ -27257,7 +27652,7 @@ mod tests {
             pre_fail_total_stake,
             u256_from_big_endian(
                 final_chain
-                    .dpos_snapshot(1)
+                    .dpos_snapshot(1.into())
                     .unwrap()
                     .total_stakes
                     .get(&validator)
@@ -27283,7 +27678,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let signing_key = SigningKey::from_slice(&[35u8; 32]).unwrap();
         let period_one_block = signed_pbft_block(&signing_key, 1, 180);
@@ -27313,11 +27708,13 @@ mod tests {
             .finalize_block(period_one_block, vec![transfer_tx], vec![])
             .unwrap();
 
-        let mut snapshot = final_chain.dpos_snapshot(1).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(1.into()).unwrap();
         snapshot
             .total_stakes
             .insert(validator, u256_to_big_endian(U256::from(1_000u64)));
-        final_chain.insert_dpos_snapshot(1, snapshot).unwrap();
+        final_chain
+            .insert_dpos_snapshot(1.into(), snapshot)
+            .unwrap();
         let pre_fail_validator = final_chain.account(validator).unwrap().unwrap();
         let pre_fail_validator_balance = *pre_fail_validator.balance.as_u256();
         let pre_fail_contract_balance = balance_of(&final_chain, DPOS_CONTRACT_ADDRESS);
@@ -27353,7 +27750,7 @@ mod tests {
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             pre_fail_contract_balance
         );
-        let post_fail_snapshot = final_chain.dpos_snapshot(1).unwrap();
+        let post_fail_snapshot = final_chain.dpos_snapshot(1.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(post_fail_snapshot.total_stakes.get(&validator).unwrap()),
             U256::from(1_000u64)
@@ -27389,12 +27786,12 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let rewards_config = FinalChainRewardsConfig {
-            cornus_period: 0,
+            cornus_period: 0.into(),
             cornus_delegation_locking_period: 2,
-            cacti_period: u64::MAX,
+            cacti_period: u64::MAX.into(),
             ..Default::default()
         };
         let period_one = 1u64;
@@ -27434,7 +27831,7 @@ mod tests {
             .finalize_block(period_one_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
         let undelegate_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period_one, &undelegate_tx);
+            expected_native_contract_tx_gas(&final_chain, period_one.into(), &undelegate_tx);
 
         assert_eq!(
             receipt_fields(&receipts[0]),
@@ -27541,7 +27938,7 @@ mod tests {
             .finalize_block(period_two_block, vec![locked_confirm_tx.clone()], vec![])
             .unwrap();
         let locked_confirm_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period_two, &locked_confirm_tx);
+            expected_native_contract_tx_gas(&final_chain, period_two.into(), &locked_confirm_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (0, locked_confirm_tx_gas, locked_confirm_tx_gas)
@@ -27571,7 +27968,7 @@ mod tests {
             .finalize_block(period_three_block, vec![confirm_tx.clone()], vec![])
             .unwrap();
         let confirm_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period_three, &confirm_tx);
+            expected_native_contract_tx_gas(&final_chain, period_three.into(), &confirm_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, confirm_tx_gas, confirm_tx_gas)
@@ -27634,7 +28031,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let period = 1u64;
         let pbft_block = signed_pbft_block(&signing_key, period, 181);
@@ -27677,8 +28074,10 @@ mod tests {
         )
         .unwrap();
 
-        let first_gas = expected_native_contract_tx_gas(&final_chain, period, &first_undelegate);
-        let second_gas = expected_native_contract_tx_gas(&final_chain, period, &second_undelegate);
+        let first_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &first_undelegate);
+        let second_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &second_undelegate);
         let (_header_rlp, receipts) = final_chain
             .finalize_block(
                 pbft_block,
@@ -27702,7 +28101,7 @@ mod tests {
         );
         assert!(receipt_logs(&receipts[1]).is_empty());
 
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         let pending = snapshot.undelegations.get(&validator).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(
@@ -27722,9 +28121,9 @@ mod tests {
         let validator = [0x72; 20];
         let signing_key = SigningKey::from_slice(&[35u8; 32]).unwrap();
         let rewards_config = FinalChainRewardsConfig {
-            cornus_period: 0,
+            cornus_period: 0.into(),
             cornus_delegation_locking_period: 10,
-            cacti_period: u64::MAX,
+            cacti_period: u64::MAX.into(),
             ..Default::default()
         };
         let genesis_dpos_config = GenesisDposConfig {
@@ -27735,7 +28134,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let period_one = 1u64;
         let period_two = 2u64;
@@ -27793,7 +28192,7 @@ mod tests {
             .finalize_block(period_one_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
         let period_one_gas =
-            expected_native_contract_tx_gas(&final_chain, period_one, &undelegate_tx);
+            expected_native_contract_tx_gas(&final_chain, period_one.into(), &undelegate_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, period_one_gas, period_one_gas)
@@ -27802,14 +28201,15 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_two_block, vec![confirm_tx.clone()], vec![])
             .unwrap();
-        let period_two_gas = expected_native_contract_tx_gas(&final_chain, period_two, &confirm_tx);
+        let period_two_gas =
+            expected_native_contract_tx_gas(&final_chain, period_two.into(), &confirm_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (0, period_two_gas, period_two_gas)
         );
         assert!(receipt_logs(&receipts[0]).is_empty());
 
-        let snapshot = final_chain.dpos_snapshot(period_two).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period_two.into()).unwrap();
         assert_eq!(snapshot.undelegations.len(), 1);
         assert_eq!(snapshot.undelegations.get(&validator).unwrap().len(), 1);
 
@@ -27825,9 +28225,9 @@ mod tests {
         let validator = [0x73; 20];
         let signing_key = SigningKey::from_slice(&[36u8; 32]).unwrap();
         let rewards_config = FinalChainRewardsConfig {
-            cornus_period: 0,
+            cornus_period: 0.into(),
             cornus_delegation_locking_period: 1,
-            cacti_period: u64::MAX,
+            cacti_period: u64::MAX.into(),
             ..Default::default()
         };
         let genesis_dpos_config = GenesisDposConfig {
@@ -27838,7 +28238,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let period_one = 1u64;
         let period_two = 2u64;
@@ -27896,7 +28296,7 @@ mod tests {
             .finalize_block(period_one_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
         let period_one_gas =
-            expected_native_contract_tx_gas(&final_chain, period_one, &undelegate_tx);
+            expected_native_contract_tx_gas(&final_chain, period_one.into(), &undelegate_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, period_one_gas, period_one_gas)
@@ -27909,7 +28309,8 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_two_block, vec![confirm_tx.clone()], vec![])
             .unwrap();
-        let period_two_gas = expected_native_contract_tx_gas(&final_chain, period_two, &confirm_tx);
+        let period_two_gas =
+            expected_native_contract_tx_gas(&final_chain, period_two.into(), &confirm_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, period_two_gas, period_two_gas)
@@ -27926,7 +28327,7 @@ mod tests {
             balance_of(&final_chain, DPOS_CONTRACT_ADDRESS),
             U256::from(17_000u64)
         );
-        let snapshot = final_chain.dpos_snapshot(period_two).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period_two.into()).unwrap();
         assert!(!snapshot.undelegations.contains_key(&validator));
 
         drop(final_chain);
@@ -27949,7 +28350,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let period = 1u64;
         let period_block = signed_pbft_block(&signing_key, period, 211);
@@ -27983,7 +28384,7 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_block, vec![cancel_tx.clone()], vec![])
             .unwrap();
-        let cancel_gas = expected_native_contract_tx_gas(&final_chain, period, &cancel_tx);
+        let cancel_gas = expected_native_contract_tx_gas(&final_chain, period.into(), &cancel_tx);
         assert_eq!(receipt_fields(&receipts[0]), (0, cancel_gas, cancel_gas));
         assert!(receipt_logs(&receipts[0]).is_empty());
         assert_eq!(
@@ -27995,7 +28396,7 @@ mod tests {
             U256::from(1_000_000u64)
         );
 
-        let mut snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let mut snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         create_undelegation(
             &mut snapshot,
             validator,
@@ -28030,7 +28431,7 @@ mod tests {
         let validator = [0x76; 20];
         let signing_key = SigningKey::from_slice(&[38u8; 32]).unwrap();
         let rewards_config = FinalChainRewardsConfig {
-            cornus_period: 0,
+            cornus_period: 0.into(),
             ..Default::default()
         };
         let genesis_dpos_config = GenesisDposConfig {
@@ -28041,7 +28442,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let period_one = 1u64;
         let period_two = 2u64;
@@ -28099,7 +28500,7 @@ mod tests {
             .finalize_block(period_one_block, vec![undelegate_tx.clone()], vec![])
             .unwrap();
         let period_one_gas =
-            expected_native_contract_tx_gas(&final_chain, period_one, &undelegate_tx);
+            expected_native_contract_tx_gas(&final_chain, period_one.into(), &undelegate_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, period_one_gas, period_one_gas)
@@ -28108,7 +28509,8 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_two_block, vec![cancel_tx.clone()], vec![])
             .unwrap();
-        let period_two_gas = expected_native_contract_tx_gas(&final_chain, period_two, &cancel_tx);
+        let period_two_gas =
+            expected_native_contract_tx_gas(&final_chain, period_two.into(), &cancel_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, period_two_gas, period_two_gas)
@@ -28164,12 +28566,12 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let rewards_config = FinalChainRewardsConfig {
-            cornus_period: 0,
+            cornus_period: 0.into(),
             cornus_delegation_locking_period: 10,
-            cacti_period: u64::MAX,
+            cacti_period: u64::MAX.into(),
             ..Default::default()
         };
         let period_one = 1u64;
@@ -28230,7 +28632,8 @@ mod tests {
         let (_header_rlp, receipts) = final_chain
             .finalize_block(period_two_block, vec![cancel_tx.clone()], vec![])
             .unwrap();
-        let cancel_tx_gas = expected_native_contract_tx_gas(&final_chain, period_two, &cancel_tx);
+        let cancel_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period_two.into(), &cancel_tx);
         assert_eq!(
             receipt_fields(&receipts[0]),
             (1, cancel_tx_gas, cancel_tx_gas)
@@ -28257,7 +28660,7 @@ mod tests {
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period_two, validator)
+                .dpos_eligible_vote_count(period_two.into(), validator)
                 .unwrap(),
             10
         );
@@ -28297,7 +28700,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&pbft_signing_key, period, 152);
 
@@ -28373,18 +28776,20 @@ mod tests {
         assert_eq!(receipts.len(), 3);
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, first_validator)
+                .dpos_eligible_vote_count(period.into(), first_validator)
                 .unwrap(),
             7
         );
         assert_eq!(
             final_chain
-                .dpos_eligible_vote_count(period, second_validator)
+                .dpos_eligible_vote_count(period.into(), second_validator)
                 .unwrap(),
             5
         );
         assert_eq!(
-            final_chain.dpos_eligible_total_vote_count(period).unwrap(),
+            final_chain
+                .dpos_eligible_total_vote_count(period.into())
+                .unwrap(),
             12
         );
 
@@ -28424,7 +28829,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let final_chain = FinalChain::new(
             storage.clone(),
@@ -28457,7 +28862,7 @@ mod tests {
             .finalize_block(pbft_block, vec![redelegate_tx], vec![])
             .unwrap();
         assert_eq!(receipt_fields(&receipts[0]).0, 1);
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(snapshot.total_stakes.get(&first_validator).unwrap()),
             U256::from(7_000u64)
@@ -28499,7 +28904,7 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let pbft_block = signed_pbft_block(&pbft_signing_key, period, 152);
 
@@ -28584,12 +28989,13 @@ mod tests {
         .unwrap();
 
         let register_first_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &register_first_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &register_first_tx);
         let register_second_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &register_second_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &register_second_tx);
         let redelegate_tx_gas =
-            expected_native_contract_tx_gas(&final_chain, period, &redelegate_tx);
-        let transfer_tx_gas = expected_native_contract_tx_gas(&final_chain, period, &transfer_tx);
+            expected_native_contract_tx_gas(&final_chain, period.into(), &redelegate_tx);
+        let transfer_tx_gas =
+            expected_native_contract_tx_gas(&final_chain, period.into(), &transfer_tx);
         let total_gas_cost =
             register_first_tx_gas + register_second_tx_gas + redelegate_tx_gas + transfer_tx_gas;
 
@@ -28646,7 +29052,7 @@ mod tests {
             )
         );
 
-        let snapshot = final_chain.dpos_snapshot(period).unwrap();
+        let snapshot = final_chain.dpos_snapshot(period.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot
@@ -28795,10 +29201,10 @@ mod tests {
             commission_change_delta: 0,
             commission_change_frequency: 0,
             delegation_delay: 0,
-            dag_vdf_sortition_total_vote_count_until_period: 0,
+            dag_vdf_sortition_total_vote_count_until_period: 0.into(),
         };
         let rewards_config = FinalChainRewardsConfig {
-            fix_redelegate_block_num: period_two,
+            fix_redelegate_block_num: period_two.into(),
             redelegations: vec![RedelegationCorrection {
                 validator,
                 delegator: validator,
@@ -28838,7 +29244,7 @@ mod tests {
             .dpos_snapshots
             .lock()
             .unwrap()
-            .get_mut(&0)
+            .get_mut(&0.into())
             .unwrap()
             .delegator_rewards
             .insert(validator, u256_to_big_endian(U256::from(1_000u64)));
@@ -28848,7 +29254,7 @@ mod tests {
             .finalize_block(period_one_block, vec![pre_fix_redelegation], vec![])
             .unwrap();
 
-        let snapshot_one = final_chain.dpos_snapshot(period_one).unwrap();
+        let snapshot_one = final_chain.dpos_snapshot(period_one.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot_one
@@ -28875,7 +29281,7 @@ mod tests {
             .finalize_block(period_two_block, vec![fix_block_redelegation], vec![])
             .unwrap();
         assert_eq!(receipt_fields(&period_two_receipts[0]).0, 1);
-        let snapshot_two = final_chain.dpos_snapshot(period_two).unwrap();
+        let snapshot_two = final_chain.dpos_snapshot(period_two.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot_two
@@ -28908,7 +29314,7 @@ mod tests {
             .unwrap();
         assert_eq!(receipt_fields(&receipts[0]).0, 0);
         assert_eq!(receipt_fields(&receipts[1]).0, 1);
-        let snapshot_three = final_chain.dpos_snapshot(period_three).unwrap();
+        let snapshot_three = final_chain.dpos_snapshot(period_three.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot_three
@@ -28942,7 +29348,7 @@ mod tests {
             rewards_config,
         )
         .unwrap();
-        let snapshot_three_after_restart = final_chain.dpos_snapshot(period_three).unwrap();
+        let snapshot_three_after_restart = final_chain.dpos_snapshot(period_three.into()).unwrap();
         assert_eq!(
             u256_from_big_endian(
                 snapshot_three_after_restart
@@ -28967,7 +29373,7 @@ mod tests {
             balance_of(&final_chain, validator),
             validator_balance_before + U256::from(645u64)
         );
-        let mut snapshot_one_after_restart = final_chain.dpos_snapshot(period_one).unwrap();
+        let mut snapshot_one_after_restart = final_chain.dpos_snapshot(period_one.into()).unwrap();
         let mut accounts_after_restart = final_chain.current_account_snapshot().unwrap();
         let err = final_chain
             .apply_dpos_redelegate(
@@ -28977,7 +29383,7 @@ mod tests {
                 validator,
                 validator,
                 u256_to_big_endian(U256::from(1_000u64)),
-                period_one,
+                period_one.into(),
             )
             .unwrap_err();
         assert!(
@@ -29089,7 +29495,7 @@ mod tests {
     #[test]
     fn external_evm_position_codec_preserves_u32_max_schema() {
         let position = FinalChainTransactionPosition::new(u32::MAX);
-        let location = external_evm_transaction_location_rlp(7, position, true);
+        let location = external_evm_transaction_location_rlp(7.into(), position, true);
         let location_rlp = Rlp::new(&location);
         assert_eq!(location_rlp.val_at::<u32>(1).unwrap(), u32::MAX);
 
@@ -29197,7 +29603,7 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                cornus_period: 2,
+                cornus_period: 2.into(),
                 ..Default::default()
             },
         )
@@ -29363,7 +29769,7 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                cornus_period: 1,
+                cornus_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -29416,8 +29822,8 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                cornus_period: 1,
-                magnolia_period: 1,
+                cornus_period: 1.into(),
+                magnolia_period: 1.into(),
                 ..Default::default()
             },
         )
@@ -29464,7 +29870,7 @@ mod tests {
             std::slice::from_ref(&transaction.rlp),
         );
         let mut rewards = FinalChainRewardsConfig::default();
-        rewards.cornus_period = 0;
+        rewards.cornus_period = 0.into();
         let final_chain = FinalChain::new_with_rewards_config(
             storage.clone(),
             200_000.into(),
@@ -29547,7 +29953,7 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                cornus_period: 2,
+                cornus_period: 2.into(),
                 ..Default::default()
             },
         )
@@ -29609,7 +30015,7 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                cornus_period: period_two,
+                cornus_period: period_two.into(),
                 ..Default::default()
             },
         )
@@ -29683,8 +30089,8 @@ mod tests {
             vec![],
             GenesisDposConfig::default(),
             FinalChainRewardsConfig {
-                cornus_period: 1,
-                magnolia_period: 1,
+                cornus_period: 1.into(),
+                magnolia_period: 1.into(),
                 ..Default::default()
             },
         )

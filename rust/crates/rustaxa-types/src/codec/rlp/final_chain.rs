@@ -1,6 +1,7 @@
 use crate::codec::rlp::pbft::SignedPbftBlockRlp;
 use crate::final_chain::{
-    BlockHeaderContext, FinalChainBlockHeader, FinalChainLogBloom, StoredFinalChainBlockHeader,
+    BlockHeaderContext, FinalChainBlockHeader, FinalChainBlockNumber, FinalChainLogBloom,
+    StoredFinalChainBlockHeader,
 };
 use crate::pbft::PbftBlockMetadata;
 use anyhow::Result;
@@ -53,6 +54,7 @@ pub struct LegacyBlockHeaderRlpInput<'a> {
     signed_pbft_block: Option<SignedPbftBlockRlp<'a>>,
     block_gas_limit: u64,
     genesis_timestamp: u64,
+    block_number: FinalChainBlockNumber,
 }
 
 impl<'a> LegacyBlockHeaderRlpInput<'a> {
@@ -66,11 +68,17 @@ impl<'a> LegacyBlockHeaderRlpInput<'a> {
             signed_pbft_block: None,
             block_gas_limit,
             genesis_timestamp,
+            block_number: FinalChainBlockNumber::GENESIS,
         }
     }
 
     pub fn signed_pbft_block(mut self, signed_pbft_block: SignedPbftBlockRlp<'a>) -> Self {
         self.signed_pbft_block = Some(signed_pbft_block);
+        self
+    }
+
+    pub fn block_number(mut self, block_number: FinalChainBlockNumber) -> Self {
+        self.block_number = block_number;
         self
     }
 }
@@ -147,7 +155,8 @@ fn encode_legacy_block_header(header: &FinalChainBlockHeader) -> Vec<u8> {
     stream.append(&header.transactions_root);
     stream.append(&header.receipts_root);
     stream.append(&header.log_bloom.as_ref());
-    stream.append(&header.number);
+    // RLP is a compatibility/storage boundary; keep the domain number typed internally.
+    stream.append(&header.number.as_u64());
     stream.append(&header.gas_limit.as_u64());
     stream.append(&header.gas_used.as_u64());
     stream.append(&header.timestamp);
@@ -165,9 +174,15 @@ impl TryFrom<LegacyBlockHeaderRlpInput<'_>> for LegacyBlockHeaderRlp {
             Some(block) => Some(PbftBlockMetadata::try_from(block)?),
             None => None,
         };
+        if let Some(pbft) = pbft.as_ref()
+            && FinalChainBlockNumber::new(pbft.period) != value.block_number
+        {
+            anyhow::bail!("FINAL_CHAIN_BLOCK_NUMBER_METADATA_MISMATCH");
+        }
         let hash = ethereum_block_header_hash(
             &stored_header,
             pbft.as_ref(),
+            value.block_number,
             value.block_gas_limit,
             value.genesis_timestamp,
         );
@@ -176,6 +191,7 @@ impl TryFrom<LegacyBlockHeaderRlpInput<'_>> for LegacyBlockHeaderRlp {
             BlockHeaderContext {
                 hash,
                 pbft: pbft.as_ref(),
+                block_number: value.block_number,
                 block_gas_limit: value.block_gas_limit.into(),
                 genesis_timestamp: value.genesis_timestamp,
             },
@@ -186,11 +202,11 @@ impl TryFrom<LegacyBlockHeaderRlpInput<'_>> for LegacyBlockHeaderRlp {
 fn ethereum_block_header_hash(
     stored_header: &StoredFinalChainBlockHeader,
     pbft: Option<&PbftBlockMetadata>,
+    block_number: FinalChainBlockNumber,
     gas_limit: u64,
     genesis_timestamp: u64,
 ) -> H256 {
     let author = pbft.map(|pbft| pbft.author).unwrap_or_default();
-    let number = pbft.map(|pbft| pbft.period).unwrap_or_default();
     let timestamp = pbft.map(|pbft| pbft.timestamp).unwrap_or(genesis_timestamp);
     let extra_data = pbft
         .map(|pbft| pbft.extra_data.as_slice())
@@ -198,7 +214,7 @@ fn ethereum_block_header_hash(
     keccak256(&encode_ethereum_header_hash_input(
         stored_header,
         author,
-        number,
+        block_number.as_u64(),
         gas_limit,
         timestamp,
         extra_data,
@@ -373,6 +389,7 @@ mod tests {
                 block_gas_limit,
                 0,
             )
+            .block_number(period.into())
             .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block)),
         )
         .unwrap();
@@ -392,6 +409,24 @@ mod tests {
         assert_eq!(
             full_header_rlp.at(12).unwrap().data().unwrap(),
             extra_data.as_slice()
+        );
+    }
+
+    #[test]
+    fn rejects_header_number_when_admitted_identity_mismatches_pbft_metadata() {
+        let signing_key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let pbft_block = signed_pbft_block_rlp(&signing_key, 42, 12345, &[]);
+        let raw_header = header_data_rlp(0, U256::zero());
+        let error = LegacyBlockHeaderRlp::try_from(
+            LegacyBlockHeaderRlpInput::new(StoredBlockHeaderRlp::new(&raw_header), 1_000, 0)
+                .block_number(43u64.into())
+                .signed_pbft_block(SignedPbftBlockRlp::new(&pbft_block)),
+        )
+        .expect_err("mismatched admitted identity must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("FINAL_CHAIN_BLOCK_NUMBER_METADATA_MISMATCH")
         );
     }
 

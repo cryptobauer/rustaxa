@@ -80,7 +80,7 @@ fn final_chain_call_request_from_ffi(
     request: rustaxa_ffi::FinalChainCall,
 ) -> Result<rustaxa_consensus::FinalChainCallRequest, anyhow::Error> {
     Ok(rustaxa_consensus::FinalChainCallRequest {
-        block_number: request.block_number,
+        block_number: request.block_number.into(),
         sender: request.sender,
         receiver: request.receiver_found.then_some(request.receiver),
         value: rustaxa_types::FinalChainTransactionValue::try_from(request.value.as_slice())
@@ -189,7 +189,7 @@ fn system_transaction_request_to_ffi(
 ) -> rustaxa_ffi::FinalChainSystemTransactionRequest {
     rustaxa_ffi::FinalChainSystemTransactionRequest {
         request_id: request.request_id,
-        period: request.period,
+        period: request.period.as_u64(),
         regular_transaction_count: request.regular_transaction_count,
     }
 }
@@ -199,7 +199,7 @@ fn system_transaction_report_from_ffi(
 ) -> rustaxa_consensus::FinalChainSystemTransactionReport {
     rustaxa_consensus::FinalChainSystemTransactionReport {
         request_id: report.request_id,
-        period: report.period,
+        period: report.period.into(),
         transactions: report
             .transactions
             .into_iter()
@@ -213,7 +213,7 @@ fn system_transaction_plan_fact_from_ffi(
 ) -> Result<rustaxa_consensus::FinalChainSystemTransactionPlanFact, anyhow::Error> {
     Ok(rustaxa_consensus::FinalChainSystemTransactionPlanFact {
         request_id: fact.request_id,
-        period: fact.period,
+        period: fact.period.into(),
         is_pillar_block_period: fact.is_pillar_block_period,
         bridge_contract_address: fact.bridge_contract_address,
         bridge_contract_found: fact.bridge_contract_found,
@@ -229,7 +229,7 @@ fn system_transaction_plan_to_ffi(
 ) -> rustaxa_ffi::FinalChainSystemTransactionPlan {
     rustaxa_ffi::FinalChainSystemTransactionPlan {
         request_id: plan.request_id,
-        period: plan.period,
+        period: plan.period.as_u64(),
         transactions: plan
             .transactions
             .into_iter()
@@ -243,7 +243,7 @@ fn evm_request_to_ffi(
 ) -> Result<rustaxa_ffi::FinalChainEvmExecutionRequest, anyhow::Error> {
     Ok(rustaxa_ffi::FinalChainEvmExecutionRequest {
         request_id: request.request_id,
-        period: request.period,
+        period: request.period.as_u64(),
         block_author: request.block_author,
         timestamp: request.timestamp,
         block_gas_limit: request.block_gas_limit.as_u64(),
@@ -260,7 +260,7 @@ fn evm_rewards_request_to_ffi(
 ) -> rustaxa_ffi::FinalChainEvmRewardsRequest {
     rustaxa_ffi::FinalChainEvmRewardsRequest {
         request_id: request.request_id,
-        period: request.period,
+        period: request.period.as_u64(),
         block_author: request.block_author,
         block_gas_used: request.block_gas_used.as_u64(),
         transaction_gas_used: request
@@ -291,7 +291,7 @@ fn execution_step_to_ffi(
     Ok(rustaxa_ffi::FinalChainExecutionStep {
         status: step.status,
         action: step.action,
-        period: step.period,
+        period: step.period.as_u64(),
         external_evm_transaction_count: step.external_evm_transaction_count,
         evm_request: evm_request_to_ffi(step.evm_request)?,
         evm_rewards_request: evm_rewards_request_to_ffi(step.evm_rewards_request),
@@ -354,7 +354,7 @@ fn evm_rewards_report_from_ffi(
 ) -> rustaxa_consensus::FinalChainEvmRewardsReport {
     rustaxa_consensus::FinalChainEvmRewardsReport {
         request_id: report.request_id,
-        period: report.period,
+        period: report.period.into(),
         status: report.status,
         state_root: report.state_root,
         total_reward: report.total_reward,
@@ -366,7 +366,7 @@ fn external_evm_commit_report_to_ffi(
 ) -> rustaxa_ffi::FinalChainExternalEvmCommitReport {
     rustaxa_ffi::FinalChainExternalEvmCommitReport {
         request_id: plan.request_id,
-        period: plan.period,
+        period: plan.period.as_u64(),
         error_code: plan.error_code,
     }
 }
@@ -386,7 +386,7 @@ fn external_evm_state_commit_intent_to_ffi(
     rustaxa_ffi::FinalChainExternalEvmStateCommitIntent {
         request_id: intent.request_id,
         plan_id: intent.plan_id,
-        period: intent.period,
+        period: intent.period.as_u64(),
         publication_block_hash: intent.publication_block_hash,
         status: intent.status,
         error_code: intent.error_code,
@@ -409,7 +409,7 @@ fn external_evm_commit_decision_to_ffi(
         request_id: decision.request_id,
         plan_id: decision.plan_id,
         decision_id: decision.decision_id,
-        period: decision.period,
+        period: decision.period.as_u64(),
         publication_block_hash: decision.publication_block_hash,
         status: decision.status,
         error_code: decision.error_code,
@@ -422,7 +422,7 @@ fn external_evm_publication_report_to_ffi(
     rustaxa_ffi::FinalChainExternalEvmPublicationReport {
         request_id: report.request_id,
         plan_id: report.plan_id,
-        period: report.period,
+        period: report.period.as_u64(),
         block_hash: report.block_hash,
         executed_dag_block_count: report.executed_dag_block_count,
         executed_transaction_count: report.executed_transaction_count,
@@ -438,7 +438,7 @@ fn commit_report_to_ffi(
 ) -> rustaxa_ffi::FinalChainExecutionCommitReport {
     rustaxa_ffi::FinalChainExecutionCommitReport {
         status: report.status,
-        period: report.period,
+        period: report.period.as_u64(),
         block_header_rlp: report.block_header_rlp,
         receipts: report
             .receipts
@@ -512,7 +512,8 @@ fn genesis_dpos_config_from_ffi(
         commission_change_frequency: config.commission_change_frequency,
         delegation_delay: config.delegation_delay,
         dag_vdf_sortition_total_vote_count_until_period: config
-            .dag_vdf_sortition_total_vote_count_until_period,
+            .dag_vdf_sortition_total_vote_count_until_period
+            .into(),
     })
 }
 
@@ -568,30 +569,30 @@ pub fn create_final_chain_with_rewards_config(
         genesis_dpos_config_from_ffi(genesis_dpos_config)?,
         rustaxa_consensus::FinalChainRewardsConfig {
             committee_size: rewards_config.committee_size,
-            magnolia_period: rewards_config.magnolia_period,
-            phalaenopsis_period: rewards_config.phalaenopsis_period,
-            aspen_part_one_period: rewards_config.aspen_part_one_period,
-            fix_claim_all_block_num: rewards_config.fix_claim_all_block_num,
-            fix_redelegate_block_num: rewards_config.fix_redelegate_block_num,
-            aspen_part_two_period: rewards_config.aspen_part_two_period,
+            magnolia_period: rewards_config.magnolia_period.into(),
+            phalaenopsis_period: rewards_config.phalaenopsis_period.into(),
+            aspen_part_one_period: rewards_config.aspen_part_one_period.into(),
+            fix_claim_all_block_num: rewards_config.fix_claim_all_block_num.into(),
+            fix_redelegate_block_num: rewards_config.fix_redelegate_block_num.into(),
+            aspen_part_two_period: rewards_config.aspen_part_two_period.into(),
             max_block_author_reward_percent: rewards_config.max_block_author_reward_percent,
             dag_proposers_reward_percent: rewards_config.dag_proposers_reward_percent,
             yield_percentage: rewards_config.yield_percentage,
             dpos_blocks_per_year: rewards_config.dpos_blocks_per_year,
             dpos_delegation_locking_period: rewards_config.dpos_delegation_locking_period,
-            cornus_period: rewards_config.cornus_period,
+            cornus_period: rewards_config.cornus_period.into(),
             cornus_delegation_locking_period: rewards_config.cornus_delegation_locking_period,
             genesis_balance_sum: rewards_config.genesis_balance_sum,
             aspen_max_supply: rewards_config.aspen_max_supply,
             aspen_generated_rewards: rewards_config.aspen_generated_rewards,
-            cacti_period: rewards_config.cacti_period,
+            cacti_period: rewards_config.cacti_period.into(),
             cacti_delegation_locking_period: rewards_config.cacti_delegation_locking_period,
             magnolia_jail_time: rewards_config.magnolia_jail_time,
             cacti_jail_time: rewards_config.cacti_jail_time,
             rewards_distribution_frequency: rewards_config
                 .frequency_rules
                 .into_iter()
-                .map(|rule| (rule.from_period, rule.frequency))
+                .map(|rule| (rule.from_period.into(), rule.frequency))
                 .collect(),
             redelegations: rewards_config
                 .redelegations
@@ -776,13 +777,13 @@ impl BridgeFinalChain {
     pub fn get_block_hash(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .0
-            .block_hash(num)
+            .block_hash(num.into())
             .map_err(|e| anyhow::anyhow!(e))?
             .unwrap_or_default())
     }
 
     pub fn get_block_header(self: &BridgeFinalChain, num: u64) -> Result<Vec<u8>, anyhow::Error> {
-        Ok(self.0.block_header(num)?.unwrap_or_default())
+        Ok(self.0.block_header(num.into())?.unwrap_or_default())
     }
 
     pub fn get_transaction_location(
@@ -796,7 +797,7 @@ impl BridgeFinalChain {
         self: &BridgeFinalChain,
         period: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0.transaction_count(period)
+        self.0.transaction_count(period.into())
     }
 
     pub fn get_execution_status(
@@ -817,7 +818,9 @@ impl BridgeFinalChain {
         from: u64,
         to: u64,
     ) -> Result<Vec<u64>, anyhow::Error> {
-        self.0.with_block_bloom(&(*bloom).into(), from, to)
+        self.0
+            .with_block_bloom(&(*bloom).into(), from.into(), to.into())
+            .map(|blocks| blocks.into_iter().map(Into::into).collect())
     }
 
     pub fn recover_external_evm_pending_publication(
@@ -846,7 +849,7 @@ impl BridgeFinalChain {
         address: &[u8; 20],
     ) -> Result<rustaxa_ffi::AccountLookup, anyhow::Error> {
         Ok(account_to_lookup(
-            self.0.account_at_block(block_number, *address)?,
+            self.0.account_at_block(block_number.into(), *address)?,
         ))
     }
 
@@ -863,7 +866,7 @@ impl BridgeFinalChain {
     ) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .0
-            .vrf_key_at_block(block_number, *address)?
+            .vrf_key_at_block(block_number.into(), *address)?
             .map(|key| key.to_vec())
             .unwrap_or_default())
     }
@@ -873,14 +876,15 @@ impl BridgeFinalChain {
         block_number: u64,
         address: &[u8; 20],
     ) -> Result<u64, anyhow::Error> {
-        self.0.dpos_eligible_vote_count(block_number, *address)
+        self.0
+            .dpos_eligible_vote_count(block_number.into(), *address)
     }
 
     pub fn get_dpos_eligible_total_vote_count(
         self: &BridgeFinalChain,
         block_number: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0.dpos_eligible_total_vote_count(block_number)
+        self.0.dpos_eligible_total_vote_count(block_number.into())
     }
 
     pub fn get_dpos_is_eligible(
@@ -888,7 +892,7 @@ impl BridgeFinalChain {
         block_number: u64,
         address: &[u8; 20],
     ) -> Result<bool, anyhow::Error> {
-        self.0.dpos_is_eligible(block_number, *address)
+        self.0.dpos_is_eligible(block_number.into(), *address)
     }
 
     /// Returns DagManager authorization facts for staged VDF/DPoS checks.
@@ -901,7 +905,9 @@ impl BridgeFinalChain {
         block_number: u64,
         sender: &[u8; 20],
     ) -> Result<rustaxa_ffi::DagDposAuthorizationFacts, anyhow::Error> {
-        let facts = self.0.dag_dpos_authorization_facts(block_number, *sender)?;
+        let facts = self
+            .0
+            .dag_dpos_authorization_facts(block_number.into(), *sender)?;
         Ok(rustaxa_ffi::DagDposAuthorizationFacts {
             vrf_key_found: facts.vrf_key_found,
             vrf_key: facts
@@ -953,7 +959,7 @@ impl BridgeFinalChain {
     ) -> Result<Vec<rustaxa_ffi::DposValidatorStake>, anyhow::Error> {
         Ok(self
             .0
-            .dpos_validators_total_stakes(block_number)?
+            .dpos_validators_total_stakes(block_number.into())?
             .into_iter()
             .map(|stake| rustaxa_ffi::DposValidatorStake {
                 address: stake.address,
@@ -966,21 +972,21 @@ impl BridgeFinalChain {
         self: &BridgeFinalChain,
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.dpos_total_amount_delegated(block_number)
+        self.0.dpos_total_amount_delegated(block_number.into())
     }
 
     pub fn get_dpos_yield(
         self: &BridgeFinalChain,
         block_number: u64,
     ) -> Result<u64, anyhow::Error> {
-        self.0.dpos_yield(block_number)
+        self.0.dpos_yield(block_number.into())
     }
 
     pub fn get_dpos_total_supply(
         self: &BridgeFinalChain,
         block_number: u64,
     ) -> Result<Vec<u8>, anyhow::Error> {
-        self.0.dpos_total_supply(block_number)
+        self.0.dpos_total_supply(block_number.into())
     }
 
     pub fn get_dpos_validators_eligible_vote_counts(
@@ -989,7 +995,7 @@ impl BridgeFinalChain {
     ) -> Result<Vec<rustaxa_ffi::DposValidatorVoteCount>, anyhow::Error> {
         Ok(self
             .0
-            .dpos_validators_eligible_vote_counts(block_number)?
+            .dpos_validators_eligible_vote_counts(block_number.into())?
             .into_iter()
             .map(|vote_count| rustaxa_ffi::DposValidatorVoteCount {
                 address: vote_count.address,
@@ -1030,7 +1036,7 @@ impl BridgeFinalChain {
     ) -> Result<Vec<rustaxa_ffi::TxRlp>, anyhow::Error> {
         Ok(self
             .0
-            .transaction_rlps(period)?
+            .transaction_rlps(period.into())?
             .into_iter()
             .map(|data| rustaxa_ffi::TxRlp { data })
             .collect())
@@ -1043,7 +1049,10 @@ impl BridgeFinalChain {
     ) -> Result<Vec<u8>, anyhow::Error> {
         Ok(self
             .0
-            .transaction_receipt_rlp(period, transaction_receipt_position_from_ffi(position)?)?
+            .transaction_receipt_rlp(
+                period.into(),
+                transaction_receipt_position_from_ffi(position)?,
+            )?
             .unwrap_or_default())
     }
 
@@ -2664,7 +2673,7 @@ mod tests {
         .expect("commit plan should convert");
 
         assert!(plan.error_code.is_empty());
-        assert_eq!(plan.period, 7);
+        assert_eq!(plan.period, rustaxa_types::FinalChainBlockNumber::new(7));
         assert_eq!(plan.post_execution_state_root, [0x11; 32]);
         assert_eq!(plan.state_root, [0x22; 32]);
         assert_eq!(plan.total_reward, vec![0x33]);
@@ -2686,7 +2695,10 @@ mod tests {
             execution_session_plan_external_evm_publication(&final_chain, &mut session)
                 .expect("publication plan should convert");
         assert!(publication.error_code.is_empty());
-        assert_eq!(publication.period, 7);
+        assert_eq!(
+            publication.period,
+            rustaxa_types::FinalChainBlockNumber::new(7)
+        );
         assert_ne!(publication.plan_id, [0; 32]);
         assert!(!publication.block_header_rlp.is_empty());
         assert!(!publication.stored_header_rlp.is_empty());
@@ -2915,6 +2927,7 @@ mod tests {
                 0,
                 0,
             )
+            .block_number(1u64.into())
             .signed_pbft_block(
                 rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp::new(&pbft_block_rlp),
             ),
@@ -3364,7 +3377,7 @@ mod tests {
         .expect("rewards stats update should attach");
 
         assert_ne!(publication.plan_id, old_plan_id);
-        assert_eq!(publication.rewards_stats_update.current_period, 1);
+        assert_eq!(publication.rewards_stats_update.current_period, 1.into());
         assert!(publication.rewards_stats_update.cache_current_period);
         assert_eq!(
             publication.rewards_stats_update.current_block_stats_rlp,
@@ -3702,7 +3715,7 @@ mod tests {
             request_id: intent.request_id,
             plan_id: intent.plan_id,
             decision_id: [0; 32],
-            period: intent.period,
+            period: intent.period.into(),
             publication_block_hash: intent.publication_block_hash,
             status: rustaxa_consensus::FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
             error_code: String::new(),
@@ -3779,7 +3792,7 @@ mod tests {
             rustaxa_consensus::FinalChainExternalEvmLifecycleReport {
                 request_id: intent.request_id,
                 plan_id: intent.plan_id,
-                period: intent.period,
+                period: intent.period.into(),
                 post_execution_state_root: plan.post_execution_state_root,
                 post_rewards_state_root: wrong_rewards_root,
                 publication_block_hash: intent.publication_block_hash,

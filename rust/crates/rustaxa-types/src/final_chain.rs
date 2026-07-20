@@ -7,6 +7,79 @@ use std::cmp::Ordering;
 /// Canonical byte width of an Ethereum/FinalChain log bloom.
 pub const FINAL_CHAIN_LOG_BLOOM_BYTES: usize = 256;
 
+/// Typed identity of a finalized FinalChain block.
+///
+/// This domain value is intentionally not an arithmetic newtype: callers must
+/// choose checked or saturating distance operations explicitly at lifecycle
+/// boundaries. Conversion to the raw `u64` representation is reserved for
+/// storage, wire, and CXX/public compatibility edges.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainBlockNumber(u64);
+
+impl FinalChainBlockNumber {
+    /// Genesis block number.
+    pub const GENESIS: Self = Self(0);
+    /// Largest representable FinalChain block number.
+    pub const MAX: Self = Self(u64::MAX);
+
+    /// Wraps a raw FinalChain block number at a compatibility boundary.
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the raw block number for storage, wire, or FFI conversion.
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Reports whether this is the genesis block.
+    pub const fn is_genesis(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Advances one block, returning `None` at `MAX`.
+    pub const fn checked_next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Adds a non-negative block distance, returning `None` on overflow.
+    pub const fn checked_add_distance(self, distance: u64) -> Option<Self> {
+        match self.0.checked_add(distance) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Subtracts a block distance, returning `None` on underflow.
+    pub const fn checked_sub_distance(self, distance: u64) -> Option<Self> {
+        match self.0.checked_sub(distance) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
+
+    /// Subtracts a block distance, clamping at genesis on underflow.
+    pub const fn saturating_sub_distance(self, distance: u64) -> Self {
+        Self(self.0.saturating_sub(distance))
+    }
+}
+
+impl From<u64> for FinalChainBlockNumber {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<FinalChainBlockNumber> for u64 {
+    fn from(value: FinalChainBlockNumber) -> Self {
+        value.as_u64()
+    }
+}
+
 /// Gas quantity used throughout FinalChain execution and persistence.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -755,7 +828,7 @@ pub struct GenesisDposConfig {
     pub delegation_delay: u64,
     /// Exclusive period boundary below which legacy DAG VDF sortition uses the
     /// total eligible vote count as denominator.
-    pub dag_vdf_sortition_total_vote_count_until_period: u64,
+    pub dag_vdf_sortition_total_vote_count_until_period: FinalChainBlockNumber,
 }
 
 /// A fungible DPoS token quantity represented within the `U256` domain.
@@ -876,30 +949,30 @@ pub struct FinalChainRewardsConfig {
     /// Committee size used by legacy rewards stats for max vote-weight bounds.
     pub committee_size: u32,
     /// First period where Magnolia fee rewards are active.
-    pub magnolia_period: u64,
+    pub magnolia_period: FinalChainBlockNumber,
     /// First period where the exact legacy Phalaenopsis DPoS escrow-transfer
     /// selector is active.
     ///
     /// A value of `u64::MAX` disables the compatibility action outside
     /// configured networks.
-    pub phalaenopsis_period: u64,
+    pub phalaenopsis_period: FinalChainBlockNumber,
     /// First period where Aspen part-one DAG reward counting is active.
-    pub aspen_part_one_period: u64,
+    pub aspen_part_one_period: FinalChainBlockNumber,
     /// First period where the legacy pre-Aspen `claimAllRewards(uint32)` ABI is disabled.
     ///
     /// A value of `u64::MAX` keeps the compatibility ABI enabled for local
     /// rewrite tests that do not configure the hardfork boundary.
-    pub fix_claim_all_block_num: u64,
+    pub fix_claim_all_block_num: FinalChainBlockNumber,
     /// First period where a one-time redelegation hardfork stake correction is applied.
     ///
     /// A value of `u64::MAX` disables correction outside configured hardforks.
-    pub fix_redelegate_block_num: u64,
+    pub fix_redelegate_block_num: FinalChainBlockNumber,
     /// First period where Aspen part-two dynamic-yield rewards are active.
     ///
     /// Rust native finalization currently distributes fixed-yield rewards only.
     /// A zero value keeps the part-two path disabled for rewrite tests and
     /// local configurations that do not provide the hardfork boundary.
-    pub aspen_part_two_period: u64,
+    pub aspen_part_two_period: FinalChainBlockNumber,
     /// Ordered redelegation stake corrections applied when
     /// `fix_redelegate_block_num` is reached.
     pub redelegations: Vec<RedelegationCorrection>,
@@ -916,7 +989,7 @@ pub struct FinalChainRewardsConfig {
     /// Legacy DPoS undelegation locking period before Cornus overrides it.
     pub dpos_delegation_locking_period: u64,
     /// First period where Cornus DPoS V2 undelegation methods are active.
-    pub cornus_period: u64,
+    pub cornus_period: FinalChainBlockNumber,
     /// DPoS undelegation locking period after Cornus and before Cacti.
     pub cornus_delegation_locking_period: u64,
     /// Genesis account balance sum encoded as an unsigned big-endian integer.
@@ -931,7 +1004,7 @@ pub struct FinalChainRewardsConfig {
     /// the pre-migration minted-token counter.
     pub aspen_generated_rewards: Vec<u8>,
     /// First period where Cacti reward stats provide dynamic blocks-per-year.
-    pub cacti_period: u64,
+    pub cacti_period: FinalChainBlockNumber,
     /// DPoS undelegation locking period after Cacti.
     pub cacti_delegation_locking_period: u64,
     /// Number of finalized blocks a validator remains jailed before Cacti.
@@ -939,30 +1012,30 @@ pub struct FinalChainRewardsConfig {
     /// Number of finalized blocks a validator remains jailed after Cacti.
     pub cacti_jail_time: u64,
     /// Rewards distribution frequency changes keyed by starting period.
-    pub rewards_distribution_frequency: Vec<(u64, u32)>,
+    pub rewards_distribution_frequency: Vec<(FinalChainBlockNumber, u32)>,
 }
 
 impl Default for FinalChainRewardsConfig {
     fn default() -> Self {
         Self {
             committee_size: 0,
-            magnolia_period: 0,
-            phalaenopsis_period: u64::MAX,
-            aspen_part_one_period: 0,
-            fix_claim_all_block_num: u64::MAX,
-            fix_redelegate_block_num: u64::MAX,
-            aspen_part_two_period: 0,
+            magnolia_period: FinalChainBlockNumber::GENESIS,
+            phalaenopsis_period: FinalChainBlockNumber::MAX,
+            aspen_part_one_period: FinalChainBlockNumber::GENESIS,
+            fix_claim_all_block_num: FinalChainBlockNumber::MAX,
+            fix_redelegate_block_num: FinalChainBlockNumber::MAX,
+            aspen_part_two_period: FinalChainBlockNumber::GENESIS,
             max_block_author_reward_percent: 0,
             dag_proposers_reward_percent: 0,
             yield_percentage: 0,
             dpos_blocks_per_year: 0,
             dpos_delegation_locking_period: 0,
-            cornus_period: 0,
+            cornus_period: FinalChainBlockNumber::GENESIS,
             cornus_delegation_locking_period: 0,
             genesis_balance_sum: Vec::new(),
             aspen_max_supply: Vec::new(),
             aspen_generated_rewards: Vec::new(),
-            cacti_period: 0,
+            cacti_period: FinalChainBlockNumber::GENESIS,
             cacti_delegation_locking_period: 0,
             magnolia_jail_time: 0,
             cacti_jail_time: 0,
@@ -982,7 +1055,7 @@ impl Default for FinalChainRewardsConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FinalChainCallRequest {
     /// Block number used for historical reads.
-    pub block_number: u64,
+    pub block_number: FinalChainBlockNumber,
     /// Caller address bytes in canonical Ethereum/Taraxa address order.
     pub sender: [u8; 20],
     /// Optional receiver address. `None` represents contract creation.
@@ -1126,6 +1199,7 @@ impl StoredFinalChainBlockHeader {
         FinalChainBlockHeaderBuilder::new(self)
             .hash(context.hash)
             .pbft(context.pbft)
+            .block_number(context.block_number)
             .block_gas_limit(context.block_gas_limit)
             .genesis_timestamp(context.genesis_timestamp)
             .build()
@@ -1137,6 +1211,7 @@ impl StoredFinalChainBlockHeader {
 pub struct BlockHeaderContext<'a> {
     pub hash: H256,
     pub pbft: Option<&'a PbftBlockMetadata>,
+    pub block_number: FinalChainBlockNumber,
     pub block_gas_limit: FinalChainGas,
     pub genesis_timestamp: u64,
 }
@@ -1150,7 +1225,7 @@ pub struct FinalChainBlockHeader {
     pub transactions_root: H256,
     pub receipts_root: H256,
     pub log_bloom: FinalChainLogBloom,
-    pub number: u64,
+    pub number: FinalChainBlockNumber,
     pub gas_limit: FinalChainGas,
     pub gas_used: FinalChainGas,
     pub timestamp: u64,
@@ -1163,6 +1238,7 @@ pub struct FinalChainBlockHeaderBuilder<'a> {
     stored_header: &'a StoredFinalChainBlockHeader,
     hash: Option<H256>,
     pbft: Option<&'a PbftBlockMetadata>,
+    block_number: Option<FinalChainBlockNumber>,
     block_gas_limit: Option<FinalChainGas>,
     genesis_timestamp: Option<u64>,
 }
@@ -1173,6 +1249,7 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
             stored_header,
             hash: None,
             pbft: None,
+            block_number: None,
             block_gas_limit: None,
             genesis_timestamp: None,
         }
@@ -1185,6 +1262,11 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
 
     pub fn pbft(mut self, pbft: Option<&'a PbftBlockMetadata>) -> Self {
         self.pbft = pbft;
+        self
+    }
+
+    pub fn block_number(mut self, block_number: FinalChainBlockNumber) -> Self {
+        self.block_number = Some(block_number);
         self
     }
 
@@ -1209,7 +1291,9 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
             .genesis_timestamp
             .ok_or_else(|| anyhow!("missing genesis timestamp"))?;
         let author = self.pbft.map(|pbft| pbft.author).unwrap_or_default();
-        let number = self.pbft.map(|pbft| pbft.period).unwrap_or_default();
+        let number = self
+            .block_number
+            .ok_or_else(|| anyhow!("missing final-chain block number"))?;
         let timestamp = self
             .pbft
             .map(|pbft| pbft.timestamp)
@@ -1240,6 +1324,25 @@ impl<'a> FinalChainBlockHeaderBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_number_requires_explicit_checked_distance() {
+        let genesis = FinalChainBlockNumber::GENESIS;
+        assert!(genesis.is_genesis());
+        assert_eq!(genesis.checked_next(), Some(FinalChainBlockNumber::new(1)));
+        assert_eq!(genesis.checked_sub_distance(1), None);
+        assert_eq!(genesis.saturating_sub_distance(1), genesis);
+        assert_eq!(FinalChainBlockNumber::MAX.checked_next(), None);
+        assert_eq!(
+            FinalChainBlockNumber::new(7).checked_add_distance(5),
+            Some(12.into())
+        );
+        assert_eq!(
+            FinalChainBlockNumber::new(7).checked_sub_distance(5),
+            Some(2.into())
+        );
+        assert_eq!(u64::from(FinalChainBlockNumber::new(42)), 42);
+    }
 
     #[test]
     fn dpos_token_amount_checks_ingress_and_arithmetic_boundaries() {
@@ -1423,6 +1526,7 @@ mod tests {
 
         let header = FinalChainBlockHeaderBuilder::new(&stored_header)
             .hash(H256::from_low_u64_be(99))
+            .block_number(FinalChainBlockNumber::GENESIS)
             .block_gas_limit(1000.into())
             .genesis_timestamp(1234)
             .build()
@@ -1430,7 +1534,7 @@ mod tests {
 
         assert_eq!(header.parent_hash, stored_header.parent_hash);
         assert_eq!(header.author, H160::zero());
-        assert_eq!(header.number, 0);
+        assert_eq!(header.number, FinalChainBlockNumber::GENESIS);
         assert_eq!(header.gas_limit.as_u64(), 1000);
         assert_eq!(header.gas_used, stored_header.gas_used);
         assert_eq!(header.timestamp, 1234);

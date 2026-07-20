@@ -4269,6 +4269,27 @@ Validation passed all 1,193 tests across `rustaxa-types`, `rustaxa-consensus`, a
 check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, and the FinalChain Tier 3 Rust-enabled/pure-C++ parity gate.
 Rust formatting and whitespace validation also passed; existing normal-policy clippy warnings remain outside this slice.
 
+### CRW-09C FinalChain Block-Number Lifecycle
+
+`CRW-09C` introduces `FinalChainBlockNumber(u64)` as the Rust-owned finalized-block identity. PBFT metadata remains in
+its own period domain and converts exactly once when native or external FinalChain execution is admitted. The typed
+identity remains intact through head progression, historical account and DPoS reads, snapshot keys, headers, hardfork
+activation, execution and rewards sessions, publication, recovery, audit, transaction and receipt lookup, and bloom
+query endpoints and leaves. Expected-head progression uses `checked_next`, preserving the existing
+`final-chain last block overflow` validation order; rejecting a MAX-valued head before mutation is intentional checked
+overflow behavior, rather than a claim that MAX-head semantics remain unchanged.
+
+The migration changes no schema or public ABI. Storage keys and values, header and transaction-location RLP, request and
+plan identity preimages, StateAPI facts, PBFT metadata, and CXX/public carriers retain their exact `u64` representation;
+Rust wraps at ingress and explicitly unwraps only at those boundaries. Durations, timestamps, counts, generic PBFT
+periods, bloom indexes, and storage infrastructure indexes remain numeric. No bridge handle, export, shim, module flag,
+or compatibility-test inventory entry changed, so `CRW-07` has no delta.
+
+Focused `rustaxa-types`, `rustaxa-consensus` FinalChain, and `rustaxa-bridge` FinalChain suites passed together with
+`make rewrite-validate-fast`, `make rewrite-validate-final-chain`, and
+`make rewrite-validate-final-chain-parity`. Independent configured code-mapper review approved the final lifecycle and
+boundary audit. `CRW-09D` is now ready.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

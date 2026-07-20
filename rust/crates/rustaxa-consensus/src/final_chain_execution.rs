@@ -15,7 +15,7 @@ use rustaxa_types::codec::rlp::final_chain::{
 };
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::{
-    FinalChainGas, FinalChainGasPrice, FinalChainLogBloom, FinalChainNonce,
+    FinalChainBlockNumber, FinalChainGas, FinalChainGasPrice, FinalChainLogBloom, FinalChainNonce,
     FinalChainTransactionPosition, FinalChainTransactionValue, FinalizationDagBlock,
     FinalizationTransaction, LegacySystemTransactionInput, LegacyTransactionEnvelope,
     StoredFinalChainBlockHeader, encode_legacy_system_transaction,
@@ -192,7 +192,7 @@ pub struct FinalChainEvmTransactionInput {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainSystemTransactionRequest {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub regular_transaction_count: u64,
 }
 
@@ -204,7 +204,7 @@ pub struct FinalChainSystemTransactionRequest {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainSystemTransactionReport {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub transactions: Vec<Vec<u8>>,
 }
 
@@ -216,7 +216,7 @@ pub struct FinalChainSystemTransactionReport {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainSystemTransactionPlanFact {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub is_pillar_block_period: bool,
     pub bridge_contract_address: [u8; 20],
     pub bridge_contract_found: bool,
@@ -235,7 +235,7 @@ pub struct FinalChainSystemTransactionPlanFact {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainSystemTransactionPlan {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub transactions: Vec<Vec<u8>>,
 }
 
@@ -248,7 +248,7 @@ pub struct FinalChainSystemTransactionPlan {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainEvmExecutionRequest {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub block_author: [u8; 20],
     pub timestamp: u64,
     pub block_gas_limit: FinalChainGas,
@@ -316,7 +316,7 @@ pub struct FinalChainEvmExecutionReport {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainEvmRewardsRequest {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub block_author: [u8; 20],
     pub block_gas_used: FinalChainGas,
     pub transaction_gas_used: Vec<FinalChainGas>,
@@ -335,8 +335,8 @@ pub struct FinalChainEvmRewardsRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FinalChainPreparedExternalEvmRewardsStatsPlan {
     pub(crate) request_id: [u8; 32],
-    pub(crate) period: u64,
-    pub(crate) expected_prior_head: u64,
+    pub(crate) period: FinalChainBlockNumber,
+    pub(crate) expected_prior_head: FinalChainBlockNumber,
     pub(crate) expected_runtime_generation: u64,
     pub(crate) distribution_stats: Vec<RewardsStatsPeriodRlp>,
     pub(crate) storage_update: FinalChainExternalEvmRewardsStatsUpdate,
@@ -350,7 +350,7 @@ pub(crate) struct FinalChainPreparedExternalEvmRewardsStatsPlan {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FinalChainEvmRewardsReport {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub status: u8,
     pub state_root: [u8; 32],
     pub total_reward: Vec<u8>,
@@ -366,7 +366,7 @@ pub struct FinalChainEvmRewardsReport {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmCommitPlan {
     pub request_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub post_execution_state_root: [u8; 32],
     pub state_root: [u8; 32],
     pub total_reward: Vec<u8>,
@@ -406,7 +406,7 @@ pub struct FinalChainExternalEvmTransactionPublication {
 /// atomically with FinalChain block visibility.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmRewardsStatsUpdate {
-    pub current_period: u64,
+    pub current_period: FinalChainBlockNumber,
     pub cache_current_period: bool,
     pub clear_cached_stats: bool,
     pub current_block_stats_rlp: Vec<u8>,
@@ -439,7 +439,7 @@ pub struct FinalChainProposalPeriodDagLevelUpdate {
 pub struct FinalChainExternalEvmPublicationPlan {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub block_hash: [u8; 32],
     pub block_header_rlp: Vec<u8>,
     pub stored_header_rlp: Vec<u8>,
@@ -464,7 +464,7 @@ pub struct FinalChainExternalEvmPublicationPlan {
 pub struct FinalChainExternalEvmStateCommitRequest {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub post_execution_state_root: [u8; 32],
     pub post_rewards_state_root: [u8; 32],
     pub publication_block_hash: [u8; 32],
@@ -479,7 +479,7 @@ pub struct FinalChainExternalEvmStateCommitRequest {
 pub struct FinalChainExternalEvmStateCommitIntent {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub publication_block_hash: [u8; 32],
     pub status: u8,
     pub error_code: String,
@@ -510,7 +510,7 @@ pub struct FinalChainExternalEvmStateCommitResult {
 pub struct FinalChainExternalEvmLifecycleReport {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub post_execution_state_root: [u8; 32],
     pub post_rewards_state_root: [u8; 32],
     pub publication_block_hash: [u8; 32],
@@ -532,7 +532,7 @@ pub struct FinalChainExternalEvmCommitDecision {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
     pub decision_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub publication_block_hash: [u8; 32],
     pub status: u8,
     pub error_code: String,
@@ -552,7 +552,7 @@ pub struct FinalChainExternalEvmCommitDecision {
 pub struct FinalChainExternalEvmPublicationReport {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub block_hash: [u8; 32],
     pub executed_dag_block_count: u64,
     pub executed_transaction_count: u64,
@@ -570,7 +570,7 @@ pub struct FinalChainExternalEvmPublicationReport {
 /// must match the post-rewards root accepted by the Rust execution session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExternalEvmCommittedStateDescriptor {
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub state_root: [u8; 32],
 }
 
@@ -586,7 +586,7 @@ pub struct FinalChainExternalEvmCommittedStateDescriptor {
 pub struct FinalChainExternalEvmPublicationAuditReport {
     pub request_id: [u8; 32],
     pub plan_id: [u8; 32],
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub block_hash: [u8; 32],
     pub checked_fields: u64,
     pub status: u8,
@@ -602,7 +602,7 @@ pub struct FinalChainExternalEvmPublicationAuditReport {
 pub struct FinalChainExecutionStep {
     pub status: u8,
     pub action: u8,
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub external_evm_transaction_count: u64,
     pub evm_request: FinalChainEvmExecutionRequest,
     pub evm_rewards_request: FinalChainEvmRewardsRequest,
@@ -618,7 +618,7 @@ pub struct FinalChainExecutionStep {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FinalChainExecutionCommitReport {
     pub status: u8,
-    pub period: u64,
+    pub period: FinalChainBlockNumber,
     pub block_header_rlp: Vec<u8>,
     pub receipts: Vec<Vec<u8>>,
     pub gas_used: FinalChainGas,
@@ -636,6 +636,7 @@ pub struct FinalChainExecutionCommitReport {
 pub struct FinalChainExecutionSession {
     request: FinalChainExecutionRequest,
     metadata: rustaxa_types::PbftBlockMetadata,
+    block_number: FinalChainBlockNumber,
     evm_request: Option<FinalChainEvmExecutionRequest>,
     status: u8,
     system_transaction_request: Option<FinalChainSystemTransactionRequest>,
@@ -669,10 +670,11 @@ pub fn create_final_chain_execution_session(
             request,
             rustaxa_types::PbftBlockMetadata {
                 author: Default::default(),
-                period: 0,
+                period: 0u64,
                 timestamp: 0,
                 extra_data: Vec::new(),
             },
+            FinalChainBlockNumber::GENESIS,
             format!("FINAL_CHAIN_EXECUTION_INVALID_PBFT: {error:#}"),
         ),
     }
@@ -704,7 +706,7 @@ pub fn final_chain_execution_session_next(
             FinalChainExecutionStep {
                 status: session.status,
                 action: FINAL_CHAIN_EXECUTION_ACTION_REJECT,
-                period: session.metadata.period,
+                period: session.block_number,
                 error_code: session.error_code.clone(),
                 ..Default::default()
             }
@@ -712,7 +714,7 @@ pub fn final_chain_execution_session_next(
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM => FinalChainExecutionStep {
             status: session.status,
             action: FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM,
-            period: session.metadata.period,
+            period: session.block_number,
             external_evm_transaction_count: session
                 .evm_request
                 .as_ref()
@@ -725,7 +727,7 @@ pub fn final_chain_execution_session_next(
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_SYSTEM_TRANSACTIONS => FinalChainExecutionStep {
             status: session.status,
             action: FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS,
-            period: session.metadata.period,
+            period: session.block_number,
             external_evm_transaction_count: count_external_evm_transactions(
                 &classify_ordered_execution_transactions(&session.request.transactions)
                     .expect("session constructor validates transaction positions"),
@@ -740,7 +742,7 @@ pub fn final_chain_execution_session_next(
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS => FinalChainExecutionStep {
             status: session.status,
             action: FINAL_CHAIN_EXECUTION_ACTION_DISTRIBUTE_EXTERNAL_EVM_REWARDS,
-            period: session.metadata.period,
+            period: session.block_number,
             evm_rewards_request: session.rewards_request.clone().unwrap_or_default(),
             error_code: session.error_code.clone(),
             ..Default::default()
@@ -748,21 +750,21 @@ pub fn final_chain_execution_session_next(
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_PUBLICATION => FinalChainExecutionStep {
             status: session.status,
             action: FINAL_CHAIN_EXECUTION_ACTION_PLAN_EXTERNAL_EVM_PUBLICATION,
-            period: session.metadata.period,
+            period: session.block_number,
             error_code: session.error_code.clone(),
             ..Default::default()
         },
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_LIFECYCLE => FinalChainExecutionStep {
             status: session.status,
             action: FINAL_CHAIN_EXECUTION_ACTION_REQUEST_EXTERNAL_EVM_STATE_COMMIT,
-            period: session.metadata.period,
+            period: session.block_number,
             error_code: session.error_code.clone(),
             ..Default::default()
         },
         FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_STATE_COMMIT => FinalChainExecutionStep {
             status: session.status,
             action: FINAL_CHAIN_EXECUTION_ACTION_REPORT_EXTERNAL_EVM_LIFECYCLE,
-            period: session.metadata.period,
+            period: session.block_number,
             error_code: session.error_code.clone(),
             ..Default::default()
         },
@@ -770,7 +772,7 @@ pub fn final_chain_execution_session_next(
             FinalChainExecutionStep {
                 status: session.status,
                 action: FINAL_CHAIN_EXECUTION_ACTION_PUBLISH_EXTERNAL_EVM_STORAGE,
-                period: session.metadata.period,
+                period: session.block_number,
                 error_code: session.error_code.clone(),
                 ..Default::default()
             }
@@ -778,7 +780,7 @@ pub fn final_chain_execution_session_next(
         FINAL_CHAIN_EXECUTION_STATUS_COMPLETE => FinalChainExecutionStep {
             status: FINAL_CHAIN_EXECUTION_STATUS_COMPLETE,
             action: FINAL_CHAIN_EXECUTION_ACTION_COMPLETE,
-            period: session.metadata.period,
+            period: session.block_number,
             ..Default::default()
         },
         _ => {
@@ -791,7 +793,7 @@ pub fn final_chain_execution_session_next(
                 FinalChainExecutionStep {
                     status: session.status,
                     action: FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS,
-                    period: session.metadata.period,
+                    period: session.block_number,
                     external_evm_transaction_count,
                     system_transaction_request: system_request,
                     error_code: String::new(),
@@ -804,7 +806,7 @@ pub fn final_chain_execution_session_next(
                 FinalChainExecutionStep {
                     status: session.status,
                     action: FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM,
-                    period: session.metadata.period,
+                    period: session.block_number,
                     external_evm_transaction_count,
                     evm_request,
                     error_code: String::new(),
@@ -814,7 +816,7 @@ pub fn final_chain_execution_session_next(
                 FinalChainExecutionStep {
                     status: FINAL_CHAIN_EXECUTION_STATUS_READY,
                     action: FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE,
-                    period: session.metadata.period,
+                    period: session.block_number,
                     external_evm_transaction_count: 0,
                     evm_request: FinalChainEvmExecutionRequest::default(),
                     error_code: String::new(),
@@ -911,7 +913,7 @@ fn final_chain_execution_session_report_system_transactions_with_count(
         session.error_code = "FINAL_CHAIN_SYSTEM_TRANSACTIONS_REQUEST_ID_MISMATCH".to_string();
         return final_chain_execution_session_next(session);
     }
-    if report.period != session.metadata.period {
+    if report.period != session.block_number {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_SYSTEM_TRANSACTIONS_PERIOD_MISMATCH".to_string();
         return final_chain_execution_session_next(session);
@@ -941,11 +943,12 @@ fn final_chain_execution_session_report_system_transactions_with_count(
     all_transactions.extend(system_transactions.clone());
     let evm_request = FinalChainEvmExecutionRequest {
         request_id: execution_request_id(
+            session.block_number,
             &session.metadata,
             session.request.block_gas_limit,
             &all_transactions,
         ),
-        period: session.metadata.period,
+        period: session.block_number,
         block_author: session.metadata.author.into(),
         timestamp: session.metadata.timestamp,
         block_gas_limit: session.request.block_gas_limit,
@@ -1104,41 +1107,70 @@ pub fn final_chain_execution_session_plan_external_evm_commit(
     if session.status != FINAL_CHAIN_EXECUTION_STATUS_WAITING_EXTERNAL_EVM_REWARDS {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_UNEXPECTED".to_string();
-        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
     }
     let Some(evm_request) = session.evm_request.as_ref() else {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_WITHOUT_REQUEST".to_string();
-        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
     };
     let Some(evm_report) = session.report.as_ref() else {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_WITHOUT_EVM_REPORT".to_string();
-        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
     };
     if rewards_report.request_id != evm_request.request_id {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_REQUEST_ID_MISMATCH".to_string();
-        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
     }
-    if rewards_report.period != session.metadata.period {
+    if rewards_report.period != session.block_number {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_PERIOD_MISMATCH".to_string();
-        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
     }
     if rewards_report.status != FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_REJECTED".to_string();
-        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
     }
     if rewards_report.total_reward.len() > 32 {
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_REPORT_TOTAL_REWARD_OVERSIZED".to_string();
-        return rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone());
+        return rejected_external_evm_commit_plan(
+            session.block_number,
+            &session.metadata,
+            session.error_code.clone(),
+        );
     }
     match build_external_evm_commit_plan(
         &session.request,
         &session.metadata,
+        session.block_number,
         evm_request,
         evm_report,
         &rewards_report,
@@ -1152,7 +1184,11 @@ pub fn final_chain_execution_session_plan_external_evm_commit(
         Err(error) => {
             session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
             session.error_code = format!("FINAL_CHAIN_EVM_COMMIT_PLAN_INVALID: {error:#}");
-            rejected_external_evm_commit_plan(&session.metadata, session.error_code.clone())
+            rejected_external_evm_commit_plan(
+                session.block_number,
+                &session.metadata,
+                session.error_code.clone(),
+            )
         }
     }
 }
@@ -1172,6 +1208,7 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_PUBLICATION_UNEXPECTED".to_string();
         return rejected_external_evm_publication_plan(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1180,6 +1217,7 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_PUBLICATION_WITHOUT_REQUEST".to_string();
         return rejected_external_evm_publication_plan(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1188,6 +1226,7 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_PUBLICATION_WITHOUT_COMMIT_PLAN".to_string();
         return rejected_external_evm_publication_plan(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1196,6 +1235,7 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
         final_chain,
         &session.request.pbft_block_rlp,
         &session.metadata,
+        session.block_number,
         evm_request,
         commit_plan,
     ) {
@@ -1208,7 +1248,11 @@ pub fn final_chain_execution_session_plan_external_evm_publication(
         Err(error) => {
             session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
             session.error_code = format!("FINAL_CHAIN_EVM_PUBLICATION_INVALID: {error:#}");
-            rejected_external_evm_publication_plan(&session.metadata, session.error_code.clone())
+            rejected_external_evm_publication_plan(
+                session.block_number,
+                &session.metadata,
+                session.error_code.clone(),
+            )
         }
     }
 }
@@ -1227,6 +1271,7 @@ pub fn final_chain_execution_session_request_external_evm_state_commit(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_STATE_COMMIT_UNEXPECTED".to_string();
         return rejected_external_evm_state_commit_intent(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1237,6 +1282,7 @@ pub fn final_chain_execution_session_request_external_evm_state_commit(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = error_code;
         return rejected_external_evm_state_commit_intent(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1365,7 +1411,7 @@ fn session_external_evm_rewards_stats_plan(
         .ok_or_else(|| anyhow::anyhow!("FINAL_CHAIN_EVM_REWARDS_STATS_REQUEST_MISSING"))?;
     if plan.request_id != evm_request.request_id
         || plan.period != evm_request.period
-        || plan.period != session.metadata.period
+        || plan.period != session.block_number
     {
         anyhow::bail!("FINAL_CHAIN_EVM_REWARDS_STATS_SESSION_MISMATCH");
     }
@@ -1388,6 +1434,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_UNEXPECTED".to_string();
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1396,6 +1443,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_WITHOUT_STATE_COMMIT_INTENT".to_string();
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1404,6 +1452,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_INTENT_REQUEST_ID_MISMATCH".to_string();
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1412,6 +1461,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_INTENT_PLAN_ID_MISMATCH".to_string();
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1420,6 +1470,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_INTENT_PERIOD_MISMATCH".to_string();
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1428,6 +1479,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_INTENT_BLOCK_HASH_MISMATCH".to_string();
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1448,6 +1500,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = error_code;
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1457,6 +1510,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_LIFECYCLE_COMMITTED_WITH_ERROR".to_string();
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1483,6 +1537,7 @@ pub fn final_chain_execution_session_report_external_evm_lifecycle(
             ),
         };
         return rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1528,6 +1583,7 @@ pub fn final_chain_execution_session_report_external_evm_state_commit_result(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_UNEXPECTED".to_string();
         return Ok(rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         ));
@@ -1537,6 +1593,7 @@ pub fn final_chain_execution_session_report_external_evm_state_commit_result(
         session.error_code =
             "FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_WITHOUT_STATE_COMMIT_INTENT".to_string();
         return Ok(rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         ));
@@ -1545,6 +1602,7 @@ pub fn final_chain_execution_session_report_external_evm_state_commit_result(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_STATE_COMMIT_RESULT_WITHOUT_COMMIT_PLAN".to_string();
         return Ok(rejected_external_evm_commit_decision(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         ));
@@ -1741,6 +1799,7 @@ pub fn final_chain_execution_session_attach_external_evm_rewards_stats(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_STATS_UNEXPECTED".to_string();
         return rejected_external_evm_publication_plan(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1749,6 +1808,7 @@ pub fn final_chain_execution_session_attach_external_evm_rewards_stats(
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_REWARDS_STATS_WITHOUT_PUBLICATION_PLAN".to_string();
         return rejected_external_evm_publication_plan(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1776,6 +1836,7 @@ pub fn final_chain_execution_session_attach_external_evm_proposal_period_dag_lev
         session.status = FINAL_CHAIN_EXECUTION_STATUS_REJECTED;
         session.error_code = "FINAL_CHAIN_EVM_PROPOSAL_PERIOD_MAPPING_UNEXPECTED".to_string();
         return rejected_external_evm_publication_plan(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1785,6 +1846,7 @@ pub fn final_chain_execution_session_attach_external_evm_proposal_period_dag_lev
         session.error_code =
             "FINAL_CHAIN_EVM_PROPOSAL_PERIOD_MAPPING_WITHOUT_PUBLICATION_PLAN".to_string();
         return rejected_external_evm_publication_plan(
+            session.block_number,
             &session.metadata,
             session.error_code.clone(),
         );
@@ -1809,7 +1871,7 @@ pub fn commit_final_chain_execution_session(
     if step.action != FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE {
         return Ok(FinalChainExecutionCommitReport {
             status: FINAL_CHAIN_EXECUTION_STATUS_REJECTED,
-            period: session.metadata.period,
+            period: session.block_number,
             error_code: if step.error_code.is_empty() {
                 "FINAL_CHAIN_EXECUTION_NOT_NATIVE_COMMIT".to_string()
             } else {
@@ -1829,16 +1891,17 @@ pub fn commit_final_chain_execution_session(
     } = session.request;
     let executed_dag_blocks = finalized_dag_blocks.len() as u64;
     let executed_transactions = transactions.len() as u64;
-    let (block_header_rlp, receipts) = final_chain.finalize_block_with_rewards_facts(
+    let (block_header_rlp, receipts) = final_chain.finalize_block_with_rewards_facts_at(
         pbft_block_rlp,
         transactions,
         finalized_dag_blocks,
         blocks_per_year,
         cert_votes,
+        session.block_number,
     )?;
     Ok(FinalChainExecutionCommitReport {
         status: FINAL_CHAIN_EXECUTION_STATUS_COMPLETE,
-        period: session.metadata.period,
+        period: session.block_number,
         block_header_rlp,
         receipts,
         gas_used: FinalChainGas::ZERO,
@@ -1854,16 +1917,23 @@ impl FinalChainExecutionSession {
         metadata: rustaxa_types::PbftBlockMetadata,
     ) -> Self {
         let regular_transaction_count = request.transactions.len();
-        Self::new_with_regular_transaction_count(request, metadata, regular_transaction_count)
+        let block_number = FinalChainBlockNumber::new(metadata.period);
+        Self::new_with_regular_transaction_count(
+            request,
+            metadata,
+            block_number,
+            regular_transaction_count,
+        )
     }
 
     fn new_with_regular_transaction_count(
         request: FinalChainExecutionRequest,
         metadata: rustaxa_types::PbftBlockMetadata,
+        block_number: FinalChainBlockNumber,
         regular_transaction_count: usize,
     ) -> Self {
         if let Err(error_code) = validate_regular_transaction_count(regular_transaction_count) {
-            return Self::rejected(request, metadata, error_code.to_string());
+            return Self::rejected(request, metadata, block_number, error_code.to_string());
         }
         let ordered_transactions = classify_ordered_execution_transactions(&request.transactions)
             .expect("regular transaction count was validated");
@@ -1872,6 +1942,7 @@ impl FinalChainExecutionSession {
             return Self {
                 request,
                 metadata,
+                block_number,
                 evm_request: None,
                 status: FINAL_CHAIN_EXECUTION_STATUS_READY,
                 system_transaction_request: None,
@@ -1890,21 +1961,24 @@ impl FinalChainExecutionSession {
             return Self::rejected(
                 request,
                 metadata,
+                block_number,
                 "FINAL_CHAIN_EXECUTION_REQUIRES_EXTERNAL_EVM".to_string(),
             );
         }
         let system_transaction_request = FinalChainSystemTransactionRequest {
             request_id: system_transaction_request_id(
+                block_number,
                 &metadata,
                 request.block_gas_limit,
                 &ordered_transactions,
             ),
-            period: metadata.period,
+            period: block_number,
             regular_transaction_count: ordered_transactions.len() as u64,
         };
         Self {
             request,
             metadata,
+            block_number,
             evm_request: None,
             status: FINAL_CHAIN_EXECUTION_STATUS_READY,
             system_transaction_request: Some(system_transaction_request),
@@ -1923,11 +1997,13 @@ impl FinalChainExecutionSession {
     fn rejected(
         request: FinalChainExecutionRequest,
         metadata: rustaxa_types::PbftBlockMetadata,
+        block_number: FinalChainBlockNumber,
         error_code: String,
     ) -> Self {
         Self {
             request,
             metadata,
+            block_number,
             evm_request: None,
             status: FINAL_CHAIN_EXECUTION_STATUS_REJECTED,
             system_transaction_request: None,
@@ -1956,7 +2032,7 @@ fn rejected_session_external_evm_publication_report(
     FinalChainExternalEvmPublicationReport {
         request_id,
         plan_id,
-        period: session.metadata.period,
+        period: session.block_number,
         block_hash,
         dpos_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
         account_snapshot_status: FINAL_CHAIN_EVM_PUBLICATION_SNAPSHOT_STATUS_NOT_EVALUATED,
@@ -2049,7 +2125,7 @@ fn build_external_evm_rewards_fact(
         .first()
         .map(|vote| vote.period.saturating_sub(1));
     Ok(FinalizedRewardsPeriodFact {
-        period: request.period,
+        period: request.period.as_u64(),
         block_author: H160::from(request.block_author),
         blocks_per_year: finalization_request.blocks_per_year,
         // FinalChain replaces this placeholder from its period-keyed DPoS
@@ -2086,6 +2162,7 @@ fn build_external_evm_rewards_fact(
 fn build_external_evm_commit_plan(
     request: &FinalChainExecutionRequest,
     metadata: &rustaxa_types::PbftBlockMetadata,
+    block_number: FinalChainBlockNumber,
     evm_request: &FinalChainEvmExecutionRequest,
     evm_report: &FinalChainEvmExecutionReport,
     rewards_report: &FinalChainEvmRewardsReport,
@@ -2109,7 +2186,7 @@ fn build_external_evm_commit_plan(
     add_bloom_value(&mut indexed_log_bloom, metadata.author.as_bytes());
     Ok(FinalChainExternalEvmCommitPlan {
         request_id: evm_request.request_id,
-        period: metadata.period,
+        period: block_number,
         post_execution_state_root: evm_report.state_root,
         state_root: rewards_report.state_root,
         total_reward: rewards_report.total_reward.clone(),
@@ -2144,14 +2221,15 @@ fn build_external_evm_commit_plan(
 fn build_external_evm_publication_plan(
     final_chain: &FinalChain,
     pbft_block_rlp: &[u8],
-    metadata: &rustaxa_types::PbftBlockMetadata,
+    _metadata: &rustaxa_types::PbftBlockMetadata,
+    block_number: FinalChainBlockNumber,
     evm_request: &FinalChainEvmExecutionRequest,
     commit_plan: &FinalChainExternalEvmCommitPlan,
 ) -> Result<FinalChainExternalEvmPublicationPlan, anyhow::Error> {
     if commit_plan.error_code.is_empty() && commit_plan.request_id != evm_request.request_id {
         anyhow::bail!("external EVM publication request id mismatch");
     }
-    if commit_plan.period != metadata.period {
+    if commit_plan.period != block_number {
         anyhow::bail!("external EVM publication period mismatch");
     }
     if commit_plan.encoded_receipts.len() != evm_request.transactions.len() {
@@ -2163,7 +2241,7 @@ fn build_external_evm_publication_plan(
     }
 
     let parent_hash = final_chain
-        .block_hash(final_chain.last_block_number()?)?
+        .block_hash(final_chain.last_block_number_typed()?)?
         .map(|bytes| h256_from_slice(&bytes, "external EVM parent final-chain hash"))
         .transpose()?
         .unwrap_or_default();
@@ -2183,6 +2261,7 @@ fn build_external_evm_publication_plan(
             final_chain.block_gas_limit().as_u64(),
             final_chain.genesis_timestamp(),
         )
+        .block_number(block_number)
         .signed_pbft_block(SignedPbftBlockRlp::new(pbft_block_rlp)),
     )?;
     let block_hash = full_header.hash()?;
@@ -2202,7 +2281,7 @@ fn build_external_evm_publication_plan(
     let mut publication = FinalChainExternalEvmPublicationPlan {
         request_id: commit_plan.request_id,
         plan_id: [0; 32],
-        period: metadata.period,
+        period: block_number,
         block_hash: block_hash.into(),
         block_header_rlp: full_header.into_vec(),
         stored_header_rlp: stored_header_rlp.into_vec(),
@@ -2227,33 +2306,36 @@ fn build_external_evm_publication_plan(
 }
 
 fn rejected_external_evm_commit_plan(
-    metadata: &rustaxa_types::PbftBlockMetadata,
+    block_number: FinalChainBlockNumber,
+    _metadata: &rustaxa_types::PbftBlockMetadata,
     error_code: String,
 ) -> FinalChainExternalEvmCommitPlan {
     FinalChainExternalEvmCommitPlan {
-        period: metadata.period,
+        period: block_number,
         error_code,
         ..Default::default()
     }
 }
 
 fn rejected_external_evm_publication_plan(
-    metadata: &rustaxa_types::PbftBlockMetadata,
+    block_number: FinalChainBlockNumber,
+    _metadata: &rustaxa_types::PbftBlockMetadata,
     error_code: String,
 ) -> FinalChainExternalEvmPublicationPlan {
     FinalChainExternalEvmPublicationPlan {
-        period: metadata.period,
+        period: block_number,
         error_code,
         ..Default::default()
     }
 }
 
 fn rejected_external_evm_state_commit_intent(
-    metadata: &rustaxa_types::PbftBlockMetadata,
+    block_number: FinalChainBlockNumber,
+    _metadata: &rustaxa_types::PbftBlockMetadata,
     error_code: String,
 ) -> FinalChainExternalEvmStateCommitIntent {
     FinalChainExternalEvmStateCommitIntent {
-        period: metadata.period,
+        period: block_number,
         status: FINAL_CHAIN_EVM_STATE_COMMIT_INTENT_REJECTED,
         error_code,
         ..Default::default()
@@ -2261,11 +2343,12 @@ fn rejected_external_evm_state_commit_intent(
 }
 
 fn rejected_external_evm_commit_decision(
-    metadata: &rustaxa_types::PbftBlockMetadata,
+    block_number: FinalChainBlockNumber,
+    _metadata: &rustaxa_types::PbftBlockMetadata,
     error_code: String,
 ) -> FinalChainExternalEvmCommitDecision {
     FinalChainExternalEvmCommitDecision {
-        period: metadata.period,
+        period: block_number,
         status: FINAL_CHAIN_EVM_COMMIT_DECISION_REJECTED,
         error_code,
         ..Default::default()
@@ -2291,7 +2374,7 @@ fn validate_external_evm_state_commit_facts(
     if request.plan_id != publication_plan.plan_id {
         return Err(format!("{error_prefix}_PLAN_ID_MISMATCH"));
     }
-    if request.period != session.metadata.period {
+    if request.period != session.block_number {
         return Err(format!("{error_prefix}_PERIOD_MISMATCH"));
     }
     if request.post_execution_state_root != commit_plan.post_execution_state_root {
@@ -2425,7 +2508,7 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
     let mut hasher = Keccak::v256();
     hasher.update(b"rustaxa-final-chain-external-evm-publication-plan-v1");
     hasher.update(&plan.request_id);
-    hasher.update(&plan.period.to_be_bytes());
+    hasher.update(&plan.period.as_u64().to_be_bytes());
     hasher.update(&plan.block_hash);
     hash_bytes_with_len(&mut hasher, &plan.block_header_rlp);
     hash_bytes_with_len(&mut hasher, &plan.stored_header_rlp);
@@ -2445,7 +2528,13 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
         hasher.update(b"proposal-period-dag-level");
         hasher.update(&plan.proposal_period_dag_level_update.level.to_be_bytes());
     }
-    hasher.update(&plan.rewards_stats_update.current_period.to_be_bytes());
+    hasher.update(
+        &plan
+            .rewards_stats_update
+            .current_period
+            .as_u64()
+            .to_be_bytes(),
+    );
     hasher.update(&[u8::from(plan.rewards_stats_update.cache_current_period)]);
     hasher.update(&[u8::from(plan.rewards_stats_update.clear_cached_stats)]);
     hash_bytes_with_len(
@@ -2461,7 +2550,7 @@ pub(crate) fn final_chain_external_evm_publication_plan_id(
 pub(crate) fn final_chain_external_evm_commit_decision_id(
     request_id: [u8; 32],
     plan_id: [u8; 32],
-    period: u64,
+    period: FinalChainBlockNumber,
     publication_block_hash: [u8; 32],
 ) -> [u8; 32] {
     use tiny_keccak::{Hasher, Keccak};
@@ -2470,7 +2559,7 @@ pub(crate) fn final_chain_external_evm_commit_decision_id(
     hasher.update(b"rustaxa-final-chain-external-evm-commit-decision-v1");
     hasher.update(&request_id);
     hasher.update(&plan_id);
-    hasher.update(&period.to_be_bytes());
+    hasher.update(&period.as_u64().to_be_bytes());
     hasher.update(&publication_block_hash);
 
     let mut decision_id = [0u8; 32];
@@ -2557,6 +2646,7 @@ fn transaction_kind(transaction: &FinalizationTransaction) -> u8 {
 }
 
 fn system_transaction_request_id(
+    block_number: FinalChainBlockNumber,
     metadata: &rustaxa_types::PbftBlockMetadata,
     block_gas_limit: FinalChainGas,
     transactions: &[FinalChainEvmTransactionInput],
@@ -2565,7 +2655,7 @@ fn system_transaction_request_id(
 
     let mut hasher = Keccak::v256();
     hasher.update(b"rustaxa-final-chain-system-transactions");
-    hasher.update(&metadata.period.to_be_bytes());
+    hasher.update(&block_number.as_u64().to_be_bytes());
     hasher.update(metadata.author.as_bytes());
     hasher.update(&metadata.timestamp.to_be_bytes());
     hasher.update(&block_gas_limit.as_u64().to_be_bytes());
@@ -2580,6 +2670,7 @@ fn system_transaction_request_id(
 }
 
 fn execution_request_id(
+    block_number: FinalChainBlockNumber,
     metadata: &rustaxa_types::PbftBlockMetadata,
     block_gas_limit: FinalChainGas,
     transactions: &[FinalChainEvmTransactionInput],
@@ -2590,7 +2681,7 @@ fn execution_request_id(
     // Version the identity domain because nonce encoding changed from fixed
     // eight-byte integers to length-prefixed canonical arbitrary-width bytes.
     hasher.update(b"rustaxa-final-chain-evm-execution-v2");
-    hasher.update(&metadata.period.to_be_bytes());
+    hasher.update(&block_number.as_u64().to_be_bytes());
     hasher.update(metadata.author.as_bytes());
     hasher.update(&metadata.timestamp.to_be_bytes());
     hasher.update(&block_gas_limit.as_u64().to_be_bytes());
@@ -2751,7 +2842,7 @@ mod tests {
     fn system_transaction_plan_fact() -> FinalChainSystemTransactionPlanFact {
         FinalChainSystemTransactionPlanFact {
             request_id: [0x42; 32],
-            period: 9,
+            period: 9.into(),
             is_pillar_block_period: true,
             bridge_contract_address: [0x77; 20],
             bridge_contract_found: true,
@@ -2773,7 +2864,7 @@ mod tests {
         ));
         let commit_plan = FinalChainExternalEvmCommitPlan {
             request_id: [0x11; 32],
-            period: 7,
+            period: 7.into(),
             post_execution_state_root: [0x22; 32],
             state_root: [0x33; 32],
             error_code: String::new(),
@@ -2782,7 +2873,7 @@ mod tests {
         let publication_plan = FinalChainExternalEvmPublicationPlan {
             request_id: commit_plan.request_id,
             plan_id: [0x44; 32],
-            period: 7,
+            period: 7.into(),
             block_hash: [0x55; 32],
             error_code: String::new(),
             ..Default::default()
@@ -2917,7 +3008,7 @@ mod tests {
     fn execution_request_id_covers_fixed_gas_price_and_canonical_nonce_bytes() {
         let metadata = rustaxa_types::PbftBlockMetadata {
             author: H160::from_low_u64_be(1),
-            period: 2,
+            period: 2u64,
             timestamp: 3,
             extra_data: Vec::new(),
         };
@@ -2937,8 +3028,12 @@ mod tests {
         };
         transaction.gas_price = FinalChainGasPrice::try_from(&[1][..]).unwrap();
         transaction.value = FinalChainTransactionValue::try_from(&[2][..]).unwrap();
-        let legacy_width_id =
-            execution_request_id(&metadata, 1_000_000.into(), &[transaction.clone()]);
+        let legacy_width_id = execution_request_id(
+            FinalChainBlockNumber::new(metadata.period),
+            &metadata,
+            1_000_000.into(),
+            &[transaction.clone()],
+        );
         assert_eq!(
             legacy_width_id,
             [
@@ -2955,10 +3050,20 @@ mod tests {
         fixed_width.value = FinalChainTransactionValue::try_from(fixed_value.as_slice()).unwrap();
         assert_eq!(
             legacy_width_id,
-            execution_request_id(&metadata, 1_000_000.into(), &[fixed_width])
+            execution_request_id(
+                FinalChainBlockNumber::new(metadata.period),
+                &metadata,
+                1_000_000.into(),
+                &[fixed_width],
+            )
         );
         transaction.nonce = transaction.nonce.next();
-        let widened_id = execution_request_id(&metadata, 1_000_000.into(), &[transaction]);
+        let widened_id = execution_request_id(
+            FinalChainBlockNumber::new(metadata.period),
+            &metadata,
+            1_000_000.into(),
+            &[transaction],
+        );
         assert_ne!(legacy_width_id, widened_id);
     }
 
@@ -2966,7 +3071,7 @@ mod tests {
     fn execution_request_id_preserves_minimal_zero_gas_system_preimage() {
         let metadata = rustaxa_types::PbftBlockMetadata {
             author: H160::from_low_u64_be(1),
-            period: 2,
+            period: 2u64,
             timestamp: 3,
             extra_data: Vec::new(),
         };
@@ -2985,7 +3090,12 @@ mod tests {
             is_system: true,
         };
         assert_eq!(
-            execution_request_id(&metadata, 1_000_000.into(), &[transaction]),
+            execution_request_id(
+                FinalChainBlockNumber::new(metadata.period),
+                &metadata,
+                1_000_000.into(),
+                &[transaction],
+            ),
             [
                 90, 76, 93, 113, 145, 192, 173, 31, 4, 216, 240, 230, 23, 235, 240, 15, 84, 116,
                 68, 209, 160, 185, 34, 246, 15, 54, 235, 249, 218, 168, 223, 153,
@@ -3018,13 +3128,15 @@ mod tests {
             request_with_transactions(Vec::new(), FINAL_CHAIN_EXECUTION_MODE_EXTERNAL_EVM_ALLOWED);
         let metadata = rustaxa_types::PbftBlockMetadata {
             author: H160::zero(),
-            period: 1,
+            period: 1u64,
             timestamp: 2,
             extra_data: Vec::new(),
         };
+        let block_number = FinalChainBlockNumber::new(metadata.period);
         let mut session = FinalChainExecutionSession::new_with_regular_transaction_count(
             request,
             metadata,
+            block_number,
             overflow_count,
         );
         let step = final_chain_execution_session_next(&mut session);
@@ -3043,7 +3155,7 @@ mod tests {
         );
         let metadata = rustaxa_types::PbftBlockMetadata {
             author: H160::zero(),
-            period: 1,
+            period: 1u64,
             timestamp: 2,
             extra_data: Vec::new(),
         };
@@ -3115,7 +3227,7 @@ mod tests {
 
         assert_eq!(step.status, FINAL_CHAIN_EXECUTION_STATUS_READY);
         assert_eq!(step.action, FINAL_CHAIN_EXECUTION_ACTION_COMMIT_NATIVE);
-        assert_eq!(step.period, 7);
+        assert_eq!(step.period, 7.into());
         assert_eq!(step.external_evm_transaction_count, 0);
     }
 
@@ -3159,7 +3271,7 @@ mod tests {
             system_step.action,
             FINAL_CHAIN_EXECUTION_ACTION_PROVIDE_SYSTEM_TRANSACTIONS
         );
-        assert_eq!(system_step.system_transaction_request.period, 7);
+        assert_eq!(system_step.system_transaction_request.period, 7.into());
         assert_eq!(
             system_step
                 .system_transaction_request
@@ -3175,7 +3287,7 @@ mod tests {
             step.action,
             FINAL_CHAIN_EXECUTION_ACTION_EXECUTE_EXTERNAL_EVM
         );
-        assert_eq!(step.period, 7);
+        assert_eq!(step.period, 7.into());
         assert_eq!(step.evm_request.block_gas_limit.as_u64(), 1_000_000);
         assert_eq!(step.external_evm_transaction_count, 2);
         assert_eq!(step.evm_request.transactions.len(), 4);
@@ -3293,7 +3405,7 @@ mod tests {
             rewards.evm_rewards_request.request_id,
             step.evm_request.request_id
         );
-        assert_eq!(rewards.evm_rewards_request.period, 7);
+        assert_eq!(rewards.evm_rewards_request.period, 7.into());
         assert_eq!(rewards.evm_rewards_request.block_gas_used.as_u64(), 1);
         assert_eq!(
             rewards
@@ -3329,7 +3441,11 @@ mod tests {
         session.prepared_rewards_stats_plan = Some(FinalChainPreparedExternalEvmRewardsStatsPlan {
             request_id: [0xff; 32],
             period: step.evm_request.period,
-            expected_prior_head: step.evm_request.period - 1,
+            expected_prior_head: step
+                .evm_request
+                .period
+                .checked_sub_distance(1)
+                .expect("final-chain rewards period has no prior head"),
             expected_runtime_generation: 0,
             distribution_stats: Vec::new(),
             storage_update: FinalChainExternalEvmRewardsStatsUpdate::default(),
@@ -3375,7 +3491,7 @@ mod tests {
             &mut session,
             FinalChainEvmRewardsReport {
                 request_id: step.evm_request.request_id,
-                period: 7,
+                period: 7.into(),
                 status: FINAL_CHAIN_EVM_REWARDS_REPORT_STATUS_SUCCESS,
                 state_root: [0x22; 32],
                 total_reward: vec![0x33],
@@ -3383,7 +3499,7 @@ mod tests {
         );
 
         assert!(plan.error_code.is_empty());
-        assert_eq!(plan.period, 7);
+        assert_eq!(plan.period, 7.into());
         assert_eq!(plan.request_id, step.evm_request.request_id);
         assert_eq!(plan.post_execution_state_root, [0x10; 32]);
         assert_eq!(plan.state_root, [0x22; 32]);
