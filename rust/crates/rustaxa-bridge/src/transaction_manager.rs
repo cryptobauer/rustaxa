@@ -3009,7 +3009,10 @@ mod tests {
                     },
                     nonce: FinalChainNonce::from_bytes(&transaction.nonce)
                         .expect("transaction-manager test nonce should be canonical"),
-                    value: transaction.value,
+                    value: rustaxa_types::FinalChainTransactionValue::try_from(
+                        transaction.value.as_slice(),
+                    )
+                    .expect("transaction-manager test value should fit u256"),
                     gas_price: rustaxa_types::FinalChainGasPrice::try_from(
                         transaction.gas_price.as_slice(),
                     )

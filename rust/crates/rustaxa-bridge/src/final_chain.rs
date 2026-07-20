@@ -57,7 +57,8 @@ fn finalization_transaction_from_ffi(
             None
         },
         nonce: FinalChainNonce::from_bytes(&transaction.nonce)?,
-        value: transaction.value,
+        value: rustaxa_types::FinalChainTransactionValue::try_from(transaction.value.as_slice())
+            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"))?,
         gas_price: rustaxa_types::FinalChainGasPrice::try_from(transaction.gas_price.as_slice())
             .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
         gas_limit: transaction.gas_limit,
@@ -73,7 +74,8 @@ fn final_chain_call_request_from_ffi(
         block_number: request.block_number,
         sender: request.sender,
         receiver: request.receiver_found.then_some(request.receiver),
-        value: request.value,
+        value: rustaxa_types::FinalChainTransactionValue::try_from(request.value.as_slice())
+            .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"))?,
         gas_price: rustaxa_types::FinalChainGasPrice::try_from(request.gas_price.as_slice())
             .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_GAS_PRICE_EXCEEDS_U256"))?,
         gas_limit: request.gas_limit,
@@ -145,7 +147,11 @@ fn evm_transaction_input_to_ffi(
         receiver_found,
         receiver,
         nonce: transaction.nonce.to_bytes(),
-        value: transaction.value,
+        value: if transaction.is_system {
+            transaction.value.to_legacy_minimal_bytes()
+        } else {
+            transaction.value.to_fixed_be_bytes().to_vec()
+        },
         gas_price: transaction.gas_price.to_fixed_be_bytes().to_vec(),
         gas_limit: transaction.gas_limit,
         data: transaction.data,
@@ -1311,7 +1317,7 @@ mod tests {
             sender: [1; 20],
             receiver: Some([2; 20]),
             nonce: FinalChainNonce::from_bytes(&high_nonce).expect("nonce should be canonical"),
-            value: vec![],
+            value: ethereum_types::U256::zero().into(),
             gas_price: ethereum_types::U256::zero().into(),
             gas_limit: 21_000,
             data: vec![],
@@ -1370,7 +1376,7 @@ mod tests {
             sender: [0; 20],
             receiver: None,
             nonce: FinalChainNonce::zero(),
-            value: Vec::new(),
+            value: ethereum_types::U256::zero().into(),
             gas_price: ethereum_types::U256::one().into(),
             gas_limit: 0,
             data: Vec::new(),
@@ -1381,6 +1387,60 @@ mod tests {
         let gas_price = evm_transaction_input_to_ffi(input).unwrap().gas_price;
         assert_eq!(gas_price.len(), 32);
         assert_eq!(gas_price[31], 1);
+    }
+
+    #[test]
+    fn bridge_checks_value_ingress_and_preserves_output_encodings() {
+        let mut transaction = ffi_transaction(0x45, true, [2; 20], vec![]);
+        transaction.value = vec![1; 33];
+        assert_eq!(
+            finalization_transaction_from_ffi(transaction)
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"
+        );
+        let call = rustaxa_ffi::FinalChainCall {
+            block_number: 0,
+            sender: [0; 20],
+            receiver_found: false,
+            receiver: [0; 20],
+            value: vec![1; 33],
+            gas_price: Vec::new(),
+            gas_limit: 0,
+            input: Vec::new(),
+        };
+        assert_eq!(
+            final_chain_call_request_from_ffi(call)
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_TRANSACTION_VALUE_EXCEEDS_U256"
+        );
+
+        let base = rustaxa_consensus::FinalChainEvmTransactionInput {
+            position: 0.into(),
+            hash: [0; 32],
+            sender: [0; 20],
+            receiver: None,
+            nonce: FinalChainNonce::zero(),
+            value: ethereum_types::U256::zero().into(),
+            gas_price: ethereum_types::U256::zero().into(),
+            gas_limit: 0,
+            data: Vec::new(),
+            rlp: vec![0xaa],
+            kind: 0,
+            is_system: false,
+        };
+        let regular = evm_transaction_input_to_ffi(base.clone()).unwrap();
+        assert_eq!(regular.value, vec![0; 32]);
+        assert_eq!(regular.rlp, vec![0xaa]);
+        let system =
+            evm_transaction_input_to_ffi(rustaxa_consensus::FinalChainEvmTransactionInput {
+                is_system: true,
+                ..base
+            })
+            .unwrap();
+        assert_eq!(system.value, vec![0]);
+        assert_eq!(system.rlp, vec![0xaa]);
     }
 
     fn ffi_evm_log(
@@ -3685,7 +3745,7 @@ mod tests {
             sender: [2; 20],
             receiver: None,
             nonce: FinalChainNonce::zero(),
-            value: Vec::new(),
+            value: ethereum_types::U256::zero().into(),
             gas_price: ethereum_types::U256::zero().into(),
             gas_limit: 0,
             data: Vec::new(),

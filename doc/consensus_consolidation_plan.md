@@ -4159,6 +4159,27 @@ Validation passed all 50 `rustaxa-types`, 793 `rustaxa-consensus`, and 342 `rust
 check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, Rust formatting, and whitespace validation. Existing
 normal-policy clippy warnings remain outside this slice.
 
+### CRW-09 Typed FinalChain Transaction Values
+
+The next role-specific monetary slice introduces `FinalChainTransactionValue(U256)` for finalization transactions,
+transient calls, external-EVM request inputs, native transfers, and payable DPoS execution. The type accepts zero through
+32 big-endian bytes including leading zeros, rejects wider bridge inputs with a stable error, exposes explicit U256
+conversion, and provides the two established executor encodings. Regular C++ transactions and calls retain fixed
+32-byte values; decoded system transactions retain minimal nonzero bytes and `[0]` for zero. Request identity uses the
+same source discriminator, so neither regular nor system transcript domains require versioning.
+
+Canonical transaction RLP, transaction hashes, and transaction roots remain supplied-authoritative and are never
+regenerated from the typed value. Native affordability, debit/credit, nonpayable rejection, payable ABI-word injection,
+gas/nonce ordering, failure rollback, receipts, and restart behavior retain their existing execution paths. Account
+balance, gas price, DPoS principal, fees, rewards, and supply remain separate roles. Focused tests cover boundary widths,
+both value encodings, bridge rejection, regular/system outbound transcripts, regular/system request-ID goldens and
+normalization, unchanged RLP transport, plus the existing native transfer, payable, transient-call, and external-EVM
+suites. No carrier, handle, export, shim, module flag, compatibility-only test, or `CRW-07` inventory delta is added.
+
+Validation passed all 52 `rustaxa-types`, 793 `rustaxa-consensus`, and 343 `rustaxa-bridge` tests, the workspace compile
+check, `rewrite-validate-fast`, the FinalChain Tier 2 gate, Rust formatting, and whitespace validation. Existing
+normal-policy clippy warnings remain outside this slice.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

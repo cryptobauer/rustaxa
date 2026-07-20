@@ -11,7 +11,8 @@ pub use final_chain::{
     FINAL_CHAIN_LOG_BLOOM_BYTES, FinalChainBlockHeader, FinalChainBlockHeaderBuilder,
     FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest, FinalChainGasPrice,
     FinalChainGasPriceLengthError, FinalChainLogBloom, FinalChainLogBloomLengthError,
-    FinalChainNonce, FinalChainRewardsConfig, FinalChainTransactionPosition, FinalizationDagBlock,
+    FinalChainNonce, FinalChainRewardsConfig, FinalChainTransactionPosition,
+    FinalChainTransactionValue, FinalChainTransactionValueLengthError, FinalizationDagBlock,
     FinalizationTransaction, GenesisAccount, GenesisDposConfig, GenesisValidator,
     GenesisValidatorMetadata, RedelegationCorrection, StoredFinalChainBlockHeader,
 };

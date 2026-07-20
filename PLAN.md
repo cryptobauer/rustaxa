@@ -1380,4 +1380,6 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    storage-index blooms now share one fixed 256-byte domain value while retaining historical RLP, hash, and marker bytes.
    FinalChain gas prices now use a distinct `U256` domain through transient/native/external execution and checked fee
    arithmetic while preserving fixed-width CXX request bytes and keeping value, balance, stake, and reward roles separate.
+   FinalChain transaction/call values now use their own `U256` domain through native, payable, transient, and external
+   execution while preserving fixed regular, legacy-minimal system, and canonical transaction-RLP bytes.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

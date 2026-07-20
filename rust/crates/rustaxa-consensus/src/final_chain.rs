@@ -1277,7 +1277,7 @@ impl FinalChain {
             || is_dpos_validator_page_read_selector(selector)
             || is_dpos_undelegation_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
-            && !u256_from_big_endian(&request.value).is_zero()
+            && !request.value.is_zero()
             && !dpos_selector_is_payable(selector)
         {
             return Ok(FinalChainCallOutcome {
@@ -1549,7 +1549,7 @@ impl FinalChain {
         let mut accounts = self.account_snapshot_map_at_block(request.block_number)?;
         let mut dpos_snapshot = self.dpos_snapshot_at_finalized_block(request.block_number)?;
         let gas_price = request.gas_price.as_u256();
-        let value = u256_from_big_endian(&request.value);
+        let value = request.value.as_u256();
 
         let mut balance_after_gas_cap = None;
         if request.sender != [0u8; 20] {
@@ -1649,7 +1649,7 @@ impl FinalChain {
             _ => None,
         };
 
-        Self::inject_dpos_transaction_value(&mut dpos_tx, &request.value);
+        Self::inject_dpos_transaction_value(&mut dpos_tx, request.value);
         if value_transfer_allowed && !value.is_zero() {
             if request.sender != [0u8; 20] {
                 let sender = accounts
@@ -3246,7 +3246,7 @@ impl FinalChain {
         for transaction in transactions.iter() {
             let sender_was_present = accounts.contains_key(&transaction.sender);
             let gas_price = transaction.gas_price.as_u256();
-            let value = u256_from_big_endian(&transaction.value);
+            let value = transaction.value.as_u256();
             // Legacy transaction admission checks sender nonce and the complete
             // gas cap before decoding native-precompile calldata.  Preserve that
             // precedence so malformed/state-dependent calls cannot abort a block
@@ -3294,7 +3294,7 @@ impl FinalChain {
                 None
             };
             if let Some(NativeContractTransaction::Dpos(dpos_tx)) = contract_transaction.as_mut() {
-                Self::inject_dpos_transaction_value(dpos_tx, &transaction.value);
+                Self::inject_dpos_transaction_value(dpos_tx, transaction.value);
             }
             let dpos_value_transfer_allowed = contract_transaction.as_ref().is_some_and(|tx| {
                 matches!(tx, NativeContractTransaction::Dpos(_))
@@ -3787,10 +3787,14 @@ impl FinalChain {
     /// Finalized execution performs this before cloning the decoded transaction
     /// for same-block claim-gas maintenance, so registration and delegation
     /// membership changes are visible to later claim-all transactions.
-    fn inject_dpos_transaction_value(dpos_transaction: &mut DposTransaction, value: &[u8]) {
+    fn inject_dpos_transaction_value(
+        dpos_transaction: &mut DposTransaction,
+        value: rustaxa_types::FinalChainTransactionValue,
+    ) {
+        let value = value.to_fixed_be_bytes().to_vec();
         match dpos_transaction {
-            DposTransaction::Register(registration) => registration.stake = value.to_vec(),
-            DposTransaction::Delegate { amount, .. } => *amount = value.to_vec(),
+            DposTransaction::Register(registration) => registration.stake = value,
+            DposTransaction::Delegate { amount, .. } => *amount = value,
             _ => {}
         }
     }
@@ -4057,7 +4061,7 @@ impl FinalChain {
             .account(request.sender)?
             .map(|account| u256_from_big_endian(&account.balance))
             .unwrap_or_default();
-        let value = u256_from_big_endian(&request.value);
+        let value = request.value.as_u256();
         if balance < value {
             return Ok(Some(FinalChainCallOutcome {
                 gas_used: VALUE_TRANSFER_GAS,
@@ -4093,13 +4097,13 @@ impl FinalChain {
             || is_dpos_validator_page_read_selector(selector)
             || is_dpos_undelegation_page_read_selector(selector))
             && request.block_number >= self.dpos_cornus_period
-            && !u256_from_big_endian(&request.value).is_zero()
+            && !request.value.is_zero()
         {
             return Ok(0);
         }
         if is_dpos_mutation_selector(selector) {
             if request.block_number >= self.dpos_cornus_period
-                && !u256_from_big_endian(&request.value).is_zero()
+                && !request.value.is_zero()
                 && !dpos_selector_is_payable(selector)
             {
                 return Ok(0);
@@ -12037,7 +12041,7 @@ mod tests {
             sender,
             receiver,
             nonce: nonce.into(),
-            value: u256_to_big_endian(value),
+            value: value.into(),
             gas_price: gas_price.into(),
             gas_limit,
             data,
@@ -12216,7 +12220,7 @@ mod tests {
             block_number,
             sender: [0u8; 20],
             receiver: Some(DPOS_CONTRACT_ADDRESS),
-            value: vec![],
+            value: U256::zero().into(),
             gas_price: U256::zero().into(),
             gas_limit: 1_000_000,
             input,
@@ -12228,7 +12232,7 @@ mod tests {
             block_number,
             sender: [0u8; 20],
             receiver: Some(SLASHING_CONTRACT_ADDRESS),
-            value: vec![],
+            value: U256::zero().into(),
             gas_price: U256::zero().into(),
             gas_limit: 1_000_000,
             input,
@@ -13266,7 +13270,7 @@ mod tests {
         assert!(!malformed.code_err.is_empty());
         assert!(malformed.code_retval.is_empty());
         let mut pre_cornus_value = dpos_call_request(0, page_zero_input.clone());
-        pre_cornus_value.value = vec![1];
+        pre_cornus_value.value = U256::one().into();
         assert!(
             final_chain
                 .call(pre_cornus_value)
@@ -13275,7 +13279,7 @@ mod tests {
                 .is_empty()
         );
         let mut cornus_value = dpos_call_request(1, page_zero_input.clone());
-        cornus_value.value = vec![1];
+        cornus_value.value = U256::one().into();
         let cornus_value = final_chain.call(cornus_value).unwrap();
         assert_eq!(cornus_value.gas_used, 0);
         assert_eq!(cornus_value.code_err, "DPoS method is not payable");
@@ -15206,7 +15210,7 @@ mod tests {
         assert_eq!(malformed_for.gas_used, 0);
         assert!(!malformed_for.code_err.is_empty());
         let mut pre_cornus_value = dpos_call_request(0, get_validators_input(0));
-        pre_cornus_value.value = vec![1];
+        pre_cornus_value.value = U256::one().into();
         assert_eq!(final_chain.call(pre_cornus_value).unwrap().code_err, "");
 
         let mut snapshot = final_chain.dpos_snapshot(0).unwrap();
@@ -15287,7 +15291,7 @@ mod tests {
         )
         .unwrap();
         let mut nonpayable = dpos_call_request(0, DPOS_GET_VALIDATORS_FOR_SELECTOR.to_vec());
-        nonpayable.value = vec![1];
+        nonpayable.value = U256::one().into();
         let nonpayable = cornus_chain.call(nonpayable).unwrap();
         assert_eq!(nonpayable.gas_used, 0);
         assert_eq!(nonpayable.code_err, "DPoS method is not payable");
@@ -15388,7 +15392,7 @@ mod tests {
             0,
             dpos_eligibility_address_input(DPOS_IS_VALIDATOR_ELIGIBLE_SELECTOR, validator),
         );
-        nonpayable.value = vec![1];
+        nonpayable.value = U256::one().into();
         let nonpayable = final_chain.call(nonpayable).unwrap();
         assert_eq!(nonpayable.code_err, "DPoS method is not payable");
         assert_eq!(nonpayable.gas_used, 0);
@@ -15783,7 +15787,7 @@ mod tests {
         .unwrap();
 
         let mut payable_validator = dpos_call_request(0, get_validator_input(validator));
-        payable_validator.value = vec![7];
+        payable_validator.value = U256::from(7).into();
         let payable_validator = pre_chain.call(payable_validator).unwrap();
         assert_eq!(payable_validator.code_err, "");
         assert_eq!(payable_validator.gas_used, DPOS_GET_METHOD_GAS);
@@ -15897,7 +15901,7 @@ mod tests {
 
         let mut nonpayable_v2 =
             dpos_call_request(0, get_undelegation_v2_input(delegator, validator, 1));
-        nonpayable_v2.value = vec![1];
+        nonpayable_v2.value = U256::one().into();
         let nonpayable_v2 = cornus_chain.call(nonpayable_v2).unwrap();
         assert_eq!(nonpayable_v2.code_err, "DPoS method is not payable");
         assert_eq!(nonpayable_v2.gas_used, 0);
@@ -16922,7 +16926,7 @@ mod tests {
             final_v2_page
         );
         let mut cornus_nonpayable = dpos_call_request(1, malformed_v1);
-        cornus_nonpayable.value = vec![1];
+        cornus_nonpayable.value = U256::one().into();
         let cornus_nonpayable = cornus_chain.call(cornus_nonpayable).unwrap();
         assert_eq!(cornus_nonpayable.gas_used, 0);
         assert_eq!(cornus_nonpayable.code_err, "DPoS method is not payable");
@@ -17319,7 +17323,7 @@ mod tests {
             U256::from(10_000u64)
         );
         let mut malformed_nonpayable = dpos_call_request(1, malformed);
-        malformed_nonpayable.value = vec![1];
+        malformed_nonpayable.value = U256::one().into();
         let malformed_nonpayable = cornus_chain.call(malformed_nonpayable).unwrap();
         assert_eq!(malformed_nonpayable.gas_used, 0);
         assert_eq!(malformed_nonpayable.code_err, "DPoS method is not payable");
@@ -17815,7 +17819,7 @@ mod tests {
 
         let delegate_input = delegate_input(validator);
         let mut delegate_request = dpos_call_request(0, delegate_input.clone());
-        delegate_request.value = u256_to_big_endian(U256::from(1_000u64));
+        delegate_request.value = U256::from(1_000u64).into();
         let delegate = final_chain.call(delegate_request).unwrap();
         assert_eq!(delegate.code_err, "");
         assert_eq!(delegate.consensus_err, "");
@@ -17889,7 +17893,7 @@ mod tests {
         assert!(malformed.logs.is_empty());
 
         let mut nonpayable = dpos_call_request(0, claim_rewards_input(validator));
-        nonpayable.value = vec![1];
+        nonpayable.value = U256::one().into();
         let nonpayable = final_chain.call(nonpayable).unwrap();
         assert_eq!(nonpayable.code_err, "Method is not payable");
         assert_eq!(
@@ -17977,7 +17981,7 @@ mod tests {
         final_chain.rewards_config.fix_claim_all_block_num = 0;
         let mut retired_batch_request =
             dpos_call_request(0, DPOS_CLAIM_ALL_REWARDS_BATCH_SELECTOR.to_vec());
-        retired_batch_request.value = vec![1];
+        retired_batch_request.value = U256::one().into();
         let retired_batch = final_chain.call(retired_batch_request).unwrap();
         assert_eq!(retired_batch.code_err, "no method with id: 0x09b72e00");
         assert_eq!(
@@ -17988,7 +17992,7 @@ mod tests {
         final_chain.dpos_phalaenopsis_period = u64::MAX;
         let mut inactive_phala_request =
             dpos_call_request(0, DPOS_PHALA_ESCROW_TRANSFER_SELECTOR.to_vec());
-        inactive_phala_request.value = vec![1];
+        inactive_phala_request.value = U256::one().into();
         let inactive_phala = final_chain.call(inactive_phala_request).unwrap();
         assert_eq!(inactive_phala.code_err, "no method with id: 0x44df8e70");
         assert_eq!(
@@ -18037,7 +18041,7 @@ mod tests {
         let request = |gas_limit: u64, request_value: U256| {
             let mut request = dpos_call_request(0, input.clone());
             request.sender = sender;
-            request.value = u256_to_big_endian(request_value);
+            request.value = request_value.into();
             request.gas_price = U256::one().into();
             request.gas_limit = gas_limit;
             request
@@ -18196,8 +18200,8 @@ mod tests {
         };
         let mut dpos_snapshot = sample_dpos_snapshot_with_undelegations();
         let mut accounts = HashMap::new();
-        let request_value = u256_to_big_endian(U256::from(2_500u64));
-        FinalChain::inject_dpos_transaction_value(&mut registration_tx, &request_value);
+        let request_value = rustaxa_types::FinalChainTransactionValue::from(U256::from(2_500u64));
+        FinalChain::inject_dpos_transaction_value(&mut registration_tx, request_value);
 
         let outcome = final_chain
             .apply_dpos_mutation_transaction(1, registration_tx, &mut dpos_snapshot, &mut accounts)
@@ -18213,7 +18217,7 @@ mod tests {
             ),
             U256::from(2_500u64)
         );
-        assert_eq!(u256_from_big_endian(&request_value), U256::from(2_500u64));
+        assert_eq!(request_value.as_u256(), U256::from(2_500u64));
         assert!(!accounts.contains_key(&DPOS_CONTRACT_ADDRESS));
 
         drop(final_chain);
@@ -18242,8 +18246,8 @@ mod tests {
         };
         let mut dpos_snapshot = sample_dpos_snapshot_with_undelegations();
         let mut accounts = HashMap::new();
-        let request_value = u256_to_big_endian(tx_value);
-        FinalChain::inject_dpos_transaction_value(&mut delegate_tx, &request_value);
+        let request_value = rustaxa_types::FinalChainTransactionValue::from(tx_value);
+        FinalChain::inject_dpos_transaction_value(&mut delegate_tx, request_value);
         let previous_stake = u256_from_big_endian(
             dpos_snapshot
                 .total_stakes
@@ -18276,7 +18280,7 @@ mod tests {
             ),
             tx_value
         );
-        assert_eq!(u256_from_big_endian(&request_value), tx_value);
+        assert_eq!(request_value.as_u256(), tx_value);
 
         drop(final_chain);
         drop(storage);
@@ -29209,7 +29213,7 @@ mod tests {
             sender,
             receiver: Some(receiver),
             nonce: max_u256_nonce.clone(),
-            value: u256_to_big_endian(U256::from(1u64)),
+            value: U256::one().into(),
             gas_price: U256::one().into(),
             gas_limit: 21_000,
             data: Vec::new(),

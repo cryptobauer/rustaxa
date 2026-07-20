@@ -97,6 +97,90 @@ impl TryFrom<&[u8]> for FinalChainGasPrice {
     }
 }
 
+/// Error returned when a FinalChain transaction value exceeds `u256`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FinalChainTransactionValueLengthError {
+    actual: usize,
+}
+impl FinalChainTransactionValueLengthError {
+    /// Returns the rejected slice length.
+    pub const fn actual(self) -> usize {
+        self.actual
+    }
+}
+impl std::fmt::Display for FinalChainTransactionValueLengthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FinalChain transaction value has {} bytes, expected at most 32",
+            self.actual
+        )
+    }
+}
+impl std::error::Error for FinalChainTransactionValueLengthError {}
+
+/// Canonical `u256` value transferred by a FinalChain transaction or call.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FinalChainTransactionValue(U256);
+impl FinalChainTransactionValue {
+    /// Returns zero value.
+    pub fn zero() -> Self {
+        Self(U256::zero())
+    }
+    /// Wraps a value already represented as `u256`.
+    pub const fn from_u256(value: U256) -> Self {
+        Self(value)
+    }
+    /// Decodes zero through 32 big-endian bytes, including leading zeroes.
+    pub fn try_from_be_slice(bytes: &[u8]) -> Result<Self, FinalChainTransactionValueLengthError> {
+        if bytes.len() > 32 {
+            return Err(FinalChainTransactionValueLengthError {
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self(U256::from_big_endian(bytes)))
+    }
+    /// Reports whether the transferred value is zero.
+    pub fn is_zero(self) -> bool {
+        self.0.is_zero()
+    }
+    /// Returns the wrapped value.
+    pub const fn as_u256(self) -> U256 {
+        self.0
+    }
+    /// Consumes the wrapper and returns its value.
+    pub const fn into_u256(self) -> U256 {
+        self.0
+    }
+    /// Encodes exactly 32 big-endian bytes.
+    pub fn to_fixed_be_bytes(self) -> [u8; 32] {
+        self.0.to_big_endian()
+    }
+    /// Encodes the legacy execution form: zero is `[0]`, otherwise minimal big-endian.
+    pub fn to_legacy_minimal_bytes(self) -> Vec<u8> {
+        let fixed = self.to_fixed_be_bytes();
+        let first = fixed.iter().position(|byte| *byte != 0).unwrap_or(31);
+        fixed[first..].to_vec()
+    }
+}
+impl From<U256> for FinalChainTransactionValue {
+    fn from(value: U256) -> Self {
+        Self(value)
+    }
+}
+impl From<FinalChainTransactionValue> for U256 {
+    fn from(value: FinalChainTransactionValue) -> Self {
+        value.0
+    }
+}
+impl TryFrom<&[u8]> for FinalChainTransactionValue {
+    type Error = FinalChainTransactionValueLengthError;
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::try_from_be_slice(bytes)
+    }
+}
+
 /// Error returned when a byte slice cannot form a fixed-width log bloom.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FinalChainLogBloomLengthError {
@@ -654,7 +738,7 @@ pub struct FinalChainCallRequest {
     /// Optional receiver address. `None` represents contract creation.
     pub receiver: Option<[u8; 20]>,
     /// Transaction value as an unsigned big-endian integer byte string.
-    pub value: Vec<u8>,
+    pub value: FinalChainTransactionValue,
     /// Gas price in the EVM `u256` domain.
     pub gas_price: FinalChainGasPrice,
     /// Gas limit supplied by the caller.
@@ -765,7 +849,7 @@ pub struct FinalizationTransaction {
     /// Transaction nonce.
     pub nonce: FinalChainNonce,
     /// Transaction value as unsigned big-endian integer bytes.
-    pub value: Vec<u8>,
+    pub value: FinalChainTransactionValue,
     /// Gas price in the EVM `u256` domain.
     pub gas_price: FinalChainGasPrice,
     /// Gas limit supplied by the transaction.
@@ -951,6 +1035,37 @@ mod tests {
             Some(U256::from(21))
         );
         assert_eq!(FinalChainGasPrice::from(U256::MAX).checked_fee(2), None);
+    }
+
+    #[test]
+    fn transaction_value_accepts_boundary_widths_and_encodes_both_forms() {
+        for length in [0, 1, 31, 32] {
+            let mut bytes = vec![0; length];
+            if let Some(last) = bytes.last_mut() {
+                *last = 9;
+            }
+            let value = FinalChainTransactionValue::try_from(bytes.as_slice()).unwrap();
+            assert_eq!(value.to_fixed_be_bytes().len(), 32);
+            assert_eq!(value.is_zero(), length == 0);
+        }
+        assert_eq!(
+            FinalChainTransactionValue::zero().to_legacy_minimal_bytes(),
+            vec![0]
+        );
+        assert_eq!(
+            FinalChainTransactionValue::try_from(&[0, 1][..])
+                .unwrap()
+                .to_legacy_minimal_bytes(),
+            vec![1]
+        );
+        let maximum = FinalChainTransactionValue::from_u256(U256::MAX);
+        assert_eq!(maximum.to_fixed_be_bytes(), [0xff; 32]);
+    }
+
+    #[test]
+    fn transaction_value_rejects_33_bytes_with_actual_length() {
+        let error = FinalChainTransactionValue::try_from(&[0; 33][..]).unwrap_err();
+        assert_eq!(error.actual(), 33);
     }
 
     #[test]
