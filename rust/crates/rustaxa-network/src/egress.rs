@@ -18,7 +18,7 @@ use std::{
 use rtrb::{Consumer, PopError};
 use rustaxa_arena::arena::Arena;
 
-use crate::{events::NetworkEvent, filter::PacketFilter, packet::Packet, peers::PeerRegistry};
+use crate::{events::NetworkEvent, packet::Packet, peers::PeerRegistry};
 
 /// Lifecycle wrapper for egress worker threads.
 ///
@@ -136,10 +136,7 @@ impl Processor {
         // filter: packet_handler.cpp - malicious, broken packet, broken RLP, other things (also as early as possible)
         // process is implemented for each type of package
 
-        let packet = self.arena.borrow(event.slot)?;
-        if !packet.peer_connected(&self.registry)? {
-            //
-        }
+        let _ = self.arena.borrow(event.slot)?;
 
         Ok(())
 

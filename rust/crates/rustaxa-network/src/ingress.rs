@@ -18,7 +18,7 @@ use std::{
 use rtrb::{Consumer, PopError};
 use rustaxa_arena::arena::Arena;
 
-use crate::{events::NetworkEvent, filter::PacketFilter, packet::Packet, peers::PeerRegistry};
+use crate::{events::NetworkEvent, packet::Packet, peers::PeerRegistry};
 
 /// Lifecycle wrapper for ingress worker threads.
 ///
@@ -137,8 +137,8 @@ impl Processor {
         // process is implemented for each type of package
 
         let packet = self.arena.borrow(event.slot)?;
-        if !packet.peer_connected(&self.registry)? {
-            //
+        if self.registry.connected(packet.peer.node)?.is_none() {
+            self.registry.disconnect(packet.peer.node)?;
         }
 
         Ok(())
