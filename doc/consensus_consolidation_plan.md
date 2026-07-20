@@ -4234,6 +4234,21 @@ installation. No production behavior, schema, CXX carrier, bridge surface, or `C
 Validation passed all three focused characterization tests, all 798 `rustaxa-consensus` tests, `rewrite-validate-fast`,
 Rust formatting, and whitespace validation. Existing normal-policy clippy warnings remain outside this slice.
 
+### CRW-09 Remaining Execution Queue
+
+The authoritative tracker now decomposes remaining CRW-09 work into behavior-complete vertical families rather than
+individual scalar fields. `CRW-09C` is the next ready item and must type the full FinalChain block-number lifecycle,
+including the single PBFT-period admission conversion, storage keys, hardfork heights, historical reads, publication,
+recovery, bloom ranges, and bridge edges. The persisted DPoS principal/custody migration then uses the already shared
+`DposTokenAmount` plus a private `StoredDposAmount` provenance wrapper; it must not introduce nominal principal/custody
+scalar types around intentionally fungible token transfers.
+
+Subsequent dependency families cover ordered corrections, arbitrary-width reward indexes, reward pools/claims, explicit
+Aspen supply migration state, and final non-EVM adapter/carrier reconciliation. Removing temporary C++
+`rewards::BlockStats` materialization is not part of ordinary CRW-09 completion: the decode exists at the accepted
+StateAPI external-executor boundary, and replacing it requires the explicit `CRW-E01` scope decision. Concrete EVM/state
+execution remains outside the non-network/non-EVM consensus closeout.
+
 ### CRW-09 Typed FinalChain Gas Lifecycle
 
 This domain slice introduces `FinalChainGas(u64)` across the complete Rust FinalChain gas lifecycle: transaction and call

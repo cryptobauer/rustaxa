@@ -521,6 +521,9 @@ Current snapshot after DAG manager verify-result API cleanup:
   export, constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
 - The standalone DPoS snapshot-provenance characterization adds Rust codec tests only. It changes no carrier, handle,
   export, constructor, shim route, module flag, compatibility-only bridge test, or `CRW-07` inventory entry.
+- Remaining CRW-09 carrier reconciliation follows behavior-family rows `CRW-09C` through `CRW-09I`. Temporary C++
+  `rewards::BlockStats` decoding is classified under scope-gated `CRW-E01` because removing it changes the accepted
+  StateAPI external-executor contract; it does not block ordinary non-EVM CRW-09 completion.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

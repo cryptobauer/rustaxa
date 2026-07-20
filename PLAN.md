@@ -1388,4 +1388,8 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    while preserving CXX carriers, RLP, hashes, request identities, and error ordering. DPoS eligibility threshold, vote
    step, maximum stake, and minimum deposit now use the shared `DposTokenAmount(U256)` semantic domain; persisted
    principal/custody, reward pools, supply, and arbitrary-width reward-per-stake remain dependency-ordered follow-ups.
+   The next ready family is the lifecycle-complete FinalChain block-number domain. It precedes persisted DPoS principal
+   because snapshot keys, activation heights, delayed reads, custody unlocks, corrections, publication, and restart all
+   depend on unambiguous FinalChain block identity. Temporary C++ `BlockStats` decoding remains part of the accepted
+   StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope gate.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.
