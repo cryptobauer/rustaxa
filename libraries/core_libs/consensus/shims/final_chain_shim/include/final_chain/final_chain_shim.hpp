@@ -19,11 +19,17 @@
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
 
+namespace taraxa {
+class DagManager;
+}
+
 namespace taraxa::final_chain {
 
 // Rust-mode final-chain shim facade.
 // This class is a standalone surface in Rust-enabled builds.
 class FinalChain {
+  friend class ::taraxa::DagManager;
+
  protected:
   util::event::EventEmitter<std::shared_ptr<FinalizationResult>> const block_finalized_emitter_{};
   util::event::EventEmitter<uint64_t> const block_applying_emitter_{};
@@ -111,9 +117,6 @@ class FinalChain {
   // value, while Rust bridge infrastructure failures still throw.
   rustaxa::DagDposAuthorizationFacts dagDposAuthorizationFacts(EthBlockNumber blk_num, addr_t const& addr) const;
   rustaxa::PbftFinalChainFacts collectPbftFinalChainFacts(rustaxa::PbftFinalChainFactRequest request) const;
-  rustaxa::DagProposerFinalChainFacts dagProposerFinalChainFacts(std::optional<EthBlockNumber> proposal_period,
-                                                                 const addr_t& proposer) const;
-
   uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
   uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;
   bool dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const;

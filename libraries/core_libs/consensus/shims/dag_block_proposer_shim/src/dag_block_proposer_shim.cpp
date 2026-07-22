@@ -172,13 +172,7 @@ bool DagBlockProposer::proposeDagBlock(const std::shared_ptr<NodeDagProposerData
     throw std::runtime_error("Rust DAG proposer session did not request FinalChain facts");
   }
 
-  const auto proposal_period = std::optional<PbftPeriod>{step.proposal_period};
-  const auto final_chain_facts =
-      final_chain_->dagProposerFinalChainFacts(proposal_period, node_dag_proposer_data->wallet.node_addr);
-  rustaxa::DagProposerFinalChainFactsReport final_chain_facts_report;
-  final_chain_facts_report.last_finalized_period = final_chain_facts.last_finalized_period;
-  final_chain_facts_report.authorization_facts = final_chain_facts.authorization_facts;
-  step = dag_mgr_->reportProposerFinalChainFacts(proposer_session_id, std::move(final_chain_facts_report));
+  step = dag_mgr_->reportProposerFinalChainFacts(proposer_session_id);
   if (auto done = finish_if_complete(step)) {
     return *done;
   }

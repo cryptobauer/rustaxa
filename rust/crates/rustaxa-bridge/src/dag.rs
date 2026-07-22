@@ -2,13 +2,12 @@ use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
     DagManagerFinalizationApplyPayload, DagManagerNonFinalizedSize,
     DagManagerNonFinalizedSyncPayload, DagOrder, DagPersistenceCounters, DagPivotTipsValidation,
-    DagProposerAddBlockReport, DagProposerFinalChainFactsReport, DagProposerSessionBeginInput,
-    DagProposerSessionStep, DagProposerSignedBlockIntent, DagProposerSigningReport,
-    DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan, DagProposerVdfProofReport,
-    DagProposerWorkerCommand, DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash,
-    DagTransactionRlpLookup, DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport,
-    DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, HashLookup,
-    TransactionPackSelectedTransaction,
+    DagProposerAddBlockReport, DagProposerSessionBeginInput, DagProposerSessionStep,
+    DagProposerSignedBlockIntent, DagProposerSigningReport, DagProposerStorageTipSelectionInput,
+    DagProposerTipSelectionPlan, DagProposerVdfProofReport, DagProposerWorkerCommand,
+    DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
+    DagVerifyBlockAuthorizationReport, DagVerifyBlockGasReport, DagVerifyBlockSessionInput,
+    DagVerifyBlockSessionStep, HashLookup, TransactionPackSelectedTransaction,
 };
 use crate::ffi::{BridgeStorage, DagRuntimeState};
 use anyhow::{ensure, Context, Result};
@@ -256,6 +255,8 @@ pub(crate) struct DagProposerFinalChainFactsSnapshot {
     pub session_id: u64,
     pub fingerprint: [u8; 32],
     pub proposal_period: u64,
+    pub proposal_period_found: bool,
+    pub proposer_address: [u8; 20],
 }
 
 /// Preparation result preserving existing missing/wrong-action step semantics.
@@ -1681,6 +1682,8 @@ pub(crate) fn dag_manager_runtime_prepare_proposer_final_chain_facts(
         session_id,
         fingerprint: session.observation.fingerprint,
         proposal_period: session.observation.proposal_period,
+        proposal_period_found: session.observation.proposal_period_found,
+        proposer_address: session.begin_input.proposer_address,
     })
 }
 
@@ -1693,6 +1696,8 @@ fn proposer_final_chain_snapshot_matches(
         DagProposerSessionAction::CollectFinalChainFacts
     ) && session.observation.fingerprint == snapshot.fingerprint
         && session.observation.proposal_period == snapshot.proposal_period
+        && session.observation.proposal_period_found == snapshot.proposal_period_found
+        && session.begin_input.proposer_address == snapshot.proposer_address
 }
 
 /// Removes only the exact proposer cursor that owned a failed composed lookup.
@@ -1719,7 +1724,8 @@ pub(crate) fn dag_manager_runtime_cleanup_proposer_final_chain_facts(
 pub(crate) fn dag_manager_runtime_apply_proposer_final_chain_facts(
     runtime: &mut DagRuntimeState,
     snapshot: &DagProposerFinalChainFactsSnapshot,
-    report: DagProposerFinalChainFactsReport,
+    last_finalized_period: u64,
+    authorization_facts: rustaxa_consensus::dag::DagDposAuthorizationFacts,
     sortition_params: SortitionParams,
     initially_loaded_params: SortitionParams,
 ) -> Result<DagProposerSessionStep> {
@@ -1740,6 +1746,14 @@ pub(crate) fn dag_manager_runtime_apply_proposer_final_chain_facts(
     ensure!(
         session.observation.proposal_period == snapshot.proposal_period,
         "DAG_PROPOSER_SESSION_STALE_PROPOSAL_PERIOD"
+    );
+    ensure!(
+        session.observation.proposal_period_found == snapshot.proposal_period_found,
+        "DAG_PROPOSER_SESSION_STALE_PROPOSAL_PERIOD_FOUND"
+    );
+    ensure!(
+        session.begin_input.proposer_address == snapshot.proposer_address,
+        "DAG_PROPOSER_SESSION_STALE_PROPOSER_ADDRESS"
     );
     ensure!(
         sortition_params == initially_loaded_params,
@@ -1778,7 +1792,8 @@ pub(crate) fn dag_manager_runtime_apply_proposer_final_chain_facts(
         &session.begin_input,
         session.transaction_observation,
         &session.observation,
-        report,
+        last_finalized_period,
+        authorization_facts,
         sortition_params,
         last_propose_level,
         retry_count,
@@ -2287,7 +2302,8 @@ fn domain_attempt_input(
     input: &DagProposerSessionBeginInput,
     transaction_observation: DagProposerTransactionObservation,
     observation: &DagProposerObservation,
-    report: DagProposerFinalChainFactsReport,
+    last_finalized_period: u64,
+    authorization_facts: rustaxa_consensus::dag::DagDposAuthorizationFacts,
     sortition_params: SortitionParams,
     last_propose_level: u64,
     retry_count: u64,
@@ -2299,23 +2315,18 @@ fn domain_attempt_input(
         frontier: observation.frontier.clone(),
         proposal_period_found: observation.proposal_period_found,
         proposal_period: observation.proposal_period,
-        last_finalized_period: report.last_finalized_period,
+        last_finalized_period,
         dag_expiry_level_limit: input.dag_expiry_level_limit,
         period_block_hash_found: observation.period_block_hash_found,
         period_block_hash: observation.period_block_hash,
         wallet_vrf_public_key: input.wallet_vrf_public_key,
         wallet_vrf_secret: input.wallet_vrf_secret,
         authorization_facts: rustaxa_consensus::dag::DagDposAuthorizationFacts {
-            vrf_key: report
-                .authorization_facts
-                .vrf_key
-                .as_slice()
-                .try_into()
-                .ok(),
-            vrf_key_found: report.authorization_facts.vrf_key_found,
-            sender_eligible_vote_count: report.authorization_facts.sender_eligible_vote_count,
-            vdf_sortition_max_vote_count: report.authorization_facts.vdf_sortition_max_vote_count,
-            eligibility_status: report.authorization_facts.eligibility_status,
+            vrf_key: authorization_facts.vrf_key,
+            vrf_key_found: authorization_facts.vrf_key_found,
+            sender_eligible_vote_count: authorization_facts.sender_eligible_vote_count,
+            vdf_sortition_max_vote_count: authorization_facts.vdf_sortition_max_vote_count,
+            eligibility_status: authorization_facts.eligibility_status,
         },
         sortition_params,
         max_non_finalized_dag_blocks: input.max_non_finalized_dag_blocks,
@@ -2790,9 +2801,7 @@ fn dag_reference_metadata_from_runtime_or_storage(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::rustaxa_ffi::{
-        DagDposAuthorizationFacts, DagProposerFinalChainFactsReport, DagProposerSessionBeginInput,
-    };
+    use crate::ffi::rustaxa_ffi::DagProposerSessionBeginInput;
     use crate::ffi::{BridgeDagStorageQueries, BridgeStorage, BridgeTransactionStorageQueries};
     use crate::storage::{
         create_dag_storage_queries, create_storage, create_transaction_storage_queries,
@@ -3278,21 +3287,20 @@ mod tests {
     }
 
     struct ProposerFinalChainTestFacts {
-        report: DagProposerFinalChainFactsReport,
+        last_finalized_period: u64,
+        authorization_facts: dag::DagDposAuthorizationFacts,
         sortition_params: SortitionParams,
     }
 
     fn proposer_final_chain_facts(vrf_key: [u8; 32]) -> ProposerFinalChainTestFacts {
         ProposerFinalChainTestFacts {
-            report: DagProposerFinalChainFactsReport {
-                last_finalized_period: 7,
-                authorization_facts: DagDposAuthorizationFacts {
-                    vrf_key_found: true,
-                    vrf_key: vrf_key.to_vec(),
-                    sender_eligible_vote_count: 10,
-                    vdf_sortition_max_vote_count: 20,
-                    eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-                },
+            last_finalized_period: 7,
+            authorization_facts: dag::DagDposAuthorizationFacts {
+                vrf_key: Some(vrf_key),
+                vrf_key_found: true,
+                sender_eligible_vote_count: 10,
+                vdf_sortition_max_vote_count: 20,
+                eligibility_status: dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
             },
             sortition_params: SortitionParams {
                 vrf: VrfParams {
@@ -3321,7 +3329,8 @@ mod tests {
         dag_manager_runtime_apply_proposer_final_chain_facts(
             runtime,
             &snapshot,
-            facts.report,
+            facts.last_finalized_period,
+            facts.authorization_facts,
             facts.sortition_params,
             facts.sortition_params,
         )

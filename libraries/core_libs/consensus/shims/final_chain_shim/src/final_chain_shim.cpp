@@ -1065,12 +1065,6 @@ rustaxa::PbftFinalChainFacts FinalChain::collectPbftFinalChainFacts(rustaxa::Pbf
   return rust_final_chain_.value()->collect_pbft_final_chain_facts(std::move(request));
 }
 
-rustaxa::DagProposerFinalChainFacts FinalChain::dagProposerFinalChainFacts(
-    std::optional<EthBlockNumber> proposal_period, const addr_t& proposer) const {
-  return rust_final_chain_.value()->get_dag_proposer_final_chain_facts(
-      proposal_period.has_value(), proposal_period.value_or(0), into_address_array(proposer));
-}
-
 uint64_t FinalChain::dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const {
   return rust_final_chain_.value()->get_dpos_eligible_vote_count(blk_num, into_address_array(addr));
 }

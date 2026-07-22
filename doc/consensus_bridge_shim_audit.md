@@ -68,7 +68,7 @@ This table is the per-handle inventory for `type Bridge*` declarations in `rust/
 | Shim directory | Current role | Current consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `dag_block_proposer_shim` | Standalone C++ executor facade over Rust manager-owned proposal sessions; Rust selects historical sortition parameters, while C++ executes VDF from the returned typed command, signs one returned hash, and submits the returned signed RLP; feature-on builds do not compile the original proposer or an Old scaffold | App/DAG manager proposer lifecycle | C++ public compatibility facade | Delete after worker/network lifecycle, VDF execution, signing, and add-block effects move behind Rust application/external ports. |
-| `dag_manager_shim` | C++ DAG compatibility/executor facade over the App-owned DAG/transaction service; feature-on builds import and compile no legacy manager scaffold; proposer observation, construction, unsigned-intent, and signed-RLP state are service-owned | App/consensus code, DAG tests | C++ public compatibility facade | Remove remaining public DAG-block/transaction materialization when callers can use the application service or a thinner public facade. |
+| `dag_manager_shim` | C++ DAG compatibility/executor facade over the App-owned DAG/transaction service; feature-on builds import and compile no legacy manager scaffold; proposer observation, FinalChain fact collection, construction, unsigned-intent, and signed-RLP state are service-owned | App/consensus code, DAG tests | C++ public compatibility facade | Remove remaining public DAG-block/transaction materialization when callers can use the application service or a thinner public facade. |
 | `final_chain_shim` | Rust FinalChain runtime behind C++ FinalChain API | App, PBFT manager, transaction manager, RPC/EVM execution | External boundary | Keep EVM execution adapter; remove consensus fact/materialization methods after Rust consensus consumes FinalChain ports directly. |
 | `gas_pricer_shim` | Standalone Rust-backed gas price oracle facade | Transaction/RPC gas price paths | C++ public compatibility facade | The facade no longer imports or compiles `GasPricerOld`; keep its feature flag and public adapter until gas price API is native Rust and external RPC sees only a narrow query method. |
 | `key_manager_shim` | Standalone FinalChain key-fact adapter; feature-on builds import and compile no legacy manager scaffold | App/bootstrap/key manager users | External boundary | Keep the public facade until key ownership is redesigned; the dead `KeyManagerOld` compile scaffold is removed. |
@@ -539,6 +539,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   bridge ingress while keeping migration phase, yield, and snapshot byte provenance private to `rustaxa-consensus`.
   Existing external EVM/CXX byte carriers and snapshot slots 8-10 remain unchanged. No handle, export, constructor,
   shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
+- The first `CRW-09I` contraction deletes the `DagProposerFinalChainFacts` and
+  `DagProposerFinalChainFactsReport` CXX carriers, their standalone FinalChain bridge/shim getter, and the C++ copy
+  relay. The cursor-bound DAG service now reads Rust FinalChain head and DPoS/VRF facts directly with lock-free query
+  separation and cursor/sortition revalidation. The retained `BridgeFinalChain` and `BridgeDagTransactionService`
+  handles are passed only through shim-private composition; no new handle or public compatibility API is added.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

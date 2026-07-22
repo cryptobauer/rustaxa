@@ -886,10 +886,9 @@ rustaxa::DagProposerSessionStep DagManager::proposerSessionNext(uint64_t session
   return rustaxa::dag_manager_runtime_proposer_session_next(dag_transaction_service_->service(), session_id);
 }
 
-rustaxa::DagProposerSessionStep DagManager::reportProposerFinalChainFacts(
-    uint64_t session_id, rustaxa::DagProposerFinalChainFactsReport report) {
-  return rustaxa::dag_manager_runtime_proposer_session_report_final_chain_facts(dag_transaction_service_->service(),
-                                                                                session_id, std::move(report));
+rustaxa::DagProposerSessionStep DagManager::reportProposerFinalChainFacts(uint64_t session_id) {
+  return rustaxa::dag_manager_runtime_proposer_session_report_final_chain_facts(
+      dag_transaction_service_->service(), session_id, *final_chain_->rust_final_chain_.value());
 }
 
 rustaxa::DagProposerSessionStep DagManager::pollProposerVdfWait(uint64_t session_id) {

@@ -3999,12 +3999,6 @@ pub mod rustaxa_ffi {
         eligibility_status: u8,
     }
 
-    /// Rust-collected FinalChain facts needed to start one DAG proposer attempt.
-    struct DagProposerFinalChainFacts {
-        last_finalized_period: u64,
-        authorization_facts: DagDposAuthorizationFacts,
-    }
-
     /// External/configured facts used to open one runtime-owned proposal session.
     ///
     /// The caller supplies trusted wallet identity (VRF keys and proposer address), packing limits, and
@@ -4028,16 +4022,6 @@ pub mod rustaxa_ffi {
         pbft_gas_limit: u64,
         dag_gas_limit: u64,
         max_tips: u16,
-    }
-
-    /// FinalChain facts collected for the runtime-derived proposal period.
-    ///
-    /// These facts answer the session's collect action and must correspond to the `proposal_period` in that step. Rust
-    /// revalidates its observation before consuming them; stale observations terminate without retry mutation, while
-    /// storage/decode/planner failures return an error and remove the session.
-    struct DagProposerFinalChainFactsReport {
-        last_finalized_period: u64,
-        authorization_facts: DagDposAuthorizationFacts,
     }
 
     /// Complete instruction/result snapshot returned by the Rust-owned DAG proposer cursor.
@@ -4732,7 +4716,7 @@ pub mod rustaxa_ffi {
         pub fn dag_manager_runtime_proposer_session_report_final_chain_facts(
             runtime: &BridgeDagTransactionService,
             session_id: u64,
-            report: DagProposerFinalChainFactsReport,
+            final_chain: &BridgeFinalChain,
         ) -> Result<DagProposerSessionStep>;
         /// Prepares a DAG-owned transaction pack from private cursor configuration.
         /// Estimate-needed results keep action 1 and expose only `transaction_estimate_requests`; declared/cache-only,
@@ -6092,12 +6076,6 @@ pub mod rustaxa_ffi {
             block_number: u64,
             sender: &[u8; 20],
         ) -> Result<DagDposAuthorizationFacts>;
-        pub fn get_dag_proposer_final_chain_facts(
-            self: &BridgeFinalChain,
-            proposal_period_found: bool,
-            proposal_period: u64,
-            sender: &[u8; 20],
-        ) -> Result<DagProposerFinalChainFacts>;
         pub fn get_dpos_validators_total_stakes(
             self: &BridgeFinalChain,
             block_number: u64,

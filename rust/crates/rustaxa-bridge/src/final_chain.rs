@@ -964,39 +964,6 @@ impl BridgeFinalChain {
         })
     }
 
-    /// Returns the FinalChain facts needed by one DAG proposer attempt.
-    ///
-    /// Inputs are the proposal-period lookup result and local proposer address
-    /// supplied by the C++ proposer shim. Rust owns the FinalChain query shape:
-    /// it always returns the latest finalized period, and it collects
-    /// block-scoped DPoS/VRF authorization facts whenever the proposal period
-    /// exists. The Rust FinalChain DPoS API owns delegation-delay readiness, so
-    /// DAG proposal does not wait for `last_finalized >= proposal_period` before
-    /// asking for eligibility.
-    pub fn get_dag_proposer_final_chain_facts(
-        self: &BridgeFinalChain,
-        proposal_period_found: bool,
-        proposal_period: u64,
-        sender: &[u8; 20],
-    ) -> Result<rustaxa_ffi::DagProposerFinalChainFacts, anyhow::Error> {
-        let last_finalized_period = self.0.last_block_number()?;
-        let authorization_facts = if proposal_period_found {
-            self.get_dag_dpos_authorization_facts(proposal_period, sender)?
-        } else {
-            rustaxa_ffi::DagDposAuthorizationFacts {
-                vrf_key_found: false,
-                vrf_key: Vec::new(),
-                sender_eligible_vote_count: 0,
-                vdf_sortition_max_vote_count: 0,
-                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
-            }
-        };
-        Ok(rustaxa_ffi::DagProposerFinalChainFacts {
-            last_finalized_period,
-            authorization_facts,
-        })
-    }
-
     pub fn get_dpos_validators_total_stakes(
         self: &BridgeFinalChain,
         block_number: u64,
@@ -2417,25 +2384,26 @@ mod tests {
         );
 
         let proposer_facts = final_chain
-            .get_dag_proposer_final_chain_facts(true, 0, &validator)
+            .get_dag_dpos_authorization_facts(0, &validator)
             .expect("proposer facts should be available for finalized proposal period");
-        assert_eq!(proposer_facts.last_finalized_period, 0);
-        assert!(proposer_facts.authorization_facts.vrf_key_found);
-        assert_eq!(proposer_facts.authorization_facts.vrf_key, vec![0xA1; 32]);
+        assert_eq!(proposer_facts.vrf_key_found, true);
+        assert_eq!(proposer_facts.vrf_key, vec![0xA1; 32]);
         assert_eq!(
-            proposer_facts.authorization_facts.eligibility_status,
+            proposer_facts.eligibility_status,
             dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE
         );
 
         let unavailable_facts = final_chain
-            .get_dag_proposer_final_chain_facts(true, 1, &validator)
+            .get_dag_dpos_authorization_facts(1, &validator)
             .expect("proposal period should query DPoS authorization readiness");
-        assert_eq!(unavailable_facts.last_finalized_period, 0);
-        assert!(unavailable_facts.authorization_facts.vrf_key_found);
+        assert_eq!(proposer_facts.sender_eligible_vote_count, 10);
+        assert!(unavailable_facts.vrf_key_found);
         assert_eq!(
-            unavailable_facts.authorization_facts.eligibility_status,
+            unavailable_facts.eligibility_status,
             dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
         );
+        let last_finalized_period = final_chain.get_last_block_number().unwrap();
+        assert_eq!(last_finalized_period, 0);
 
         drop(final_chain);
         let _ = fs::remove_dir_all(temp_dir);

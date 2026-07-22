@@ -1,7 +1,8 @@
 use crate::dag::{build_dag_state_from_storage, DagAddBlockEffectPlan, DagAddBlockRuntimeInput};
 use crate::ffi::rustaxa_ffi::*;
 use crate::ffi::{
-    BridgeStorage, DagRuntimeState, TransactionPackSessionOwner, TransactionRuntimeState,
+    BridgeFinalChain, BridgeStorage, DagRuntimeState, TransactionPackSessionOwner,
+    TransactionRuntimeState,
 };
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use crate::transaction_manager::{
@@ -24,10 +25,11 @@ use std::sync::{Mutex, MutexGuard};
 /// Full production construction initializes all three domains from one shared Rust storage
 /// handle before publishing the service. Compatibility construction omits DAG and sortition
 /// state for standalone TransactionManager or GasPricer tests; unavailable calls fail with
-/// stable domain-specific errors. Each current bridge call holds only its domain-specific
-/// mutex for the duration of the Rust operation, and no guard crosses an external executor
-/// callback. A future operation that genuinely needs multiple domains must acquire them in
-/// the universal DAG-then-sortition-then-transaction order.
+/// stable domain-specific errors. Calls hold one domain mutex unless they explicitly compose
+/// sibling state, in which case they acquire locks only in the universal
+/// DAG-then-sortition-then-transaction order. Proposer FinalChain-fact collection snapshots
+/// under DAG, releases every service lock for the FinalChain query, then reacquires DAG followed
+/// by sortition to revalidate and apply. No guard crosses an external executor callback.
 pub struct BridgeDagTransactionService {
     transaction: Mutex<TransactionRuntimeState>,
     dag: Mutex<Option<DagRuntimeState>>,
@@ -1071,12 +1073,12 @@ dag_free_mut_result!(service_dag_manager_runtime_proposer_session_next, dag_mana
 pub fn service_dag_manager_runtime_proposer_session_report_final_chain_facts(
     service: &BridgeDagTransactionService,
     session_id: u64,
-    report: DagProposerFinalChainFactsReport,
+    final_chain: &BridgeFinalChain,
 ) -> Result<DagProposerSessionStep> {
     service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
         service,
         session_id,
-        report,
+        final_chain,
         || {},
     )
 }
@@ -1084,7 +1086,7 @@ pub fn service_dag_manager_runtime_proposer_session_report_final_chain_facts(
 fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
     service: &BridgeDagTransactionService,
     session_id: u64,
-    report: DagProposerFinalChainFactsReport,
+    final_chain: &BridgeFinalChain,
     between_lookups: impl FnOnce(),
 ) -> Result<DagProposerSessionStep> {
     let preparation = {
@@ -1114,6 +1116,23 @@ fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_ho
             return Err(error);
         }
     };
+    let (last_finalized_period, authorization_facts) =
+        match proposer_final_chain_facts_from_final_chain(
+            final_chain,
+            snapshot.proposal_period_found,
+            snapshot.proposal_period,
+            snapshot.proposer_address,
+        ) {
+            Ok(facts) => facts,
+            Err(error) => {
+                let mut dag_guard = service.dag()?;
+                let dag = dag_guard
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+                dag_manager_runtime_cleanup_proposer_final_chain_facts(dag, &snapshot);
+                return Err(error);
+            }
+        };
     between_lookups();
 
     let mut dag_guard = service.dag()?;
@@ -1140,10 +1159,34 @@ fn service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_ho
     dag_manager_runtime_apply_proposer_final_chain_facts(
         dag,
         &snapshot,
-        report,
+        last_finalized_period,
+        authorization_facts,
         revalidated_params,
         initially_loaded_params,
     )
+}
+
+fn proposer_final_chain_facts_from_final_chain(
+    final_chain: &BridgeFinalChain,
+    proposal_period_found: bool,
+    proposal_period: u64,
+    proposer_address: [u8; 20],
+) -> Result<(u64, rustaxa_consensus::dag::DagDposAuthorizationFacts)> {
+    let last_finalized_period = final_chain.0.last_block_number()?;
+    let authorization_facts = if proposal_period_found {
+        final_chain
+            .0
+            .dag_dpos_authorization_facts(proposal_period.into(), proposer_address)?
+    } else {
+        rustaxa_consensus::dag::DagDposAuthorizationFacts {
+            vrf_key: None,
+            vrf_key_found: false,
+            sender_eligible_vote_count: 0,
+            vdf_sortition_max_vote_count: 0,
+            eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
+        }
+    };
+    Ok((last_finalized_period, authorization_facts))
 }
 dag_free_mut_result!(service_dag_manager_runtime_proposer_session_poll_vdf, dag_manager_runtime_proposer_session_poll_vdf(session_id: u64) -> DagProposerSessionStep);
 dag_free_mut_fallible!(service_dag_manager_runtime_proposer_session_report_vdf_proof, dag_manager_runtime_proposer_session_report_vdf_proof(session_id: u64, report: DagProposerVdfProofReport) -> DagProposerSessionStep);
@@ -1158,6 +1201,8 @@ mod tests {
         DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS, DAG_VERIFY_SESSION_ACTION_GAS,
         DAG_VERIFY_SESSION_ACTION_VDF_SORTITION,
     };
+    use crate::ffi::rustaxa_ffi;
+    use crate::final_chain::create_final_chain_with_rewards_config;
     use crate::storage::{create_storage, create_transaction_storage_queries};
     use ethereum_types::{H160, H256, U256};
     use k256::ecdsa::SigningKey;
@@ -1185,6 +1230,10 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn u256_be(value: u64) -> Vec<u8> {
+        U256::from(value).to_big_endian().to_vec()
     }
 
     fn queue_config() -> TransactionQueueConfig {
@@ -1388,35 +1437,121 @@ mod tests {
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(service, proposer_begin_input())
                 .expect("proposer session");
-        let step = report_proposer_final_chain_facts(service, session_id);
+        let snapshot = {
+            let mut dag = service.dag().unwrap();
+            match dag_manager_runtime_prepare_proposer_final_chain_facts(
+                dag.as_mut().unwrap(),
+                session_id,
+            ) {
+                DagProposerFinalChainFactsPreparation::Snapshot(snapshot) => snapshot,
+                DagProposerFinalChainFactsPreparation::Step(_) => {
+                    panic!("proposer cursor should request FinalChain facts")
+                }
+            }
+        };
+        let params = service
+            .sortition()
+            .unwrap()
+            .params_for_period_from_storage(snapshot.proposal_period)
+            .unwrap();
+        let mut dag = service.dag().unwrap();
+        let _sortition = service.sortition().unwrap();
+        let step = dag_manager_runtime_apply_proposer_final_chain_facts(
+            dag.as_mut().unwrap(),
+            &snapshot,
+            0,
+            rustaxa_consensus::dag::DagDposAuthorizationFacts {
+                vrf_key: Some(public_key_from_secret(&SECRET_KEY).unwrap()),
+                vrf_key_found: true,
+                sender_eligible_vote_count: 1,
+                vdf_sortition_max_vote_count: 1,
+                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+            params,
+            params,
+        )
+        .unwrap();
         assert_eq!(step.action, 1);
         session_id
     }
 
     fn report_proposer_final_chain_facts(
         service: &BridgeDagTransactionService,
+        final_chain: &BridgeFinalChain,
         session_id: u64,
     ) -> DagProposerSessionStep {
         service_dag_manager_runtime_proposer_session_report_final_chain_facts(
             service,
             session_id,
-            proposer_final_chain_report(),
+            final_chain,
         )
         .expect("final-chain facts")
     }
 
-    fn proposer_final_chain_report() -> DagProposerFinalChainFactsReport {
-        let vrf_key = public_key_from_secret(&SECRET_KEY).expect("VRF key");
-        DagProposerFinalChainFactsReport {
-            last_finalized_period: 0,
-            authorization_facts: DagDposAuthorizationFacts {
-                vrf_key_found: true,
-                vrf_key: vrf_key.to_vec(),
-                sender_eligible_vote_count: 10,
-                vdf_sortition_max_vote_count: 20,
-                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+    fn proposer_address() -> [u8; 20] {
+        address_from_signing_key(&SigningKey::from_slice(&[0x44; 32]).unwrap())
+    }
+
+    fn make_proposer_final_chain(
+        storage: &BridgeStorage,
+        proposer_address: [u8; 20],
+    ) -> Box<BridgeFinalChain> {
+        let proposer_vrf_key = public_key_from_secret(&SECRET_KEY).expect("proposer vrf key");
+        create_final_chain_with_rewards_config(
+            storage,
+            0,
+            0,
+            vec![],
+            vec![rustaxa_ffi::GenesisValidator {
+                address: proposer_address,
+                owner: [0u8; 20],
+                vrf_key: proposer_vrf_key,
+                commission: 0,
+                description: "".to_string(),
+                endpoint: "".to_string(),
+                total_stake: u256_be(10_000),
+                delegations: vec![rustaxa_ffi::GenesisDelegation {
+                    delegator: proposer_address,
+                    stake: u256_be(10_000),
+                }],
+            }],
+            rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: u256_be(1_000),
+                vote_eligibility_balance_step: u256_be(1_000),
+                validator_maximum_stake: u256_be(30_000),
+                minimum_deposit: vec![],
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
             },
-        }
+            rustaxa_ffi::FinalChainRewardsConfig {
+                committee_size: 0,
+                magnolia_period: 0,
+                phalaenopsis_period: u64::MAX,
+                aspen_part_one_period: u64::MAX,
+                fix_claim_all_block_num: u64::MAX,
+                fix_redelegate_block_num: u64::MAX,
+                aspen_part_two_period: 0,
+                max_block_author_reward_percent: 0,
+                dag_proposers_reward_percent: 0,
+                yield_percentage: 0,
+                dpos_blocks_per_year: 0,
+                dpos_delegation_locking_period: 0,
+                cornus_period: 0,
+                cornus_delegation_locking_period: 0,
+                genesis_balance_sum: Vec::new(),
+                aspen_max_supply: Vec::new(),
+                aspen_generated_rewards: Vec::new(),
+                cacti_period: 0,
+                cacti_delegation_locking_period: 0,
+                magnolia_jail_time: 0,
+                cacti_jail_time: 0,
+                frequency_rules: Vec::new(),
+                redelegations: Vec::new(),
+            },
+        )
+        .expect("proposer final chain")
     }
 
     fn assert_zero_legacy_sortition_params(
@@ -1590,6 +1725,7 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
         insert_test_queue_transaction(&service, 0x71);
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
@@ -1613,7 +1749,7 @@ mod tests {
         let pack = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
             &service,
             session_id,
-            proposer_final_chain_report(),
+            &final_chain,
         )
         .unwrap();
         assert_eq!(pack.action, 1);
@@ -1659,13 +1795,14 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .unwrap();
         let terminal = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
             &service,
             session_id,
-            proposer_final_chain_report(),
+            &final_chain,
         )
         .unwrap();
         assert_ne!(terminal.action, 2);
@@ -1677,7 +1814,7 @@ mod tests {
     }
 
     #[test]
-    fn proposer_final_chain_facts_reject_wrong_action_and_full_stale_cursor() {
+    fn proposer_final_chain_facts_reject_full_stale_cursor() {
         let dir = unique_temp_dir("rustaxa_dag_proposer_stale_facts");
         let storage = create_storage(dir.to_str().unwrap()).unwrap();
         let service = create_dag_transaction_service_from_storage(
@@ -1691,27 +1828,8 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
         insert_test_queue_transaction(&service, 0x73);
-        let session_id =
-            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
-                .unwrap();
-        let _ = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
-            &service,
-            session_id,
-            proposer_final_chain_report(),
-        )
-        .unwrap();
-        let wrong_action = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
-            &service,
-            session_id,
-            proposer_final_chain_report(),
-        )
-        .unwrap();
-        assert_eq!(wrong_action.status, 2);
-        assert!(wrong_action
-            .error_code
-            .contains("UNEXPECTED_FINAL_CHAIN_FACTS_REPORT"));
-
         let stale_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .unwrap();
@@ -1719,7 +1837,7 @@ mod tests {
             service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
                 &service,
                 stale_id,
-                proposer_final_chain_report(),
+                &final_chain,
                 || {
                     let mut dag = service.dag().unwrap();
                     assert!(dag_manager_runtime_abort_proposer_session(
@@ -1733,6 +1851,18 @@ mod tests {
         assert!(stale
             .to_string()
             .contains("DAG_PROPOSER_SESSION_STALE_CURSOR"));
+
+        let wrong_stage_id = open_proposer_pack(&service);
+        let wrong_stage = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+            &service,
+            wrong_stage_id,
+            &final_chain,
+        )
+        .expect("wrong-stage reports use the stable invalid-step carrier");
+        assert_eq!(wrong_stage.status, 2);
+        assert!(wrong_stage
+            .error_code
+            .contains("DAG_PROPOSER_SESSION_UNEXPECTED_FINAL_CHAIN_FACTS_REPORT"));
 
         drop(service);
         drop(storage);
@@ -1754,6 +1884,7 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
         insert_test_queue_transaction(&service, 0x74);
         let session_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
@@ -1765,7 +1896,7 @@ mod tests {
             service_dag_manager_runtime_proposer_session_report_final_chain_facts_with_hook(
                 &service,
                 session_id,
-                proposer_final_chain_report(),
+                &final_chain,
                 || {
                     storage
                         .0
@@ -1814,6 +1945,7 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
         let first =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .unwrap();
@@ -1824,7 +1956,7 @@ mod tests {
         let unavailable = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
             &service,
             first,
-            proposer_final_chain_report(),
+            &final_chain,
         )
         .err()
         .expect("missing capability should fail");
@@ -1865,7 +1997,7 @@ mod tests {
             service_dag_manager_runtime_proposer_session_report_final_chain_facts(
                 &service,
                 corrupt,
-                proposer_final_chain_report(),
+                &final_chain,
             )
             .is_err()
         );
@@ -1876,6 +2008,73 @@ mod tests {
             .unwrap()
             .proposer_sessions
             .contains_key(&corrupt));
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn proposer_final_chain_read_failure_cleans_only_the_matching_cursor() {
+        let dir = unique_temp_dir("rustaxa_dag_proposer_final_chain_failure_cleanup");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
+        let first =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+        let second =
+            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
+                .unwrap();
+
+        storage
+            .0
+            .final_chain()
+            .write_conformance_lookup_rows(
+                1,
+                &[1],
+                99,
+                H256::zero(),
+                &[],
+                H256::zero(),
+                &[],
+                H256::zero(),
+                &[],
+                99,
+                &[],
+            )
+            .unwrap();
+        let read_error = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
+            &service,
+            first,
+            &final_chain,
+        )
+        .err()
+        .expect("invalid LAST_NUMBER must fail after sortition lookup");
+        assert!(read_error
+            .to_string()
+            .contains("final_chain_meta/LAST_NUMBER"));
+
+        let first_after =
+            service_dag_manager_runtime_proposer_session_next(&service, first).unwrap();
+        assert_eq!(first_after.status, 2);
+        assert!(first_after
+            .error_code
+            .contains("DAG_PROPOSER_SESSION_NOT_STARTED"));
+        let second_after =
+            service_dag_manager_runtime_proposer_session_next(&service, second).unwrap();
+        assert_eq!(second_after.status, 0);
+        assert_eq!(second_after.action, 7);
 
         drop(service);
         drop(storage);
@@ -2102,13 +2301,14 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
 
         // The caller-shaped input contains configuration only; the empty sibling
         // runtime drives the legacy empty-pool skip.
         let empty_id =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .unwrap();
-        let empty = report_proposer_final_chain_facts(&service, empty_id);
+        let empty = report_proposer_final_chain_facts(&service, &final_chain, empty_id);
         assert_eq!(empty.status, 1);
         assert_eq!(
             empty.reason_code,
@@ -2128,19 +2328,14 @@ mod tests {
         limited_input.max_non_finalized_transactions = 0;
         let limited_id =
             service_dag_manager_runtime_begin_proposer_session(&service, limited_input).unwrap();
-        let limited = report_proposer_final_chain_facts(&service, limited_id);
+        let limited = report_proposer_final_chain_facts(&service, &final_chain, limited_id);
         assert_eq!(limited.status, 1);
         assert_eq!(
             limited.reason_code,
             rustaxa_consensus::dag::DAG_PROPOSER_REASON_NON_FINALIZED_TRANSACTION_LIMIT
         );
 
-        let ready_id =
-            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
-                .unwrap();
-        let ready = report_proposer_final_chain_facts(&service, ready_id);
-        assert_eq!(ready.status, 0);
-        assert_eq!(ready.action, 1);
+        let ready_id = open_proposer_pack(&service);
         assert!(service
             .dag_transaction_service_proposer_pack_abort(ready_id)
             .unwrap());
@@ -3157,7 +3352,6 @@ mod tests {
         )
         .unwrap();
         let queued = insert_test_queue_transaction(&service, 0x53);
-
         let throttled_id = open_proposer_pack(&service);
         let throttled = service
             .dag_transaction_service_proposer_pack_prepare(throttled_id, true, 21_000, 0, 0)
@@ -3261,7 +3455,6 @@ mod tests {
                 last_block_number: 0,
             })
             .unwrap();
-
         let session_id = open_proposer_pack(&service);
         let prepare = service
             .dag_transaction_service_proposer_pack_prepare(session_id, false, 21_000, 0, 10)

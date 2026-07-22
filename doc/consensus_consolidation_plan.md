@@ -2980,8 +2980,9 @@ correctness, concurrency, error-classification, deletion, documentation, or cove
 This CRW-05/CRW-07 follow-up removes the remaining historical-sortition lookup and inbound parameter relay from live
 DAG proposal planning while preserving asynchronous VDF execution as an explicit C++ executor boundary.
 
-- `DagProposerFinalChainFactsReport` carries only the last finalized period and proposer authorization facts requested
-  from external FinalChain. The cursor-owned proposal period is never echoed through C++.
+- The later `CRW-09I` contraction removes `DagProposerFinalChainFactsReport` entirely. The cursor-bound composed service
+  reads last-finalized and DPoS/VRF authorization facts directly from the Rust FinalChain runtime; C++ now supplies only
+  the proposer session id and a shim-private runtime reference.
 - `BridgeDagTransactionService` snapshots the keyed cursor/action/observation/period under the DAG lock, reads the
   historical parameters under the sortition lock alone, then reacquires `DAG -> sortition`, revalidates the exact cursor,
   repeats the indexed lookup, and compares the complete parameter value before privately planning and advancing.
@@ -4391,6 +4392,24 @@ The snapshot shape, CXX carriers, bridge handles/exports, shims, module flags, a
 unchanged, so `CRW-07` has no delta. All 58 `rustaxa-types`, 816 `rustaxa-consensus`, and 348 `rustaxa-bridge` tests,
 Tier 1, FinalChain Tier 2, Tier 3 parity, the bridge inventory guard, and pre-commit passed. Independent configured
 review approved the final diff without blockers; `CRW-09I` is now ready.
+
+### CRW-09I DAG Proposer FinalChain Fact Composition
+
+The first `CRW-09I` contraction removes the DAG proposer FinalChain fact round trip. `DagProposerFinalChainFacts`,
+`DagProposerFinalChainFactsReport`, the standalone FinalChain bridge getter, the FinalChain shim relay, and the C++
+field-copy path are deleted. `BridgeDagTransactionService` now snapshots the cursor/action/fingerprint and proposer
+identity under the DAG lock, releases it, loads historical sortition parameters and Rust FinalChain head plus DPoS/VRF
+authorization facts, then reacquires DAG followed by sortition and revalidates the complete observation before applying.
+Lookup failures clean only the matching cursor; parameter drift and stale-cursor behavior remain explicit.
+
+C++ supplies only the runtime-issued session id and a shim-private reference to the Rust FinalChain runtime. External
+EVM/StateAPI system-transaction facts, account/code/storage/call/trace operations, rewards execution, staged-state
+commit, and publication recovery remain accepted `CRW-E01` boundaries and are unchanged. CRW-09I remains active for
+the PBFT, vote/pillar, DAG verification, and mixed transaction-admission fact families.
+
+Validation passed with six focused proposer-FinalChain bridge tests, all 349 `rustaxa-bridge` tests,
+`make rewrite-validate-fast`, `.githooks/pre-commit`, `dag_test` (6/6), and `dag_block_test` (13/13). Independent review
+approved the post-fix diff with no correctness, lock-order, API-exposure, regression, or coverage findings.
 
 ## Historical Execution Order
 
