@@ -1326,6 +1326,31 @@ impl FinalChain {
         Ok(self.genesis_vrf_keys.get(&address).copied())
     }
 
+    /// Resolves the PBFT validator VRF key using the legacy exact/prior/next policy.
+    ///
+    /// `period` is the vote's DPoS period. Exact and prior snapshots are
+    /// queried in that order; the next period is queried only when it is ready
+    /// under the configured delegation delay. A missing key returns `None`,
+    /// while unavailable or corrupt snapshots in the ready range remain hard
+    /// errors. The operation does not retain a snapshot or caller-owned handle.
+    pub fn pbft_vrf_key_with_fallback(
+        &self,
+        period: u64,
+        address: [u8; 20],
+    ) -> Result<Option<[u8; 32]>, anyhow::Error> {
+        for lookup_period in [Some(period), period.checked_sub(1)].into_iter().flatten() {
+            if let Some(key) = self.vrf_key_at_block(lookup_period.into(), address)? {
+                return Ok(Some(key));
+            }
+        }
+        if let Some(next) = period.checked_add(1)
+            && self.pbft_dpos_facts_available(next)?
+        {
+            return self.vrf_key_at_block(next.into(), address);
+        }
+        Ok(None)
+    }
+
     /// Returns the DPoS eligible vote count for one validator address at a block.
     pub fn dpos_eligible_vote_count(
         &self,
@@ -16915,6 +16940,66 @@ mod tests {
         assert_eq!(
             u256_from_big_endian(&validator_info.code_retval[64..96]),
             U256::zero()
+        );
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn pbft_vrf_key_fallback_reads_ready_next_delayed_snapshot() {
+        let path = temp_db_path("pbft-vrf-key-ready-next-fallback");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let validator = [0x17; 20];
+        let expected_key = [0x91; 32];
+        let mut final_chain = FinalChain::new_with_rewards_config(
+            storage.clone(),
+            1_000_000.into(),
+            0,
+            vec![],
+            vec![genesis_validator(validator, U256::from(1_000u64))],
+            GenesisDposConfig {
+                eligibility_balance_threshold: DposTokenAmount::from(U256::from(1_000u64)),
+                vote_eligibility_balance_step: DposTokenAmount::from(U256::from(1_000u64)),
+                validator_maximum_stake: DposTokenAmount::from(U256::from(10_000u64)),
+                delegation_delay: 1,
+                ..Default::default()
+            },
+            FinalChainRewardsConfig::default(),
+        )
+        .unwrap();
+
+        final_chain.genesis_vrf_keys.remove(&validator);
+        let mut next_snapshot = {
+            let mut snapshots = final_chain.dpos_snapshots.lock().unwrap();
+            let exact_snapshot = snapshots.get_mut(&0.into()).unwrap();
+            exact_snapshot.vrf_keys.remove(&validator);
+            exact_snapshot.clone()
+        };
+        next_snapshot.vrf_keys.insert(validator, expected_key);
+        final_chain
+            .dpos_snapshots
+            .lock()
+            .unwrap()
+            .insert(1.into(), next_snapshot);
+        let mut batch = storage.create_write_batch();
+        storage
+            .batch_put_raw(
+                &mut batch,
+                Column::FinalChainMeta,
+                &FinalChain::DB_META_LAST_NUMBER.to_le_bytes(),
+                &1u64.to_le_bytes(),
+            )
+            .unwrap();
+        storage.commit_write_batch_with_sync(batch, false).unwrap();
+
+        assert_eq!(final_chain.last_block_number().unwrap(), 1);
+        assert_eq!(
+            final_chain
+                .pbft_vrf_key_with_fallback(1, validator)
+                .unwrap(),
+            Some(expected_key)
         );
 
         drop(final_chain);

@@ -4477,6 +4477,26 @@ Rust-enabled/pure-C++ FinalChain parity gate, and the repository pre-commit hook
 `VoteTest.two_t_plus_one_votes` passed in isolation. A combined two-test invocation retained the classified shared
 `/tmp/taraxa0/db/db/LOCK` fixture collision after its first case passed.
 
+### CRW-09I VoteManager Validation FinalChain Composition
+
+Rust-mode `VoteManager::validateVote` now makes one composed PBFT-service call with canonical vote bytes, strict-VRF
+policy, and committee configuration. The service derives the voter from canonical bytes, reads voter DPoS stake,
+resolves and caches the validator VRF key with exact/prior/next Rust FinalChain fallback, validates signature and VRF,
+then reads total DPoS stake and calculates the authoritative weight. No verified-vote mutex is held across FinalChain or
+cryptographic work; it is acquired briefly for key-cache publication and the terminal replay mutation.
+
+Accepted validation returns Rust-built canonical weighted vote RLP. The C++ facade verifies its unweighted bytes, hash,
+block, PBFT coordinates, type, voter, and calculated weight before replacing the temporary live sidecar. This removes
+DPoS counts, VRF keys, readiness/error facts, and sortition thresholds from the production validation call. Generic
+`PbftFinalChainFact*` carriers remain for weighted generation, local proposer sortition, and PBFT-manager consumers, so
+CRW-09I remains active.
+
+Focused Rust and C++ coverage proves composed FinalChain lookup, replay publication, zero-stake short-circuiting, and
+exact weighted-payload hydration. The full `rustaxa-consensus`/`rustaxa-bridge` package suite, the standalone composed
+validation and transfer-vote C++ cases, `make rewrite-validate-fast`, both FinalChain Tier 2 and Tier 3 parity gates, and
+the repository pre-commit hook passed. The consensus Tier 2 aggregate invocation retained the classified shared
+`/tmp/taraxa0/db/db/LOCK` fixture collision; the affected vote cases pass when run independently.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

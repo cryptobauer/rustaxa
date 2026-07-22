@@ -253,6 +253,17 @@ class VerifiedVotes {
       rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts) const;
 
   /**
+   * Validates canonical PBFT vote bytes with Rust-owned FinalChain enrichment.
+   *
+   * Rust derives voter identity from the canonical bytes, resolves DPoS stake
+   * and the validator VRF key through `final_chain`, validates the proof, and
+   * returns an authoritative weighted payload without exposing those facts to C++.
+   */
+  rustaxa::PbftVoteRuntimeValidationResult validateCanonicalVoteWithFinalChain(
+      const rustaxa::BridgeFinalChain& final_chain, rust::Slice<const uint8_t> canonical_vote_rlp, bool strict_vrf,
+      uint64_t committee_size, uint64_t number_of_proposers) const;
+
+  /**
    * Returns flattened verified-vote objects from all indexed voted values.
    *
    * Invariants:

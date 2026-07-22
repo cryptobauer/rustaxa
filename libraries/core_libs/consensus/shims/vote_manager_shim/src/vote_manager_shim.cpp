@@ -1345,107 +1345,50 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     return {false, err_msg.str()};
   }
 
-  const uint64_t vote_period = inspection.period;
   const auto recovered_voter = fromBridgeAddress(inspection.recovered_voter);
-  auto external_facts = makeVoteValidationExternalFacts(strict, kPbftConfig);
+  rustaxa::PbftVoteRuntimeValidationResult validation_result{};
   rustaxa::PbftCanonicalVoteValidation validation{};
 
-  uint64_t voter_dpos_votes_count = 0;
-  uint64_t total_dpos_votes_count = 0;
-  rustaxa::PbftFinalChainFacts dpos_facts{};
   try {
-    dpos_facts = collectPbftDposFacts(final_chain_, vote_period - 1, true, {recovered_voter});
-    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status)) {
-      external_facts.future_dpos_state = true;
-      (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-      err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
-              << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-              << "). Err msg: "
-              << (dpos_facts.address_facts.empty()
-                      ? finalChainFactError(dpos_facts)
-                      : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts));
+    validation_result = verified_votes_.validateCanonicalVoteWithFinalChain(
+        final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), strict, kPbftConfig.committee_size,
+        kPbftConfig.number_of_proposers);
+    validation = validation_result.validation;
+
+    if (validation.status == kPbftVoteValidationStatusZeroStake) {
+      err_msg << "Invalid vote " << vote->getHash() << ": author " << recovered_voter << " has zero stake";
       return {false, err_msg.str()};
     }
-    voter_dpos_votes_count = dpos_facts.address_facts[0].vote_count;
-    external_facts.voter_dpos_ready = true;
-    external_facts.voter_dpos_vote_count = voter_dpos_votes_count;
-  } catch (...) {
-    external_facts.unknown_error = true;
-    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-    err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
-    return {false, err_msg.str()};
-  }
 
-  validation = verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
-  if (validation.status == kPbftVoteValidationStatusZeroStake) {
-    err_msg << "Invalid vote " << vote->getHash() << ": author " << recovered_voter << " has zero stake";
-    return {false, err_msg.str()};
-  }
-  if (validation.status == kPbftVoteValidationStatusInvalidVoteType) {
-    err_msg << "Invalid vote " << vote->getHash() << ": invalid PBFT vote type";
-    return {false, err_msg.str()};
-  }
-
-  try {
-    const auto pk = key_manager_->getVrfKey(vote_period - 1, recovered_voter);
-    external_facts.vrf_key_ready = true;
-    external_facts.has_vrf_key = pk != nullptr;
-    if (pk != nullptr) {
-      external_facts.vrf_public_key = pk->asArray();
+    if (validation.status == kPbftVoteValidationStatusInvalidVoteType) {
+      err_msg << "Invalid vote " << vote->getHash() << ": invalid PBFT vote type";
+      return {false, err_msg.str()};
     }
 
-    validation =
-        verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
     if (validation.status == kPbftVoteValidationStatusMissingVrfKey) {
       err_msg << "No vrf key mapped for vote author " << recovered_voter;
       return {false, err_msg.str()};
     }
+
     if (validation.status == kPbftVoteValidationStatusInvalidSignature) {
       err_msg << "Invalid vote " << vote->getHash() << ": invalid signature";
       return {false, err_msg.str()};
     }
+
     if (validation.status == kPbftVoteValidationStatusInvalidVrfProof) {
       err_msg << "Invalid vote " << vote->getHash() << ": invalid vrf proof";
       return {false, err_msg.str()};
     }
 
-    if (!finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
-      external_facts.future_dpos_state = true;
-      (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-      err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
-              << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-              << "). Err msg: " << finalChainFactError(dpos_facts);
-      return {false, err_msg.str()};
-    }
-    total_dpos_votes_count = dpos_facts.total_vote_count;
-    external_facts.total_dpos_ready = true;
-    external_facts.total_dpos_vote_count = total_dpos_votes_count;
-    validation =
-        verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts).validation;
-    if (!validation.has_sortition_threshold) {
-      throw std::runtime_error("Rust PBFT vote validation did not return a sortition threshold");
-    }
     if (validation.status == kPbftVoteValidationStatusZeroWeight) {
       err_msg << "Invalid vote " << vote->getHash() << ": zero weight";
       return {false, err_msg.str()};
     }
-    if (!validation.weight_calculated) {
-      throw std::runtime_error("Rust PBFT vote validation accepted validation facts without a calculated weight");
-    }
 
-    if (validation.calculated_weight == 0) {
-      throw std::runtime_error("Rust PBFT vote validation accepted a zero calculated weight");
-    }
-  } catch (state_api::ErrFutureBlock& e) {
-    external_facts.future_dpos_state = true;
-    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
-    err_msg << "Unable to validate vote " << vote->getHash() << " against dpos contract. It's period (" << vote_period
-            << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-            << "). Err msg: " << e.what();
+  } catch (const std::exception& e) {
+    err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation. " << e.what();
     return {false, err_msg.str()};
   } catch (...) {
-    external_facts.unknown_error = true;
-    (void)verified_votes_.validateCanonicalVote(toBridgeByteSlice(canonical_vote_rlp), external_facts);
     err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
     return {false, err_msg.str()};
   }
@@ -1454,14 +1397,32 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
     err_msg << "Invalid vote " << vote->getHash() << ": unknown error during validation";
     return {false, err_msg.str()};
   }
+  if (!validation.has_sortition_threshold) {
+    throw std::runtime_error("Rust PBFT vote validation accepted a vote without a sortition threshold");
+  }
+  if (!validation.weight_calculated) {
+    throw std::runtime_error("Rust PBFT vote validation accepted validation facts without a calculated weight");
+  }
+  if (!validation_result.has_weighted_vote || validation_result.weighted_vote_rlp.empty()) {
+    throw std::runtime_error("Rust PBFT vote validation accepted a vote without a weighted payload");
+  }
 
   if (!vote->getWeight().has_value()) {
-    if (!vote->calculateWeight(voter_dpos_votes_count, total_dpos_votes_count, validation.sortition_threshold)) {
+    if (validation.calculated_weight == 0) {
       err_msg << "Invalid vote " << vote->getHash() << ": zero weight";
       return {false, err_msg.str()};
     }
-  }
-  if (!vote->getWeight().has_value() || *vote->getWeight() != validation.calculated_weight) {
+    PbftVote weighted_vote(fromBridgeBytes(validation_result.weighted_vote_rlp));
+    if (weighted_vote.rlp(true, false) != fromBridgeBytes(canonical_vote_rlp) ||
+        weighted_vote.getHash() != vote->getHash() || weighted_vote.getBlockHash() != vote->getBlockHash() ||
+        weighted_vote.getPeriod() != vote->getPeriod() || weighted_vote.getRound() != vote->getRound() ||
+        weighted_vote.getStep() != vote->getStep() || weighted_vote.getType() != vote->getType() ||
+        weighted_vote.getVoterAddr() != vote->getVoterAddr() || !weighted_vote.getWeight().has_value() ||
+        *weighted_vote.getWeight() != validation.calculated_weight) {
+      throw std::runtime_error("Rust weighted PBFT vote payload mismatches the live vote identity");
+    }
+    *vote = std::move(weighted_vote);
+  } else if (*vote->getWeight() != validation.calculated_weight) {
     err_msg << "Invalid vote " << vote->getHash() << ": Rust calculated weight " << validation.calculated_weight
             << " mismatches live vote weight " << vote->getWeight().value_or(0);
     return {false, err_msg.str()};
@@ -1479,8 +1440,7 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
 
   rustaxa::PbftTwoTPlusOneThresholdPlan threshold_plan{};
   try {
-    threshold_plan =
-        verified_votes_.twoTPlusOneThresholdWithFinalChain(final_chain_->rustFinalChain(), threshold_fact);
+    threshold_plan = verified_votes_.twoTPlusOneThresholdWithFinalChain(final_chain_->rustFinalChain(), threshold_fact);
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Err msg: " << e.what()
                  << ". Rust composed threshold lookup failed";

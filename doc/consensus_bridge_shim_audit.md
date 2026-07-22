@@ -561,13 +561,20 @@ Current snapshot after DAG manager verify-result API cleanup:
   cache, borrows Rust FinalChain only on a cache miss that requests the exact-period DPoS total, then re-enters the
   planner without retaining either lock or handle. The operation-specific CXX request is narrowed to period, vote type,
   and committee configuration; PBFT-chain size, DPoS total, and readiness/error fields now exist only in the private
-  Rust planner fact. Generic FinalChain fact carriers remain live for
-  VoteManager validation/generation/sortition and PBFT-manager validation/eligibility until those operation families
+  Rust planner fact. Generic FinalChain fact carriers remain live for VoteManager generation/sortition and PBFT-manager
+  validation/eligibility until those operation families
   are composed. The dead non-composed `VerifiedVotes::twoTPlusOneThreshold` facade and
   `pbft_service_verified_votes_two_t_plus_one_threshold` CXX export are deleted; native Rust tests reach the private
   planner under the service mutex without retaining an external-state injection API.
   The CXX result is likewise narrowed to status, error code, threshold presence, and threshold value; sortition
   threshold, cache diagnostics, and the retired two-pass `needs_total_dpos_votes` signal remain Rust-private.
+- The VoteManager validation `CRW-09I` contraction removes `validateVote` as a consumer of generic
+  `PbftFinalChainFact*` carriers and the C++ `KeyManager`. One PBFT-service call accepts canonical vote bytes plus strict
+  VRF and committee configuration, releases its vote-state mutex for voter/total DPoS and exact/prior/next VRF-key
+  lookup through Rust FinalChain, and reacquires it only for address-key caching and terminal replay publication.
+  Successful validation returns canonical weighted vote RLP; C++ verifies the full identity and hydrates only its
+  temporary live sidecar. DPoS counts, keys, readiness flags, and sortition thresholds do not cross this composed
+  boundary. The generic carrier remains live for VoteManager generation/sortition and PBFT-manager consumers.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

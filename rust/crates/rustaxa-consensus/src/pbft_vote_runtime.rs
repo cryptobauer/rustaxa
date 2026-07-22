@@ -3,9 +3,10 @@
 //! This module is the stateful companion to the side-effect-free PBFT vote
 //! admission and progress planners. It owns the verified-vote index plus the
 //! canonical/weighted payload sidecar needed by storage and slashing effects.
-//! Callers still supply FinalChain/key validation facts and execute returned
-//! side effects at the boundary; the runtime owns the deterministic mutation
-//! ordering and the payload bytes derived from the admitted canonical vote.
+//! Bridge composition may enrich validation from FinalChain before entering
+//! this runtime; admission compatibility callers can still supply explicit
+//! validation facts. The runtime owns deterministic mutation ordering, replay
+//! and validator-key caches, and payload bytes derived from admitted votes.
 
 use std::collections::BTreeMap;
 
@@ -356,7 +357,9 @@ impl PbftVoteRuntimeCleanupPlan {
 ///
 /// The runtime owns deterministic verified-vote metadata and the byte payloads
 /// needed after admission. It does not own live C++ `PbftVote` objects, storage
-/// handles, network peers, or transaction submission.
+/// handles, network peers, or transaction submission. Its address-keyed VRF
+/// cache preserves validator-key lookup behavior for composed validation while
+/// keeping FinalChain access outside the runtime lock.
 #[derive(Debug, Clone)]
 pub struct PbftVoteAdmissionRuntime {
     verified_votes: VerifiedVotes,
@@ -365,6 +368,7 @@ pub struct PbftVoteAdmissionRuntime {
     payloads: BTreeMap<H256, PbftVoteRuntimePayload>,
     reward_vote_cursor: Option<RewardVoteCursor>,
     reward_vote_cursor_reset_generation: u64,
+    validation_vrf_keys: BTreeMap<[u8; 20], [u8; 32]>,
 }
 
 impl Default for PbftVoteAdmissionRuntime {
@@ -400,7 +404,23 @@ impl PbftVoteAdmissionRuntime {
             payloads: BTreeMap::new(),
             reward_vote_cursor: None,
             reward_vote_cursor_reset_generation: 0,
+            validation_vrf_keys: BTreeMap::new(),
         }
+    }
+
+    /// Returns the address-keyed VRF key cached by composed vote validation.
+    ///
+    /// The cache intentionally mirrors the legacy `KeyManager` lifetime: a
+    /// successfully resolved key is reused for that validator address until
+    /// the PBFT vote runtime is recreated.
+    #[must_use]
+    pub fn validation_vrf_key(&self, voter: [u8; 20]) -> Option<[u8; 32]> {
+        self.validation_vrf_keys.get(&voter).copied()
+    }
+
+    /// Publishes a successfully resolved validator VRF key for later validation.
+    pub fn cache_validation_vrf_key(&mut self, voter: [u8; 20], key: [u8; 32]) {
+        self.validation_vrf_keys.insert(voter, key);
     }
 
     /// Restores the authoritative vote runtime directly from native Rust storage.

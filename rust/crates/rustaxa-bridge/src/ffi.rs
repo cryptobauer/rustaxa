@@ -2443,6 +2443,10 @@ pub mod rustaxa_ffi {
         replay_should_mark: bool,
         replay_inserted: bool,
         replay_already_present: bool,
+        /// True when composed validation returned an authoritative weighted vote payload.
+        has_weighted_vote: bool,
+        /// Canonical legacy `PbftVote::rlp(true, true)` bytes on successful composed validation.
+        weighted_vote_rlp: Vec<u8>,
     }
 
     /// Rust-owned PBFT reward-vote materialization output.
@@ -5311,6 +5315,14 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             canonical_vote_rlp: &[u8],
             validation_facts: PbftVoteValidationExternalFacts,
+        ) -> Result<PbftVoteRuntimeValidationResult>;
+        pub fn pbft_service_verified_votes_validate_with_final_chain(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            canonical_vote_rlp: &[u8],
+            strict_vrf: bool,
+            committee_size: u64,
+            number_of_proposers: u64,
         ) -> Result<PbftVoteRuntimeValidationResult>;
         pub fn pbft_service_verified_votes_insert_unique_voter(
             self: &BridgePbftService,

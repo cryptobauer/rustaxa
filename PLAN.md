@@ -933,7 +933,9 @@ The current Rust consensus footprint is broad but still incomplete:
   `VoteManager::addVerifiedVote` execution, Rust-owned PBFT vote validation
   planning with replay-cache storage,
   canonical PBFT vote RLP inspection, signed/unsigned vote hashing, signature recovery, VRF proof verification,
-  Rust-computed received-vote weight, sortition-threshold calculation, Rust-owned PBFT `2t+1` threshold cache, local
+  Rust-composed received-vote enrichment through borrowed FinalChain state, address-keyed VRF-key fallback caching,
+  Rust-computed received-vote weight and canonical weighted-payload construction, sortition-threshold calculation,
+  Rust-owned PBFT `2t+1` threshold cache, local
   proposer-sortition screening, Rust-owned local PBFT vote byte generation/signing for canonical signed and weighted
   vote payloads with shim-side parity checks against temporary C++ live sidecars for the Rust-mode `VoteManager`
   overlay, and Rust-owned optimized PBFT vote-bundle construction from retained weighted payload records for

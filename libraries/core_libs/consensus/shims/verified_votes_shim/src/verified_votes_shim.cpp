@@ -237,13 +237,20 @@ bool VerifiedVotes::replayInsert(const vote_hash_t& vote_hash) const {
 rustaxa::PbftTwoTPlusOneThresholdPlan VerifiedVotes::twoTPlusOneThresholdWithFinalChain(
     const rustaxa::BridgeFinalChain& final_chain, const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const {
   return pbft_service_->service().pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(final_chain,
-                                                                                                         fact);
+                                                                                                        fact);
 }
 
 rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVote(
     rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts) const {
   return pbft_service_->service().pbft_service_verified_votes_validate_canonical_vote(canonical_vote_rlp,
                                                                                       validation_facts);
+}
+
+rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVoteWithFinalChain(
+    const rustaxa::BridgeFinalChain& final_chain, rust::Slice<const uint8_t> canonical_vote_rlp, bool strict_vrf,
+    uint64_t committee_size, uint64_t number_of_proposers) const {
+  return pbft_service_->service().pbft_service_verified_votes_validate_with_final_chain(
+      final_chain, canonical_vote_rlp, strict_vrf, committee_size, number_of_proposers);
 }
 
 std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::votes() const {

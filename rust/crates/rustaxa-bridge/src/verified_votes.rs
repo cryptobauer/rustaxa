@@ -42,7 +42,8 @@ use rustaxa_consensus::pbft_thresholds::{
 };
 use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactFlags as DomainPbftVoteEventFactFlags;
 use rustaxa_consensus::pbft_vote_payload::{
-    build_optimized_pbft_vote_bundle, PbftVotePayloadRecord as DomainPbftVotePayloadRecord,
+    build_optimized_pbft_vote_bundle, build_weighted_pbft_vote_payload,
+    PbftVotePayloadRecord as DomainPbftVotePayloadRecord,
 };
 use rustaxa_consensus::pbft_vote_storage::{
     clear_own_verified_votes, persist_pbft_vote_progress, save_own_verified_vote,
@@ -343,6 +344,8 @@ impl VerifiedVotesAccess<'_> {
             replay_should_mark: replay.should_mark,
             replay_inserted: replay.inserted,
             replay_already_present: replay.already_present,
+            has_weighted_vote: false,
+            weighted_vote_rlp: Vec::new(),
         })
     }
 
@@ -1242,6 +1245,142 @@ impl BridgePbftService {
             runtime,
             storage: self.storage.as_deref(),
         })
+    }
+
+    fn publish_vote_validation(
+        &self,
+        validation: PbftCanonicalVoteValidation,
+        weighted_vote_rlp: Vec<u8>,
+    ) -> Result<PbftVoteRuntimeValidationResult, anyhow::Error> {
+        let replay = self
+            .with_verified_votes(|votes| Ok(votes.runtime.record_validation_replay(&validation)))?;
+        Ok(PbftVoteRuntimeValidationResult {
+            status: validation.status.as_u8(),
+            error_code: validation.error_code.to_owned(),
+            accepted: validation.accepted,
+            rejected: validation.rejected,
+            validation: validation.into(),
+            replay_should_mark: replay.should_mark,
+            replay_inserted: replay.inserted,
+            replay_already_present: replay.already_present,
+            has_weighted_vote: !weighted_vote_rlp.is_empty(),
+            weighted_vote_rlp,
+        })
+    }
+
+    /// Validates one canonical PBFT vote against live Rust FinalChain state.
+    ///
+    /// The operation preserves legacy lookup order: voter DPoS stake first,
+    /// then the validator VRF key at the vote's DPoS block with prior/next
+    /// fallback, followed by total DPoS stake. Signature, VRF proof, threshold,
+    /// and weight validation execute without holding the verified-votes mutex;
+    /// that mutex is acquired only once to publish the resulting replay mark.
+    /// Future FinalChain state retains the existing non-replayable status,
+    /// while corrupt/missing ready state is reported as the existing unknown
+    /// error status.
+    pub fn pbft_service_verified_votes_validate_with_final_chain(
+        &self,
+        final_chain: &BridgeFinalChain,
+        canonical_vote_rlp: &[u8],
+        strict_vrf: bool,
+        committee_size: u64,
+        number_of_proposers: u64,
+    ) -> Result<PbftVoteRuntimeValidationResult, anyhow::Error> {
+        let inspection = inspect_canonical_pbft_vote(canonical_vote_rlp)?;
+        let mut facts = DomainPbftVoteValidationExternalFacts {
+            voter_dpos_ready: false,
+            voter_dpos_vote_count: 0,
+            total_dpos_ready: false,
+            total_dpos_vote_count: 0,
+            future_dpos_state: false,
+            unknown_error: false,
+            vrf_key_ready: false,
+            has_vrf_key: false,
+            vrf_public_key: [0; 32],
+            strict_vrf,
+            committee_size,
+            number_of_proposers,
+            has_preverified_weight: false,
+            preverified_weight: 0,
+        };
+
+        if inspection.status != PbftCanonicalVoteInspectionStatus::Valid {
+            return self.publish_vote_validation(
+                validate_canonical_pbft_vote(canonical_vote_rlp, facts)?,
+                Vec::new(),
+            );
+        }
+
+        let Some(dpos_period) = inspection.period.checked_sub(1) else {
+            facts.unknown_error = true;
+            return self.publish_vote_validation(
+                validate_canonical_pbft_vote(canonical_vote_rlp, facts)?,
+                Vec::new(),
+            );
+        };
+        let voter = inspection.recovered_voter.0;
+        match final_chain
+            .0
+            .pbft_dpos_eligible_vote_count(dpos_period, voter)
+        {
+            Ok(Some(votes)) => {
+                facts.voter_dpos_ready = true;
+                facts.voter_dpos_vote_count = votes;
+            }
+            Ok(None) => facts.future_dpos_state = true,
+            Err(_) => facts.unknown_error = true,
+        }
+        let validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+        if validation.rejected || facts.future_dpos_state || facts.unknown_error {
+            return self.publish_vote_validation(validation, Vec::new());
+        }
+
+        let cached_key =
+            self.with_verified_votes(|votes| Ok(votes.runtime.validation_vrf_key(voter)))?;
+        let mut key_lookup_error = false;
+        if let Some(key) = cached_key {
+            facts.has_vrf_key = true;
+            facts.vrf_public_key = key;
+        } else {
+            match final_chain.0.pbft_vrf_key_with_fallback(dpos_period, voter) {
+                Ok(Some(key)) => {
+                    facts.has_vrf_key = true;
+                    facts.vrf_public_key = key;
+                    self.with_verified_votes(|votes| {
+                        votes.runtime.cache_validation_vrf_key(voter, key);
+                        Ok(())
+                    })?;
+                }
+                Ok(None) => {}
+                Err(_) => key_lookup_error = true,
+            }
+        }
+        facts.vrf_key_ready = !key_lookup_error;
+        facts.unknown_error = key_lookup_error;
+        let validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+        if validation.rejected || facts.unknown_error {
+            return self.publish_vote_validation(validation, Vec::new());
+        }
+
+        match final_chain
+            .0
+            .pbft_dpos_eligible_total_vote_count(dpos_period)
+        {
+            Ok(Some(total)) => {
+                facts.total_dpos_ready = true;
+                facts.total_dpos_vote_count = total;
+            }
+            Ok(None) => facts.future_dpos_state = true,
+            Err(_) => facts.unknown_error = true,
+        }
+        let validation = validate_canonical_pbft_vote(canonical_vote_rlp, facts)?;
+        let weighted_vote_rlp = if validation.accepted && validation.weight_calculated {
+            build_weighted_pbft_vote_payload(canonical_vote_rlp, validation.calculated_weight)?
+                .vote_rlp
+        } else {
+            Vec::new()
+        };
+        self.publish_vote_validation(validation, weighted_vote_rlp)
     }
 
     /// Plans or resolves one PBFT `2t+1` threshold with Rust FinalChain composition.
@@ -2819,7 +2958,15 @@ mod tests {
     }
 
     fn final_chain_with_one_validator(storage: &BridgeStorage) -> Box<BridgeFinalChain> {
-        let address = [0x51; 20];
+        final_chain_with_validator(storage, [0x51; 20], [0x52; 32], 5_000)
+    }
+
+    fn final_chain_with_validator(
+        storage: &BridgeStorage,
+        address: [u8; 20],
+        vrf_key: [u8; 32],
+        stake: u64,
+    ) -> Box<BridgeFinalChain> {
         create_final_chain(
             storage,
             0,
@@ -2828,14 +2975,14 @@ mod tests {
             vec![rustaxa_ffi::GenesisValidator {
                 address,
                 owner: address,
-                vrf_key: [0x52; 32],
+                vrf_key,
                 commission: 0,
                 description: String::new(),
                 endpoint: String::new(),
-                total_stake: u256_be(5_000),
+                total_stake: u256_be(stake),
                 delegations: vec![rustaxa_ffi::GenesisDelegation {
                     delegator: address,
-                    stake: u256_be(5_000),
+                    stake: u256_be(stake),
                 }],
             }],
             rustaxa_ffi::GenesisDposConfig {
@@ -2875,10 +3022,20 @@ mod tests {
         vote_type: PbftVoteType,
         step: u64,
     ) -> rustaxa_consensus::PbftGeneratedVote {
+        generated_vote_at_period(block_hash, node_secret, vote_type, 12, step)
+    }
+
+    fn generated_vote_at_period(
+        block_hash: [u8; 32],
+        node_secret: [u8; 32],
+        vote_type: PbftVoteType,
+        period: u64,
+        step: u64,
+    ) -> rustaxa_consensus::PbftGeneratedVote {
         generate_pbft_vote(PbftVoteGenerationInput {
             block_hash: block_hash.into(),
             vote_type,
-            period: 12,
+            period,
             round: 2,
             step,
             node_secret,
@@ -2989,6 +3146,74 @@ mod tests {
             has_preverified_weight: false,
             preverified_weight: 0,
         }
+    }
+
+    #[test]
+    fn one_shot_vote_validation_uses_final_chain_and_marks_replay_once() {
+        let storage = temp_bridge_storage("one_shot_vote_validation");
+        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let vrf_key = vrf::public_key_from_secret(&VRF_SECRET).unwrap();
+        let final_chain = final_chain_with_validator(&storage, voter, vrf_key, 5_000);
+        let vote = generated_vote_at_period([0x71; 32], NODE_SECRET, PbftVoteType::Cert, 1, 3);
+
+        let first = service
+            .pbft_service_verified_votes_validate_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                true,
+                100,
+                20,
+            )
+            .unwrap();
+        assert_eq!(first.status, PbftVoteValidationStatus::Valid.as_u8());
+        assert!(first.accepted);
+        assert!(first.validation.weight_calculated);
+        assert!(first.validation.calculated_weight > 0);
+        assert!(first.replay_should_mark);
+        assert!(first.replay_inserted);
+        assert!(!first.replay_already_present);
+
+        let repeated = service
+            .pbft_service_verified_votes_validate_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                true,
+                100,
+                20,
+            )
+            .unwrap();
+        assert!(!repeated.replay_inserted);
+        assert!(repeated.replay_already_present);
+    }
+
+    #[test]
+    fn one_shot_vote_validation_stops_after_zero_voter_stake() {
+        let storage = temp_bridge_storage("one_shot_zero_stake");
+        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        let voter = voter_from_secret(&NODE_SECRET);
+        let final_chain = final_chain_with_validator(
+            &storage,
+            voter,
+            vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            500,
+        );
+        let vote = generated_vote_at_period([0x72; 32], NODE_SECRET, PbftVoteType::Cert, 1, 3);
+
+        let result = service
+            .pbft_service_verified_votes_validate_with_final_chain(
+                &final_chain,
+                &vote.vote_rlp,
+                true,
+                100,
+                20,
+            )
+            .unwrap();
+        assert_eq!(result.status, PbftVoteValidationStatus::ZeroStake.as_u8());
+        assert!(result.rejected);
+        assert!(!result.validation.vrf_valid);
+        assert!(!result.validation.weight_calculated);
+        assert!(result.replay_inserted);
     }
 
     fn runtime_flags() -> PbftVoteEventFactFlags {

@@ -227,6 +227,36 @@ TEST_F(VoteTest, rust_reward_vote_check_accepts_reverse_round_fallback) {
   EXPECT_TRUE(missing_votes.empty());
 }
 
+#ifdef RUSTAXA_ENABLE
+TEST_F(VoteTest, rust_validate_vote_composes_final_chain_and_hydrates_weight) {
+  auto node = create_nodes(1, true /*start*/).front();
+  auto vote_mgr = node->getVoteManager();
+  auto pbft_mgr = node->getPbftManager();
+  pbft_mgr->stop();
+
+  clearAllVotes({node});
+  const auto [current_round, current_period] = pbft_mgr->getPbftRoundAndPeriod();
+  const auto &wallet = node->getConfig().getFirstWallet();
+
+  auto weighted_vote = vote_mgr->generateVoteWithWeight(blk_hash_t(77), PbftVoteTypes::soft_vote, current_period,
+                                                        current_round, 2, wallet);
+  ASSERT_NE(weighted_vote, nullptr);
+  ASSERT_TRUE(weighted_vote->getWeight().has_value());
+  ASSERT_GT(*weighted_vote->getWeight(), 0);
+
+  auto unweighted_vote = std::make_shared<PbftVote>(weighted_vote->rlp(true, false));
+  ASSERT_FALSE(unweighted_vote->getWeight().has_value());
+  const auto [valid_unweighted, unweighted_err] = vote_mgr->validateVote(unweighted_vote);
+  EXPECT_TRUE(valid_unweighted) << unweighted_err;
+  ASSERT_TRUE(unweighted_vote->getWeight().has_value());
+  EXPECT_EQ(*unweighted_vote->getWeight(), *weighted_vote->getWeight());
+  EXPECT_EQ(unweighted_vote->rlp(true, true), weighted_vote->rlp(true, true));
+
+  const auto [valid_weighted, weighted_err] = vote_mgr->validateVote(weighted_vote);
+  EXPECT_TRUE(valid_weighted) << weighted_err;
+}
+#endif
+
 // Generate a vote, send the vote from node2 to node1
 TEST_F(VoteTest, transfer_vote) {
   auto node_cfgs = make_node_cfgs(2);
