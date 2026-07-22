@@ -287,7 +287,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09B` | `complete` | Establish the shared DPoS monetary prerequisite and persisted-encoding evidence. | `CRW-09A` | `DposTokenAmount(U256)` owns policy amounts; characterization proves valid mixed encodings, schema 5/6 self-delegation synthesis, arbitrary-width reward indexes, and explicitly tracked malformed-decoder debt. |
 | `CRW-09C` | `complete` | Type the complete FinalChain block-number lifecycle and PBFT-period conversion boundary. | `CRW-09A` | `FinalChainBlockNumber` owns head progression, hardfork heights, headers, historical reads, snapshots, native/external sessions, publication/recovery/audit, bloom endpoints, rewards heads, request identities, and bridge conversion. PBFT converts once at FinalChain admission; storage/RLP/CXX representations are unchanged; focused Rust coverage, Tier 1, FinalChain Tier 2, Tier 3 pure-C++ parity, and independent mapping review passed. |
 | `CRW-09D` | `complete` | Migrate the complete DPoS principal/custody ledger using shared `DposTokenAmount` plus private `StoredDposAmount` provenance. | `CRW-09B`; `CRW-09C` | Aggregate stake, delegation principal, V1/V2 custody and transitions, ABI reads, snapshots, malformed-input rejection, restart, and aggregate/ledger invariants are typed and parity-covered. |
-| `CRW-09E` | `ready` | Type redelegation correction amounts and their ordered hardfork application. | `CRW-09C`; `CRW-09D` | Corrections preserve configured order and activation semantics, update principal/aggregate/reward cursors atomically, and retain same-validator corruption policy and restart parity. |
+| `CRW-09E` | `complete` | Type redelegation correction amounts and their ordered hardfork application. | `CRW-09C`; `CRW-09D` | Corrections preserve configured order and activation semantics, validate the principal anchor and repair aggregate/reward-head state atomically, and retain same-validator corruption policy and restart parity. |
 | `CRW-09F` | `ready` | Type arbitrary-width reward-per-stake accumulators and delegation cursors. | `CRW-09D` | A distinct BigUint-backed reward-index domain owns validator accumulators and delegation cursors while regression policy, rounding, claims, persistence, and restart remain compatible. |
 | `CRW-09G` | `blocked` | Migrate reward pools and claim settlement using shared token amounts. | `CRW-09D`; `CRW-09F` | Commission/delegator pools, fee rewards, claims, account credits, cursor advancement, rollback, receipts, and restart use `DposTokenAmount` without changing reward-index semantics. |
 | `CRW-09H` | `blocked` | Type supply, minted rewards, and Aspen migration state. | `CRW-09C`; `CRW-09G` | Pre-/post-Aspen supply state is explicit; migration runs once; inconsistent persisted combinations fail closed; checked cap/reward arithmetic and accepted old schemas retain activation, publication, and restart parity. |
@@ -329,6 +329,15 @@ ledgers reject orphan validators, principal-sum overflow, and aggregate mismatch
 explicit historical same-validator corruption markers retain their established exceptions. ABI and snapshot shapes,
 CXX carriers, bridge exports, shims, and module flags are unchanged, so `CRW-07` has no inventory delta. `CRW-09E` and
 `CRW-09F` are now independently ready.
+
+`CRW-09E` types ordered hardfork correction amounts as the shared `DposTokenAmount` while retaining byte-vector CXX
+configuration carriers and converting once at bridge ingress. The exact-height transition now applies each configured
+entry in legacy order against a candidate DPoS snapshot: it validates the principal pair, repairs the stale reward head,
+subtracts only the historically inflated aggregate, and recomputes the validator vote count without changing principal,
+global vote total, history state, or corruption markers. Duplicate and later failures discard the entire candidate, so
+no partial aggregate, vote, or reward-graph mutation reaches publication. Oversized configuration amounts fail with an
+indexed stable error before FinalChain construction; ordering and duplicates remain intact. No snapshot/CXX shape,
+handle, export, shim, or module flag changed, so `CRW-07` has no inventory delta. `CRW-09F` remains ready.
 
 `CRW-08` current slice closes native DPoS delegate transaction receipt/state parity. Rust now charges top-level
 transaction intrinsic gas in addition to action gas for every Rust-native DPoS/slashing transaction while preserving

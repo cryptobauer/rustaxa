@@ -395,9 +395,10 @@ impl DposRewardGraph {
     }
 
     /// Corrects a stale validator head without changing stored counts.
-    /// The stale head may remain live when another delegation cursor retains
-    /// it; the affected delegation cursor must identify `head_block`, and the
-    /// target node must exist, preventing rebinding to an arbitrary orphan.
+    /// A stale node may remain live only while a delegation cursor retains it;
+    /// an unreferenced live stale node is conflicting validator state. The
+    /// affected cursor must identify an existing `head_block`, preventing
+    /// rebinding to an arbitrary orphan.
     pub fn rebind_stale_validator_head(
         &mut self,
         validator: Validator,

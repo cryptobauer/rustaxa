@@ -935,8 +935,8 @@ pub struct RedelegationCorrection {
     pub validator: [u8; 20],
     /// Delegator address whose historical redelegation is being corrected.
     pub delegator: [u8; 20],
-    /// Correction amount as an unsigned big-endian integer byte string.
-    pub amount: Vec<u8>,
+    /// Fungible stake removed from the historically inflated validator aggregate.
+    pub amount: DposTokenAmount,
 }
 
 /// Rewards and hardfork configuration used by Rust native finalization.

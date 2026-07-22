@@ -1390,8 +1390,10 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    delegation principal, and V1/V2 custody use that shared value plus a private consensus-owned persisted-encoding
    wrapper, preserving historical fixed/minimal bytes and fixed-width registration ingress while rejecting malformed
    persisted amounts before publication.
-   Redelegation corrections and arbitrary-width reward indexes are the next independently ready families; reward pools,
-   supply, and final adapter contraction remain dependency-ordered follow-ups. Temporary C++ `BlockStats` decoding
+   Ordered redelegation correction amounts now use the shared token domain and apply atomically through a candidate
+   snapshot while preserving aggregate-only legacy repair, principal, global votes, reward-head semantics, and restart.
+   Arbitrary-width reward indexes are the next ready family; reward pools, supply, and final adapter contraction remain
+   dependency-ordered follow-ups. Temporary C++ `BlockStats` decoding
    remains part of the accepted StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope
    gate.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

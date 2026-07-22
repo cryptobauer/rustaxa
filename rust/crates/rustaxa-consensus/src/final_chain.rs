@@ -57,7 +57,7 @@ use rustaxa_types::{
     FinalChainBlockNumber, FinalChainCallLog, FinalChainCallOutcome, FinalChainCallRequest,
     FinalChainGas, FinalChainNonce, FinalChainRewardsConfig, FinalChainTransactionPosition,
     FinalizationDagBlock, FinalizationTransaction, GenesisAccount, GenesisDposConfig,
-    GenesisValidator, RedelegationCorrection, StoredFinalChainBlockHeader,
+    GenesisValidator, StoredFinalChainBlockHeader,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -6942,44 +6942,44 @@ impl FinalChain {
         if block_number != self.rewards_config.fix_redelegate_block_num {
             return Ok(());
         }
-        for correction in self.rewards_config.redelegations.iter() {
-            let RedelegationCorrection {
-                validator,
-                delegator,
-                amount: _,
-            } = correction;
-            snapshot.total_stakes.get(validator).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Rust FinalChain::finalize DPoS hardfork redelegation validator does not exist"
-                )
-            })?;
-            snapshot
-                .delegations
-                .get(validator)
-                .and_then(|delegations| delegations.get(delegator))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Rust FinalChain::finalize DPoS hardfork redelegation delegator does not exist"
-                    )
-                })?;
-        }
+        let mut candidate = snapshot.clone();
         for correction in &self.rewards_config.redelegations {
-            let current_stake = snapshot
+            let current_stake = candidate
                 .total_stakes
                 .get(&correction.validator)
                 .map(StoredDposAmount::as_u256)
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "Rust FinalChain::finalize DPoS hardfork redelegation validator disappeared"
+                        "Rust FinalChain::finalize DPoS hardfork redelegation validator does not exist"
                     )
                 })?;
-            let amount = u256_from_big_endian(&correction.amount);
-            let new_stake = current_stake.checked_sub(amount).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Rust FinalChain::finalize DPoS hardfork redelegation underflows stake"
-                )
-            })?;
-            snapshot.total_stakes.insert(
+            candidate
+                .delegations
+                .get(&correction.validator)
+                .and_then(|delegations| delegations.get(&correction.delegator))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Rust FinalChain::finalize DPoS hardfork redelegation delegator does not exist"
+                    )
+                })?;
+            let affected_cursor_block = candidate
+                .reward_reference_graph
+                .read_cursor(&correction.validator, &correction.delegator)?;
+            candidate
+                .reward_reference_graph
+                .rebind_stale_validator_head(
+                    correction.validator,
+                    correction.delegator,
+                    affected_cursor_block,
+                )?;
+            let new_stake = current_stake
+                .checked_sub(correction.amount.as_u256())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Rust FinalChain::finalize DPoS hardfork redelegation underflows stake"
+                    )
+                })?;
+            candidate.total_stakes.insert(
                 correction.validator,
                 StoredDposAmount::canonical_u256_after_mutation(new_stake),
             );
@@ -6989,20 +6989,11 @@ impl FinalChain {
                 self.dpos_vote_eligibility_balance_step,
                 self.dpos_validator_maximum_stake,
             )?;
-            snapshot
+            candidate
                 .vote_counts
                 .insert(correction.validator, corrected_vote_count);
-            let affected_cursor_block = snapshot
-                .reward_reference_graph
-                .read_cursor(&correction.validator, &correction.delegator)?;
-            snapshot
-                .reward_reference_graph
-                .rebind_stale_validator_head(
-                    correction.validator,
-                    correction.delegator,
-                    affected_cursor_block,
-                )?;
         }
+        *snapshot = candidate;
         Ok(())
     }
 
@@ -11350,7 +11341,7 @@ mod tests {
     use k256::ecdsa::SigningKey;
     use rlp::{Rlp, RlpStream};
     use rustaxa_storage::{Column, Config};
-    use rustaxa_types::GenesisValidatorMetadata;
+    use rustaxa_types::{GenesisValidatorMetadata, RedelegationCorrection};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -29563,6 +29554,102 @@ mod tests {
     }
 
     #[test]
+    fn redelegate_corrections_are_ordered_atomic_and_preserve_principal_policy() {
+        let path = temp_db_path("redelegate-correction-transition");
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let mut final_chain = new_final_chain(storage.clone(), 200_000, 0, vec![], vec![]);
+        let validator = [0x22; 20];
+        let delegator = [0x11; 20];
+        final_chain.rewards_config.fix_redelegate_block_num = 2.into();
+        final_chain.rewards_config.redelegations = vec![RedelegationCorrection {
+            validator,
+            delegator,
+            amount: DposTokenAmount::from(U256::from(1_000u64)),
+        }];
+
+        let mut snapshot = sample_dpos_snapshot_with_undelegations();
+        snapshot
+            .reward_reference_graph
+            .write_cursor(validator, delegator, 1)
+            .unwrap();
+        snapshot
+            .reward_reference_graph
+            .overwrite_validator_head_stale(validator, 0)
+            .unwrap();
+        snapshot
+            .redelegate_same_validator_corruption
+            .insert(validator);
+        let before_activation = snapshot.clone();
+        final_chain
+            .apply_redelegate_hardfork_corrections(&mut snapshot, 1.into())
+            .unwrap();
+        assert_eq!(snapshot, before_activation);
+
+        final_chain
+            .apply_redelegate_hardfork_corrections(&mut snapshot, 2.into())
+            .unwrap();
+        assert_eq!(
+            snapshot.total_stakes[&validator].as_u256(),
+            U256::from(9_000u64)
+        );
+        assert_eq!(
+            snapshot.delegations[&validator][&delegator].as_u256(),
+            U256::from(10_000u64),
+            "the hardfork fixes aggregate inflation without changing principal"
+        );
+        assert_eq!(snapshot.vote_counts[&validator], 0);
+        assert_eq!(snapshot.total_vote_count, 7);
+        assert!(
+            snapshot
+                .redelegate_same_validator_corruption
+                .contains(&validator)
+        );
+
+        final_chain.rewards_config.redelegations = vec![
+            RedelegationCorrection {
+                validator,
+                delegator,
+                amount: DposTokenAmount::from(U256::one()),
+            },
+            RedelegationCorrection {
+                validator,
+                delegator,
+                amount: DposTokenAmount::from(U256::from(20_000u64)),
+            },
+        ];
+        snapshot = before_activation.clone();
+        assert!(
+            final_chain
+                .apply_redelegate_hardfork_corrections(&mut snapshot, 2.into())
+                .unwrap_err()
+                .to_string()
+                .contains("missing stale head marker")
+        );
+        assert_eq!(
+            snapshot, before_activation,
+            "a duplicate correction failure must not publish the first correction"
+        );
+
+        final_chain.rewards_config.redelegations = vec![RedelegationCorrection {
+            validator,
+            delegator,
+            amount: DposTokenAmount::from(U256::from(20_000u64)),
+        }];
+        assert!(
+            final_chain
+                .apply_redelegate_hardfork_corrections(&mut snapshot, 2.into())
+                .unwrap_err()
+                .to_string()
+                .contains("underflows stake")
+        );
+        assert_eq!(snapshot, before_activation);
+
+        drop(final_chain);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
     fn finalize_block_applies_redelegate_correction_at_activation_block() {
         let path = temp_db_path("finalize-dpos-redelegate-hardfork-fix");
         let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
@@ -29657,7 +29744,7 @@ mod tests {
             redelegations: vec![RedelegationCorrection {
                 validator,
                 delegator: validator,
-                amount: u256_to_big_endian(U256::from(1_000u64)),
+                amount: DposTokenAmount::from(U256::from(1_000u64)),
             }],
             ..Default::default()
         };
@@ -29745,6 +29832,11 @@ mod tests {
         assert_eq!(snapshot_two.total_vote_count, 1);
         assert_eq!(snapshot_two.vote_counts.get(&validator), Some(&1));
         assert_eq!(
+            snapshot_two.delegations[&validator][&validator].as_u256(),
+            U256::from(5_000u64),
+            "the fix-block correction must not subtract authoritative principal"
+        );
+        assert_eq!(
             snapshot_two
                 .delegator_rewards
                 .get(&validator)
@@ -29815,6 +29907,10 @@ mod tests {
         assert_eq!(
             snapshot_three_after_restart.vote_counts.get(&validator),
             Some(&1)
+        );
+        assert_eq!(
+            snapshot_three_after_restart.delegations[&validator][&validator].as_u256(),
+            U256::from(5_000u64)
         );
         assert!(
             snapshot_three_after_restart

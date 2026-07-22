@@ -4310,6 +4310,26 @@ Focused FinalChain tests, all 801 `rustaxa-consensus` library tests, `make rewri
 gate, the Tier 3 Rust-enabled/pure-C++ parity gate, the bridge inventory guard, formatting, and whitespace validation
 passed. `CRW-09E` and `CRW-09F` are now independently ready; `CRW-07` has no delta.
 
+### CRW-09E Ordered Redelegation Corrections
+
+`CRW-09E` changes the cross-crate hardfork correction amount from raw bytes to the existing shared
+`DposTokenAmount(U256)`. The CXX carrier remains a byte vector; the bridge validates every amount once, reports the
+configured index for oversized values, and preserves vector order and duplicates. No persistence provenance is attached
+because correction amounts are configuration values rather than snapshot fields.
+
+At the exact activation height, corrections execute in configured legacy order against a cloned candidate snapshot.
+Each entry validates its validator/principal pair, rebinds the stale reward head to the configured delegator cursor,
+subtracts only the historically inflated aggregate, and recomputes that validator's vote count. Delegation principal,
+global eligible-vote total, history completeness, and same-validator corruption markers remain unchanged. The candidate
+is published only after every entry succeeds, so duplicate stale-head failures, later arithmetic failures, and malformed
+reward topology cannot expose partial aggregate, vote, or graph changes. Normal FinalChain batch persistence and the
+exact-height gate provide restart durability without reapplication.
+
+Focused type/bridge/transition/restart tests, all 58 `rustaxa-types`, 802 `rustaxa-consensus`, and 347
+`rustaxa-bridge` library tests, `make rewrite-validate-fast`, the FinalChain Tier 2 gate, and the Tier 3
+Rust-enabled/pure-C++ parity gate passed. No CXX shape, handle, export, shim, module flag, or inventory entry changed;
+`CRW-07` has no delta and `CRW-09F` remains ready.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

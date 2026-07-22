@@ -517,6 +517,32 @@ fn genesis_dpos_config_from_ffi(
     })
 }
 
+/// Converts ordered FFI hardfork corrections into typed Rust configuration.
+///
+/// Vector order and duplicate entries are consensus-significant and are
+/// retained exactly. Amounts wider than `U256` fail construction before a
+/// FinalChain instance is published.
+fn redelegation_corrections_from_ffi(
+    corrections: Vec<rustaxa_ffi::RedelegationCorrection>,
+) -> Result<Vec<rustaxa_consensus::RedelegationCorrection>, anyhow::Error> {
+    corrections
+        .into_iter()
+        .enumerate()
+        .map(|(index, correction)| {
+            Ok(rustaxa_consensus::RedelegationCorrection {
+                validator: correction.validator,
+                delegator: correction.delegator,
+                amount: rustaxa_types::DposTokenAmount::try_from_be_slice(&correction.amount)
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256: field=redelegations[{index}].amount"
+                        )
+                    })?,
+            })
+        })
+        .collect()
+}
+
 pub fn create_final_chain_with_rewards_config(
     storage: &BridgeStorage,
     block_gas_limit: u64,
@@ -594,15 +620,7 @@ pub fn create_final_chain_with_rewards_config(
                 .into_iter()
                 .map(|rule| (rule.from_period.into(), rule.frequency))
                 .collect(),
-            redelegations: rewards_config
-                .redelegations
-                .into_iter()
-                .map(|correction| rustaxa_consensus::RedelegationCorrection {
-                    validator: correction.validator,
-                    delegator: correction.delegator,
-                    amount: correction.amount,
-                })
-                .collect(),
+            redelegations: redelegation_corrections_from_ffi(rewards_config.redelegations)?,
         },
     )?;
     Ok(Box::new(BridgeFinalChain(final_chain)))
@@ -1248,6 +1266,67 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256"
+        );
+    }
+
+    fn ffi_redelegation_correction(
+        validator_byte: u8,
+        delegator_byte: u8,
+        amount: Vec<u8>,
+    ) -> rustaxa_ffi::RedelegationCorrection {
+        rustaxa_ffi::RedelegationCorrection {
+            validator: [validator_byte; 20],
+            delegator: [delegator_byte; 20],
+            amount,
+        }
+    }
+
+    #[test]
+    fn redelegation_corrections_accept_u256_widths_and_preserve_order_and_duplicates() {
+        let full_width = {
+            let mut bytes = vec![0; 32];
+            bytes[0] = 1;
+            bytes
+        };
+        let corrections = vec![
+            ffi_redelegation_correction(0x10, 0x20, vec![]),
+            ffi_redelegation_correction(0x11, 0x21, vec![0x2a]),
+            ffi_redelegation_correction(0x12, 0x22, full_width),
+            ffi_redelegation_correction(0x13, 0x23, vec![0xff; 32]),
+            ffi_redelegation_correction(0x11, 0x21, vec![0x2a]),
+        ];
+
+        let converted = redelegation_corrections_from_ffi(corrections)
+            .expect("all U256-width correction amounts should be accepted");
+
+        assert_eq!(converted.len(), 5);
+        assert_eq!(converted[0].validator, [0x10; 20]);
+        assert_eq!(converted[0].delegator, [0x20; 20]);
+        assert_eq!(converted[0].amount.as_u256(), U256::zero());
+        assert_eq!(converted[1].validator, [0x11; 20]);
+        assert_eq!(converted[1].delegator, [0x21; 20]);
+        assert_eq!(converted[1].amount.as_u256(), U256::from(0x2a));
+        assert_eq!(converted[2].validator, [0x12; 20]);
+        assert_eq!(converted[2].delegator, [0x22; 20]);
+        assert_eq!(converted[2].amount.as_u256(), U256::one() << 248);
+        assert_eq!(converted[3].validator, [0x13; 20]);
+        assert_eq!(converted[3].delegator, [0x23; 20]);
+        assert_eq!(converted[3].amount.as_u256(), U256::MAX);
+        assert_eq!(converted[4], converted[1]);
+    }
+
+    #[test]
+    fn redelegation_corrections_reject_oversized_amount_with_indexed_error() {
+        let corrections = vec![
+            ffi_redelegation_correction(0x10, 0x20, vec![1]),
+            ffi_redelegation_correction(0x11, 0x21, vec![0xff; 33]),
+        ];
+
+        assert_eq!(
+            redelegation_corrections_from_ffi(corrections)
+                .expect_err("33-byte correction amount should be rejected")
+                .to_string(),
+            "FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256: field=redelegations[1].amount"
         );
     }
 
