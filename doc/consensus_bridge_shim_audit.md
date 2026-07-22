@@ -587,7 +587,16 @@ Current snapshot after DAG manager verify-result API cleanup:
   verification, threshold selection, and weight calculation private in Rust. C++ consumes only the typed terminal
   status, stable error code, and accepted bit. The obsolete `PbftProposerSortitionFact` and
   `PbftProposerSortitionPlan` CXX carriers and `pbft_proposer_sortition_plan` free export are deleted. The generic
-  carrier remains live for VoteManager admission compatibility and PBFT-manager consumers.
+  carrier remains live for the subsequently composed VoteManager admission path and PBFT-manager consumers at this
+  historical point in the contraction sequence.
+- The VoteManager admission `CRW-09I` contraction removes the last VoteManager consumer of generic
+  `PbftFinalChainFact*` carriers and the C++ `KeyManager`. The composed service accepts canonical vote bytes and a plain
+  policy/preverified-weight request, inspects the vote before external reads, resolves voter stake and VRF key before
+  total stake, and enters the verified-vote mutex only for transactional admission and publication. Trusted preverified
+  weight skips admission-validation voter-stake, VRF-key, and total-stake reads; the earlier threshold composition may
+  still read FinalChain on a cache miss. The CXX `PbftVoteValidationExternalFacts` carrier, low-level
+  validate/admit exports and facade, and shim-local generic-fact/status helpers are deleted; the equivalent facts remain
+  consensus-owned for native validation. Generic FinalChain facts now remain only for PBFT-manager consumers.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

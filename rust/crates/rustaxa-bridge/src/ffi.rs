@@ -2502,17 +2502,8 @@ pub mod rustaxa_ffi {
         embedded_weight: u64,
     }
 
-    /// External node-state facts used by Rust canonical PBFT vote validation.
-    struct PbftVoteValidationExternalFacts {
-        voter_dpos_ready: bool,
-        voter_dpos_vote_count: u64,
-        total_dpos_ready: bool,
-        total_dpos_vote_count: u64,
-        future_dpos_state: bool,
-        unknown_error: bool,
-        vrf_key_ready: bool,
-        has_vrf_key: bool,
-        vrf_public_key: [u8; 32],
+    /// External request facts used for FinalChain-backed PBFT admission.
+    struct PbftVoteAdmissionValidationRequest {
         strict_vrf: bool,
         committee_size: u64,
         number_of_proposers: u64,
@@ -5300,11 +5291,6 @@ pub mod rustaxa_ffi {
             final_chain: &BridgeFinalChain,
             fact: PbftTwoTPlusOneThresholdFact,
         ) -> Result<PbftTwoTPlusOneThresholdPlan>;
-        pub fn pbft_service_verified_votes_validate_canonical_vote(
-            self: &BridgePbftService,
-            canonical_vote_rlp: &[u8],
-            validation_facts: PbftVoteValidationExternalFacts,
-        ) -> Result<PbftVoteRuntimeValidationResult>;
         pub fn pbft_service_verified_votes_validate_with_final_chain(
             self: &BridgePbftService,
             final_chain: &BridgeFinalChain,
@@ -5313,6 +5299,14 @@ pub mod rustaxa_ffi {
             committee_size: u64,
             number_of_proposers: u64,
         ) -> Result<PbftVoteRuntimeValidationResult>;
+        pub fn pbft_service_verified_votes_admit_and_persist_with_final_chain(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            canonical_vote_rlp: &[u8],
+            validation_request: PbftVoteAdmissionValidationRequest,
+            flags: PbftVoteEventFactFlags,
+            context: PbftVoteProgressContext,
+        ) -> Result<PbftVoteAdmissionRuntimeResult>;
         pub fn pbft_service_verified_votes_insert_unique_voter(
             self: &BridgePbftService,
             vote: VerifiedVotePayload,
@@ -5385,13 +5379,6 @@ pub mod rustaxa_ffi {
             two_t_plus_one_threshold: u64,
             apply_threshold_decision: bool,
         ) -> Result<VerifiedVoteAddOutcome>;
-        pub fn pbft_service_verified_votes_admit_and_persist(
-            self: &BridgePbftService,
-            canonical_vote_rlp: &[u8],
-            validation_facts: PbftVoteValidationExternalFacts,
-            flags: PbftVoteEventFactFlags,
-            context: PbftVoteProgressContext,
-        ) -> Result<PbftVoteAdmissionRuntimeResult>;
         pub fn pbft_service_verified_votes_weighted_payload(
             self: &BridgePbftService,
             vote_hash: &[u8; 32],

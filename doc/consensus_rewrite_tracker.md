@@ -316,8 +316,13 @@ proposer count, and wallet identity material to one PBFT-service call. Rust vali
 borrowing FinalChain, reads voter stake before total stake, generates and verifies the canonical proposer VRF proof for
 `[period, round, 1]`, and calculates the legacy-compatible weight without exposing proof, output, threshold, or DPoS
 facts to C++. The obsolete `PbftProposerSortitionFact`/`PbftProposerSortitionPlan` CXX carriers and free planner export
-are deleted. Generic `PbftFinalChainFact*` carriers remain live for VoteManager admission compatibility and PBFT-manager
-consumers, so `CRW-09I` remains active.
+are deleted. Vote admission is composed as well: C++ supplies canonical bytes plus a narrow admission-policy request,
+and Rust inspects the vote, resolves voter stake and VRF key before total stake, validates, and transactionally publishes
+the admission without holding the verified-vote mutex across FinalChain reads. Preverified weighted votes skip the
+admission-validation voter-stake, VRF-key, and total-stake reads; the separately composed threshold lookup may still
+read FinalChain on a cache miss. The old CXX external-facts carrier, low-level validation/admission exports, C++ KeyManager member,
+and VoteManager generic-fact helpers are deleted. Generic `PbftFinalChainFact*` carriers now remain live only for
+PBFT-manager consumers, so `CRW-09I` remains active.
 
 The current `CRW-09` slice replaces raw Rust account-balance bytes with a `U256` domain value plus one private encoding-
 provenance bit. Untouched genesis accounts retain their fixed 32-byte lookup and snapshot representation, while new or

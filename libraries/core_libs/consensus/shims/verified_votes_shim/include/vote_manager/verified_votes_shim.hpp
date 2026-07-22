@@ -262,23 +262,6 @@ class VerifiedVotes {
       const rustaxa::BridgeFinalChain& final_chain, const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const;
 
   /**
-   * Validates canonical PBFT vote bytes through the unified Rust vote runtime.
-   *
-   * Inputs:
-   * - `canonical_vote_rlp`: signed unweighted PBFT vote bytes.
-   * - `validation_facts`: FinalChain/key/config facts supplied by `VoteManager`.
-   *
-   * Outputs:
-   * - Rust validation result plus explicit replay-cache mutation facts.
-   *
-   * Invariants:
-   * - Replay marking is applied inside the same Rust runtime that owns
-   *   admission and verified-vote state.
-   */
-  rustaxa::PbftVoteRuntimeValidationResult validateCanonicalVote(
-      rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts) const;
-
-  /**
    * Validates canonical PBFT vote bytes with Rust-owned FinalChain enrichment.
    *
    * Rust derives voter identity from the canonical bytes, resolves DPoS stake
@@ -453,26 +436,35 @@ class VerifiedVotes {
 
   /**
    * Runs one Rust-owned PBFT vote admission transition against this facade's
-   * verified-vote runtime.
+   * verified-vote runtime while composing FinalChain facts in Rust.
    *
    * Inputs:
+   * - `final_chain`: borrowed FinalChain handle used by Rust for DPoS and VRF
+   *   lookups.
    * - `canonical_vote_rlp`: signed unweighted vote bytes for the incoming vote.
-   * - `validation_facts`: FinalChain/key facts collected by `VoteManager`.
+   * - `validation_request`: admission-specific facts, including whether the vote
+   *   was preverified with weight.
    * - `flags`: ingress and reward-vote flags for progress planning.
    * - `context`: current PBFT period/round and optional 2t+1 threshold facts.
    *
    * Outputs:
-   * - A flat Rust mutation/executor report with validation, replay, insertion, durable publication status,
-   *   peer-known, proposed-block sidecar, gossip, slashing, threshold, and PBFT-progress intents.
+   * - A flat Rust mutation/executor report with validation, replay, insertion,
+   *   durable publication status, peer-known, proposed-block sidecar, gossip,
+   *   slashing, threshold, and PBFT-progress intents.
    *
    * Invariants:
-   * - Rust persists required progress payloads before publishing the transition or any external intent.
+   * - Rust owns FinalChain composition, while this facade only relays the
+   *   admission request and mutates no legacy state.
+   * - Rust persists required progress payloads before publishing the transition or any
+   *   external intent.
    * - Storage rejection leaves the transition unpublished and suppresses all external intents.
-   * - The call does not execute network or slashing side effects; callers may execute them only after publication.
+   * - The call does not execute network or slashing side effects; callers may execute
+   *   them only after publication.
    */
   rustaxa::PbftVoteAdmissionRuntimeResult admitAndPersistValidatedVote(
-      rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
-      rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context);
+      const rustaxa::BridgeFinalChain& final_chain, rust::Slice<const uint8_t> canonical_vote_rlp,
+      rustaxa::PbftVoteAdmissionValidationRequest validation_request, rustaxa::PbftVoteEventFactFlags flags,
+      rustaxa::PbftVoteProgressContext context);
 
   /**
    * Sets `network_t_plus_one_step` for vote's (`period`, `round`) entry when present.

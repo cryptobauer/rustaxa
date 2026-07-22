@@ -53,7 +53,6 @@ constexpr uint8_t kPbftVoteAdmissionPersistenceNotRequired = 0;
 constexpr uint8_t kPbftVoteAdmissionPersistenceApplied = 1;
 constexpr uint8_t kPbftVoteAdmissionPersistenceRejected = 2;
 constexpr uint8_t kPbftTwoTPlusOneThresholdStatusAvailable = 0;
-constexpr uint8_t kPbftFinalChainFactStatusReady = 0;
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t& hash) { return hash.asArray(); }
 
@@ -98,37 +97,6 @@ dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) {
 
 rust::Slice<const uint8_t> toBridgeByteSlice(const rust::Vec<uint8_t>& bytes) {
   return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
-}
-
-rustaxa::PbftFinalChainFacts collectPbftDposFacts(const std::shared_ptr<final_chain::FinalChain>& final_chain,
-                                                  PbftPeriod dpos_period, bool collect_total_vote_count,
-                                                  const std::vector<addr_t>& addresses) {
-  rustaxa::PbftFinalChainFactRequest request{};
-  request.period = dpos_period;
-  request.collect_total_vote_count = collect_total_vote_count;
-  request.collect_address_vote_counts = !addresses.empty();
-  request.addresses.reserve(addresses.size());
-  for (const auto& address : addresses) {
-    request.addresses.push_back(rustaxa::PbftFinalChainFactAddress{toBridgeAddress(address)});
-  }
-  return final_chain->collectPbftFinalChainFacts(std::move(request));
-}
-
-bool finalChainFactReady(uint8_t status) { return status == kPbftFinalChainFactStatusReady; }
-
-std::string finalChainFactError(const rustaxa::PbftFinalChainFacts& facts) {
-  if (!facts.error_code.empty()) {
-    return static_cast<std::string>(facts.error_code);
-  }
-  return "PBFT_FINAL_CHAIN_FACTS_UNAVAILABLE";
-}
-
-std::string finalChainAddressFactError(const rustaxa::PbftFinalChainAddressFact& fact,
-                                       const rustaxa::PbftFinalChainFacts& facts) {
-  if (!fact.error_code.empty()) {
-    return static_cast<std::string>(fact.error_code);
-  }
-  return finalChainFactError(facts);
 }
 
 rustaxa::PbftFinalizedPeriodApplyResult rewardResetResult(uint8_t status, PbftPeriod period,
@@ -307,12 +275,21 @@ rustaxa::PbftVoteProgressContext makeVoteProgressContext(PbftPeriod current_peri
   return context;
 }
 
-rustaxa::PbftVoteValidationExternalFacts makeVoteValidationExternalFacts(bool strict, const PbftConfig& config) {
-  rustaxa::PbftVoteValidationExternalFacts facts{};
-  facts.strict_vrf = strict;
-  facts.committee_size = config.committee_size;
-  facts.number_of_proposers = config.number_of_proposers;
-  return facts;
+rustaxa::PbftVoteAdmissionValidationRequest makeVoteAdmissionValidationRequest(const std::shared_ptr<PbftVote>& vote,
+                                                                               const PbftConfig& config) {
+  if (!vote) {
+    throw std::runtime_error("VoteManager cannot build PBFT vote admission request without a vote");
+  }
+
+  rustaxa::PbftVoteAdmissionValidationRequest request{};
+  request.strict_vrf = true;
+  request.committee_size = config.committee_size;
+  request.number_of_proposers = config.number_of_proposers;
+  if (vote->getWeight().has_value()) {
+    request.has_preverified_weight = true;
+    request.preverified_weight = *vote->getWeight();
+  }
+  return request;
 }
 
 rustaxa::PbftProposerSortitionRequest makeProposerSortitionRequest(PbftPeriod pbft_period, PbftRound pbft_round,
@@ -435,10 +412,10 @@ VoteManager::VoteManager(const FullNodeConfig& config, SharedPbftService pbft_se
     : kPbftConfig(config.genesis.pbft),
       pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),
-      key_manager_(std::move(key_manager)),
       slashing_manager_(std::move(slashing_manager)),
       pbft_service_(std::move(pbft_service)),
       verified_votes_(dev::toAddress(config.getFirstWallet().node_secret), pbft_service_) {
+  (void)key_manager;
   const auto node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("VOTE_MGR");
 }
@@ -586,55 +563,18 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     throw std::runtime_error("VoteManager Rust PBFT vote admission inspection mismatched live vote sidecar");
   }
 
-  auto external_facts = makeVoteValidationExternalFacts(true, kPbftConfig);
-  const auto recovered_voter = fromBridgeAddress(inspection.recovered_voter);
+  auto admission_request = makeVoteAdmissionValidationRequest(vote, kPbftConfig);
   const auto preverified_weight = vote->getWeight();
   if (preverified_weight.has_value()) {
     if (*preverified_weight == 0) {
       LOG(log_er_) << "Unable to add vote " << hash << " into the verified queue. Invalid vote weight";
       return report;
     }
-    external_facts.has_preverified_weight = true;
-    external_facts.preverified_weight = *preverified_weight;
-  } else {
-    try {
-      const auto dpos_facts = collectPbftDposFacts(final_chain_, vote->getPeriod() - 1, true, {recovered_voter});
-      if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status) ||
-          !finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
-        external_facts.future_dpos_state = true;
-        const auto error = dpos_facts.address_facts.empty()
-                               ? finalChainFactError(dpos_facts)
-                               : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts);
-        LOG(log_er_) << "Unable to admit vote " << hash << " against dpos contract. Its period (" << vote->getPeriod()
-                     << ") is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-                     << "). Err msg: " << error;
-        return report;
-      }
-      external_facts.voter_dpos_vote_count = dpos_facts.address_facts[0].vote_count;
-      external_facts.voter_dpos_ready = true;
-
-      const auto pk = key_manager_->getVrfKey(vote->getPeriod() - 1, recovered_voter);
-      external_facts.vrf_key_ready = true;
-      external_facts.has_vrf_key = pk != nullptr;
-      if (pk != nullptr) {
-        external_facts.vrf_public_key = pk->asArray();
-      }
-
-      external_facts.total_dpos_vote_count = dpos_facts.total_vote_count;
-      external_facts.total_dpos_ready = true;
-    } catch (const std::exception& e) {
-      external_facts.unknown_error = true;
-      LOG(log_er_) << "Unable to admit vote " << hash << ". Err msg: " << e.what();
-      return report;
-    } catch (...) {
-      external_facts.unknown_error = true;
-      LOG(log_er_) << "Unable to admit vote " << hash << ". Unknown error";
-      return report;
-    }
   }
 
   const auto runtime_result = verified_votes_.admitAndPersistValidatedVote(
-      toBridgeByteSlice(canonical_vote_rlp), external_facts, makeVoteEventFactFlags(), progress_context);
+      final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), std::move(admission_request),
+      makeVoteEventFactFlags(), progress_context);
   if (runtime_result.persistence_status == kPbftVoteAdmissionPersistenceRejected) {
     std::stringstream err;
     err << "Rust PBFT vote admission persistence rejected vote " << hash << ": "
@@ -685,6 +625,21 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     return report;
   }
   requireRuntimeAdmissionVoteMatches(runtime_result.vote, vote, runtime_result.validation.calculated_weight);
+  if (!preverified_weight.has_value()) {
+    auto weighted_record = rustaxa::pbft_vote_weighted_payload_from_canonical_vote(
+        toBridgeByteSlice(canonical_vote_rlp), runtime_result.validation.calculated_weight);
+    PbftVote weighted_vote(fromBridgeBytes(weighted_record.vote_rlp));
+    if (weighted_record.hash != toBridgeHash(vote->getHash()) ||
+        weighted_vote.rlp(true, false) != fromBridgeBytes(canonical_vote_rlp) ||
+        weighted_vote.getHash() != vote->getHash() || weighted_vote.getBlockHash() != vote->getBlockHash() ||
+        weighted_vote.getPeriod() != vote->getPeriod() || weighted_vote.getRound() != vote->getRound() ||
+        weighted_vote.getStep() != vote->getStep() || weighted_vote.getType() != vote->getType() ||
+        weighted_vote.getVoterAddr() != vote->getVoterAddr() || !weighted_vote.getWeight().has_value() ||
+        *weighted_vote.getWeight() != runtime_result.validation.calculated_weight) {
+      throw std::runtime_error("VoteManager Rust weighted admission payload mismatched the live vote identity");
+    }
+    *vote = std::move(weighted_vote);
+  }
 
   if (runtime_result.report_slashing) {
     LOG(log_wr_) << "Non unique vote " << vote->getHash().abridged() << " (race condition)";

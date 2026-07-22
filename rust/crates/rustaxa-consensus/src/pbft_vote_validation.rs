@@ -91,10 +91,11 @@ pub struct PbftCanonicalVoteInspection {
 
 /// External state facts needed to validate an inspected canonical PBFT vote.
 ///
-/// C++ supplies these facts after reading FinalChain and KeyManager. Rust uses
-/// them together with the canonical vote bytes to verify VRF proof output,
-/// compute the sortition threshold, and calculate the authoritative validation
-/// weight.
+/// Infrastructure supplies these facts after reading FinalChain and resolving
+/// the validator VRF key. Rust uses them together with the canonical vote bytes
+/// to verify VRF proof output, compute the sortition threshold, and calculate
+/// the authoritative validation weight. They remain an internal/native planner
+/// boundary and are not exposed through the composed CXX admission API.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct PbftVoteValidationExternalFacts {
     /// Whether voter DPoS lookup completed without a future-state error.
@@ -124,6 +125,27 @@ pub struct PbftVoteValidationExternalFacts {
     /// Whether the caller supplied an already verified sidecar weight.
     pub has_preverified_weight: bool,
     /// Already verified sidecar weight for trusted `addVerifiedVote` callers.
+    pub preverified_weight: u64,
+}
+
+/// Caller-owned policy and trusted-weight inputs for one PBFT vote admission.
+///
+/// This request deliberately excludes FinalChain and VRF lookup results. The
+/// infrastructure adapter resolves those facts after canonical inspection,
+/// while a trusted preverified weight permits validation enrichment to skip
+/// its voter-stake, VRF-key, and total-stake reads. A zero preverified weight
+/// is rejected by normal validation.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct PbftVoteAdmissionValidationRequest {
+    /// Whether strict VRF verification is required for an unweighted vote.
+    pub strict_vrf: bool,
+    /// PBFT committee size used for soft/cert/next vote sortition.
+    pub committee_size: u64,
+    /// Proposal committee size used for proposal vote sortition.
+    pub number_of_proposers: u64,
+    /// Whether the caller supplied an already verified sidecar weight.
+    pub has_preverified_weight: bool,
+    /// Already verified sidecar weight for trusted admission callers.
     pub preverified_weight: u64,
 }
 

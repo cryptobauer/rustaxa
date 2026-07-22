@@ -4543,6 +4543,30 @@ two-validator transcript additionally fixes the proposer threshold at one while 
 the legacy C++ weight is zero, and proves the Rust-enabled decision matches that oracle. The same transcript passes in
 the isolated all-Rustaxa-disabled pure-C++ `vote_test` build.
 
+### CRW-09I VoteManager Admission FinalChain Composition
+
+Rust-mode `VoteManager::addVerifiedVoteWithReport` now sends canonical vote bytes and a narrow admission request to one
+PBFT-service operation. The request contains only strict-VRF policy, committee configuration, and optional trusted
+preverified weight. Rust owns canonical inspection, voter DPoS lookup, address-keyed FinalChain VRF-key lookup, proof
+validation, total DPoS lookup, weight calculation, and transactional admission/publication. Preverified weight skips
+those admission-validation voter-stake, VRF-key, and total-stake reads; the independently composed threshold lookup
+that precedes admission may still read FinalChain on a cache miss. No verified-vote mutex is held while resolving
+external state.
+
+The domain request is owned by `rustaxa-consensus`; its plain CXX mirror and conversion remain in `rustaxa-bridge`.
+The CXX `PbftVoteValidationExternalFacts` carrier, low-level validation/admission exports, dead validation facade,
+VoteManager `KeyManager` member, generic fact collector, and fact-status/error helpers are deleted. Native Rust
+validation retains consensus-owned external facts for unit-level planner/runtime coverage. Generic
+`PbftFinalChainFact*` carriers now remain only for PBFT-manager validation/eligibility consumers, so CRW-09I stays
+active until that operation family is composed.
+
+Focused Rust tests cover accepted preverified admission and zero-stake rejection through the composed call. Focused C++
+tests cover missing-weight FinalChain composition; a mode-neutral preverified admission test passes in both the
+Rust-enabled and isolated all-Rustaxa-disabled builds. All Rust consensus and bridge package tests, Tier 1, both
+consensus and FinalChain Tier 2 gates, and the Tier 3 FinalChain parity gate pass. Independent review evidence is
+complete: after narrowing the fast-path wording to exclude the independently composed threshold lookup, the configured
+reviewer approved the full diff with no remaining findings. The repository pre-commit hook passes.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

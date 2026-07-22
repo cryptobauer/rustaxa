@@ -260,9 +260,9 @@ pub use pbft_vote_storage::{
 pub use pbft_vote_validation::{
     PbftCanonicalVoteInspection, PbftCanonicalVoteInspectionStatus, PbftCanonicalVoteValidation,
     PbftProposerSortitionRequest, PbftProposerSortitionResult, PbftProposerSortitionStatus,
-    PbftProposerSortitionValidatedRequest, PbftVoteReplayCache, PbftVoteValidationExternalFacts,
-    PbftVoteValidationFact, PbftVoteValidationPlan, PbftVoteValidationStatus,
-    generate_and_validate_proposer_sortition,
+    PbftProposerSortitionValidatedRequest, PbftVoteAdmissionValidationRequest, PbftVoteReplayCache,
+    PbftVoteValidationExternalFacts, PbftVoteValidationFact, PbftVoteValidationPlan,
+    PbftVoteValidationStatus, generate_and_validate_proposer_sortition,
     generate_and_validate_proposer_sortition_with_prepared_request, inspect_canonical_pbft_vote,
     pbft_vote_sortition_threshold, plan_pbft_vote_validation,
     prepare_and_validate_pbft_proposer_sortition_request, validate_canonical_pbft_vote,

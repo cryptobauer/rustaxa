@@ -240,12 +240,6 @@ rustaxa::PbftTwoTPlusOneThresholdPlan VerifiedVotes::twoTPlusOneThresholdWithFin
                                                                                                         fact);
 }
 
-rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVote(
-    rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts) const {
-  return pbft_service_->service().pbft_service_verified_votes_validate_canonical_vote(canonical_vote_rlp,
-                                                                                      validation_facts);
-}
-
 rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVoteWithFinalChain(
     const rustaxa::BridgeFinalChain& final_chain, rust::Slice<const uint8_t> canonical_vote_rlp, bool strict_vrf,
     uint64_t committee_size, uint64_t number_of_proposers) const {
@@ -522,10 +516,11 @@ VerifiedVotes::AddVerifiedVoteOutcome VerifiedVotes::addVerifiedVoteWithThreshol
 }
 
 rustaxa::PbftVoteAdmissionRuntimeResult VerifiedVotes::admitAndPersistValidatedVote(
-    rust::Slice<const uint8_t> canonical_vote_rlp, rustaxa::PbftVoteValidationExternalFacts validation_facts,
-    rustaxa::PbftVoteEventFactFlags flags, rustaxa::PbftVoteProgressContext context) {
-  return pbft_service_->service().pbft_service_verified_votes_admit_and_persist(canonical_vote_rlp, validation_facts,
-                                                                                flags, context);
+    const rustaxa::BridgeFinalChain& final_chain, rust::Slice<const uint8_t> canonical_vote_rlp,
+    rustaxa::PbftVoteAdmissionValidationRequest validation_request, rustaxa::PbftVoteEventFactFlags flags,
+    rustaxa::PbftVoteProgressContext context) {
+  return pbft_service_->service().pbft_service_verified_votes_admit_and_persist_with_final_chain(
+      final_chain, canonical_vote_rlp, std::move(validation_request), flags, context);
 }
 
 void VerifiedVotes::setNetworkTPlusOneStep(std::shared_ptr<PbftVote> vote) {
