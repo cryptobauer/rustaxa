@@ -2639,16 +2639,6 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
-    /// Canonical pillar-vote bytes paired with externally supplied DPoS weight.
-    ///
-    /// C++ still owns the external FinalChain/StateAPI read that provides the
-    /// weight. Rust owns byte inspection and bundle planning once the weight is
-    /// supplied.
-    struct PillarVoteWeightedRlpPayload {
-        vote_rlp: Vec<u8>,
-        weight: u64,
-    }
-
     /// Local context for preparing one pillar-vote admission.
     ///
     /// Rust sources current-pillar anchor facts and owns RLP decoding,
@@ -2669,79 +2659,35 @@ pub mod rustaxa_ffi {
         pillar_blocks_interval: u64,
     }
 
-    /// Prepared identity for one pillar vote before external DPoS lookup.
+    /// CXX-visible result of composed pillar-vote validation.
     ///
     /// Status values match `PillarVoteValidationPlanStatus` in the C++ shim:
-    /// `0` is ready for DPoS lookup and `can_query_dpos == true`; non-zero
-    /// values identify the deterministic rejection reason.
-    /// A ready external result also retains a one-time checked preparation keyed
-    /// by `vote_hash`; apply must consume that retained entry.
+    /// `0` is valid and non-zero values identify deterministic rejection. Rust
+    /// owns the generation-bound preparation and FinalChain DPoS lookup; C++
+    /// receives only fields used to populate its compatibility result.
     struct PillarVoteSingleAdmissionPreparePlan {
         status: u8,
-        can_query_dpos: bool,
-        needs_threshold: bool,
         period: u64,
-        block_hash: [u8; 32],
         vote_hash: [u8; 32],
         voter: [u8; 20],
-        anchor_generation: u64,
-        has_current_anchor: bool,
-        current_period: u64,
-        current_hash: [u8; 32],
     }
 
-    /// External DPoS facts needed to apply one prepared pillar vote.
+    /// Complete result of preparing, weighting, and applying one pillar vote.
     ///
-    /// `vote_hash` selects a one-time runtime preparation created by either the
-    /// checked external route or the explicitly trusted local/restart route.
-    /// C++ supplies only FinalChain facts; canonical vote bytes, validation
-    /// policy, and anchor generation come from the retained preparation.
-    struct PillarVoteSingleAdmissionApplyInput {
-        vote_hash: [u8; 32],
-        validator_vote_count: u64,
-        has_threshold: bool,
-        threshold: u64,
-    }
-
-    /// Preparation result for a synced weighted pillar-vote bundle.
-    ///
-    /// Status codes are stable: `0` ready, `1` empty bundle, `2` missing
-    /// current anchor, `3` current-period mismatch, and `4` inspection failure.
-    /// On ready, C++ may query external DPoS weights for `inspections`; apply
-    /// must echo `anchor_generation` so Rust can reject stale work.
-    struct PillarVoteWeightedBundlePreparePlan {
-        status: u8,
-        can_query_dpos: bool,
-        inspections: Vec<PillarVoteInspection>,
-        first_bad_vote_hash: [u8; 32],
-        required_votes_period: u64,
-        expected_block_hash: [u8; 32],
-        anchor_generation: u64,
-        has_current_anchor: bool,
-        current_period: u64,
-        current_hash: [u8; 32],
-    }
-
-    /// Generation-bound input for applying one prepared weighted bundle.
-    ///
-    /// Rust re-derives the expected hash from its current snapshot and rejects
-    /// a changed generation before mutating aggregation state.
-    struct PillarVoteWeightedBundleApplyInput {
-        votes: Vec<PillarVoteWeightedRlpPayload>,
-        required_votes_period: u64,
-        threshold: u64,
-        anchor_generation: u64,
-    }
-
-    /// Result of applying one prepared pillar vote to Rust aggregation state.
-    /// Status `10` is stale anchor and `11` is missing/consumed/evicted preparation.
-    struct PillarVoteSingleAdmissionApplyPlan {
+    /// Rust owns the unlocked FinalChain query between the generation-bound
+    /// prepare and apply stages. Identity fields remain available solely for
+    /// compatibility logging and receipt bookkeeping in the C++ facade.
+    struct PillarVoteSingleAdmissionWithFinalChainPlan {
         status: u8,
         accepted: bool,
         duplicate: bool,
         conflict_found: bool,
         conflicting_vote_hash: [u8; 32],
         block_weight: u64,
+        validator_vote_count: u64,
+        period: u64,
+        vote_hash: [u8; 32],
+        voter: [u8; 20],
     }
 
     /// Pillar vote payload selected for C++ edge materialization.
@@ -2784,13 +2730,10 @@ pub mod rustaxa_ffi {
         chunks: Vec<PillarVoteNetworkBundleChunk>,
     }
 
-    /// Result of validating and applying canonical pillar-vote bytes.
-    ///
-    /// C++ supplies DPoS weights from the external FinalChain boundary. Rust
-    /// owns byte inspection, weighted bundle planning, period-threshold
-    /// initialization, and selected-vote insertion into the pillar-chain
-    /// runtime.
-    struct PillarVoteBundleApplyPlan {
+    /// Complete result of inspecting, weighting, and applying one synced bundle.
+    struct PillarVoteBundleWithFinalChainPlan {
+        prepare_status: u8,
+        missing_threshold: bool,
         status: u8,
         block_weight: u64,
         selected_weight: u64,
@@ -2798,6 +2741,13 @@ pub mod rustaxa_ffi {
         insert_failed: bool,
         insert_failed_vote_hash: [u8; 32],
         applied_votes: u64,
+    }
+
+    /// Compatibility lookup for the externally visible pillar threshold API.
+    struct PillarConsensusThresholdLookup {
+        available: bool,
+        threshold: u64,
+        error_code: String,
     }
 
     /// Input facts for one pillar-vote relevance check.
@@ -2973,6 +2923,8 @@ pub mod rustaxa_ffi {
         bridge_root: [u8; 32],
         bridge_epoch: [u8; 32],
         vote_count_changes: Vec<PillarValidatorVoteCountChange>,
+        current_vote_counts: Vec<PillarValidatorVoteCount>,
+        anchor_generation: u64,
     }
 
     /// Compact request for Rust-owned pillar-block finalization execution.
@@ -5536,10 +5488,10 @@ pub mod rustaxa_ffi {
         // Consensus pillar votes
 
         pub fn pillar_vote_inspect(vote_rlp: &[u8]) -> Result<PillarVoteInspection>;
-        pub fn pbft_service_pillar_plan_block_creation(
+        pub fn pbft_service_pillar_plan_block_creation_with_final_chain(
             self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
             request: PillarBlockCreationRequest,
-            current_vote_counts: Vec<PillarValidatorVoteCount>,
         ) -> Result<PillarBlockCreationWithVoteCountsPlan>;
         pub fn pbft_service_pillar_plan_block_linkage(
             self: &BridgePbftService,
@@ -5590,6 +5542,11 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             data_rlp: Vec<u8>,
         ) -> Result<()>;
+        pub fn pbft_service_pillar_apply_planned_current_block_data(
+            self: &BridgePbftService,
+            data_rlp: Vec<u8>,
+            expected_anchor_generation: u64,
+        ) -> Result<()>;
         pub fn pbft_service_pillar_apply_own_vote(
             self: &BridgePbftService,
             vote_rlp: Vec<u8>,
@@ -5601,37 +5558,35 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             request: PillarCurrentAnchorDecisionRequest,
         ) -> Result<PillarCurrentAnchorDecisionResult>;
-        pub fn pbft_service_pillar_consensus_threshold(
+        pub fn pbft_service_pillar_consensus_threshold_with_final_chain(
             self: &BridgePbftService,
-            total_vote_count: u64,
-        ) -> Result<u64>;
-        pub fn pbft_service_pillar_prepare_single_vote_admission(
+            final_chain: &BridgeFinalChain,
+            period: u64,
+        ) -> Result<PillarConsensusThresholdLookup>;
+        pub fn pbft_service_pillar_validate_single_vote_with_final_chain(
             self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
             vote_rlp: Vec<u8>,
             context: PillarVoteSingleAdmissionContext,
         ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
-        pub fn pbft_service_pillar_prepare_trusted_single_vote_admission(
+        pub fn pbft_service_pillar_apply_single_vote_with_final_chain(
             self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
             vote_rlp: Vec<u8>,
-        ) -> Result<PillarVoteSingleAdmissionPreparePlan>;
+            context: PillarVoteSingleAdmissionContext,
+            trusted_local_or_restore: bool,
+        ) -> Result<PillarVoteSingleAdmissionWithFinalChainPlan>;
         pub fn pbft_service_pillar_plan_vote_relevance(
             self: &BridgePbftService,
             vote_rlp: Vec<u8>,
             context: PillarVoteRuntimeRelevanceContext,
         ) -> Result<PillarVoteRelevancePlan>;
-        pub fn pbft_service_pillar_apply_prepared_single_vote_admission(
+        pub fn pbft_service_pillar_apply_rlp_bundle_with_final_chain(
             self: &BridgePbftService,
-            input: PillarVoteSingleAdmissionApplyInput,
-        ) -> Result<PillarVoteSingleAdmissionApplyPlan>;
-        pub fn pbft_service_pillar_prepare_weighted_rlp_bundle(
-            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
             vote_rlps: Vec<PillarVoteRlpPayload>,
             required_votes_period: u64,
-        ) -> Result<PillarVoteWeightedBundlePreparePlan>;
-        pub fn pbft_service_pillar_apply_weighted_rlp_bundle(
-            self: &BridgePbftService,
-            input: PillarVoteWeightedBundleApplyInput,
-        ) -> Result<PillarVoteBundleApplyPlan>;
+        ) -> Result<PillarVoteBundleWithFinalChainPlan>;
         pub fn pbft_service_pillar_get_verified_vote_payloads(
             self: &BridgePbftService,
             period: u64,

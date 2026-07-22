@@ -549,6 +549,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   DAG cursor retains signed block bytes, recovers the sender at the established authorization stage, reads FinalChain
   facts without service locks held, revalidates the exact cursor, and keeps the accepted VRF key private through VDF
   verification. Retained block/proposal-hash and gas reports remain classified executor/public-object facts.
+- The Pillar `CRW-09I` contraction removes `PillarChainManager` as a consumer of generic `PbftFinalChainFact*`
+  carriers. Single-vote validation/admission, synced-bundle weighting, threshold lookup, and block creation now borrow
+  Rust FinalChain synchronously inside `BridgePbftService`; no pillar mutex is held during the query and mutation
+  revalidates the exact preparation or anchor generation. The FinalChain shim exposes one borrowed, non-retainable
+  Rust handle accessor for shim-private composition. Generic fact carriers remain because PBFT manager and VoteManager
+  still consume them, and block creation returns a validator-count vector solely for temporary C++
+  `CurrentPillarBlockDataDb` materialization.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.
@@ -612,8 +619,8 @@ Current snapshot after DAG manager verify-result API cleanup:
   Rust persistence/cleanup and compatibility publication, releasing it before network/event callbacks. C++ retains
   `current_pillar_block_` only for startup/public compatibility, block-creation vote-count materialization, logging, and
   post-decision event payloads.
-- Pillar strict-majority threshold arithmetic (`total_vote_count / 2 + 1`) is Rust-owned. C++ still acquires the typed
-  total-vote fact from the accepted FinalChain boundary, then calls the runtime threshold method. The operation-tagged
+- Pillar strict-majority threshold arithmetic (`total_vote_count / 2 + 1`) is Rust-owned. The composed Rust service
+  borrows FinalChain for the typed total-vote fact and returns the compatibility threshold result to C++. The operation-tagged
   current-anchor planner uses checked PBFT-period subtraction and restart-interval addition, with explicit missing,
   mismatch, underflow, invalid-interval, overflow, and not-due statuses.
 - Latest-finalized pillar identity is now part of the runtime snapshot rather than a C++ manager field. Runtime
@@ -627,8 +634,9 @@ Current snapshot after DAG manager verify-result API cleanup:
   bridge-mechanics tests are removed.
 - `pillar_chain_manager_shim::validateSyncPillarVotesBundleDeterministically()` no longer performs shim-local per-vote
   inspection or supplies a C++ current hash. Runtime prepare inspects canonical vote RLPs and returns recovered voters,
-  expected hash, and anchor generation; C++ performs the one remaining external FinalChain DPoS batch read; runtime
-  apply revalidates the generation/current period and owns weighted validation, threshold initialization, and insertion.
+  expected hash, and anchor generation; the service releases the pillar lock, borrows Rust FinalChain for ordered vote
+  weights and the total, then reacquires pillar state to revalidate and apply weighted validation, threshold
+  initialization, and insertion.
   The obsolete standalone `inspect_pillar_vote_bundle_rlps` CXX export is removed because it could not bind its recovered
   identities to current-anchor state.
 - The standalone `plan_pillar_vote_relevance` CXX export is deleted. Production tarcap relevance checks use
@@ -638,13 +646,14 @@ Current snapshot after DAG manager verify-result API cleanup:
 - `pillar_chain_manager_shim::createPillarBlock()` now calls
   `plan_pillar_block_creation_with_vote_counts`, which combines pillar-block shell planning and ordered validator
   vote-count delta planning behind one Rust bridge call. The creation-only `plan_pillar_block_creation` CXX export and
-  shell-only DTO are deleted. C++ still owns external FinalChain DPoS vote-count reads, temporary `PillarBlock`
-  materialization, current-block storage payload materialization, and live manager mirrors, but the current-block sidecar
-  write now enters through `BridgePillarChainRuntime` instead of `BridgePillarChainStorage`.
+  shell-only DTO are deleted. Rust now composes exact-period FinalChain DPoS vote-count reads and binds the returned plan
+  to its anchor generation. C++ retains temporary `PillarBlock` and current-block storage-payload materialization plus
+  live manager mirrors, but persistence uses a generation-checked `BridgePillarChainRuntime` apply instead of
+  `BridgePillarChainStorage`.
 - The no-caller plain-fact pillar-vote bundle CXX planner is deleted:
   `PillarVoteBundleFact`, `PillarVoteBundleAcceptedVote`, `PillarVoteBundlePlan`, and `plan_pillar_vote_bundle`.
-  Live pillar-chain sync uses generation-bound runtime prepare/apply around the one remaining external FinalChain DPoS
-  weight read in C++. The old standalone inspection/weighted planner exports, accepted-voter DTO, shim-side
+  Live pillar-chain sync uses generation-bound runtime prepare/apply around a Rust-composed FinalChain DPoS weight and
+  total-vote lookup. The old standalone inspection/weighted planner exports, accepted-voter DTO, shim-side
   accepted-hash-to-live-vote map, and `addPlannedVerifiedPillarVoteForRust` insertion helper are deleted. Native
   `rustaxa-consensus` tests keep coverage for the plain domain planner.
 - The standalone pillar-vote CXX handle is deleted from `ffi.rs` after the last C++ bridge test moved to
@@ -656,7 +665,8 @@ Current snapshot after DAG manager verify-result API cleanup:
   `BridgePillarChainRuntime::pillar_chain_runtime_prepare_single_vote_admission` plus
   `BridgePillarChainRuntime::pillar_chain_runtime_apply_prepared_single_vote_admission`. Rust owns canonical RLP decode, signature
   recovery, duplicate/relevance/identity checks, period-data initialization, insertion, and conflict/duplicate
-  classification. C++ retains only external FinalChain DPoS eligibility/vote-count reads, threshold lookup, and logging.
+  classification. The service composes FinalChain DPoS eligibility/vote-count reads and threshold initialization; C++
+  retains logging and temporary live-vote materialization.
   The manager's own-vote persistence write now also enters through `BridgePillarChainRuntime`; the matching
   `BridgePillarChainStorage` write methods remain for `storage_shim` compatibility only.
   The piecemeal single-vote CXX exports `pillar_votes_period_data_initialized`, `pillar_votes_init_period_data`,

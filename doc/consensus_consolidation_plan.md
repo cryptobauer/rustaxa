@@ -4428,6 +4428,30 @@ Validation passed with four focused verification-authorization bridge tests, all
 `make rewrite-validate-fast`, `.githooks/pre-commit`, `dag_test` (6/6), and `dag_block_test` (13/13). Independent review
 approved the post-documentation-fix diff with no correctness, lifetime, lock-order, API-contract, or coverage findings.
 
+### CRW-09I Pillar FinalChain Fact Composition
+
+The Pillar contraction moves all five Pillar FinalChain dependencies behind composed Rust service calls: external
+single-vote validation, verified/trusted vote admission (including threshold initialization), synced weighted bundles,
+the public threshold compatibility lookup, and block-creation validator vote counts. Each operation snapshots or
+prepares pillar state under its sibling mutex, releases that mutex before borrowing Rust FinalChain, then reacquires and
+revalidates the exact preparation or anchor generation before mutation. Infrastructure failure cleans only the matching
+single-vote preparation; trusted local/restart admission remains an explicitly separate route.
+
+The C++ overlay no longer constructs Pillar-specific `PbftFinalChainFactRequest`, interprets address/total fact status,
+or copies per-voter weights into bundle inputs. The block-creation response still returns the complete validator-count
+vector because C++ temporarily materializes `CurrentPillarBlockDataDb` for its public/storage compatibility surface.
+The generic `PbftFinalChainFact*` carrier/export remains live for PBFT manager and VoteManager, so this slice reduces its
+consumer count rather than closing carrier deletion. CRW-09I remains active for those remaining families.
+
+Validation passed all 356 `rustaxa-bridge` tests, five focused pillar bridge tests, four focused Rust-enabled
+`pillar_chain_test` admission/validation cases, `make rewrite-validate-fast`, `make rewrite-validate-consensus`,
+`make rewrite-validate-final-chain`, the bridge-inventory guard, and the storage-boundary guard. The three unrelated
+full `pillar_chain_test` failures remain the existing shared `/tmp/taraxa0/db/db/LOCK` fixture collision observed after
+the multi-node case; every focused changed-path case passes in isolation. The pre-commit hook also passed on rerun after
+one unrelated rewards-stat test briefly hit its own temporary RocksDB lock and then passed alone and in the full rerun.
+Independent configured review approved the generation-safe runtime composition, narrowed CXX DTOs, and final coverage
+without remaining findings.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

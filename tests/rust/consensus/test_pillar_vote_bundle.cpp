@@ -6,7 +6,6 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
-#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,41 +78,6 @@ rust::Box<rustaxa::BridgePbftService> createReadyPillarService(const rustaxa::Br
 
 }  // namespace
 
-TEST(PillarVoteBundleBridgeTest, preparePillarVoteBundleReturnsRecoveredVotersAndGeneration) {
-  const auto first_secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
-  const auto second_secret = taraxa::secret_t("0b8f2d8f2b753f9d6eebcc334d79c8d0e9cfdd4457f0327f3a30a2d8a7f1f7cd");
-  const taraxa::PbftPeriod period{123};
-  const auto current_anchor = makeCurrentPillarAnchor(period - 1);
-  const auto block_hash = current_anchor.hash;
-  const taraxa::PillarVote first_vote(first_secret, period, block_hash);
-  const taraxa::PillarVote second_vote(second_secret, period, block_hash);
-  rust::Vec<rustaxa::PillarVoteRlpPayload> votes;
-  votes.reserve(2);
-  rustaxa::PillarVoteRlpPayload first_payload;
-  first_payload.vote_rlp = makeBytes(first_vote.rlp());
-  votes.push_back(std::move(first_payload));
-  rustaxa::PillarVoteRlpPayload second_payload;
-  second_payload.vote_rlp = makeBytes(second_vote.rlp());
-  votes.push_back(std::move(second_payload));
-
-  const auto test_dir = tempStoragePath("rustaxa_pillar_vote_bundle_prepare");
-  auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_service = createReadyPillarService(*storage);
-  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
-  const auto plan = pillar_service->pbft_service_pillar_prepare_weighted_rlp_bundle(std::move(votes), period);
-
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_TRUE(plan.can_query_dpos);
-  EXPECT_NE(plan.anchor_generation, 0);
-  EXPECT_EQ(plan.expected_block_hash, block_hash.asArray());
-  ASSERT_EQ(plan.inspections.size(), 2);
-  EXPECT_EQ(plan.inspections[0].vote_hash, first_vote.getHash().asArray());
-  EXPECT_EQ(plan.inspections[0].voter, first_vote.getVoterAddr().asArray());
-  EXPECT_EQ(plan.inspections[1].vote_hash, second_vote.getHash().asArray());
-  EXPECT_EQ(plan.inspections[1].voter, second_vote.getVoterAddr().asArray());
-  std::filesystem::remove_all(test_dir);
-}
-
 TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeState) {
   const taraxa::PbftPeriod current_period{130};
   const auto current_anchor = makeCurrentPillarAnchor(current_period);
@@ -159,10 +123,6 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
   EXPECT_EQ(decision.status, 0);
   EXPECT_TRUE(decision.selected);
 
-  EXPECT_EQ(pillar_service->pbft_service_pillar_consensus_threshold(0), 1);
-  EXPECT_EQ(pillar_service->pbft_service_pillar_consensus_threshold(10), 6);
-  EXPECT_EQ(pillar_service->pbft_service_pillar_consensus_threshold(std::numeric_limits<uint64_t>::max()),
-            std::numeric_limits<uint64_t>::max() / 2 + 1);
   std::filesystem::remove_all(test_dir);
 }
 
@@ -204,62 +164,6 @@ TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationWithCurrentBlockCanRea
   EXPECT_FALSE(prepare.should_emit);
   EXPECT_FALSE(prepare.has_prepared_pillar_block);
   EXPECT_FALSE(prepare.should_request_votes);
-  std::filesystem::remove_all(test_dir);
-}
-
-TEST(PillarVoteBundleBridgeTest, applyPillarVoteBundleFromWeightedRlpsInsertsAcceptedVotes) {
-  const auto first_secret = taraxa::secret_t("3800b2875669d9b2053c1aff9224ecfdc411423aac5b5a73d7a45ced1c3b9dcd");
-  const auto second_secret = taraxa::secret_t("0b8f2d8f2b753f9d6eebcc334d79c8d0e9cfdd4457f0327f3a30a2d8a7f1f7cd");
-  const taraxa::PbftPeriod period{124};
-  const auto current_anchor = makeCurrentPillarAnchor(period - 1);
-  const auto block_hash = current_anchor.hash;
-  const taraxa::PillarVote first_vote(first_secret, period, block_hash);
-  const taraxa::PillarVote second_vote(second_secret, period, block_hash);
-  rust::Vec<rustaxa::PillarVoteWeightedRlpPayload> votes;
-  votes.reserve(2);
-  rustaxa::PillarVoteWeightedRlpPayload first_payload;
-  first_payload.vote_rlp = makeBytes(first_vote.rlp());
-  first_payload.weight = 4;
-  votes.push_back(std::move(first_payload));
-  rustaxa::PillarVoteWeightedRlpPayload second_payload;
-  second_payload.vote_rlp = makeBytes(second_vote.rlp());
-  second_payload.weight = 3;
-  votes.push_back(std::move(second_payload));
-
-  const auto test_dir = tempStoragePath("rustaxa_pillar_vote_bundle_runtime");
-  auto storage = rustaxa::create_storage(test_dir.string());
-  auto pillar_service = createReadyPillarService(*storage);
-  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
-
-  rust::Vec<rustaxa::PillarVoteRlpPayload> vote_rlps;
-  rustaxa::PillarVoteRlpPayload first_rlp;
-  first_rlp.vote_rlp = makeBytes(first_vote.rlp());
-  vote_rlps.push_back(std::move(first_rlp));
-  rustaxa::PillarVoteRlpPayload second_rlp;
-  second_rlp.vote_rlp = makeBytes(second_vote.rlp());
-  vote_rlps.push_back(std::move(second_rlp));
-  const auto prepared = pillar_service->pbft_service_pillar_prepare_weighted_rlp_bundle(std::move(vote_rlps), period);
-  ASSERT_TRUE(prepared.can_query_dpos);
-
-  rustaxa::PillarVoteWeightedBundleApplyInput input;
-  input.votes = std::move(votes);
-  input.required_votes_period = period;
-  input.threshold = 7;
-  input.anchor_generation = prepared.anchor_generation;
-  const auto plan = pillar_service->pbft_service_pillar_apply_weighted_rlp_bundle(std::move(input));
-
-  EXPECT_EQ(plan.status, 0);
-  EXPECT_EQ(plan.block_weight, 7);
-  EXPECT_EQ(plan.selected_weight, 7);
-  EXPECT_FALSE(plan.insert_failed);
-  EXPECT_EQ(plan.applied_votes, 2);
-
-  const auto lookup =
-      pillar_service->pbft_service_pillar_get_verified_vote_payloads(period, block_hash.asArray(), true);
-  EXPECT_TRUE(lookup.threshold_met);
-  EXPECT_EQ(lookup.selected_weight, 7);
-  ASSERT_EQ(lookup.votes.size(), 2);
-  EXPECT_EQ(lookup.votes[0].weight + lookup.votes[1].weight, 7);
   std::filesystem::remove_all(test_dir);
 }
 

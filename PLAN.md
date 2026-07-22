@@ -1267,12 +1267,13 @@ The current Rust consensus footprint is broad but still incomplete:
    Reward-vote reset live metadata is still physically mutated in the vote-manager shim, but the action is now an
    explicit Rust-validated executor report instead of an unproved PBFT-manager side effect. The full Rust-mode
    `PillarChainManager` overlay now keeps original pillar
-   manager files clean while Rust
-   owns deterministic pillar-vote relevance/inspection/insertion and the first pillar-block planning slice: validator
-   vote-count deltas are planned in Rust from C++-supplied FinalChain snapshots, and pillar-block first/period/parent
-   linkage is validated by Rust before C++ materializes or persists `PillarBlock` objects. C++ still owns bridge
-   root/epoch facts, DPoS reads, live `PillarVote` sidecars, signing, storage writes, event emission, network requests,
-   and finalization orchestration.
+   manager files clean while Rust owns deterministic pillar-vote relevance/inspection/insertion and pillar-block
+   planning. Pillar validation, admission, synced-bundle weighting, threshold lookup, and block creation borrow Rust
+   FinalChain directly between generation-bound pillar stages; C++ no longer materializes DPoS fact requests or
+   per-validator weights. Pillar-block first/period/parent linkage and validator deltas are validated by Rust before C++
+   materializes or persists `PillarBlock` objects. C++ still owns bridge root/epoch executor facts, live `PillarVote`
+   sidecars, signing, storage compatibility materialization, event emission, network requests, and finalization
+   orchestration.
    `DagManager::getNonFinalizedBlocksWithTransactions()` now consumes a Rust-storage-backed sync payload: Rust
    selects non-finalized hashes, loads selected DAG block RLPs, decodes transaction references, de-duplicates transaction
    lookups, and returns transaction RLP results while C++ only reconstructs legacy return objects. The Rust-mode

@@ -22,6 +22,9 @@
 namespace taraxa {
 class DagManager;
 }
+namespace taraxa::pillar_chain {
+class PillarChainManager;
+}
 
 namespace taraxa::final_chain {
 
@@ -29,6 +32,7 @@ namespace taraxa::final_chain {
 // This class is a standalone surface in Rust-enabled builds.
 class FinalChain {
   friend class ::taraxa::DagManager;
+  friend class ::taraxa::pillar_chain::PillarChainManager;
 
  protected:
   util::event::EventEmitter<std::shared_ptr<FinalizationResult>> const block_finalized_emitter_{};
@@ -43,6 +47,7 @@ class FinalChain {
              [[maybe_unused]] const addr_t& node_addr);
   FinalChain(const FinalChain&) = delete;
   FinalChain(FinalChain&&) = delete;
+
   FinalChain& operator=(const FinalChain&) = delete;
   FinalChain& operator=(FinalChain&&) = delete;
 
@@ -131,6 +136,9 @@ class FinalChain {
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
 
  private:
+  /** Borrows the Rust owner synchronously for the friend Pillar facade. */
+  const rustaxa::BridgeFinalChain& rustFinalChain() const { return *rust_final_chain_.value(); }
+
   /**
    * Thin adapter for the external EVM `StateAPI` client used by Rust-enabled FinalChain publication.
    *

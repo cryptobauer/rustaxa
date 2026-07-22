@@ -1,11 +1,13 @@
 //! CXX bridge wrappers for deterministic pillar-chain planning.
 //!
-//! This bridge exposes storage-free pillar-chain helpers to C++ shims. The
-//! boundary accepts plain vote-count and linkage facts, converts them into
-//! Rust consensus-domain values, and returns stable CXX payloads. C++ remains
-//! responsible for FinalChain queries, `PillarBlock` object construction,
-//! event emission, and network side effects. Rust consensus owns the storage
-//! writes for pillar rows that this shim routes to `rustaxa-storage`.
+//! This bridge composes pillar-chain state with borrowed Rust FinalChain reads
+//! and exposes stable CXX plans to the compatibility shim. Production callers
+//! no longer supply Pillar-specific DPoS vote-count or eligibility facts;
+//! low-level fact planners remain module-internal test seams. C++ remains
+//! responsible for temporary `PillarBlock` object construction, event
+//! emission, and network side effects. Rust consensus owns the pillar storage
+//! writes routed through `rustaxa-storage`, including generation-checked apply
+//! of a planned current block.
 
 use crate::ffi::rustaxa_ffi::{
     PillarBlockCreationRequest as FfiPillarBlockCreationRequest,
@@ -19,11 +21,15 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
 use crate::ffi::{
-    BridgePbftService, BridgePillarChainStorage, BridgeStorage, PillarChainState,
+    BridgeFinalChain, BridgePbftService, BridgePillarChainStorage, BridgeStorage, PillarChainState,
     PillarChainStateSnapshot, SingleVotePreparationRegistry,
 };
 use anyhow::{anyhow, bail, ensure, Context, Result};
-use ethereum_types::{H160, H256};
+#[cfg(test)]
+use ethereum_types::H160;
+use ethereum_types::H256;
+#[cfg(test)]
+use rustaxa_consensus::plan_pillar_consensus_threshold as consensus_plan_pillar_consensus_threshold;
 use rustaxa_consensus::{
     load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
     load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
@@ -31,7 +37,6 @@ use rustaxa_consensus::{
     load_pillar_period_data_storage as consensus_load_pillar_period_data_storage,
     plan_pillar_block_creation as consensus_plan_pillar_block_creation,
     plan_pillar_block_linkage as consensus_plan_pillar_block_linkage,
-    plan_pillar_consensus_threshold as consensus_plan_pillar_consensus_threshold,
     plan_pillar_current_anchor_decision as consensus_plan_pillar_current_anchor_decision,
     plan_pillar_vote_count_changes as consensus_plan_vote_count_changes,
     save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
@@ -179,6 +184,23 @@ impl PillarChainState {
     ///   caller remains responsible for installing temporary C++ sidecars until
     ///   the pillar manager facade is retired.
     pub fn pillar_state_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
+        self.pillar_state_apply_current_block_data_inner(data_rlp, None)
+    }
+
+    /// Applies one block-creation result only if its sampled anchor is current.
+    pub fn pillar_state_apply_planned_current_block_data(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: u64,
+    ) -> Result<()> {
+        self.pillar_state_apply_current_block_data_inner(data_rlp, Some(expected_anchor_generation))
+    }
+
+    fn pillar_state_apply_current_block_data_inner(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: Option<u64>,
+    ) -> Result<()> {
         ensure!(
             !data_rlp.is_empty(),
             "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
@@ -198,6 +220,12 @@ impl PillarChainState {
             .current_anchor
             .write()
             .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        if let Some(expected) = expected_anchor_generation {
+            ensure!(
+                snapshot.generation == expected,
+                "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
+            );
+        }
         let generation = snapshot
             .generation
             .checked_add(1)
@@ -330,6 +358,7 @@ impl PillarChainState {
     }
 
     /// Computes the strict-majority threshold from an external total-vote fact.
+    #[cfg(test)]
     pub fn pillar_state_consensus_threshold(&self, total_vote_count: u64) -> u64 {
         consensus_plan_pillar_consensus_threshold(total_vote_count)
     }
@@ -361,9 +390,12 @@ impl PillarChainState {
                 last_finalized_period,
                 last_finalized_hash,
             })?;
-        let current_vote_counts = current_vote_counts
-            .into_iter()
-            .map(vote_count_to_consensus)
+        let consensus_vote_counts = current_vote_counts
+            .iter()
+            .map(|value| ConsensusPillarValidatorVoteCount {
+                address: value.address.into(),
+                vote_count: value.vote_count,
+            })
             .collect::<Vec<_>>();
         let previous_vote_counts =
             if request.pillar_block_period == request.first_pillar_block_period {
@@ -383,7 +415,7 @@ impl PillarChainState {
                     .collect()
             };
         let vote_count_changes = consensus_plan_vote_count_changes(
-            current_vote_counts.as_slice(),
+            consensus_vote_counts.as_slice(),
             previous_vote_counts.as_slice(),
         )?
         .into_iter()
@@ -393,6 +425,8 @@ impl PillarChainState {
             FfiPillarBlockCreationWithVoteCountsPlan::from_creation_plan(
                 creation_plan,
                 vote_count_changes,
+                current_vote_counts,
+                snapshot.generation,
             ),
         )
     }
@@ -457,6 +491,16 @@ impl BridgePbftService {
             .pillar_state_apply_current_block_data(data_rlp)
     }
 
+    /// Publishes a block-creation payload only against its sampled generation.
+    pub fn pbft_service_pillar_apply_planned_current_block_data(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: u64,
+    ) -> Result<()> {
+        self.pillar_state(true)?
+            .pillar_state_apply_planned_current_block_data(data_rlp, expected_anchor_generation)
+    }
+
     pub fn pbft_service_pillar_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
         self.pillar_state(true)?
             .pillar_state_apply_own_vote(vote_rlp)
@@ -477,11 +521,13 @@ impl BridgePbftService {
             .pillar_state_plan_current_anchor_decision(request)
     }
 
+    #[cfg(test)]
     pub fn pbft_service_pillar_consensus_threshold(&self, total_vote_count: u64) -> Result<u64> {
         let state = self.pillar_state(true)?;
         Ok(state.pillar_state_consensus_threshold(total_vote_count))
     }
 
+    #[cfg(test)]
     pub fn pbft_service_pillar_plan_block_creation(
         &self,
         request: FfiPillarBlockCreationRequest,
@@ -489,6 +535,51 @@ impl BridgePbftService {
     ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
         self.pillar_state(true)?
             .pillar_state_plan_block_creation(request, current_vote_counts)
+    }
+
+    /// Plans a pillar block while keeping the validator snapshot query inside Rust.
+    ///
+    /// The pillar generation is sampled before the potentially blocking
+    /// FinalChain read and verified again after reacquiring the pillar mutex.
+    /// No pillar lock is held while FinalChain selects the period snapshot.
+    /// `request.pillar_block_period` is the exact DPoS snapshot height. The
+    /// result contains both Rust-planned deltas and the canonical current counts
+    /// temporarily required by C++ persistence materialization. FinalChain
+    /// errors and generation drift reject without publishing pillar state.
+    pub fn pbft_service_pillar_plan_block_creation_with_final_chain(
+        &self,
+        final_chain: &BridgeFinalChain,
+        request: FfiPillarBlockCreationRequest,
+    ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
+        let generation = {
+            let state = self.pillar_state(true)?;
+            let generation = state
+                .current_anchor
+                .read()
+                .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
+                .generation;
+            generation
+        };
+        let current_vote_counts = final_chain
+            .0
+            .dpos_validators_eligible_vote_counts(request.pillar_block_period.into())?
+            .into_iter()
+            .map(|value| FfiPillarValidatorVoteCount {
+                address: value.address,
+                vote_count: value.vote_count,
+            })
+            .collect();
+        let state = self.pillar_state(true)?;
+        ensure!(
+            state
+                .current_anchor
+                .read()
+                .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
+                .generation
+                == generation,
+            "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
+        );
+        state.pillar_state_plan_block_creation(request, current_vote_counts)
     }
 
     pub fn pbft_service_pillar_plan_block_linkage(
@@ -596,15 +687,6 @@ fn decoded_current_pillar_previous_hash(
     Ok(decoded.pillar_block.previous_pillar_block_hash)
 }
 
-fn vote_count_to_consensus(
-    value: FfiPillarValidatorVoteCount,
-) -> ConsensusPillarValidatorVoteCount {
-    ConsensusPillarValidatorVoteCount {
-        address: H160::from(value.address),
-        vote_count: value.vote_count,
-    }
-}
-
 impl From<ConsensusPillarValidatorVoteCountChange> for FfiPillarValidatorVoteCountChange {
     fn from(value: ConsensusPillarValidatorVoteCountChange) -> Self {
         Self {
@@ -628,6 +710,8 @@ impl FfiPillarBlockCreationWithVoteCountsPlan {
     fn from_creation_plan(
         value: ConsensusPillarBlockCreationPlan,
         vote_count_changes: Vec<FfiPillarValidatorVoteCountChange>,
+        current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
+        anchor_generation: u64,
     ) -> Self {
         Self {
             status: value.status as u8,
@@ -638,6 +722,8 @@ impl FfiPillarBlockCreationWithVoteCountsPlan {
             bridge_root: value.bridge_root.0,
             bridge_epoch: value.bridge_epoch.0,
             vote_count_changes,
+            current_vote_counts,
+            anchor_generation,
         }
     }
 }
@@ -645,6 +731,8 @@ impl FfiPillarBlockCreationWithVoteCountsPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi;
+    use crate::final_chain::create_final_chain;
     use crate::storage::create_storage;
     use std::fs;
     use std::path::PathBuf;
@@ -656,6 +744,46 @@ mod tests {
             .expect("time should be available")
             .as_nanos();
         std::env::temp_dir().join(format!("{name}_{nonce}"))
+    }
+
+    fn u256_be(value: u64) -> Vec<u8> {
+        ethereum_types::U256::from(value).to_big_endian().to_vec()
+    }
+
+    fn final_chain_with_validator(
+        storage: &BridgeStorage,
+        address: [u8; 20],
+    ) -> Box<BridgeFinalChain> {
+        create_final_chain(
+            storage,
+            0,
+            0,
+            Vec::new(),
+            vec![rustaxa_ffi::GenesisValidator {
+                address,
+                owner: address,
+                vrf_key: [7; 32],
+                commission: 0,
+                description: String::new(),
+                endpoint: String::new(),
+                total_stake: u256_be(5_000),
+                delegations: vec![rustaxa_ffi::GenesisDelegation {
+                    delegator: address,
+                    stake: u256_be(5_000),
+                }],
+            }],
+            rustaxa_ffi::GenesisDposConfig {
+                eligibility_balance_threshold: u256_be(1_000),
+                vote_eligibility_balance_step: u256_be(1_000),
+                validator_maximum_stake: u256_be(30_000),
+                minimum_deposit: Vec::new(),
+                commission_change_delta: 0,
+                commission_change_frequency: 0,
+                delegation_delay: 0,
+                dag_vdf_sortition_total_vote_count_until_period: 0,
+            },
+        )
+        .expect("FinalChain should initialize")
     }
 
     fn canonical_current_data(period: u64) -> Vec<u8> {
@@ -1377,6 +1505,54 @@ mod tests {
                 .contains("PILLAR_FINALIZED_BLOCK_EMPTY_PAYLOAD"));
         }
 
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn composed_final_chain_threshold_and_creation_keep_validator_facts_in_rust() {
+        let temp_dir = unique_temp_dir("pillar_composed_final_chain");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let final_chain = final_chain_with_validator(&storage, [9; 20]);
+            let service = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            service.pbft_service_complete_pillar_bootstrap().unwrap();
+
+            let threshold = service
+                .pbft_service_pillar_consensus_threshold_with_final_chain(&final_chain, 0)
+                .unwrap();
+            assert!(threshold.available);
+            assert!(threshold.threshold > 0);
+
+            let plan = service
+                .pbft_service_pillar_plan_block_creation_with_final_chain(
+                    &final_chain,
+                    FfiPillarBlockCreationRequest {
+                        pillar_block_period: 0,
+                        state_root: [1; 32],
+                        bridge_root: [2; 32],
+                        bridge_epoch: [0; 32],
+                        first_pillar_block_period: 0,
+                        pillar_blocks_interval: 10,
+                    },
+                )
+                .unwrap();
+            assert!(plan.valid);
+            assert_eq!(plan.current_vote_counts.len(), 1);
+            assert_eq!(plan.current_vote_counts[0].address, [9; 20]);
+            assert!(plan.current_vote_counts[0].vote_count > 0);
+            assert_eq!(plan.vote_count_changes.len(), 1);
+
+            service
+                .pbft_service_pillar_apply_current_block_data(canonical_current_data(1))
+                .unwrap();
+            let stale = service
+                .pbft_service_pillar_apply_planned_current_block_data(
+                    canonical_current_data(0),
+                    plan.anchor_generation,
+                )
+                .unwrap_err();
+            assert!(format!("{stale:#}").contains("PILLAR_BLOCK_CREATION_STALE_ANCHOR"));
+        }
         let _ = fs::remove_dir_all(temp_dir);
     }
 }
