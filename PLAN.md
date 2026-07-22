@@ -1386,10 +1386,12 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    mutated/new account snapshots remain byte-compatible across lookup, persistence, and restart. FinalChain gas limits,
    usage, cumulative validation, rewards inputs, receipts, headers, and publication now share a checked `u64` domain
    while preserving CXX carriers, RLP, hashes, request identities, and error ordering. DPoS eligibility threshold, vote
-   step, maximum stake, and minimum deposit now use the shared `DposTokenAmount(U256)` semantic domain; persisted
-   principal/custody, reward pools, supply, and arbitrary-width reward-per-stake remain dependency-ordered follow-ups.
-   The next ready family is the lifecycle-complete FinalChain block-number domain. It precedes persisted DPoS principal
-   because snapshot keys, activation heights, delayed reads, custody unlocks, corrections, publication, and restart all
-   depend on unambiguous FinalChain block identity. Temporary C++ `BlockStats` decoding remains part of the accepted
-   StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope gate.
+   step, maximum stake, and minimum deposit now use the shared `DposTokenAmount(U256)` semantic domain. Aggregate stake,
+   delegation principal, and V1/V2 custody use that shared value plus a private consensus-owned persisted-encoding
+   wrapper, preserving historical fixed/minimal bytes and fixed-width registration ingress while rejecting malformed
+   persisted amounts before publication.
+   Redelegation corrections and arbitrary-width reward indexes are the next independently ready families; reward pools,
+   supply, and final adapter contraction remain dependency-ordered follow-ups. Temporary C++ `BlockStats` decoding
+   remains part of the accepted StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope
+   gate.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

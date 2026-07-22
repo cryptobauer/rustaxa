@@ -286,9 +286,9 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09A` | `complete` | Establish the FinalChain scalar/codec foundation: nonce, transaction position, bloom, gas price, transaction value, account balance, and complete gas lifecycle. | None | Rust FinalChain uses the typed domains end to end while CXX carriers, persisted bytes, request identities, headers, receipts, and error ordering remain compatible. |
 | `CRW-09B` | `complete` | Establish the shared DPoS monetary prerequisite and persisted-encoding evidence. | `CRW-09A` | `DposTokenAmount(U256)` owns policy amounts; characterization proves valid mixed encodings, schema 5/6 self-delegation synthesis, arbitrary-width reward indexes, and explicitly tracked malformed-decoder debt. |
 | `CRW-09C` | `complete` | Type the complete FinalChain block-number lifecycle and PBFT-period conversion boundary. | `CRW-09A` | `FinalChainBlockNumber` owns head progression, hardfork heights, headers, historical reads, snapshots, native/external sessions, publication/recovery/audit, bloom endpoints, rewards heads, request identities, and bridge conversion. PBFT converts once at FinalChain admission; storage/RLP/CXX representations are unchanged; focused Rust coverage, Tier 1, FinalChain Tier 2, Tier 3 pure-C++ parity, and independent mapping review passed. |
-| `CRW-09D` | `ready` | Migrate the complete DPoS principal/custody ledger using shared `DposTokenAmount` plus private `StoredDposAmount` provenance. | `CRW-09B`; `CRW-09C` | Aggregate stake, delegation principal, V1/V2 custody and transitions, ABI reads, snapshots, malformed-input rejection, restart, and aggregate/ledger invariants are typed and parity-covered. |
-| `CRW-09E` | `blocked` | Type redelegation correction amounts and their ordered hardfork application. | `CRW-09C`; `CRW-09D` | Corrections preserve configured order and activation semantics, update principal/aggregate/reward cursors atomically, and retain same-validator corruption policy and restart parity. |
-| `CRW-09F` | `blocked` | Type arbitrary-width reward-per-stake accumulators and delegation cursors. | `CRW-09D` | A distinct BigUint-backed reward-index domain owns validator accumulators and delegation cursors while regression policy, rounding, claims, persistence, and restart remain compatible. |
+| `CRW-09D` | `complete` | Migrate the complete DPoS principal/custody ledger using shared `DposTokenAmount` plus private `StoredDposAmount` provenance. | `CRW-09B`; `CRW-09C` | Aggregate stake, delegation principal, V1/V2 custody and transitions, ABI reads, snapshots, malformed-input rejection, restart, and aggregate/ledger invariants are typed and parity-covered. |
+| `CRW-09E` | `ready` | Type redelegation correction amounts and their ordered hardfork application. | `CRW-09C`; `CRW-09D` | Corrections preserve configured order and activation semantics, update principal/aggregate/reward cursors atomically, and retain same-validator corruption policy and restart parity. |
+| `CRW-09F` | `ready` | Type arbitrary-width reward-per-stake accumulators and delegation cursors. | `CRW-09D` | A distinct BigUint-backed reward-index domain owns validator accumulators and delegation cursors while regression policy, rounding, claims, persistence, and restart remain compatible. |
 | `CRW-09G` | `blocked` | Migrate reward pools and claim settlement using shared token amounts. | `CRW-09D`; `CRW-09F` | Commission/delegator pools, fee rewards, claims, account credits, cursor advancement, rollback, receipts, and restart use `DposTokenAmount` without changing reward-index semantics. |
 | `CRW-09H` | `blocked` | Type supply, minted rewards, and Aspen migration state. | `CRW-09C`; `CRW-09G` | Pre-/post-Aspen supply state is explicit; migration runs once; inconsistent persisted combinations fail closed; checked cap/reward arithmetic and accepted old schemas retain activation, publication, and restart parity. |
 | `CRW-09I` | `blocked` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
@@ -319,6 +319,16 @@ self-delegation synthesis preserves aggregate-stake bytes. A separately labeled 
 the legacy decoder still accepts short leading-zero and greater-than-U256 principal bytes. That acceptance is migration
 debt, not a compatibility guarantee; the persisted DPoS amount slice must replace it with immediate stable rejection
 before state installation. This test-only slice has no `CRW-07` delta.
+
+`CRW-09D` now types aggregate stake, per-delegator principal, and V1/V2 undelegation custody with the shared
+`DposTokenAmount` semantic value and a private consensus-owned `StoredDposAmount` encoding-provenance wrapper. Snapshot
+decode rejects oversized and short leading-zero values before state installation, untouched fixed/minimal encodings
+round-trip byte-for-byte, arithmetic mutations canonicalize their persisted representation, and registration retains
+its legacy fixed-width ABI-funded stake bytes. Current complete
+ledgers reject orphan validators, principal-sum overflow, and aggregate mismatches while schema 5/6 rebuild state and
+explicit historical same-validator corruption markers retain their established exceptions. ABI and snapshot shapes,
+CXX carriers, bridge exports, shims, and module flags are unchanged, so `CRW-07` has no inventory delta. `CRW-09E` and
+`CRW-09F` are now independently ready.
 
 `CRW-08` current slice closes native DPoS delegate transaction receipt/state parity. Rust now charges top-level
 transaction intrinsic gas in addition to action gas for every Rust-native DPoS/slashing transaction while preserving

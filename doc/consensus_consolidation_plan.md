@@ -4290,6 +4290,26 @@ Focused `rustaxa-types`, `rustaxa-consensus` FinalChain, and `rustaxa-bridge` Fi
 `make rewrite-validate-final-chain-parity`. Independent configured code-mapper review approved the final lifecycle and
 boundary audit. `CRW-09D` is now ready.
 
+### CRW-09D DPoS Principal and Custody Ledger
+
+`CRW-09D` replaces raw Rust byte vectors for aggregate validator stake, per-delegator principal, and V1/V2
+undelegation custody with the shared `DposTokenAmount(U256)` semantic value. Persistence compatibility remains private
+to `rustaxa-consensus`: `StoredDposAmount` records fixed-32 versus canonical-minimal provenance, preserves untouched
+snapshot bytes exactly, canonicalizes arithmetic mutations, and retains the legacy fixed-width ABI-funded registration
+stake. The public shared type therefore carries fungible token semantics without exposing snapshot migration policy
+through `rustaxa-types`.
+
+Snapshot decode accepts empty, canonical one-to-31-byte, and exact 32-byte amounts, but rejects oversized and short
+leading-zero encodings before any decoded restart state is installed. Complete ledgers reject delegation rows without
+an aggregate, checked principal-sum overflow, and aggregate/principal mismatch. Schema 5/6 snapshots retain their
+incomplete-ledger rebuild behavior, and validators marked by the established same-validator redelegation corruption
+policy retain that narrow historical exception. Snapshot schema and RLP shape, ABI output, CXX carriers, bridge exports,
+shims, and module flags are unchanged.
+
+Focused FinalChain tests, all 801 `rustaxa-consensus` library tests, `make rewrite-validate-fast`, the FinalChain Tier 2
+gate, the Tier 3 Rust-enabled/pure-C++ parity gate, the bridge inventory guard, formatting, and whitespace validation
+passed. `CRW-09E` and `CRW-09F` are now independently ready; `CRW-07` has no delta.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
