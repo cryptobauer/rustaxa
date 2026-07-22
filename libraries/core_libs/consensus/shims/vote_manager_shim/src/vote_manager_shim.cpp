@@ -336,16 +336,6 @@ rustaxa::PbftVoteGenerationInput makeVoteGenerationInput(const blk_hash_t& block
   return input;
 }
 
-rustaxa::PbftVoteWeightFacts makeVoteWeightFacts(uint64_t voter_dpos_votes_count, uint64_t total_dpos_votes_count,
-                                                 uint64_t committee_size, uint64_t number_of_proposers) {
-  rustaxa::PbftVoteWeightFacts facts{};
-  facts.voter_dpos_vote_count = voter_dpos_votes_count;
-  facts.total_dpos_vote_count = total_dpos_votes_count;
-  facts.committee_size = committee_size;
-  facts.number_of_proposers = number_of_proposers;
-  return facts;
-}
-
 void requireRustVoteGenerationRejected(const rustaxa::PbftGeneratedVote& generated, uint8_t expected_status,
                                        const char* operation) {
   if (!generated.accepted && generated.status == expected_status) {
@@ -1198,54 +1188,27 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
                                                               PbftPeriod period, PbftRound round, PbftStep step,
                                                               const WalletConfig& wallet) {
   const auto generation_input = makeVoteGenerationInput(blockhash, vote_type, period, round, step, wallet);
-  uint64_t voter_dpos_votes_count = 0;
-  uint64_t total_dpos_votes_count = 0;
-
   try {
-    const auto dpos_facts = collectPbftDposFacts(final_chain_, period - 1, true, {wallet.node_addr});
-    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status) ||
-        !finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
-      LOG(log_er_) << "Unable to place vote for period: " << period << ", round: " << round << ", step: " << step
-                   << ", voted block hash: " << blockhash.abridged() << ". "
-                   << "Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-                   << "). Err msg: " << finalChainFactError(dpos_facts);
-      return nullptr;
-    }
-
-    voter_dpos_votes_count = dpos_facts.address_facts[0].vote_count;
-    if (!voter_dpos_votes_count) {
-      const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
-          generation_input,
-          makeVoteWeightFacts(voter_dpos_votes_count, 0, kPbftConfig.committee_size, kPbftConfig.number_of_proposers));
+    const auto generated = verified_votes_.generateSignedVoteWithWeight(
+        final_chain_->rustFinalChain(), generation_input, kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
+    if (generated.status == kPbftVoteGenerationStatusZeroStake) {
       requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroStake, "zero-stake weighted vote");
       return nullptr;
     }
-
-    total_dpos_votes_count = dpos_facts.total_vote_count;
+    if (generated.status == kPbftVoteGenerationStatusZeroTotalDpos) {
+      requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroTotalDpos, "zero-total weighted vote");
+      return nullptr;
+    }
+    if (generated.status == kPbftVoteGenerationStatusZeroWeight) {
+      requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroWeight, "zero-weight weighted vote");
+      return nullptr;
+    }
+    return materializeRustGeneratedVote(generated, wallet, true);
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to place vote for period: " << period << ", round: " << round << ", step: " << step
                  << ", voted block hash: " << blockhash.abridged() << ". Err msg: " << e.what();
     return nullptr;
   }
-
-  if (!total_dpos_votes_count) {
-    const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
-        generation_input, makeVoteWeightFacts(voter_dpos_votes_count, total_dpos_votes_count,
-                                              kPbftConfig.committee_size, kPbftConfig.number_of_proposers));
-    requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroTotalDpos, "zero-total weighted vote");
-    return nullptr;
-  }
-
-  const auto generated = rustaxa::pbft_generate_signed_vote_with_weight(
-      generation_input, makeVoteWeightFacts(voter_dpos_votes_count, total_dpos_votes_count, kPbftConfig.committee_size,
-                                            kPbftConfig.number_of_proposers));
-
-  if (generated.status == kPbftVoteGenerationStatusZeroWeight) {
-    requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroWeight, "zero-weight weighted vote");
-    return nullptr;
-  }
-
-  return materializeRustGeneratedVote(generated, wallet, true);
 }
 
 VoteManager::LocallyGeneratedVotePlacement VoteManager::generateAndPlaceLocalVote(const blk_hash_t& block_hash,

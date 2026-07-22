@@ -4497,6 +4497,27 @@ validation and transfer-vote C++ cases, `make rewrite-validate-fast`, both Final
 the repository pre-commit hook passed. The consensus Tier 2 aggregate invocation retained the classified shared
 `/tmp/taraxa0/db/db/LOCK` fixture collision; the affected vote cases pass when run independently.
 
+### CRW-09I VoteManager Weighted Generation FinalChain Composition
+
+Rust-mode `VoteManager::generateVoteWithWeight` now makes one PBFT-service call with wallet/signing input and immutable
+committee configuration. The service checks the PBFT-to-DPoS period conversion, borrows Rust FinalChain, reads voter
+stake before total stake, and delegates signing and weighting to the consensus-owned generator. Period underflow,
+future state, and unavailable snapshots remain boundary errors; zero stake, zero total stake, and zero weight remain the
+existing typed generation outcomes. No PBFT service lock or borrowed FinalChain handle survives the synchronous call.
+
+C++ materializes the canonical weighted RLP through the existing strict identity, signature, VRF, weight, and exact-byte
+checks. The bridge-only `PbftVoteWeightFacts` DTO, conversion, and free weighted-generation CXX export are deleted;
+`rustaxa-consensus` retains the domain weight facts privately. Generic `PbftFinalChainFact*` carriers remain for local
+proposer sortition, unweighted admission compatibility, and PBFT-manager consumers, so CRW-09I remains active.
+
+Eight focused bridge tests cover successful canonical generation, zero stake, zero weight, future state, period
+underflow, invalid vote type, and identity-error ordering; standalone C++ cases cover deterministic production routing
+and far-future rejection. `make rewrite-validate-fast`, consensus Tier 2, and the Tier 3 Rust-enabled/pure-C++ FinalChain
+parity gate passed. The consensus aggregate retained the classified shared `/tmp/taraxa0/db/db/LOCK` collision in
+`vote_test`; both new cases pass independently. Independent review approved the corrected diff without blockers.
+Zero-total and corrupt-ready-snapshot service fixtures remain unconstructed residual edge coverage; their paths retain
+typed zero-total and fail-closed snapshot behavior.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

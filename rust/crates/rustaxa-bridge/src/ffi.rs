@@ -2562,14 +2562,6 @@ pub mod rustaxa_ffi {
         expected_vrf_public_key: [u8; 32],
     }
 
-    /// DPoS facts used by Rust to embed a legacy PBFT vote weight.
-    struct PbftVoteWeightFacts {
-        voter_dpos_vote_count: u64,
-        total_dpos_vote_count: u64,
-        committee_size: u64,
-        number_of_proposers: u64,
-    }
-
     /// Rust-generated canonical PBFT vote payload.
     ///
     /// `vote_rlp` is a signed 3-field legacy vote for unweighted generation and
@@ -5474,9 +5466,12 @@ pub mod rustaxa_ffi {
         pub fn pbft_generate_signed_vote(
             input: PbftVoteGenerationInput,
         ) -> Result<PbftGeneratedVote>;
-        pub fn pbft_generate_signed_vote_with_weight(
+        pub fn pbft_service_generate_signed_vote_with_weight(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
             input: PbftVoteGenerationInput,
-            facts: PbftVoteWeightFacts,
+            committee_size: u64,
+            number_of_proposers: u64,
         ) -> Result<PbftGeneratedVote>;
         pub fn pbft_vote_weighted_payload_from_canonical_vote(
             canonical_vote_rlp: &[u8],

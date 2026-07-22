@@ -253,6 +253,13 @@ rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVoteWit
       final_chain, canonical_vote_rlp, strict_vrf, committee_size, number_of_proposers);
 }
 
+rustaxa::PbftGeneratedVote VerifiedVotes::generateSignedVoteWithWeight(
+    const rustaxa::BridgeFinalChain& final_chain, rustaxa::PbftVoteGenerationInput generation_input,
+    uint64_t committee_size, uint64_t number_of_proposers) const {
+  return pbft_service_->service().pbft_service_generate_signed_vote_with_weight(final_chain, generation_input,
+                                                                                committee_size, number_of_proposers);
+}
+
 std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::votes() const {
   std::vector<std::shared_ptr<PbftVote>> out;
   const auto snapshot = pbft_service_->service().pbft_service_verified_votes_state_snapshot();

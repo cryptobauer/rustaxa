@@ -255,6 +255,44 @@ TEST_F(VoteTest, rust_validate_vote_composes_final_chain_and_hydrates_weight) {
   const auto [valid_weighted, weighted_err] = vote_mgr->validateVote(weighted_vote);
   EXPECT_TRUE(valid_weighted) << weighted_err;
 }
+
+TEST_F(VoteTest, rust_generate_weighted_vote_is_deterministic) {
+  auto node = create_nodes(1, true /*start*/).front();
+  auto pbft_mgr = node->getPbftManager();
+  auto vote_mgr = node->getVoteManager();
+  pbft_mgr->stop();
+
+  clearAllVotes({node});
+  const auto [current_round, current_period] = pbft_mgr->getPbftRoundAndPeriod();
+  const auto &wallet = node->getConfig().getFirstWallet();
+
+  auto block_hash = blk_hash_t(77);
+  auto vote_a =
+      vote_mgr->generateVoteWithWeight(block_hash, PbftVoteTypes::soft_vote, current_period, current_round, 2, wallet);
+  auto vote_b =
+      vote_mgr->generateVoteWithWeight(block_hash, PbftVoteTypes::soft_vote, current_period, current_round, 2, wallet);
+
+  ASSERT_NE(vote_a, nullptr);
+  ASSERT_NE(vote_b, nullptr);
+  EXPECT_EQ(vote_a->getHash(), vote_b->getHash());
+  EXPECT_EQ(vote_a->rlp(true, true), vote_b->rlp(true, true));
+}
+
+TEST_F(VoteTest, rust_generate_weighted_vote_rejects_far_future_period) {
+  auto node = create_nodes(1, true /*start*/).front();
+  auto pbft_mgr = node->getPbftManager();
+  auto vote_mgr = node->getVoteManager();
+  pbft_mgr->stop();
+
+  clearAllVotes({node});
+  const auto [current_round, current_period] = pbft_mgr->getPbftRoundAndPeriod();
+  const auto &wallet = node->getConfig().getFirstWallet();
+
+  auto too_far_period = current_period + 1000;
+  auto vote = vote_mgr->generateVoteWithWeight(blk_hash_t(11), PbftVoteTypes::propose_vote, too_far_period,
+                                               current_round, 1, wallet);
+  EXPECT_EQ(vote, nullptr);
+}
 #endif
 
 // Generate a vote, send the vote from node2 to node1

@@ -574,7 +574,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   lookup through Rust FinalChain, and reacquires it only for address-key caching and terminal replay publication.
   Successful validation returns canonical weighted vote RLP; C++ verifies the full identity and hydrates only its
   temporary live sidecar. DPoS counts, keys, readiness flags, and sortition thresholds do not cross this composed
-  boundary. The generic carrier remains live for VoteManager generation/sortition and PBFT-manager consumers.
+  boundary. The generic carrier remains live for VoteManager admission/sortition and PBFT-manager consumers.
+- The VoteManager weighted-generation `CRW-09I` contraction removes `generateVoteWithWeight` as a consumer of generic
+  `PbftFinalChainFact*` carriers. One PBFT-service call borrows Rust FinalChain, reads voter stake before total stake,
+  preserves typed zero-stake/zero-total/zero-weight outcomes, and returns canonical weighted vote RLP for checked C++
+  sidecar hydration. The bridge-only `PbftVoteWeightFacts` carrier and free weighted-generation export are deleted;
+  consensus-domain weight facts stay private. The generic carrier remains live for VoteManager admission/sortition and
+  PBFT-manager consumers.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

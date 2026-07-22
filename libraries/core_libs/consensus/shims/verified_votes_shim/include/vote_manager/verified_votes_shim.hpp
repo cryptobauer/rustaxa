@@ -144,6 +144,17 @@ class VerifiedVotes {
   VerifiedVotes(addr_t node_addr, SharedPbftService pbft_service);
 
   /**
+   * Generates one weighted vote through Rust-owned FinalChain composition.
+   *
+   * The borrowed FinalChain handle is used only for this synchronous call. C++ supplies wallet/signing input and
+   * committee configuration; DPoS counts, readiness state, and weight calculation remain Rust-private. Typed generation
+   * rejection statuses and canonical weighted vote bytes are returned unchanged.
+   */
+  rustaxa::PbftGeneratedVote generateSignedVoteWithWeight(const rustaxa::BridgeFinalChain& final_chain,
+                                                          rustaxa::PbftVoteGenerationInput generation_input,
+                                                          uint64_t committee_size, uint64_t number_of_proposers) const;
+
+  /**
    * Loads all locally generated weighted PBFT vote records from native Rust storage.
    *
    * Outputs:
@@ -227,10 +238,6 @@ class VerifiedVotes {
 
   /**
    * Resolves the PBFT `2t+1` threshold with Rust-owned FinalChain composition.
-   *
-   * The service probes its Rust cache first and borrows `final_chain` only when
-   * the planner requests the exact-period DPoS total. No DPoS scalar or
-   * readiness carrier is exposed to this facade.
    */
   rustaxa::PbftTwoTPlusOneThresholdPlan twoTPlusOneThresholdWithFinalChain(
       const rustaxa::BridgeFinalChain& final_chain, const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const;
