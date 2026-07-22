@@ -556,6 +556,18 @@ Current snapshot after DAG manager verify-result API cleanup:
   Rust handle accessor for shim-private composition. Generic fact carriers remain because PBFT manager and VoteManager
   still consume them, and block creation returns a validator-count vector solely for temporary C++
   `CurrentPillarBlockDataDb` materialization.
+- The VoteManager threshold `CRW-09I` contraction removes `getPbftTwoTPlusOne` as a consumer of generic
+  `PbftFinalChainFact*` carriers. `BridgePbftService` derives its live Rust PBFT-chain size, probes the Rust threshold
+  cache, borrows Rust FinalChain only on a cache miss that requests the exact-period DPoS total, then re-enters the
+  planner without retaining either lock or handle. The operation-specific CXX request is narrowed to period, vote type,
+  and committee configuration; PBFT-chain size, DPoS total, and readiness/error fields now exist only in the private
+  Rust planner fact. Generic FinalChain fact carriers remain live for
+  VoteManager validation/generation/sortition and PBFT-manager validation/eligibility until those operation families
+  are composed. The dead non-composed `VerifiedVotes::twoTPlusOneThreshold` facade and
+  `pbft_service_verified_votes_two_t_plus_one_threshold` CXX export are deleted; native Rust tests reach the private
+  planner under the service mutex without retaining an external-state injection API.
+  The CXX result is likewise narrowed to status, error code, threshold presence, and threshold value; sortition
+  threshold, cache diagnostics, and the retired two-pass `needs_total_dpos_votes` signal remain Rust-private.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

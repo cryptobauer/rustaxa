@@ -234,9 +234,10 @@ bool VerifiedVotes::replayInsert(const vote_hash_t& vote_hash) const {
   return pbft_service_->service().pbft_service_verified_votes_replay_insert(bridge_hash);
 }
 
-rustaxa::PbftTwoTPlusOneThresholdPlan VerifiedVotes::twoTPlusOneThreshold(
-    const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const {
-  return pbft_service_->service().pbft_service_verified_votes_two_t_plus_one_threshold(fact);
+rustaxa::PbftTwoTPlusOneThresholdPlan VerifiedVotes::twoTPlusOneThresholdWithFinalChain(
+    const rustaxa::BridgeFinalChain& final_chain, const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const {
+  return pbft_service_->service().pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(final_chain,
+                                                                                                         fact);
 }
 
 rustaxa::PbftVoteRuntimeValidationResult VerifiedVotes::validateCanonicalVote(

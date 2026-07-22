@@ -4452,6 +4452,31 @@ one unrelated rewards-stat test briefly hit its own temporary RocksDB lock and t
 Independent configured review approved the generation-safe runtime composition, narrowed CXX DTOs, and final coverage
 without remaining findings.
 
+### CRW-09I VoteManager Threshold FinalChain Composition
+
+The PBFT `2t+1` threshold path no longer performs a two-pass FinalChain fact collection loop in C++.
+The CXX request now contains only period, vote type, and committee configuration. `BridgePbftService` builds the full
+planner fact privately from its Rust PBFT-chain head and probes the Rust threshold cache. On a miss it releases the verified-vote mutex, borrows
+Rust FinalChain for the exact-period eligible DPoS total, refreshes the PBFT-chain size, and re-enters the threshold
+planner. Future FinalChain state and infrastructure errors retain the planner's typed fail-closed statuses, and a cache
+hit does not touch FinalChain.
+
+The C++ VoteManager supplies only period, vote type, and committee configuration, then consumes the operation-specific
+threshold plan. No DPoS scalar/result carrier or direct FinalChain getter was introduced. The existing generic
+`PbftFinalChainFact*` family remains live for VoteManager validation, weighted generation, local sortition, and PBFT
+manager consumers, so CRW-09I remains active and the generic carrier cannot yet be deleted. The dead non-composed
+`VerifiedVotes::twoTPlusOneThreshold` facade and `pbft_service_verified_votes_two_t_plus_one_threshold` CXX export are
+deleted as a `CRW-07` contraction; low-level cache setup remains private to Rust tests. The composed CXX result is also
+narrowed to the four fields VoteManager consumes, removing internal sortition/cache diagnostics and the retired
+two-pass `needs_total_dpos_votes` control signal from the bridge.
+
+Focused Rust coverage proves the threshold is derived from authoritative Rust PBFT/FinalChain state, future FinalChain
+state fails closed, and cache hits avoid FinalChain state. All 359 `rustaxa-bridge` tests, the C++
+`vote_test` target build, `make rewrite-validate-fast`, both consensus and FinalChain Tier 2 gates, the Tier 3
+Rust-enabled/pure-C++ FinalChain parity gate, and the repository pre-commit hook passed.
+`VoteTest.two_t_plus_one_votes` passed in isolation. A combined two-test invocation retained the classified shared
+`/tmp/taraxa0/db/db/LOCK` fixture collision after its first case passed.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

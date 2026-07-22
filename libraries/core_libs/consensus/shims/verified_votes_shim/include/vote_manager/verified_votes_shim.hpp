@@ -226,18 +226,14 @@ class VerifiedVotes {
   bool replayInsert(const vote_hash_t& vote_hash) const;
 
   /**
-   * Plans or computes the PBFT `2t+1` threshold from Rust runtime cache state.
+   * Resolves the PBFT `2t+1` threshold with Rust-owned FinalChain composition.
    *
-   * Inputs:
-   * - `fact`: scalar PBFT-chain/FinalChain facts collected by `VoteManager`.
-   *
-   * Outputs:
-   * - Rust threshold lookup result with stable status and cache-hit flags.
-   *
-   * Invariants:
-   * - Cache ownership is co-located with admission and verified-vote state.
+   * The service probes its Rust cache first and borrows `final_chain` only when
+   * the planner requests the exact-period DPoS total. No DPoS scalar or
+   * readiness carrier is exposed to this facade.
    */
-  rustaxa::PbftTwoTPlusOneThresholdPlan twoTPlusOneThreshold(const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const;
+  rustaxa::PbftTwoTPlusOneThresholdPlan twoTPlusOneThresholdWithFinalChain(
+      const rustaxa::BridgeFinalChain& final_chain, const rustaxa::PbftTwoTPlusOneThresholdFact& fact) const;
 
   /**
    * Validates canonical PBFT vote bytes through the unified Rust vote runtime.

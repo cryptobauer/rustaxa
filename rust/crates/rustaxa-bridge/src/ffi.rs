@@ -2463,17 +2463,12 @@ pub mod rustaxa_ffi {
         missing_vote_hash: [u8; 32],
     }
 
-    /// Caller facts for Rust-owned PBFT `2t+1` threshold lookup and caching.
+    /// Caller configuration for one Rust-composed PBFT `2t+1` threshold lookup.
     struct PbftTwoTPlusOneThresholdFact {
         pbft_period: u64,
         vote_type: u8,
-        current_pbft_chain_size: u64,
         committee_size: u64,
         number_of_proposers: u64,
-        has_total_dpos_votes_count: bool,
-        total_dpos_votes_count: u64,
-        future_dpos_state: bool,
-        unknown_error: bool,
     }
 
     /// Rust PBFT `2t+1` threshold lookup result.
@@ -2482,10 +2477,6 @@ pub mod rustaxa_ffi {
         error_code: String,
         has_threshold: bool,
         threshold: u64,
-        sortition_threshold: u64,
-        needs_total_dpos_votes: bool,
-        cache_hit: bool,
-        cached: bool,
     }
 
     /// Result of inspecting canonical legacy PBFT vote RLP in Rust.
@@ -5311,8 +5302,9 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             vote_hash: &[u8; 32],
         ) -> Result<bool>;
-        pub fn pbft_service_verified_votes_two_t_plus_one_threshold(
+        pub fn pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
             self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
             fact: PbftTwoTPlusOneThresholdFact,
         ) -> Result<PbftTwoTPlusOneThresholdPlan>;
         pub fn pbft_service_verified_votes_validate_canonical_vote(

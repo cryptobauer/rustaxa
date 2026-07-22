@@ -294,6 +294,15 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09I` | `active` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
 | `CRW-10` | `blocked` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 
+The VoteManager threshold sub-slice of `CRW-09I` is routed: `getPbftTwoTPlusOne` no longer collects or interprets generic
+FinalChain DPoS facts in C++. The PBFT service owns cache-first threshold composition, reads its sibling Rust PBFT-chain
+size without a C++ relay, borrows Rust FinalChain only for an exact-period total on cache miss, and returns the existing
+operation-specific threshold plan. CRW-09I remains active because VoteManager validation, weighted generation, local
+sortition, and PBFT-manager validation/eligibility still consume generic `PbftFinalChainFact*` carriers. The dead
+non-composed threshold CXX export and C++ facade are removed alongside this routing as a `CRW-07` contraction.
+The remaining operation-specific request/result carriers are narrowed to configuration input and the four
+VoteManager-consumed result fields; PBFT-chain, DPoS, sortition, cache, and two-pass control state stays Rust-private.
+
 The current `CRW-09` slice replaces raw Rust account-balance bytes with a `U256` domain value plus one private encoding-
 provenance bit. Untouched genesis accounts retain their fixed 32-byte lookup and snapshot representation, while new or
 successfully mutated accounts retain canonical minimal bytes. Snapshot decode rejects oversized and short leading-zero

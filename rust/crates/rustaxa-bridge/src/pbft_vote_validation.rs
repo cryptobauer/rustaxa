@@ -28,10 +28,6 @@ pub(crate) fn threshold_plan_to_ffi(
         error_code: plan.error_code.to_owned(),
         has_threshold: plan.has_threshold,
         threshold: plan.threshold,
-        sortition_threshold: plan.sortition_threshold,
-        needs_total_dpos_votes: plan.needs_total_dpos_votes,
-        cache_hit: plan.cache_hit,
-        cached: plan.cached,
     }
 }
 
