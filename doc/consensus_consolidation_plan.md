@@ -4411,6 +4411,23 @@ Validation passed with six focused proposer-FinalChain bridge tests, all 349 `ru
 `make rewrite-validate-fast`, `.githooks/pre-commit`, `dag_test` (6/6), and `dag_block_test` (13/13). Independent review
 approved the post-fix diff with no correctness, lock-order, API-exposure, regression, or coverage findings.
 
+### CRW-09I DAG Verification FinalChain Fact Composition
+
+The next `CRW-09I` contraction removes the DAG verification authorization round trip. The Rust DAG cursor now retains
+canonical signed block RLP, recovers the proposer only when the authorization stage is reached, snapshots its exact
+identity, releases the DAG lock, and queries the Rust FinalChain DPoS/VRF state directly. It then revalidates the cursor
+before applying facts. This preserves the legacy validation order while removing C++ sender/fact conversion authority.
+
+The accepted VRF key remains private in the Rust VDF action and its cursor-bound snapshot. C++ continues to supply the
+canonical block RLP, block level, proposal-period hash, and external gas-estimation facts, but no longer carries the VRF
+key. `DagVerifyBlockAuthorizationReport`, `DagDposAuthorizationFacts`, the standalone FinalChain authorization getter,
+the FinalChain shim relay, and both C++ fact/key copy helpers are deleted. CRW-09I remains active for the PBFT,
+vote/pillar, and mixed transaction-admission fact families.
+
+Validation passed with four focused verification-authorization bridge tests, all 352 `rustaxa-bridge` tests,
+`make rewrite-validate-fast`, `.githooks/pre-commit`, `dag_test` (6/6), and `dag_block_test` (13/13). Independent review
+approved the post-documentation-fix diff with no correctness, lifetime, lock-order, API-contract, or coverage findings.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

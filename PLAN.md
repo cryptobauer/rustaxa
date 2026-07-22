@@ -1398,8 +1398,9 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    type through `rustaxa-types`. Transaction-fee ownership, commission/delegator deltas, persisted reward pools, account
    credits, and successful claim settlement now use `DposTokenAmount`, while snapshot encoding provenance remains
    consensus-private and reward indexes remain arbitrary-width. Supply typing is complete, and final adapter contraction
-   is removing non-EVM Rust-to-C++-to-Rust fact relays in dependency order; the DAG proposer FinalChain height and
-   DPoS/VRF carrier bounce is already composed directly inside the Rust DAG service. Temporary C++ `BlockStats` decoding
+   is removing non-EVM Rust-to-C++-to-Rust fact relays in dependency order; both DAG proposal and DAG verification now
+   compose FinalChain DPoS/VRF facts directly inside the Rust DAG service and keep accepted VRF state cursor-private.
+   Temporary C++ `BlockStats` decoding
    remains part of the accepted StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope
    gate.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

@@ -108,14 +108,6 @@ class FinalChain {
   std::string trace(std::vector<state_api::EVMTransaction> state_trxs, std::vector<state_api::EVMTransaction> trxs,
                     EthBlockNumber blk_n, std::optional<state_api::Tracing> params = {}) const;
 
-  // Returns the Rust-collected DPoS/VRF facts required by `DagManager::verifyBlock`.
-  //
-  // Inputs:
-  // - consensus block number and sender address.
-  //
-  // Outputs are encoded in `rustaxa::DagDposAuthorizationFacts`; missing DPoS snapshots are represented as a status
-  // value, while Rust bridge infrastructure failures still throw.
-  rustaxa::DagDposAuthorizationFacts dagDposAuthorizationFacts(EthBlockNumber blk_num, addr_t const& addr) const;
   rustaxa::PbftFinalChainFacts collectPbftFinalChainFacts(rustaxa::PbftFinalChainFactRequest request) const;
   uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
   uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;

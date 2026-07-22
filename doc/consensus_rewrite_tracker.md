@@ -1137,8 +1137,8 @@ The next `CRW-05` slice absorbs sortition runtime state into the application-own
 Full production construction restores DAG, sortition, and transaction state from one Rust storage owner before
 publication; transaction/gas compatibility services expose neither DAG nor sortition capability. The standalone
 `BridgeSortitionParamsManager` handle and factories are deleted, while the C++ facade retains only compatibility
-materialization and the existing typed PBFT preview/stage/commit boundary. DAG verification and proposer sortition-fact
-relays remain the next narrowing work for this owner.
+materialization and the existing typed PBFT preview/stage/commit boundary. The later `CRW-09I` slices remove the DAG
+verification and proposer FinalChain/sortition fact relays from C++.
 
 The latest `CRW-05` slice absorbs external-EVM rewards-stat planning and publication state into Rust `FinalChain`.
 Validated execution reports now build a session-owned rewards plan bound to the exact request, period, prior FinalChain
@@ -1168,8 +1168,8 @@ compatibility facade or returns a six-field live-state report to PBFT. `BridgePb
 and retained storage-stage change before `BridgeDagTransactionService` atomically publishes a cloned next sortition
 state; stale cursors and preview mismatches leave sortition unchanged. The CXX report carrier and the rewrite-only C++
 commit helper are deleted. A post-primary preview/stage divergence is fatal rather than retryable because duplicate
-resume does not replay protected sortition mutation. DAG verification and proposer sortition-fact relays remain the next
-narrowing work for this owner.
+resume does not replay protected sortition mutation. The later `CRW-09I` slices remove the DAG verification and proposer
+FinalChain/sortition fact relays from C++.
 
 The latest `CRW-05`/`CRW-07` slice internalizes DAG VDF verification across the private DAG and sortition siblings of
 `BridgeDagTransactionService`. The DAG cursor retains its full signed-block hash, cursor identity, action generation,

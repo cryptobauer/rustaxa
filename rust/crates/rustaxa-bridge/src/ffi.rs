@@ -3919,6 +3919,8 @@ pub mod rustaxa_ffi {
         tips: Vec<DagHash>,
         block_transaction_hashes: Vec<DagTransactionHash>,
         supplied_transaction_hashes: Vec<DagTransactionHash>,
+        /// Canonical signed block bytes retained for authorization-stage sender recovery.
+        block_rlp: Vec<u8>,
     }
 
     /// One requested Rust-owned `verifyBlock` session step.
@@ -3959,14 +3961,6 @@ pub mod rustaxa_ffi {
         account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
     }
 
-    /// Live DPoS/VRF authorization report for one `verifyBlock` session.
-    struct DagVerifyBlockAuthorizationReport {
-        vrf_key_found: bool,
-        sender_eligible_vote_count: u64,
-        vdf_sortition_max_vote_count: u64,
-        eligibility_status: u8,
-    }
-
     /// Proof-bearing facts needed to verify the active Rust-owned DAG cursor.
     /// Session identity, proposal period, normalized vote counts, and
     /// historical sortition parameters remain private Rust state.
@@ -3976,7 +3970,6 @@ pub mod rustaxa_ffi {
         block_rlp: Vec<u8>,
         block_level: u64,
         proposal_period_hash: [u8; 32],
-        vrf_public_key: [u8; 32],
     }
 
     /// External gas facts for one `verifyBlock` session.
@@ -3988,15 +3981,6 @@ pub mod rustaxa_ffi {
         estimated_transactions_weight: u64,
         dag_gas_limit: u64,
         pbft_gas_limit: u64,
-    }
-
-    /// Rust-collected DPoS and VRF facts for DAG authorization.
-    struct DagDposAuthorizationFacts {
-        vrf_key_found: bool,
-        vrf_key: Vec<u8>,
-        sender_eligible_vote_count: u64,
-        vdf_sortition_max_vote_count: u64,
-        eligibility_status: u8,
     }
 
     /// External/configured facts used to open one runtime-owned proposal session.
@@ -4685,10 +4669,17 @@ pub mod rustaxa_ffi {
             runtime: &BridgeDagTransactionService,
             report: DagVerifyBlockTransactionCompletionReport,
         ) -> Result<DagVerifyBlockSessionStep>;
+        /// Collects DPoS/VRF facts from the borrowed Rust FinalChain for the
+        /// active authorization cursor. Missing or wrong-stage cursors return
+        /// the stable invalid-step carrier. The DAG lock is released during
+        /// sender recovery and FinalChain lookup; Rust then revalidates the
+        /// exact cursor before applying facts. Decode, recovery, storage, or
+        /// FinalChain failures remove only the unchanged owning cursor and
+        /// propagate as bridge errors.
         #[rust_name = "service_dag_manager_runtime_verify_block_session_report_authorization"]
         pub fn dag_manager_runtime_verify_block_session_report_authorization(
             runtime: &BridgeDagTransactionService,
-            report: DagVerifyBlockAuthorizationReport,
+            final_chain: &BridgeFinalChain,
         ) -> Result<DagVerifyBlockSessionStep>;
         /// Verifies the active VDF action through isolated DAG and sortition
         /// lock intervals, then advances only the unchanged cursor.
@@ -6071,11 +6062,6 @@ pub mod rustaxa_ffi {
             block_number: u64,
             address: &[u8; 20],
         ) -> Result<bool>;
-        pub fn get_dag_dpos_authorization_facts(
-            self: &BridgeFinalChain,
-            block_number: u64,
-            sender: &[u8; 20],
-        ) -> Result<DagDposAuthorizationFacts>;
         pub fn get_dpos_validators_total_stakes(
             self: &BridgeFinalChain,
             block_number: u64,

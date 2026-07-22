@@ -27,9 +27,11 @@ use std::sync::{Mutex, MutexGuard};
 /// state for standalone TransactionManager or GasPricer tests; unavailable calls fail with
 /// stable domain-specific errors. Calls hold one domain mutex unless they explicitly compose
 /// sibling state, in which case they acquire locks only in the universal
-/// DAG-then-sortition-then-transaction order. Proposer FinalChain-fact collection snapshots
-/// under DAG, releases every service lock for the FinalChain query, then reacquires DAG followed
-/// by sortition to revalidate and apply. No guard crosses an external executor callback.
+/// DAG-then-sortition-then-transaction order. Proposer and verification FinalChain-fact collection
+/// snapshot under DAG and release every service lock for the FinalChain query. Proposer collection
+/// then reacquires DAG followed by sortition; verification reacquires only DAG. Both revalidate the
+/// exact cursor before applying, and matching infrastructure failures clean only their owning
+/// cursor. No guard crosses an external executor callback.
 pub struct BridgeDagTransactionService {
     transaction: Mutex<TransactionRuntimeState>,
     dag: Mutex<Option<DagRuntimeState>>,
@@ -970,7 +972,70 @@ fn verify_block_transaction_view_requests(
         )
         .collect()
 }
-dag_free_mut_result!(service_dag_manager_runtime_verify_block_session_report_authorization, dag_manager_runtime_verify_block_session_report_authorization(report: DagVerifyBlockAuthorizationReport) -> DagVerifyBlockSessionStep);
+/// Collects FinalChain DPoS/VRF facts for the exact active DAG verification cursor.
+///
+/// The cursor is snapshotted under the DAG lock, the FinalChain query runs with
+/// every service lock released, and the unchanged cursor is revalidated before
+/// facts advance it. Infrastructure failures remove only the matching cursor.
+pub fn service_dag_manager_runtime_verify_block_session_report_authorization(
+    service: &BridgeDagTransactionService,
+    final_chain: &BridgeFinalChain,
+) -> Result<DagVerifyBlockSessionStep> {
+    service_dag_manager_runtime_verify_block_session_report_authorization_with_hook(
+        service,
+        final_chain,
+        || {},
+    )
+}
+
+fn service_dag_manager_runtime_verify_block_session_report_authorization_with_hook(
+    service: &BridgeDagTransactionService,
+    final_chain: &BridgeFinalChain,
+    between_query_and_apply: impl FnOnce(),
+) -> Result<DagVerifyBlockSessionStep> {
+    let snapshot = {
+        let mut dag_guard = service.dag()?;
+        let dag = dag_guard
+            .as_mut()
+            .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+        match dag_manager_runtime_prepare_verify_block_authorization(dag) {
+            DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
+            DagVerifyBlockAuthorizationPreparation::Step(step) => return Ok(step),
+        }
+    };
+
+    let facts_result = (|| {
+        let sender = rustaxa_types::dag::DagBlock::try_from(
+            rustaxa_types::codec::rlp::dag::DagBlockRlp::new(&snapshot.block_rlp),
+        )
+        .context("DAG_VERIFY_SESSION_AUTHORIZATION_BLOCK_DECODE")?
+        .recover_sender()
+        .context("DAG_VERIFY_SESSION_AUTHORIZATION_SENDER_RECOVERY")?
+        .0;
+        final_chain
+            .0
+            .dag_dpos_authorization_facts(snapshot.proposal_period.into(), sender)
+    })();
+    let facts = match facts_result {
+        Ok(facts) => facts,
+        Err(error) => {
+            let mut dag_guard = service.dag()?;
+            let dag = dag_guard
+                .as_mut()
+                .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+            dag_manager_runtime_cleanup_verify_block_authorization(dag, &snapshot);
+            return Err(error);
+        }
+    };
+
+    between_query_and_apply();
+
+    let mut dag_guard = service.dag()?;
+    let dag = dag_guard
+        .as_mut()
+        .ok_or_else(|| anyhow!("DAG_SERVICE_UNAVAILABLE"))?;
+    dag_manager_runtime_apply_verify_block_authorization(dag, &snapshot, facts)
+}
 dag_free_mut_fallible!(service_dag_manager_runtime_verify_block_session_report_gas, dag_manager_runtime_verify_block_session_report_gas(report: DagVerifyBlockGasReport) -> DagVerifyBlockSessionStep);
 
 /// Executes cursor-bound DAG VDF verification across isolated DAG and
@@ -1012,7 +1077,7 @@ pub fn service_dag_transaction_service_verify_block_session_vdf(
             block_rlp: request.block_rlp,
             block_level: request.block_level,
             proposal_period_hash: H256::from(request.proposal_period_hash),
-            vrf_public_key: request.vrf_public_key,
+            vrf_public_key: snapshot.vrf_public_key,
             sortition_params,
             sender_eligible_vote_count: snapshot.vote_count,
             vdf_sortition_max_vote_count: snapshot.max_vote_count,
@@ -1608,6 +1673,7 @@ mod tests {
                     .iter()
                     .map(|hash| DagTransactionHash { hash: *hash })
                     .collect(),
+                block_rlp: Vec::new(),
             },
         )
         .expect("verify-block session should begin");
@@ -1626,9 +1692,46 @@ mod tests {
         block.out().to_vec()
     }
 
+    fn sign_vdf_test_block(block_rlp: &[u8]) -> Vec<u8> {
+        sign_vdf_test_block_with_seed(block_rlp, 0x44)
+    }
+
+    fn sign_vdf_test_block_with_seed(block_rlp: &[u8], seed: u8) -> Vec<u8> {
+        let mut block = rustaxa_types::dag::DagBlock::try_from(
+            rustaxa_types::codec::rlp::dag::DagBlockRlp::new(block_rlp),
+        )
+        .expect("test DAG block should decode");
+        let key = SigningKey::from_slice(&[seed; 32]).expect("test DAG signing key");
+        let (signature, recovery_id) = key
+            .sign_prehash_recoverable(block.signing_hash().as_bytes())
+            .expect("test DAG block should sign");
+        block.signature[..64].copy_from_slice(&signature.to_bytes());
+        block.signature[64] = recovery_id.to_byte();
+
+        let mut encoded = RlpStream::new_list(8);
+        encoded.append(&block.pivot);
+        encoded.append(&block.level);
+        encoded.append(&block.timestamp);
+        encoded.append(&block.vdf);
+        encoded.append_list(&block.tips);
+        encoded.append_list(&block.transactions);
+        encoded.append(&block.signature.as_ref());
+        encoded.append(&block.gas_estimation);
+        encoded.out().to_vec()
+    }
+
     fn valid_vdf_request(
         threshold_upper: u16,
         proposal_period_hash: [u8; 32],
+    ) -> DagVerifyBlockVdfRequest {
+        valid_vdf_request_with_votes(threshold_upper, proposal_period_hash, 1, 1)
+    }
+
+    fn valid_vdf_request_with_votes(
+        threshold_upper: u16,
+        proposal_period_hash: [u8; 32],
+        vote_count: u64,
+        max_vote_count: u64,
     ) -> DagVerifyBlockVdfRequest {
         let placeholder = vdf_test_block(Vec::new(), 0);
         let vrf_input =
@@ -1647,8 +1750,8 @@ mod tests {
             &SECRET_KEY,
             &vrf_input,
             &vdf_input,
-            1,
-            1,
+            vote_count,
+            max_vote_count,
             &CancellationToken::new(),
         )
         .expect("VDF proof should generate");
@@ -1662,7 +1765,6 @@ mod tests {
             block_rlp: vdf_test_block(payload.out().to_vec(), 0),
             block_level: 1,
             proposal_period_hash,
-            vrf_public_key: public_key_from_secret(&SECRET_KEY).expect("VRF public key"),
         }
     }
 
@@ -1679,6 +1781,7 @@ mod tests {
                 tips: Vec::new(),
                 block_transaction_hashes: Vec::new(),
                 supplied_transaction_hashes: Vec::new(),
+                block_rlp: block_rlp.to_vec(),
             },
         )
         .expect("verify session should begin");
@@ -1698,9 +1801,21 @@ mod tests {
             authorization.action,
             DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
         );
-        service_dag_manager_runtime_verify_block_session_report_authorization(
-            service,
-            DagVerifyBlockAuthorizationReport {
+        let snapshot = {
+            let mut dag = service.dag().unwrap();
+            match dag_manager_runtime_prepare_verify_block_authorization(dag.as_mut().unwrap()) {
+                DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
+                DagVerifyBlockAuthorizationPreparation::Step(_) => {
+                    panic!("verification cursor should await authorization")
+                }
+            }
+        };
+        let mut dag = service.dag().unwrap();
+        dag_manager_runtime_apply_verify_block_authorization(
+            dag.as_mut().unwrap(),
+            &snapshot,
+            rustaxa_consensus::dag::DagDposAuthorizationFacts {
+                vrf_key: Some(public_key_from_secret(&SECRET_KEY).unwrap()),
                 vrf_key_found: true,
                 sender_eligible_vote_count: 1,
                 vdf_sortition_max_vote_count: 1,
@@ -1708,6 +1823,230 @@ mod tests {
             },
         )
         .expect("authorization should advance to VDF")
+    }
+
+    fn begin_verify_authorization_action(
+        service: &BridgeDagTransactionService,
+        block_rlp: &[u8],
+    ) -> DagVerifyBlockSessionStep {
+        service_dag_manager_runtime_begin_verify_block_session(
+            service,
+            DagVerifyBlockSessionInput {
+                block_hash: keccak256(block_rlp).0,
+                block_level: 1,
+                pivot: [1; 32],
+                tips: Vec::new(),
+                block_transaction_hashes: Vec::new(),
+                supplied_transaction_hashes: Vec::new(),
+                block_rlp: block_rlp.to_vec(),
+            },
+        )
+        .expect("verify session should begin");
+        let preparation =
+            service_dag_manager_runtime_verify_block_session_prepare_transactions(service)
+                .expect("empty transaction query should prepare");
+        service_dag_manager_runtime_verify_block_session_complete_transactions(
+            service,
+            DagVerifyBlockTransactionCompletionReport {
+                cursor_id: preparation.cursor_id,
+                proposal_period: preparation.proposal_period,
+                account_nonce_facts: Vec::new(),
+            },
+        )
+        .expect("empty transaction query should complete")
+    }
+
+    #[test]
+    fn verify_authorization_composes_final_chain_and_keeps_vrf_key_private() {
+        let dir = unique_temp_dir("rustaxa_dag_verify_composed_authorization");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
+        let mut request = valid_vdf_request_with_votes(1_000, [0xA7; 32], 10, 30);
+        request.block_rlp = sign_vdf_test_block(&request.block_rlp);
+        let authorization = begin_verify_authorization_action(&service, &request.block_rlp);
+        assert_eq!(
+            authorization.action,
+            DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+        );
+
+        let vdf = service_dag_manager_runtime_verify_block_session_report_authorization(
+            &service,
+            &final_chain,
+        )
+        .expect("Rust FinalChain authorization should advance the cursor");
+        assert_eq!(vdf.action, DAG_VERIFY_SESSION_ACTION_VDF_SORTITION);
+        assert_eq!(vdf.vote_count, 10);
+        assert_eq!(vdf.max_vote_count, 30);
+
+        let gas = service_dag_transaction_service_verify_block_session_vdf(
+            &service,
+            DagVerifyBlockVdfRequest {
+                cursor_id: vdf.cursor_id,
+                ..request
+            },
+        )
+        .expect("VDF verification should use the cursor-private VRF key");
+        assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_authorization_rejects_wrong_action_and_stale_replacement() {
+        let dir = unique_temp_dir("rustaxa_dag_verify_authorization_stale");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
+        let block_rlp = sign_vdf_test_block(&vdf_test_block(Vec::new(), 0));
+        begin_verify_block_session(&service, &[], &[]);
+        let wrong = service_dag_manager_runtime_verify_block_session_report_authorization(
+            &service,
+            &final_chain,
+        )
+        .expect("wrong action should use the stable invalid-step carrier");
+        assert_eq!(wrong.status, 2);
+        assert!(wrong
+            .error_code
+            .contains("DAG_VERIFY_SESSION_UNEXPECTED_AUTHORIZATION_REPORT"));
+
+        begin_verify_authorization_action(&service, &block_rlp);
+        let stale =
+            service_dag_manager_runtime_verify_block_session_report_authorization_with_hook(
+                &service,
+                &final_chain,
+                || {
+                    begin_verify_block_session(&service, &[], &[]);
+                },
+            )
+            .err()
+            .expect("replacement cursor must reject stale FinalChain facts");
+        assert!(stale
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_AUTHORIZATION_CURSOR_MISMATCH"));
+        let replacement = service_dag_manager_runtime_verify_block_session_next(&service).unwrap();
+        assert_eq!(
+            replacement.action,
+            DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_authorization_preserves_snapshot_and_missing_key_rejections() {
+        let dir = unique_temp_dir("rustaxa_dag_verify_authorization_rejections");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
+        let unknown_sender_block =
+            sign_vdf_test_block_with_seed(&vdf_test_block(Vec::new(), 0), 0x45);
+        begin_verify_authorization_action(&service, &unknown_sender_block);
+        let missing_key = service_dag_manager_runtime_verify_block_session_report_authorization(
+            &service,
+            &final_chain,
+        )
+        .expect("missing validator VRF key is a consensus rejection");
+        assert!(missing_key.complete);
+        assert_eq!(
+            missing_key.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FAILED_VDF_VERIFICATION
+        );
+
+        {
+            let mut dag = service.dag().unwrap();
+            dag.as_mut()
+                .unwrap()
+                .dag_manager_runtime_ensure_proposal_period_mapping(1, 1)
+                .unwrap();
+        }
+        let proposer_block = sign_vdf_test_block(&vdf_test_block(Vec::new(), 0));
+        begin_verify_authorization_action(&service, &proposer_block);
+        let unavailable = service_dag_manager_runtime_verify_block_session_report_authorization(
+            &service,
+            &final_chain,
+        )
+        .expect("missing historical snapshot is a consensus rejection");
+        assert!(unavailable.complete);
+        assert_eq!(
+            unavailable.reject_code,
+            rustaxa_consensus::dag::DAG_VERIFY_REJECT_FUTURE_BLOCK
+        );
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn verify_authorization_decode_failure_removes_the_owned_cursor() {
+        let dir = unique_temp_dir("rustaxa_dag_verify_authorization_decode_failure");
+        let storage = create_storage(dir.to_str().unwrap()).unwrap();
+        let service = create_dag_transaction_service_from_storage(
+            &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
+            queue_config(),
+            gas_config(),
+            u64::MAX,
+        )
+        .unwrap();
+        let final_chain = make_proposer_final_chain(&storage, proposer_address());
+        begin_verify_authorization_action(&service, &[0x80]);
+        let decode_error = service_dag_manager_runtime_verify_block_session_report_authorization(
+            &service,
+            &final_chain,
+        )
+        .err()
+        .expect("malformed retained block bytes are an infrastructure error");
+        assert!(decode_error
+            .to_string()
+            .contains("DAG_VERIFY_SESSION_AUTHORIZATION_BLOCK_DECODE"));
+        let removed = service_dag_manager_runtime_verify_block_session_next(&service).unwrap();
+        assert_eq!(removed.status, 2);
+        assert!(removed
+            .error_code
+            .contains("DAG_VERIFY_SESSION_NOT_STARTED"));
+
+        drop(service);
+        drop(storage);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2149,7 +2488,6 @@ mod tests {
                 block_rlp,
                 block_level: 1,
                 proposal_period_hash: [0x92; 32],
-                vrf_public_key: public_key_from_secret(&SECRET_KEY).unwrap(),
             },
         )
         .expect("malformed proof should be a deterministic consensus rejection");
@@ -2189,6 +2527,7 @@ mod tests {
                 tips: Vec::new(),
                 block_transaction_hashes: Vec::new(),
                 supplied_transaction_hashes: Vec::new(),
+                block_rlp: request.block_rlp.clone(),
             },
         )
         .unwrap();

@@ -747,9 +747,9 @@ pub struct DagVerifyVdfDposFacts {
 /// DPoS and VRF facts collected for DAG VDF authorization.
 ///
 /// Inputs are collected from FinalChain state for one `(proposal_period,
-/// sender)` pair. The optional `vrf_key` is included so the transitional C++
-/// shim can continue running C++ VDF proof verification without repeating VRF
-/// lookup through `KeyManager`.
+/// sender)` pair. The optional `vrf_key` is retained by the Rust DAG cursor
+/// after authorization and consumed only by cursor-bound Rust VDF verification;
+/// it is not returned through CXX.
 ///
 /// Output invariants:
 /// - `vrf_key_found` is true exactly when `vrf_key` contains a key.

@@ -544,6 +544,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   relay. The cursor-bound DAG service now reads Rust FinalChain head and DPoS/VRF facts directly with lock-free query
   separation and cursor/sortition revalidation. The retained `BridgeFinalChain` and `BridgeDagTransactionService`
   handles are passed only through shim-private composition; no new handle or public compatibility API is added.
+- The next `CRW-09I` contraction deletes the DAG verification `DagVerifyBlockAuthorizationReport` and
+  `DagDposAuthorizationFacts` CXX carriers, the standalone FinalChain getter/shim relay, and the C++ VRF-key copy. The
+  DAG cursor retains signed block bytes, recovers the sender at the established authorization stage, reads FinalChain
+  facts without service locks held, revalidates the exact cursor, and keeps the accepted VRF key private through VDF
+  verification. Retained block/proposal-hash and gas reports remain classified executor/public-object facts.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

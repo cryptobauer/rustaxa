@@ -1056,11 +1056,6 @@ uint64_t FinalChain::dposEligibleTotalVoteCount(EthBlockNumber blk_num) const {
   return rust_final_chain_.value()->get_dpos_eligible_total_vote_count(blk_num);
 }
 
-rustaxa::DagDposAuthorizationFacts FinalChain::dagDposAuthorizationFacts(EthBlockNumber blk_num,
-                                                                         const addr_t& addr) const {
-  return rust_final_chain_.value()->get_dag_dpos_authorization_facts(blk_num, into_address_array(addr));
-}
-
 rustaxa::PbftFinalChainFacts FinalChain::collectPbftFinalChainFacts(rustaxa::PbftFinalChainFactRequest request) const {
   return rust_final_chain_.value()->collect_pbft_final_chain_facts(std::move(request));
 }

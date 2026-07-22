@@ -241,16 +241,6 @@ std::vector<std::shared_ptr<DagBlock>> from_bridge_dag_sync_blocks(const rust::V
   return out;
 }
 
-std::array<uint8_t, 32> to_bridge_vrf_public_key(const rust::Vec<uint8_t> &vrf_public_key) {
-  if (vrf_public_key.size() != 32) {
-    throw std::runtime_error("DagManager: VRF public key must be 32 bytes");
-  }
-
-  std::array<uint8_t, 32> out{};
-  std::copy(vrf_public_key.begin(), vrf_public_key.end(), out.begin());
-  return out;
-}
-
 dev::bytes rust_vdf_message(const blk_hash_t &pivot, const std::vector<trx_hash_t> &trx_hashes) {
   const auto bridge_pivot = to_bridge_hash(pivot);
   return from_rust_bytes(rustaxa::dag_vdf_message(bridge_pivot, to_bridge_dag_hashes(trx_hashes)));
@@ -264,6 +254,7 @@ rustaxa::DagVerifyBlockSessionInput to_bridge_verify_block_session_input(
   out.pivot = to_bridge_hash(block->getPivot());
   out.tips = to_bridge_dag_hashes(block->getTips());
   out.block_transaction_hashes = to_bridge_dag_transaction_hashes(block->getTrxs());
+  out.block_rlp = to_rust_vec(block->rlp(true));
 
   vec_trx_t supplied_trx_hashes;
   supplied_trx_hashes.reserve(trxs.size());
@@ -306,16 +297,6 @@ std::optional<DagManager::VerifyBlockReturnType> to_verify_block_reject(uint32_t
   }
 }
 
-rustaxa::DagVerifyBlockAuthorizationReport to_bridge_verify_block_authorization_report(
-    const rustaxa::DagDposAuthorizationFacts &facts) {
-  rustaxa::DagVerifyBlockAuthorizationReport out;
-  out.vrf_key_found = facts.vrf_key_found;
-  out.sender_eligible_vote_count = facts.sender_eligible_vote_count;
-  out.vdf_sortition_max_vote_count = facts.vdf_sortition_max_vote_count;
-  out.eligibility_status = facts.eligibility_status;
-  return out;
-}
-
 rustaxa::DagVerifyBlockGasReport to_bridge_verify_block_gas_report(uint64_t block_gas_estimation,
                                                                    uint64_t estimated_transactions_weight,
                                                                    uint64_t dag_gas_limit, uint64_t pbft_gas_limit) {
@@ -325,11 +306,6 @@ rustaxa::DagVerifyBlockGasReport to_bridge_verify_block_gas_report(uint64_t bloc
   out.dag_gas_limit = dag_gas_limit;
   out.pbft_gas_limit = pbft_gas_limit;
   return out;
-}
-
-rustaxa::DagDposAuthorizationFacts rust_dag_authorization_facts(const final_chain::FinalChain &final_chain,
-                                                                PbftPeriod proposal_period, const addr_t &proposer) {
-  return final_chain.dagDposAuthorizationFacts(proposal_period, proposer);
 }
 
 }  // namespace
@@ -484,12 +460,8 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
     throw std::runtime_error("DagManager: Rust verifyBlock session did not request authorization facts");
   }
 
-  const auto authorization_facts = rust_dag_authorization_facts(*final_chain_, proposal_period, blk->getSender());
-  {
-    std::unique_lock lock(rust_graphs_mutex_);
-    step = rustaxa::dag_manager_runtime_verify_block_session_report_authorization(
-        dag_transaction_service_->service(), to_bridge_verify_block_authorization_report(authorization_facts));
-  }
+  step = rustaxa::dag_manager_runtime_verify_block_session_report_authorization(
+      dag_transaction_service_->service(), *final_chain_->rust_final_chain_.value());
   if (auto complete = finish_if_complete(step); complete.has_value()) {
     return std::move(*complete);
   }
@@ -502,7 +474,6 @@ std::pair<DagManager::VerifyBlockReturnType, SharedTransactions> DagManager::ver
   vdf_request.block_rlp = to_rust_vec(blk->rlp(true));
   vdf_request.block_level = blk->getLevel();
   vdf_request.proposal_period_hash = to_bridge_hash(getPeriodBlockHashForDagProposal(proposal_period));
-  vdf_request.vrf_public_key = to_bridge_vrf_public_key(authorization_facts.vrf_key);
   step = rustaxa::dag_transaction_service_verify_block_session_vdf(dag_transaction_service_->service(),
                                                                    std::move(vdf_request));
   if (auto complete = finish_if_complete(step); complete.has_value()) {
