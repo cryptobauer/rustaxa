@@ -290,8 +290,8 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09E` | `complete` | Type redelegation correction amounts and their ordered hardfork application. | `CRW-09C`; `CRW-09D` | Corrections preserve configured order and activation semantics, validate the principal anchor and repair aggregate/reward-head state atomically, and retain same-validator corruption policy and restart parity. |
 | `CRW-09F` | `complete` | Type arbitrary-width reward-per-stake accumulators and delegation cursors. | `CRW-09D` | A distinct BigUint-backed reward-index domain owns validator accumulators and delegation cursors while regression policy, rounding, claims, persistence, and restart remain compatible. |
 | `CRW-09G` | `complete` | Migrate reward pools and claim settlement using shared token amounts. | `CRW-09D`; `CRW-09F` | Commission/delegator pools, fee rewards, claims, account credits, cursor advancement, rollback, receipts, and restart use `DposTokenAmount` without changing reward-index semantics. |
-| `CRW-09H` | `ready` | Type supply, minted rewards, and Aspen migration state. | `CRW-09C`; `CRW-09G` | Pre-/post-Aspen supply state is explicit; migration runs once; inconsistent persisted combinations fail closed; checked cap/reward arithmetic and accepted old schemas retain activation, publication, and restart parity. |
-| `CRW-09I` | `blocked` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
+| `CRW-09H` | `complete` | Type supply, minted rewards, and Aspen migration state. | `CRW-09C`; `CRW-09G` | Pre-/post-Aspen supply state is explicit; migration runs once; inconsistent persisted combinations fail closed; checked cap/reward arithmetic and accepted old schemas retain activation, publication, and restart parity. |
+| `CRW-09I` | `ready` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
 | `CRW-10` | `blocked` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 
 The current `CRW-09` slice replaces raw Rust account-balance bytes with a `U256` domain value plus one private encoding-
@@ -358,6 +358,18 @@ snapshot-shape, compatibility-test, or `CRW-07` inventory delta is introduced.
 All 58 `rustaxa-types`, 811 `rustaxa-consensus`, and 347 `rustaxa-bridge` tests, Tier 1, FinalChain Tier 2, Tier 3
 Rust-enabled/pure-C++ parity, bridge-inventory, and pre-commit gates passed. Independent configured review approved the
 slice without actionable findings; `CRW-09H` is now ready.
+
+`CRW-09H` keeps the broadly shared fungible U256 vocabulary as `DposTokenAmount` in `rustaxa-types` while defining
+Aspen migration phase, yield, and persisted byte provenance privately in `rustaxa-consensus`. Reward configuration,
+minted plans, supply-cap arithmetic, and finalized header rewards are typed after bridge ingress without changing the
+external EVM or CXX byte carriers. Snapshot slots 8-10 retain their accepted schema, but conflicting fields, zero or
+oversized supplies, activation-order violations, configured supply above the cap, and restart histories that regress
+minted totals, migration phase, or total supply now fail closed. Migration remains lazy, records the complete
+post-reward state once, and candidate staging prevents cap failures from publishing accounts, headers, snapshots, or
+heads. No CXX, shim, module-flag, compatibility-test, or `CRW-07` inventory delta is introduced. All 58
+`rustaxa-types`, 816 `rustaxa-consensus`, and 348 `rustaxa-bridge` tests and the required Tier 1, FinalChain Tier 2,
+Tier 3 parity, bridge-inventory, and pre-commit gates passed. Independent configured review approved the final diff;
+`CRW-09I` is now ready.
 
 `CRW-08` current slice closes native DPoS delegate transaction receipt/state parity. Rust now charges top-level
 transaction intrinsic gas in addition to action gas for every Rust-native DPoS/slashing transaction while preserving

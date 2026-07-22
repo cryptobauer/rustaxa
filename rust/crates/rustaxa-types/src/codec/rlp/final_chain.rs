@@ -1,7 +1,7 @@
 use crate::codec::rlp::pbft::SignedPbftBlockRlp;
 use crate::final_chain::{
-    BlockHeaderContext, FinalChainBlockHeader, FinalChainBlockNumber, FinalChainLogBloom,
-    StoredFinalChainBlockHeader,
+    BlockHeaderContext, DposTokenAmount, FinalChainBlockHeader, FinalChainBlockNumber,
+    FinalChainLogBloom, StoredFinalChainBlockHeader,
 };
 use crate::pbft::PbftBlockMetadata;
 use anyhow::Result;
@@ -124,7 +124,7 @@ fn decode_stored_block_header_rlp(rlp: &Rlp<'_>) -> Result<StoredFinalChainBlock
                 anyhow::anyhow!("FINAL_CHAIN_STORED_HEADER_LOG_BLOOM_INVALID_LENGTH: {error}")
             })?,
         gas_used: rlp.val_at::<u64>(STORED_HEADER_GAS_USED_POS)?.into(),
-        total_reward: rlp.val_at(STORED_HEADER_TOTAL_REWARD_POS)?,
+        total_reward: DposTokenAmount::from(rlp.val_at::<U256>(STORED_HEADER_TOTAL_REWARD_POS)?),
     })
 }
 
@@ -136,7 +136,7 @@ fn encode_stored_block_header_rlp(header: &StoredFinalChainBlockHeader) -> Vec<u
     stream.append(&header.receipts_root);
     stream.append(&header.log_bloom.as_ref());
     stream.append(&header.gas_used.as_u64());
-    stream.append(&header.total_reward);
+    stream.append(&header.total_reward.as_u256());
     stream.out().to_vec()
 }
 
@@ -160,7 +160,7 @@ fn encode_legacy_block_header(header: &FinalChainBlockHeader) -> Vec<u8> {
     stream.append(&header.gas_limit.as_u64());
     stream.append(&header.gas_used.as_u64());
     stream.append(&header.timestamp);
-    stream.append(&header.total_reward);
+    stream.append(&header.total_reward.as_u256());
     stream.append(&header.extra_data.as_slice());
     stream.out().to_vec()
 }

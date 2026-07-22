@@ -493,7 +493,7 @@ impl ConsensusQueryApi {
             receipts_root: stored_header.receipts_root.into(),
             log_bloom: stored_header.log_bloom.as_ref().to_vec(),
             gas_used: stored_header.gas_used.as_u64(),
-            total_reward: stored_header.total_reward.to_big_endian(),
+            total_reward: stored_header.total_reward.to_fixed_be_bytes(),
             stored_header_rlp,
             has_pbft_hash: pbft_hash.found,
             pbft_block_hash: pbft_hash.hash,
@@ -1921,7 +1921,7 @@ mod tests {
             receipts_root: H256::from_low_u64_be(4),
             log_bloom: [0xAA; 256].into(),
             gas_used: 55.into(),
-            total_reward: U256::from(66u64),
+            total_reward: rustaxa_types::DposTokenAmount::from(U256::from(66u64)),
         })
         .into_vec()
     }

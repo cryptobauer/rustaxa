@@ -843,7 +843,7 @@ mod tests {
             receipts_root: H256::from_low_u64_be(13),
             log_bloom: [0xBB; 256].into(),
             gas_used: 99.into(),
-            total_reward: U256::from(100u64),
+            total_reward: rustaxa_types::DposTokenAmount::from(U256::from(100u64)),
         })
         .into_vec()
     }

@@ -535,6 +535,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   snapshot and receipt boundaries. Transaction-fee ownership, reward deltas, pools, and successful transfers use
   `DposTokenAmount`; persistence provenance remains private to `rustaxa-consensus`. No carrier, handle, export,
   constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
+- `CRW-09H` types reward configuration, minted totals, Aspen supply arithmetic, and finalized header rewards after
+  bridge ingress while keeping migration phase, yield, and snapshot byte provenance private to `rustaxa-consensus`.
+  Existing external EVM/CXX byte carriers and snapshot slots 8-10 remain unchanged. No handle, export, constructor,
+  shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

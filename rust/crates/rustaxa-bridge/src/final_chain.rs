@@ -517,6 +517,19 @@ fn genesis_dpos_config_from_ffi(
     })
 }
 
+/// Converts one rewards-configuration monetary input at the CXX ingress.
+///
+/// CXX retains byte-vector carriers for compatibility. Rust accepts every
+/// unsigned big-endian value through 32 bytes and rejects wider inputs before
+/// constructing or publishing a FinalChain instance.
+fn rewards_token_amount_from_ffi(
+    bytes: &[u8],
+    field: &'static str,
+) -> Result<rustaxa_types::DposTokenAmount, anyhow::Error> {
+    rustaxa_types::DposTokenAmount::try_from_be_slice(bytes)
+        .map_err(|_| anyhow::anyhow!("FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256: field={field}"))
+}
+
 /// Converts ordered FFI hardfork corrections into typed Rust configuration.
 ///
 /// Vector order and duplicate entries are consensus-significant and are
@@ -608,9 +621,22 @@ pub fn create_final_chain_with_rewards_config(
             dpos_delegation_locking_period: rewards_config.dpos_delegation_locking_period,
             cornus_period: rewards_config.cornus_period.into(),
             cornus_delegation_locking_period: rewards_config.cornus_delegation_locking_period,
-            genesis_balance_sum: rewards_config.genesis_balance_sum,
-            aspen_max_supply: rewards_config.aspen_max_supply,
-            aspen_generated_rewards: rewards_config.aspen_generated_rewards,
+            genesis_balance_sum: if rewards_config.genesis_balance_sum.is_empty() {
+                None
+            } else {
+                Some(rewards_token_amount_from_ffi(
+                    &rewards_config.genesis_balance_sum,
+                    "genesis_balance_sum",
+                )?)
+            },
+            aspen_max_supply: rewards_token_amount_from_ffi(
+                &rewards_config.aspen_max_supply,
+                "aspen_max_supply",
+            )?,
+            aspen_generated_rewards: rewards_token_amount_from_ffi(
+                &rewards_config.aspen_generated_rewards,
+                "aspen_generated_rewards",
+            )?,
             cacti_period: rewards_config.cacti_period.into(),
             cacti_delegation_locking_period: rewards_config.cacti_delegation_locking_period,
             magnolia_jail_time: rewards_config.magnolia_jail_time,
@@ -1266,6 +1292,28 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256"
+        );
+    }
+
+    #[test]
+    fn rewards_config_amounts_validate_once_with_field_specific_errors() {
+        assert_eq!(
+            rewards_token_amount_from_ffi(&[], "genesis_balance_sum")
+                .unwrap()
+                .as_u256(),
+            U256::zero()
+        );
+        assert_eq!(
+            rewards_token_amount_from_ffi(&[0xff; 32], "aspen_max_supply")
+                .unwrap()
+                .as_u256(),
+            U256::MAX
+        );
+        assert_eq!(
+            rewards_token_amount_from_ffi(&[0xff; 33], "aspen_generated_rewards")
+                .unwrap_err()
+                .to_string(),
+            "FINAL_CHAIN_DPOS_TOKEN_AMOUNT_EXCEEDS_U256: field=aspen_generated_rewards"
         );
     }
 
@@ -2997,7 +3045,7 @@ mod tests {
         );
         assert_eq!(stored_header.log_bloom, commit_plan.header_log_bloom);
         assert_eq!(stored_header.gas_used.as_u64(), 35);
-        assert_eq!(stored_header.total_reward, U256::from(0x99));
+        assert_eq!(stored_header.total_reward.as_u256(), U256::from(0x99));
         let full_header = rustaxa_types::codec::rlp::final_chain::LegacyBlockHeaderRlp::try_from(
             rustaxa_types::codec::rlp::final_chain::LegacyBlockHeaderRlpInput::new(
                 rustaxa_types::codec::rlp::final_chain::StoredBlockHeaderRlp::new(

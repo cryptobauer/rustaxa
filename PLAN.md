@@ -447,8 +447,9 @@ reference builds retain the untouched legacy RewardsStats header and source.
     the Rust DPoS contract account while the DPoS snapshot records per-validator commission ownership. Rust native
     finalization also distributes fixed-yield and Aspen part-two dynamic-yield minted block/DAG/vote rewards from decoded
     Rust reward stats into staged validator commission and delegator reward pools, credits the DPoS contract account with
-    the minted total, migrates part-one minted tokens into durable total supply at the Aspen part-two boundary, and writes
-    header `total_reward` from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
+    the minted total, lazily migrates part-one minted tokens exactly once into an explicit durable Aspen supply state,
+    enforces monotonic restart provenance and the configured maximum supply, and writes typed header `total_reward`
+    from the Rust plan. Rust-backed FinalChain shim reads now expose DPoS total delegated, yield,
     total supply, and read-only delegator reward pages backed by the persisted Rust reward-reference graph. The page
     read preserves legacy insertion/removal ordering, wrapping offsets, widened gas calculation, and strict corruption
     handling without falling back to scalar reward state. Rust now executes delegator

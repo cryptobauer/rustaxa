@@ -994,17 +994,19 @@ pub struct FinalChainRewardsConfig {
     pub cornus_period: FinalChainBlockNumber,
     /// DPoS undelegation locking period after Cornus and before Cacti.
     pub cornus_delegation_locking_period: u64,
-    /// Genesis account balance sum encoded as an unsigned big-endian integer.
+    /// Genesis account balance sum used by Aspen supply migration.
     ///
     /// Aspen part-two supply migration adds this value to the durable
     /// part-one minted-token counter and generated rewards.
-    pub genesis_balance_sum: Vec<u8>,
-    /// Aspen part-two maximum supply encoded as an unsigned big-endian integer.
-    pub aspen_max_supply: Vec<u8>,
-    /// Aspen part-one generated rewards encoded as an unsigned big-endian
-    /// integer. Aspen part-two migration adds it to the genesis balance sum and
-    /// the pre-migration minted-token counter.
-    pub aspen_generated_rewards: Vec<u8>,
+    /// `None` preserves the existing local-construction behavior that derives
+    /// the sum from genesis accounts; `Some(0)` is an explicitly configured
+    /// zero and remains distinct at the Rust boundary.
+    pub genesis_balance_sum: Option<DposTokenAmount>,
+    /// Aspen part-two maximum fungible token supply.
+    pub aspen_max_supply: DposTokenAmount,
+    /// Aspen part-one generated rewards. Aspen part-two migration adds this to
+    /// the genesis balance sum and the pre-migration minted-token counter.
+    pub aspen_generated_rewards: DposTokenAmount,
     /// First period where Cacti reward stats provide dynamic blocks-per-year.
     pub cacti_period: FinalChainBlockNumber,
     /// DPoS undelegation locking period after Cacti.
@@ -1034,9 +1036,9 @@ impl Default for FinalChainRewardsConfig {
             dpos_delegation_locking_period: 0,
             cornus_period: FinalChainBlockNumber::GENESIS,
             cornus_delegation_locking_period: 0,
-            genesis_balance_sum: Vec::new(),
-            aspen_max_supply: Vec::new(),
-            aspen_generated_rewards: Vec::new(),
+            genesis_balance_sum: None,
+            aspen_max_supply: DposTokenAmount::zero(),
+            aspen_generated_rewards: DposTokenAmount::zero(),
             cacti_period: FinalChainBlockNumber::GENESIS,
             cacti_delegation_locking_period: 0,
             magnolia_jail_time: 0,
@@ -1193,7 +1195,8 @@ pub struct StoredFinalChainBlockHeader {
     pub receipts_root: H256,
     pub log_bloom: FinalChainLogBloom,
     pub gas_used: FinalChainGas,
-    pub total_reward: U256,
+    /// Actual fungible DPoS reward minted into this block.
+    pub total_reward: DposTokenAmount,
 }
 
 impl StoredFinalChainBlockHeader {
@@ -1231,7 +1234,8 @@ pub struct FinalChainBlockHeader {
     pub gas_limit: FinalChainGas,
     pub gas_used: FinalChainGas,
     pub timestamp: u64,
-    pub total_reward: U256,
+    /// Actual fungible DPoS reward minted into this block.
+    pub total_reward: DposTokenAmount,
     pub extra_data: Vec<u8>,
 }
 
@@ -1523,7 +1527,7 @@ mod tests {
             receipts_root: H256::from_low_u64_be(4),
             log_bloom: FinalChainLogBloom::ZERO,
             gas_used: 5.into(),
-            total_reward: U256::from(6u64),
+            total_reward: DposTokenAmount::from(U256::from(6u64)),
         };
 
         let header = FinalChainBlockHeaderBuilder::new(&stored_header)
@@ -1553,7 +1557,7 @@ mod tests {
             receipts_root: H256::from_low_u64_be(4),
             log_bloom: FinalChainLogBloom::ZERO,
             gas_used: 5.into(),
-            total_reward: U256::from(6u64),
+            total_reward: DposTokenAmount::from(U256::from(6u64)),
         };
 
         let err = FinalChainBlockHeaderBuilder::new(&stored_header)

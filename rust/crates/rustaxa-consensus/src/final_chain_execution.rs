@@ -2252,7 +2252,9 @@ fn build_external_evm_publication_plan(
         receipts_root: H256::from(commit_plan.receipts_root),
         log_bloom: commit_plan.header_log_bloom,
         gas_used: commit_plan.gas_used,
-        total_reward: u256_from_big_endian(&commit_plan.total_reward),
+        total_reward: rustaxa_types::DposTokenAmount::from(u256_from_big_endian(
+            &commit_plan.total_reward,
+        )),
     };
     let stored_header_rlp = StoredBlockHeaderRlpOwned::from(&stored_header);
     let full_header = LegacyBlockHeaderRlp::try_from(

@@ -4372,6 +4372,26 @@ FinalChain Tier 2 gate, Tier 3 Rust-enabled/pure-C++ parity, the bridge inventor
 hook passed. Independent configured review approved the complete diff without actionable findings; `CRW-09H` is now
 ready.
 
+### CRW-09H Aspen Supply State and Minted Rewards
+
+`CRW-09H` retains `DposTokenAmount(U256)` in `rustaxa-types` as shared fungible-value vocabulary, while the Aspen
+phase enum, yield newtype, and persisted amount-provenance wrapper remain consensus-private. Reward configuration,
+minted reward plans, cap arithmetic, and stored header `total_reward` now carry the token domain; external EVM and CXX
+carriers remain raw bytes and convert at their established ingress or egress boundaries.
+
+Snapshot slots 8-10 preserve the existing pre-/post-migration encoding. Structural conflicts, zero/oversized supply,
+migration before activation, and supply above the cap fail before installation. Load-time history validation also
+rejects regressions in the pre-migration minted counter, the migration phase, or post-migration total supply, preventing
+configured genesis/generated inputs from being reapplied after restart. Aspen-II configuration validates phase order
+and configured initial supply during construction. Runtime migration remains lazy and publishes a complete post-reward
+supply state only with the successful finalized candidate; checked cap failures cannot publish partial account,
+snapshot, header, cache, or head state.
+
+The snapshot shape, CXX carriers, bridge handles/exports, shims, module flags, and compatibility-test inventory are
+unchanged, so `CRW-07` has no delta. All 58 `rustaxa-types`, 816 `rustaxa-consensus`, and 348 `rustaxa-bridge` tests,
+Tier 1, FinalChain Tier 2, Tier 3 parity, the bridge inventory guard, and pre-commit passed. Independent configured
+review approved the final diff without blockers; `CRW-09I` is now ready.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
