@@ -1392,8 +1392,10 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    persisted amounts before publication.
    Ordered redelegation correction amounts now use the shared token domain and apply atomically through a candidate
    snapshot while preserving aggregate-only legacy repair, principal, global votes, reward-head semantics, and restart.
-   Arbitrary-width reward indexes are the next ready family; reward pools, supply, and final adapter contraction remain
-   dependency-ordered follow-ups. Temporary C++ `BlockStats` decoding
+   Arbitrary-width reward indexes now use a consensus-private `BigUint` domain in graph authority and a separate
+   byte-provenance wrapper for inert snapshot mirrors, preserving exact restart bytes without exporting the semantic
+   type through `rustaxa-types`. Reward pools, supply, and final adapter contraction remain dependency-ordered
+   follow-ups. Temporary C++ `BlockStats` decoding
    remains part of the accepted StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope
    gate.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

@@ -528,6 +528,9 @@ Current snapshot after DAG manager verify-result API cleanup:
 - Remaining CRW-09 carrier reconciliation follows behavior-family rows `CRW-09D` through `CRW-09I`. Temporary C++
   `rewards::BlockStats` decoding is classified under scope-gated `CRW-E01` because removing it changes the accepted
   StateAPI external-executor contract; it does not block ordinary non-EVM CRW-09 completion.
+- `CRW-09F` keeps reward-index arithmetic and persistence provenance private to `rustaxa-consensus`; snapshot scalar
+  mirrors and graph RLP retain their existing byte carriers. No handle, export, constructor, shim route, module flag,
+  compatibility-only test, or `CRW-07` inventory entry changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

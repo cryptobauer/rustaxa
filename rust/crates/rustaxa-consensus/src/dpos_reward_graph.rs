@@ -16,6 +16,97 @@ pub type Validator = [u8; 20];
 /// Ethereum-style address type for delegator identity.
 pub type Delegator = [u8; 20];
 
+/// Exact cumulative reward-per-stake index used by DPoS reward accounting.
+///
+/// The value is deliberately arbitrary width: consensus arithmetic must not
+/// truncate at the EVM `uint256` boundary. Snapshot and graph codecs decide
+/// how the value is represented as bytes; this type owns only its mathematical
+/// meaning and the rounding rules applied while advancing or settling it.
+#[repr(transparent)]
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct DposRewardIndex(BigUint);
+
+impl DposRewardIndex {
+    /// Returns the zero reward index.
+    pub(crate) fn zero() -> Self {
+        Self(BigUint::from(0_u8))
+    }
+
+    /// Builds an index from canonical minimal big-endian bytes.
+    ///
+    /// Empty bytes encode zero. Nonzero values must not contain a leading zero;
+    /// there is intentionally no maximum width.
+    pub(crate) fn from_canonical_bytes(
+        raw: &[u8],
+        field: &'static str,
+    ) -> Result<Self, DposRewardGraphError> {
+        if raw.first() == Some(&0_u8) {
+            return Err(DposRewardGraphError::InvalidRlp(format!(
+                "{field} uses non-canonical bigint bytes"
+            )));
+        }
+        Ok(Self(BigUint::from_bytes_be(raw)))
+    }
+
+    /// Encodes the index using canonical minimal big-endian bytes.
+    pub(crate) fn to_canonical_bytes(&self) -> Vec<u8> {
+        if self.0 == BigUint::from(0_u8) {
+            return Vec::new();
+        }
+        self.0.to_bytes_be()
+    }
+
+    #[cfg(test)]
+    fn into_biguint_for_boundary(self) -> BigUint {
+        self.0
+    }
+
+    /// Advances this cumulative index using legacy floor rounding.
+    pub(crate) fn advance(
+        &self,
+        pool: BigUint,
+        maximum_stake: BigUint,
+        total_stake: BigUint,
+    ) -> Result<Self, DposRewardGraphError> {
+        if total_stake == BigUint::from(0_u8) {
+            return Err(DposRewardGraphError::ZeroDenominator);
+        }
+        Ok(Self(&self.0 + (pool * maximum_stake / total_stake)))
+    }
+
+    /// Computes the exact floor-rounded reward accrued since `cursor`.
+    pub(crate) fn reward_since(
+        &self,
+        cursor: &Self,
+        principal: BigUint,
+        maximum_stake: BigUint,
+    ) -> Result<BigUint, DposRewardGraphError> {
+        if self < cursor {
+            return Err(DposRewardGraphError::ArithmeticUnderflow {
+                left: "current_rps",
+                right: "cursor_rps",
+            });
+        }
+        if maximum_stake == BigUint::from(0_u8) {
+            return Ok(BigUint::from(0_u8));
+        }
+        Ok((&self.0 - &cursor.0) * principal / maximum_stake)
+    }
+}
+
+impl From<BigUint> for DposRewardIndex {
+    fn from(value: BigUint) -> Self {
+        Self(value)
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<BigUint> for DposRewardIndex {
+    fn eq(&self, other: &BigUint) -> bool {
+        &self.0 == other
+    }
+}
+
 /// Key used for reward nodes: `(validator, block)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct NodeKey {
@@ -26,7 +117,7 @@ pub struct NodeKey {
 /// Internal reward node value.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Node {
-    pub reward_per_stake: BigUint,
+    pub(crate) reward_per_stake: DposRewardIndex,
     pub count: u32,
 }
 
@@ -237,6 +328,7 @@ impl DposRewardGraph {
 
     /// Reports the explicitly permitted legacy stale-head state.
     /// Incomplete provenance cannot answer this query.
+    #[cfg(test)]
     pub fn is_stale_head(&self, validator: &Validator) -> Result<bool, DposRewardGraphError> {
         self.ensure_complete()?;
         Ok(self.stale_validator_heads.contains(validator))
@@ -355,6 +447,7 @@ impl DposRewardGraph {
 
     /// Moves or creates a validator-head reference and adjusts both node counts.
     /// Missing nodes, count bounds, and stale conflicts fail atomically.
+    #[cfg(test)]
     pub fn attach_validator_head(
         &mut self,
         validator: Validator,
@@ -458,6 +551,7 @@ impl DposRewardGraph {
 
     /// Reproduces the pre-fix stale-head transition: decrement/delete the old
     /// node while retaining its head block and adding the stale marker.
+    #[cfg(test)]
     pub fn detach_validator_head(
         &mut self,
         validator: &Validator,
@@ -777,24 +871,6 @@ impl DposRewardGraph {
         })
     }
 
-    /// Replaces one existing node's arbitrary-width accumulator atomically.
-    pub fn set_node_reward_per_stake(
-        &mut self,
-        validator: Validator,
-        block: u64,
-        reward_per_stake: BigUint,
-    ) -> Result<(), DposRewardGraphError> {
-        self.apply_mutation(|graph| {
-            let key = NodeKey { validator, block };
-            let node = graph
-                .nodes
-                .get_mut(&key)
-                .ok_or(DposRewardGraphError::MissingNode { validator, block })?;
-            node.reward_per_stake = reward_per_stake;
-            Ok(())
-        })
-    }
-
     /// Advances the graph block monotonically without recomputing counts.
     pub fn next_block(&mut self, next_block: u64) -> Result<(), DposRewardGraphError> {
         self.apply_mutation(|graph| {
@@ -811,16 +887,15 @@ impl DposRewardGraph {
 
     /// Computes exact cumulative reward-per-stake from uint256 domain inputs.
     /// Intermediates remain arbitrary-width; zero stake and over-wide inputs fail.
-    pub fn reward_per_stake(
+    pub(crate) fn reward_per_stake(
         &self,
-        head_rps: &BigUint,
+        head_rps: &DposRewardIndex,
         pool: &[u8],
         max_stake: &[u8],
         total_stake: &[u8],
-    ) -> Result<BigUint, DposRewardGraphError> {
+    ) -> Result<DposRewardIndex, DposRewardGraphError> {
         self.ensure_complete()?;
-        reward_per_stake(
-            head_rps,
+        head_rps.advance(
             decode_u256_like_bytes("pool", pool)?,
             decode_u256_like_bytes("max_stake", max_stake)?,
             decode_u256_like_bytes("total_stake", total_stake)?,
@@ -829,16 +904,15 @@ impl DposRewardGraph {
 
     /// Computes the exact floor-rounded reward from cumulative cursor values.
     /// Principal and maximum stake are checked uint256 domain inputs.
-    pub fn reward_from_cursor(
+    pub(crate) fn reward_from_cursor(
         &self,
-        cursor_rps: &BigUint,
-        current_rps: BigUint,
+        cursor_rps: &DposRewardIndex,
+        current_rps: DposRewardIndex,
         principal: &[u8],
         max_stake: &[u8],
     ) -> Result<BigUint, DposRewardGraphError> {
         self.ensure_complete()?;
-        reward_from_cursor_principal(
-            &current_rps,
+        current_rps.reward_since(
             cursor_rps,
             decode_u256_like_bytes("principal", principal)?,
             decode_u256_like_bytes("max_stake", max_stake)?,
@@ -1023,20 +1097,15 @@ fn decode_count(raw: &[u8], field: &'static str) -> Result<u32, DposRewardGraphE
         .map_err(|_| DposRewardGraphError::InvalidRlp(format!("{field} exceeds u32")))
 }
 
-fn decode_node_reward(raw: &[u8], field: &'static str) -> Result<BigUint, DposRewardGraphError> {
-    if (raw.len() > 1 && raw[0] == 0_u8) || (raw.len() == 1 && raw[0] == 0_u8) {
-        return Err(DposRewardGraphError::InvalidRlp(format!(
-            "{field} uses non-canonical bigint bytes"
-        )));
-    }
-    Ok(BigUint::from_bytes_be(raw))
+fn decode_node_reward(
+    raw: &[u8],
+    field: &'static str,
+) -> Result<DposRewardIndex, DposRewardGraphError> {
+    DposRewardIndex::from_canonical_bytes(raw, field)
 }
 
-fn encode_node_reward(value: &BigUint) -> Vec<u8> {
-    if value == &BigUint::from(0_u8) {
-        return Vec::new();
-    }
-    value.to_bytes_be()
+fn encode_node_reward(value: &DposRewardIndex) -> Vec<u8> {
+    value.to_canonical_bytes()
 }
 
 /// Encode the graph into canonical RLP.
@@ -1313,16 +1382,16 @@ pub fn decode_dpos_reward_graph(encoded: &[u8]) -> Result<DposRewardGraph, DposR
 
 /// Computes `current_rps = head_rps + floor(pool * max_stake / total_stake)`
 /// with arbitrary-width unsigned arithmetic. A zero denominator fails.
-pub fn reward_per_stake(
+#[cfg(test)]
+fn reward_per_stake(
     head_rps: &BigUint,
     pool: BigUint,
     max_stake: BigUint,
     total_stake: BigUint,
 ) -> Result<BigUint, DposRewardGraphError> {
-    if total_stake == BigUint::from(0_u8) {
-        return Err(DposRewardGraphError::ZeroDenominator);
-    }
-    Ok(head_rps + (pool * max_stake / total_stake))
+    DposRewardIndex::from(head_rps.clone())
+        .advance(pool, max_stake, total_stake)
+        .map(DposRewardIndex::into_biguint_for_boundary)
 }
 
 fn decoder_error(context: &'static str) -> impl FnOnce(DecoderError) -> DposRewardGraphError {
@@ -1331,22 +1400,18 @@ fn decoder_error(context: &'static str) -> impl FnOnce(DecoderError) -> DposRewa
 
 /// Computes `floor((current_rps - cursor_rps) * principal / max_stake)` exactly.
 /// A regressed cursor fails; zero maximum stake returns zero for legacy parity.
-pub fn reward_from_cursor_principal(
+#[cfg(test)]
+fn reward_from_cursor_principal(
     current_rps: &BigUint,
     cursor_rps: &BigUint,
     principal: BigUint,
     max_stake: BigUint,
 ) -> Result<BigUint, DposRewardGraphError> {
-    if current_rps < cursor_rps {
-        return Err(DposRewardGraphError::ArithmeticUnderflow {
-            left: "current_rps",
-            right: "cursor_rps",
-        });
-    }
-    if max_stake == BigUint::from(0_u8) {
-        return Ok(BigUint::from(0_u8));
-    }
-    Ok((current_rps - cursor_rps) * principal / max_stake)
+    DposRewardIndex::from(current_rps.clone()).reward_since(
+        &DposRewardIndex::from(cursor_rps.clone()),
+        principal,
+        max_stake,
+    )
 }
 
 #[cfg(test)]
@@ -1366,7 +1431,7 @@ mod tests {
                 block: 10,
             },
             Node {
-                reward_per_stake: BigUint::from(11_u64),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(11_u64)),
                 count: 3,
             },
         );
@@ -1376,7 +1441,7 @@ mod tests {
                 block: 15,
             },
             Node {
-                reward_per_stake: BigUint::from(7_u64),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(7_u64)),
                 count: 2,
             },
         );
@@ -1542,7 +1607,7 @@ mod tests {
                 block: 1,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: 0,
             },
         );
@@ -1552,7 +1617,7 @@ mod tests {
                 block: 2,
             },
             Node {
-                reward_per_stake: BigUint::from(7_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(7_u8)),
                 // The buggy same-validator redelegation transcript already
                 // counted both the delegation and logical validator refs.
                 count: 2,
@@ -1595,7 +1660,7 @@ mod tests {
                 block: 2,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: 1,
             },
         );
@@ -1635,7 +1700,7 @@ mod tests {
                 block: 1,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: u32::MAX,
             },
         );
@@ -1670,7 +1735,7 @@ mod tests {
                 block: 3,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: 0,
             },
         );
@@ -1700,7 +1765,7 @@ mod tests {
             .bootstrap_node(
                 key,
                 Node {
-                    reward_per_stake: BigUint::from(99_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(99_u8)),
                     count: 2,
                 },
                 true,
@@ -1733,7 +1798,7 @@ mod tests {
                     block: 0,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(1_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                     count: 3,
                 },
                 true,
@@ -1747,7 +1812,7 @@ mod tests {
                     block: 1,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(2_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(2_u8)),
                     count: 2,
                 },
                 true,
@@ -1782,7 +1847,7 @@ mod tests {
                     block: 2,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(3_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(3_u8)),
                     count: 2,
                 },
                 true,
@@ -1839,7 +1904,7 @@ mod tests {
                         block: 8,
                     },
                     Node {
-                        reward_per_stake: BigUint::from(1_u8),
+                        reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                         count: 2,
                     },
                     true,
@@ -1882,7 +1947,7 @@ mod tests {
             .bootstrap_node(
                 key,
                 Node {
-                    reward_per_stake: BigUint::from(77_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(77_u8)),
                     count: 2,
                 },
                 true,
@@ -1896,7 +1961,7 @@ mod tests {
             .register_validator(
                 key,
                 Node {
-                    reward_per_stake: BigUint::from(0_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(0_u8)),
                     count: 2,
                 },
                 &[delegator],
@@ -1904,7 +1969,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             graph.load_node(&key).unwrap().reward_per_stake,
-            BigUint::from(0_u8)
+            DposRewardIndex::zero()
         );
         assert_eq!(graph.load_node(&key).unwrap().count, 2);
         assert_eq!(graph.read_validator_head(&validator).unwrap(), 9);
@@ -1915,7 +1980,7 @@ mod tests {
             graph.register_validator(
                 key,
                 Node {
-                    reward_per_stake: BigUint::from(1_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                     count: 1
                 },
                 &[]
@@ -1945,7 +2010,7 @@ mod tests {
             .bootstrap_node(
                 key,
                 Node {
-                    reward_per_stake: BigUint::from(9_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(9_u8)),
                     count: 4,
                 },
                 true,
@@ -1968,7 +2033,7 @@ mod tests {
             .bootstrap_node(
                 next_key,
                 Node {
-                    reward_per_stake: BigUint::from(10_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(10_u8)),
                     count: 2,
                 },
                 true,
@@ -1986,7 +2051,7 @@ mod tests {
             graph.bootstrap_node(
                 key,
                 Node {
-                    reward_per_stake: BigUint::from(10_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(10_u8)),
                     count: 1,
                 },
                 false,
@@ -2010,7 +2075,7 @@ mod tests {
                 block: 2,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: 0,
             },
         );
@@ -2056,7 +2121,7 @@ mod tests {
                 block: 4,
             },
             Node {
-                reward_per_stake: BigUint::from(2_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(2_u8)),
                 count: 0,
             },
         );
@@ -2086,7 +2151,7 @@ mod tests {
                 block: 5,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: 1,
             },
         );
@@ -2096,7 +2161,7 @@ mod tests {
                 block: 6,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 // Positive orphan counts are consensus-visible and must not be
                 // recomputed merely because no live reference points here.
                 count: 1,
@@ -2131,7 +2196,7 @@ mod tests {
                 block: 1,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: u32::MAX,
             },
         );
@@ -2165,7 +2230,7 @@ mod tests {
                 block: 2,
             },
             Node {
-                reward_per_stake: BigUint::from(5_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(5_u8)),
                 count: 0,
             },
         );
@@ -2229,7 +2294,7 @@ mod tests {
                     block: 2,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(3_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(3_u8)),
                     count: 1,
                 },
                 true,
@@ -2238,11 +2303,16 @@ mod tests {
             Err(DposRewardGraphError::GraphHistoryIncomplete)
         ));
         assert!(matches!(
-            decoded.reward_per_stake(&BigUint::from(0_u8), &[], &[1], &[1]),
+            decoded.reward_per_stake(&DposRewardIndex::zero(), &[], &[1], &[1]),
             Err(DposRewardGraphError::GraphHistoryIncomplete)
         ));
         assert!(matches!(
-            decoded.reward_from_cursor(&BigUint::from(0_u8), BigUint::from(1_u8), &[1], &[1]),
+            decoded.reward_from_cursor(
+                &DposRewardIndex::zero(),
+                DposRewardIndex::from(BigUint::from(1_u8)),
+                &[1],
+                &[1]
+            ),
             Err(DposRewardGraphError::GraphHistoryIncomplete)
         ));
         assert!(matches!(
@@ -2264,7 +2334,7 @@ mod tests {
                 block: 42,
             },
             Node {
-                reward_per_stake: BigUint::from(4_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(4_u8)),
                 count: 7,
             },
         );
@@ -2296,7 +2366,7 @@ mod tests {
                 block: 1,
             },
             Node {
-                reward_per_stake: huge.clone(),
+                reward_per_stake: DposRewardIndex::from(huge.clone()),
                 count: 1,
             },
         );
@@ -2336,6 +2406,25 @@ mod tests {
     }
 
     #[test]
+    fn reward_index_keeps_arbitrary_width_and_legacy_floor_order() {
+        let head = DposRewardIndex::from(BigUint::from(1_u8) << 300);
+        let current = head
+            .advance(
+                BigUint::from(7_u8),
+                BigUint::from(3_u8),
+                BigUint::from(2_u8),
+            )
+            .unwrap();
+        assert_eq!(current, (BigUint::from(1_u8) << 300) + BigUint::from(10_u8));
+        assert_eq!(
+            current
+                .reward_since(&head, BigUint::from(100_u8), BigUint::from(7_u8))
+                .unwrap(),
+            BigUint::from(142_u8)
+        );
+    }
+
+    #[test]
     fn abi_conversion_mod_2_to_256() {
         let value = (BigUint::from(1_u8) << 300) + BigUint::from(0x1234_u16);
         let out = DposRewardGraph::reward_to_u256_abi(&value);
@@ -2353,7 +2442,7 @@ mod tests {
                 block: 1,
             },
             Node {
-                reward_per_stake: BigUint::from(1_u8),
+                reward_per_stake: DposRewardIndex::from(BigUint::from(1_u8)),
                 count: 0,
             },
         );
@@ -2361,12 +2450,17 @@ mod tests {
         let over = vec![0xFF_u8; 33];
         assert!(
             graph
-                .reward_per_stake(&BigUint::from(1_u8), &over, &[], &[])
+                .reward_per_stake(&DposRewardIndex::from(BigUint::from(1_u8)), &over, &[], &[])
                 .is_err()
         );
         assert!(
             graph
-                .reward_from_cursor(&BigUint::from(1_u8), BigUint::from(1_u8), &over, &[])
+                .reward_from_cursor(
+                    &DposRewardIndex::from(BigUint::from(1_u8)),
+                    DposRewardIndex::from(BigUint::from(1_u8)),
+                    &over,
+                    &[]
+                )
                 .is_err()
         );
     }

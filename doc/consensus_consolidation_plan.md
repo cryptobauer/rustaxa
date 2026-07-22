@@ -4330,6 +4330,24 @@ Focused type/bridge/transition/restart tests, all 58 `rustaxa-types`, 802 `rusta
 Rust-enabled/pure-C++ parity gate passed. No CXX shape, handle, export, shim, module flag, or inventory entry changed;
 `CRW-07` has no delta and `CRW-09F` remains ready.
 
+### CRW-09F Arbitrary-Width Reward Indexes
+
+`CRW-09F` introduces the consensus-owned `DposRewardIndex(BigUint)` domain in the DPoS reward graph. Graph nodes,
+checkpoint accumulation, cursor-delta settlement, regression detection, and canonical graph RLP now use the domain
+without narrowing intermediate values to `uint256`. Floor rounding remains ordered exactly as the legacy formulas, and
+only the established redelegation-fix activation policy may translate a regressed cursor into a zero payout. Graph
+delegation cursors remain block references whose nodes own the corresponding reward index.
+
+Snapshot slots 11 and 12 remain inert compatibility mirrors. Their private `StoredDposRewardIndex` wrapper keeps byte
+provenance separate from arithmetic, reproduces every previously accepted untouched width and leading-zero encoding,
+and canonicalizes only rows replaced by a successful mutation. The graph remains authoritative, so no new equality
+constraint is imposed between graph nodes and scalar mirrors. The snapshot shape, CXX carriers, bridge exports, shims,
+and module flags are unchanged; `CRW-07` has no inventory delta.
+
+All 804 `rustaxa-consensus` tests, `make rewrite-validate-fast`, the FinalChain Tier 2 gate, the Tier 3
+Rust-enabled/pure-C++ parity gate, the bridge inventory guard, and the repository pre-commit hook passed.
+Independent configured review approved the slice without blockers; `CRW-09G` is now ready.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

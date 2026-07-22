@@ -4,8 +4,8 @@ use crate::dag::{
     DagDposAuthorizationFacts,
 };
 use crate::dpos_reward_graph::{
-    DposRewardGraph, DposRewardGraphError, Node, NodeKey, decode_dpos_reward_graph,
-    encode_dpos_reward_graph,
+    DposRewardGraph, DposRewardGraphError, DposRewardIndex, Node, NodeKey,
+    decode_dpos_reward_graph, encode_dpos_reward_graph,
 };
 use crate::final_chain_execution::{
     FINAL_CHAIN_EVM_COMMIT_DECISION_READY_TO_PUBLISH,
@@ -159,12 +159,74 @@ impl StoredDposAmount {
     }
 }
 
+/// Persistence wrapper for a consensus reward index compatibility mirror.
+///
+/// `DposRewardIndex` owns arithmetic and canonical graph encoding. Legacy
+/// snapshot slots 11 and 12 historically accepted arbitrary-width byte strings,
+/// including leading-zero padding. Retaining only the original length is enough
+/// to reproduce those bytes exactly while keeping representation provenance out
+/// of the mathematical type. A mutated row is always replaced canonically.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct StoredDposRewardIndex {
+    index: DposRewardIndex,
+    persisted_len: usize,
+}
+
+impl StoredDposRewardIndex {
+    fn from_snapshot_bytes(bytes: &[u8]) -> Self {
+        Self {
+            index: DposRewardIndex::from(BigUint::from_bytes_be(bytes)),
+            persisted_len: bytes.len(),
+        }
+    }
+
+    fn canonical_after_mutation(index: DposRewardIndex) -> Self {
+        let persisted_len = index.to_canonical_bytes().len();
+        Self {
+            index,
+            persisted_len,
+        }
+    }
+
+    fn to_snapshot_bytes(&self) -> Vec<u8> {
+        let canonical = self.index.to_canonical_bytes();
+        debug_assert!(self.persisted_len >= canonical.len());
+        let mut bytes = vec![0_u8; self.persisted_len.saturating_sub(canonical.len())];
+        bytes.extend_from_slice(&canonical);
+        bytes
+    }
+}
+
+impl From<Vec<u8>> for StoredDposRewardIndex {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::from_snapshot_bytes(&bytes)
+    }
+}
+
+impl PartialEq<Vec<u8>> for StoredDposRewardIndex {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        self.to_snapshot_bytes() == *other
+    }
+}
+
 type DposAmountRows = BTreeMap<[u8; 20], StoredDposAmount>;
 type DposDelegations = BTreeMap<[u8; 20], BTreeMap<[u8; 20], StoredDposAmount>>;
-type DposDelegationRewardCursors = BTreeMap<[u8; 20], BTreeMap<[u8; 20], Vec<u8>>>;
+type DposRewardIndexRows = BTreeMap<[u8; 20], StoredDposRewardIndex>;
+type DposDelegationRewardCursors = BTreeMap<[u8; 20], BTreeMap<[u8; 20], StoredDposRewardIndex>>;
 type DposDelegatorValidators = BTreeMap<[u8; 20], Vec<[u8; 20]>>;
 type DposUndelegationsV2 = BTreeMap<[u8; 20], Vec<DposValidatorUndelegationsV2>>;
 type DposUndelegations = BTreeMap<[u8; 20], Vec<DposUndelegation>>;
+
+/// FinalChain policy for the one historical reward-index regression transcript.
+///
+/// Reward-index arithmetic itself always rejects a cursor ahead of the current
+/// accumulator. Only the exact redelegation-fix activation may translate that
+/// error into a zero payout while advancing the compatibility cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RewardIndexRegressionPolicy {
+    Reject,
+    LegacyFixActivationZeroPayout,
+}
 
 /// Pending V2 undelegations for one validator in legacy iterable-map order.
 ///
@@ -410,7 +472,7 @@ struct DposSnapshot {
     /// claiming or mutating reward pools.
     delegation_reward_cursors: DposDelegationRewardCursors,
     /// Current F1 cumulative rewards-per-one-stake by validator.
-    validator_reward_per_stake: BTreeMap<[u8; 20], Vec<u8>>,
+    validator_reward_per_stake: DposRewardIndexRows,
     /// Aspen part-one minted-token counter at this block.
     minted_tokens: Vec<u8>,
     /// Aspen part-two total supply at this block.
@@ -668,7 +730,7 @@ impl FinalChain {
                     *validator,
                     delegations
                         .keys()
-                        .map(|delegator| (*delegator, Vec::new()))
+                        .map(|delegator| (*delegator, StoredDposRewardIndex::default()))
                         .collect::<BTreeMap<_, _>>(),
                 )
             })
@@ -685,7 +747,7 @@ impl FinalChain {
                     block: FinalChainBlockNumber::GENESIS.as_u64(),
                 },
                 Node {
-                    reward_per_stake: BigUint::from(0_u8),
+                    reward_per_stake: DposRewardIndex::zero(),
                     count: u32::try_from(delegators.len().checked_add(1).ok_or_else(|| {
                         anyhow::anyhow!("genesis reward reference graph count overflow")
                     })?)?,
@@ -3170,7 +3232,7 @@ impl FinalChain {
         &self,
         snapshot: &DposSnapshot,
         validator: [u8; 20],
-    ) -> Result<BigUint, anyhow::Error> {
+    ) -> Result<DposRewardIndex, anyhow::Error> {
         let graph = &snapshot.reward_reference_graph;
         let head_block = graph.read_validator_head(&validator)?;
         let head = graph
@@ -3254,7 +3316,7 @@ impl FinalChain {
         &self,
         snapshot: &mut DposSnapshot,
         validator: [u8; 20],
-    ) -> Result<BigUint, anyhow::Error> {
+    ) -> Result<DposRewardIndex, anyhow::Error> {
         let rewards_pool = snapshot
             .delegator_rewards
             .get(&validator)
@@ -3304,9 +3366,10 @@ impl FinalChain {
             )?;
             Ok(reward_per_stake)
         })?;
-        snapshot
-            .validator_reward_per_stake
-            .insert(validator, reward_per_stake.to_bytes_be());
+        snapshot.validator_reward_per_stake.insert(
+            validator,
+            StoredDposRewardIndex::canonical_after_mutation(reward_per_stake.clone()),
+        );
         snapshot.delegator_rewards.insert(validator, Vec::new());
         Ok(reward_per_stake)
     }
@@ -5270,7 +5333,12 @@ impl FinalChain {
         delegator: [u8; 20],
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         self.apply_dpos_delegator_reward_claim_with_cursor(
-            snapshot, accounts, validator, delegator, true, false,
+            snapshot,
+            accounts,
+            validator,
+            delegator,
+            true,
+            RewardIndexRegressionPolicy::Reject,
         )
     }
 
@@ -5283,7 +5351,7 @@ impl FinalChain {
         validator: [u8; 20],
         delegator: [u8; 20],
         move_cursor: bool,
-        allow_reward_regression: bool,
+        regression_policy: RewardIndexRegressionPolicy,
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let delegator_stake = snapshot
             .delegations
@@ -5317,7 +5385,11 @@ impl FinalChain {
             Err(DposRewardGraphError::ArithmeticUnderflow {
                 left: "current_rps",
                 right: "cursor_rps",
-            }) if allow_reward_regression => BigUint::from(0u8),
+            }) if regression_policy
+                == RewardIndexRegressionPolicy::LegacyFixActivationZeroPayout =>
+            {
+                BigUint::from(0u8)
+            }
             Err(error) => return Err(error.into()),
         };
         let dpos_contract_balance = *accounts
@@ -5337,7 +5409,10 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, reward_cursor.to_bytes_be());
+                .insert(
+                    delegator,
+                    StoredDposRewardIndex::canonical_after_mutation(reward_cursor.clone()),
+                );
             self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
         }
 
@@ -5882,7 +5957,7 @@ impl FinalChain {
                 block: graph_block,
             },
             Node {
-                reward_per_stake: BigUint::from(0_u8),
+                reward_per_stake: DposRewardIndex::zero(),
                 count: graph_count,
             },
             &graph_delegators,
@@ -5926,7 +6001,7 @@ impl FinalChain {
                 registration.validator,
             );
             let mut reward_cursors = BTreeMap::new();
-            reward_cursors.insert(owner, Vec::new());
+            reward_cursors.insert(owner, StoredDposRewardIndex::default());
             snapshot
                 .delegation_reward_cursors
                 .insert(registration.validator, reward_cursors);
@@ -5984,7 +6059,7 @@ impl FinalChain {
         let reward_cursor = if current_delegation.is_zero() {
             self.checkpoint_validator_reward_per_stake(snapshot, validator)?
         } else {
-            BigUint::from(0_u8)
+            DposRewardIndex::zero()
         };
         if current_delegation.is_zero() {
             add_delegator_validator(&mut snapshot.delegator_validators, delegator, validator);
@@ -5992,7 +6067,10 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, reward_cursor.to_bytes_be());
+                .insert(
+                    delegator,
+                    StoredDposRewardIndex::canonical_after_mutation(reward_cursor.clone()),
+                );
             self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
         }
         snapshot.delegations.entry(validator).or_default().insert(
@@ -6074,7 +6152,7 @@ impl FinalChain {
             delegator,
             validator,
             remove_amount,
-            false,
+            RewardIndexRegressionPolicy::Reject,
         )?;
         if !self.magnolia_active(block_number)
             && snapshot
@@ -6199,7 +6277,10 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, reward_cursor.to_bytes_be());
+                .insert(
+                    delegator,
+                    StoredDposRewardIndex::canonical_after_mutation(reward_cursor.clone()),
+                );
             self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
             Vec::new()
         };
@@ -6258,7 +6339,7 @@ impl FinalChain {
             delegator,
             validator,
             remove_amount,
-            false,
+            RewardIndexRegressionPolicy::Reject,
         )?;
         if !self.magnolia_active(block_number)
             && snapshot
@@ -6388,7 +6469,10 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, reward_cursor.to_bytes_be());
+                .insert(
+                    delegator,
+                    StoredDposRewardIndex::canonical_after_mutation(reward_cursor),
+                );
             self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
             Vec::new()
         };
@@ -6614,7 +6698,7 @@ impl FinalChain {
         delegator: [u8; 20],
         validator: [u8; 20],
         remove_amount: U256,
-        allow_reward_regression: bool,
+        regression_policy: RewardIndexRegressionPolicy,
     ) -> Result<Vec<ReceiptLog>, anyhow::Error> {
         let Some(stake) = snapshot.total_stakes.get(&validator) else {
             anyhow::bail!("Rust FinalChain::finalize DPoS validator does not exist for undelegate")
@@ -6649,7 +6733,7 @@ impl FinalChain {
             validator,
             delegator,
             false,
-            allow_reward_regression,
+            regression_policy,
         )?;
         let delegations = snapshot.delegations.get_mut(&validator).ok_or_else(|| {
             anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
@@ -6685,7 +6769,10 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, cursor.to_bytes_be());
+                .insert(
+                    delegator,
+                    StoredDposRewardIndex::canonical_after_mutation(cursor.clone()),
+                );
         }
         let new_stake = current_stake - remove_amount;
         self.set_validator_stake(snapshot, validator, new_stake)?;
@@ -6727,7 +6814,10 @@ impl FinalChain {
                 .delegation_reward_cursors
                 .entry(validator)
                 .or_default()
-                .insert(delegator, cursor.to_bytes_be());
+                .insert(
+                    delegator,
+                    StoredDposRewardIndex::canonical_after_mutation(cursor.clone()),
+                );
             self.synchronize_reward_reference_graph_cursor(snapshot, validator, delegator)?;
             Vec::new()
         };
@@ -6778,9 +6868,14 @@ impl FinalChain {
             return Ok(DposApplyOutcome::mutation_contract_failure(contract_error));
         }
         let same_validator = from == to;
-        let allow_reward_regression = same_validator
+        let regression_policy = if same_validator
             && block_number == self.rewards_config.fix_redelegate_block_num
-            && self.is_pre_fix_same_validator_redelegate_corrupted(snapshot, from)?;
+            && self.is_pre_fix_same_validator_redelegate_corrupted(snapshot, from)?
+        {
+            RewardIndexRegressionPolicy::LegacyFixActivationZeroPayout
+        } else {
+            RewardIndexRegressionPolicy::Reject
+        };
         let stale_same_validator_head =
             if same_validator && block_number <= self.rewards_config.fix_redelegate_block_num {
                 Some(snapshot.reward_reference_graph.read_validator_head(&from)?)
@@ -6844,7 +6939,7 @@ impl FinalChain {
                 delegator,
                 from,
                 amount,
-                allow_reward_regression,
+                regression_policy,
             )?
             .into_iter()
             .filter(is_dpos_rewards_claimed_log)
@@ -7837,8 +7932,8 @@ fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Result<Vec<u8>, anyhow::
     stream.append(&snapshot.minted_tokens.as_slice());
     stream.append(&snapshot.total_supply.as_slice());
     stream.append(&snapshot.current_yield);
-    append_address_bytes_map(&mut stream, &snapshot.validator_reward_per_stake);
-    append_nested_address_bytes_map(&mut stream, &snapshot.delegation_reward_cursors);
+    append_reward_index_map(&mut stream, &snapshot.validator_reward_per_stake);
+    append_nested_reward_index_map(&mut stream, &snapshot.delegation_reward_cursors);
     append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
     append_address_vec(&mut stream, &snapshot.validator_order);
     append_undelegations_v2_map(&mut stream, &snapshot.undelegations_v2);
@@ -7921,12 +8016,12 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         (Vec::new(), 0)
     };
     let validator_reward_per_stake = if item_count >= 14 {
-        decode_address_bytes_map(&rlp.at(11)?, "validator reward per stake")?
+        decode_reward_index_map(&rlp.at(11)?, "validator reward per stake")?
     } else {
         BTreeMap::new()
     };
     let delegation_reward_cursors = if item_count >= 14 {
-        decode_nested_address_bytes_map(&rlp.at(12)?, "delegation reward cursor")?
+        decode_nested_reward_index_map(&rlp.at(12)?, "delegation reward cursor")?
     } else {
         synthesize_empty_delegation_cursors(&delegations)
     };
@@ -8149,10 +8244,16 @@ fn append_stored_dpos_amount_map(stream: &mut rlp::RlpStream, map: &DposAmountRo
     }
 }
 
-fn append_nested_address_bytes_map(
-    stream: &mut rlp::RlpStream,
-    map: &BTreeMap<[u8; 20], BTreeMap<[u8; 20], Vec<u8>>>,
-) {
+fn append_reward_index_map(stream: &mut rlp::RlpStream, map: &DposRewardIndexRows) {
+    stream.begin_list(map.len());
+    for (address, value) in map {
+        stream.begin_list(2);
+        stream.append(&address.as_slice());
+        stream.append(&value.to_snapshot_bytes().as_slice());
+    }
+}
+
+fn append_nested_reward_index_map(stream: &mut rlp::RlpStream, map: &DposDelegationRewardCursors) {
     stream.begin_list(map.len());
     for (outer, values) in map {
         stream.begin_list(2);
@@ -8161,7 +8262,7 @@ fn append_nested_address_bytes_map(
         for (inner, value) in values {
             stream.begin_list(2);
             stream.append(&inner.as_slice());
-            stream.append(&value.as_slice());
+            stream.append(&value.to_snapshot_bytes().as_slice());
         }
     }
 }
@@ -8319,10 +8420,29 @@ fn decode_stored_dpos_amount_map(
     Ok(map)
 }
 
-fn decode_nested_address_bytes_map(
+fn decode_reward_index_map(
     rlp: &Rlp<'_>,
     field: &str,
-) -> Result<BTreeMap<[u8; 20], BTreeMap<[u8; 20], Vec<u8>>>, anyhow::Error> {
+) -> Result<DposRewardIndexRows, anyhow::Error> {
+    let mut map = BTreeMap::new();
+    for item in rlp.iter() {
+        anyhow::ensure!(
+            item.item_count()? == 2,
+            "DPoS snapshot {field} entry must contain exactly two items"
+        );
+        let address = decode_address(&item.at(0)?, field)?;
+        map.insert(
+            address,
+            StoredDposRewardIndex::from_snapshot_bytes(item.at(1)?.data()?),
+        );
+    }
+    Ok(map)
+}
+
+fn decode_nested_reward_index_map(
+    rlp: &Rlp<'_>,
+    field: &str,
+) -> Result<DposDelegationRewardCursors, anyhow::Error> {
     let mut map = BTreeMap::new();
     for item in rlp.iter() {
         anyhow::ensure!(
@@ -8338,7 +8458,7 @@ fn decode_nested_address_bytes_map(
             );
             values.insert(
                 decode_address(&entry.at(0)?, field)?,
-                entry.at(1)?.data()?.to_vec(),
+                StoredDposRewardIndex::from_snapshot_bytes(entry.at(1)?.data()?),
             );
         }
         map.insert(outer, values);
@@ -8491,7 +8611,7 @@ fn synthesize_empty_delegation_cursors(
                 *validator,
                 delegators
                     .keys()
-                    .map(|delegator| (*delegator, Vec::new()))
+                    .map(|delegator| (*delegator, StoredDposRewardIndex::default()))
                     .collect::<BTreeMap<_, _>>(),
             )
         })
@@ -13327,8 +13447,8 @@ mod tests {
         stream.append(&snapshot.minted_tokens.as_slice());
         stream.append(&snapshot.total_supply.as_slice());
         stream.append(&snapshot.current_yield);
-        append_address_bytes_map(&mut stream, &snapshot.validator_reward_per_stake);
-        append_nested_address_bytes_map(&mut stream, &snapshot.delegation_reward_cursors);
+        append_reward_index_map(&mut stream, &snapshot.validator_reward_per_stake);
+        append_nested_reward_index_map(&mut stream, &snapshot.delegation_reward_cursors);
         append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
         append_address_vec(&mut stream, &snapshot.validator_order);
         append_undelegations_v2_map(&mut stream, &snapshot.undelegations_v2);
@@ -13380,8 +13500,8 @@ mod tests {
         stream.append(&snapshot.minted_tokens.as_slice());
         stream.append(&snapshot.total_supply.as_slice());
         stream.append(&snapshot.current_yield);
-        append_address_bytes_map(&mut stream, &snapshot.validator_reward_per_stake);
-        append_nested_address_bytes_map(&mut stream, &snapshot.delegation_reward_cursors);
+        append_reward_index_map(&mut stream, &snapshot.validator_reward_per_stake);
+        append_nested_reward_index_map(&mut stream, &snapshot.delegation_reward_cursors);
         append_delegator_validators_map(&mut stream, &snapshot.delegator_validators);
         append_address_vec(&mut stream, &snapshot.validator_order);
         append_undelegations_v2_map(&mut stream, &snapshot.undelegations_v2);
@@ -13437,10 +13557,16 @@ mod tests {
         delegator_rewards.insert(validator, u256_to_big_endian(U256::from(15u64)));
         let mut delegation_reward_cursors = BTreeMap::new();
         let mut delegator_cursor_map = BTreeMap::new();
-        delegator_cursor_map.insert(delegator, u256_to_big_endian(U256::from(2u64)));
+        delegator_cursor_map.insert(
+            delegator,
+            StoredDposRewardIndex::from_snapshot_bytes(&u256_to_big_endian(U256::from(2u64))),
+        );
         delegation_reward_cursors.insert(validator, delegator_cursor_map);
         let mut validator_reward_per_stake = BTreeMap::new();
-        validator_reward_per_stake.insert(validator, u256_to_big_endian(U256::from(30_000u64)));
+        validator_reward_per_stake.insert(
+            validator,
+            StoredDposRewardIndex::from_snapshot_bytes(&u256_to_big_endian(U256::from(30_000u64))),
+        );
 
         let mut undelegations_v2 = BTreeMap::new();
         undelegations_v2.insert(
@@ -13483,7 +13609,7 @@ mod tests {
                     block: 0,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(2_u8),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(2_u8)),
                     count: 1,
                 },
                 false,
@@ -13498,7 +13624,7 @@ mod tests {
                     block: 1,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(30_000_u64),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(30_000_u64)),
                     count: 1,
                 },
                 true,
@@ -13547,8 +13673,10 @@ mod tests {
         let delegator_reward = Vec::new();
         let minted_tokens = vec![0x89];
         let total_supply = vec![0x9a];
-        let reward_per_stake = vec![0xab; 40];
-        let reward_cursor = vec![0xcd; 41];
+        let mut reward_per_stake = vec![0; 40];
+        reward_per_stake[39] = 0xab;
+        let mut reward_cursor = vec![0; 41];
+        reward_cursor[40] = 0xcd;
 
         snapshot.total_stakes.insert(
             validator,
@@ -13573,12 +13701,12 @@ mod tests {
         snapshot.total_supply = total_supply.clone();
         snapshot
             .validator_reward_per_stake
-            .insert(validator, reward_per_stake.clone());
+            .insert(validator, reward_per_stake.clone().into());
         snapshot
             .delegation_reward_cursors
             .get_mut(&validator)
             .unwrap()
-            .insert(delegator, reward_cursor.clone());
+            .insert(delegator, reward_cursor.clone().into());
 
         let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
         let decoded = decode_dpos_snapshot_rlp(&encoded).unwrap();
@@ -13614,6 +13742,23 @@ mod tests {
             decoded.delegation_reward_cursors[&validator][&delegator],
             reward_cursor
         );
+    }
+
+    #[test]
+    fn stored_reward_index_preserves_padding_until_mutation() {
+        let cases = [Vec::new(), vec![0], vec![0, 0, 1], {
+            let mut bytes = vec![0; 41];
+            bytes[40] = 7;
+            bytes
+        }];
+        for bytes in cases {
+            let stored = StoredDposRewardIndex::from_snapshot_bytes(&bytes);
+            assert_eq!(stored.to_snapshot_bytes(), bytes);
+            let canonical = StoredDposRewardIndex::canonical_after_mutation(stored.index);
+            let expected =
+                DposRewardIndex::from(BigUint::from_bytes_be(&bytes)).to_canonical_bytes();
+            assert_eq!(canonical.to_snapshot_bytes(), expected);
+        }
     }
 
     #[test]
@@ -14083,7 +14228,7 @@ mod tests {
                     block: 1,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(300_u64),
+                    reward_per_stake: DposRewardIndex::from(BigUint::from(300_u64)),
                     count: 1,
                 },
                 true,
@@ -14392,7 +14537,7 @@ mod tests {
             .delegation_reward_cursors
             .get_mut(&validator)
             .expect("missing validator reward cursors")
-            .insert(delegator, u256_to_big_endian(U256::from(30_000u64)));
+            .insert(delegator, u256_to_big_endian(U256::from(30_000u64)).into());
         let head = snapshot
             .reward_reference_graph
             .read_validator_head(&validator)
@@ -14475,7 +14620,7 @@ mod tests {
             .delegation_reward_cursors
             .get_mut(&validator)
             .expect("missing validator reward cursors")
-            .insert(delegator, u256_to_big_endian(U256::from(30_000u64)));
+            .insert(delegator, u256_to_big_endian(U256::from(30_000u64)).into());
         let head = snapshot
             .reward_reference_graph
             .read_validator_head(&validator)
@@ -14695,7 +14840,7 @@ mod tests {
                 .load_node(&orphan_key)
                 .unwrap(),
             Node {
-                reward_per_stake: BigUint::from(0_u8),
+                reward_per_stake: DposRewardIndex::zero(),
                 count: 2,
             }
         );
@@ -14847,7 +14992,7 @@ mod tests {
                     block: graph_block,
                 },
                 Node {
-                    reward_per_stake: BigUint::from(0_u8),
+                    reward_per_stake: DposRewardIndex::zero(),
                     count: 1,
                 },
                 true,
@@ -24485,7 +24630,7 @@ mod tests {
             .delegation_reward_cursors
             .entry(validator)
             .or_default()
-            .insert(delegator, Vec::new());
+            .insert(delegator, StoredDposRewardIndex::default());
         snapshot
             .delegator_rewards
             .insert(validator, u256_to_big_endian(U256::from(150u64)));
