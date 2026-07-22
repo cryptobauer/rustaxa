@@ -2588,27 +2588,24 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
-    /// Explicit caller facts for locally generated proposer sortition screening.
-    struct PbftProposerSortitionFact {
-        dpos_vote_count_ready: bool,
-        dpos_vote_count: u64,
-        total_dpos_vote_count_ready: bool,
-        total_dpos_vote_count: u64,
-        weight_ready: bool,
-        weight: u64,
-        future_dpos_state: bool,
-        unknown_error: bool,
+    /// Request for local proposer-sortition generation and validation.
+    #[derive(Debug)]
+    struct PbftProposerSortitionRequest {
+        pbft_period: u64,
+        pbft_round: u64,
         number_of_proposers: u64,
+        vrf_secret: [u8; 64],
+        expected_vrf_public_key: [u8; 32],
+        voter_public_key: [u8; 64],
+        expected_voter: [u8; 20],
     }
 
-    /// Rust screening decision for one locally generated proposer sortition.
-    struct PbftProposerSortitionPlan {
+    /// Result of local proposer-sortition generation and validation.
+    #[derive(Debug)]
+    struct PbftProposerSortitionResult {
         status: u8,
         error_code: String,
         accepted: bool,
-        rejected: bool,
-        has_sortition_threshold: bool,
-        sortition_threshold: u64,
     }
 
     /// Result of inspecting one PillarVote RLP payload in Rust.
@@ -5473,6 +5470,11 @@ pub mod rustaxa_ffi {
             committee_size: u64,
             number_of_proposers: u64,
         ) -> Result<PbftGeneratedVote>;
+        pub fn pbft_service_generate_and_validate_proposer_sortition(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            request: PbftProposerSortitionRequest,
+        ) -> Result<PbftProposerSortitionResult>;
         pub fn pbft_vote_weighted_payload_from_canonical_vote(
             canonical_vote_rlp: &[u8],
             weight: u64,
@@ -5480,9 +5482,6 @@ pub mod rustaxa_ffi {
         pub fn pbft_vote_bundle_payload_from_records(
             records: Vec<PbftVoteStorageRecord>,
         ) -> Result<Vec<u8>>;
-        pub fn pbft_proposer_sortition_plan(
-            fact: PbftProposerSortitionFact,
-        ) -> Result<PbftProposerSortitionPlan>;
 
         // Consensus pillar votes
 

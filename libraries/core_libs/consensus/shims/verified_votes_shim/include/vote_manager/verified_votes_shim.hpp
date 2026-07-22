@@ -155,6 +155,25 @@ class VerifiedVotes {
                                                           uint64_t committee_size, uint64_t number_of_proposers) const;
 
   /**
+   * Generates and validates local proposer sortition through Rust-owned
+   * FinalChain composition.
+   *
+   * Inputs:
+   * - `final_chain`: borrowed FinalChain handle used for local DPoS lookup.
+   * - `sortition_request`: VRF and proposer identity/fact input for this block.
+   *
+   * Outputs:
+   * - Typed proposer-sortition status, accepted bit, and error code.
+   *
+   * Invariants:
+   * - FinalChain reads remain inside Rust during this call.
+   * - The call throws on unexpected bridge/runtime errors; all expected
+   *   rejection paths are surfaced through the result object.
+   */
+  rustaxa::PbftProposerSortitionResult generateAndValidateProposerSortition(
+      const rustaxa::BridgeFinalChain& final_chain, rustaxa::PbftProposerSortitionRequest sortition_request) const;
+
+  /**
    * Loads all locally generated weighted PBFT vote records from native Rust storage.
    *
    * Outputs:

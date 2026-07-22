@@ -15,7 +15,9 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use ethereum_types::{H160, H256};
 use rlp::{Rlp, RlpStream};
-use rustaxa_vdf::vrf::{self, VRF_OUTPUT_BYTES, VRF_PROOF_BYTES, VRF_PUBLIC_KEY_BYTES};
+use rustaxa_vdf::vrf::{
+    self, VRF_OUTPUT_BYTES, VRF_PROOF_BYTES, VRF_PUBLIC_KEY_BYTES, VRF_SECRET_KEY_BYTES,
+};
 use std::collections::{HashSet, VecDeque};
 use tiny_keccak::{Hasher, Keccak};
 
@@ -440,6 +442,8 @@ pub enum PbftProposerSortitionStatus {
     FutureDposState,
     /// The caller reported an unexpected sortition failure.
     UnknownError,
+    /// Total eligible DPoS votes are zero.
+    ZeroTotalDpos,
 }
 
 impl PbftProposerSortitionStatus {
@@ -453,78 +457,169 @@ impl PbftProposerSortitionStatus {
             Self::ZeroWeight => 3,
             Self::FutureDposState => 4,
             Self::UnknownError => 5,
+            Self::ZeroTotalDpos => 6,
         }
     }
 }
 
-/// Caller-supplied facts for locally generated proposer sortition screening.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct PbftProposerSortitionFact {
-    /// Whether FinalChain voter-count lookup completed.
-    pub dpos_vote_count_ready: bool,
-    /// DPoS eligible vote count for the local node when ready.
-    pub dpos_vote_count: u64,
-    /// Whether total DPoS vote-count lookup completed.
-    pub total_dpos_vote_count_ready: bool,
-    /// Total DPoS eligible vote count when ready.
-    pub total_dpos_vote_count: u64,
-    /// Whether sortition weight calculation completed.
-    pub weight_ready: bool,
-    /// Calculated proposer sortition weight when ready.
-    pub weight: u64,
-    /// True when FinalChain state is behind the requested proposer period.
-    pub future_dpos_state: bool,
-    /// True when the caller caught an unexpected proposer-sortition failure.
-    pub unknown_error: bool,
-    /// Proposer committee size used for proposal vote sortition.
+/// Caller request for local proposer sortition generation and validation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftProposerSortitionRequest {
+    /// PBFT period used in vote payloads and for sortition threshold lookup.
+    pub pbft_period: u64,
+    /// PBFT round used in vote sortition input.
+    pub pbft_round: u64,
+    /// Proposal committee size used for proposal vote sortition.
     pub number_of_proposers: u64,
+    /// VRF secret used to prove local proposer eligibility.
+    pub vrf_secret: [u8; VRF_SECRET_KEY_BYTES],
+    /// Expected VRF public key for local proposer wallet.
+    pub expected_vrf_public_key: [u8; VRF_PUBLIC_KEY_BYTES],
+    /// Uncompressed 64-byte secp256k1 voter public key provided by the caller.
+    pub voter_public_key: [u8; RECOVERED_PUBLIC_KEY_BYTES],
+    /// Expected proposer address.
+    pub expected_voter: H160,
 }
 
-/// Deterministic screening plan for one local proposer sortition.
+/// Caller request with validated proposer identity and canonical public key.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftProposerSortitionValidatedRequest {
+    /// Original requester context used for proposal sortition math.
+    pub request: PbftProposerSortitionRequest,
+    /// Canonical 64-byte uncompressed secp256k1 key derived from `voter_public_key`.
+    pub verified_voter_public_key: [u8; RECOVERED_PUBLIC_KEY_BYTES],
+}
+
+/// Deterministic validation result for local proposer sortition.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub struct PbftProposerSortitionPlan {
-    /// Primary screening status.
+pub struct PbftProposerSortitionResult {
+    /// Decision status for the local proposer-sortition attempt.
     pub status: PbftProposerSortitionStatus,
+    /// Stable error code for bridge/log consumers.
+    pub error_code: &'static str,
     /// Whether the local proposer sortition is accepted.
     pub accepted: bool,
-    /// Whether screening is complete and rejected.
-    pub rejected: bool,
-    /// Whether a proposer threshold has been computed.
-    pub has_sortition_threshold: bool,
-    /// Proposer threshold to use for weight calculation when present.
-    pub sortition_threshold: u64,
 }
 
-impl PbftProposerSortitionPlan {
-    fn pending(threshold: Option<u64>) -> Self {
-        Self {
-            status: PbftProposerSortitionStatus::Pending,
-            accepted: false,
-            rejected: false,
-            has_sortition_threshold: threshold.is_some(),
-            sortition_threshold: threshold.unwrap_or_default(),
-        }
-    }
-
-    fn rejected(status: PbftProposerSortitionStatus) -> Self {
+impl PbftProposerSortitionResult {
+    /// Builds a typed terminal rejection with its stable bridge error code.
+    ///
+    /// `status` must describe a rejection; callers are responsible for not passing `Pending` or `Valid`.
+    pub fn rejected(status: PbftProposerSortitionStatus) -> Self {
         Self {
             status,
+            error_code: proposer_sortition_error_code(status),
             accepted: false,
-            rejected: true,
-            has_sortition_threshold: false,
-            sortition_threshold: 0,
         }
     }
 
-    fn accepted(threshold: Option<u64>) -> Self {
+    /// Builds the terminal accepted result for a non-zero proposer weight.
+    pub fn accepted() -> Self {
         Self {
             status: PbftProposerSortitionStatus::Valid,
+            error_code: "",
             accepted: true,
-            rejected: false,
-            has_sortition_threshold: threshold.is_some(),
-            sortition_threshold: threshold.unwrap_or_default(),
         }
     }
+}
+
+/// Generates and validates local proposer-sortition outcomes from read-only facts.
+///
+/// This helper validates caller-provided cryptographic identity, derives VRF
+/// output for `[period, round, 1]`, and runs legacy proposer weight
+/// calculation. It does not read FinalChain or retain service handles.
+pub fn generate_and_validate_proposer_sortition(
+    request: PbftProposerSortitionRequest,
+    voter_dpos_vote_count: u64,
+    total_dpos_vote_count: u64,
+) -> Result<PbftProposerSortitionResult> {
+    let request = prepare_and_validate_pbft_proposer_sortition_request(request)?;
+    generate_and_validate_proposer_sortition_with_prepared_request(
+        request,
+        voter_dpos_vote_count,
+        total_dpos_vote_count,
+    )
+}
+
+/// Validates local identity, configuration, and static VRF material before reading external facts.
+///
+/// Returns a prepared request containing the canonical voter key. Invalid or mismatched voter/VRF identities and a
+/// zero proposer committee size are returned as errors; this function performs no FinalChain reads.
+pub fn prepare_and_validate_pbft_proposer_sortition_request(
+    request: PbftProposerSortitionRequest,
+) -> Result<PbftProposerSortitionValidatedRequest> {
+    if request.number_of_proposers == 0 {
+        anyhow::bail!("PBFT_PROPOSER_SORTITION_ZERO_PROPOSER_COUNT");
+    }
+
+    let verified_voter_public_key =
+        verify_and_canonicalize_uncompressed_public_key(&request.voter_public_key)?;
+    let derived_voter = address_from_recovered_public_key(&verified_voter_public_key);
+    if derived_voter != request.expected_voter {
+        anyhow::bail!("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY");
+    }
+
+    let vrf_public_key = vrf::public_key_from_secret(&request.vrf_secret)?;
+    if vrf_public_key != request.expected_vrf_public_key {
+        anyhow::bail!("PBFT_PROPOSER_SORTITION_INVALID_VRF_PUBLIC_KEY");
+    }
+
+    Ok(PbftProposerSortitionValidatedRequest {
+        request,
+        verified_voter_public_key,
+    })
+}
+
+/// Generates and screens proposer sortition after static request validation.
+///
+/// The caller supplies the exact voter and total DPoS counts for the request period. Zero stake, zero total stake, and
+/// zero calculated weight are typed rejections. VRF generation/verification or weight-calculation failures are returned
+/// as errors. The prepared identity invariant is trusted and no external state is read or retained.
+pub fn generate_and_validate_proposer_sortition_with_prepared_request(
+    prepared_request: PbftProposerSortitionValidatedRequest,
+    voter_dpos_vote_count: u64,
+    total_dpos_vote_count: u64,
+) -> Result<PbftProposerSortitionResult> {
+    let request = prepared_request.request;
+    let verified_voter_public_key = prepared_request.verified_voter_public_key;
+    let vrf_public_key = request.expected_vrf_public_key;
+    debug_assert_eq!(
+        address_from_recovered_public_key(&verified_voter_public_key),
+        request.expected_voter
+    );
+
+    if voter_dpos_vote_count == 0 {
+        return Ok(PbftProposerSortitionResult::rejected(
+            PbftProposerSortitionStatus::ZeroStake,
+        ));
+    }
+
+    if total_dpos_vote_count == 0 {
+        return Ok(PbftProposerSortitionResult::rejected(
+            PbftProposerSortitionStatus::ZeroTotalDpos,
+        ));
+    }
+
+    let sortition_threshold = request.number_of_proposers.min(total_dpos_vote_count);
+    let vrf_message = legacy_vrf_message_rlp(request.pbft_period, request.pbft_round, 1);
+    let vrf_proof = vrf::prove(&request.vrf_secret, &vrf_message)?;
+    let vrf_output = vrf::verify_output(&vrf_public_key, &vrf_proof, &vrf_message)?
+        .ok_or_else(|| anyhow!("PBFT_PROPOSER_SORTITION_INVALID_VRF_OUTPUT"))?;
+
+    let weight = calculate_pbft_vote_weight(
+        voter_dpos_vote_count,
+        total_dpos_vote_count,
+        sortition_threshold,
+        &vrf_output,
+        &verified_voter_public_key,
+    )?;
+    if weight == 0 {
+        return Ok(PbftProposerSortitionResult::rejected(
+            PbftProposerSortitionStatus::ZeroWeight,
+        ));
+    }
+
+    Ok(PbftProposerSortitionResult::accepted())
 }
 
 /// Computes the PBFT sortition threshold for a vote type and total DPoS votes.
@@ -1186,33 +1281,37 @@ pub fn plan_pbft_vote_validation(fact: PbftVoteValidationFact) -> PbftVoteValida
     PbftVoteValidationPlan::accepted(threshold)
 }
 
-/// Plans screening for one locally generated proposer sortition.
-#[must_use]
-pub fn plan_pbft_proposer_sortition(fact: PbftProposerSortitionFact) -> PbftProposerSortitionPlan {
-    if fact.future_dpos_state {
-        return PbftProposerSortitionPlan::rejected(PbftProposerSortitionStatus::FutureDposState);
+const fn proposer_sortition_error_code(status: PbftProposerSortitionStatus) -> &'static str {
+    match status {
+        PbftProposerSortitionStatus::Pending | PbftProposerSortitionStatus::Valid => "",
+        PbftProposerSortitionStatus::ZeroStake => "PBFT_PROPOSER_SORTITION_ZERO_STAKE",
+        PbftProposerSortitionStatus::ZeroWeight => "PBFT_PROPOSER_SORTITION_ZERO_WEIGHT",
+        PbftProposerSortitionStatus::FutureDposState => "PBFT_PROPOSER_SORTITION_FUTURE_DPOS_STATE",
+        PbftProposerSortitionStatus::ZeroTotalDpos => "PBFT_PROPOSER_SORTITION_ZERO_TOTAL_DPOS",
+        PbftProposerSortitionStatus::UnknownError => "PBFT_PROPOSER_SORTITION_UNKNOWN_ERROR",
     }
-    if fact.unknown_error {
-        return PbftProposerSortitionPlan::rejected(PbftProposerSortitionStatus::UnknownError);
-    }
-    if !fact.dpos_vote_count_ready {
-        return PbftProposerSortitionPlan::pending(None);
-    }
-    if fact.dpos_vote_count == 0 {
-        return PbftProposerSortitionPlan::rejected(PbftProposerSortitionStatus::ZeroStake);
-    }
+}
 
-    let threshold = fact
-        .total_dpos_vote_count_ready
-        .then_some(fact.number_of_proposers.min(fact.total_dpos_vote_count));
-    if !fact.total_dpos_vote_count_ready || !fact.weight_ready {
-        return PbftProposerSortitionPlan::pending(threshold);
-    }
-    if fact.weight == 0 {
-        return PbftProposerSortitionPlan::rejected(PbftProposerSortitionStatus::ZeroWeight);
-    }
+fn verify_and_canonicalize_uncompressed_public_key(
+    public_key: &[u8; RECOVERED_PUBLIC_KEY_BYTES],
+) -> Result<[u8; RECOVERED_PUBLIC_KEY_BYTES]> {
+    use k256::ecdsa::VerifyingKey;
 
-    PbftProposerSortitionPlan::accepted(threshold)
+    let mut uncompressed = [0_u8; RECOVERED_PUBLIC_KEY_BYTES + 1];
+    uncompressed[0] = 4;
+    uncompressed[1..].copy_from_slice(public_key);
+    let verifying_key = VerifyingKey::from_sec1_bytes(&uncompressed)
+        .map_err(|_| anyhow!("PBFT_PROPOSER_SORTITION_INVALID_VOTER_PUBLIC_KEY"))?;
+    let encoded = verifying_key.to_encoded_point(false);
+    let encoded_bytes = encoded.as_bytes();
+    let mut canonical = [0_u8; RECOVERED_PUBLIC_KEY_BYTES];
+    canonical.copy_from_slice(&encoded_bytes[1..]);
+    Ok(canonical)
+}
+
+fn address_from_recovered_public_key(public_key: &[u8; RECOVERED_PUBLIC_KEY_BYTES]) -> H160 {
+    let public_key_hash = keccak256(public_key);
+    H160::from_slice(&public_key_hash.as_bytes()[12..])
 }
 
 #[cfg(test)]
@@ -1386,25 +1485,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn screens_local_proposer_sortition() {
-        let fact = PbftProposerSortitionFact {
-            dpos_vote_count_ready: true,
-            dpos_vote_count: 10,
-            total_dpos_vote_count_ready: true,
-            total_dpos_vote_count: 100,
-            weight_ready: true,
-            weight: 1,
-            future_dpos_state: false,
-            unknown_error: false,
+    fn proposer_sortition_request() -> PbftProposerSortitionRequest {
+        let signing_key = SigningKey::from_slice(&[0x24; 32]).unwrap();
+        let point = signing_key.verifying_key().to_encoded_point(false);
+        let mut voter_public_key = [0_u8; 64];
+        voter_public_key.copy_from_slice(&point.as_bytes()[1..]);
+        let expected_voter = signer_address(&signing_key);
+        PbftProposerSortitionRequest {
+            pbft_period: 1,
+            pbft_round: 1,
             number_of_proposers: 20,
-        };
+            vrf_secret: VRF_SECRET_KEY,
+            expected_vrf_public_key: vrf::public_key_from_secret(&VRF_SECRET_KEY).unwrap(),
+            voter_public_key,
+            expected_voter,
+        }
+    }
 
-        let plan = plan_pbft_proposer_sortition(fact);
+    #[test]
+    fn validates_and_generates_deterministic_local_proposer_sortition() {
+        let request = proposer_sortition_request();
 
-        assert_eq!(plan.status, PbftProposerSortitionStatus::Valid);
-        assert!(plan.accepted);
-        assert_eq!(plan.sortition_threshold, 20);
+        let first = generate_and_validate_proposer_sortition(request.clone(), 10, 10).unwrap();
+        let second = generate_and_validate_proposer_sortition(request, 10, 10).unwrap();
+
+        assert_eq!(first.status, PbftProposerSortitionStatus::Valid);
+        assert!(first.accepted);
+        assert_eq!(second.status, first.status);
+        assert_eq!(second.accepted, first.accepted);
+        assert_eq!(second.error_code, first.error_code);
+    }
+
+    #[test]
+    fn returns_zero_total_status_when_total_dpos_votes_is_zero() {
+        let request = proposer_sortition_request();
+        let result = generate_and_validate_proposer_sortition(request, 10, 0).unwrap();
+
+        assert_eq!(result.status, PbftProposerSortitionStatus::ZeroTotalDpos);
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn returns_zero_weight_for_deterministic_ineligible_proposer_output() {
+        let request = proposer_sortition_request();
+        let result = generate_and_validate_proposer_sortition(request, 10, 10_000).unwrap();
+
+        assert_eq!(result.status, PbftProposerSortitionStatus::ZeroWeight);
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn prevalidates_request_identity_before_generation() {
+        let mut request = proposer_sortition_request();
+        request.expected_voter = H160::zero();
+        let err = prepare_and_validate_pbft_proposer_sortition_request(request).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_proposer_count_during_request_prevalidation() {
+        let mut request = proposer_sortition_request();
+        request.number_of_proposers = 0;
+
+        let err = prepare_and_validate_pbft_proposer_sortition_request(request).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("PBFT_PROPOSER_SORTITION_ZERO_PROPOSER_COUNT")
+        );
     }
 
     #[test]

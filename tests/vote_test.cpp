@@ -6,7 +6,9 @@
 #include "network/network.hpp"
 #include "network/tarcap/packets_handlers/latest/vote_packet_handler.hpp"
 #include "pbft/pbft_manager.hpp"
+#ifdef RUSTAXA_ENABLE
 #include "rustaxa-bridge/ffi.rs.h"
+#endif
 #include "test_util/test_util.hpp"
 
 namespace taraxa::core_tests {
@@ -293,7 +295,61 @@ TEST_F(VoteTest, rust_generate_weighted_vote_rejects_far_future_period) {
                                                current_round, 1, wallet);
   EXPECT_EQ(vote, nullptr);
 }
+
+TEST_F(VoteTest, rust_generate_and_validate_proposer_sortition_is_deterministic) {
+  auto node = create_nodes(1, true /*start*/).front();
+  auto pbft_mgr = node->getPbftManager();
+  auto vote_mgr = node->getVoteManager();
+  pbft_mgr->stop();
+
+  clearAllVotes({node});
+  const auto [current_round, current_period] = pbft_mgr->getPbftRoundAndPeriod();
+  const auto &wallet = node->getConfig().getFirstWallet();
+
+  const auto first = vote_mgr->genAndValidateVrfSortition(current_period, current_round, wallet);
+  const auto second = vote_mgr->genAndValidateVrfSortition(current_period, current_round, wallet);
+
+  EXPECT_TRUE(first);
+  EXPECT_EQ(second, first);
+}
+
+TEST_F(VoteTest, rust_generate_and_validate_proposer_sortition_rejects_far_future_period) {
+  auto node = create_nodes(1, true /*start*/).front();
+  auto pbft_mgr = node->getPbftManager();
+  auto vote_mgr = node->getVoteManager();
+  pbft_mgr->stop();
+
+  clearAllVotes({node});
+  const auto [current_round, current_period] = pbft_mgr->getPbftRoundAndPeriod();
+  const auto &wallet = node->getConfig().getFirstWallet();
+
+  EXPECT_FALSE(vote_mgr->genAndValidateVrfSortition(current_period + 1000, current_round, wallet));
+}
 #endif
+
+TEST_F(VoteTest, proposer_sortition_matches_legacy_nontrivial_weight) {
+  auto node_cfgs = make_node_cfgs(2, 2);
+  node_cfgs[0].genesis.pbft.number_of_proposers = 1;
+  auto node = create_node(node_cfgs[0], true);
+  auto pbft_mgr = node->getPbftManager();
+  auto vote_mgr = node->getVoteManager();
+  pbft_mgr->stop();
+
+  clearAllVotes({node});
+  const auto [current_round, current_period] = pbft_mgr->getPbftRoundAndPeriod();
+  const auto &wallet = node->getConfig().getFirstWallet();
+  const auto voter_votes = node->getFinalChain()->dposEligibleVoteCount(current_period - 1, wallet.node_addr);
+  const auto total_votes = node->getFinalChain()->dposEligibleTotalVoteCount(current_period - 1);
+  const auto threshold = std::min<uint64_t>(node->getConfig().genesis.pbft.number_of_proposers, total_votes);
+  ASSERT_LT(threshold, total_votes);
+
+  VrfPbftSortition legacy_sortition(wallet.vrf_secret, {PbftVoteTypes::propose_vote, current_period, current_round, 1});
+  const auto legacy_weight = legacy_sortition.calculateWeight(voter_votes, total_votes, threshold, wallet.node_pk);
+  EXPECT_EQ(legacy_weight, 0);
+  const auto rust_or_legacy_result = vote_mgr->genAndValidateVrfSortition(current_period, current_round, wallet);
+
+  EXPECT_EQ(rust_or_legacy_result, legacy_weight != 0);
+}
 
 // Generate a vote, send the vote from node2 to node1
 TEST_F(VoteTest, transfer_vote) {

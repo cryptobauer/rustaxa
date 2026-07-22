@@ -1246,8 +1246,10 @@ The current Rust consensus footprint is broad but still incomplete:
    proof checks, Rust-computed received-vote weight, the replay cache, PBFT sortition-threshold formula, Rust-owned
    `2t+1` threshold lookup/current-period cache, and local proposer-sortition screening. The threshold path now composes
    its live Rust PBFT-chain size and exact-period FinalChain DPoS total inside `BridgePbftService`, so C++ supplies only
-   period, vote type, and committee configuration; proposer sortition and admission compatibility still temporarily
-   supply FinalChain/key-manager facts. Weighted local generation now composes voter/total DPoS reads directly through a
+   period, vote type, and committee configuration. Local proposer sortition now likewise composes identity validation,
+   voter/total DPoS reads, proposer proof generation/verification, and weight calculation behind one PBFT-service call;
+   within VoteManager, only admission compatibility still temporarily supplies FinalChain/key-manager facts; separate
+   PBFT-manager consumers of the generic fact family remain tracked by `CRW-09I`. Weighted local generation now composes voter/total DPoS reads directly through a
    borrowed Rust FinalChain handle and returns canonical weighted RLP; C++ supplies only signing/configuration input and
    hydrates the checked temporary sidecar without recalculating weight. Rust now also
    generates local PBFT vote bytes in a side-effect-free bridge API: it derives the VRF proof/output, signs the legacy

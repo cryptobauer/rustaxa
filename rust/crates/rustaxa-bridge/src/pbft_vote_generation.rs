@@ -7,6 +7,8 @@
 
 use crate::ffi::rustaxa_ffi::{
     PbftGeneratedVote as FfiPbftGeneratedVote,
+    PbftProposerSortitionRequest as FfiPbftProposerSortitionRequest,
+    PbftProposerSortitionResult as FfiPbftProposerSortitionResult,
     PbftVoteGenerationInput as FfiPbftVoteGenerationInput,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService};
@@ -15,6 +17,11 @@ use ethereum_types::{H160, H256};
 use rustaxa_consensus::pbft_vote_generation::{
     generate_pbft_vote, generate_pbft_vote_with_weight, PbftGeneratedVote, PbftVoteGenerationInput,
     PbftVoteWeightFacts,
+};
+use rustaxa_consensus::pbft_vote_validation::{
+    generate_and_validate_proposer_sortition_with_prepared_request,
+    prepare_and_validate_pbft_proposer_sortition_request, PbftProposerSortitionRequest,
+    PbftProposerSortitionResult,
 };
 use rustaxa_consensus::verified_votes::PbftVoteType;
 
@@ -84,6 +91,67 @@ impl BridgePbftService {
         };
         Ok(generate_pbft_vote_with_weight(input, facts)?.into())
     }
+
+    /// Generates proposer-sortition proof inputs and validates local proposer weight.
+    ///
+    /// The caller supplies raw FinalChain voter identity and DPoS facts are read
+    /// from `final_chain` by PBFT period semantics (`dpos_period = pbft_period - 1`).
+    /// Identity and proof validation errors are returned as boundary errors.
+    pub fn pbft_service_generate_and_validate_proposer_sortition(
+        &self,
+        final_chain: &BridgeFinalChain,
+        request: FfiPbftProposerSortitionRequest,
+    ) -> Result<FfiPbftProposerSortitionResult> {
+        let request = PbftProposerSortitionRequest::try_from(request)?;
+        let request = prepare_and_validate_pbft_proposer_sortition_request(request)?;
+        let dpos_period = request
+            .request
+            .pbft_period
+            .checked_sub(1)
+            .ok_or_else(|| anyhow!("PBFT_PROPOSER_SORTITION_PERIOD_UNDERFLOW"))?;
+
+        let voter_dpos_vote_count = match final_chain
+            .0
+            .pbft_dpos_eligible_vote_count(dpos_period, request.request.expected_voter.0)
+        {
+            Ok(Some(votes)) => votes,
+            Ok(None) => {
+                return Ok(PbftProposerSortitionResult::rejected(
+                    rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState,
+                )
+                .into())
+            }
+            Err(err) => anyhow::bail!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
+        };
+
+        if voter_dpos_vote_count == 0 {
+            return Ok(PbftProposerSortitionResult::rejected(
+                rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::ZeroStake,
+            )
+            .into());
+        }
+
+        let total_dpos_vote_count = match final_chain.0.pbft_dpos_eligible_total_vote_count(dpos_period)
+        {
+            Ok(Some(total)) => total,
+            Ok(None) => {
+                return Ok(PbftProposerSortitionResult::rejected(
+                    rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState,
+                )
+                .into())
+            }
+            Err(err) => anyhow::bail!("PBFT_FINAL_CHAIN_TOTAL_VOTES_FACT_UNAVAILABLE: {err}"),
+        };
+
+        Ok(
+            generate_and_validate_proposer_sortition_with_prepared_request(
+                request,
+                voter_dpos_vote_count,
+                total_dpos_vote_count,
+            )?
+            .into(),
+        )
+    }
 }
 
 impl TryFrom<FfiPbftVoteGenerationInput> for PbftVoteGenerationInput {
@@ -126,6 +194,32 @@ impl From<PbftGeneratedVote> for FfiPbftGeneratedVote {
             weight: value.weight,
             vote_rlp: value.vote_rlp,
         }
+    }
+}
+
+impl From<PbftProposerSortitionResult> for FfiPbftProposerSortitionResult {
+    fn from(value: PbftProposerSortitionResult) -> Self {
+        Self {
+            status: value.status.as_u8(),
+            error_code: value.error_code.to_owned(),
+            accepted: value.accepted,
+        }
+    }
+}
+
+impl TryFrom<FfiPbftProposerSortitionRequest> for PbftProposerSortitionRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(value: FfiPbftProposerSortitionRequest) -> Result<Self> {
+        Ok(Self {
+            pbft_period: value.pbft_period,
+            pbft_round: value.pbft_round,
+            number_of_proposers: value.number_of_proposers,
+            vrf_secret: value.vrf_secret,
+            expected_vrf_public_key: value.expected_vrf_public_key,
+            voter_public_key: value.voter_public_key,
+            expected_voter: H160::from(value.expected_voter),
+        })
     }
 }
 
@@ -260,6 +354,167 @@ mod tests {
             expected_voter: voter_from_secret(&secret),
             expected_vrf_public_key: rustaxa_vdf::vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
         }
+    }
+
+    fn proposer_sortition_request(
+        voter_secret: [u8; 32],
+        pbft_period: u64,
+        pbft_round: u64,
+        number_of_proposers: u64,
+    ) -> FfiPbftProposerSortitionRequest {
+        let expected_voter = voter_from_secret(&voter_secret);
+        let signing_key = SigningKey::from_slice(&voter_secret).unwrap();
+        let point = signing_key.verifying_key().to_encoded_point(false);
+        let mut voter_public_key = [0_u8; 64];
+        voter_public_key.copy_from_slice(&point.as_bytes()[1..]);
+
+        FfiPbftProposerSortitionRequest {
+            pbft_period,
+            pbft_round,
+            number_of_proposers,
+            vrf_secret: VRF_SECRET,
+            expected_vrf_public_key: rustaxa_vdf::vrf::public_key_from_secret(&VRF_SECRET).unwrap(),
+            voter_public_key,
+            expected_voter,
+        }
+    }
+
+    #[test]
+    fn bridge_service_generates_and_validates_local_proposer_sortition() {
+        let (service, final_chain) = test_fixture();
+        let request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+
+        let result = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+
+        assert_eq!(
+            result.status,
+            rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::Valid.as_u8()
+        );
+        assert!(result.accepted);
+        assert_eq!(result.error_code, "");
+    }
+
+    #[test]
+    fn bridge_service_proposer_sortition_is_deterministic_for_identical_inputs() {
+        let (service, final_chain) = test_fixture();
+        let request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+
+        let first = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+        let second = service
+            .pbft_service_generate_and_validate_proposer_sortition(
+                &final_chain,
+                proposer_sortition_request(NODE_SECRET, 1, 1, 100),
+            )
+            .unwrap();
+
+        assert_eq!(first.status, second.status);
+        assert_eq!(first.accepted, second.accepted);
+        assert_eq!(first.error_code, second.error_code);
+    }
+
+    #[test]
+    fn bridge_service_reports_proposer_sortition_zero_stake_as_typed_status() {
+        let (service, final_chain) = test_fixture();
+        let request = proposer_sortition_request(NODE_SECRET_ZERO_STAKE, 1, 1, 100);
+
+        let result = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+
+        assert_eq!(
+            result.status,
+            rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::ZeroStake.as_u8()
+        );
+        assert!(!result.accepted);
+    }
+
+    #[test]
+    fn bridge_service_reports_proposer_sortition_future_as_typed_status() {
+        let (service, final_chain) = test_fixture();
+        let request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
+
+        let result = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .unwrap();
+
+        assert_eq!(
+            result.status,
+            rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState
+                .as_u8()
+        );
+    }
+
+    #[test]
+    fn bridge_service_errors_on_proposer_sortition_period_zero() {
+        let (service, final_chain) = test_fixture();
+        let request = proposer_sortition_request(NODE_SECRET, 0, 1, 100);
+
+        let err = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("period 0 must underflow");
+        assert!(err
+            .to_string()
+            .contains("PBFT_PROPOSER_SORTITION_PERIOD_UNDERFLOW"));
+    }
+
+    #[test]
+    fn bridge_service_errors_on_proposer_sortition_identity_mismatch() {
+        let (service, final_chain) = test_fixture();
+        let mut request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+        request.expected_voter = voter_from_secret(&NODE_SECRET_ZERO_STAKE);
+
+        let err = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("identity mismatch must be a boundary error");
+        assert!(err
+            .to_string()
+            .contains("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY"));
+    }
+
+    #[test]
+    fn bridge_service_validates_proposer_sortition_identity_before_future_period_lookup() {
+        let (service, final_chain) = test_fixture();
+        let mut request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
+        request.expected_voter = voter_from_secret(&NODE_SECRET_ZERO_STAKE);
+
+        let err = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("identity mismatch must be checked before FinalChain state");
+        assert!(err
+            .to_string()
+            .contains("PBFT_PROPOSER_SORTITION_INVALID_VOTER_IDENTITY"));
+    }
+
+    #[test]
+    fn bridge_service_validates_proposer_sortition_vrf_public_key_before_future_period_lookup() {
+        let (service, final_chain) = test_fixture();
+        let mut request = proposer_sortition_request(NODE_SECRET, 99, 1, 100);
+        request.expected_vrf_public_key = [0_u8; 32];
+
+        let err = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("vrf mismatch must be checked before FinalChain state");
+        assert!(err
+            .to_string()
+            .contains("PBFT_PROPOSER_SORTITION_INVALID_VRF_PUBLIC_KEY"));
+    }
+
+    #[test]
+    fn bridge_service_errors_on_proposer_sortition_vrf_mismatch() {
+        let (service, final_chain) = test_fixture();
+        let mut request = proposer_sortition_request(NODE_SECRET, 1, 1, 100);
+        request.expected_vrf_public_key = [0_u8; 32];
+
+        let err = service
+            .pbft_service_generate_and_validate_proposer_sortition(&final_chain, request)
+            .expect_err("vrf public key mismatch must be a boundary error");
+        assert!(err
+            .to_string()
+            .contains("PBFT_PROPOSER_SORTITION_INVALID_VRF_PUBLIC_KEY"));
     }
 
     #[test]

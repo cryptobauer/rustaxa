@@ -2190,7 +2190,9 @@ Implementation status:
   conversion, and vote generation helpers remain because `vote_manager_shim` still calls them directly.
 - The no-caller scalar threshold helper `pbft_vote_sortition_threshold_for_bridge` is also deleted from the CXX surface.
   Native `rustaxa-consensus` keeps `pbft_vote_sortition_threshold` for validation, threshold planning, and vote
-  generation; live C++ proposer screening still uses `pbft_proposer_sortition_plan`.
+  generation. The later local-sortition composition also deletes `pbft_proposer_sortition_plan`; live C++ now supplies
+  only PBFT coordinates, proposer configuration, and wallet identity to one PBFT-service operation that privately reads
+  FinalChain facts and performs proposer proof/weight validation in Rust.
 - `BridgeTransactionQueue` and its standalone CXX exports are deleted with `transaction_queue_shim`. Production queue
   state is private to `BridgeTransactionManagerRuntime`; native `rustaxa-consensus` queue tests retain domain coverage.
 - `BridgeTransactionManagerRuntime` CXX exports have been narrowed further: old no-caller sidecar lookup/finish/evict
@@ -4517,6 +4519,29 @@ parity gate passed. The consensus aggregate retained the classified shared `/tmp
 `vote_test`; both new cases pass independently. Independent review approved the corrected diff without blockers.
 Zero-total and corrupt-ready-snapshot service fixtures remain unconstructed residual edge coverage; their paths retain
 typed zero-total and fail-closed snapshot behavior.
+
+### CRW-09I VoteManager Local Proposer-Sortition FinalChain Composition
+
+Rust-mode `VoteManager::genAndValidateVrfSortition` now makes one PBFT-service call with the PBFT period and round,
+proposer committee size, and configured voter/VRF identity material. Rust validates both identities before any
+FinalChain read, checks the PBFT-to-DPoS period conversion, reads voter stake before total stake, generates and verifies
+the canonical proposer proof over RLP `[period, round, 1]`, and calculates the legacy-compatible proposer weight. The
+proof, output, threshold, weight, and DPoS facts remain private to Rust; C++ consumes only a typed status, stable error
+code, and accepted bit. No PBFT lock or borrowed FinalChain handle survives the synchronous call.
+
+The obsolete `PbftProposerSortitionFact` and `PbftProposerSortitionPlan` CXX carriers, their conversions, the free
+`pbft_proposer_sortition_plan` export, and the staged C++ fact/weight loop are deleted. Generic
+`PbftFinalChainFact*` carriers remain for unweighted VoteManager admission compatibility and PBFT-manager consumers, so
+CRW-09I remains active.
+
+Focused consensus and bridge tests cover deterministic acceptance, zero stake, zero total stake, zero weight, future
+state, period underflow, zero proposer configuration, and voter/VRF identity error ordering. Two standalone C++ cases
+cover deterministic production routing and far-future rejection. `make rewrite-validate-fast`, consensus Tier 2, and the
+Tier 3 Rust-enabled/pure-C++ FinalChain parity gate passed. Running both new C++ cases in one process reproduced the
+classified shared `/tmp/taraxa0/db/db/LOCK` fixture collision; each case passes independently. A mode-neutral fixed
+two-validator transcript additionally fixes the proposer threshold at one while total eligible votes are two, asserts
+the legacy C++ weight is zero, and proves the Rust-enabled decision matches that oracle. The same transcript passes in
+the isolated all-Rustaxa-disabled pure-C++ `vote_test` build.
 
 ## Historical Execution Order
 

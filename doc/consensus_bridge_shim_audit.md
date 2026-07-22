@@ -581,6 +581,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   sidecar hydration. The bridge-only `PbftVoteWeightFacts` carrier and free weighted-generation export are deleted;
   consensus-domain weight facts stay private. The generic carrier remains live for VoteManager admission/sortition and
   PBFT-manager consumers.
+- The VoteManager local-sortition `CRW-09I` contraction removes `genAndValidateVrfSortition` as a consumer of generic
+  `PbftFinalChainFact*` carriers. One PBFT-service call validates the configured voter and VRF identities before any
+  external read, borrows Rust FinalChain for voter-then-total DPoS lookup, and keeps proposer proof generation,
+  verification, threshold selection, and weight calculation private in Rust. C++ consumes only the typed terminal
+  status, stable error code, and accepted bit. The obsolete `PbftProposerSortitionFact` and
+  `PbftProposerSortitionPlan` CXX carriers and `pbft_proposer_sortition_plan` free export are deleted. The generic
+  carrier remains live for VoteManager admission compatibility and PBFT-manager consumers.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.
@@ -823,8 +830,8 @@ Current snapshot after DAG manager verify-result API cleanup:
   inspection, vote generation, and payload conversion helpers remain live until their C++ shim callers are moved behind
   a facade.
 - `pbft_vote_sortition_threshold_for_bridge` is retired as a no-caller scalar helper. Native Rust consensus keeps the
-  threshold calculation internally, while C++ proposer screening continues through the live `pbft_proposer_sortition_plan`
-  boundary.
+  threshold calculation internally; local proposer screening now reaches it only through the composed PBFT-service
+  operation described above.
 - `BridgePbftManagerStateActionEffectSession` is retired. PBFT manager state-action effect cursors are now owned by the
   long-lived `BridgePbftManagerRuntime` through `pbft_manager_runtime_begin_state_action_effect_session`,
   `pbft_manager_runtime_state_action_effect_session_next`, and

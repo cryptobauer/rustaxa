@@ -9,15 +9,12 @@
 use crate::ffi::rustaxa_ffi::{
     PbftCanonicalVoteInspection as FfiPbftCanonicalVoteInspection,
     PbftCanonicalVoteValidation as FfiPbftCanonicalVoteValidation,
-    PbftProposerSortitionFact as FfiPbftProposerSortitionFact,
-    PbftProposerSortitionPlan as FfiPbftProposerSortitionPlan,
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan,
 };
 use anyhow::Result;
 use rustaxa_consensus::pbft_thresholds::PbftTwoTPlusOneThresholdPlan;
 use rustaxa_consensus::pbft_vote_validation::{
-    inspect_canonical_pbft_vote, plan_pbft_proposer_sortition, PbftCanonicalVoteInspection,
-    PbftCanonicalVoteValidation, PbftProposerSortitionFact,
+    inspect_canonical_pbft_vote, PbftCanonicalVoteInspection, PbftCanonicalVoteValidation,
 };
 
 pub(crate) fn threshold_plan_to_ffi(
@@ -38,32 +35,6 @@ pub(crate) fn threshold_plan_to_ffi(
 /// internal failure.
 pub fn pbft_inspect_canonical_vote(vote_rlp: &[u8]) -> Result<FfiPbftCanonicalVoteInspection> {
     Ok(inspect_canonical_pbft_vote(vote_rlp)?.into())
-}
-
-/// Plans screening for one locally generated proposer sortition.
-pub fn pbft_proposer_sortition_plan(
-    fact: FfiPbftProposerSortitionFact,
-) -> Result<FfiPbftProposerSortitionPlan> {
-    let plan = plan_pbft_proposer_sortition(PbftProposerSortitionFact {
-        dpos_vote_count_ready: fact.dpos_vote_count_ready,
-        dpos_vote_count: fact.dpos_vote_count,
-        total_dpos_vote_count_ready: fact.total_dpos_vote_count_ready,
-        total_dpos_vote_count: fact.total_dpos_vote_count,
-        weight_ready: fact.weight_ready,
-        weight: fact.weight,
-        future_dpos_state: fact.future_dpos_state,
-        unknown_error: fact.unknown_error,
-        number_of_proposers: fact.number_of_proposers,
-    });
-
-    Ok(FfiPbftProposerSortitionPlan {
-        status: plan.status.as_u8(),
-        error_code: proposer_sortition_error_code(plan.status).to_owned(),
-        accepted: plan.accepted,
-        rejected: plan.rejected,
-        has_sortition_threshold: plan.has_sortition_threshold,
-        sortition_threshold: plan.sortition_threshold,
-    })
 }
 
 impl From<PbftCanonicalVoteInspection> for FfiPbftCanonicalVoteInspection {
@@ -116,50 +87,9 @@ impl From<PbftCanonicalVoteValidation> for FfiPbftCanonicalVoteValidation {
     }
 }
 
-const fn proposer_sortition_error_code(
-    status: rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus,
-) -> &'static str {
-    match status {
-        rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::Pending
-        | rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::Valid => "",
-        rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::ZeroStake => {
-            "PBFT_PROPOSER_SORTITION_ZERO_STAKE"
-        }
-        rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::ZeroWeight => {
-            "PBFT_PROPOSER_SORTITION_ZERO_WEIGHT"
-        }
-        rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::FutureDposState => {
-            "PBFT_PROPOSER_SORTITION_FUTURE_DPOS_STATE"
-        }
-        rustaxa_consensus::pbft_vote_validation::PbftProposerSortitionStatus::UnknownError => {
-            "PBFT_PROPOSER_SORTITION_UNKNOWN_ERROR"
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn bridge_screens_local_proposer_sortition() {
-        let plan = pbft_proposer_sortition_plan(FfiPbftProposerSortitionFact {
-            dpos_vote_count_ready: true,
-            dpos_vote_count: 10,
-            total_dpos_vote_count_ready: true,
-            total_dpos_vote_count: 100,
-            weight_ready: true,
-            weight: 1,
-            future_dpos_state: false,
-            unknown_error: false,
-            number_of_proposers: 20,
-        })
-        .unwrap();
-
-        assert_eq!(plan.status, 1);
-        assert!(plan.accepted);
-        assert_eq!(plan.sortition_threshold, 20);
-    }
 
     #[test]
     fn bridge_inspects_canonical_pbft_vote_without_throwing_on_peer_errors() {

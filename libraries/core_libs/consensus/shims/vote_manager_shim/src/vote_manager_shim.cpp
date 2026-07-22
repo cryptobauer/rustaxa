@@ -47,6 +47,7 @@ constexpr uint8_t kPbftLeaderSelectionStaleSnapshot = 3;
 constexpr uint8_t kPbftLeaderSelectionInvalidValidationReport = 4;
 constexpr uint8_t kPbftLeaderSelectionServiceUnavailable = 5;
 constexpr uint8_t kPbftVoteGenerationStatusZeroWeight = 6;
+constexpr uint8_t kPbftProposerSortitionStatusFutureDposState = 4;
 constexpr uint8_t kPbftVotePersistenceStatusApplied = 0;
 constexpr uint8_t kPbftVoteAdmissionPersistenceNotRequired = 0;
 constexpr uint8_t kPbftVoteAdmissionPersistenceApplied = 1;
@@ -314,10 +315,18 @@ rustaxa::PbftVoteValidationExternalFacts makeVoteValidationExternalFacts(bool st
   return facts;
 }
 
-rustaxa::PbftProposerSortitionFact makeProposerSortitionFact(const PbftConfig& config) {
-  rustaxa::PbftProposerSortitionFact fact{};
-  fact.number_of_proposers = config.number_of_proposers;
-  return fact;
+rustaxa::PbftProposerSortitionRequest makeProposerSortitionRequest(PbftPeriod pbft_period, PbftRound pbft_round,
+                                                                   const WalletConfig& wallet,
+                                                                   const PbftConfig& config) {
+  rustaxa::PbftProposerSortitionRequest request{};
+  request.pbft_period = pbft_period;
+  request.pbft_round = pbft_round;
+  request.number_of_proposers = config.number_of_proposers;
+  request.vrf_secret = toBridgeFixedBytes<64>(wallet.vrf_secret);
+  request.expected_vrf_public_key = toBridgeFixedBytes<32>(wallet.vrf_pk);
+  request.voter_public_key = toBridgeFixedBytes<64>(wallet.node_pk);
+  request.expected_voter = toBridgeAddress(wallet.node_addr);
+  return request;
 }
 
 rustaxa::PbftVoteGenerationInput makeVoteGenerationInput(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
@@ -1430,72 +1439,33 @@ bool VoteManager::voteAlreadyValidated(const vote_hash_t& vote_hash) const {
 
 bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round,
                                              const WalletConfig& wallet) const {
-  VrfPbftSortition vrf_sortition(wallet.vrf_secret, {PbftVoteTypes::propose_vote, pbft_period, pbft_round, 1});
-  auto sortition_fact = makeProposerSortitionFact(kPbftConfig);
-  rustaxa::PbftFinalChainFacts dpos_facts{};
-
   try {
-    dpos_facts = collectPbftDposFacts(final_chain_, pbft_period - 1, true, {wallet.node_addr});
-    if (dpos_facts.address_facts.empty() || !finalChainFactReady(dpos_facts.address_facts[0].status)) {
-      sortition_fact.future_dpos_state = true;
-      (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
-      LOG(log_er_) << "Unable to generate vrf sortition for period " << pbft_period << ", round " << pbft_round
-                   << ". Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-                   << "). Err msg: "
-                   << (dpos_facts.address_facts.empty()
-                           ? finalChainFactError(dpos_facts)
-                           : finalChainAddressFactError(dpos_facts.address_facts[0], dpos_facts));
-      return false;
+    auto sortition_request = makeProposerSortitionRequest(pbft_period, pbft_round, wallet, kPbftConfig);
+    const auto sortition_result = verified_votes_.generateAndValidateProposerSortition(final_chain_->rustFinalChain(),
+                                                                                       std::move(sortition_request));
+    if (sortition_result.accepted) {
+      return true;
     }
-    const uint64_t voter_dpos_votes_count = dpos_facts.address_facts[0].vote_count;
-    sortition_fact.dpos_vote_count_ready = true;
-    sortition_fact.dpos_vote_count = voter_dpos_votes_count;
-    auto sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
-    if (sortition_plan.rejected) {
-      LOG(log_er_) << "Generated vrf sortition for period " << pbft_period << ", round " << pbft_round
-                   << " is invalid. Voter dpos vote count is zero";
+
+    if (sortition_result.status == kPbftProposerSortitionStatusFutureDposState) {
+      LOG(log_er_) << "Unable to generate proposer VRF sortition for period " << pbft_period << ", round " << pbft_round
+                   << ". Period is too far ahead of actual finalized pbft chain size. Err msg: "
+                   << static_cast<std::string>(sortition_result.error_code);
       return false;
     }
 
-    if (!finalChainFactReady(dpos_facts.total_vote_count_status) || !dpos_facts.has_total_vote_count) {
-      sortition_fact.future_dpos_state = true;
-      (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
-      LOG(log_er_) << "Unable to generate vrf sortition for period " << pbft_period << ", round " << pbft_round
-                   << ". Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-                   << "). Err msg: " << finalChainFactError(dpos_facts);
-      return false;
-    }
-    const uint64_t total_dpos_votes_count = dpos_facts.total_vote_count;
-    sortition_fact.total_dpos_vote_count_ready = true;
-    sortition_fact.total_dpos_vote_count = total_dpos_votes_count;
-    sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
-    if (!sortition_plan.has_sortition_threshold) {
-      throw std::runtime_error("Rust PBFT proposer sortition did not return a sortition threshold");
-    }
-
-    sortition_fact.weight_ready = true;
-    sortition_fact.weight = vrf_sortition.calculateWeight(voter_dpos_votes_count, total_dpos_votes_count,
-                                                          sortition_plan.sortition_threshold, wallet.node_pk);
-    sortition_plan = rustaxa::pbft_proposer_sortition_plan(sortition_fact);
-    if (!sortition_plan.accepted) {
-      LOG(log_dg_) << "Generated vrf sortition for period " << pbft_period << ", round " << pbft_round
-                   << " is invalid. Vrf sortition is zero";
-      return false;
-    }
-  } catch (state_api::ErrFutureBlock& e) {
-    sortition_fact.future_dpos_state = true;
-    (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
-    LOG(log_er_) << "Unable to generate vrf sortition for period " << pbft_period << ", round " << pbft_round
-                 << ". Period is too far ahead of actual finalized pbft chain size (" << dpos_facts.last_block_number
-                 << "). Err msg: " << e.what();
+    LOG(log_dg_) << "Generated proposer VRF sortition for period " << pbft_period << ", round " << pbft_round
+                 << " is invalid. Status: " << static_cast<uint32_t>(sortition_result.status)
+                 << ", error: " << static_cast<std::string>(sortition_result.error_code);
+    return false;
+  } catch (const std::exception& e) {
+    LOG(log_er_) << "Unable to generate proposer VRF sortition for period " << pbft_period << ", round " << pbft_round
+                 << ". Err msg: " << e.what();
     return false;
   } catch (...) {
-    sortition_fact.unknown_error = true;
-    (void)rustaxa::pbft_proposer_sortition_plan(sortition_fact);
+    LOG(log_er_) << "Unable to generate proposer VRF sortition for period " << pbft_period << ", round " << pbft_round;
     return false;
   }
-
-  return true;
 }
 
 VoteManager::ProposalWalletFacts VoteManager::proposalWalletFacts(

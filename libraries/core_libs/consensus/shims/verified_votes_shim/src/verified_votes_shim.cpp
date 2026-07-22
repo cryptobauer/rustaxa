@@ -260,6 +260,12 @@ rustaxa::PbftGeneratedVote VerifiedVotes::generateSignedVoteWithWeight(
                                                                                 committee_size, number_of_proposers);
 }
 
+rustaxa::PbftProposerSortitionResult VerifiedVotes::generateAndValidateProposerSortition(
+    const rustaxa::BridgeFinalChain& final_chain, rustaxa::PbftProposerSortitionRequest sortition_request) const {
+  return pbft_service_->service().pbft_service_generate_and_validate_proposer_sortition(final_chain,
+                                                                                        std::move(sortition_request));
+}
+
 std::vector<std::shared_ptr<PbftVote>> VerifiedVotes::votes() const {
   std::vector<std::shared_ptr<PbftVote>> out;
   const auto snapshot = pbft_service_->service().pbft_service_verified_votes_state_snapshot();
