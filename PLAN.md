@@ -1394,8 +1394,10 @@ strategy and repeatable Makefile targets live in `doc/rewrite_validation_strateg
    snapshot while preserving aggregate-only legacy repair, principal, global votes, reward-head semantics, and restart.
    Arbitrary-width reward indexes now use a consensus-private `BigUint` domain in graph authority and a separate
    byte-provenance wrapper for inert snapshot mirrors, preserving exact restart bytes without exporting the semantic
-   type through `rustaxa-types`. Reward pools, supply, and final adapter contraction remain dependency-ordered
-   follow-ups. Temporary C++ `BlockStats` decoding
+   type through `rustaxa-types`. Transaction-fee ownership, commission/delegator deltas, persisted reward pools, account
+   credits, and successful claim settlement now use `DposTokenAmount`, while snapshot encoding provenance remains
+   consensus-private and reward indexes remain arbitrary-width. Supply typing and final adapter contraction remain
+   dependency-ordered follow-ups. Temporary C++ `BlockStats` decoding
    remains part of the accepted StateAPI executor boundary and moves only under the explicit external-EVM/StateAPI scope
    gate.
 5. Keep `cpp-reference` synchronized for C++ intersection changes so upstream sync remains viable.

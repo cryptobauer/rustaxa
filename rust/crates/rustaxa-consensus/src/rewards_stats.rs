@@ -16,7 +16,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use ethereum_types::{H160, H256, U256};
 use rlp::{Rlp, RlpStream};
 use rustaxa_storage::{Column, Storage, StorageWriteBatch};
-use rustaxa_types::FinalChainGas;
+use rustaxa_types::{DposTokenAmount, FinalChainGas};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Hardfork and committee configuration used by reward-stat planning.
@@ -125,7 +125,7 @@ pub struct RewardsStatsPeriodRlp {
 pub struct RewardsValidatorDistribution {
     pub dag_blocks_count: u32,
     pub vote_weight: u64,
-    pub fees_rewards: U256,
+    pub fees_rewards: DposTokenAmount,
 }
 
 /// One finalized period's reward-distribution inputs decoded from legacy
@@ -206,7 +206,7 @@ pub struct RewardsStatsRuntime {
 struct ValidatorStats {
     dag_blocks_count: u32,
     vote_weight: u64,
-    fees_rewards: U256,
+    fees_rewards: DposTokenAmount,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -425,7 +425,7 @@ impl RewardsStatsRuntime {
         };
 
         let include_fees = fact.period >= self.config.magnolia_period;
-        let mut fee_by_tx = BTreeMap::<H256, U256>::new();
+        let mut fee_by_tx = BTreeMap::<H256, DposTokenAmount>::new();
         let mut block_tx_hashes = BTreeSet::<H256>::new();
         for tx in &fact.transactions {
             block_tx_hashes.insert(tx.hash);
@@ -436,7 +436,7 @@ impl RewardsStatsRuntime {
             } else {
                 U256::zero()
             };
-            fee_by_tx.insert(tx.hash, fee);
+            fee_by_tx.insert(tx.hash, DposTokenAmount::from(fee));
         }
 
         if fact.period >= self.config.aspen_part_one_period {
@@ -461,7 +461,7 @@ impl RewardsStatsRuntime {
         stats: &mut BlockStats,
         dag_blocks: &[RewardDagBlockFact],
         block_tx_hashes: &BTreeSet<H256>,
-        fee_by_tx: &mut BTreeMap<H256, U256>,
+        fee_by_tx: &mut BTreeMap<H256, DposTokenAmount>,
     ) -> Result<()> {
         for dag_block in dag_blocks {
             let mut has_unique_transactions = false;
@@ -491,7 +491,7 @@ impl RewardsStatsRuntime {
     fn process_dag_blocks_aspen(
         stats: &mut BlockStats,
         dag_blocks: &[RewardDagBlockFact],
-        fee_by_tx: &mut BTreeMap<H256, U256>,
+        fee_by_tx: &mut BTreeMap<H256, DposTokenAmount>,
     ) -> Result<()> {
         let min_difficulty = dag_blocks
             .iter()
@@ -522,7 +522,7 @@ impl RewardsStatsRuntime {
         stats: &mut BlockStats,
         tx_hash: H256,
         validator: H160,
-        fee_by_tx: &mut BTreeMap<H256, U256>,
+        fee_by_tx: &mut BTreeMap<H256, DposTokenAmount>,
     ) -> Result<bool> {
         let Some(fee) = fee_by_tx.remove(&tx_hash) else {
             return Ok(false);
@@ -845,7 +845,7 @@ impl ValidatorStats {
         stream.begin_list(3);
         stream.append(&self.dag_blocks_count);
         stream.append(&self.vote_weight);
-        stream.append(&self.fees_rewards);
+        stream.append(&self.fees_rewards.as_u256());
     }
 }
 
@@ -888,7 +888,7 @@ fn decode_rewards_block_distribution(period: u64, data: &[u8]) -> Result<Rewards
             RewardsValidatorDistribution {
                 dag_blocks_count: stats.val_at(0)?,
                 vote_weight: stats.val_at(1)?,
-                fees_rewards: stats.val_at(2)?,
+                fees_rewards: DposTokenAmount::from(stats.val_at::<U256>(2)?),
             },
         );
         anyhow::ensure!(replaced.is_none(), "REWARDS_STATS_DUPLICATE_VALIDATOR_RLP");
@@ -908,7 +908,7 @@ fn decode_rewards_block_distribution(period: u64, data: &[u8]) -> Result<Rewards
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rlp::Rlp;
+    use rlp::{Rlp, RlpStream};
     use rustaxa_storage::{Config, Storage};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1064,8 +1064,134 @@ mod tests {
             &RewardsValidatorDistribution {
                 dag_blocks_count: 1,
                 vote_weight: 0,
-                fees_rewards: U256::from(20u64),
+                fees_rewards: DposTokenAmount::from(U256::from(20u64)),
             }
+        );
+    }
+
+    #[test]
+    fn decode_rewards_block_distributions_rejects_malformed_validator_entry_shape() {
+        let mut validators = RlpStream::new_list(1);
+        let mut entry = RlpStream::new_list(1);
+        entry.append(&addr(4));
+        validators.append_raw(&entry.out(), 1);
+
+        let mut block_stats = RlpStream::new_list(6);
+        block_stats.append(&addr(1));
+        block_stats.append(&1234u32);
+        block_stats.append_raw(&validators.out(), 1);
+        block_stats.append(&0u32);
+        block_stats.append(&0u64);
+        block_stats.append(&0u64);
+
+        let err = decode_rewards_block_distributions(&[RewardsStatsPeriodRlp {
+            period: 5,
+            data: block_stats.out().to_vec(),
+        }])
+        .unwrap_err();
+
+        assert_eq!(err.to_string(), "REWARDS_STATS_VALIDATOR_ENTRY_ITEM_COUNT");
+    }
+
+    #[test]
+    fn decode_rewards_block_distributions_rejects_duplicate_validator_records() {
+        let mut validators = RlpStream::new_list(2);
+        let mut validator_stats = RlpStream::new_list(3);
+        validator_stats.append(&1u32);
+        validator_stats.append(&0u64);
+        validator_stats.append(&U256::from(10u64));
+
+        let mut entry = RlpStream::new_list(2);
+        entry.append(&addr(2));
+        entry.append_raw(&validator_stats.out(), 1);
+
+        let entry = entry.out().to_vec();
+        validators.append_raw(&entry, 1);
+        validators.append_raw(&entry, 1);
+
+        let mut block_stats = RlpStream::new_list(6);
+        block_stats.append(&addr(1));
+        block_stats.append(&1234u32);
+        block_stats.append_raw(&validators.out(), 1);
+        block_stats.append(&0u32);
+        block_stats.append(&0u64);
+        block_stats.append(&0u64);
+
+        let err = decode_rewards_block_distributions(&[RewardsStatsPeriodRlp {
+            period: 5,
+            data: block_stats.out().to_vec(),
+        }])
+        .unwrap_err();
+
+        assert_eq!(err.to_string(), "REWARDS_STATS_DUPLICATE_VALIDATOR_RLP");
+    }
+
+    #[test]
+    fn process_period_rejects_fee_calculation_overflow_and_does_not_publish() {
+        let storage = temp_storage("rewards-stats-fee-overflow");
+        let mut runtime = runtime(1);
+        let mut bad_fact = fact(10);
+        bad_fact.transactions = vec![RewardTransactionFact {
+            hash: H256::from_low_u64_be(0xF001),
+            gas_price: (U256::MAX >> 1) + U256::one(),
+            gas_used: 2.into(),
+        }];
+        bad_fact.dag_blocks.clear();
+
+        let plan = runtime.process_period(bad_fact);
+        assert_eq!(plan.status, RewardsStatsStatus::Rejected);
+        assert_eq!(plan.error_code, "REWARDS_STATS_FEE_OVERFLOW");
+
+        let apply = apply_rewards_stats_storage_writes(&storage, &plan, false).unwrap();
+        assert_eq!(apply.status, RewardsStatsApplyStatus::Rejected);
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn process_period_rejects_validator_fee_pool_overflow_and_does_not_publish() {
+        let storage = temp_storage("rewards-stats-validator-fee-overflow");
+        let mut runtime = runtime(1);
+        let overflow_fee = (U256::MAX >> 1) + U256::one();
+        let tx_hash_1 = H256::from_low_u64_be(0xF002);
+        let tx_hash_2 = H256::from_low_u64_be(0xF003);
+
+        let mut bad_fact = fact(10);
+        bad_fact.transactions = vec![
+            RewardTransactionFact {
+                hash: tx_hash_1,
+                gas_price: overflow_fee,
+                gas_used: 1.into(),
+            },
+            RewardTransactionFact {
+                hash: tx_hash_2,
+                gas_price: overflow_fee,
+                gas_used: 1.into(),
+            },
+        ];
+        bad_fact.dag_blocks = vec![RewardDagBlockFact {
+            author: addr(2),
+            difficulty: 7,
+            transaction_hashes: vec![tx_hash_1, tx_hash_2],
+        }];
+
+        let plan = runtime.process_period(bad_fact);
+        assert_eq!(plan.status, RewardsStatsStatus::Rejected);
+        assert_eq!(plan.error_code, "REWARDS_STATS_VALIDATOR_FEE_OVERFLOW");
+
+        let apply = apply_rewards_stats_storage_writes(&storage, &plan, false).unwrap();
+        assert_eq!(apply.status, RewardsStatsApplyStatus::Rejected);
+        assert!(
+            storage
+                .metadata()
+                .block_rewards_stats_rlp()
+                .unwrap()
+                .is_empty()
         );
     }
 

@@ -7,6 +7,7 @@
 
 use num_bigint::BigUint;
 use rlp::{DecoderError, Rlp, RlpStream};
+use rustaxa_types::DposTokenAmount;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -122,7 +123,6 @@ pub struct Node {
 }
 
 const SCHEMA_VERSION: u8 = 1;
-const MAX_U256_BYTES: usize = 32;
 
 /// In-memory deterministic storage shape for DPoS reward graph state.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -201,9 +201,6 @@ pub enum DposRewardGraphError {
         validator: Validator,
     },
     ZeroDenominator,
-    AmountOverU256 {
-        field: &'static str,
-    },
     ArithmeticUnderflow {
         left: &'static str,
         right: &'static str,
@@ -274,7 +271,6 @@ impl fmt::Display for DposRewardGraphError {
                 )
             }
             ZeroDenominator => write!(f, "total_stake is zero"),
-            AmountOverU256 { field } => write!(f, "{field} exceeds 256-bit width"),
             ArithmeticUnderflow { left, right } => write!(f, "{left} < {right}"),
         }
     }
@@ -885,20 +881,21 @@ impl DposRewardGraph {
         })
     }
 
-    /// Computes exact cumulative reward-per-stake from uint256 domain inputs.
-    /// Intermediates remain arbitrary-width; zero stake and over-wide inputs fail.
+    /// Computes exact cumulative reward-per-stake from typed token inputs.
+    /// Intermediates remain arbitrary-width; zero total stake fails while all
+    /// input widths have already been validated by `DposTokenAmount`.
     pub(crate) fn reward_per_stake(
         &self,
         head_rps: &DposRewardIndex,
-        pool: &[u8],
-        max_stake: &[u8],
-        total_stake: &[u8],
+        pool: DposTokenAmount,
+        max_stake: DposTokenAmount,
+        total_stake: DposTokenAmount,
     ) -> Result<DposRewardIndex, DposRewardGraphError> {
         self.ensure_complete()?;
         head_rps.advance(
-            decode_u256_like_bytes("pool", pool)?,
-            decode_u256_like_bytes("max_stake", max_stake)?,
-            decode_u256_like_bytes("total_stake", total_stake)?,
+            token_amount_biguint(pool),
+            token_amount_biguint(max_stake),
+            token_amount_biguint(total_stake),
         )
     }
 
@@ -908,14 +905,14 @@ impl DposRewardGraph {
         &self,
         cursor_rps: &DposRewardIndex,
         current_rps: DposRewardIndex,
-        principal: &[u8],
-        max_stake: &[u8],
+        principal: DposTokenAmount,
+        max_stake: DposTokenAmount,
     ) -> Result<BigUint, DposRewardGraphError> {
         self.ensure_complete()?;
         current_rps.reward_since(
             cursor_rps,
-            decode_u256_like_bytes("principal", principal)?,
-            decode_u256_like_bytes("max_stake", max_stake)?,
+            token_amount_biguint(principal),
+            token_amount_biguint(max_stake),
         )
     }
 
@@ -1044,19 +1041,8 @@ impl DposRewardGraph {
     }
 }
 
-fn decode_u256_like_bytes(
-    field: &'static str,
-    raw: &[u8],
-) -> Result<BigUint, DposRewardGraphError> {
-    if raw.len() > MAX_U256_BYTES {
-        return Err(DposRewardGraphError::AmountOverU256 { field });
-    }
-    if raw.len() == 1 && raw[0] == 0 {
-        return Err(DposRewardGraphError::InvalidRlp(format!(
-            "{field} uses non-canonical zero encoding"
-        )));
-    }
-    Ok(BigUint::from_bytes_be(raw))
+fn token_amount_biguint(amount: DposTokenAmount) -> BigUint {
+    BigUint::from_bytes_be(&amount.to_fixed_be_bytes())
 }
 
 fn decode_u64(raw: &[u8], field: &'static str) -> Result<u64, DposRewardGraphError> {
@@ -2303,15 +2289,20 @@ mod tests {
             Err(DposRewardGraphError::GraphHistoryIncomplete)
         ));
         assert!(matches!(
-            decoded.reward_per_stake(&DposRewardIndex::zero(), &[], &[1], &[1]),
+            decoded.reward_per_stake(
+                &DposRewardIndex::zero(),
+                DposTokenAmount::zero(),
+                DposTokenAmount::from(ethereum_types::U256::from(1_u8)),
+                DposTokenAmount::from(ethereum_types::U256::from(1_u8)),
+            ),
             Err(DposRewardGraphError::GraphHistoryIncomplete)
         ));
         assert!(matches!(
             decoded.reward_from_cursor(
                 &DposRewardIndex::zero(),
                 DposRewardIndex::from(BigUint::from(1_u8)),
-                &[1],
-                &[1]
+                DposTokenAmount::from(ethereum_types::U256::from(1_u8)),
+                DposTokenAmount::from(ethereum_types::U256::from(1_u8)),
             ),
             Err(DposRewardGraphError::GraphHistoryIncomplete)
         ));
@@ -2434,7 +2425,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_principal_over_u256() {
+    fn typed_amount_inputs_preserve_zero_maximum_reward_behavior() {
         let mut graph = DposRewardGraph::new();
         graph.nodes.insert(
             NodeKey {
@@ -2447,21 +2438,16 @@ mod tests {
             },
         );
 
-        let over = vec![0xFF_u8; 33];
-        assert!(
-            graph
-                .reward_per_stake(&DposRewardIndex::from(BigUint::from(1_u8)), &over, &[], &[])
-                .is_err()
-        );
-        assert!(
+        assert_eq!(
             graph
                 .reward_from_cursor(
                     &DposRewardIndex::from(BigUint::from(1_u8)),
                     DposRewardIndex::from(BigUint::from(1_u8)),
-                    &over,
-                    &[]
+                    DposTokenAmount::from(ethereum_types::U256::MAX),
+                    DposTokenAmount::zero(),
                 )
-                .is_err()
+                .unwrap(),
+            BigUint::from(0_u8)
         );
     }
 }

@@ -4240,7 +4240,7 @@ The authoritative tracker now decomposes remaining CRW-09 work into behavior-com
 individual scalar fields. `CRW-09C` is the next ready item and must type the full FinalChain block-number lifecycle,
 including the single PBFT-period admission conversion, storage keys, hardfork heights, historical reads, publication,
 recovery, bloom ranges, and bridge edges. The persisted DPoS principal/custody migration then uses the already shared
-`DposTokenAmount` plus a private `StoredDposAmount` provenance wrapper; it must not introduce nominal principal/custody
+`DposTokenAmount` plus a private `StoredDposTokenAmount` provenance wrapper; it must not introduce nominal principal/custody
 scalar types around intentionally fungible token transfers.
 
 Subsequent dependency families cover ordered corrections, arbitrary-width reward indexes, reward pools/claims, explicit
@@ -4294,7 +4294,7 @@ boundary audit. `CRW-09D` is now ready.
 
 `CRW-09D` replaces raw Rust byte vectors for aggregate validator stake, per-delegator principal, and V1/V2
 undelegation custody with the shared `DposTokenAmount(U256)` semantic value. Persistence compatibility remains private
-to `rustaxa-consensus`: `StoredDposAmount` records fixed-32 versus canonical-minimal provenance, preserves untouched
+to `rustaxa-consensus`: `StoredDposTokenAmount` records fixed-32 versus canonical-minimal provenance, preserves untouched
 snapshot bytes exactly, canonicalizes arithmetic mutations, and retains the legacy fixed-width ABI-funded registration
 stake. The public shared type therefore carries fungible token semantics without exposing snapshot migration policy
 through `rustaxa-types`.
@@ -4347,6 +4347,30 @@ and module flags are unchanged; `CRW-07` has no inventory delta.
 All 804 `rustaxa-consensus` tests, `make rewrite-validate-fast`, the FinalChain Tier 2 gate, the Tier 3
 Rust-enabled/pure-C++ parity gate, the bridge inventory guard, and the repository pre-commit hook passed.
 Independent configured review approved the slice without blockers; `CRW-09G` is now ready.
+
+### CRW-09G DPoS Reward Pools and Claim Settlement
+
+`CRW-09G` carries the shared `DposTokenAmount(U256)` semantic value through transaction-fee ownership, per-validator
+commission/delegator deltas, persisted reward pools, account credits, and successful claim receipts. Reward-graph
+principal, pool, and maximum-stake inputs are typed before arithmetic; the graph continues to own arbitrary-width
+`DposRewardIndex(BigUint)` intermediates and the pending-reward ABI remains the sole low-256-bit projection boundary.
+Delegator settlement computes the exact reward, compares it with the U256 contract balance as a `BigUint`, and only then
+converts a payable reward to `DposTokenAmount`, preserving the established insufficient-balance error order.
+
+The consensus-private persistence wrapper is now named `StoredDposTokenAmount` and is shared by principal, custody,
+commission-pool, and delegator-pool rows. Snapshot slots 1 and 7 therefore preserve untouched empty,
+canonical-minimal, and exact 32-byte encodings, reject oversized, short-leading-zero, and duplicate rows before state
+installation, and canonicalize only successfully mutated values. FinalChain candidate staging continues to make reward
+pool, cursor, account, receipt, and rewards-stat publication atomic on hard errors and storage failures. Minted totals,
+supply state, Aspen migration, yield/cap arithmetic, and header `total_reward` remain in `CRW-09H`.
+
+Snapshot/RLP shape, CXX carriers, bridge handles and exports, shim routes, module flags, and compatibility-test inventory
+are unchanged, so `CRW-07` has no delta.
+
+All 58 `rustaxa-types`, 811 `rustaxa-consensus`, and 347 `rustaxa-bridge` tests, `make rewrite-validate-fast`, the
+FinalChain Tier 2 gate, Tier 3 Rust-enabled/pure-C++ parity, the bridge inventory guard, and the repository pre-commit
+hook passed. Independent configured review approved the complete diff without actionable findings; `CRW-09H` is now
+ready.
 
 ## Historical Execution Order
 

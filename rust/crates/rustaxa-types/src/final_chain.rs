@@ -835,9 +835,10 @@ pub struct GenesisDposConfig {
 ///
 /// Ingress accepts unsigned big-endian byte strings no wider than 32 bytes. The
 /// type deliberately exposes only checked arithmetic used by DPoS operations.
-/// Persisted principal and custody pair this value with consensus-private
-/// encoding provenance; reward and supply values remain byte-backed until
-/// their complete state-machine migrations land.
+/// Persistence policy is deliberately excluded: consensus-owned wrappers pair
+/// principal, custody, and reward-pool values with their historical snapshot
+/// encoding provenance. Supply migration and its state-machine policy likewise
+/// remain outside this shared semantic value.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct DposTokenAmount(U256);

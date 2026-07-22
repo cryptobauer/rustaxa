@@ -531,6 +531,10 @@ Current snapshot after DAG manager verify-result API cleanup:
 - `CRW-09F` keeps reward-index arithmetic and persistence provenance private to `rustaxa-consensus`; snapshot scalar
   mirrors and graph RLP retain their existing byte carriers. No handle, export, constructor, shim route, module flag,
   compatibility-only test, or `CRW-07` inventory entry changes.
+- `CRW-09G` keeps reward pools and claim settlement inside Rust FinalChain while reusing the existing byte-compatible
+  snapshot and receipt boundaries. Transaction-fee ownership, reward deltas, pools, and successful transfers use
+  `DposTokenAmount`; persistence provenance remains private to `rustaxa-consensus`. No carrier, handle, export,
+  constructor, shim route, module flag, compatibility-only test, or `CRW-07` inventory entry changes.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

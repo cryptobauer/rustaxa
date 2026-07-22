@@ -65,24 +65,26 @@ use std::sync::Mutex;
 use triehash::ordered_trie_root;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StoredDposAmountEncoding {
+enum StoredDposTokenAmountEncoding {
     Fixed32,
     Minimal,
 }
 
-/// A DPoS principal or custody amount with its persisted byte provenance.
+/// A persisted fungible DPoS token amount with its snapshot byte provenance.
 ///
-/// Exact fixed-width and canonical-minimal legacy encodings survive untouched
-/// snapshot round trips. Arithmetic mutations replace the value with its
-/// canonical encoding, while registration retains the legacy fixed-width ABI
-/// value it persists; malformed persisted bytes fail before state installation.
+/// Principal, custody, commission-pool, and delegator-pool rows share this
+/// representation because they carry the same token semantics and historical
+/// fixed-width-versus-minimal encoding contract. Exact valid encodings survive
+/// untouched snapshot round trips. Arithmetic mutations replace the value with
+/// its canonical encoding, while registration retains the legacy fixed-width
+/// ABI value it persists; malformed bytes fail before state installation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct StoredDposAmount {
+struct StoredDposTokenAmount {
     amount: DposTokenAmount,
-    encoding: StoredDposAmountEncoding,
+    encoding: StoredDposTokenAmountEncoding,
 }
 
-impl StoredDposAmount {
+impl StoredDposTokenAmount {
     fn from_snapshot_bytes(bytes: &[u8], field: &str) -> Result<Self, anyhow::Error> {
         anyhow::ensure!(
             bytes.len() <= 32,
@@ -100,9 +102,9 @@ impl StoredDposAmount {
             amount: DposTokenAmount::try_from_be_slice(bytes)
                 .map_err(|error| anyhow::anyhow!(error))?,
             encoding: if bytes.len() == 32 {
-                StoredDposAmountEncoding::Fixed32
+                StoredDposTokenAmountEncoding::Fixed32
             } else {
-                StoredDposAmountEncoding::Minimal
+                StoredDposTokenAmountEncoding::Minimal
             },
         })
     }
@@ -113,9 +115,9 @@ impl StoredDposAmount {
         Self {
             amount,
             encoding: if first == 0 {
-                StoredDposAmountEncoding::Fixed32
+                StoredDposTokenAmountEncoding::Fixed32
             } else {
-                StoredDposAmountEncoding::Minimal
+                StoredDposTokenAmountEncoding::Minimal
             },
         }
     }
@@ -138,8 +140,8 @@ impl StoredDposAmount {
 
     fn persisted_len(&self) -> usize {
         match self.encoding {
-            StoredDposAmountEncoding::Fixed32 => 32,
-            StoredDposAmountEncoding::Minimal => {
+            StoredDposTokenAmountEncoding::Fixed32 => 32,
+            StoredDposTokenAmountEncoding::Minimal => {
                 let fixed = self.amount.to_fixed_be_bytes();
                 fixed
                     .iter()
@@ -151,11 +153,17 @@ impl StoredDposAmount {
 
     fn to_snapshot_bytes(&self) -> Vec<u8> {
         let fixed = self.amount.to_fixed_be_bytes();
-        if self.encoding == StoredDposAmountEncoding::Fixed32 {
+        if self.encoding == StoredDposTokenAmountEncoding::Fixed32 {
             return fixed.to_vec();
         }
         let first = fixed.iter().position(|byte| *byte != 0).unwrap_or(32);
         fixed[first..].to_vec()
+    }
+}
+
+impl Default for StoredDposTokenAmount {
+    fn default() -> Self {
+        Self::canonical_after_mutation(DposTokenAmount::zero())
     }
 }
 
@@ -209,8 +217,9 @@ impl PartialEq<Vec<u8>> for StoredDposRewardIndex {
     }
 }
 
-type DposAmountRows = BTreeMap<[u8; 20], StoredDposAmount>;
-type DposDelegations = BTreeMap<[u8; 20], BTreeMap<[u8; 20], StoredDposAmount>>;
+type DposPrincipalRows = BTreeMap<[u8; 20], StoredDposTokenAmount>;
+type DposRewardPools = BTreeMap<[u8; 20], StoredDposTokenAmount>;
+type DposDelegations = BTreeMap<[u8; 20], BTreeMap<[u8; 20], StoredDposTokenAmount>>;
 type DposRewardIndexRows = BTreeMap<[u8; 20], StoredDposRewardIndex>;
 type DposDelegationRewardCursors = BTreeMap<[u8; 20], BTreeMap<[u8; 20], StoredDposRewardIndex>>;
 type DposDelegatorValidators = BTreeMap<[u8; 20], Vec<[u8; 20]>>;
@@ -244,7 +253,7 @@ struct DposValidatorUndelegationsV2 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposUndelegationV2Entry {
     id: u64,
-    amount: StoredDposAmount,
+    amount: StoredDposTokenAmount,
     block: u64,
 }
 
@@ -252,7 +261,7 @@ struct DposUndelegationV2Entry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposUndelegation {
     validator: [u8; 20],
-    amount: StoredDposAmount,
+    amount: StoredDposTokenAmount,
     block: u64,
 }
 
@@ -437,11 +446,11 @@ pub struct FinalChain {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DposSnapshot {
     /// Total stake by validator address at this block.
-    total_stakes: DposAmountRows,
+    total_stakes: DposPrincipalRows,
     /// Accumulated commission reward by validator address at this block.
-    commission_rewards: BTreeMap<[u8; 20], Vec<u8>>,
+    commission_rewards: DposRewardPools,
     /// Accumulated delegator reward pool by validator address at this block.
-    delegator_rewards: BTreeMap<[u8; 20], Vec<u8>>,
+    delegator_rewards: DposRewardPools,
     /// Validator metadata by validator address at this block.
     validator_metadata: BTreeMap<[u8; 20], DposValidatorMetadata>,
     /// Validator VRF keys by validator address at this block.
@@ -515,7 +524,7 @@ struct DposSnapshot {
 }
 
 struct NativeRewardsStatsPlan {
-    fee_rewards_by_validator: BTreeMap<[u8; 20], U256>,
+    fee_rewards_by_validator: BTreeMap<[u8; 20], DposTokenAmount>,
     distribution_stats: Vec<RewardsBlockDistribution>,
     storage_update: Option<OwnedRewardsStatsUpdate>,
     runtime_after_commit: RewardsStatsRuntime,
@@ -532,8 +541,8 @@ struct FinalChainRewardsStatsRuntimeState {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct DposRewardDeltas {
-    commission_rewards: BTreeMap<[u8; 20], U256>,
-    delegator_rewards: BTreeMap<[u8; 20], U256>,
+    commission_rewards: BTreeMap<[u8; 20], DposTokenAmount>,
+    delegator_rewards: BTreeMap<[u8; 20], DposTokenAmount>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -670,7 +679,7 @@ impl FinalChain {
                     genesis_dpos_config.vote_eligibility_balance_step,
                     genesis_dpos_config.validator_maximum_stake,
                 )?;
-                let total_stake = StoredDposAmount::from_snapshot_bytes(
+                let total_stake = StoredDposTokenAmount::from_snapshot_bytes(
                     &validator.total_stake,
                     "genesis total stake",
                 )?;
@@ -680,7 +689,7 @@ impl FinalChain {
                     .map(|(delegator, amount)| {
                         Ok((
                             delegator,
-                            StoredDposAmount::from_snapshot_bytes(
+                            StoredDposTokenAmount::from_snapshot_bytes(
                                 &amount,
                                 "genesis delegation principal",
                             )?,
@@ -2833,7 +2842,7 @@ impl FinalChain {
         &self,
         accounts: &mut HashMap<[u8; 20], Account>,
         beneficiary: [u8; 20],
-        reward: U256,
+        reward: DposTokenAmount,
     ) -> Result<(), anyhow::Error> {
         if reward.is_zero() {
             return Ok(());
@@ -2842,7 +2851,7 @@ impl FinalChain {
         let balance = *account.balance.as_u256();
         account.balance.replace_after_mutation(
             balance
-                .checked_add(reward)
+                .checked_add(reward.as_u256())
                 .ok_or_else(|| anyhow::anyhow!("pre-Magnolia PBFT beneficiary reward overflow"))?,
         );
         Ok(())
@@ -2858,16 +2867,16 @@ impl FinalChain {
     fn credit_post_magnolia_dpos_fee_rewards(
         &self,
         accounts: &mut HashMap<[u8; 20], Account>,
-        fee_rewards_by_validator: &BTreeMap<[u8; 20], U256>,
+        fee_rewards_by_validator: &BTreeMap<[u8; 20], DposTokenAmount>,
     ) -> Result<(), anyhow::Error> {
-        let reward =
-            fee_rewards_by_validator
-                .values()
-                .try_fold(U256::zero(), |total, reward| {
-                    total.checked_add(*reward).ok_or_else(|| {
-                        anyhow::anyhow!("post-Magnolia DPoS fee reward total overflow")
-                    })
-                })?;
+        let reward = fee_rewards_by_validator.values().try_fold(
+            DposTokenAmount::zero(),
+            |total, reward| {
+                total
+                    .checked_add(*reward)
+                    .ok_or_else(|| anyhow::anyhow!("post-Magnolia DPoS fee reward total overflow"))
+            },
+        )?;
         if reward.is_zero() {
             return Ok(());
         }
@@ -2877,7 +2886,7 @@ impl FinalChain {
         let balance = *account.balance.as_u256();
         account.balance.replace_after_mutation(
             balance
-                .checked_add(reward)
+                .checked_add(reward.as_u256())
                 .ok_or_else(|| anyhow::anyhow!("DPoS contract fee reward balance overflow"))?,
         );
         Ok(())
@@ -3212,12 +3221,12 @@ impl FinalChain {
         merge_reward_value(
             &mut plan.dpos_rewards.commission_rewards,
             validator,
-            commission,
+            DposTokenAmount::from(commission),
         )?;
         merge_reward_value(
             &mut plan.dpos_rewards.delegator_rewards,
             validator,
-            delegator_reward,
+            DposTokenAmount::from(delegator_reward),
         )?;
         plan.total_minted_reward = plan
             .total_minted_reward
@@ -3244,19 +3253,18 @@ impl FinalChain {
         let pool = snapshot
             .delegator_rewards
             .get(&validator)
-            .map(Vec::as_slice)
+            .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
         let total_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::to_snapshot_bytes)
+            .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
-        if pool.iter().all(|byte| *byte == 0) || total_stake.is_empty() {
+        if pool.is_zero() || total_stake.is_zero() {
             return Ok(head);
         }
-        let maximum_stake = self.dpos_validator_maximum_stake.to_fixed_be_bytes();
         graph
-            .reward_per_stake(&head, pool, &maximum_stake, &total_stake)
+            .reward_per_stake(&head, pool, self.dpos_validator_maximum_stake, total_stake)
             .map_err(Into::into)
     }
 
@@ -3320,14 +3328,13 @@ impl FinalChain {
         let rewards_pool = snapshot
             .delegator_rewards
             .get(&validator)
-            .cloned()
+            .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
         let total_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::to_snapshot_bytes)
+            .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
-        let maximum_stake = self.dpos_validator_maximum_stake.to_fixed_be_bytes();
         let reward_per_stake = self.apply_reward_reference_graph(snapshot, |graph| {
             let current_block = graph.current_block()?;
             match graph.load_node(&NodeKey {
@@ -3345,12 +3352,15 @@ impl FinalChain {
                     block: head_block,
                 })?
                 .reward_per_stake;
-            let reward_per_stake = if rewards_pool.iter().all(|byte| *byte == 0)
-                || total_stake.iter().all(|byte| *byte == 0)
-            {
+            let reward_per_stake = if rewards_pool.is_zero() || total_stake.is_zero() {
                 head
             } else {
-                graph.reward_per_stake(&head, &rewards_pool, &maximum_stake, &total_stake)?
+                graph.reward_per_stake(
+                    &head,
+                    rewards_pool,
+                    self.dpos_validator_maximum_stake,
+                    total_stake,
+                )?
             };
             graph.bootstrap_node(
                 NodeKey {
@@ -3370,7 +3380,9 @@ impl FinalChain {
             validator,
             StoredDposRewardIndex::canonical_after_mutation(reward_per_stake.clone()),
         );
-        snapshot.delegator_rewards.insert(validator, Vec::new());
+        snapshot
+            .delegator_rewards
+            .insert(validator, StoredDposTokenAmount::default());
         Ok(reward_per_stake)
     }
 
@@ -3965,7 +3977,7 @@ impl FinalChain {
             {
                 accounts.remove(&transaction.sender);
             }
-            transaction_fees.push((transaction.hash, gas_cost));
+            transaction_fees.push((transaction.hash, DposTokenAmount::from(gas_cost)));
         }
         cleanup_slashing_jailed_validators(&mut dpos_snapshot, block_number);
 
@@ -4597,7 +4609,7 @@ impl FinalChain {
         let stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .unwrap_or_default();
         stake >= self.dpos_eligibility_balance_threshold.as_u256()
     }
@@ -4879,14 +4891,14 @@ impl FinalChain {
         let total_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::to_snapshot_bytes)
+            .map(StoredDposTokenAmount::to_snapshot_bytes)
             .ok_or_else(|| {
                 anyhow::anyhow!("Rust FinalChain::call DPoS validator does not exist")
             })?;
         let commission_reward = snapshot
             .commission_rewards
             .get(&validator)
-            .map(Vec::as_slice)
+            .map(StoredDposTokenAmount::to_snapshot_bytes)
             .unwrap_or_default();
         let metadata = snapshot
             .validator_metadata
@@ -4911,7 +4923,7 @@ impl FinalChain {
 
         let mut output = Vec::with_capacity(output_capacity);
         output.extend_from_slice(&abi_word_from_u256_bytes(&total_stake)?);
-        output.extend_from_slice(&abi_word_from_u256_bytes(commission_reward)?);
+        output.extend_from_slice(&abi_word_from_u256_bytes(&commission_reward)?);
         output.extend_from_slice(&abi_word_from_u64(u64::from(metadata.commission)));
         output.extend_from_slice(&abi_word_from_u64(metadata.last_commission_change));
         let undelegations_count = if self.magnolia_active(block_number) {
@@ -5174,12 +5186,7 @@ impl FinalChain {
             let reward = if total_stake.is_zero() {
                 U256::zero()
             } else {
-                self.pending_delegator_reward(
-                    snapshot,
-                    *validator,
-                    delegator,
-                    &stake.to_snapshot_bytes(),
-                )?
+                self.pending_delegator_reward(snapshot, *validator, delegator, stake.amount())?
             };
             output.extend_from_slice(&abi_word_from_address(*validator));
             output.extend_from_slice(&stake.amount().to_fixed_be_bytes());
@@ -5300,7 +5307,7 @@ impl FinalChain {
         snapshot: &DposSnapshot,
         validator: [u8; 20],
         delegator: [u8; 20],
-        stake: &[u8],
+        stake: DposTokenAmount,
     ) -> Result<U256, anyhow::Error> {
         let current_reward_per_stake =
             self.current_validator_reward_per_stake_exact(snapshot, validator)?;
@@ -5318,7 +5325,7 @@ impl FinalChain {
             &cursor,
             current_reward_per_stake,
             stake,
-            &self.dpos_validator_maximum_stake.to_fixed_be_bytes(),
+            self.dpos_validator_maximum_stake,
         )?;
         Ok(u256_from_big_endian(&DposRewardGraph::reward_to_u256_abi(
             &reward,
@@ -5378,8 +5385,8 @@ impl FinalChain {
         let reward_exact = match snapshot.reward_reference_graph.reward_from_cursor(
             &previous_cursor,
             reward_cursor.clone(),
-            &delegator_stake.to_snapshot_bytes(),
-            &self.dpos_validator_maximum_stake.to_fixed_be_bytes(),
+            delegator_stake.amount(),
+            self.dpos_validator_maximum_stake,
         ) {
             Ok(reward) => reward,
             Err(DposRewardGraphError::ArithmeticUnderflow {
@@ -5402,7 +5409,8 @@ impl FinalChain {
                 "Rust FinalChain::finalize DPoS contract balance insufficient for reward claim"
             );
         }
-        let reward = u256_from_big_endian(&reward_exact.to_bytes_be());
+        let reward = DposTokenAmount::try_from_be_slice(&reward_exact.to_bytes_be())
+            .map_err(|error| anyhow::anyhow!(error))?;
 
         if move_cursor {
             snapshot
@@ -5425,14 +5433,14 @@ impl FinalChain {
             .or_insert_with(empty_account);
         dpos_account.balance.replace_after_mutation(
             dpos_contract_balance
-                .checked_sub(reward)
+                .checked_sub(reward.as_u256())
                 .ok_or_else(|| anyhow::anyhow!("DPoS contract reward underflow"))?,
         );
         let delegator_account = accounts.entry(delegator).or_insert_with(empty_account);
         let current_delegator_balance = *delegator_account.balance.as_u256();
         delegator_account.balance.replace_after_mutation(
             current_delegator_balance
-                .checked_add(reward)
+                .checked_add(reward.as_u256())
                 .ok_or_else(|| anyhow::anyhow!("DPoS delegator reward overflow"))?,
         );
         Ok(vec![dpos_rewards_claimed_log(
@@ -5599,7 +5607,7 @@ impl FinalChain {
         let is_zero_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::is_zero)
+            .map(StoredDposTokenAmount::is_zero)
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "Rust FinalChain::finalize DPoS commission claim on missing validator stake row"
@@ -5609,14 +5617,14 @@ impl FinalChain {
         let reward = snapshot
             .commission_rewards
             .get(&validator)
-            .map(|bytes| u256_from_big_endian(bytes))
+            .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
         let dpos_contract_balance = *accounts
             .entry(DPOS_CONTRACT_ADDRESS)
             .or_insert_with(empty_account)
             .balance
             .as_u256();
-        if reward > dpos_contract_balance {
+        if reward.as_u256() > dpos_contract_balance {
             anyhow::bail!(
                 "Rust FinalChain::finalize DPoS contract balance insufficient for commission reward claim"
             );
@@ -5624,21 +5632,21 @@ impl FinalChain {
 
         snapshot
             .commission_rewards
-            .insert(validator, u256_to_big_endian(U256::zero()));
+            .insert(validator, StoredDposTokenAmount::default());
         if !reward.is_zero() {
             let dpos_account = accounts
                 .entry(DPOS_CONTRACT_ADDRESS)
                 .or_insert_with(empty_account);
             dpos_account.balance.replace_after_mutation(
                 dpos_contract_balance
-                    .checked_sub(reward)
+                    .checked_sub(reward.as_u256())
                     .ok_or_else(|| anyhow::anyhow!("DPoS contract commission reward underflow"))?,
             );
             let owner_account = accounts.entry(owner).or_insert_with(empty_account);
             let current_owner_balance = *owner_account.balance.as_u256();
             owner_account.balance.replace_after_mutation(
                 current_owner_balance
-                    .checked_add(reward)
+                    .checked_add(reward.as_u256())
                     .ok_or_else(|| anyhow::anyhow!("DPoS commission reward overflow"))?,
             );
         }
@@ -5965,7 +5973,7 @@ impl FinalChain {
 
         snapshot.total_vote_count = total_vote_count;
         let stored_registration_stake =
-            StoredDposAmount::from_snapshot_bytes(&registration.stake, "registration stake")?;
+            StoredDposTokenAmount::from_snapshot_bytes(&registration.stake, "registration stake")?;
         snapshot
             .total_stakes
             .insert(registration.validator, stored_registration_stake.clone());
@@ -6044,7 +6052,7 @@ impl FinalChain {
             .delegations
             .get(&validator)
             .and_then(|delegations| delegations.get(&delegator))
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .unwrap_or_default();
         if current_delegation.is_zero() && add_amount < self.dpos_minimum_deposit.as_u256() {
             return Ok(DposApplyOutcome::mutation_contract_failure(
@@ -6075,7 +6083,7 @@ impl FinalChain {
         }
         snapshot.delegations.entry(validator).or_default().insert(
             delegator,
-            StoredDposAmount::canonical_u256_after_mutation(
+            StoredDposTokenAmount::canonical_u256_after_mutation(
                 current_delegation
                     .checked_add(add_amount)
                     .ok_or_else(|| anyhow::anyhow!("DPoS delegation addition overflow"))?,
@@ -6113,7 +6121,7 @@ impl FinalChain {
         };
         snapshot.total_stakes.insert(
             validator,
-            StoredDposAmount::canonical_u256_after_mutation(new_stake),
+            StoredDposTokenAmount::canonical_u256_after_mutation(new_stake),
         );
         snapshot.vote_counts.insert(validator, new_vote_count);
         Ok(())
@@ -6158,11 +6166,11 @@ impl FinalChain {
             && snapshot
                 .total_stakes
                 .get(&validator)
-                .is_some_and(StoredDposAmount::is_zero)
+                .is_some_and(StoredDposTokenAmount::is_zero)
             && snapshot
                 .commission_rewards
                 .get(&validator)
-                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+                .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, true)?;
         }
@@ -6170,7 +6178,7 @@ impl FinalChain {
             snapshot,
             delegator,
             validator,
-            StoredDposAmount::canonical_u256_after_mutation(remove_amount),
+            StoredDposTokenAmount::canonical_u256_after_mutation(remove_amount),
             unlock_block,
         )?;
         logs.push(dpos_undelegated_log(delegator, validator, remove_amount)?);
@@ -6213,11 +6221,11 @@ impl FinalChain {
             && snapshot
                 .total_stakes
                 .get(&validator)
-                .is_some_and(StoredDposAmount::is_zero)
+                .is_some_and(StoredDposTokenAmount::is_zero)
             && snapshot
                 .commission_rewards
                 .get(&validator)
-                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+                .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, false)?;
         }
@@ -6289,11 +6297,11 @@ impl FinalChain {
             .entry(validator)
             .or_default()
             .get(&delegator)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .unwrap_or_default();
         snapshot.delegations.entry(validator).or_default().insert(
             delegator,
-            StoredDposAmount::canonical_u256_after_mutation(
+            StoredDposTokenAmount::canonical_u256_after_mutation(
                 current_delegation
                     .checked_add(amount)
                     .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V1 cancel overflow"))?,
@@ -6302,7 +6310,7 @@ impl FinalChain {
         let current_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .unwrap_or_default();
         self.set_validator_stake(
             snapshot,
@@ -6345,11 +6353,11 @@ impl FinalChain {
             && snapshot
                 .total_stakes
                 .get(&validator)
-                .is_some_and(StoredDposAmount::is_zero)
+                .is_some_and(StoredDposTokenAmount::is_zero)
             && snapshot
                 .commission_rewards
                 .get(&validator)
-                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+                .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, true)?;
         }
@@ -6357,7 +6365,7 @@ impl FinalChain {
             snapshot,
             delegator,
             validator,
-            StoredDposAmount::canonical_u256_after_mutation(remove_amount),
+            StoredDposTokenAmount::canonical_u256_after_mutation(remove_amount),
             block_number
                 .as_u64()
                 .checked_add(self.dpos_delegation_locking_period(block_number))
@@ -6410,11 +6418,11 @@ impl FinalChain {
             && snapshot
                 .total_stakes
                 .get(&validator)
-                .is_some_and(StoredDposAmount::is_zero)
+                .is_some_and(StoredDposTokenAmount::is_zero)
             && snapshot
                 .commission_rewards
                 .get(&validator)
-                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+                .is_none_or(StoredDposTokenAmount::is_zero)
         {
             remove_dpos_validator(snapshot, validator, false)?;
         }
@@ -6481,11 +6489,11 @@ impl FinalChain {
             .entry(validator)
             .or_default()
             .get(&delegator)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .unwrap_or_default();
         snapshot.delegations.entry(validator).or_default().insert(
             delegator,
-            StoredDposAmount::canonical_u256_after_mutation(
+            StoredDposTokenAmount::canonical_u256_after_mutation(
                 current_delegation
                     .checked_add(amount)
                     .ok_or_else(|| anyhow::anyhow!("DPoS undelegation V2 cancel overflow"))?,
@@ -6494,7 +6502,7 @@ impl FinalChain {
         let current_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .unwrap_or_default();
         self.set_validator_stake(
             snapshot,
@@ -6531,7 +6539,7 @@ impl FinalChain {
             .delegations
             .get(&validator)
             .and_then(|delegations| delegations.get(&delegator))
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
         else {
             return Ok(Some(DposContractError::NonExistentDelegation));
         };
@@ -6569,7 +6577,7 @@ impl FinalChain {
             .delegations
             .get(&validator)
             .and_then(|delegations| delegations.get(&delegator))
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
         else {
             return Ok(Some(DposContractError::NonExistentDelegation));
         };
@@ -6611,14 +6619,14 @@ impl FinalChain {
         let Some(from_stake) = snapshot
             .total_stakes
             .get(&from)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
         else {
             return Ok(Some(DposContractError::NonExistentValidator));
         };
         let Some(to_stake) = snapshot
             .total_stakes
             .get(&to)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
         else {
             return Ok(Some(DposContractError::NonExistentValidator));
         };
@@ -6637,7 +6645,7 @@ impl FinalChain {
             .delegations
             .get(&from)
             .and_then(|delegations| delegations.get(&delegator))
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
         else {
             return Ok(Some(DposContractError::NonExistentDelegation));
         };
@@ -6711,7 +6719,7 @@ impl FinalChain {
                 anyhow::anyhow!("Rust FinalChain::finalize DPoS delegation does not exist")
             })?
             .get(&delegator)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .ok_or_else(|| {
                 anyhow::anyhow!("Rust FinalChain::finalize DPoS delegator stake does not exist")
             })?;
@@ -6748,7 +6756,7 @@ impl FinalChain {
         } else {
             delegations.insert(
                 delegator,
-                StoredDposAmount::canonical_u256_after_mutation(new_delegation),
+                StoredDposTokenAmount::canonical_u256_after_mutation(new_delegation),
             );
             let cursor_block = snapshot.reward_reference_graph.current_block()?;
             snapshot.reward_reference_graph.load_node(&NodeKey {
@@ -6796,7 +6804,7 @@ impl FinalChain {
         let current_stake = snapshot
             .total_stakes
             .get(&validator)
-            .map(StoredDposAmount::as_u256)
+            .map(StoredDposTokenAmount::as_u256)
             .ok_or_else(|| {
                 anyhow::anyhow!("DPoS redelegation destination validator disappeared")
             })?;
@@ -6804,7 +6812,7 @@ impl FinalChain {
             .delegations
             .get(&validator)
             .and_then(|delegations| delegations.get(&delegator))
-            .map(StoredDposAmount::as_u256);
+            .map(StoredDposTokenAmount::as_u256);
         let logs = if existing_delegation.is_some() {
             self.apply_dpos_delegator_reward_claim(snapshot, accounts, validator, delegator)?
         } else {
@@ -6827,7 +6835,7 @@ impl FinalChain {
             .ok_or_else(|| anyhow::anyhow!("DPoS redelegation destination delegation overflow"))?;
         snapshot.delegations.entry(validator).or_default().insert(
             delegator,
-            StoredDposAmount::canonical_u256_after_mutation(next_delegation),
+            StoredDposTokenAmount::canonical_u256_after_mutation(next_delegation),
         );
         self.set_validator_stake(
             snapshot,
@@ -6909,7 +6917,7 @@ impl FinalChain {
             let rewards_pool = snapshot
                 .delegator_rewards
                 .get(&from)
-                .map(|rewards| u256_from_big_endian(rewards))
+                .map(StoredDposTokenAmount::as_u256)
                 .unwrap_or_default();
             if !rewards_pool.is_zero()
                 && block_number < self.rewards_config.fix_redelegate_block_num
@@ -6925,7 +6933,7 @@ impl FinalChain {
                 snapshot
                     .total_stakes
                     .get(&from)
-                    .map(StoredDposAmount::as_u256)
+                    .map(StoredDposTokenAmount::as_u256)
             })
             .flatten();
         let initial_same_vote =
@@ -6954,11 +6962,11 @@ impl FinalChain {
             && snapshot
                 .total_stakes
                 .get(&from)
-                .is_some_and(StoredDposAmount::is_zero)
+                .is_some_and(StoredDposTokenAmount::is_zero)
             && snapshot
                 .commission_rewards
                 .get(&from)
-                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+                .is_none_or(StoredDposTokenAmount::is_zero)
             && (!self.magnolia_active(block_number)
                 || dpos_undelegations_count_for_validator(snapshot, from) == 0)
         {
@@ -7002,7 +7010,7 @@ impl FinalChain {
             };
             snapshot.total_stakes.insert(
                 from,
-                StoredDposAmount::canonical_u256_after_mutation(inflated_stake),
+                StoredDposTokenAmount::canonical_u256_after_mutation(inflated_stake),
             );
             snapshot.vote_counts.insert(from, inflated_vote);
             match initial_same_delegator_rewards.flatten() {
@@ -7042,7 +7050,7 @@ impl FinalChain {
             let current_stake = candidate
                 .total_stakes
                 .get(&correction.validator)
-                .map(StoredDposAmount::as_u256)
+                .map(StoredDposTokenAmount::as_u256)
                 .ok_or_else(|| {
                     anyhow::anyhow!(
                         "Rust FinalChain::finalize DPoS hardfork redelegation validator does not exist"
@@ -7076,7 +7084,7 @@ impl FinalChain {
                 })?;
             candidate.total_stakes.insert(
                 correction.validator,
-                StoredDposAmount::canonical_u256_after_mutation(new_stake),
+                StoredDposTokenAmount::canonical_u256_after_mutation(new_stake),
             );
             let corrected_vote_count = dpos_vote_count(
                 &u256_to_big_endian(new_stake),
@@ -7288,7 +7296,7 @@ impl FinalChain {
         block_number: FinalChainBlockNumber,
         finalized_transactions: &[FinalizationTransaction],
         finalized_dag_blocks: &[FinalizationDagBlock],
-        transaction_fees: &[([u8; 32], U256)],
+        transaction_fees: &[([u8; 32], DposTokenAmount)],
         blocks_per_year: u32,
         cert_votes: Vec<RewardCertVoteFact>,
     ) -> Result<NativeRewardsStatsPlan, anyhow::Error> {
@@ -7307,7 +7315,7 @@ impl FinalChain {
                     .find(|transaction| transaction.hash == *hash)
                     .ok_or_else(|| anyhow::anyhow!("missing transaction for executed fee hash"))?;
                 let gas_price = transaction.gas_price.as_u256();
-                let gas_used = gas_used_from_fee(*fee, gas_price)?;
+                let gas_used = gas_used_from_fee(fee.as_u256(), gas_price)?;
                 Ok((*hash, gas_used))
             })
             .collect::<Result<HashMap<_, _>>>()?;
@@ -7921,14 +7929,14 @@ fn h256_from_slice(raw: &[u8], field: &str) -> Result<ethereum_types::H256, anyh
 fn encode_dpos_snapshot_rlp(snapshot: &DposSnapshot) -> Result<Vec<u8>, anyhow::Error> {
     validate_dpos_principal_ledger(snapshot)?;
     let mut stream = rlp::RlpStream::new_list(24);
-    append_stored_dpos_amount_map(&mut stream, &snapshot.total_stakes);
-    append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
+    append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
+    append_stored_dpos_token_amount_map(&mut stream, &snapshot.commission_rewards);
     append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
     append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
     append_vote_count_map(&mut stream, &snapshot.vote_counts);
     stream.append(&snapshot.total_vote_count);
     append_delegations_map(&mut stream, &snapshot.delegations);
-    append_address_bytes_map(&mut stream, &snapshot.delegator_rewards);
+    append_stored_dpos_token_amount_map(&mut stream, &snapshot.delegator_rewards);
     stream.append(&snapshot.minted_tokens.as_slice());
     stream.append(&snapshot.total_supply.as_slice());
     stream.append(&snapshot.current_yield);
@@ -7978,8 +7986,9 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
             "DPoS snapshot RLP must contain exactly five, six, seven, nine, eleven, fourteen, fifteen, seventeen, twenty, twenty-one, twenty-two, twenty-three, or twenty-four items"
         );
     }
-    let total_stakes = decode_stored_dpos_amount_map(&rlp.at(0)?, "total stake")?;
-    let commission_rewards = decode_address_bytes_map(&rlp.at(1)?, "commission rewards")?;
+    let total_stakes = decode_stored_dpos_token_amount_map(&rlp.at(0)?, "total stake")?;
+    let commission_rewards =
+        decode_stored_dpos_token_amount_map(&rlp.at(1)?, "commission rewards")?;
     let validator_metadata = decode_validator_metadata_map(&rlp.at(2)?)?;
     let (vrf_keys, vote_counts, total_vote_count, delegations) = if item_count >= 6 {
         (
@@ -8001,7 +8010,7 @@ fn decode_dpos_snapshot_rlp(raw: &[u8]) -> Result<DposSnapshot, anyhow::Error> {
         )
     };
     let delegator_rewards = if item_count >= 9 {
-        decode_address_bytes_map(&rlp.at(7)?, "delegator rewards")?
+        decode_stored_dpos_token_amount_map(&rlp.at(7)?, "delegator rewards")?
     } else {
         BTreeMap::new()
     };
@@ -8226,16 +8235,7 @@ fn decode_account_snapshot_rlp(raw: &[u8]) -> Result<HashMap<[u8; 20], Account>,
     Ok(accounts)
 }
 
-fn append_address_bytes_map(stream: &mut rlp::RlpStream, map: &BTreeMap<[u8; 20], Vec<u8>>) {
-    stream.begin_list(map.len());
-    for (address, value) in map {
-        stream.begin_list(2);
-        stream.append(&address.as_slice());
-        stream.append(&value.as_slice());
-    }
-}
-
-fn append_stored_dpos_amount_map(stream: &mut rlp::RlpStream, map: &DposAmountRows) {
+fn append_stored_dpos_token_amount_map(stream: &mut rlp::RlpStream, map: &DposPrincipalRows) {
     stream.begin_list(map.len());
     for (address, value) in map {
         stream.begin_list(2);
@@ -8383,7 +8383,7 @@ fn decode_delegations_map(rlp: &Rlp<'_>) -> Result<DposDelegations, anyhow::Erro
                 anyhow::bail!("DPoS snapshot delegation item must contain exactly two items");
             }
             let delegator = decode_address(&delegation.at(0)?, "delegator address")?;
-            let amount = StoredDposAmount::from_snapshot_bytes(
+            let amount = StoredDposTokenAmount::from_snapshot_bytes(
                 delegation.at(1)?.data()?,
                 "delegation principal",
             )?;
@@ -8400,10 +8400,10 @@ fn decode_delegations_map(rlp: &Rlp<'_>) -> Result<DposDelegations, anyhow::Erro
     Ok(map)
 }
 
-fn decode_stored_dpos_amount_map(
+fn decode_stored_dpos_token_amount_map(
     rlp: &Rlp<'_>,
     field: &str,
-) -> Result<DposAmountRows, anyhow::Error> {
+) -> Result<DposPrincipalRows, anyhow::Error> {
     let mut map = BTreeMap::new();
     for item in rlp.iter() {
         anyhow::ensure!(
@@ -8411,7 +8411,7 @@ fn decode_stored_dpos_amount_map(
             "DPoS snapshot {field} entry must contain exactly two items"
         );
         let address = decode_address(&item.at(0)?, field)?;
-        let amount = StoredDposAmount::from_snapshot_bytes(item.at(1)?.data()?, field)?;
+        let amount = StoredDposTokenAmount::from_snapshot_bytes(item.at(1)?.data()?, field)?;
         anyhow::ensure!(
             map.insert(address, amount).is_none(),
             "FINAL_CHAIN_DPOS_STORED_AMOUNT_DUPLICATE_KEY: field={field}"
@@ -8488,7 +8488,7 @@ fn decode_undelegations_v2_map(rlp: &Rlp<'_>) -> Result<DposUndelegationsV2, any
                 }
                 entries.push(DposUndelegationV2Entry {
                     id: entry_item.val_at(0)?,
-                    amount: StoredDposAmount::from_snapshot_bytes(
+                    amount: StoredDposTokenAmount::from_snapshot_bytes(
                         entry_item.at(1)?.data()?,
                         "V2 undelegation custody",
                     )?,
@@ -8534,7 +8534,7 @@ fn decode_undelegations_map(rlp: &Rlp<'_>) -> Result<DposUndelegations, anyhow::
             }
             entries.push(DposUndelegation {
                 validator: decode_address(&entry_item.at(0)?, "V1 undelegation validator")?,
-                amount: StoredDposAmount::from_snapshot_bytes(
+                amount: StoredDposTokenAmount::from_snapshot_bytes(
                     entry_item.at(1)?.data()?,
                     "V1 undelegation custody",
                 )?,
@@ -8590,7 +8590,7 @@ fn decode_delegator_validators_map(
     Ok(map)
 }
 
-fn synthesize_self_delegations(total_stakes: &DposAmountRows) -> DposDelegations {
+fn synthesize_self_delegations(total_stakes: &DposPrincipalRows) -> DposDelegations {
     total_stakes
         .iter()
         .map(|(validator, stake)| {
@@ -8697,12 +8697,12 @@ fn remove_dpos_validator(
     let stake = snapshot
         .total_stakes
         .get(&validator)
-        .map(StoredDposAmount::as_u256)
+        .map(StoredDposTokenAmount::as_u256)
         .unwrap_or_default();
     let commission_rewards = snapshot
         .commission_rewards
         .get(&validator)
-        .map(|bytes| u256_from_big_endian(bytes))
+        .map(StoredDposTokenAmount::as_u256)
         .unwrap_or_default();
     anyhow::ensure!(
         stake.is_zero() && commission_rewards.is_zero(),
@@ -8769,7 +8769,7 @@ fn create_undelegation(
     snapshot: &mut DposSnapshot,
     delegator: [u8; 20],
     validator: [u8; 20],
-    amount: StoredDposAmount,
+    amount: StoredDposTokenAmount,
     block: u64,
 ) -> Result<(), anyhow::Error> {
     snapshot
@@ -8878,7 +8878,7 @@ fn create_undelegation_v2(
     snapshot: &mut DposSnapshot,
     delegator: [u8; 20],
     validator: [u8; 20],
-    amount: StoredDposAmount,
+    amount: StoredDposTokenAmount,
     block: u64,
 ) -> Result<u64, anyhow::Error> {
     let id = snapshot
@@ -9086,20 +9086,6 @@ fn decode_address_fixed_hash_map(
             decode_address(&item.at(0)?, field)?,
             decode_fixed_hash(&item.at(1)?, field)?,
         );
-    }
-    Ok(map)
-}
-
-fn decode_address_bytes_map(
-    rlp: &Rlp<'_>,
-    field: &str,
-) -> Result<BTreeMap<[u8; 20], Vec<u8>>, anyhow::Error> {
-    let mut map = BTreeMap::new();
-    for item in rlp.iter() {
-        if item.item_count()? != 2 {
-            anyhow::bail!("DPoS snapshot {field} entry must contain exactly two items");
-        }
-        map.insert(decode_address(&item.at(0)?, field)?, item.val_at(1)?);
     }
     Ok(map)
 }
@@ -9379,24 +9365,24 @@ fn dpos_redelegated_log(
 fn dpos_rewards_claimed_log(
     account: [u8; 20],
     validator: [u8; 20],
-    amount: U256,
+    amount: DposTokenAmount,
 ) -> Result<ReceiptLog, anyhow::Error> {
     dpos_amount_log(
         DPOS_REWARDS_CLAIMED_TOPIC,
         vec![address_topic(account), address_topic(validator)],
-        amount,
+        amount.as_u256(),
     )
 }
 
 fn dpos_commission_rewards_claimed_log(
     account: [u8; 20],
     validator: [u8; 20],
-    amount: U256,
+    amount: DposTokenAmount,
 ) -> Result<ReceiptLog, anyhow::Error> {
     dpos_amount_log(
         DPOS_COMMISSION_REWARDS_CLAIMED_TOPIC,
         vec![address_topic(account), address_topic(validator)],
-        amount,
+        amount.as_u256(),
     )
 }
 
@@ -9520,7 +9506,7 @@ fn empty_account() -> Account {
 
 fn fee_rewards_from_distribution_stats(
     distribution_stats: &[RewardsBlockDistribution],
-) -> Result<BTreeMap<[u8; 20], U256>, anyhow::Error> {
+) -> Result<BTreeMap<[u8; 20], DposTokenAmount>, anyhow::Error> {
     let mut rewards = BTreeMap::new();
     for stats in distribution_stats {
         for (validator, validator_stats) in &stats.validators_stats {
@@ -9533,8 +9519,8 @@ fn fee_rewards_from_distribution_stats(
 }
 
 fn merge_reward_map(
-    target: &mut BTreeMap<[u8; 20], U256>,
-    source: &BTreeMap<[u8; 20], U256>,
+    target: &mut BTreeMap<[u8; 20], DposTokenAmount>,
+    source: &BTreeMap<[u8; 20], DposTokenAmount>,
 ) -> Result<(), anyhow::Error> {
     for (validator, reward) in source {
         merge_reward_value(target, *validator, *reward)?;
@@ -9543,14 +9529,16 @@ fn merge_reward_map(
 }
 
 fn merge_reward_value(
-    target: &mut BTreeMap<[u8; 20], U256>,
+    target: &mut BTreeMap<[u8; 20], DposTokenAmount>,
     validator: [u8; 20],
-    reward: U256,
+    reward: DposTokenAmount,
 ) -> Result<(), anyhow::Error> {
     if reward.is_zero() {
         return Ok(());
     }
-    let current = target.entry(validator).or_insert_with(U256::zero);
+    let current = target
+        .entry(validator)
+        .or_insert_with(DposTokenAmount::zero);
     *current = current
         .checked_add(reward)
         .ok_or_else(|| anyhow::anyhow!("validator reward delta overflow"))?;
@@ -9558,8 +9546,8 @@ fn merge_reward_value(
 }
 
 fn apply_reward_map(
-    target: &mut BTreeMap<[u8; 20], Vec<u8>>,
-    rewards: BTreeMap<[u8; 20], U256>,
+    target: &mut DposRewardPools,
+    rewards: BTreeMap<[u8; 20], DposTokenAmount>,
     overflow_message: &'static str,
 ) -> Result<(), anyhow::Error> {
     for (validator, reward) in rewards {
@@ -9568,11 +9556,11 @@ fn apply_reward_map(
         }
         let current = target
             .get(&validator)
-            .map(|bytes| u256_from_big_endian(bytes))
+            .map(StoredDposTokenAmount::amount)
             .unwrap_or_default();
         target.insert(
             validator,
-            u256_to_big_endian(
+            StoredDposTokenAmount::canonical_after_mutation(
                 current
                     .checked_add(reward)
                     .ok_or_else(|| anyhow::anyhow!(overflow_message))?,
@@ -9614,10 +9602,12 @@ fn percent_of_max_commission(value: U256, commission: u16) -> Result<U256, anyho
 /// execution facts can also feed post-Magnolia DAG-author commission planning.
 /// This helper ignores the hashes, returns zero for empty blocks, and reports
 /// overflow as a consensus execution error.
-fn total_transaction_fees(transaction_fees: &[([u8; 32], U256)]) -> Result<U256, anyhow::Error> {
+fn total_transaction_fees(
+    transaction_fees: &[([u8; 32], DposTokenAmount)],
+) -> Result<DposTokenAmount, anyhow::Error> {
     transaction_fees
         .iter()
-        .try_fold(U256::zero(), |total, (_, fee)| {
+        .try_fold(DposTokenAmount::zero(), |total, (_, fee)| {
             total
                 .checked_add(*fee)
                 .ok_or_else(|| anyhow::anyhow!("transaction fee total overflow"))
@@ -10802,7 +10792,7 @@ fn update_dpos_claim_gas_snapshot(
                     .or_default()
                     .insert(
                         registration.metadata.owner,
-                        StoredDposAmount::from_snapshot_bytes(
+                        StoredDposTokenAmount::from_snapshot_bytes(
                             &registration.stake,
                             "claim gas registration stake",
                         )?,
@@ -10820,7 +10810,7 @@ fn update_dpos_claim_gas_snapshot(
                 .entry(*validator)
                 .or_default()
                 .get(delegator)
-                .map(StoredDposAmount::as_u256)
+                .map(StoredDposTokenAmount::as_u256)
                 .unwrap_or_default();
             let next = current
                 .checked_add(u256_from_big_endian(amount))
@@ -10829,7 +10819,7 @@ fn update_dpos_claim_gas_snapshot(
                 })?;
             snapshot.delegations.entry(*validator).or_default().insert(
                 *delegator,
-                StoredDposAmount::canonical_u256_after_mutation(next),
+                StoredDposTokenAmount::canonical_u256_after_mutation(next),
             );
         }
         DposTransaction::Undelegate {
@@ -10844,7 +10834,7 @@ fn update_dpos_claim_gas_snapshot(
                 .or_default()
                 .push(DposUndelegation {
                     validator: *validator,
-                    amount: StoredDposAmount::from_snapshot_bytes(
+                    amount: StoredDposTokenAmount::from_snapshot_bytes(
                         amount,
                         "claim gas V1 undelegation custody",
                     )?,
@@ -10861,7 +10851,10 @@ fn update_dpos_claim_gas_snapshot(
                 snapshot,
                 *delegator,
                 *validator,
-                StoredDposAmount::from_snapshot_bytes(amount, "claim gas V2 undelegation custody")?,
+                StoredDposTokenAmount::from_snapshot_bytes(
+                    amount,
+                    "claim gas V2 undelegation custody",
+                )?,
                 0,
             )?;
         }
@@ -10878,7 +10871,7 @@ fn update_dpos_claim_gas_snapshot(
                 .entry(*to)
                 .or_default()
                 .get(delegator)
-                .map(StoredDposAmount::as_u256)
+                .map(StoredDposTokenAmount::as_u256)
                 .unwrap_or_default();
             let next = current
                 .checked_add(u256_from_big_endian(amount))
@@ -10887,7 +10880,7 @@ fn update_dpos_claim_gas_snapshot(
                 })?;
             snapshot.delegations.entry(*to).or_default().insert(
                 *delegator,
-                StoredDposAmount::canonical_u256_after_mutation(next),
+                StoredDposTokenAmount::canonical_u256_after_mutation(next),
             );
         }
         DposTransaction::ConfirmUndelegate {
@@ -10907,14 +10900,14 @@ fn update_dpos_claim_gas_snapshot(
                     .entry(*validator)
                     .or_default()
                     .get(delegator)
-                    .map(StoredDposAmount::as_u256)
+                    .map(StoredDposTokenAmount::as_u256)
                     .unwrap_or_default();
                 let restored = current.checked_add(entry.amount.as_u256()).ok_or_else(|| {
                     anyhow::anyhow!("claimAllRewards gas snapshot undelegation cancel overflow")
                 })?;
                 snapshot.delegations.entry(*validator).or_default().insert(
                     *delegator,
-                    StoredDposAmount::canonical_u256_after_mutation(restored),
+                    StoredDposTokenAmount::canonical_u256_after_mutation(restored),
                 );
                 remove_undelegation(snapshot, *delegator, *validator);
             }
@@ -10940,11 +10933,11 @@ fn update_dpos_claim_gas_snapshot(
                     .entry(*validator)
                     .or_default()
                     .get(delegator)
-                    .map(StoredDposAmount::as_u256)
+                    .map(StoredDposTokenAmount::as_u256)
                     .unwrap_or_default();
                 snapshot.delegations.entry(*validator).or_default().insert(
                     *delegator,
-                    StoredDposAmount::canonical_u256_after_mutation(
+                    StoredDposTokenAmount::canonical_u256_after_mutation(
                         current.checked_add(entry.amount.as_u256()).ok_or_else(|| {
                             anyhow::anyhow!(
                                 "claimAllRewards gas snapshot V2 undelegation cancel overflow"
@@ -11054,7 +11047,10 @@ fn update_dpos_claim_gas_snapshot_remove(
     let Some(delegations) = snapshot.delegations.get_mut(&validator) else {
         return Ok(());
     };
-    let Some(current) = delegations.get(&delegator).map(StoredDposAmount::as_u256) else {
+    let Some(current) = delegations
+        .get(&delegator)
+        .map(StoredDposTokenAmount::as_u256)
+    else {
         return Ok(());
     };
     let remove = u256_from_big_endian(amount);
@@ -11064,7 +11060,7 @@ fn update_dpos_claim_gas_snapshot_remove(
     } else {
         delegations.insert(
             delegator,
-            StoredDposAmount::canonical_u256_after_mutation(current - remove),
+            StoredDposTokenAmount::canonical_u256_after_mutation(current - remove),
         );
     }
     Ok(())
@@ -11160,7 +11156,7 @@ struct NativeExecution {
     accounts: HashMap<[u8; 20], Account>,
     receipts: Vec<NativeReceipt>,
     gas_used: FinalChainGas,
-    transaction_fees: Vec<([u8; 32], U256)>,
+    transaction_fees: Vec<([u8; 32], DposTokenAmount)>,
     dpos_snapshot: DposSnapshot,
 }
 
@@ -11465,12 +11461,12 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn stored_amount(value: U256) -> StoredDposAmount {
-        StoredDposAmount::canonical_u256_after_mutation(value)
+    fn stored_amount(value: U256) -> StoredDposTokenAmount {
+        StoredDposTokenAmount::canonical_u256_after_mutation(value)
     }
 
-    fn stored_amount_bytes(bytes: &[u8]) -> StoredDposAmount {
-        StoredDposAmount::from_snapshot_bytes(bytes, "test amount").unwrap()
+    fn stored_amount_bytes(bytes: &[u8]) -> StoredDposTokenAmount {
+        StoredDposTokenAmount::from_snapshot_bytes(bytes, "test amount").unwrap()
     }
 
     #[test]
@@ -11484,7 +11480,7 @@ mod tests {
             vec![0xff; 32],
         ] {
             assert_eq!(
-                StoredDposAmount::from_snapshot_bytes(&valid, "test")
+                StoredDposTokenAmount::from_snapshot_bytes(&valid, "test")
                     .unwrap()
                     .to_snapshot_bytes(),
                 valid
@@ -11499,7 +11495,7 @@ mod tests {
             (vec![1; 33], "FINAL_CHAIN_DPOS_STORED_AMOUNT_EXCEEDS_U256"),
         ] {
             assert!(
-                StoredDposAmount::from_snapshot_bytes(&invalid, "test")
+                StoredDposTokenAmount::from_snapshot_bytes(&invalid, "test")
                     .unwrap_err()
                     .to_string()
                     .contains(code)
@@ -13436,14 +13432,14 @@ mod tests {
 
     fn encode_legacy_dpos_snapshot_without_undelegations(snapshot: &DposSnapshot) -> Vec<u8> {
         let mut stream = RlpStream::new_list(20);
-        append_stored_dpos_amount_map(&mut stream, &snapshot.total_stakes);
-        append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.commission_rewards);
         append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
         append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
         append_vote_count_map(&mut stream, &snapshot.vote_counts);
         stream.append(&snapshot.total_vote_count);
         append_delegations_map(&mut stream, &snapshot.delegations);
-        append_address_bytes_map(&mut stream, &snapshot.delegator_rewards);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.delegator_rewards);
         stream.append(&snapshot.minted_tokens.as_slice());
         stream.append(&snapshot.total_supply.as_slice());
         stream.append(&snapshot.current_yield);
@@ -13464,8 +13460,8 @@ mod tests {
         include_vrf_keys: bool,
     ) -> Vec<u8> {
         let mut stream = RlpStream::new_list(if include_vrf_keys { 6 } else { 5 });
-        append_stored_dpos_amount_map(&mut stream, &snapshot.total_stakes);
-        append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.commission_rewards);
         append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
         if include_vrf_keys {
             append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
@@ -13477,8 +13473,8 @@ mod tests {
 
     fn encode_legacy_dpos_snapshot_with_delegation_ledger(snapshot: &DposSnapshot) -> Vec<u8> {
         let mut stream = RlpStream::new_list(7);
-        append_stored_dpos_amount_map(&mut stream, &snapshot.total_stakes);
-        append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.commission_rewards);
         append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
         append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
         append_vote_count_map(&mut stream, &snapshot.vote_counts);
@@ -13489,14 +13485,14 @@ mod tests {
 
     fn encode_legacy_dpos_snapshot_with_undelegations(snapshot: &DposSnapshot) -> Vec<u8> {
         let mut stream = RlpStream::new_list(21);
-        append_stored_dpos_amount_map(&mut stream, &snapshot.total_stakes);
-        append_address_bytes_map(&mut stream, &snapshot.commission_rewards);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.total_stakes);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.commission_rewards);
         append_validator_metadata_map(&mut stream, &snapshot.validator_metadata);
         append_address_fixed_hash_map(&mut stream, &snapshot.vrf_keys);
         append_vote_count_map(&mut stream, &snapshot.vote_counts);
         stream.append(&snapshot.total_vote_count);
         append_delegations_map(&mut stream, &snapshot.delegations);
-        append_address_bytes_map(&mut stream, &snapshot.delegator_rewards);
+        append_stored_dpos_token_amount_map(&mut stream, &snapshot.delegator_rewards);
         stream.append(&snapshot.minted_tokens.as_slice());
         stream.append(&snapshot.total_supply.as_slice());
         stream.append(&snapshot.current_yield);
@@ -13529,10 +13525,10 @@ mod tests {
         let mut total_stakes = BTreeMap::new();
         total_stakes.insert(
             validator,
-            StoredDposAmount::canonical_u256_after_mutation(U256::from(10_000u64)),
+            StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(10_000u64)),
         );
         let mut commission_rewards = BTreeMap::new();
-        commission_rewards.insert(validator, u256_to_big_endian(U256::from(250u64)));
+        commission_rewards.insert(validator, stored_amount(U256::from(250u64)));
         let mut validator_metadata = BTreeMap::new();
         validator_metadata.insert(
             validator,
@@ -13550,11 +13546,11 @@ mod tests {
         let mut delegator_map = BTreeMap::new();
         delegator_map.insert(
             delegator,
-            StoredDposAmount::canonical_u256_after_mutation(U256::from(10_000u64)),
+            StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(10_000u64)),
         );
         delegations.insert(validator, delegator_map);
         let mut delegator_rewards = BTreeMap::new();
-        delegator_rewards.insert(validator, u256_to_big_endian(U256::from(15u64)));
+        delegator_rewards.insert(validator, stored_amount(U256::from(15u64)));
         let mut delegation_reward_cursors = BTreeMap::new();
         let mut delegator_cursor_map = BTreeMap::new();
         delegator_cursor_map.insert(
@@ -13575,7 +13571,9 @@ mod tests {
                 validator,
                 entries: vec![DposUndelegationV2Entry {
                     id: 1,
-                    amount: StoredDposAmount::canonical_u256_after_mutation(U256::from(2_000u64)),
+                    amount: StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(
+                        2_000u64,
+                    )),
                     block: 50,
                 }],
             }],
@@ -13585,7 +13583,7 @@ mod tests {
             delegator,
             vec![DposUndelegation {
                 validator,
-                amount: StoredDposAmount::canonical_u256_after_mutation(U256::from(3_000u64)),
+                amount: StoredDposTokenAmount::canonical_u256_after_mutation(U256::from(3_000u64)),
                 block: 5,
             }],
         );
@@ -13680,23 +13678,25 @@ mod tests {
 
         snapshot.total_stakes.insert(
             validator,
-            StoredDposAmount::from_snapshot_bytes(&total_stake, "test total stake").unwrap(),
+            StoredDposTokenAmount::from_snapshot_bytes(&total_stake, "test total stake").unwrap(),
         );
         snapshot.delegations.get_mut(&validator).unwrap().insert(
             delegator,
-            StoredDposAmount::from_snapshot_bytes(
+            StoredDposTokenAmount::from_snapshot_bytes(
                 &delegation_principal,
                 "test delegation principal",
             )
             .unwrap(),
         );
         snapshot.undelegations.get_mut(&delegator).unwrap()[0].amount =
-            StoredDposAmount::from_snapshot_bytes(&v1_custody, "test V1 custody").unwrap();
+            StoredDposTokenAmount::from_snapshot_bytes(&v1_custody, "test V1 custody").unwrap();
         snapshot.undelegations_v2.get_mut(&delegator).unwrap()[0].entries[0].amount =
-            StoredDposAmount::from_snapshot_bytes(&v2_custody, "test V2 custody").unwrap();
-        snapshot
-            .delegator_rewards
-            .insert(validator, delegator_reward.clone());
+            StoredDposTokenAmount::from_snapshot_bytes(&v2_custody, "test V2 custody").unwrap();
+        snapshot.delegator_rewards.insert(
+            validator,
+            StoredDposTokenAmount::from_snapshot_bytes(&delegator_reward, "test delegator reward")
+                .unwrap(),
+        );
         snapshot.minted_tokens = minted_tokens.clone();
         snapshot.total_supply = total_supply.clone();
         snapshot
@@ -13731,7 +13731,10 @@ mod tests {
                 .to_snapshot_bytes(),
             v2_custody
         );
-        assert_eq!(decoded.delegator_rewards[&validator], delegator_reward);
+        assert_eq!(
+            decoded.delegator_rewards[&validator].to_snapshot_bytes(),
+            delegator_reward
+        );
         assert_eq!(decoded.minted_tokens, minted_tokens);
         assert_eq!(decoded.total_supply, total_supply);
         assert_eq!(
@@ -13742,6 +13745,124 @@ mod tests {
             decoded.delegation_reward_cursors[&validator][&delegator],
             reward_cursor
         );
+    }
+
+    #[test]
+    fn dpos_reward_pool_slots_preserve_every_valid_amount_encoding() {
+        let validator = [0x22; 20];
+        for (label, bytes) in [
+            ("empty", Vec::new()),
+            ("minimal", vec![0x45]),
+            ("fixed32", [vec![0; 31], vec![0x45]].concat()),
+        ] {
+            for commission_pool in [true, false] {
+                let mut snapshot = sample_dpos_snapshot_with_undelegations();
+                let pool = if commission_pool {
+                    &mut snapshot.commission_rewards
+                } else {
+                    &mut snapshot.delegator_rewards
+                };
+                pool.insert(
+                    validator,
+                    StoredDposTokenAmount::from_snapshot_bytes(&bytes, label).unwrap(),
+                );
+
+                let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+                let decoded = decode_dpos_snapshot_rlp(&encoded).unwrap();
+                let decoded_pool = if commission_pool {
+                    &decoded.commission_rewards
+                } else {
+                    &decoded.delegator_rewards
+                };
+                assert_eq!(decoded_pool[&validator].to_snapshot_bytes(), bytes);
+                assert_eq!(encode_dpos_snapshot_rlp(&decoded).unwrap(), encoded);
+            }
+        }
+    }
+
+    #[test]
+    fn dpos_reward_pool_slots_reject_malformed_and_duplicate_rows() {
+        let snapshot = sample_dpos_snapshot_with_undelegations();
+        let encoded = encode_dpos_snapshot_rlp(&snapshot).unwrap();
+        let encoded = Rlp::new(&encoded);
+        let validator = [0x22; 20];
+        for slot in [1_usize, 7] {
+            for (label, malformed, expected) in [
+                (
+                    "short-leading-zero",
+                    vec![0, 1],
+                    "FINAL_CHAIN_DPOS_STORED_AMOUNT_SHORT_LEADING_ZERO",
+                ),
+                (
+                    "oversized",
+                    vec![0xee; 33],
+                    "FINAL_CHAIN_DPOS_STORED_AMOUNT_EXCEEDS_U256",
+                ),
+            ] {
+                let mut malformed_map = RlpStream::new_list(1);
+                malformed_map.begin_list(2);
+                malformed_map.append(&validator.as_slice());
+                malformed_map.append(&malformed.as_slice());
+                let malformed_map = malformed_map.out();
+                let mut candidate = RlpStream::new_list(24);
+                for index in 0..24 {
+                    if index == slot {
+                        candidate.append_raw(&malformed_map, 1);
+                    } else {
+                        candidate.append_raw(encoded.at(index).unwrap().as_raw(), 1);
+                    }
+                }
+                let error = decode_dpos_snapshot_rlp(&candidate.out()).unwrap_err();
+                assert!(
+                    error.to_string().contains(expected),
+                    "slot={slot} {label}: {error:#}"
+                );
+            }
+
+            let mut duplicate_map = RlpStream::new_list(2);
+            for amount in [vec![1], vec![2]] {
+                duplicate_map.begin_list(2);
+                duplicate_map.append(&validator.as_slice());
+                duplicate_map.append(&amount.as_slice());
+            }
+            let duplicate_map = duplicate_map.out();
+            let mut candidate = RlpStream::new_list(24);
+            for index in 0..24 {
+                if index == slot {
+                    candidate.append_raw(&duplicate_map, 1);
+                } else {
+                    candidate.append_raw(encoded.at(index).unwrap().as_raw(), 1);
+                }
+            }
+            let error = decode_dpos_snapshot_rlp(&candidate.out()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("FINAL_CHAIN_DPOS_STORED_AMOUNT_DUPLICATE_KEY"),
+                "slot={slot}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn reward_pool_mutation_canonicalizes_only_the_changed_row() {
+        let changed = [0x11; 20];
+        let untouched = [0x22; 20];
+        let fixed_one = [vec![0; 31], vec![1]].concat();
+        let mut pools = BTreeMap::from([
+            (changed, stored_amount_bytes(&fixed_one)),
+            (untouched, stored_amount_bytes(&fixed_one)),
+        ]);
+
+        apply_reward_map(
+            &mut pools,
+            BTreeMap::from([(changed, DposTokenAmount::from(U256::one()))]),
+            "test reward overflow",
+        )
+        .unwrap();
+
+        assert_eq!(pools[&changed].to_snapshot_bytes(), vec![2]);
+        assert_eq!(pools[&untouched].to_snapshot_bytes(), fixed_one);
     }
 
     #[test]
@@ -13816,7 +13937,7 @@ mod tests {
             let snapshot = sample_dpos_snapshot_with_undelegations();
             let mut legacy = rlp::RlpStream::new_list(5);
             legacy.append_raw(&raw_stakes.out(), 1);
-            append_address_bytes_map(&mut legacy, &snapshot.commission_rewards);
+            append_stored_dpos_token_amount_map(&mut legacy, &snapshot.commission_rewards);
             append_validator_metadata_map(&mut legacy, &snapshot.validator_metadata);
             append_vote_count_map(&mut legacy, &snapshot.vote_counts);
             legacy.append(&snapshot.total_vote_count);
@@ -14209,7 +14330,7 @@ mod tests {
         let mut reward_snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         reward_snapshot
             .delegator_rewards
-            .insert(first_validator, u256_to_big_endian(U256::from(100u64)));
+            .insert(first_validator, stored_amount(U256::from(100u64)));
         let reward_page = final_chain
             .encode_dpos_delegations_from_snapshot(&reward_snapshot, delegator, 0)
             .unwrap();
@@ -14801,7 +14922,7 @@ mod tests {
             .insert(validator, stored_amount(U256::zero()));
         snapshot
             .commission_rewards
-            .insert(validator, u256_to_big_endian(U256::zero()));
+            .insert(validator, stored_amount(U256::zero()));
         snapshot.vote_counts.insert(validator, 0);
         snapshot.total_vote_count = 0;
 
@@ -14963,7 +15084,7 @@ mod tests {
             .insert([1; 20], stored_amount(U256::zero()));
         snapshot
             .commission_rewards
-            .insert([1; 20], u256_to_big_endian(U256::zero()));
+            .insert([1; 20], stored_amount(U256::zero()));
         snapshot.vote_counts.insert([1; 20], 0);
         assert!(snapshot.total_stakes.contains_key(&[1; 20]));
 
@@ -15043,7 +15164,7 @@ mod tests {
         let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
         snapshot
             .commission_rewards
-            .insert(validator, u256_to_big_endian(U256::zero()));
+            .insert(validator, stored_amount(U256::zero()));
         let mut accounts = HashMap::new();
         accounts.insert(DPOS_CONTRACT_ADDRESS, empty_account());
 
@@ -16183,7 +16304,7 @@ mod tests {
             .insert([2; 20], stored_amount(U256::zero()));
         snapshot
             .commission_rewards
-            .insert([2; 20], u256_to_big_endian(U256::zero()));
+            .insert([2; 20], stored_amount(U256::zero()));
         let delegators = snapshot
             .delegations
             .remove(&[2; 20])
@@ -21364,7 +21485,7 @@ mod tests {
             snapshot
                 .delegator_rewards
                 .get(&dag_author)
-                .map(|reward| u256_from_big_endian(reward))
+                .map(|reward| reward.as_u256())
                 .unwrap(),
             U256::from(150u64)
         );
@@ -21490,7 +21611,7 @@ mod tests {
             updated_snapshot
                 .commission_rewards
                 .get(&validator)
-                .map(|reward| u256_from_big_endian(reward))
+                .map(|reward| reward.as_u256())
                 .unwrap_or_default(),
             U256::from(100u64)
         );
@@ -21498,7 +21619,7 @@ mod tests {
             updated_snapshot
                 .delegator_rewards
                 .get(&validator)
-                .map(|reward| u256_from_big_endian(reward))
+                .map(|reward| reward.as_u256())
                 .unwrap_or_default(),
             U256::from(100u64)
         );
@@ -21591,7 +21712,7 @@ mod tests {
             failed_snapshot
                 .commission_rewards
                 .get(&validator)
-                .map(|reward| u256_from_big_endian(reward))
+                .map(|reward| reward.as_u256())
                 .unwrap_or_default(),
             U256::from(50u64)
         );
@@ -21599,7 +21720,7 @@ mod tests {
             failed_snapshot
                 .delegator_rewards
                 .get(&validator)
-                .map(|reward| u256_from_big_endian(reward))
+                .map(|reward| reward.as_u256())
                 .unwrap_or_default(),
             U256::from(150u64)
         );
@@ -22176,15 +22297,13 @@ mod tests {
                 .contains_key(&validator)
         );
         assert_eq!(
-            u256_from_big_endian(
-                final_chain
-                    .dpos_snapshot(third_period.into())
-                    .unwrap()
-                    .commission_rewards
-                    .get(&validator)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default(),
-            ),
+            final_chain
+                .dpos_snapshot(third_period.into())
+                .unwrap()
+                .commission_rewards
+                .get(&validator)
+                .map(|reward| reward.as_u256())
+                .unwrap_or_default(),
             U256::from(VALUE_TRANSFER_GAS * 2)
         );
 
@@ -22494,7 +22613,7 @@ mod tests {
             .insert(validator, stored_amount(U256::zero()));
         snapshot
             .commission_rewards
-            .insert(validator, u256_to_big_endian(U256::zero()));
+            .insert(validator, stored_amount(U256::zero()));
         let delegators = snapshot
             .delegations
             .remove(&validator)
@@ -24633,7 +24752,7 @@ mod tests {
             .insert(delegator, StoredDposRewardIndex::default());
         snapshot
             .delegator_rewards
-            .insert(validator, u256_to_big_endian(U256::from(150u64)));
+            .insert(validator, stored_amount(U256::from(150u64)));
         snapshot
             .total_stakes
             .insert(validator, stored_amount(U256::from(20_000u64)));
@@ -24747,7 +24866,10 @@ mod tests {
                 &mut snapshot,
                 DposRewardDeltas {
                     commission_rewards: BTreeMap::new(),
-                    delegator_rewards: BTreeMap::from([(validator, U256::from(77u64))]),
+                    delegator_rewards: BTreeMap::from([(
+                        validator,
+                        DposTokenAmount::from(U256::from(77u64)),
+                    )]),
                 },
                 1.into(),
                 U256::from(77u64),
@@ -24758,7 +24880,11 @@ mod tests {
 
         assert_eq!(snapshot.reward_reference_graph, graph_before);
         assert_eq!(
-            u256_from_big_endian(snapshot.delegator_rewards.get(&validator).unwrap()),
+            snapshot
+                .delegator_rewards
+                .get(&validator)
+                .unwrap()
+                .as_u256(),
             U256::from(77u64)
         );
 
@@ -24883,7 +25009,7 @@ mod tests {
             snapshot
                 .delegator_rewards
                 .get(&validator)
-                .map(|reward| u256_from_big_endian(reward))
+                .map(|reward| reward.as_u256())
                 .unwrap(),
             U256::from(750u64)
         );
@@ -26868,8 +26994,12 @@ mod tests {
         )
         .unwrap();
         let mut snapshot = final_chain.dpos_snapshot(0.into()).unwrap();
-        snapshot.commission_rewards.insert(validator, Vec::new());
-        snapshot.delegator_rewards.insert(validator, Vec::new());
+        snapshot
+            .commission_rewards
+            .insert(validator, stored_amount_bytes(&[]));
+        snapshot
+            .delegator_rewards
+            .insert(validator, stored_amount_bytes(&[]));
         final_chain
             .insert_dpos_snapshot(0.into(), snapshot)
             .unwrap();
@@ -29928,7 +30058,7 @@ mod tests {
             .get_mut(&0.into())
             .unwrap()
             .delegator_rewards
-            .insert(validator, u256_to_big_endian(U256::from(1_000u64)));
+            .insert(validator, stored_amount(U256::from(1_000u64)));
         let validator_balance_before = balance_of(&final_chain, validator);
 
         let _ = final_chain
@@ -29952,7 +30082,7 @@ mod tests {
             snapshot_one
                 .delegator_rewards
                 .get(&validator)
-                .map(|rewards| u256_from_big_endian(rewards)),
+                .map(|rewards| rewards.as_u256()),
             Some(U256::from(1_000u64))
         );
         assert_eq!(
@@ -29985,7 +30115,7 @@ mod tests {
             snapshot_two
                 .delegator_rewards
                 .get(&validator)
-                .map(|rewards| u256_from_big_endian(rewards)),
+                .map(|rewards| rewards.as_u256()),
             Some(U256::from(1_000u64))
         );
         assert_eq!(
@@ -30019,7 +30149,7 @@ mod tests {
             snapshot_three
                 .delegator_rewards
                 .get(&validator)
-                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+                .is_none_or(|rewards| rewards.as_u256().is_zero())
         );
         assert_eq!(
             balance_of(&final_chain, validator),
@@ -30061,7 +30191,7 @@ mod tests {
             snapshot_three_after_restart
                 .delegator_rewards
                 .get(&validator)
-                .is_none_or(|rewards| u256_from_big_endian(rewards).is_zero())
+                .is_none_or(|rewards| rewards.as_u256().is_zero())
         );
         assert_eq!(
             balance_of(&final_chain, validator),
