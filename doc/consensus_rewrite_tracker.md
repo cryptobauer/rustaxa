@@ -308,6 +308,12 @@ carriers, and mixed the scope-gated network/EVM follow-ups with active consensus
 status/dependency authority; `CRW-N01` and `CRW-E01` remain explicitly blocked there, and reusable validation guidance
 remains in the Validation Matrix.
 
+The third `CRW-10` closeout slice removes the no-caller CXX
+`pbft_service_verified_votes_weighted_payload` export, its export-specific `PbftVotePayloadLookup` carrier, and the
+bridge helper used only by Rust tests. The lower-level Rust runtime still owns weighted-payload retention and lookup for
+production aggregate selection and snapshot behavior. This is a `CRW-07` export/carrier contraction only: no handle,
+shim, module flag, runtime behavior, or accepted compatibility boundary changes.
+
 The VoteManager threshold sub-slice of `CRW-09I` is routed: `getPbftTwoTPlusOne` no longer collects or interprets generic
 FinalChain DPoS facts in C++. The PBFT service owns cache-first threshold composition, reads its sibling Rust PBFT-chain
 size without a C++ relay, borrows Rust FinalChain only for an exact-period total on cache miss, and returns the existing

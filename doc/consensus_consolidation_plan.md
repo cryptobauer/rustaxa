@@ -4621,6 +4621,12 @@ Further CRW-10 deletion requires a fresh no-caller census rather than inferring 
 obsolete. Upstream intersection synchronization remains a separate closeout step because the current feature branch has
 no local `main` or `cpp-reference` branch and the explicit `upstream-main..HEAD` historical intersection is broad.
 
+The first post-inventory no-caller census removes the CXX
+`pbft_service_verified_votes_weighted_payload` export, its export-specific `PbftVotePayloadLookup` carrier, and the
+bridge helper used only by Rust tests. Production C++ has no caller for this diagnostic lookup; the Rust runtime retains
+the lower-level weighted-payload operation used by aggregate selection and snapshot behavior. This narrows `CRW-07`
+without changing handles, shims, module flags, or runtime routing.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

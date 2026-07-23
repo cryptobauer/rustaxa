@@ -9,9 +9,8 @@ use crate::ffi::rustaxa_ffi::{
     PbftTwoTPlusOneThresholdFact as FfiPbftTwoTPlusOneThresholdFact,
     PbftTwoTPlusOneThresholdPlan as FfiPbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneVoteBundle,
     PbftVoteAdmissionRuntimeResult, PbftVoteAdmissionValidationRequest, PbftVoteEventFactFlags,
-    PbftVotePayloadLookup, PbftVoteProgressContext as FfiPbftVoteProgressContext,
-    PbftVoteRuntimeValidationResult, PbftVoteStorageRecord,
-    RewardVoteCursorCommitResult as FfiRewardVoteCursorCommitResult,
+    PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
+    PbftVoteStorageRecord, RewardVoteCursorCommitResult as FfiRewardVoteCursorCommitResult,
     RewardVoteCursorSnapshot as FfiRewardVoteCursorSnapshot, RewardVotePayloadSnapshot,
     RoundMarkerSnapshot, ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome,
     TwoTPlusOneSnapshotEntry, TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup,
@@ -809,24 +808,6 @@ impl VerifiedVotesAccess<'_> {
     /// Removes periods lower than `pbft_period`.
     pub fn verified_votes_cleanup_votes_by_period(&mut self, pbft_period: u64) {
         self.runtime.cleanup_votes_by_period(pbft_period);
-    }
-
-    /// Returns one retained weighted PBFT vote payload by canonical vote hash.
-    pub fn verified_votes_weighted_payload(&self, vote_hash: &[u8; 32]) -> PbftVotePayloadLookup {
-        let Some(vote) = self
-            .runtime
-            .weighted_payload(H256::from(*vote_hash))
-            .cloned()
-        else {
-            return PbftVotePayloadLookup {
-                found: false,
-                vote: empty_storage_record(),
-            };
-        };
-        PbftVotePayloadLookup {
-            found: true,
-            vote: vote.into(),
-        }
     }
 
     /// Selects PBFT reward votes from Rust-owned metadata and retained payloads.
@@ -1836,7 +1817,6 @@ service_verified_votes_plain! {
     fn pbft_service_verified_votes_plan_next_votes_bundle_egress(period: u64, round: u64) -> PbftNextVotesBundleEgressPlan => verified_votes_plan_next_votes_bundle_egress;
     fn pbft_service_verified_votes_build_optimized_votes_bundle_egress(request: PbftOptimizedVoteBundleBuildRequest) -> PbftOptimizedVoteBundleBuildResult => verified_votes_build_optimized_votes_bundle_egress;
     fn pbft_service_verified_votes_cleanup_votes_by_period(pbft_period: u64) -> () => verified_votes_cleanup_votes_by_period;
-    fn pbft_service_verified_votes_weighted_payload(vote_hash: &[u8; 32]) -> PbftVotePayloadLookup => verified_votes_weighted_payload;
     fn pbft_service_verified_votes_reward_vote_cursor() -> FfiRewardVoteCursorSnapshot => verified_votes_reward_vote_cursor;
     fn pbft_service_verified_votes_reward_vote_period() -> u64 => verified_votes_reward_vote_period;
 }
@@ -3285,12 +3265,6 @@ mod tests {
         assert!(result.has_vote);
         assert_eq!(result.validation.calculated_weight, 40);
         assert_eq!(result.validation.calculated_weight, result.vote.weight);
-        let lookup = service
-            .pbft_service_verified_votes_weighted_payload(&vote.vote_hash.into())
-            .unwrap();
-        assert!(lookup.found);
-        assert_eq!(lookup.vote.hash, vote.vote_hash.0);
-        assert!(!lookup.vote.vote_rlp.is_empty());
     }
 
     #[test]
@@ -3607,7 +3581,7 @@ mod tests {
     }
 
     #[test]
-    fn bridge_admission_exposes_retained_weighted_payloads() {
+    fn bridge_admission_accepts_consecutive_generated_votes() {
         let storage = temp_bridge_storage("admission_retained_payloads");
         let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
         let first = generated_vote([0x22; 32], NODE_SECRET);
@@ -3626,13 +3600,6 @@ mod tests {
         assert!(first_result.accepted);
         assert!(first_result.transition_published);
         assert!(!first_result.persistence_required);
-
-        let lookup = votes
-            .pbft_service_verified_votes_weighted_payload(&first_hash)
-            .unwrap();
-        assert!(lookup.found);
-        assert_eq!(lookup.vote.hash, first_hash);
-        assert!(!lookup.vote.vote_rlp.is_empty());
 
         let second_result = votes
             .pbft_service_verified_votes_admit_and_persist(

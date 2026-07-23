@@ -171,6 +171,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   families. The current inventory has no missing or stale entries; the retired `pillar_votes_shim` remains documented
   in implementation history rather than the live shim table.
 
+- The next no-caller census removes the CXX
+  `pbft_service_verified_votes_weighted_payload` export, its export-specific `PbftVotePayloadLookup` carrier, and its
+  bridge helper. Weighted-payload retention and lookup remain internal to the Rust runtime for aggregate selection and
+  snapshots; no C++ caller, handle, shim route, module flag, or compatibility-only test remains to classify.
+
 - Direct `*Old::method(...)` forwarding in consensus shims has no current matches. `dag_manager_shim` is fully detached
   from `DagManagerOld`: the overlay directly includes its standalone facade, and feature-on builds exclude the original
   manager source instead of compiling renamed symbols. It owns its public `VerifyBlockReturnType` enum and

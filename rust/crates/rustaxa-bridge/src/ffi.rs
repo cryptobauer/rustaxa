@@ -1122,17 +1122,6 @@ pub mod rustaxa_ffi {
         vote_rlp: Vec<u8>,
     }
 
-    /// Lookup result for a retained Rust PBFT vote payload.
-    ///
-    /// When `found` is true, `vote` carries the weighted
-    /// `PbftVote::rlp(true, true)` bytes retained by the Rust admission
-    /// runtime. C++ may temporarily materialize a `PbftVote` sidecar from this
-    /// payload, but Rust remains the source of truth for payload retention.
-    struct PbftVotePayloadLookup {
-        found: bool,
-        vote: PbftVoteStorageRecord,
-    }
-
     struct RewardVoteCursorSnapshot {
         found: bool,
         period: u64,
@@ -5410,10 +5399,6 @@ pub mod rustaxa_ffi {
             two_t_plus_one_threshold: u64,
             apply_threshold_decision: bool,
         ) -> Result<VerifiedVoteAddOutcome>;
-        pub fn pbft_service_verified_votes_weighted_payload(
-            self: &BridgePbftService,
-            vote_hash: &[u8; 32],
-        ) -> Result<PbftVotePayloadLookup>;
         pub fn pbft_service_verified_votes_select_reward_vote_payloads(
             self: &BridgePbftService,
             block_period: u64,
