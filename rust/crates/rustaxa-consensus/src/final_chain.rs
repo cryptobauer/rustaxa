@@ -1406,6 +1406,31 @@ impl FinalChain {
         self.dpos_eligible_total_vote_count(period.into()).map(Some)
     }
 
+    /// Returns DPoS eligible vote counts for a requested wallet subset.
+    ///
+    /// Ready periods return one fact per requested wallet in the same order as
+    /// `addresses`. Future periods return `Ok(None)` and do not perform partial
+    /// snapshot reads. Snapshot corruption or missing required rows remains a hard
+    /// error for ready periods.
+    pub fn pbft_dpos_eligible_wallet_vote_counts(
+        &self,
+        period: u64,
+        addresses: &[[u8; 20]],
+    ) -> Result<Option<Vec<DposValidatorVoteCount>>, anyhow::Error> {
+        if !self.pbft_dpos_facts_available(period)? {
+            return Ok(None);
+        }
+        let mut out = Vec::with_capacity(addresses.len());
+        for address in addresses {
+            let vote_count = self.dpos_eligible_vote_count(period.into(), *address)?;
+            out.push(DposValidatorVoteCount {
+                address: *address,
+                vote_count,
+            });
+        }
+        Ok(Some(out))
+    }
+
     /// Returns whether the validator has nonzero DPoS eligible votes at a block.
     pub fn dpos_is_eligible(
         &self,

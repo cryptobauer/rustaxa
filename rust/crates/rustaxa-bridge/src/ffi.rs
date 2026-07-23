@@ -3114,7 +3114,7 @@ pub mod rustaxa_ffi {
     }
 
     /// One address whose PBFT-facing FinalChain DPoS facts should be collected.
-    struct PbftFinalChainFactAddress {
+    struct PbftFinalChainDposAddress {
         address: [u8; 20],
     }
 
@@ -3124,15 +3124,11 @@ pub mod rustaxa_ffi {
     /// `candidate_final_chain_hash` is checked only when
     /// `validate_candidate_final_chain_hash` is true. `collect_final_chain_hash`
     /// requests the proposal-time expected hash without validating a candidate.
-    /// Address facts are returned in the same order as `addresses`.
     struct PbftFinalChainFactRequest {
         period: u64,
         candidate_final_chain_hash: [u8; 32],
         collect_final_chain_hash: bool,
         validate_candidate_final_chain_hash: bool,
-        collect_total_vote_count: bool,
-        collect_address_vote_counts: bool,
-        addresses: Vec<PbftFinalChainFactAddress>,
     }
 
     /// PBFT-facing FinalChain hash lookup or validation result.
@@ -3149,12 +3145,22 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// One ordered PBFT-facing FinalChain DPoS address fact.
-    ///
-    /// `status` is `0` when the vote count and eligibility are available and
-    /// `1` when the Rust FinalChain snapshot for the requested period is not
-    /// available.
-    struct PbftFinalChainAddressFact {
+    /// PBFT-facing FinalChain DPoS total-vote count request.
+    struct PbftFinalChainDposTotalVoteCountRequest {
+        period: u64,
+    }
+
+    /// PBFT-facing FinalChain DPoS total-vote response.
+    struct PbftFinalChainDposTotalVoteCountFacts {
+        status: u8,
+        last_block_number: u64,
+        has_total_vote_count: bool,
+        total_vote_count: u64,
+        error_code: String,
+    }
+
+    /// Per-wallet PBFT-facing DPoS query fact for batch eligibility checks.
+    struct PbftFinalChainDposAddressVoteFact {
         address: [u8; 20],
         status: u8,
         eligible: bool,
@@ -3162,19 +3168,59 @@ pub mod rustaxa_ffi {
         error_code: String,
     }
 
-    /// Grouped FinalChain facts sourced by Rust for PBFT manager decisions.
+    /// PBFT-facing DPoS aggregate-vote request for a supplied wallet subset.
+    struct PbftFinalChainDposWalletAggregateVoteCountRequest {
+        period: u64,
+        addresses: Vec<PbftFinalChainDposAddress>,
+    }
+
+    /// PBFT-facing DPoS aggregate-vote response for a supplied wallet subset.
+    struct PbftFinalChainDposWalletAggregateVoteCountFacts {
+        status: u8,
+        last_block_number: u64,
+        has_aggregate_vote_count: bool,
+        aggregate_vote_count: u64,
+        error_code: String,
+    }
+
+    /// PBFT-facing DPoS single-wallet eligibility request.
+    struct PbftFinalChainDposWalletEligibilityRequest {
+        period: u64,
+        address: [u8; 20],
+    }
+
+    /// PBFT-facing DPoS single-wallet eligibility response.
+    struct PbftFinalChainDposWalletEligibilityFacts {
+        status: u8,
+        last_block_number: u64,
+        address: [u8; 20],
+        eligible: bool,
+        vote_count: u64,
+        error_code: String,
+    }
+
+    /// PBFT-facing DPoS batch wallet-eligibility request.
+    struct PbftFinalChainDposWalletEligibilityBatchRequest {
+        period: u64,
+        addresses: Vec<PbftFinalChainDposAddress>,
+    }
+
+    /// PBFT-facing DPoS batch wallet-eligibility response.
+    struct PbftFinalChainDposWalletEligibilityBatchFacts {
+        status: u8,
+        last_block_number: u64,
+        address_facts: Vec<PbftFinalChainDposAddressVoteFact>,
+        error_code: String,
+    }
+
+    /// PBFT-facing FinalChain hash result sourced by Rust for PBFT manager decisions.
     ///
-    /// `status` is `0` when all requested fact groups are ready and `1` when at
-    /// least one requested fact group is unavailable as data. Bridge
-    /// infrastructure failures still throw.
+    /// `status` is `0` when the requested hash fact is ready and `1` when it is
+    /// unavailable as data. Bridge infrastructure failures still throw.
     struct PbftFinalChainFacts {
         status: u8,
         last_block_number: u64,
         final_chain_hash: PbftFinalChainHashResult,
-        total_vote_count_status: u8,
-        has_total_vote_count: bool,
-        total_vote_count: u64,
-        address_facts: Vec<PbftFinalChainAddressFact>,
         error_code: String,
     }
 
@@ -6093,5 +6139,26 @@ pub mod rustaxa_ffi {
             self: &BridgeFinalChain,
             request: PbftFinalChainFactRequest,
         ) -> Result<PbftFinalChainFacts>;
+
+        pub fn pbft_service_collect_dpos_total_vote_count(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            request: PbftFinalChainDposTotalVoteCountRequest,
+        ) -> Result<PbftFinalChainDposTotalVoteCountFacts>;
+        pub fn pbft_service_collect_dpos_wallet_aggregate_vote_count(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            request: PbftFinalChainDposWalletAggregateVoteCountRequest,
+        ) -> Result<PbftFinalChainDposWalletAggregateVoteCountFacts>;
+        pub fn pbft_service_collect_dpos_wallet_eligibility(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            request: PbftFinalChainDposWalletEligibilityRequest,
+        ) -> Result<PbftFinalChainDposWalletEligibilityFacts>;
+        pub fn pbft_service_collect_dpos_wallet_eligibility_batch(
+            self: &BridgePbftService,
+            final_chain: &BridgeFinalChain,
+            request: PbftFinalChainDposWalletEligibilityBatchRequest,
+        ) -> Result<PbftFinalChainDposWalletEligibilityBatchFacts>;
     }
 }

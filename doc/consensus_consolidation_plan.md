@@ -4567,6 +4567,24 @@ consensus and FinalChain Tier 2 gates, and the Tier 3 FinalChain parity gate pas
 complete: after narrowing the fast-path wording to exclude the independently composed threshold lookup, the configured
 reviewer approved the full diff with no remaining findings. The repository pre-commit hook passes.
 
+### CRW-09I PBFT Manager DPoS Query Composition
+
+Four PBFT-manager DPoS consumers now use operation-specific PBFT-service calls: the current total eligible vote count,
+the aggregate vote count of locally eligible wallets, single-node participation, and batch eligible-wallet refresh.
+Each call borrows the Rust FinalChain runtime synchronously and preserves exact-period delayed-snapshot semantics;
+eligibility remains defined as an available eligible vote count greater than zero. C++ retains the public query methods,
+eligible-wallet compatibility cache, wait loop, and logging, but no longer interprets a mixed generic fact envelope or
+aggregates per-address vote counts.
+
+The generic `PbftFinalChainFact*` carrier and collector are narrowed to FinalChain hash lookup/validation only. Their
+DPoS flags, total-vote fields, address request/result fields, and C++ conversion helpers are deleted. CRW-09I remains
+active for the proposal hash and live/sync hash-validation family; composing those three consumers will permit complete
+deletion of the generic carrier and collector.
+
+Four focused bridge tests, the focused `PbftManagerTest.check_get_eligible_vote_count` production case, the PBFT-manager
+target build, Tier 1, both consensus and FinalChain Tier 2 gates, and Tier 3 FinalChain parity passed. Independent review
+approved the staged cache publication, private FinalChain borrow, typed failure mapping, and final carrier narrowing.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

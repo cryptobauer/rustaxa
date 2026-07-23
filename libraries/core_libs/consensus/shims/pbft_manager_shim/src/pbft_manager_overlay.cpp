@@ -48,6 +48,7 @@ static_assert(!checkedNextPbftPeriod(std::numeric_limits<PbftPeriod>::max()).has
 constexpr uint8_t kPbftSyncFinalChainValid = 0;
 constexpr uint8_t kPbftSyncFinalChainMissing = 1;
 constexpr uint8_t kPbftSyncFinalChainInvalid = 2;
+constexpr uint8_t kPbftSyncDposFactsReady = 0;
 constexpr uint8_t kPbftSyncFactValid = 0;
 constexpr uint8_t kPbftSyncFactInvalid = 1;
 constexpr uint8_t kPbftSyncRuntimeCheckFinalChainHash = 1;
@@ -218,8 +219,6 @@ const rustaxa::BridgePbftService &requireReadyPillarService(const SharedPbftServ
 
 std::array<uint8_t, 32> toBridgeHash(const uint256_hash_t &hash) { return hash.asArray(); }
 
-std::array<uint8_t, 20> toBridgeAddress(const addr_t &address) { return address.asArray(); }
-
 template <size_t N, typename FixedHash>
 std::array<uint8_t, N> toBridgeFixedBytes(const FixedHash &value) {
   return value.asArray();
@@ -227,17 +226,6 @@ std::array<uint8_t, N> toBridgeFixedBytes(const FixedHash &value) {
 
 uint256_hash_t fromBridgeHash(const std::array<uint8_t, 32> &hash) {
   return uint256_hash_t(hash.data(), uint256_hash_t::ConstructFromPointer);
-}
-
-rust::Vec<rustaxa::PbftFinalChainFactAddress> toBridgeAddresses(const std::vector<addr_t> &addresses) {
-  rust::Vec<rustaxa::PbftFinalChainFactAddress> out;
-  out.reserve(addresses.size());
-  for (const auto &address : addresses) {
-    rustaxa::PbftFinalChainFactAddress fact_address;
-    fact_address.address = toBridgeAddress(address);
-    out.push_back(fact_address);
-  }
-  return out;
 }
 
 rust::Vec<rustaxa::PbftFinalizationHash> toBridgeHashes(const std::vector<blk_hash_t> &hashes) {
@@ -258,18 +246,15 @@ uint64_t toBroadcastElapsedMs(std::chrono::milliseconds elapsed) {
   return static_cast<uint64_t>(elapsed.count());
 }
 
-rustaxa::PbftFinalChainFactRequest makePbftFinalChainFactRequest(
-    PbftPeriod period, const blk_hash_t &candidate_final_chain_hash, bool collect_final_chain_hash,
-    bool validate_candidate_final_chain_hash, bool collect_total_vote_count, bool collect_address_vote_counts,
-    std::vector<addr_t> addresses = {}) {
+rustaxa::PbftFinalChainFactRequest makePbftFinalChainFactRequest(PbftPeriod period,
+                                                                 const blk_hash_t &candidate_final_chain_hash,
+                                                                 bool collect_final_chain_hash,
+                                                                 bool validate_candidate_final_chain_hash) {
   rustaxa::PbftFinalChainFactRequest request;
   request.period = period;
   request.candidate_final_chain_hash = toBridgeHash(candidate_final_chain_hash);
   request.collect_final_chain_hash = collect_final_chain_hash;
   request.validate_candidate_final_chain_hash = validate_candidate_final_chain_hash;
-  request.collect_total_vote_count = collect_total_vote_count;
-  request.collect_address_vote_counts = collect_address_vote_counts;
-  request.addresses = toBridgeAddresses(addresses);
   return request;
 }
 
@@ -934,7 +919,7 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   initialState();
 
   // Update wallets eligibility, call after initialState (waitForPeriodFinalization)
-  eligible_wallets_.updateWalletsEligibility(pbft_chain_->getPbftChainSize(), final_chain_);
+  eligible_wallets_.updateWalletsEligibility(pbft_chain_->getPbftChainSize(), pbft_service_, final_chain_);
 
   // Note: processPillarBlock must be called after eligible_wallets_.updateWalletsEligibility
   auto current_pbft_period = pbft_chain_->getPbftChainSize();
@@ -1355,17 +1340,20 @@ void PbftManager::waitForPeriodFinalization() {
 std::optional<uint64_t> PbftManager::getCurrentDposTotalVotesCount() const {
   try {
     const auto period = pbft_chain_->getPbftChainSize();
-    const auto facts = final_chain_->collectPbftFinalChainFacts(
-        makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, true, false));
-    if (facts.has_total_vote_count && facts.total_vote_count_status == kPbftSyncFactValid) {
+    rustaxa::PbftFinalChainDposTotalVoteCountRequest request;
+    request.period = period;
+    const auto facts =
+        pbft_service_->service().pbft_service_collect_dpos_total_vote_count(final_chain_->rustFinalChain(), request);
+    if (facts.status == kPbftSyncDposFactsReady && facts.has_total_vote_count) {
       return facts.total_vote_count;
     }
-    LOG(log_wr_) << "Unable to get CurrentDposTotalVotesCount for period: " << pbft_chain_->getPbftChainSize()
+    LOG(log_wr_) << "Unable to get CurrentDposTotalVotesCount for period: " << period
                  << ". Period is too far ahead of actual finalized pbft chain size (" << facts.last_block_number
                  << "). Err msg: " << static_cast<std::string>(facts.error_code);
   } catch (const std::exception &e) {
-    LOG(log_wr_) << "Rust FinalChain PBFT total-vote fact collection failed for period "
-                 << pbft_chain_->getPbftChainSize() << ". Err msg: " << e.what();
+    LOG(log_wr_) << "Unable to get CurrentDposTotalVotesCount for period: " << pbft_chain_->getPbftChainSize()
+                 << ". Period is too far ahead of actual finalized pbft chain size (" << final_chain_->lastBlockNumber()
+                 << "). Err msg: " << e.what();
   }
 
   return {};
@@ -1389,36 +1377,60 @@ std::optional<uint64_t> PbftManager::getCurrentNodeVotesCount() const {
     thisThreadSleepForMilliSeconds(plan.sleep_ms);
   }
 
-  std::vector<addr_t> eligible_addresses;
-  for (const auto &wallet : eligible_wallets_.getWallets(getPbftPeriod())) {
-    // Wallet is not dpos eligible - do no vote
-    if (!wallet.first) {
-      continue;
-    }
-    eligible_addresses.emplace_back(wallet.second.node_addr);
-  }
-
   try {
     const auto period = pbft_chain_->getPbftChainSize();
-    const auto facts = final_chain_->collectPbftFinalChainFacts(makePbftFinalChainFactRequest(
-        period, kNullBlockHash, false, false, false, true, std::move(eligible_addresses)));
-    uint64_t node_votes_count = 0;
-    for (const auto &address_fact : facts.address_facts) {
-      if (address_fact.status != kPbftSyncFactValid) {
-        LOG(log_wr_) << "Unable to get CurrentNodeVotesCount for period: " << period
-                     << ". Period is too far ahead of actual finalized pbft chain size (" << facts.last_block_number
-                     << "). Err msg: " << static_cast<std::string>(address_fact.error_code);
-        return {};
+    rustaxa::PbftFinalChainDposWalletAggregateVoteCountRequest request;
+    request.period = period;
+    const auto &wallets = eligible_wallets_.getWallets(getPbftPeriod());
+    request.addresses.reserve(wallets.size());
+    for (const auto &wallet : wallets) {
+      if (!wallet.first) {
+        continue;
       }
-      node_votes_count += address_fact.vote_count;
+      rustaxa::PbftFinalChainDposAddress bridge_address;
+      bridge_address.address = toBridgeFixedBytes<20>(wallet.second.node_addr);
+      request.addresses.push_back(bridge_address);
     }
-    return node_votes_count;
+
+    const auto facts = pbft_service_->service().pbft_service_collect_dpos_wallet_aggregate_vote_count(
+        final_chain_->rustFinalChain(), request);
+    if (facts.status == kPbftSyncDposFactsReady && facts.has_aggregate_vote_count) {
+      return facts.aggregate_vote_count;
+    }
+    LOG(log_wr_) << "Rust FinalChain PBFT node-vote fact collection failed for period " << period
+                 << ". Period is too far ahead of actual finalized pbft chain size (" << facts.last_block_number
+                 << "). Err msg: " << static_cast<std::string>(facts.error_code);
   } catch (const std::exception &e) {
     LOG(log_wr_) << "Rust FinalChain PBFT node-vote fact collection failed for period "
-                 << pbft_chain_->getPbftChainSize() << ". Err msg: " << e.what();
+                 << pbft_chain_->getPbftChainSize() << ". Period is too far ahead of actual finalized pbft chain size ("
+                 << final_chain_->lastBlockNumber() << "). Err msg: " << e.what();
   }
 
   return {};
+}
+
+bool PbftManager::canParticipateInConsensus(PbftPeriod period, const addr_t &node_addr) const {
+  try {
+    const auto request_address = toBridgeFixedBytes<20>(node_addr);
+    rustaxa::PbftFinalChainDposWalletEligibilityRequest request;
+    request.period = period;
+    request.address = request_address;
+
+    const auto fact = pbft_service_->service().pbft_service_collect_dpos_wallet_eligibility(
+        final_chain_->rustFinalChain(), request);
+    if (fact.status == kPbftSyncDposFactsReady && fact.address == request_address) {
+      return fact.eligible;
+    }
+    LOG(log_er_) << "Rust FinalChain PBFT eligibility fact collection failed for period " << period
+                 << ". Err msg: " << static_cast<std::string>(fact.error_code)
+                 << ". Node is considered as not eligible to participate in consensus for period " << period;
+  } catch (const std::exception &e) {
+    LOG(log_er_) << "Rust FinalChain PBFT eligibility fact collection failed for period " << period
+                 << ". Err msg: " << e.what()
+                 << ". Node is considered as not eligible to participate in consensus for period " << period;
+  }
+
+  return false;
 }
 
 void PbftManager::setPbftStep(PbftStep pbft_step) {
@@ -1532,7 +1544,7 @@ bool PbftManager::applyRustPlannedAdvancePeriod_(
         current_period_start_datetime_ = std::chrono::system_clock::now();
         break;
       case kPbftManagerAdvancePeriodActionUpdateWalletEligibility:
-        eligible_wallets_.updateWalletsEligibility(advance_plan.finalized_chain_size, final_chain_);
+        eligible_wallets_.updateWalletsEligibility(advance_plan.finalized_chain_size, pbft_service_, final_chain_);
         break;
       case kPbftManagerAdvancePeriodActionCleanupPeriodState: {
         // The service atomically cleans verified-vote and proposed-block state after previous-period reward votes are
@@ -2725,7 +2737,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   }
 
   const auto final_chain_facts = final_chain_->collectPbftFinalChainFacts(
-      makePbftFinalChainFactRequest(current_pbft_period, kNullBlockHash, true, false, false, false));
+      makePbftFinalChainFactRequest(current_pbft_period, kNullBlockHash, true, false));
 
   auto ghost = dag_mgr_->getGhostPath(last_period_dag_anchor_block_hash);
   LOG(log_dg_) << "GHOST size " << ghost.size();
@@ -2850,7 +2862,7 @@ PbftStateRootValidation PbftManager::validateFinalChainHash(const std::shared_pt
   const auto &pbft_block_hash = pbft_block->getBlockHash();
 
   const auto facts = final_chain_->collectPbftFinalChainFacts(
-      makePbftFinalChainFactRequest(period, pbft_block->getFinalChainHash(), true, true, false, false));
+      makePbftFinalChainFactRequest(period, pbft_block->getFinalChainHash(), true, true));
   if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
     LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
     return PbftStateRootValidation::Missing;
@@ -3988,7 +4000,7 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
 
   auto validate_final_chain_hash_from_queue_metadata = [&]() -> uint8_t {
     const auto facts = final_chain_->collectPbftFinalChainFacts(
-        makePbftFinalChainFactRequest(block_period, final_chain_hash, true, true, false, false));
+        makePbftFinalChainFactRequest(block_period, final_chain_hash, true, true));
     if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
       LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
       return kPbftSyncFinalChainMissing;
@@ -4208,28 +4220,6 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
   return rust_validation_result.valid();
 }
 
-bool PbftManager::canParticipateInConsensus(PbftPeriod period, const addr_t &node_addr) const {
-  try {
-    const auto facts = final_chain_->collectPbftFinalChainFacts(
-        makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, false, true, {node_addr}));
-    if (!facts.address_facts.empty() && facts.address_facts[0].status == kPbftSyncFactValid) {
-      return facts.address_facts[0].eligible;
-    }
-    LOG(log_er_) << "Unable to decide if node is consensus node or not for period: " << period
-                 << ". Period is too far ahead of actual finalized pbft chain size (" << facts.last_block_number
-                 << "). Err msg: "
-                 << (facts.address_facts.empty() ? static_cast<std::string>(facts.error_code)
-                                                 : static_cast<std::string>(facts.address_facts[0].error_code))
-                 << ". Node is considered as not eligible to participate in consensus for period " << period;
-  } catch (const std::exception &e) {
-    LOG(log_er_) << "Rust FinalChain PBFT eligibility fact collection failed for period " << period
-                 << ". Err msg: " << e.what()
-                 << ". Node is considered as not eligible to participate in consensus for period " << period;
-  }
-
-  return false;
-}
-
 std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> PbftManager::getProposedBlocks() const {
   return proposed_blocks_.getProposedBlocks();
 }
@@ -4367,25 +4357,43 @@ PbftManager::EligibleWallets::EligibleWallets(const std::vector<WalletConfig> &w
 }
 
 void PbftManager::EligibleWallets::updateWalletsEligibility(
-    PbftPeriod period, const std::shared_ptr<final_chain::FinalChain> &final_chain) {
+    PbftPeriod period, const SharedPbftService &pbft_service,
+    const std::shared_ptr<final_chain::FinalChain> &final_chain) {
   assert(period > period_ || period == 0);
+  assert(period <= final_chain->lastBlockNumber() + final_chain->delegationDelay());
 
-  std::vector<addr_t> addresses;
-  addresses.reserve(wallets_.size());
+  rustaxa::PbftFinalChainDposWalletEligibilityBatchRequest request;
+  request.period = period;
+  request.addresses.reserve(wallets_.size());
   for (const auto &wallet : wallets_) {
-    addresses.emplace_back(wallet.second.node_addr);
+    rustaxa::PbftFinalChainDposAddress bridge_address;
+    bridge_address.address = toBridgeFixedBytes<20>(wallet.second.node_addr);
+    request.addresses.push_back(bridge_address);
   }
 
-  const auto facts = final_chain->collectPbftFinalChainFacts(
-      makePbftFinalChainFactRequest(period, kNullBlockHash, false, false, false, true, std::move(addresses)));
-  assert(period <= facts.last_block_number + final_chain->delegationDelay());
-  assert(facts.address_facts.size() == wallets_.size());
-
-  for (size_t i = 0; i < wallets_.size(); ++i) {
-    wallets_[i].first = i < facts.address_facts.size() && facts.address_facts[i].status == kPbftSyncFactValid &&
-                        facts.address_facts[i].eligible;
+  const auto facts = pbft_service->service().pbft_service_collect_dpos_wallet_eligibility_batch(
+      final_chain->rustFinalChain(), request);
+  if (facts.status != kPbftSyncDposFactsReady) {
+    throw std::runtime_error("Rust FinalChain PBFT wallet-eligibility batch fact collection failed: " +
+                             static_cast<std::string>(facts.error_code));
+  }
+  if (facts.address_facts.size() != request.addresses.size()) {
+    throw std::runtime_error("Rust FinalChain PBFT wallet-eligibility batch size mismatch");
   }
 
+  std::vector<bool> next_eligibility;
+  next_eligibility.reserve(wallets_.size());
+  for (size_t index = 0; index < wallets_.size(); ++index) {
+    const auto &address_fact = facts.address_facts[index];
+    if (address_fact.status != kPbftSyncDposFactsReady ||
+        address_fact.address != request.addresses[index].address) {
+      throw std::runtime_error("Rust FinalChain PBFT wallet-eligibility batch order mismatch");
+    }
+    next_eligibility.push_back(address_fact.eligible);
+  }
+  for (size_t index = 0; index < wallets_.size(); ++index) {
+    wallets_[index].first = next_eligibility[index];
+  }
   period_ = period;
 }
 

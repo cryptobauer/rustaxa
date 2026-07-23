@@ -21,6 +21,7 @@
 
 namespace taraxa {
 class DagManager;
+class PbftManager;
 class VoteManager;
 }
 namespace taraxa::pillar_chain {
@@ -33,6 +34,7 @@ namespace taraxa::final_chain {
 // This class is a standalone surface in Rust-enabled builds.
 class FinalChain {
   friend class ::taraxa::DagManager;
+  friend class ::taraxa::PbftManager;
   friend class ::taraxa::VoteManager;
   friend class ::taraxa::pillar_chain::PillarChainManager;
 
@@ -136,7 +138,6 @@ class FinalChain {
                                                       std::vector<h256>&& finalized_dag_blk_hashes,
                                                       uint32_t blocks_per_year, std::shared_ptr<DagBlock>&& anchor);
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
-
  private:
   /** Borrows the Rust owner synchronously for friend consensus facades. */
   const rustaxa::BridgeFinalChain& rustFinalChain() const { return *rust_final_chain_.value(); }

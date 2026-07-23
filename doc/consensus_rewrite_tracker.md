@@ -324,6 +324,15 @@ read FinalChain on a cache miss. The old CXX external-facts carrier, low-level v
 and VoteManager generic-fact helpers are deleted. Generic `PbftFinalChainFact*` carriers now remain live only for
 PBFT-manager consumers, so `CRW-09I` remains active.
 
+The PBFT-manager DPoS query/eligibility sub-slice is composed as well. Current total votes, the eligible local-wallet
+vote sum, single-node participation, and batch wallet eligibility now enter operation-specific `BridgePbftService`
+methods that borrow Rust FinalChain synchronously. C++ supplies only the period and wallet addresses and consumes the
+operation result; ordered lookup, aggregation, zero-stake eligibility, future-state status, and error classification
+stay behind the Rust boundary. The generic `PbftFinalChainFact*` request/result is now hash-only, and its DPoS flags,
+total fields, address facts, address conversion helper, and mixed Rust collection logic are deleted. Three PBFT-manager
+hash consumers remain (proposal hash lookup plus live and sync validation), so `CRW-09I` remains active until that
+family is composed and the generic carrier/export can be removed entirely.
+
 The current `CRW-09` slice replaces raw Rust account-balance bytes with a `U256` domain value plus one private encoding-
 provenance bit. Untouched genesis accounts retain their fixed 32-byte lookup and snapshot representation, while new or
 successfully mutated accounts retain canonical minimal bytes. Snapshot decode rejects oversized and short leading-zero

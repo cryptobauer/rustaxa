@@ -597,6 +597,10 @@ Current snapshot after DAG manager verify-result API cleanup:
   still read FinalChain on a cache miss. The CXX `PbftVoteValidationExternalFacts` carrier, low-level
   validate/admit exports and facade, and shim-local generic-fact/status helpers are deleted; the equivalent facts remain
   consensus-owned for native validation. Generic FinalChain facts now remain only for PBFT-manager consumers.
+- The PBFT-manager DPoS query/eligibility `CRW-09I` contraction routes total votes, eligible-wallet vote aggregation,
+  single-node eligibility, and batch wallet eligibility through operation-specific `BridgePbftService` calls that
+  borrow Rust FinalChain. The mixed generic carrier loses every DPoS/address field and is now hash-only. Its three
+  remaining PBFT-manager hash consumers are the final prerequisite for deleting the carrier and collection export.
 - `BridgeTransactionManagerSidecar` is retired as a CXX handle. No C++ shim callers remained for the standalone sidecar
   constructor, methods, DAG-save route, or finalized-status route; live sidecar state is now private to the transaction
   state in `BridgeDagTransactionService`, whose command APIs own those paths.

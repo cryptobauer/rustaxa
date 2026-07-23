@@ -1042,14 +1042,13 @@ impl BridgeFinalChain {
             .unwrap_or_default())
     }
 
-    /// Collects FinalChain facts needed by PBFT manager proposal, validation,
-    /// and wallet-eligibility decisions.
+    /// Collects FinalChain hash facts needed by PBFT manager proposal and
+    /// validation.
     ///
-    /// The input uses PBFT period numbering and address order from C++. The
-    /// output preserves that order for address facts. Missing delayed
-    /// FinalChain headers or DPoS snapshots are returned as explicit status
-    /// data, while malformed storage and bridge infrastructure failures still
-    /// propagate as errors.
+    /// DPoS facts are moved to dedicated BridgePbftService APIs and are no
+    /// longer returned in this response. Missing delayed FinalChain headers are
+    /// returned as explicit status data, while malformed storage and bridge
+    /// infrastructure failures still propagate as errors.
     pub fn collect_pbft_final_chain_facts(
         self: &BridgeFinalChain,
         request: rustaxa_ffi::PbftFinalChainFactRequest,
@@ -1092,102 +1091,21 @@ impl BridgeFinalChain {
                 )
             };
 
-        let (total_vote_count_status, has_total_vote_count, total_vote_count, total_error) =
-            if request.collect_total_vote_count {
-                match self.0.pbft_dpos_eligible_total_vote_count(request.period) {
-                    Ok(Some(value)) => (
-                        PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                        true,
-                        value,
-                        String::new(),
-                    ),
-                    Ok(None) => (
-                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                        false,
-                        0,
-                        "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD".to_string(),
-                    ),
-                    Err(err) => (
-                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                        false,
-                        0,
-                        format!("PBFT_FINAL_CHAIN_TOTAL_VOTES_UNAVAILABLE: {err}"),
-                    ),
-                }
-            } else {
-                (PBFT_FINAL_CHAIN_FACT_STATUS_READY, false, 0, String::new())
-            };
-
-        let mut address_facts = Vec::new();
-        if request.collect_address_vote_counts {
-            address_facts.reserve(request.addresses.len());
-            for address in request.addresses {
-                match self
-                    .0
-                    .pbft_dpos_eligible_vote_count(request.period, address.address)
-                {
-                    Ok(Some(vote_count)) => {
-                        address_facts.push(rustaxa_ffi::PbftFinalChainAddressFact {
-                            address: address.address,
-                            status: PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                            eligible: vote_count > 0,
-                            vote_count,
-                            error_code: String::new(),
-                        });
-                    }
-                    Ok(None) => {
-                        address_facts.push(rustaxa_ffi::PbftFinalChainAddressFact {
-                            address: address.address,
-                            status: PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                            eligible: false,
-                            vote_count: 0,
-                            error_code: "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD".to_string(),
-                        });
-                    }
-                    Err(err) => {
-                        address_facts.push(rustaxa_ffi::PbftFinalChainAddressFact {
-                            address: address.address,
-                            status: PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                            eligible: false,
-                            vote_count: 0,
-                            error_code: format!("PBFT_FINAL_CHAIN_ADDRESS_FACT_UNAVAILABLE: {err}"),
-                        });
-                    }
-                }
-            }
-        }
-
-        let address_facts_ready = address_facts
-            .iter()
-            .all(|fact| fact.status == PBFT_FINAL_CHAIN_FACT_STATUS_READY);
-        let all_ready = final_chain_hash.status == PBFT_FINAL_CHAIN_FACT_STATUS_READY
-            && total_vote_count_status == PBFT_FINAL_CHAIN_FACT_STATUS_READY
-            && address_facts_ready;
-        let status = if all_ready {
-            PBFT_FINAL_CHAIN_FACT_STATUS_READY
-        } else if final_chain_hash.status == PBFT_FINAL_CHAIN_FACT_STATUS_INVALID {
+        let status = if final_chain_hash.status == PBFT_FINAL_CHAIN_FACT_STATUS_INVALID {
             PBFT_FINAL_CHAIN_FACT_STATUS_INVALID
         } else {
-            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
+            final_chain_hash.status
         };
         let error_code = if status == PBFT_FINAL_CHAIN_FACT_STATUS_READY {
             String::new()
-        } else if final_chain_hash.status != PBFT_FINAL_CHAIN_FACT_STATUS_READY {
-            final_chain_hash.error_code.clone()
-        } else if !total_error.is_empty() {
-            total_error.clone()
         } else {
-            "PBFT_FINAL_CHAIN_ADDRESS_FACTS_UNAVAILABLE".to_string()
+            final_chain_hash.error_code.clone()
         };
 
         Ok(rustaxa_ffi::PbftFinalChainFacts {
             status,
             last_block_number,
             final_chain_hash,
-            total_vote_count_status,
-            has_total_vote_count,
-            total_vote_count,
-            address_facts,
             error_code,
         })
     }
@@ -2335,9 +2253,6 @@ mod tests {
                 candidate_final_chain_hash: [0; 32],
                 collect_final_chain_hash: true,
                 validate_candidate_final_chain_hash: true,
-                collect_total_vote_count: true,
-                collect_address_vote_counts: true,
-                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
             })
             .expect("ready PBFT facts should not throw");
         assert_eq!(ready.status, PBFT_FINAL_CHAIN_FACT_STATUS_READY);
@@ -2347,15 +2262,6 @@ mod tests {
             PBFT_FINAL_CHAIN_FACT_STATUS_READY
         );
         assert_eq!(ready.final_chain_hash.expected_hash, [0; 32]);
-        assert!(ready.has_total_vote_count);
-        assert_eq!(ready.total_vote_count, 10);
-        assert_eq!(ready.address_facts.len(), 1);
-        assert_eq!(
-            ready.address_facts[0].status,
-            PBFT_FINAL_CHAIN_FACT_STATUS_READY
-        );
-        assert!(ready.address_facts[0].eligible);
-        assert_eq!(ready.address_facts[0].vote_count, 10);
 
         let mismatch = final_chain
             .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
@@ -2363,9 +2269,6 @@ mod tests {
                 candidate_final_chain_hash: [0xCC; 32],
                 collect_final_chain_hash: true,
                 validate_candidate_final_chain_hash: true,
-                collect_total_vote_count: false,
-                collect_address_vote_counts: false,
-                addresses: vec![],
             })
             .expect("mismatch should be returned as data");
         assert_eq!(mismatch.status, PBFT_FINAL_CHAIN_FACT_STATUS_INVALID);
@@ -2384,19 +2287,11 @@ mod tests {
                 candidate_final_chain_hash: [0; 32],
                 collect_final_chain_hash: true,
                 validate_candidate_final_chain_hash: true,
-                collect_total_vote_count: true,
-                collect_address_vote_counts: true,
-                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
             })
             .expect("missing snapshot/header should be returned as data");
         assert_eq!(unavailable.status, PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE);
         assert_eq!(
             unavailable.final_chain_hash.status,
-            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
-        );
-        assert!(!unavailable.has_total_vote_count);
-        assert_eq!(
-            unavailable.address_facts[0].status,
             PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
         );
 
@@ -2421,44 +2316,26 @@ mod tests {
                 candidate_final_chain_hash: [0; 32],
                 collect_final_chain_hash: false,
                 validate_candidate_final_chain_hash: false,
-                collect_total_vote_count: true,
-                collect_address_vote_counts: true,
-                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
             })
             .expect("delegation-delay covered period should use genesis snapshot");
         assert_eq!(ready.status, PBFT_FINAL_CHAIN_FACT_STATUS_READY);
-        assert!(ready.has_total_vote_count);
-        assert_eq!(ready.total_vote_count, 10);
-        assert_eq!(
-            ready.address_facts[0].status,
-            PBFT_FINAL_CHAIN_FACT_STATUS_READY
-        );
-        assert_eq!(ready.address_facts[0].vote_count, 10);
 
         let future = final_chain
             .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
                 period: 6,
                 candidate_final_chain_hash: [0; 32],
-                collect_final_chain_hash: false,
+                collect_final_chain_hash: true,
                 validate_candidate_final_chain_hash: false,
-                collect_total_vote_count: true,
-                collect_address_vote_counts: true,
-                addresses: vec![rustaxa_ffi::PbftFinalChainFactAddress { address: validator }],
             })
             .expect("future PBFT facts should be returned as unavailable data");
         assert_eq!(future.status, PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE);
-        assert!(!future.has_total_vote_count);
         assert_eq!(
-            future.error_code,
-            "PBFT_FINAL_CHAIN_TOTAL_VOTES_FUTURE_PERIOD"
-        );
-        assert_eq!(
-            future.address_facts[0].status,
+            future.final_chain_hash.status,
             PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
         );
         assert_eq!(
-            future.address_facts[0].error_code,
-            "PBFT_FINAL_CHAIN_ADDRESS_FACT_FUTURE_PERIOD"
+            future.final_chain_hash.error_code,
+            "PBFT_FINAL_CHAIN_HASH_MISSING"
         );
 
         drop(final_chain);

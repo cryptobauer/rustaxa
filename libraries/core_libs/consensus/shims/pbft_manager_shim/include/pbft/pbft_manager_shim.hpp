@@ -131,7 +131,8 @@ class PbftManager {
   class EligibleWallets {
    public:
     EligibleWallets(const std::vector<WalletConfig> &wallets);
-    void updateWalletsEligibility(PbftPeriod period, const std::shared_ptr<final_chain::FinalChain> &final_chain);
+    void updateWalletsEligibility(PbftPeriod period, const SharedPbftService &pbft_service,
+                                  const std::shared_ptr<final_chain::FinalChain> &final_chain);
     const std::vector<std::pair<bool, WalletConfig>> &getWallets(PbftPeriod current_pbft_period) const;
 
     /*
