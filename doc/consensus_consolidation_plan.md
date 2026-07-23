@@ -4607,6 +4607,20 @@ Tier 2, FinalChain Tier 2, and the Tier 3 Rust-enabled/pure-C++ FinalChain parit
 `PbftManagerWithDagCreation.state_root_hash` fixture still reaches its classified unavailable-latest-account-snapshot
 boundary and is not changed or weakened by this slice.
 
+### CRW-10 Mechanical Inventory Closeout
+
+CRW-10 starts by making the existing audit enforce its full stated scope. The bridge inventory guard now compares the
+live `rustaxa-bridge` module declarations, exported CXX `Bridge*` handles, and consensus shim directories against their
+respective audit tables. Any undocumented live item or stale row fails the guard, and self-tests cover each inventory
+family. Exact rows replace the former grouped PBFT-vote entry, omitted internal modules are classified, and the retired
+`pillar_votes_shim` is removed from the live table.
+
+This checkpoint changes no runtime routing. The audited live surfaces remain classified application/bootstrap,
+network/tarcap, EVM/execution, lifecycle, signing/VDF, storage/public compatibility, or C++ materialization boundaries.
+Further CRW-10 deletion requires a fresh no-caller census rather than inferring that a stable compatibility facade is
+obsolete. Upstream intersection synchronization remains a separate closeout step because the current feature branch has
+no local `main` or `cpp-reference` branch and the explicit `upstream-main..HEAD` historical intersection is broad.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

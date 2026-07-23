@@ -292,7 +292,14 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09G` | `complete` | Migrate reward pools and claim settlement using shared token amounts. | `CRW-09D`; `CRW-09F` | Commission/delegator pools, fee rewards, claims, account credits, cursor advancement, rollback, receipts, and restart use `DposTokenAmount` without changing reward-index semantics. |
 | `CRW-09H` | `complete` | Type supply, minted rewards, and Aspen migration state. | `CRW-09C`; `CRW-09G` | Pre-/post-Aspen supply state is explicit; migration runs once; inconsistent persisted combinations fail closed; checked cap/reward arithmetic and accepted old schemas retain activation, publication, and restart parity. |
 | `CRW-09I` | `complete` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
-| `CRW-10` | `ready` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
+| `CRW-10` | `active` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
+
+The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
+now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
+tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
+The grouped PBFT-vote module row is expanded into exact module classifications, previously omitted internal modules are
+documented, and the already-retired `pillar_votes_shim` row is removed from the live inventory. Runtime behavior and
+accepted network, EVM, lifecycle, signing/VDF, storage-compatibility, and public-materialization boundaries are unchanged.
 
 The VoteManager threshold sub-slice of `CRW-09I` is routed: `getPbftTwoTPlusOne` no longer collects or interprets generic
 FinalChain DPoS facts in C++. The PBFT service owns cache-first threshold composition, reads its sibling Rust PBFT-chain

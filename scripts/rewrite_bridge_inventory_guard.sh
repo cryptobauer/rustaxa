@@ -5,9 +5,9 @@ usage() {
   cat <<'EOF'
 Usage: scripts/rewrite_bridge_inventory_guard.sh [--self-test]
 
-Checks that every exported CXX `Bridge*` handle in
-rust/crates/rustaxa-bridge/src/ffi.rs is documented in
-doc/consensus_bridge_shim_audit.md.
+Checks that every exported CXX `Bridge*` handle, Rust bridge module, and
+consensus shim directory is documented in doc/consensus_bridge_shim_audit.md,
+and reports stale inventory rows after deletion.
 EOF
 }
 
@@ -55,6 +55,39 @@ extract_audited_bridge_types() {
   ' "$1" | sort -u
 }
 
+extract_bridge_modules() {
+  sed -En 's#^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?mod[[:space:]]+([a-z0-9_]+)[[:space:]]*;([[:space:]]*(//.*|/\*.*\*/))?$#rust/crates/rustaxa-bridge/src/\3.rs#p' "$1" | sort -u
+}
+
+extract_audited_bridge_modules() {
+  awk '
+    /^## Rust Bridge Modules/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && match($0, /^\| `rust\/crates\/rustaxa-bridge\/src\/[a-z0-9_]+\.rs` \|/) {
+      value = substr($0, RSTART + 3, RLENGTH - 6)
+      print value
+    }
+  ' "$1" | sort -u
+}
+
+extract_shim_directories() {
+  for shim_path in "$1"/*_shim; do
+    [ -d "$shim_path" ] || continue
+    basename "$shim_path"
+  done | sort -u
+}
+
+extract_audited_shim_directories() {
+  awk '
+    /^## Consensus Shim Directories/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && match($0, /^\| `[a-z0-9_]+_shim` \|/) {
+      value = substr($0, RSTART + 3, RLENGTH - 6)
+      print value
+    }
+  ' "$1" | sort -u
+}
+
 check_inventory() {
   ffi_file="$1"
   audit_file="$2"
@@ -77,15 +110,38 @@ check_inventory() {
 }
 
 report_stale_entries() {
-  stale_file="$1"
+  inventory_name="$1"
+  stale_file="$2"
   if [ -s "$stale_file" ]; then
-    cat >&2 <<'EOF'
-Warning: audit entries exist for bridge handles that are not exported anymore.
-Remove stale rows when deleting the corresponding compatibility surface.
-
-Stale audit entries:
-EOF
+    echo "Error: stale $inventory_name audit entries exist; remove them with the retired surface." >&2
     cat "$stale_file" >&2
+  fi
+}
+
+check_documented_inventory() {
+  inventory_name="$1"
+  live_file="$2"
+  audit_file="$3"
+  live_extractor="$4"
+  audit_extractor="$5"
+  temp_dir="$6"
+
+  live_values="$temp_dir/${inventory_name}_live"
+  audit_values="$temp_dir/${inventory_name}_audit"
+  missing_values="$temp_dir/${inventory_name}_missing"
+  stale_values="$temp_dir/${inventory_name}_stale"
+  "$live_extractor" "$live_file" >"$live_values"
+  "$audit_extractor" "$audit_file" >"$audit_values"
+  comm -23 "$live_values" "$audit_values" >"$missing_values"
+  comm -13 "$live_values" "$audit_values" >"$stale_values"
+  report_stale_entries "$inventory_name" "$stale_values"
+  if [ -s "$stale_values" ]; then
+    return 1
+  fi
+  if [ -s "$missing_values" ]; then
+    echo "Rust bridge inventory guard failed: undocumented $inventory_name entries:" >&2
+    cat "$missing_values" >&2
+    return 1
   fi
 }
 
@@ -200,6 +256,87 @@ EOF
 
   check_stale_exactly "$temp_dir/ffi.rs" "$temp_dir/audit_with_stale.md" BridgeStale "$temp_dir"
 
+  cat >"$temp_dir/lib.rs" <<'EOF'
+mod documented;
+mod documented_block; /* retained block comment */
+  pub mod documented_public;
+pub(crate) mod documented_crate; // visible inside the crate
+EOF
+  mkdir -p "$temp_dir/shims/documented_shim"
+  cat >"$temp_dir/full_audit.md" <<'EOF'
+# Audit
+
+## Rust Bridge Modules
+
+| Module | Main exported handles or constructors | Current consumers | Classification | Removal or narrowing condition |
+| --- | --- | --- | --- | --- |
+| `rust/crates/rustaxa-bridge/src/documented.rs` | helper | test | Internal Rust route | keep |
+| `rust/crates/rustaxa-bridge/src/documented_block.rs` | helper | test | Internal Rust route | keep |
+| `rust/crates/rustaxa-bridge/src/documented_crate.rs` | helper | test | Internal Rust route | keep |
+| `rust/crates/rustaxa-bridge/src/documented_public.rs` | helper | test | Internal Rust route | keep |
+
+## Consensus Shim Directories
+
+| Shim directory | Current role | Current consumers | Classification | Removal or narrowing condition |
+| --- | --- | --- | --- | --- |
+| `documented_shim` | helper | test | C++ public compatibility facade | keep |
+EOF
+  check_documented_inventory module "$temp_dir/lib.rs" "$temp_dir/full_audit.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir"
+  check_documented_inventory shim "$temp_dir/shims" "$temp_dir/full_audit.md" \
+    extract_shim_directories extract_audited_shim_directories "$temp_dir"
+
+  echo 'mod missing;' >>"$temp_dir/lib.rs"
+  if check_documented_inventory module "$temp_dir/lib.rs" "$temp_dir/full_audit.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: undocumented module was accepted" >&2
+    exit 1
+  fi
+  cat >"$temp_dir/lib.rs" <<'EOF'
+mod documented;
+mod documented_block; /* retained block comment */
+  pub mod documented_public;
+pub(crate) mod documented_crate; // visible inside the crate
+EOF
+  mkdir "$temp_dir/shims/missing_shim"
+  if check_documented_inventory shim "$temp_dir/shims" "$temp_dir/full_audit.md" \
+    extract_shim_directories extract_audited_shim_directories "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: undocumented shim was accepted" >&2
+    exit 1
+  fi
+  rm -rf "$temp_dir/shims/missing_shim"
+
+  cat >"$temp_dir/stale_audit.md" <<'EOF'
+# Audit
+
+## Rust Bridge Modules
+
+| Module | Main exported handles or constructors | Current consumers | Classification | Removal or narrowing condition |
+| --- | --- | --- | --- | --- |
+| `rust/crates/rustaxa-bridge/src/documented.rs` | helper | test | Internal Rust route | keep |
+| `rust/crates/rustaxa-bridge/src/documented_block.rs` | helper | test | Internal Rust route | keep |
+| `rust/crates/rustaxa-bridge/src/documented_crate.rs` | helper | test | Internal Rust route | keep |
+| `rust/crates/rustaxa-bridge/src/documented_public.rs` | helper | test | Internal Rust route | keep |
+| `rust/crates/rustaxa-bridge/src/stale.rs` | helper | test | Internal Rust route | remove |
+
+## Consensus Shim Directories
+
+| Shim directory | Current role | Current consumers | Classification | Removal or narrowing condition |
+| --- | --- | --- | --- | --- |
+| `documented_shim` | helper | test | C++ public compatibility facade | keep |
+| `stale_shim` | helper | test | Obsolete scaffold | remove |
+EOF
+  if check_documented_inventory module "$temp_dir/lib.rs" "$temp_dir/stale_audit.md" \
+    extract_bridge_modules extract_audited_bridge_modules "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: stale module row was accepted" >&2
+    exit 1
+  fi
+  if check_documented_inventory shim "$temp_dir/shims" "$temp_dir/stale_audit.md" \
+    extract_shim_directories extract_audited_shim_directories "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: stale shim row was accepted" >&2
+    exit 1
+  fi
+
   echo "Rust bridge inventory guard self-test passed."
   exit 0
 fi
@@ -214,7 +351,11 @@ check_inventory \
   "$missing_file" \
   "$stale_file"
 
-report_stale_entries "$stale_file"
+report_stale_entries "handle" "$stale_file"
+
+if [ -s "$stale_file" ]; then
+  exit 1
+fi
 
 if [ -s "$missing_file" ]; then
   cat >&2 <<'EOF'
@@ -230,5 +371,15 @@ EOF
   cat "$missing_file" >&2
   exit 1
 fi
+
+inventory_temp_dir="$(mktemp -d)"
+trap 'rm -f "$missing_file" "$stale_file"; rm -rf "$inventory_temp_dir"' EXIT
+
+check_documented_inventory \
+  module rust/crates/rustaxa-bridge/src/lib.rs doc/consensus_bridge_shim_audit.md \
+  extract_bridge_modules extract_audited_bridge_modules "$inventory_temp_dir"
+check_documented_inventory \
+  shim libraries/core_libs/consensus/shims doc/consensus_bridge_shim_audit.md \
+  extract_shim_directories extract_audited_shim_directories "$inventory_temp_dir"
 
 echo "Rust bridge inventory guard passed."
