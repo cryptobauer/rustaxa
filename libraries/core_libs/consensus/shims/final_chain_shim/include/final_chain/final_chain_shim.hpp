@@ -23,7 +23,7 @@ namespace taraxa {
 class DagManager;
 class PbftManager;
 class VoteManager;
-}
+}  // namespace taraxa
 namespace taraxa::pillar_chain {
 class PillarChainManager;
 }
@@ -117,7 +117,6 @@ class FinalChain {
   std::string trace(std::vector<state_api::EVMTransaction> state_trxs, std::vector<state_api::EVMTransaction> trxs,
                     EthBlockNumber blk_n, std::optional<state_api::Tracing> params = {}) const;
 
-  rustaxa::PbftFinalChainFacts collectPbftFinalChainFacts(rustaxa::PbftFinalChainFactRequest request) const;
   uint64_t dposEligibleTotalVoteCount(EthBlockNumber blk_num) const;
   uint64_t dposEligibleVoteCount(EthBlockNumber blk_num, addr_t const& addr) const;
   bool dposIsEligible(EthBlockNumber blk_num, addr_t const& addr) const;
@@ -138,6 +137,7 @@ class FinalChain {
                                                       std::vector<h256>&& finalized_dag_blk_hashes,
                                                       uint32_t blocks_per_year, std::shared_ptr<DagBlock>&& anchor);
   SharedTransactionReceipts blockReceipts(std::optional<EthBlockNumber> n = {}) const;
+
  private:
   /** Borrows the Rust owner synchronously for friend consensus facades. */
   const rustaxa::BridgeFinalChain& rustFinalChain() const { return *rust_final_chain_.value(); }

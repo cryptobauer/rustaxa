@@ -2,13 +2,12 @@ use crate::ffi::rustaxa_ffi;
 use crate::ffi::BridgeConsensusExecutionApi;
 use crate::ffi::BridgeFinalChain;
 use crate::ffi::BridgeFinalChainExecutionSession;
+use crate::ffi::BridgePbftService;
 use crate::ffi::BridgeStorage;
+use crate::pbft_manager::pbft_manager_runtime_begin_proposal_session_with_hash;
+use rustaxa_consensus::pbft_manager::PbftManagerFinalChainHashValidationResult;
 use rustaxa_consensus::{Account, FinalChain};
 use rustaxa_types::FinalChainNonce;
-
-const PBFT_FINAL_CHAIN_FACT_STATUS_READY: u8 = 0;
-const PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE: u8 = 1;
-const PBFT_FINAL_CHAIN_FACT_STATUS_INVALID: u8 = 2;
 
 fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
     match account {
@@ -28,20 +27,6 @@ fn account_to_lookup(account: Option<Account>) -> rustaxa_ffi::AccountLookup {
             code_hash: [0; 32],
             code_size: 0,
         },
-    }
-}
-
-fn pbft_final_chain_hash_result(
-    status: u8,
-    expected_hash: [u8; 32],
-    actual_hash: [u8; 32],
-    error_code: impl Into<String>,
-) -> rustaxa_ffi::PbftFinalChainHashResult {
-    rustaxa_ffi::PbftFinalChainHashResult {
-        status,
-        expected_hash,
-        actual_hash,
-        error_code: error_code.into(),
     }
 }
 
@@ -1041,72 +1026,58 @@ impl BridgeFinalChain {
             )?
             .unwrap_or_default())
     }
+}
 
-    /// Collects FinalChain hash facts needed by PBFT manager proposal and
-    /// validation.
+impl BridgePbftService {
+    /// Starts PBFT proposal planning with the authoritative FinalChain hash for the proposal period.
     ///
-    /// DPoS facts are moved to dedicated BridgePbftService APIs and are no
-    /// longer returned in this response. Missing delayed FinalChain headers are
-    /// returned as explicit status data, while malformed storage and bridge
-    /// infrastructure failures still propagate as errors.
-    pub fn collect_pbft_final_chain_facts(
-        self: &BridgeFinalChain,
-        request: rustaxa_ffi::PbftFinalChainFactRequest,
-    ) -> Result<rustaxa_ffi::PbftFinalChainFacts, anyhow::Error> {
-        let last_block_number = self.0.last_block_number()?;
-        let final_chain_hash =
-            if request.collect_final_chain_hash || request.validate_candidate_final_chain_hash {
-                let expected_hash = self.0.pbft_final_chain_hash(request.period)?;
-                match expected_hash {
-                    Some(expected_hash)
-                        if request.validate_candidate_final_chain_hash
-                            && expected_hash != request.candidate_final_chain_hash =>
-                    {
-                        pbft_final_chain_hash_result(
-                            PBFT_FINAL_CHAIN_FACT_STATUS_INVALID,
-                            expected_hash,
-                            request.candidate_final_chain_hash,
-                            "PBFT_FINAL_CHAIN_HASH_MISMATCH",
-                        )
-                    }
-                    Some(expected_hash) => pbft_final_chain_hash_result(
-                        PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                        expected_hash,
-                        request.candidate_final_chain_hash,
-                        "",
-                    ),
-                    None => pbft_final_chain_hash_result(
-                        PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE,
-                        [0; 32],
-                        request.candidate_final_chain_hash,
-                        "PBFT_FINAL_CHAIN_HASH_MISSING",
-                    ),
+    /// C++ supplies only proposal observations and executor-owned DAG/wallet facts. This method
+    /// reads the delayed Rust FinalChain view before publishing the runtime cursor; a missing hash
+    /// is retained as a typed `MissingFinalChainHash` proposal outcome, while storage failures
+    /// return an error and leave the previous cursor unchanged.
+    pub fn pbft_service_begin_proposal_session_with_final_chain(
+        &self,
+        final_chain: &BridgeFinalChain,
+        fact: rustaxa_ffi::PbftManagerProposalInitialFact,
+    ) -> Result<(), anyhow::Error> {
+        let final_chain_hash = final_chain.0.pbft_final_chain_hash(fact.period)?;
+        pbft_manager_runtime_begin_proposal_session_with_hash(self, fact, final_chain_hash);
+        Ok(())
+    }
+
+    /// Validates a candidate FinalChain hash for one PBFT period.
+    ///
+    /// Missing delayed FinalChain headers are returned as explicit `Missing` state,
+    /// and mismatched candidate hashes are returned as `Invalid`.
+    pub fn pbft_service_validate_final_chain_hash(
+        &self,
+        final_chain: &BridgeFinalChain,
+        request: rustaxa_ffi::PbftManagerFinalChainHashValidationRequest,
+    ) -> Result<rustaxa_ffi::PbftManagerFinalChainHashValidationResult, anyhow::Error> {
+        let result = match final_chain.0.pbft_final_chain_hash(request.period)? {
+            Some(expected_hash) if expected_hash == request.candidate_final_chain_hash => {
+                PbftManagerFinalChainHashValidationResult {
+                    status: rustaxa_consensus::pbft_manager::PbftManagerFinalChainHashStatus::Valid,
+                    expected_hash: expected_hash.into(),
+                    error_code: String::new(),
                 }
-            } else {
-                pbft_final_chain_hash_result(
-                    PBFT_FINAL_CHAIN_FACT_STATUS_READY,
-                    [0; 32],
-                    request.candidate_final_chain_hash,
-                    "",
-                )
-            };
-
-        let status = if final_chain_hash.status == PBFT_FINAL_CHAIN_FACT_STATUS_INVALID {
-            PBFT_FINAL_CHAIN_FACT_STATUS_INVALID
-        } else {
-            final_chain_hash.status
-        };
-        let error_code = if status == PBFT_FINAL_CHAIN_FACT_STATUS_READY {
-            String::new()
-        } else {
-            final_chain_hash.error_code.clone()
+            }
+            Some(expected_hash) => PbftManagerFinalChainHashValidationResult {
+                status: rustaxa_consensus::pbft_manager::PbftManagerFinalChainHashStatus::Invalid,
+                expected_hash: expected_hash.into(),
+                error_code: "PBFT_MANAGER_FINAL_CHAIN_HASH_MISMATCH".to_string(),
+            },
+            None => PbftManagerFinalChainHashValidationResult {
+                status: rustaxa_consensus::pbft_manager::PbftManagerFinalChainHashStatus::Missing,
+                expected_hash: [0; 32].into(),
+                error_code: "PBFT_MANAGER_FINAL_CHAIN_HASH_MISSING".to_string(),
+            },
         };
 
-        Ok(rustaxa_ffi::PbftFinalChainFacts {
-            status,
-            last_block_number,
-            final_chain_hash,
-            error_code,
+        Ok(rustaxa_ffi::PbftManagerFinalChainHashValidationResult {
+            status: result.status.as_u8(),
+            expected_hash: result.expected_hash.into(),
+            error_code: result.error_code,
         })
     }
 }
@@ -1115,12 +1086,16 @@ impl BridgeFinalChain {
 mod tests {
     use super::*;
     use crate::ffi::{BridgeDagStorageQueries, BridgeMetadataStorageQueries, BridgeStorage};
+    use crate::pbft_manager::create_pbft_service_from_storage;
     use crate::storage::{
         create_dag_storage_queries, create_metadata_storage_queries, create_storage,
     };
     use ethereum_types::{H256, U256};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
+    use rustaxa_consensus::pbft_manager::{
+        PbftManagerFinalChainHashStatus, PbftManagerProposalAction, PbftManagerProposalStatus,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1246,6 +1221,29 @@ mod tests {
         std::env::temp_dir().join(format!("{prefix}_{process_id}_{now_ns}"))
     }
 
+    fn proposal_fact(period: u64) -> rustaxa_ffi::PbftManagerProposalInitialFact {
+        rustaxa_ffi::PbftManagerProposalInitialFact {
+            period,
+            round: 1,
+            previous_pbft_block_hash: [0x11; 32],
+            last_period_dag_anchor_hash: [0x22; 32],
+            dag_genesis_hash: [0x22; 32],
+            dag_blocks_size: 10,
+            ghost_path_move_back: 0,
+            pbft_gas_limit: 1_000,
+            extra_data_required: false,
+            extra_data_available: true,
+            wallets: vec![rustaxa_ffi::PbftManagerProposalWalletFact {
+                wallet_index: 0,
+                dpos_eligible: true,
+                sortition_valid: true,
+            }],
+            ghost_path: Vec::new(),
+            has_non_finalized_fallback: false,
+            non_finalized_fallback_hash: [0; 32],
+        }
+    }
+
     fn metadata_queries(storage: &BridgeStorage) -> Box<BridgeMetadataStorageQueries> {
         create_metadata_storage_queries(storage)
     }
@@ -1274,17 +1272,24 @@ mod tests {
         storage_path: &str,
         genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
     ) -> Box<BridgeFinalChain> {
-        make_final_chain_with_delegation_delay(storage_path, genesis_validators, 0)
+        let storage = create_storage(storage_path).expect("storage should initialize");
+        make_final_chain_with_storage_and_delegation_delay(&storage, genesis_validators, 0)
     }
 
-    fn make_final_chain_with_delegation_delay(
-        storage_path: &str,
+    fn make_final_chain_with_storage(
+        storage: &BridgeStorage,
+        genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
+    ) -> Box<BridgeFinalChain> {
+        make_final_chain_with_storage_and_delegation_delay(storage, genesis_validators, 0)
+    }
+
+    fn make_final_chain_with_storage_and_delegation_delay(
+        storage: &BridgeStorage,
         genesis_validators: Vec<rustaxa_ffi::GenesisValidator>,
         delegation_delay: u64,
     ) -> Box<BridgeFinalChain> {
-        let storage = create_storage(storage_path).expect("storage should initialize");
         create_final_chain(
-            &storage,
+            storage,
             0,
             0,
             vec![],
@@ -2240,105 +2245,173 @@ mod tests {
     }
 
     #[test]
-    fn bridge_collects_pbft_final_chain_facts_from_rust_runtime() {
+    fn bridge_validates_pbft_final_chain_hash_from_rust_runtime() {
         let validator = [0xB1u8; 20];
         let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_final_chain_facts");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
+        let storage = create_storage(storage_path).expect("storage should initialize");
         let final_chain =
-            make_final_chain(storage_path, vec![genesis_validator(validator, 10_000)]);
+            make_final_chain_with_storage(&storage, vec![genesis_validator(validator, 10_000)]);
+        let pbft_service = create_pbft_service_from_storage(
+            &storage,
+            rustaxa_ffi::PbftServiceConfig {
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 1500,
+                cacti_lambda_default_ms: 500,
+                cacti_block: 1,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 1000,
+                polling_interval_ms: 100,
+                report_malicious_behaviour: true,
+                magnolia_activation_period: 0,
+            },
+        )
+        .expect("PBFT service should initialize");
 
-        let ready = final_chain
-            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
-                period: 0,
-                candidate_final_chain_hash: [0; 32],
-                collect_final_chain_hash: true,
-                validate_candidate_final_chain_hash: true,
-            })
-            .expect("ready PBFT facts should not throw");
-        assert_eq!(ready.status, PBFT_FINAL_CHAIN_FACT_STATUS_READY);
-        assert_eq!(ready.last_block_number, 0);
-        assert_eq!(
-            ready.final_chain_hash.status,
-            PBFT_FINAL_CHAIN_FACT_STATUS_READY
-        );
-        assert_eq!(ready.final_chain_hash.expected_hash, [0; 32]);
+        let ready = pbft_service
+            .pbft_service_validate_final_chain_hash(
+                &final_chain,
+                rustaxa_ffi::PbftManagerFinalChainHashValidationRequest {
+                    period: 0,
+                    candidate_final_chain_hash: [0; 32],
+                },
+            )
+            .expect("ready PBFT hash validation should return");
+        assert_eq!(ready.status, PbftManagerFinalChainHashStatus::Valid.as_u8());
+        assert_eq!(ready.expected_hash, [0; 32]);
 
-        let mismatch = final_chain
-            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
-                period: 0,
-                candidate_final_chain_hash: [0xCC; 32],
-                collect_final_chain_hash: true,
-                validate_candidate_final_chain_hash: true,
-            })
-            .expect("mismatch should be returned as data");
-        assert_eq!(mismatch.status, PBFT_FINAL_CHAIN_FACT_STATUS_INVALID);
+        let mismatch = pbft_service
+            .pbft_service_validate_final_chain_hash(
+                &final_chain,
+                rustaxa_ffi::PbftManagerFinalChainHashValidationRequest {
+                    period: 0,
+                    candidate_final_chain_hash: [0xCC; 32],
+                },
+            )
+            .expect("mismatch hash validation should return");
         assert_eq!(
-            mismatch.final_chain_hash.status,
-            PBFT_FINAL_CHAIN_FACT_STATUS_INVALID
+            mismatch.status,
+            PbftManagerFinalChainHashStatus::Invalid.as_u8()
         );
+        assert_eq!(mismatch.expected_hash, [0; 32]);
         assert_eq!(
-            mismatch.final_chain_hash.error_code,
-            "PBFT_FINAL_CHAIN_HASH_MISMATCH"
+            mismatch.error_code,
+            "PBFT_MANAGER_FINAL_CHAIN_HASH_MISMATCH"
         );
 
-        let unavailable = final_chain
-            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
-                period: 1,
-                candidate_final_chain_hash: [0; 32],
-                collect_final_chain_hash: true,
-                validate_candidate_final_chain_hash: true,
-            })
+        let unavailable = pbft_service
+            .pbft_service_validate_final_chain_hash(
+                &final_chain,
+                rustaxa_ffi::PbftManagerFinalChainHashValidationRequest {
+                    period: 1,
+                    candidate_final_chain_hash: [0; 32],
+                },
+            )
             .expect("missing snapshot/header should be returned as data");
-        assert_eq!(unavailable.status, PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE);
         assert_eq!(
-            unavailable.final_chain_hash.status,
-            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
+            unavailable.status,
+            PbftManagerFinalChainHashStatus::Missing.as_u8()
+        );
+        assert_eq!(
+            unavailable.error_code,
+            "PBFT_MANAGER_FINAL_CHAIN_HASH_MISSING"
         );
 
         drop(final_chain);
+        drop(storage);
+        drop(pbft_service);
         let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
-    fn bridge_collects_pbft_dpos_facts_with_delegation_delay_boundary() {
+    fn bridge_validates_pbft_final_chain_hash_at_delegation_delay_boundary() {
         let validator = [0xB2u8; 20];
-        let temp_dir = unique_temp_dir("rustaxa_bridge_pbft_final_chain_delegation_delay");
+        let temp_dir =
+            unique_temp_dir("rustaxa_bridge_pbft_final_chain_delegation_delay_validation");
         let storage_path = temp_dir.to_str().expect("temp path should be utf-8");
-        let final_chain = make_final_chain_with_delegation_delay(
-            storage_path,
+        let storage = create_storage(storage_path).expect("storage should initialize");
+        let final_chain = make_final_chain_with_storage_and_delegation_delay(
+            &storage,
             vec![genesis_validator(validator, 10_000)],
             5,
         );
+        let pbft_service = create_pbft_service_from_storage(
+            &storage,
+            rustaxa_ffi::PbftServiceConfig {
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 1500,
+                cacti_lambda_default_ms: 500,
+                cacti_block: 1,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 1000,
+                polling_interval_ms: 100,
+                report_malicious_behaviour: true,
+                magnolia_activation_period: 0,
+            },
+        )
+        .expect("PBFT service should initialize");
 
-        let ready = final_chain
-            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
-                period: 5,
-                candidate_final_chain_hash: [0; 32],
-                collect_final_chain_hash: false,
-                validate_candidate_final_chain_hash: false,
-            })
-            .expect("delegation-delay covered period should use genesis snapshot");
-        assert_eq!(ready.status, PBFT_FINAL_CHAIN_FACT_STATUS_READY);
+        let ready = pbft_service
+            .pbft_service_validate_final_chain_hash(
+                &final_chain,
+                rustaxa_ffi::PbftManagerFinalChainHashValidationRequest {
+                    period: 5,
+                    candidate_final_chain_hash: [0; 32],
+                },
+            )
+            .expect("delegation-delay boundary period should be ready");
+        assert_eq!(ready.status, PbftManagerFinalChainHashStatus::Valid.as_u8());
+        assert_eq!(ready.expected_hash, [0; 32]);
 
-        let future = final_chain
-            .collect_pbft_final_chain_facts(rustaxa_ffi::PbftFinalChainFactRequest {
-                period: 6,
-                candidate_final_chain_hash: [0; 32],
-                collect_final_chain_hash: true,
-                validate_candidate_final_chain_hash: false,
-            })
-            .expect("future PBFT facts should be returned as unavailable data");
-        assert_eq!(future.status, PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE);
+        crate::pbft_manager::pbft_service_complete_bootstrap(&pbft_service)
+            .expect("PBFT service should accept proposal commands");
+        pbft_service
+            .pbft_service_begin_proposal_session_with_final_chain(&final_chain, proposal_fact(5))
+            .expect("ready proposal hash should start a session");
+        let proposal = crate::pbft_manager::pbft_manager_proposal_session_next(&pbft_service);
         assert_eq!(
-            future.final_chain_hash.status,
-            PBFT_FINAL_CHAIN_FACT_STATUS_UNAVAILABLE
+            proposal.action,
+            PbftManagerProposalAction::BuildProposal.as_u8()
         );
         assert_eq!(
-            future.final_chain_hash.error_code,
-            "PBFT_FINAL_CHAIN_HASH_MISSING"
+            proposal.status,
+            PbftManagerProposalStatus::BuildReady.as_u8()
+        );
+        assert_eq!(proposal.final_chain_hash, [0; 32]);
+
+        let future = pbft_service
+            .pbft_service_validate_final_chain_hash(
+                &final_chain,
+                rustaxa_ffi::PbftManagerFinalChainHashValidationRequest {
+                    period: 6,
+                    candidate_final_chain_hash: [0; 32],
+                },
+            )
+            .expect("future PBFT facts should be returned as unavailable data");
+        assert_eq!(
+            future.status,
+            PbftManagerFinalChainHashStatus::Missing.as_u8()
+        );
+        assert_eq!(future.error_code, "PBFT_MANAGER_FINAL_CHAIN_HASH_MISSING");
+
+        pbft_service
+            .pbft_service_begin_proposal_session_with_final_chain(&final_chain, proposal_fact(6))
+            .expect("missing proposal hash should remain a typed session outcome");
+        let proposal = crate::pbft_manager::pbft_manager_proposal_session_next(&pbft_service);
+        assert_eq!(
+            proposal.action,
+            PbftManagerProposalAction::SkipProposal.as_u8()
+        );
+        assert_eq!(
+            proposal.status,
+            PbftManagerProposalStatus::MissingFinalChainHash.as_u8()
         );
 
         drop(final_chain);
+        drop(storage);
+        drop(pbft_service);
         let _ = fs::remove_dir_all(temp_dir);
     }
 

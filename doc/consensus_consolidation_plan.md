@@ -4585,6 +4585,28 @@ Four focused bridge tests, the focused `PbftManagerTest.check_get_eligible_vote_
 target build, Tier 1, both consensus and FinalChain Tier 2 gates, and Tier 3 FinalChain parity passed. Independent review
 approved the staged cache publication, private FinalChain borrow, typed failure mapping, and final carrier narrowing.
 
+### CRW-09I PBFT Manager FinalChain Hash Composition
+
+The final PBFT-manager FinalChain fact family is now composed behind `BridgePbftService`. Proposal initialization
+borrows the Rust FinalChain runtime, resolves the authoritative delayed-period hash before publishing a proposal cursor,
+and represents an unavailable hash as the existing typed proposal skip. A storage failure occurs before cursor
+mutation. Live PBFT validation and sync admission use one narrow hash-validation operation whose stable result preserves
+valid, missing, and invalid decisions and returns the expected hash for compatibility diagnostics.
+
+C++ supplies proposal observations or a candidate hash and no longer requests or interprets a generic FinalChain fact
+envelope. The `PbftFinalChainFactRequest`, `PbftFinalChainHashResult`, and `PbftFinalChainFacts` carriers, collector
+export, FinalChain shim relay, and C++ request helper are deleted as a `CRW-07` contraction. The proposal FFI carrier no
+longer exposes the authoritative hash; it is added to the private Rust domain fact after the FinalChain lookup. This
+closes the final actionable non-EVM adapter family in `CRW-09I` and completes `CRW-09`; retained StateAPI surfaces are
+the already classified external executor, committed-state lifecycle, configuration, and public-materialization
+boundaries.
+
+Focused proposal-session and bridge hash-validation tests pass, including delayed-boundary and missing-hash behavior.
+The `pbft_manager_test` target builds and `PbftManagerTest.pbft_produce_blocks_with_null_anchor` passes. Tier 1, consensus
+Tier 2, FinalChain Tier 2, and the Tier 3 Rust-enabled/pure-C++ FinalChain parity gate pass. The broader isolated
+`PbftManagerWithDagCreation.state_root_hash` fixture still reaches its classified unavailable-latest-account-snapshot
+boundary and is not changed or weakened by this slice.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

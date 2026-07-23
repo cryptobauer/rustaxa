@@ -544,6 +544,12 @@ Current snapshot after DAG manager verify-result API cleanup:
   relay. The cursor-bound DAG service now reads Rust FinalChain head and DPoS/VRF facts directly with lock-free query
   separation and cursor/sortition revalidation. The retained `BridgeFinalChain` and `BridgeDagTransactionService`
   handles are passed only through shim-private composition; no new handle or public compatibility API is added.
+- The final `CRW-09I` contraction deletes the generic `PbftFinalChainFactRequest`, `PbftFinalChainHashResult`, and
+  `PbftFinalChainFacts` CXX carriers, their collector export, the FinalChain shim relay, and the PBFT-manager C++
+  conversion helper. Proposal initialization borrows Rust FinalChain through `BridgePbftService`; live and sync hash
+  validation use an operation-specific tri-state result. No replacement generic fact carrier or public compatibility
+  handle is introduced. This is the corresponding `CRW-07` inventory contraction and completes the non-EVM
+  FinalChain adapter reconciliation.
 - The next `CRW-09I` contraction deletes the DAG verification `DagVerifyBlockAuthorizationReport` and
   `DagDposAuthorizationFacts` CXX carriers, the standalone FinalChain getter/shim relay, and the C++ VRF-key copy. The
   DAG cursor retains signed block bytes, recovers the sender at the established authorization stage, reads FinalChain

@@ -746,6 +746,52 @@ impl PbftManagerProposalStatus {
     }
 }
 
+/// FinalChain-hash composition status for PBFT proposal and sync validation.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum PbftManagerFinalChainHashStatus {
+    /// Candidate hash matches the local FinalChain block hash for the period.
+    Valid,
+    /// FinalChain has not produced a finalized block for the requested period.
+    Missing,
+    /// Candidate hash does not match the local FinalChain block hash.
+    Invalid,
+    /// Bridge supplied an unsupported status code.
+    Unknown,
+}
+
+impl PbftManagerFinalChainHashStatus {
+    /// Stable bridge code for FinalChain hash validation status.
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Valid => 0,
+            Self::Missing => 1,
+            Self::Invalid => 2,
+            Self::Unknown => 255,
+        }
+    }
+
+    /// Decodes a stable bridge status code into a domain status.
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Valid,
+            1 => Self::Missing,
+            2 => Self::Invalid,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Result of validating a candidate FinalChain hash for one PBFT period.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PbftManagerFinalChainHashValidationResult {
+    /// Validation status after comparing candidate and local FinalChain hash.
+    pub status: PbftManagerFinalChainHashStatus,
+    /// Expected FinalChain hash when status is `Valid` or `Invalid`.
+    pub expected_hash: H256,
+    /// Stable error code for the validation outcome.
+    pub error_code: String,
+}
+
 /// Stable proposal-construction session action for the C++ executor.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum PbftManagerProposalAction {
@@ -836,7 +882,7 @@ pub struct PbftManagerProposalInitialFact {
     pub extra_data_required: bool,
     /// Whether C++ successfully materialized required extra data.
     pub extra_data_available: bool,
-    /// Whether the FinalChain hash fact is valid for this period.
+    /// Whether Rust FinalChain supplied the hash for this proposal period.
     pub final_chain_hash_valid: bool,
     /// FinalChain hash to embed in the PBFT block when valid.
     pub final_chain_hash: H256,

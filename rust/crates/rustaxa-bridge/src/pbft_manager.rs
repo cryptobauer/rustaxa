@@ -1864,15 +1864,18 @@ fn state_action_effect_session_not_started_step() -> FfiPbftManagerStateActionSe
 ///   as a standalone CXX handle.
 /// - Starting a new proposal replaces any incomplete previous proposal, matching
 ///   the legacy per-call allocation behavior.
-pub fn pbft_manager_runtime_begin_proposal_session(
+pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
     runtime: &BridgePbftService,
     fact: FfiPbftManagerProposalInitialFact,
+    final_chain_hash: Option<[u8; 32]>,
 ) {
     if !runtime.accepts_live_commands() {
         return;
     }
     let mut runtime = runtime.manager_state();
-    runtime.proposal_session = Some(create_domain_pbft_manager_proposal_session(fact.into()));
+    runtime.proposal_session = Some(create_domain_pbft_manager_proposal_session(
+        proposal_initial_fact_from_ffi(fact, final_chain_hash),
+    ));
 }
 
 /// Returns the next proposal-construction action or build command.
@@ -3660,30 +3663,31 @@ impl From<FfiPbftManagerProposalDagBlockFact> for PbftManagerProposalDagBlockFac
     }
 }
 
-impl From<FfiPbftManagerProposalInitialFact> for PbftManagerProposalInitialFact {
-    fn from(value: FfiPbftManagerProposalInitialFact) -> Self {
-        Self {
-            period: value.period,
-            round: value.round,
-            previous_pbft_block_hash: value.previous_pbft_block_hash.into(),
-            last_period_dag_anchor_hash: value.last_period_dag_anchor_hash.into(),
-            dag_genesis_hash: value.dag_genesis_hash.into(),
-            dag_blocks_size: value.dag_blocks_size,
-            ghost_path_move_back: value.ghost_path_move_back,
-            pbft_gas_limit: value.pbft_gas_limit,
-            extra_data_required: value.extra_data_required,
-            extra_data_available: value.extra_data_available,
-            final_chain_hash_valid: value.final_chain_hash_valid,
-            final_chain_hash: value.final_chain_hash.into(),
-            wallets: value.wallets.into_iter().map(Into::into).collect(),
-            ghost_path: value
-                .ghost_path
-                .into_iter()
-                .map(|hash| ethereum_types::H256::from(hash.hash))
-                .collect(),
-            has_non_finalized_fallback: value.has_non_finalized_fallback,
-            non_finalized_fallback_hash: value.non_finalized_fallback_hash.into(),
-        }
+fn proposal_initial_fact_from_ffi(
+    value: FfiPbftManagerProposalInitialFact,
+    final_chain_hash: Option<[u8; 32]>,
+) -> PbftManagerProposalInitialFact {
+    PbftManagerProposalInitialFact {
+        period: value.period,
+        round: value.round,
+        previous_pbft_block_hash: value.previous_pbft_block_hash.into(),
+        last_period_dag_anchor_hash: value.last_period_dag_anchor_hash.into(),
+        dag_genesis_hash: value.dag_genesis_hash.into(),
+        dag_blocks_size: value.dag_blocks_size,
+        ghost_path_move_back: value.ghost_path_move_back,
+        pbft_gas_limit: value.pbft_gas_limit,
+        extra_data_required: value.extra_data_required,
+        extra_data_available: value.extra_data_available,
+        final_chain_hash_valid: final_chain_hash.is_some(),
+        final_chain_hash: final_chain_hash.unwrap_or([0; 32]).into(),
+        wallets: value.wallets.into_iter().map(Into::into).collect(),
+        ghost_path: value
+            .ghost_path
+            .into_iter()
+            .map(|hash| ethereum_types::H256::from(hash.hash))
+            .collect(),
+        has_non_finalized_fallback: value.has_non_finalized_fallback,
+        non_finalized_fallback_hash: value.non_finalized_fallback_hash.into(),
     }
 }
 
@@ -4482,8 +4486,6 @@ mod tests {
             pbft_gas_limit: 100,
             extra_data_required: false,
             extra_data_available: false,
-            final_chain_hash_valid: true,
-            final_chain_hash: [0x22; 32],
             wallets: vec![
                 FfiPbftManagerProposalWalletFact {
                     wallet_index: 0,
@@ -4659,7 +4661,11 @@ mod tests {
             pbft_manager_runtime_session_next(&service).error_code,
             "PBFT_MANAGER_RUNTIME_SESSION_NOT_STARTED"
         );
-        pbft_manager_runtime_begin_proposal_session(&service, proposal_fact());
+        pbft_manager_runtime_begin_proposal_session_with_hash(
+            &service,
+            proposal_fact(),
+            Some([0x22; 32]),
+        );
         assert_eq!(
             pbft_manager_proposal_session_next(&service).error_code,
             "PBFT_MANAGER_PROPOSAL_SESSION_NOT_STARTED"
@@ -4698,7 +4704,11 @@ mod tests {
         pbft_service_complete_bootstrap(&service).unwrap();
         pbft_manager_runtime_begin_session(&service, fact(STATE_VALUE_PROPOSAL));
         assert!(pbft_manager_runtime_session_next(&service).can_continue);
-        pbft_manager_runtime_begin_proposal_session(&service, proposal_fact());
+        pbft_manager_runtime_begin_proposal_session_with_hash(
+            &service,
+            proposal_fact(),
+            Some([0x22; 32]),
+        );
         assert!(pbft_manager_proposal_session_next(&service)
             .error_code
             .is_empty());
@@ -6759,7 +6769,11 @@ mod tests {
     #[test]
     fn bridge_proposal_session_requests_order_and_builds_command() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_pbft_manager_proposal_session");
-        pbft_manager_runtime_begin_proposal_session(&mut runtime, proposal_fact());
+        pbft_manager_runtime_begin_proposal_session_with_hash(
+            &runtime,
+            proposal_fact(),
+            Some([0x22; 32]),
+        );
 
         let request = pbft_manager_proposal_session_next(&mut runtime);
         assert_eq!(request.action, PROPOSAL_ACTION_REQUEST_DAG_ORDER);

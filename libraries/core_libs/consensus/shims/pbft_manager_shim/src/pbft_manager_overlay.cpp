@@ -45,9 +45,6 @@ constexpr std::optional<PbftPeriod> checkedNextPbftPeriod(PbftPeriod finalized_c
 static_assert(checkedNextPbftPeriod(1) == 2);
 static_assert(!checkedNextPbftPeriod(std::numeric_limits<PbftPeriod>::max()).has_value());
 
-constexpr uint8_t kPbftSyncFinalChainValid = 0;
-constexpr uint8_t kPbftSyncFinalChainMissing = 1;
-constexpr uint8_t kPbftSyncFinalChainInvalid = 2;
 constexpr uint8_t kPbftSyncDposFactsReady = 0;
 constexpr uint8_t kPbftSyncFactValid = 0;
 constexpr uint8_t kPbftSyncFactInvalid = 1;
@@ -117,6 +114,9 @@ constexpr uint8_t kPbftManagerProposalActionBuildProposal = 1;
 constexpr uint8_t kPbftManagerProposalActionSkipProposal = 2;
 constexpr uint8_t kPbftManagerProposalActionContractError = 255;
 constexpr uint8_t kPbftManagerProposalStatusBuildReady = 1;
+constexpr uint8_t kPbftManagerFinalChainHashStatusValid = 0;
+constexpr uint8_t kPbftManagerFinalChainHashStatusMissing = 1;
+constexpr uint8_t kPbftManagerFinalChainHashStatusInvalid = 2;
 constexpr uint8_t kPbftManagerBroadcastActionNoop = 0;
 constexpr uint8_t kPbftManagerBroadcastActionPeriodVotes = 1;
 constexpr uint8_t kPbftManagerBroadcastActionRoundVotes = 2;
@@ -244,18 +244,6 @@ uint64_t toBroadcastElapsedMs(std::chrono::milliseconds elapsed) {
     return 0;
   }
   return static_cast<uint64_t>(elapsed.count());
-}
-
-rustaxa::PbftFinalChainFactRequest makePbftFinalChainFactRequest(PbftPeriod period,
-                                                                 const blk_hash_t &candidate_final_chain_hash,
-                                                                 bool collect_final_chain_hash,
-                                                                 bool validate_candidate_final_chain_hash) {
-  rustaxa::PbftFinalChainFactRequest request;
-  request.period = period;
-  request.candidate_final_chain_hash = toBridgeHash(candidate_final_chain_hash);
-  request.collect_final_chain_hash = collect_final_chain_hash;
-  request.validate_candidate_final_chain_hash = validate_candidate_final_chain_hash;
-  return request;
 }
 
 uint64_t rustFinalChainLastBlockNumber(const std::shared_ptr<final_chain::FinalChain> &final_chain) {
@@ -1416,8 +1404,8 @@ bool PbftManager::canParticipateInConsensus(PbftPeriod period, const addr_t &nod
     request.period = period;
     request.address = request_address;
 
-    const auto fact = pbft_service_->service().pbft_service_collect_dpos_wallet_eligibility(
-        final_chain_->rustFinalChain(), request);
+    const auto fact =
+        pbft_service_->service().pbft_service_collect_dpos_wallet_eligibility(final_chain_->rustFinalChain(), request);
     if (fact.status == kPbftSyncDposFactsReady && fact.address == request_address) {
       return fact.eligible;
     }
@@ -2736,9 +2724,6 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
     }
   }
 
-  const auto final_chain_facts = final_chain_->collectPbftFinalChainFacts(
-      makePbftFinalChainFactRequest(current_pbft_period, kNullBlockHash, true, false));
-
   auto ghost = dag_mgr_->getGhostPath(last_period_dag_anchor_block_hash);
   LOG(log_dg_) << "GHOST size " << ghost.size();
 
@@ -2762,14 +2747,12 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::proposePbftBlock() {
   fact.pbft_gas_limit = pbft_gas_limit;
   fact.extra_data_required = kGenesisConfig.state.hardforks.ficus_hf.isFicusHardfork(current_pbft_period);
   fact.extra_data_available = !fact.extra_data_required || extra_data.has_value();
-  fact.final_chain_hash_valid = final_chain_facts.final_chain_hash.status == kPbftSyncFinalChainValid;
-  fact.final_chain_hash = final_chain_facts.final_chain_hash.expected_hash;
   fact.wallets = std::move(proposal_wallets.wallet_facts);
   fact.ghost_path = toBridgeHashes(ghost);
   fact.has_non_finalized_fallback = non_finalized_fallback_hash.has_value();
   fact.non_finalized_fallback_hash = toBridgeHash(non_finalized_fallback_hash.value_or(kNullBlockHash));
 
-  rustaxa::pbft_manager_runtime_begin_proposal_session(pbft_service_->service(), fact);
+  pbft_service_->service().pbft_service_begin_proposal_session_with_final_chain(final_chain_->rustFinalChain(), fact);
   auto step = rustaxa::pbft_manager_proposal_session_next(pbft_service_->service());
   while (step.action == kPbftManagerProposalActionRequestDagOrder) {
     const auto requested_anchor = fromBridgeHash(step.requested_anchor_hash);
@@ -2861,17 +2844,23 @@ PbftStateRootValidation PbftManager::validateFinalChainHash(const std::shared_pt
   const auto period = pbft_block->getPeriod();
   const auto &pbft_block_hash = pbft_block->getBlockHash();
 
-  const auto facts = final_chain_->collectPbftFinalChainFacts(
-      makePbftFinalChainFactRequest(period, pbft_block->getFinalChainHash(), true, true));
-  if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
+  rustaxa::PbftManagerFinalChainHashValidationRequest request;
+  request.period = period;
+  request.candidate_final_chain_hash = toBridgeHash(pbft_block->getFinalChainHash());
+  const auto validation =
+      pbft_service_->service().pbft_service_validate_final_chain_hash(final_chain_->rustFinalChain(), request);
+  if (validation.status == kPbftManagerFinalChainHashStatusMissing) {
     LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
     return PbftStateRootValidation::Missing;
   }
-  if (facts.final_chain_hash.status == kPbftSyncFinalChainInvalid) {
+  if (validation.status == kPbftManagerFinalChainHashStatusInvalid) {
     LOG(log_er_) << "Block " << period << " hash " << pbft_block_hash << " state root "
                  << pbft_block->getFinalChainHash() << " isn't matching actual "
-                 << fromBridgeHash(facts.final_chain_hash.expected_hash);
+                 << fromBridgeHash(validation.expected_hash);
     return PbftStateRootValidation::Invalid;
+  }
+  if (validation.status != kPbftManagerFinalChainHashStatusValid) {
+    throw std::runtime_error("Rust PBFT FinalChain hash validation returned unknown status");
   }
 
   return PbftStateRootValidation::Valid;
@@ -3999,18 +3988,24 @@ std::optional<std::pair<PeriodData, std::vector<std::shared_ptr<PbftVote>>>> Pbf
   };
 
   auto validate_final_chain_hash_from_queue_metadata = [&]() -> uint8_t {
-    const auto facts = final_chain_->collectPbftFinalChainFacts(
-        makePbftFinalChainFactRequest(block_period, final_chain_hash, true, true));
-    if (facts.final_chain_hash.status == kPbftSyncFinalChainMissing) {
+    rustaxa::PbftManagerFinalChainHashValidationRequest request;
+    request.period = block_period;
+    request.candidate_final_chain_hash = toBridgeHash(final_chain_hash);
+    const auto validation =
+        pbft_service_->service().pbft_service_validate_final_chain_hash(final_chain_->rustFinalChain(), request);
+    if (validation.status == kPbftManagerFinalChainHashStatusMissing) {
       LOG(log_wr_) << "Block " << pbft_block_hash << " could not be validated as we are behind";
-      return kPbftSyncFinalChainMissing;
+      return kPbftManagerFinalChainHashStatusMissing;
     }
-    if (facts.final_chain_hash.status == kPbftSyncFinalChainInvalid) {
+    if (validation.status == kPbftManagerFinalChainHashStatusInvalid) {
       LOG(log_er_) << "Block " << block_period << " hash " << pbft_block_hash << " state root " << final_chain_hash
-                   << " isn't matching actual " << fromBridgeHash(facts.final_chain_hash.expected_hash);
-      return kPbftSyncFinalChainInvalid;
+                   << " isn't matching actual " << fromBridgeHash(validation.expected_hash);
+      return kPbftManagerFinalChainHashStatusInvalid;
     }
-    return kPbftSyncFinalChainValid;
+    if (validation.status != kPbftManagerFinalChainHashStatusValid) {
+      throw std::runtime_error("Rust PBFT sync FinalChain hash validation returned unknown status");
+    }
+    return kPbftManagerFinalChainHashStatusValid;
   };
 
   rustaxa::PbftSyncAdmissionInitialFact initial_fact{};
@@ -4385,8 +4380,7 @@ void PbftManager::EligibleWallets::updateWalletsEligibility(
   next_eligibility.reserve(wallets_.size());
   for (size_t index = 0; index < wallets_.size(); ++index) {
     const auto &address_fact = facts.address_facts[index];
-    if (address_fact.status != kPbftSyncDposFactsReady ||
-        address_fact.address != request.addresses[index].address) {
+    if (address_fact.status != kPbftSyncDposFactsReady || address_fact.address != request.addresses[index].address) {
       throw std::runtime_error("Rust FinalChain PBFT wallet-eligibility batch order mismatch");
     }
     next_eligibility.push_back(address_fact.eligible);
