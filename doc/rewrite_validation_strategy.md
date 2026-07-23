@@ -151,8 +151,9 @@ the behavior that moved. If parity depends on the CXX bridge, bridge-level Rust 
 must replace the lost C++ signal. Closeout notes or tracker updates must state why the old C++ test no longer describes
 target Rust-mode behavior.
 
-For consensus work, subsystem-specific minimum suites and unresolved parity gaps live in the **Validation Matrix** and
-**Current Open Items** of `doc/consensus_rewrite_tracker.md`. Detailed edge cases should live beside the owning Rust
+For consensus work, unresolved work and parity gaps live in the **Remaining Consensus Work Queue**, while
+subsystem-specific minimum suites live in the **Validation Matrix** of `doc/consensus_rewrite_tracker.md`. Detailed
+edge cases should live beside the owning Rust
 module tests, bridge fixtures, or focused C++ suite. Do not preserve a separate pre-routing checklist after a route has
 landed; when a touched behavior still lacks a reusable parity fixture, record that concrete gap in the tracker and add
 the fixture before changing production authority.
