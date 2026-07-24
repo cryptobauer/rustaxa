@@ -305,44 +305,6 @@ impl RewardsStatsRuntime {
             .collect()
     }
 
-    /// Applies an already accepted rewards-stat process plan to the runtime cache.
-    ///
-    /// Inputs:
-    /// - `plan`: a successful plan produced from the same runtime state, either
-    ///   by `process_period` or by a cloned-runtime preview.
-    ///
-    /// Behavior:
-    /// - Non-boundary cache plans insert the current period's Rust-owned
-    ///   `BlockStats` RLP into the interval cache.
-    /// - Distribution-boundary plans replace the runtime cache with the
-    ///   interval rows returned in `distribution_stats`; callers clear it after
-    ///   the surrounding finalization publication commits.
-    /// - Frequency-one plans leave the runtime cache unchanged.
-    pub fn apply_process_plan(&mut self, plan: &RewardsStatsProcessPlan) -> Result<()> {
-        if plan.status != RewardsStatsStatus::Applied {
-            bail!("REWARDS_STATS_REJECTED_PLAN");
-        }
-        if plan.cache_current_period {
-            if plan.current_block_stats_rlp.is_empty() {
-                bail!("REWARDS_STATS_EMPTY_CURRENT_RLP");
-            }
-            self.cached_stats
-                .insert(plan.current_period, plan.current_block_stats_rlp.clone());
-            return Ok(());
-        }
-        if plan.clear_cached_stats {
-            let mut cached_stats = BTreeMap::new();
-            for stat in &plan.distribution_stats {
-                if stat.data.is_empty() {
-                    bail!("REWARDS_STATS_EMPTY_DISTRIBUTION_RLP");
-                }
-                cached_stats.insert(stat.period, stat.data.clone());
-            }
-            self.cached_stats = cached_stats;
-        }
-        Ok(())
-    }
-
     fn process_period_result(
         &mut self,
         fact: FinalizedRewardsPeriodFact,

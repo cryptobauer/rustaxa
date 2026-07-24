@@ -176,6 +176,13 @@ Current snapshot after DAG manager verify-result API cleanup:
   bridge helper. Weighted-payload retention and lookup remain internal to the Rust runtime for aggregate selection and
   snapshots; no C++ caller, handle, shim route, module flag, or compatibility-only test remains to classify.
 
+- The rewards no-caller census removes the CXX
+  `preview_finalized_period_rewards_stats` / `rewards_stats_runtime_commit_process_result` pair and their public bridge
+  wrappers. The now-callerless native `RewardsStatsRuntime::apply_process_plan` and the bridge-only test of that retired
+  protocol are deleted too. Production FinalChain installs a generation/head-checked processed clone; the live
+  `rewards_stats_shim` route continues to use direct processing, staged storage writes, cache reads, and committed
+  clearing. No carrier, handle, shim route, or module flag changes.
+
 - Direct `*Old::method(...)` forwarding in consensus shims has no current matches. `dag_manager_shim` is fully detached
   from `DagManagerOld`: the overlay directly includes its standalone facade, and feature-on builds exclude the original
   manager source instead of compiling renamed symbols. It owns its public `VerifyBlockReturnType` enum and

@@ -314,6 +314,14 @@ bridge helper used only by Rust tests. The lower-level Rust runtime still owns w
 production aggregate selection and snapshot behavior. This is a `CRW-07` export/carrier contraction only: no handle,
 shim, module flag, runtime behavior, or accepted compatibility boundary changes.
 
+The fourth `CRW-10` closeout slice removes the no-caller CXX rewards preview/commit pair
+`preview_finalized_period_rewards_stats` and `rewards_stats_runtime_commit_process_result`, their public bridge
+wrappers, the now-callerless native `RewardsStatsRuntime::apply_process_plan` helper, and the bridge-only test that
+exercised that retired protocol. Production FinalChain instead generation/head-checks and installs the fully processed
+cloned runtime, while the C++ shim continues to use direct processing, staged storage writes, cache views, and committed
+clears. This is a `CRW-07` export contraction only: no carrier, handle, shim, module flag, runtime routing, or accepted
+compatibility boundary changes.
+
 The VoteManager threshold sub-slice of `CRW-09I` is routed: `getPbftTwoTPlusOne` no longer collects or interprets generic
 FinalChain DPoS facts in C++. The PBFT service owns cache-first threshold composition, reads its sibling Rust PBFT-chain
 size without a C++ relay, borrows Rust FinalChain only for an exact-period total on cache miss, and returns the existing

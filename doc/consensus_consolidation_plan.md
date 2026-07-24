@@ -4627,6 +4627,14 @@ bridge helper used only by Rust tests. Production C++ has no caller for this dia
 the lower-level weighted-payload operation used by aggregate selection and snapshot behavior. This narrows `CRW-07`
 without changing handles, shims, module flags, or runtime routing.
 
+The next no-caller census removes the CXX rewards preview/commit pair
+`preview_finalized_period_rewards_stats` and `rewards_stats_runtime_commit_process_result` plus their public bridge
+wrappers. Production uses direct cache mutation, staged storage writes, and post-commit boundary clearing, so the
+removed two-step diagnostic path had no C++ consumer. Its now-callerless native
+`RewardsStatsRuntime::apply_process_plan` helper and bridge-only test are deleted; production FinalChain already covers
+the actual generation/head-checked processed-clone installation and reload paths. This narrows `CRW-07` by two exports
+without changing carriers, handles, shims, module flags, or runtime routing.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current
