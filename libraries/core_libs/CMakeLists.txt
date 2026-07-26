@@ -19,8 +19,9 @@ list(FILTER CONSENSUS_HEADERS EXCLUDE REGEX "/shims/")
 list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/shims/")
 if(RUSTAXA_ENABLE)
     # Rust mode no longer exposes the standalone DAG/PivotTree graph facade. Its
-    # DAG manager, DAG block proposer, KeyManager, TransactionManager, native
-    # queue runtime, and SortitionParamsManager overlays are fully standalone.
+    # DAG manager, DAG block proposer, KeyManager, TransactionManager, and
+    # native queue runtime overlays are fully standalone. Sortition runtime
+    # ownership is native and has no Rust-mode C++ manager facade.
     # Keep the untouched legacy implementations only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/dag/dag_manager\\.cpp$")
@@ -197,11 +198,6 @@ if(RUSTAXA_ENABLE)
     # In Rust mode, inject the standalone Rust-backed TransactionManager facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_manager_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/transaction_manager_shim/src/transaction_manager_shim.cpp)
-
-    # In Rust mode, inject the standalone Rust-backed
-    # SortitionParamsManager facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/sortition_params_manager_shim/src/sortition_params_manager_shim.cpp)
 
     # In Rust mode, inject the standalone Rust-backed KeyManager facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/key_manager_shim/include)

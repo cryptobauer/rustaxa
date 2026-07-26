@@ -133,8 +133,7 @@ TEST_F(SortitionTest, params_change_serialization) {
 TEST_F(SortitionTest, efficiency_calculation) {
   size_t tries = 10;
   auto db = std::make_shared<DbStorage>(data_dir / "db");
-  auto service = createDagTransactionService(node_cfgs[0], *db);
-  SortitionParamsManager sp({}, node_cfgs[0], db, service);
+  SortitionParamsManager sp({}, node_cfgs[0], db);
 
   while (tries--) {
     auto target_efficiency = std::rand() % 100 * kOnePercent;
@@ -204,8 +203,7 @@ TEST_F(SortitionTest, db_cleanup) {
   cfg.dag_efficiency_targets = {75 * kOnePercent, 75 * kOnePercent};
 
   auto db = std::make_shared<DbStorage>(data_dir / "db");
-  auto service = createDagTransactionService(node_cfgs[0], *db);
-  SortitionParamsManager sp({}, node_cfgs[0], db, service);
+  SortitionParamsManager sp({}, node_cfgs[0], db);
 
   {
     auto batch = db->createWriteBatch();
@@ -237,8 +235,7 @@ TEST_F(SortitionTest, get_params_from_period) {
 
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     auto batch = db->createWriteBatch();
     {
       auto b = createBlock(10, 25 * kOnePercent);
@@ -319,8 +316,7 @@ TEST_F(SortitionTest, get_params_from_period_reverse) {
 
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     auto batch = db->createWriteBatch();
     {
       auto b = createBlock(10, 75 * kOnePercent);
@@ -392,8 +388,7 @@ TEST_F(SortitionTest, efficiency_restart) {
 
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     auto batch = db->createWriteBatch();
     {
       auto b = createBlock(1, 75 * kOnePercent);
@@ -428,8 +423,7 @@ TEST_F(SortitionTest, efficiency_restart) {
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
     auto batch = db->createWriteBatch();
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     EXPECT_EQ(sp.averageDagEfficiency(), 50 * kOnePercent);
 
     // Empty block to be ignored
@@ -447,8 +441,7 @@ TEST_F(SortitionTest, efficiency_restart) {
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
     auto batch = db->createWriteBatch();
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     EXPECT_EQ(sp.averageDagEfficiency(), 45 * kOnePercent);
 
     // Empty block to be ignored
@@ -495,8 +488,7 @@ TEST_F(SortitionTest, efficiency_restart) {
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
     auto batch = db->createWriteBatch();
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     EXPECT_EQ(sp.averageDagEfficiency(), 15 * kOnePercent);
   }
 }
@@ -509,8 +501,7 @@ TEST_F(SortitionTest, params_restart) {
   cfg.computation_interval = 1;
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     auto params_changes = sp.getParamsChanges();
     EXPECT_EQ(params_changes.size(), 1);
     EXPECT_EQ(params_changes[0].period, 0);
@@ -541,8 +532,7 @@ TEST_F(SortitionTest, params_restart) {
   }
   {
     auto db = std::make_shared<DbStorage>(data_dir / "db");
-    auto service = createDagTransactionService(node_cfgs[0], *db);
-    SortitionParamsManager sp({}, node_cfgs[0], db, service);
+    SortitionParamsManager sp({}, node_cfgs[0], db);
     auto params_changes = sp.getParamsChanges();
     EXPECT_EQ(params_changes.size(), 3);
     EXPECT_EQ(params_changes[0].period, 1);

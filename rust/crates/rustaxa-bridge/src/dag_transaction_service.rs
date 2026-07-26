@@ -2339,7 +2339,15 @@ mod tests {
                 .to_rlp_bytes(),
             )
             .unwrap();
-        assert_eq!(service.current_params().unwrap().threshold_upper, 1_000);
+        assert_eq!(
+            service
+                .sortition()
+                .unwrap()
+                .current_params()
+                .vrf
+                .threshold_upper,
+            1_000
+        );
 
         let gas = service_dag_transaction_service_verify_block_session_vdf(&service, request)
             .expect("historical parameters should verify the proof");
@@ -3458,7 +3466,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            full.sortition_current_params().unwrap().threshold_upper,
+            full.sortition()
+                .unwrap()
+                .current_params()
+                .vrf
+                .threshold_upper,
             sortition_config().threshold_upper
         );
         assert_eq!(full.transaction_manager_runtime_transaction_count(), 0);
@@ -3483,7 +3495,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            restored.sortition_current_params().unwrap().threshold_upper,
+            restored
+                .sortition()
+                .unwrap()
+                .current_params()
+                .vrf
+                .threshold_upper,
             sortition_config().threshold_upper
         );
         assert_eq!(restored.dag_manager_runtime_latest_period().unwrap(), 0);

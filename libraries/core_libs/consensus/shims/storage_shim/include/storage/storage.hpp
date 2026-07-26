@@ -10,6 +10,8 @@
 #include "../../../../storage/include/storage/storage.hpp"
 #pragma pop_macro("DbStorage")
 
+#include "storage/sortition_params_change.hpp"
+
 #ifndef DbStorage
 #include "storage/storage_shim.hpp"
 #endif

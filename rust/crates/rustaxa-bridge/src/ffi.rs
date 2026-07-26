@@ -3907,14 +3907,6 @@ pub mod rustaxa_ffi {
         computation_interval: u16,
     }
 
-    struct SortitionRuntimeParams {
-        threshold_upper: u16,
-        difficulty_min: u16,
-        difficulty_max: u16,
-        difficulty_stale: u16,
-        lambda_bound: u16,
-    }
-
     struct SortitionParamsChangePayload {
         period: u64,
         interval_efficiency: u16,
@@ -3926,12 +3918,6 @@ pub mod rustaxa_ffi {
         period: u64,
         interval_efficiency: u16,
         threshold_upper: u16,
-    }
-
-    struct SortitionEfficiencyResult {
-        ok: bool,
-        value: u16,
-        error: String,
     }
 
     struct LegacySortitionParams {
@@ -5307,33 +5293,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             request: PillarBlockFinalizationAcknowledgeRequest,
         ) -> Result<PillarBlockFinalizationAcknowledgeResult>;
-
-        // Consensus sortition
-
-        pub fn sortition_current_params(
-            self: &BridgeDagTransactionService,
-        ) -> Result<SortitionRuntimeParams>;
-        pub fn sortition_params_for_period_from_storage(
-            self: &BridgeDagTransactionService,
-            period: u64,
-        ) -> Result<SortitionRuntimeParams>;
-        pub fn sortition_record_finalized_period_and_persist(
-            self: &BridgeDagTransactionService,
-            period: u64,
-            has_pivot: bool,
-            unique_transactions: u64,
-            total_dag_transaction_refs: u64,
-            non_empty_pbft_chain_size: u64,
-        ) -> Result<SortitionParamsChangeResult>;
-        pub fn sortition_average_dag_efficiency(self: &BridgeDagTransactionService) -> Result<u16>;
-        pub fn sortition_params_changes(
-            self: &BridgeDagTransactionService,
-        ) -> Result<Vec<SortitionParamsChangePayload>>;
-        pub fn sortition_calculate_dag_efficiency(
-            self: &BridgeDagTransactionService,
-            unique_transactions: u64,
-            total_dag_transaction_refs: u64,
-        ) -> SortitionEfficiencyResult;
 
         // Storage
 

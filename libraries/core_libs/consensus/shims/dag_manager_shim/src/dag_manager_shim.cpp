@@ -316,7 +316,7 @@ DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shar
     : DagManager(config, node_addr, std::move(trx_mgr), std::move(pbft_chain), std::move(final_chain), db,
                  std::move(key_manager), createDagTransactionService(config, *db)) {}
 
-DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shared_ptr<TransactionManager> trx_mgr,
+DagManager::DagManager(const FullNodeConfig &config, addr_t /*node_addr*/, std::shared_ptr<TransactionManager> trx_mgr,
                        std::shared_ptr<PbftChain> pbft_chain, std::shared_ptr<final_chain::FinalChain> final_chain,
                        std::shared_ptr<DbStorage> db, std::shared_ptr<KeyManager> key_manager,
                        SharedDagTransactionService dag_transaction_service)
@@ -325,7 +325,6 @@ DagManager::DagManager(const FullNodeConfig &config, addr_t node_addr, std::shar
       final_chain_(std::move(final_chain)),
       db_(std::move(db)),
       key_manager_(std::move(key_manager)),
-      sortition_params_manager_(node_addr, config, db_, dag_transaction_service),
       genesis_config_(config.genesis),
       genesis_block_(std::make_shared<DagBlock>(config.genesis.dag_genesis_block)),
       max_levels_per_period_(config.max_levels_per_period),
@@ -824,8 +823,6 @@ uint32_t DagManager::getNonFinalizedBlocksMinDifficulty() const {
 }
 
 std::shared_mutex &DagManager::getDagMutex() { return dag_finalization_mutex_; }
-
-SortitionParamsManager &DagManager::sortitionParamsManager() { return sortition_params_manager_; }
 
 const DagConfig &DagManager::getDagConfig() const { return genesis_config_.dag; }
 

@@ -44,16 +44,16 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 45991 |
-| `shim_lines` | 19099 |
-| `cxx_functions` | 415 |
-| `cxx_carriers` | 359 |
+| `bridge_lines` | 45564 |
+| `shim_lines` | 18848 |
+| `cxx_functions` | 409 |
+| `cxx_carriers` | 357 |
 | `cxx_handles` | 20 |
-| `shim_directories` | 15 |
+| `shim_directories` | 14 |
 | `granular_flags` | 9 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
-| `non_test_cpp_consumers` | 43 |
+| `non_test_cpp_consumers` | 42 |
 
 ## CXX Box Factory Inventory
 
@@ -126,7 +126,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | Thin DTO adapters over native `ProposedBlocksService`; stateless storage and temporary-candidate compatibility helpers | proposed-block/PBFT shims | Internal bridge route | Native state, storage, restoration, lock ownership, and standalone behavior moved to `rustaxa-consensus`; cross-domain leader selection and combined cleanup remain PBFT-owner debt; delete the C++ facade under `CRW-14`. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi` | RPC, GraphQL, light plugin | External boundary | Keep a client-oriented read API; remove manager/storage construction elsewhere. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | DTO adapters over native `SlashingProofService` | slashing/vote shims | Internal bridge route | Native service owns planner configuration, duplicate cache, and mutex; retain only the transaction-executor conversion boundary until the C++ slashing facade contracts to signing/submission effects. |
-| `rust/crates/rustaxa-bridge/src/sortition.rs` | DTO adapters over native `SortitionService` | sortition/DAG/PBFT shims | Internal bridge route | Native restoration and serialization ownership live in `rustaxa-consensus`; delete the C++ sortition facade after callers migrate. |
+| `rust/crates/rustaxa-bridge/src/sortition.rs` | PBFT finalization preview/commit conversion over native `SortitionService` | PBFT bridge runtime | Internal bridge route | Move the remaining finalization composition into the native PBFT/DAG owner; the C++ sortition facade and its direct CXX operations are deleted. |
 | `rust/crates/rustaxa-bridge/src/storage.rs` | storage facade, queries, batch | storage shim, conformance, bootstrap | Compatibility facade | Native bootstrap/query/test fixtures replace broad storage handles. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | transaction runtime and adapters | transaction/DAG/PBFT shims | Internal bridge route | Move runtime/tests native and reduce C++ to submission/EVM leaf adapters. |
@@ -169,8 +169,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `pillar_chain_manager_shim` | pillar materialization/signing/network executor | App/PBFT pillar paths | Compatibility facade | Native pillar service plus leaf effects replaces class. |
 | `proposed_blocks_shim` | materialized proposed-block view | PBFT/sync compatibility | Compatibility facade | Named callers use PBFT service/query views. |
 | `slashing_manager_shim` | slashing transaction executor | vote/slashing paths | Compatibility facade | Native plan plus signer/submission leaf ports replaces class. |
-| `sortition_params_manager_shim` | sortition compatibility facade | DAG/PBFT | Compatibility facade | Named callers use DAG service/query operations. |
-| `storage_shim` | broad `DbStorage` compatibility overlay | App/admin/query/tests | Compatibility facade | Native bootstrap and narrow admin/query clients replace broad facade. |
+| `storage_shim` | broad `DbStorage` compatibility overlay plus stable sortition-change codec | App/admin/query/tests | Compatibility facade | Native bootstrap and narrow admin/query clients replace the broad facade; retain the codec only while the stable storage API exposes `SortitionParamsChange`. |
 | `transaction_manager_shim` | transaction materialization/submission/EVM facade | App, RPC, PBFT, DAG | Compatibility facade | Native service and leaf submission/EVM APIs replace class. |
 | `verified_votes_shim` | materialized verified-vote view | VoteManager/PBFT/network | Compatibility facade | Named callers use PBFT service/transport views. |
 | `vote_manager_shim` | vote runtime/materialization/network facade | PBFT, DAG, network | Internal bridge route | Native PBFT vote service and network pipeline replace class. |

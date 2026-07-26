@@ -4840,15 +4840,10 @@ mod tests {
     }
 
     fn sortition_snapshot(service: &BridgeDagTransactionService) -> (u16, usize) {
+        let sortition = service.sortition().expect("sortition state should lock");
         (
-            service
-                .sortition_current_params()
-                .expect("sortition params should load")
-                .threshold_upper,
-            service
-                .sortition_params_changes()
-                .expect("sortition changes should load")
-                .len(),
+            sortition.current_params().vrf.threshold_upper,
+            sortition.params_changes().len(),
         )
     }
 

@@ -15,7 +15,6 @@
 
 #include "common/thread_pool.hpp"
 #include "dag/dag_block.hpp"
-#include "dag/sortition_params_manager.hpp"
 #include "pbft/pbft_chain.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "storage/storage.hpp"
@@ -162,7 +161,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   util::event::Event<DagManager, std::shared_ptr<DagBlock>> const block_verified_{};
 
   std::shared_mutex &getDagMutex();
-  SortitionParamsManager &sortitionParamsManager();
   const DagConfig &getDagConfig() const;
   uint64_t getDagExpiryLevel() const;
   uint64_t getMaxLevelsPerPeriod() const;
@@ -272,7 +270,6 @@ class DagManager : public std::enable_shared_from_this<DagManager> {
   std::shared_ptr<DbStorage> db_;
   std::shared_ptr<KeyManager> key_manager_;
   std::weak_ptr<Network> network_;
-  SortitionParamsManager sortition_params_manager_;
   const GenesisConfig genesis_config_;
   const std::shared_ptr<DagBlock> genesis_block_;
   const uint32_t max_levels_per_period_;

@@ -97,7 +97,12 @@ TEST_F(NetworkTest, transfer_lot_of_blocks) {
   const auto proposal_level = 1;
   const auto proposal_period = *db1->getProposalPeriodForDagLevel(proposal_level);
   const auto period_block_hash = db1->getPeriodBlockHash(proposal_period);
+#ifdef RUSTAXA_ENABLE
+  // PBFT is stopped above, so native current parameters remain equal to genesis.
+  const SortitionParams sortition_params = node1->getConfig().genesis.sortition;
+#else
   const auto sortition_params = dag_mgr1->sortitionParamsManager().getSortitionParams(proposal_period);
+#endif
   vdf_sortition::VdfSortition vdf(sortition_params, node1->getVrfSecretKey(),
                                   VrfSortitionBase::makeVrfInput(proposal_level, period_block_hash), 1, 1);
   const auto dag_genesis = node1->getConfig().genesis.dag_genesis_block.getHash();
@@ -112,7 +117,11 @@ TEST_F(NetworkTest, transfer_lot_of_blocks) {
   {
     const auto proposal_period = *db1->getProposalPeriodForDagLevel(proposal_level + 1);
     const auto period_block_hash = db1->getPeriodBlockHash(proposal_period);
+#ifdef RUSTAXA_ENABLE
+    const SortitionParams sortition_params = node1->getConfig().genesis.sortition;
+#else
     const auto sortition_params = dag_mgr1->sortitionParamsManager().getSortitionParams(proposal_period);
+#endif
 
     for (int i = 0; i < 100; ++i) {
       vdf_sortition::VdfSortition vdf(sortition_params, node1->getVrfSecretKey(),
@@ -166,7 +175,12 @@ TEST_F(NetworkTest, propagate_block) {
   const auto proposal_level = 1;
   const auto proposal_period = *db1->getProposalPeriodForDagLevel(proposal_level);
   const auto period_block_hash = db1->getPeriodBlockHash(proposal_period);
+#ifdef RUSTAXA_ENABLE
+  // PBFT is stopped above, so native current parameters remain equal to genesis.
+  const SortitionParams sortition_params = node1->getConfig().genesis.sortition;
+#else
   const auto sortition_params = dag_mgr1->sortitionParamsManager().getSortitionParams(proposal_period);
+#endif
   vdf_sortition::VdfSortition vdf(sortition_params, node1->getVrfSecretKey(),
                                   VrfSortitionBase::makeVrfInput(proposal_level, period_block_hash), 1, 1);
   const auto dag_genesis = node1->getConfig().genesis.dag_genesis_block.getHash();

@@ -1,11 +1,34 @@
 #include "config/version.hpp"
 #include "dag/dag_block_bundle_rlp.hpp"
-#include "dag/sortition_params_manager.hpp"
+#include "storage/sortition_params_change.hpp"
 #include "storage/storage.hpp"
 #include "transaction/system_transaction.hpp"
 #include "vote/votes_bundle_rlp.hpp"
 
 namespace taraxa {
+
+#ifdef RUSTAXA_ENABLE
+SortitionParamsChange::SortitionParamsChange(PbftPeriod period, uint16_t efficiency, const VrfParams& vrf)
+    : period(period), vrf_params(vrf), interval_efficiency(efficiency) {}
+
+bytes SortitionParamsChange::rlp() const {
+  dev::RLPStream stream;
+  stream.appendList(3);
+  stream << vrf_params.threshold_upper;
+  stream << period;
+  stream << interval_efficiency;
+  return stream.invalidate();
+}
+
+SortitionParamsChange SortitionParamsChange::from_rlp(const dev::RLP& rlp) {
+  SortitionParamsChange change;
+  change.vrf_params.threshold_upper = rlp[0].toInt<uint16_t>();
+  change.period = rlp[1].toInt<PbftPeriod>();
+  change.interval_efficiency = rlp[2].toInt<uint16_t>();
+  return change;
+}
+#endif
+
 namespace {
 static constexpr uint16_t PBFT_BLOCK_POS_IN_PERIOD_DATA = 0;
 static constexpr uint16_t CERT_VOTES_POS_IN_PERIOD_DATA = 1;

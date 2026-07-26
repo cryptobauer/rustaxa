@@ -1397,8 +1397,9 @@ Use targeted validation before broad integration runs:
 - Transaction queue and transaction-packing changes should run native Rust queue and bridge runtime validation plus
   `transaction_manager_shim_test`, Rust-mode transaction/gas-pricer consumers, and queue-focused `transaction_test` and
   `gas_pricer_test` cases in a pure-C++ reference build when legacy parity is relevant.
-- Sortition parameter changes should run `rust_consensus_tests`, `sortition_test`, and the
-  `sortition_params_manager_shim_test` overlay check in master `RUSTAXA_ENABLE` mode.
+- Sortition parameter changes should run native Rust sortition coverage, `rust_consensus_tests`, affected Rust-mode DAG
+  or network consumers, and `sortition_test` in the all-Rust-disabled pure-C++ reference build. Rust mode has no
+  `SortitionParamsManager` facade or facade-only shim test.
 - PBFT chain/proposed-block/period-data-queue changes should run `rust_consensus_tests`, the corresponding shim test,
   and targeted `pbft_chain_test` or `pbft_manager_test` cases; broader PBFT changes should also run relevant
   `vote_test` coverage.
