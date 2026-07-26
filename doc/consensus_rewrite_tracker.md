@@ -408,6 +408,15 @@ pillar consumers still require completed pillar bootstrap, so lifecycle failures
 an application topology that can no longer be constructed. The checked bridge budget falls to 50,058 lines and 416
 CXX functions.
 
+The next `CRW-12` owner extraction moves the complete pillar lifetime and synchronization topology into CXX-free
+`rustaxa-consensus::pillar_chain_service::PillarChainService`. The native service owns storage and restoration,
+`PillarVotes`, the canonical current/latest snapshot, single-vote and finalization preparation registries, finalization
+token sequencing, the outer serialization mutex, and monotonic pillar readiness. `BridgePbftService` embeds that native
+owner directly and retains only a documented temporary guard adapter for FFI-shaped task logic. FinalChain-composed
+paths preserve prepare, guard release, external query, and generation-bound relock/apply ordering. Native tests cover
+restoration, readiness publication, clone-visible state, token reuse/generation scoping, and durable generation
+recovery. The checked bridge budget falls to 49,794 lines.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

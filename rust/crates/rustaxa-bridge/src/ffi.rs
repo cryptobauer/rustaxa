@@ -30,15 +30,11 @@ use rustaxa_consensus::ConsensusQueryApi;
 use rustaxa_consensus::FinalChain;
 use rustaxa_consensus::PbftServiceReadiness;
 use rustaxa_consensus::PbftVerifiedVotesService;
-use rustaxa_consensus::PillarCurrentAnchor;
-use rustaxa_consensus::PillarVotes;
+use rustaxa_consensus::PillarChainService;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::MutexGuard;
-use std::sync::RwLock;
 use std::time::Instant;
 
 pub struct BridgeStorage(pub Arc<Storage>);
@@ -196,12 +192,9 @@ pub struct BridgePbftService {
     #[cfg(test)]
     pub(crate) storage: Option<Arc<Storage>>,
     pub(crate) readiness: PbftServiceReadiness,
-    /// Service-owned pillar state. The pillar mutex is never acquired while a
-    /// PBFT manager guard is held and is released before returning any plan to
-    /// C++ for FinalChain, network, or executor effects.
-    pub(crate) pillar: Mutex<PillarChainState>,
-    /// Pillar replay readiness is independent from PBFT manager bootstrap.
-    pub(crate) pillar_readiness: PbftServiceReadiness,
+    /// Native pillar owner. Its storage, restoration, votes, preparation
+    /// registries, outer lock, anchor lock, and readiness never live in CXX.
+    pub(crate) pillar: PillarChainService,
 }
 
 impl BridgePbftService {
@@ -217,96 +210,11 @@ impl BridgePbftService {
     pub(crate) fn pillar_state(
         &self,
         require_ready: bool,
-    ) -> anyhow::Result<MutexGuard<'_, PillarChainState>> {
-        if require_ready && !self.pillar_readiness.is_ready() {
-            anyhow::bail!("PBFT_SERVICE_PILLAR_UNAVAILABLE");
-        }
+    ) -> anyhow::Result<crate::pillar_chain::PillarChainBridgeGuard<'_>> {
         self.pillar
-            .lock()
-            .map_err(|_| anyhow::anyhow!("PBFT service pillar lock poisoned"))
+            .lock(require_ready)
+            .map(crate::pillar_chain::PillarChainBridgeGuard)
     }
-}
-
-/// Rust-owned pillar-chain runtime used by the C++ PillarChainManager shim.
-///
-/// The runtime keeps pillar-vote aggregation and typed pillar-chain storage
-/// together for operations that need both, avoiding ad hoc bridge-handle
-/// composition in live consensus routes.
-pub(crate) struct PillarChainState {
-    pub storage: Arc<Storage>,
-    pub votes: PillarVotes,
-    /// Lock-protected canonical current-pillar snapshot restored at startup.
-    ///
-    /// The snapshot is published only after its canonical row is durably
-    /// persisted. All runtime consumers bind their work to its generation.
-    pub current_anchor: RwLock<PillarChainStateSnapshot>,
-    /// One-time single-vote preparations keyed by canonical vote hash.
-    ///
-    /// Apply removes the entry before mutation. External entries are always
-    /// relevance/identity checked again under the current-anchor read lock;
-    /// trusted entries can only be created through the explicitly named
-    /// local/restart restoration route.
-    pub single_vote_preparations: Mutex<SingleVotePreparationRegistry>,
-    /// One-time prepared pillar finalization payloads keyed by caller token.
-    ///
-    /// Entries are bounded, reused for identical prepare requests, and removed
-    /// only after acknowledgement authenticates the matching durable row.
-    /// Missing or mismatched durable rows retain the token for a safe retry.
-    pub pillar_block_finalization_preparations:
-        Mutex<HashMap<u64, PillarBlockFinalizationPreparation>>,
-    /// Process-local finalization token sequence used by one-time prepare/ack.
-    pub next_pillar_block_finalization_preparation_token: u64,
-}
-
-/// Runtime-internal one-time preparation state for one canonical pillar vote.
-pub struct SingleVotePreparation {
-    pub vote_rlp: Vec<u8>,
-    pub anchor_generation: u64,
-    pub period: u64,
-    pub block_hash: H256,
-    pub voter: ethereum_types::H160,
-    pub needs_threshold: bool,
-    pub current_anchor: Option<PillarCurrentAnchor>,
-    pub first_pillar_block_period: u64,
-    pub pillar_blocks_interval: u64,
-    pub trusted_local_or_restore: bool,
-}
-
-/// Pending single-vote preparations retained between external DPoS lookup and apply.
-pub struct SingleVotePreparationRegistry {
-    pub entries: std::collections::BTreeMap<H256, SingleVotePreparation>,
-}
-
-/// One-time prepared payload used to acknowledge a pillar-block finalization.
-pub struct PillarBlockFinalizationPreparation {
-    /// Runtime generation observed when the finalization was prepared.
-    pub anchor_generation: u64,
-    /// Canonical pillar block period prepared for persistence.
-    pub prepared_pillar_block_period: u64,
-    /// Canonical pillar block RLP prepared for persistence.
-    pub prepared_pillar_block_rlp: Vec<u8>,
-    /// Vote-period cutoff for `PillarVotes::erase_votes` after acknowledgement.
-    pub matching_vote_cleanup_min_period: u64,
-    /// Whether compatibility event emission should run after ack.
-    pub should_emit: bool,
-}
-
-/// Runtime-owned canonical pillar-chain snapshot.
-///
-/// The canonical current-data bytes retain validator vote counts for Rust-owned
-/// creation planning and for temporary C++ current-block materialization. The
-/// latest-finalized block remains decoded alongside its canonical bytes so
-/// linkage and finalization never accept C++-supplied parent identity.
-#[derive(Debug)]
-pub struct PillarChainStateSnapshot {
-    pub anchor: Option<PillarCurrentAnchor>,
-    pub current_data_rlp: Vec<u8>,
-    pub current_block_rlp: Vec<u8>,
-    /// Canonical latest-finalized pillar block restored and updated by Rust.
-    pub latest_finalized_block: Option<rustaxa_types::pillar::PillarBlock>,
-    /// Canonical bytes for compatibility-only C++ materialization.
-    pub latest_finalized_block_rlp: Vec<u8>,
-    pub generation: u64,
 }
 
 /// Private transaction state owned by the application-level DAG/transaction service.

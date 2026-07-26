@@ -20,16 +20,15 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCount as FfiPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
-use crate::ffi::{
-    BridgeFinalChain, BridgePbftService, BridgePillarChainStorage, BridgeStorage, PillarChainState,
-    PillarChainStateSnapshot, SingleVotePreparationRegistry,
-};
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgePillarChainStorage, BridgeStorage};
+use anyhow::{anyhow, bail, ensure, Result};
 #[cfg(test)]
 use ethereum_types::H160;
 use ethereum_types::H256;
 #[cfg(test)]
 use rustaxa_consensus::plan_pillar_consensus_threshold as consensus_plan_pillar_consensus_threshold;
+#[cfg(test)]
+use rustaxa_consensus::PillarChainStateSnapshot;
 use rustaxa_consensus::{
     load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
     load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
@@ -45,13 +44,36 @@ use rustaxa_consensus::{
     PillarBlockCreationPlan as ConsensusPillarBlockCreationPlan,
     PillarBlockLinkageFact as ConsensusPillarBlockLinkageFact,
     PillarBlockLinkagePlan as ConsensusPillarBlockLinkagePlan,
-    PillarCurrentAnchor as ConsensusPillarCurrentAnchor,
     PillarCurrentAnchorDecisionRequest as ConsensusPillarCurrentAnchorDecisionRequest,
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
-use rustaxa_types::pillar::{CurrentPillarBlockDataDb, PillarBlock};
-use std::sync::RwLock;
+use rustaxa_consensus::{PillarChainGuard, PillarChainState};
+use rustaxa_types::pillar::CurrentPillarBlockDataDb;
+#[cfg(test)]
+use rustaxa_types::pillar::PillarBlock;
+use std::ops::{Deref, DerefMut};
+
+/// Temporary bridge adapter over the native pillar owner guard.
+///
+/// This local wrapper lets the remaining FFI conversion methods stay in the
+/// bridge while the storage/state/lock/readiness topology belongs entirely to
+/// `rustaxa-consensus`. It must be dropped before every FinalChain or C++ call.
+pub(crate) struct PillarChainBridgeGuard<'a>(pub(crate) PillarChainGuard<'a>);
+
+impl Deref for PillarChainBridgeGuard<'_> {
+    type Target = PillarChainState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for PillarChainBridgeGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Creates a typed pillar-chain storage handle from the generic CXX storage
 /// facade.
@@ -75,37 +97,6 @@ pub fn create_pillar_chain_storage(storage: &BridgeStorage) -> Box<BridgePillarC
 /// is a valid process-local baseline, and each successful apply increments it.
 /// Malformed persisted current data makes construction fail before a runtime is
 /// published.
-pub(crate) fn restore_pillar_chain_state(storage: &BridgeStorage) -> Result<PillarChainState> {
-    let current_data_rlp = consensus_load_current_pillar_block_data_storage(storage.0.as_ref())?;
-    let latest_finalized_block_rlp =
-        consensus_load_latest_pillar_block_storage(storage.0.as_ref())?;
-    let current_anchor =
-        decode_current_anchor_snapshot(current_data_rlp, latest_finalized_block_rlp, 0)
-            .context("restore current pillar anchor snapshot")?;
-    let mut runtime = PillarChainState {
-        storage: storage.0.clone(),
-        votes: rustaxa_consensus::PillarVotes::new(),
-        current_anchor: RwLock::new(current_anchor),
-        single_vote_preparations: std::sync::Mutex::new(SingleVotePreparationRegistry {
-            entries: std::collections::BTreeMap::new(),
-        }),
-        pillar_block_finalization_preparations: std::sync::Mutex::new(
-            std::collections::HashMap::new(),
-        ),
-        next_pillar_block_finalization_preparation_token: 0,
-    };
-    {
-        let current_anchor = runtime
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
-        if let Some(latest) = &current_anchor.latest_finalized_block {
-            runtime.votes.erase_votes(latest.period.saturating_add(1));
-        }
-    }
-    Ok(runtime)
-}
-
 /// Creates a test-only ready PBFT service using the production composition.
 ///
 /// The production constructor restores every PBFT capability, including pillar
@@ -181,62 +172,14 @@ impl BridgePillarChainStorage {
     }
 }
 
-impl PillarChainState {
+impl PillarChainBridgeGuard<'_> {
     /// Applies one block-creation result only if its sampled anchor is current.
     pub fn pillar_state_apply_planned_current_block_data(
         &self,
         data_rlp: Vec<u8>,
         expected_anchor_generation: u64,
     ) -> Result<()> {
-        self.pillar_state_apply_current_block_data_inner(data_rlp, expected_anchor_generation)
-    }
-
-    fn pillar_state_apply_current_block_data_inner(
-        &self,
-        data_rlp: Vec<u8>,
-        expected_anchor_generation: u64,
-    ) -> Result<()> {
-        ensure!(
-            !data_rlp.is_empty(),
-            "PILLAR_CURRENT_BLOCK_DATA_EMPTY_PAYLOAD"
-        );
-        let decoded = CurrentPillarBlockDataDb::decode_rlp(&data_rlp)
-            .context("decode current pillar block data before apply")?;
-        ensure!(
-            decoded.encode_rlp() == data_rlp,
-            "current pillar block data must use canonical RLP"
-        );
-        let current_block_rlp = decoded.pillar_block.encode_rlp();
-        let anchor = ConsensusPillarCurrentAnchor {
-            period: decoded.pillar_block.period,
-            hash: decoded.pillar_block.hash(),
-        };
-        let mut snapshot = self
-            .current_anchor
-            .write()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
-        ensure!(
-            snapshot.generation == expected_anchor_generation,
-            "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
-        );
-        let generation = snapshot
-            .generation
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("current pillar anchor generation overflow"))?;
-
-        // Keep the lock across persistence and publication so no consumer can
-        // observe bytes that are not yet durable. A failed write leaves the
-        // prior in-memory snapshot unchanged.
-        save_current_pillar_block_data_storage(self.storage.as_ref(), &data_rlp)?;
-        *snapshot = PillarChainStateSnapshot {
-            anchor: Some(anchor),
-            current_data_rlp: data_rlp,
-            current_block_rlp,
-            latest_finalized_block: snapshot.latest_finalized_block.clone(),
-            latest_finalized_block_rlp: snapshot.latest_finalized_block_rlp.clone(),
-            generation,
-        };
-        Ok(())
+        self.apply_current_block_data(data_rlp, expected_anchor_generation)
     }
 
     /// Persists this node's own pillar-block vote through the runtime-owned
@@ -465,12 +408,12 @@ impl PillarChainState {
 
 impl BridgePbftService {
     pub fn pbft_service_pillar_ready(&self) -> bool {
-        self.pillar_readiness.is_ready()
+        self.pillar.is_ready()
     }
 
     pub fn pbft_service_complete_pillar_bootstrap(&self) -> Result<()> {
         drop(self.pillar_state(false)?);
-        self.pillar_readiness.mark_ready();
+        self.pillar.mark_ready();
         Ok(())
     }
 
@@ -593,97 +536,6 @@ impl BridgePbftService {
         self.pillar_state(true)?
             .pillar_state_latest_finalized_block_rlp()
     }
-}
-
-fn decode_current_anchor_snapshot(
-    current_data_rlp: Vec<u8>,
-    latest_finalized_block_rlp: Vec<u8>,
-    generation: u64,
-) -> Result<PillarChainStateSnapshot> {
-    let latest_finalized_block = if latest_finalized_block_rlp.is_empty() {
-        None
-    } else {
-        let block = PillarBlock::decode_rlp(&latest_finalized_block_rlp)?;
-        ensure!(
-            block.encode_rlp() == latest_finalized_block_rlp,
-            "latest finalized pillar block must use canonical RLP"
-        );
-        Some(block)
-    };
-    if current_data_rlp.is_empty() {
-        return Ok(PillarChainStateSnapshot {
-            anchor: None,
-            current_data_rlp,
-            current_block_rlp: Vec::new(),
-            latest_finalized_block,
-            latest_finalized_block_rlp,
-            generation,
-        });
-    }
-    let decoded = CurrentPillarBlockDataDb::decode_rlp(&current_data_rlp)?;
-    ensure!(
-        decoded.encode_rlp() == current_data_rlp,
-        "current pillar block data must use canonical RLP"
-    );
-    let current_block_rlp = decoded.pillar_block.encode_rlp();
-    let snapshot = PillarChainStateSnapshot {
-        anchor: Some(ConsensusPillarCurrentAnchor {
-            period: decoded.pillar_block.period,
-            hash: decoded.pillar_block.hash(),
-        }),
-        current_data_rlp,
-        current_block_rlp,
-        latest_finalized_block,
-        latest_finalized_block_rlp,
-        generation,
-    };
-
-    validate_current_latest_pillar_anchor_relationship(&snapshot)?;
-    Ok(snapshot)
-}
-
-fn validate_current_latest_pillar_anchor_relationship(
-    snapshot: &PillarChainStateSnapshot,
-) -> Result<()> {
-    let Some(current_anchor) = snapshot.anchor else {
-        return Ok(());
-    };
-    let Some(latest_finalized_block) = &snapshot.latest_finalized_block else {
-        return Ok(());
-    };
-
-    let current_period = current_anchor.period;
-    let current_hash = current_anchor.hash;
-    let latest_period = latest_finalized_block.period;
-    let latest_hash = latest_finalized_block.hash();
-
-    if current_period < latest_period {
-        bail!("PILLAR_ANCHOR_LATEST_AHEAD_OF_CURRENT");
-    }
-
-    if current_period == latest_period && current_hash != latest_hash {
-        bail!("PILLAR_ANCHOR_CURRENT_LATEST_HASH_MISMATCH");
-    }
-
-    if current_period == latest_period {
-        return Ok(());
-    }
-
-    ensure!(
-        decoded_current_pillar_previous_hash(snapshot)? == latest_hash,
-        "PILLAR_ANCHOR_BROKEN_SUCCESSOR_PREVIOUS_HASH"
-    );
-    Ok(())
-}
-
-fn decoded_current_pillar_previous_hash(
-    snapshot: &PillarChainStateSnapshot,
-) -> Result<ethereum_types::H256> {
-    if snapshot.current_data_rlp.is_empty() {
-        bail!("PILLAR_ANCHOR_CURRENT_DATA_MISSING");
-    }
-    let decoded = CurrentPillarBlockDataDb::decode_rlp(&snapshot.current_data_rlp)?;
-    Ok(decoded.pillar_block.previous_pillar_block_hash)
 }
 
 impl From<ConsensusPillarValidatorVoteCountChange> for FfiPillarValidatorVoteCountChange {
@@ -846,7 +698,11 @@ mod tests {
         current_data_rlp: Vec<u8>,
         latest_finalized_block_rlp: Vec<u8>,
     ) -> anyhow::Result<PillarChainStateSnapshot> {
-        decode_current_anchor_snapshot(current_data_rlp, latest_finalized_block_rlp, 0)
+        rustaxa_consensus::decode_pillar_chain_snapshot(
+            current_data_rlp,
+            latest_finalized_block_rlp,
+            0,
+        )
     }
 
     fn canonical_current_block_with_previous(period: u64, previous: H256) -> Vec<u8> {

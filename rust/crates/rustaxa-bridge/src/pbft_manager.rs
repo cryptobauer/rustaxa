@@ -509,8 +509,7 @@ pub fn create_pbft_service_from_storage(
         #[cfg(test)]
         storage: Some(storage.0.clone()),
         readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
-        pillar: std::sync::Mutex::new(crate::pillar_chain::restore_pillar_chain_state(storage)?),
-        pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
+        pillar: rustaxa_consensus::PillarChainService::restore(storage.0.clone())?,
     }))
 }
 
@@ -4526,7 +4525,7 @@ mod tests {
             let state = service.pillar_state(false).unwrap();
             let generation = state.current_anchor.read().unwrap().generation;
             (
-                &*state as *const crate::ffi::PillarChainState as usize,
+                &*state as *const rustaxa_consensus::PillarChainState as usize,
                 generation,
                 state.next_pillar_block_finalization_preparation_token,
             )
@@ -4544,7 +4543,7 @@ mod tests {
             let state = service.pillar_state(true).unwrap();
             let generation = state.current_anchor.read().unwrap().generation;
             (
-                &*state as *const crate::ffi::PillarChainState as usize,
+                &*state as *const rustaxa_consensus::PillarChainState as usize,
                 generation,
                 state.next_pillar_block_finalization_preparation_token,
             )

@@ -24,7 +24,8 @@ use crate::ffi::rustaxa_ffi::{
     PillarVoteSingleAdmissionPreparePlan as FfiPillarVoteSingleAdmissionPreparePlan,
     PillarVoteSingleAdmissionWithFinalChainPlan, PillarVotesPayloadLookup,
 };
-use crate::ffi::{BridgeFinalChain, BridgePbftService, PillarChainState, SingleVotePreparation};
+use crate::ffi::{BridgeFinalChain, BridgePbftService};
+use crate::pillar_chain::PillarChainBridgeGuard;
 use anyhow::{anyhow, ensure, Result};
 use ethereum_types::H256;
 use rlp::Rlp;
@@ -38,6 +39,7 @@ use rustaxa_consensus::{
 use rustaxa_consensus::{
     plan_pillar_block_finalization, PillarBlockFinalizationFact, PillarBlockFinalizationStatus,
 };
+use rustaxa_consensus::{PillarBlockFinalizationPreparation, SingleVotePreparation};
 use rustaxa_storage::Storage;
 #[cfg(test)]
 use rustaxa_types::CurrentPillarBlockDataDb;
@@ -67,7 +69,6 @@ const PILLAR_VOTE_STATUS_MISSING_PREPARATION: u8 = 11;
 /// caller boundary must preserve external-vs-trusted provenance when deciding
 /// whether a new preparation is permitted.
 const MAX_SINGLE_VOTE_PREPARATIONS: usize = 4_096;
-const MAX_PILLAR_BLOCK_FINALIZATION_PREPARATIONS: usize = 16;
 const PILLAR_VOTE_STATUS_UNKNOWN: u8 = 255;
 
 /// Rust-private weighted bytes used between FinalChain composition and bundle apply.
@@ -285,7 +286,7 @@ impl PillarVotesTestFixture {
     }
 }
 
-impl PillarChainState {
+impl PillarChainBridgeGuard<'_> {
     /// Prepares one pillar vote for admission through the runtime-owned
     /// pillar-vote index.
     pub fn pbft_service_pillar_prepare_single_vote_admission(
@@ -414,12 +415,13 @@ impl PillarChainState {
         &mut self,
         input: PillarVoteSingleAdmissionApplyInput,
     ) -> Result<PillarVoteSingleAdmissionApplyPlan> {
-        let snapshot = self
+        let state = self.0.state_mut();
+        let snapshot = state
             .current_anchor
             .read()
             .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
         let vote_hash = H256::from(input.vote_hash);
-        let preparation = self
+        let preparation = state
             .single_vote_preparations
             .lock()
             .map_err(|_| anyhow!("single pillar vote preparation lock poisoned"))?
@@ -439,7 +441,7 @@ impl PillarChainState {
                 pillar_blocks_interval: preparation.pillar_blocks_interval,
             };
             let revalidated = prepare_single_vote_admission(
-                &self.votes,
+                &state.votes,
                 snapshot.anchor,
                 snapshot.generation,
                 preparation.vote_rlp.clone(),
@@ -451,7 +453,7 @@ impl PillarChainState {
         }
         // Keep the read guard through mutation so a current-block writer cannot
         // publish a new generation between validation and insertion.
-        apply_prepared_single_vote_admission(&mut self.votes, preparation.vote_rlp, input)
+        apply_prepared_single_vote_admission(&mut state.votes, preparation.vote_rlp, input)
     }
 
     fn retain_single_vote_preparation(
@@ -526,7 +528,8 @@ impl PillarChainState {
         &mut self,
         input: PillarVoteWeightedBundleApplyInput,
     ) -> Result<PillarVoteBundleApplyPlan> {
-        let snapshot = self
+        let state = self.0.state_mut();
+        let snapshot = state
             .current_anchor
             .read()
             .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
@@ -546,7 +549,7 @@ impl PillarChainState {
         // Keep the read guard through every mutation for the same generation
         // binding guaranteed by single-vote admission.
         apply_weighted_rlp_bundle(
-            &mut self.votes,
+            &mut state.votes,
             input.votes,
             input.required_votes_period,
             &expected_block_hash,
@@ -677,6 +680,7 @@ impl PillarChainState {
             .read()
             .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
         let current_anchor = snapshot.anchor;
+        let snapshot_generation = snapshot.generation;
         let current_block_rlp = snapshot.current_block_rlp.clone();
         let current_period = current_anchor
             .map(|anchor| anchor.period)
@@ -742,52 +746,21 @@ impl PillarChainState {
             Vec::new()
         };
         let success = plan.return_votes && !votes.is_empty();
+        drop(snapshot);
 
         if plan.status == PillarBlockFinalizationStatus::Ready && plan.should_persist {
-            let preparation_anchor_generation = snapshot.generation;
-            let preparation_token = {
-                let mut preparations = self
-                    .pillar_block_finalization_preparations
-                    .lock()
-                    .map_err(|_| anyhow!("pillar block finalization preparation lock poisoned"))?;
-                preparations
-                    .retain(|_, prepared| prepared.anchor_generation == snapshot.generation);
-                if let Some((token, _)) = preparations.iter().find(|(_, prepared)| {
-                    prepared.anchor_generation == preparation_anchor_generation
-                        && prepared.prepared_pillar_block_period == plan.current_period
-                        && prepared.prepared_pillar_block_rlp == current_block_rlp
-                }) {
-                    *token
-                } else {
-                    if preparations.len() >= MAX_PILLAR_BLOCK_FINALIZATION_PREPARATIONS {
-                        let oldest_token = preparations.keys().min().copied().ok_or_else(|| {
-                            anyhow!("PILLAR_BLOCK_FINALIZATION_PREPARATION_CAP_EMPTY")
-                        })?;
-                        preparations.remove(&oldest_token);
-                    }
-                    let preparation_token = self
-                        .next_pillar_block_finalization_preparation_token
+            let preparation_anchor_generation = snapshot_generation;
+            let preparation_token =
+                self.retain_finalization_preparation(PillarBlockFinalizationPreparation {
+                    anchor_generation: preparation_anchor_generation,
+                    prepared_pillar_block_period: plan.current_period,
+                    prepared_pillar_block_rlp: current_block_rlp.clone(),
+                    matching_vote_cleanup_min_period: plan
+                        .current_period
                         .checked_add(1)
-                        .ok_or_else(|| {
-                            anyhow!("PILLAR_BLOCK_FINALIZATION_TOKEN_SEQUENCE_OVERFLOW")
-                        })?;
-                    self.next_pillar_block_finalization_preparation_token = preparation_token;
-                    preparations.insert(
-                        preparation_token,
-                        crate::ffi::PillarBlockFinalizationPreparation {
-                            anchor_generation: preparation_anchor_generation,
-                            prepared_pillar_block_period: plan.current_period,
-                            prepared_pillar_block_rlp: current_block_rlp.clone(),
-                            matching_vote_cleanup_min_period: plan
-                                .current_period
-                                .checked_add(1)
-                                .unwrap_or(0),
-                            should_emit: plan.should_emit,
-                        },
-                    );
-                    preparation_token
-                }
-            };
+                        .unwrap_or(0),
+                    should_emit: plan.should_emit,
+                })?;
 
             return Ok(PillarBlockFinalizationPrepareResult {
                 status: plan.status.as_u8(),
@@ -825,7 +798,7 @@ impl PillarChainState {
             prepared_pillar_block_period: 0,
             prepared_pillar_block_rlp: Vec::new(),
             has_prepared_pillar_block: false,
-            preparation_anchor_generation: snapshot.generation,
+            preparation_anchor_generation: snapshot_generation,
             preparation_token: 0,
             votes,
         })

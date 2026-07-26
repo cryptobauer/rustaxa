@@ -24,6 +24,7 @@ pub mod pbft_vote_storage;
 pub mod pbft_vote_validation;
 pub mod period_data_queue;
 pub mod pillar_chain;
+pub mod pillar_chain_service;
 pub mod pillar_votes;
 pub mod proposed_blocks;
 pub mod rewards_stats;
@@ -285,6 +286,11 @@ pub use pillar_chain::{
     plan_pillar_consensus_threshold, plan_pillar_current_anchor_decision,
     plan_pillar_vote_count_changes, save_current_pillar_block_data_storage,
     save_finalized_pillar_block_storage, save_own_pillar_block_vote_storage,
+};
+pub use pillar_chain_service::{
+    PillarBlockFinalizationPreparation, PillarChainGuard, PillarChainService, PillarChainState,
+    PillarChainStateSnapshot, SingleVotePreparation, SingleVotePreparationRegistry,
+    decode_pillar_chain_snapshot,
 };
 pub use pillar_votes::{
     PillarVoteBundleAcceptedVote, PillarVoteBundlePlan, PillarVoteBundlePlanner,

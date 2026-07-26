@@ -98,8 +98,12 @@ the bridge root retains a direct native service and exposes only a short-lived n
 The bridge root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
 null-service and pillar-readiness checks, but no longer probe for capabilities that cannot be absent from a published
 service.
-PBFT construction/orchestration tests, the pillar owner, and the DAG/transaction/sortition owner remain in this
-workstream.
+Native `rustaxa-consensus::pillar_chain_service::PillarChainService` now owns pillar storage and restoration,
+`PillarVotes`, the canonical anchor snapshot, both preparation registries and finalization token sequence, the outer
+serialization mutex, and bootstrap readiness. The bridge temporarily borrows a native guard for DTO-oriented behavior,
+and every FinalChain-composed path drops it before the external query and reacquires it for generation-bound apply.
+PBFT construction/orchestration tests, task-oriented pillar method migration, and the DAG/transaction/sortition owner
+remain in this workstream.
 
 ### 3. Collapse configuration topology
 
