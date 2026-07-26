@@ -5,7 +5,8 @@ This is the consolidated plan for progressively replacing C++ internals with Rus
 ## Objectives
 
 - Keep upstream C++ sync practical through a pure-C++ validation gate.
-- Preserve public C++ APIs while Rust implementations replace internals behind shims.
+- Preserve protocol, wire, storage, RPC, and explicitly named external API behavior while allowing Rust-enabled `main`
+  to retire internal C++ consensus manager APIs aggressively.
 - Move high-value storage and FinalChain paths first.
 - Use existing Rust rewrite implementations as aggressively as correctness allows, so each slice moves production routing
   toward the long-term goal of complete Rust ownership rather than rebuilding orchestration in C++.
@@ -39,14 +40,26 @@ make cpp-reference-apply-intersection FROM=<base_sha> TO=<tip_sha>
 
 ## Architecture Direction
 
-Use incremental shims at the C++ boundary and idiomatic Rust composition internally.
+Use thin adapters at genuine C++ boundaries and idiomatic Rust composition internally.
 
 Core rules:
 
-- Public C++ interfaces remain stable while implementation moves.
-- C++ shims route selected APIs to Rust and keep legacy code available for validation.
-- For upstream-owned C++ classes, use the overlay shim pattern by default (as in storage and FinalChain): header overlay + shim facade + legacy `*Old` compilation rename. Prefer this over scattered inline `#ifdef` edits to reduce upstream merge conflicts.
-- Treat the full overlay shim as the first design step, not a later cleanup. Before adding Rust-mode behavior to an
+- Rust-enabled `main` is a cutover target, not a compatibility replica of the upstream internal class graph. Internal
+  C++ consensus manager APIs, constructors, callbacks, events, locks, object-returning methods, and partial feature
+  combinations may be changed or deleted after their production callers migrate.
+- Compatibility is guaranteed for protocol-visible behavior, canonical encodings, durable data, RPC/public contracts,
+  and the explicitly named external boundaries below. A historical C++ type or method is not a compatibility contract
+  merely because tests or another internal manager still use it.
+- Pure-C++ reference behavior remains available through the untouched upstream implementations and the
+  all-Rust-disabled validation route. It does not require Rust-enabled production to expose matching internal classes.
+- New shims are exceptional. Before adding one, prove that a named external C++ client cannot use an existing query,
+  transport, execution, bootstrap, admin, signing, or VDF adapter. A temporary shim must have a tracker item, deletion
+  condition, and owner.
+- When a named external client still requires an upstream-owned C++ class, use the overlay shim pattern: header overlay
+  plus a standalone facade, with the untouched implementation selected only for pure-C++ mode. Prefer this over
+  scattered inline `#ifdef` edits.
+- Do not create a full class overlay solely to preserve internal C++ architecture. Migrate internal callers to a native
+  application API and delete the class from Rust mode. When an approved overlay is required, before adding behavior to an
   upstream-owned C++ class, create or extend the class overlay (`shims/<class>_shim/include/.../<class>.hpp`), compile
   the legacy implementation as `<Class>Old`, and keep Rust routing, shim-only helper methods, temporary stubs, and
   parity scaffolding in shim-owned files. Do not add Rust-only methods, `ForRust` hooks, bridge includes, or scattered
@@ -57,6 +70,11 @@ Core rules:
   implementation directly instead of re-centering behavior in C++. Prefer extending Rust crates, bridges, and shim-owned
   Rust handles over adding C++ orchestration or C++ data materialization, unless a concrete blocker is documented and
   accepted by the task owner.
+- Tests do not justify production compatibility surface. Move behavioral tests with their native Rust owner; bridge
+  tests cover CXX conversion, lifetime, error mapping, and externally observable parity. Test-only CXX exports are
+  forbidden unless explicitly allowlisted as conformance boundaries.
+- Rust production uses one supported application composition. Granular rewrite flags and partial-service factories are
+  migration scaffolding to remove, not configurations that the final Rust architecture must preserve.
 - Logging and observability are not architectural blockers for Rust ownership. Do not keep deterministic consensus
   behavior in C++ merely because the legacy implementation logs at that point. Rust planners may return typed statuses,
   telemetry facts, or executor reports that C++ logs temporarily, and logging can be moved, changed, or dropped in a
@@ -689,7 +707,8 @@ Recommended introduction order:
 
 ### Scope
 
-Goal: rewrite consensus internals while keeping existing C++ public APIs and node wiring stable.
+Goal: cut consensus over to native Rust ownership while keeping protocol behavior, external product contracts, and the
+pure-C++ reference route stable. Internal C++ manager APIs and wiring are explicitly in scope for removal.
 
 Native Rust consensus gap closeout:
 
@@ -699,12 +718,16 @@ Native Rust consensus gap closeout:
 - Rust owns consensus rules, durable consensus state, restart normalization, storage/query selection, canonical payload
   retention, validation decisions, lifecycle command selection where it affects consensus behavior, scheduler/timer
   policy, ordered side-effect planning, and typed executor-result validation.
-- C++ may remain as an explicit executor or adapter only for public API compatibility, app-host lifecycle mechanics,
-  OS threads, condition variables, actual sleeps, key-manager signing execution, async VDF execution, network/tarcap
-  transport, packet wrapping, gossip fanout, peer marking, packet queues, EVM/StateAPI execution, state DB mutation,
-  receipt/log-bloom execution details, and arbitrary contract calls.
-- Legacy C++ object materialization is accepted only at public API, test, network, EVM/executor, or temporary
-  compatibility edges. It must not become consensus decision authority again.
+- C++ may remain only as a leaf adapter for named public APIs, minimal app hosting, OS primitives, key signing, VDF
+  execution, tarcap peer transport mechanics, and concrete EVM/StateAPI operations.
+- Rust is now authorized to own network packet inspection, admission, routing, consensus queueing, effect ordering,
+  gossip/send selection, and executor-result validation. Tarcap retains socket/peer mechanics, packet wrapping, actual
+  transmission, disconnect execution, and lane scheduling.
+- Rust is now authorized to own FinalChain/EVM execution orchestration, request construction, canonical rewards
+  payloads, receipt/result validation, commit ordering, recovery, and publication. C++ `StateAPI` retains concrete EVM
+  calls and `state_db/` mutation as a leaf executor until separately rewritten.
+- Legacy C++ object materialization is accepted only for a named RPC/plugin/public client or at an unavoidable leaf
+  executor. Tests, internal managers, logging, and convenience are not valid retention reasons.
 
 Completed closeout slices:
 
@@ -756,10 +779,11 @@ Completed closeout slices:
    closeout audit are Rust-planned, and subsystem sessions carry typed executor reports. Remaining C++ shell work is the
    accepted host/executor boundary listed above.
 
-Closeout definition now in force: consensus production behavior outside network/tarcap and EVM/state execution must not
-require C++ shims or broad bridge compatibility code as decision authority. New work that needs consensus behavior should
-extend Rust runtimes, typed ports, or Rust-owned planners first. If a remaining C++ shim or bridge path is touched, either
-keep it as a clearly classified adapter/executor boundary or move the behavior into Rust in the same slice.
+Closeout definition now in force: consensus production behavior, including network consensus pipelines and external-EVM
+orchestration, must not require manager-shaped C++ shims or broad bridge compatibility code. Only the leaf mechanics
+listed above may remain in C++. New work extends native Rust runtimes, application services, typed ports, or planners.
+When a shim or bridge path is touched, delete the complete compatibility family or reduce it to a named leaf adapter in
+the same slice.
 
 ### External Consensus Facade Boundaries
 
@@ -769,8 +793,8 @@ internal runtime state.
 
 | Boundary | Rust facade | Rust ownership | External executor or adapter ownership |
 | --- | --- | --- | --- |
-| Network and tarcap | `ConsensusNetworkApi` | Canonical packet ingestion, typed consensus/network work planning, effect identity, and executor-result validation | Peer transport, packet wrapping, send/gossip policy, peer marking/reporting, disconnects, and queue scheduling |
-| External EVM and StateAPI | `ConsensusExecutionApi` | Execution request identity, typed report validation, lifecycle and publication planning, and storage-publication authorization | EVM/state execution, staged state mutation, receipts/log execution details, contract calls, and concrete `StateAPI` operations |
+| Network and tarcap | `ConsensusNetworkApi` | Canonical packet ingestion, inspection, admission, routing, consensus queues, peer/gossip/send decisions, effect ordering, identity, and result validation | Socket and peer mechanics, packet wrapping, actual send/gossip/disconnect execution, and physical lane scheduling |
+| External EVM and StateAPI | `ConsensusExecutionApi` | Execution orchestration, canonical requests and rewards payloads, result/receipt validation, lifecycle, commit ordering, recovery, publication planning, and storage-publication authorization | Concrete EVM calls, staged `state_db/` mutation, contract execution, tracing, and raw `StateAPI` operations |
 | Public reads | `ConsensusQueryApi` | Stable read-only consensus DTOs backed by Rust storage and query logic | RPC/GraphQL/plugin formatting, live network/admin views, and public C++ object materialization where still required |
 
 C++ adapters may execute or format these contracts, but they must not recreate consensus decisions from returned facts.
@@ -786,7 +810,8 @@ Rules:
   `pbft_manager.cpp` should stay clean versus `upstream-main`, with remaining debt tracked as overlay drift until Rust
   owns the manager runtime.
 - Treat `dposIsEligible` and related vote-count methods as real consensus work, not permanent dummy behavior.
-- Keep networking callbacks, thread orchestration, and broad node integration in C++ until the Rust domain services are stable.
+- Keep only physical network and OS-thread mechanics in C++; consensus callbacks, queues, routing, and orchestration move
+  to the Rust application service.
 - Ignore logging when deciding whether behavior can move to Rust. Logs are boundary observability, not consensus
   ownership. Keep temporary C++ logging only as an executor/reporting detail while moving the underlying decision,
   state transition, or persistence logic into Rust.
