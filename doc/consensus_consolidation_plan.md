@@ -4617,9 +4617,11 @@ family. Exact rows replace the former grouped PBFT-vote entry, omitted internal 
 
 This checkpoint changes no runtime routing. The audited live surfaces remain classified application/bootstrap,
 network/tarcap, EVM/execution, lifecycle, signing/VDF, storage/public compatibility, or C++ materialization boundaries.
-Further CRW-10 deletion requires a fresh no-caller census rather than inferring that a stable compatibility facade is
-obsolete. Upstream intersection synchronization remains a separate closeout step because the current feature branch has
-no local `main` or `cpp-reference` branch and the explicit `upstream-main..HEAD` historical intersection is broad.
+The required fresh no-caller census is complete; it does not infer that stable compatibility facades are obsolete.
+Every retained CXX function has a production caller except the explicitly guard-confined storage-conformance seed
+helper. The CRW-10 commit range changes no path present in `upstream-main`, so there is no applicable upstream-owned C++
+intersection to synchronize to `cpp-reference`; the broad `upstream-main..HEAD` intersection belongs to earlier history
+and is not a safe closeout patch.
 
 The first post-inventory no-caller census removes the CXX
 `pbft_service_verified_votes_weighted_payload` export, its export-specific `PbftVotePayloadLookup` carrier, and the
@@ -4641,6 +4643,12 @@ fixtures that used it now install their initial anchors through the production
 state operation is deleted; a crate-test-only setup helper samples the current generation and delegates through the
 checked operation, leaving that operation as the sole production Rust surface. This narrows `CRW-07` by one export and
 one test escape hatch without changing carriers, handles, shims, module flags, or production routing.
+
+CRW-10 closes after the final inventory/caller audit and validation pass. Closeout searches find no legacy `*Old::`
+consensus-shim calls, queue-named network exports, or `BridgeStorage` use in `rustaxa-consensus`; remaining query and
+bridge-batch hits are the classified network/public-query, storage-shim, rewards-staging, and test boundaries. The
+inventory and storage-boundary guards, focused Rust/C++ tests, Tier 1, consensus Tier 2, pre-commit, and independent
+review pass. `CRW-N01` and `CRW-E01` remain explicitly scope-gated rather than unfinished CRW-10 work.
 
 ## Historical Execution Order
 

@@ -247,15 +247,17 @@ execution, or public API materialization into the consensus storage cleanup.
   generic iterator/existence boundaries are explicitly marked as `RUSTAXA_ADMIN_COMPAT_UNSUPPORTED`,
   `RUSTAXA_ADMIN_COMPAT_LEGACY_ONLY`, or `RUSTAXA_QUERY_COMPAT_READ`. This keeps snapshot/range/compaction/migration and
   broad iterator shells visible as compatibility debt without treating them as production consensus storage blockers.
-- Slice 7 — CXX carrier minimization is active: the transaction finalized-check identity input moved from generated
-  CXX into a shim-owned C++ carrier, and four transaction/DAG staging DTOs moved from `ffi.rs` into private Rust module
-  types. `CRW-02` then replaced `BridgePbftManagerRuntime` and `BridgePbftChain` with one application-owned
+- Slice 7 — CXX carrier minimization is complete at the accepted boundary: the transaction finalized-check identity
+  input moved from generated CXX into a shim-owned C++ carrier, and four transaction/DAG staging DTOs moved from
+  `ffi.rs` into private Rust module types. `CRW-02` then replaced `BridgePbftManagerRuntime` and `BridgePbftChain` with
+  one application-owned
   `BridgePbftService`, deleted the finalization chain report carrier/API, and moved the obsolete
   `PbftManagerStartupFact` out of CXX into a Rust-private test fixture. The remaining production exports have callers,
-  while the one test-only FinalChain seed helper is an enforced storage-conformance boundary. Further reduction follows
-  each service composition item rather than a no-caller export sweep. The first `CRW-03` sub-slice then deleted
-  `BridgeProposedBlocks`, its factory and explicit restore exports, the storage-shim-owned live handle, and the C++
-  facade mutex after all production callers moved to the PBFT service or stateless compatibility functions.
+  while the one test-only FinalChain seed helper is an enforced storage-conformance boundary. Future reduction follows
+  a demonstrated last-caller migration or explicitly re-scoped network/EVM work rather than the completed no-caller
+  export sweep. The first `CRW-03` sub-slice then deleted `BridgeProposedBlocks`, its factory and explicit restore
+  exports, the storage-shim-owned live handle, and the C++ facade mutex after all production callers moved to the PBFT
+  service or stateless compatibility functions.
 
 No separate file now tracks this cleanup; `doc/consensus_rewrite_tracker.md` is the active tracking location.
 
@@ -281,7 +283,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-04` | `complete` | Compose transaction/gas and DAG graph/manager/proposer runtimes behind application-owned Rust services with native FinalChain/storage ports. | `CRW-01`; coordinate shared dependencies with `CRW-02` | C++ shims no longer pass internal bridge handles between transaction, DAG, PBFT, FinalChain, or storage services; they perform input conversion, explicit EVM/network execution, and public materialization only. |
 | `CRW-05` | `complete` | Compose pillar, slashing, sortition, and rewards planning/state behind their Rust application owner rather than standalone internal handles. | `CRW-01`; `CRW-02` where PBFT owns the lifetime | Remaining C++ code is limited to FinalChain/DPoS fact execution, signing, transaction insertion, tarcap/event execution, lifecycle/executor work, and public materialization; internal bridge handles and cross-shim lookup paths are deleted. |
 | `CRW-06` | `complete` | Delete storage compatibility scaffolding after runtime consumers move: `BridgeStorage`, `BridgeStorageBatch`, storage query-family handles, broad storage-shim calls, and related `DbStorage` compatibility access. | Relevant consumer migrations in `CRW-02` through `CRW-05` | No production consensus route uses broad storage handles or C++/bridge batch authority. Retained admin, migration, test, network, and public-query behavior is narrow, explicitly classified, or explicitly unsupported in Rust mode. |
-| `CRW-07` | `active` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, `BridgeConsensusExecutionApi`, application/bootstrap handles, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
+| `CRW-07` | `complete` | Continue CXX carrier/export, module-flag, shim, and compatibility-test minimization after every consumer migration. | Runs alongside every consolidation item | The bridge exposes only `BridgeConsensusQueryApi`, `BridgeConsensusNetworkApi`, `BridgeConsensusExecutionApi`, application/bootstrap handles, and demonstrably necessary public compatibility handles. The inventory guard has no undocumented or stale entries, and tests protect behavior rather than retired scaffolding. |
 | `CRW-08` | `complete` | Close remaining FinalChain/DPoS behavior parity: required contract methods outside the previously supported mutation subset and full failed-contract receipt parity for older supported paths. | Completed bounded method/receipt families and canonical legacy evidence | All 25 current-ABI DPoS methods, both slashing reads, supported slashing execution, and all 16 mutation selectors execute through Rust account/DPoS state with byte-compatible outputs, receipts, logs, blooms, persistence, restart behavior, and targeted legacy-vs-Rust parity coverage. Historical databases without complete Rust snapshots remain an explicit replay/rebuild deployment boundary rather than a current-ABI execution fallback. |
 | `CRW-09` | `complete` | Introduce missing P0 FinalChain domain types/codecs and reduce temporary C++ `StateAPI` fact collection while preserving external EVM/state execution as an explicit adapter. | `CRW-09A` through `CRW-09I` | All ready P0 FinalChain domain/codec families are complete; every retained raw scalar/byte is a demonstrated codec, FFI, or external-executor representation; C++ `StateAPI` supplies only classified execution/committed-state operations; and the tracker, audit, and plan agree. |
 | `CRW-09A` | `complete` | Establish the FinalChain scalar/codec foundation: nonce, transaction position, bloom, gas price, transaction value, account balance, and complete gas lifecycle. | None | Rust FinalChain uses the typed domains end to end while CXX carriers, persisted bytes, request identities, headers, receipts, and error ordering remain compatible. |
@@ -293,7 +295,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09G` | `complete` | Migrate reward pools and claim settlement using shared token amounts. | `CRW-09D`; `CRW-09F` | Commission/delegator pools, fee rewards, claims, account credits, cursor advancement, rollback, receipts, and restart use `DposTokenAmount` without changing reward-index semantics. |
 | `CRW-09H` | `complete` | Type supply, minted rewards, and Aspen migration state. | `CRW-09C`; `CRW-09G` | Pre-/post-Aspen supply state is explicit; migration runs once; inconsistent persisted combinations fail closed; checked cap/reward arithmetic and accepted old schemas retain activation, publication, and restart parity. |
 | `CRW-09I` | `complete` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
-| `CRW-10` | `active` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
+| `CRW-10` | `complete` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
@@ -329,6 +331,16 @@ fresh runtime's expected generation `0`. The unchecked Rust state operation is d
 samples the current generation and delegates through the checked operation, while production Rust exposes only the
 generation-checked apply contract. This is a `CRW-07` export/test contraction only: no carrier, handle, shim, module
 flag, production route, or accepted compatibility boundary changes.
+
+The final `CRW-10` audit finds no actionable unclassified consensus ownership or compatibility-deletion item. A fresh
+complete CXX caller census leaves only `storage_shim_seed_final_chain_conformance_lookup_rows` without a production
+caller; its storage-conformance-only use remains explicitly classified and guard-confined. Closeout searches find no
+legacy `*Old::` consensus-shim calls, queue-named network exports, or `BridgeStorage` use in `rustaxa-consensus`; the
+remaining query and bridge-batch hits are the documented network/public-query, storage-shim, rewards-staging, and test
+boundaries. Inventory and storage-boundary guards, focused Rust/C++ tests, Tier 1, consensus Tier 2, pre-commit, and
+independent review pass. Every path changed by the CRW-10 commit range is absent from `upstream-main`, so there is no
+applicable upstream-owned C++ intersection to synchronize to `cpp-reference`. `CRW-N01` and `CRW-E01` remain explicitly
+scope-gated follow-ups and do not block this closeout.
 
 The VoteManager threshold sub-slice of `CRW-09I` is routed: `getPbftTwoTPlusOne` no longer collects or interprets generic
 FinalChain DPoS facts in C++. The PBFT service owns cache-first threshold composition, reads its sibling Rust PBFT-chain
