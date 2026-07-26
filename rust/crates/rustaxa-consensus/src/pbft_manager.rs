@@ -34,6 +34,7 @@ use rlp::RlpStream;
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_MGR_FIELD_ROUND: u8 = 0;
@@ -42,6 +43,59 @@ const PBFT_MGR_FIELD_LAMBDA: u8 = 2;
 const PBFT_MGR_STATUS_EXECUTED_BLOCK: u8 = 0;
 const PBFT_MGR_STATUS_NEXT_VOTED_SOFT_VALUE: u8 = 2;
 const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
+
+/// Exact sortition preview retained across primary storage and live commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PbftFinalizationSortitionPreparation {
+    pub period: u64,
+    pub has_pivot: bool,
+    pub unique_transactions: u64,
+    pub total_dag_transaction_refs: u64,
+    pub non_empty_pbft_chain_size: u64,
+    pub expected_change: Option<crate::sortition::SortitionParamsChange>,
+}
+
+/// Long-lived Rust PBFT manager runtime and session container.
+pub struct PbftManagerService {
+    pub state: PbftManagerRuntime,
+    pub storage: Arc<Storage>,
+    pub period_data_queue: crate::period_data_queue::PeriodDataQueue,
+    pub pbft_sync_queue_drain_session: crate::pbft_sync::PbftSyncQueueDrainSession,
+    pub pbft_sync_admission_session: Option<crate::pbft_sync::PbftSyncAdmissionSession>,
+    pub state_action_effect_session: Option<PbftManagerStateActionEffectSession>,
+    pub runtime_session: Option<PbftManagerRuntimeSession>,
+    pub proposal_session: Option<PbftManagerProposalSession>,
+    pub finalization_runtime_session: Option<crate::pbft_finalize::PbftFinalizationRuntimeState>,
+    pub finalization_runtime_plan: Option<crate::pbft_finalize::PbftFinalizationPlan>,
+    pub finalization_sortition_preparation: Option<PbftFinalizationSortitionPreparation>,
+    /// Process-local reset proof bound to the active finalization session.
+    pub finalization_reward_votes_reset_generation: u64,
+    pub chain: crate::pbft_chain::PbftChainService,
+}
+
+impl PbftManagerService {
+    pub fn new(
+        state: PbftManagerRuntime,
+        storage: Arc<Storage>,
+        chain: crate::pbft_chain::PbftChainService,
+    ) -> Self {
+        Self {
+            state,
+            storage,
+            period_data_queue: crate::period_data_queue::PeriodDataQueue::new(),
+            pbft_sync_queue_drain_session: crate::pbft_sync::create_pbft_sync_queue_drain_session(),
+            pbft_sync_admission_session: None,
+            state_action_effect_session: None,
+            runtime_session: None,
+            proposal_session: None,
+            finalization_runtime_session: None,
+            finalization_runtime_plan: None,
+            finalization_sortition_preparation: None,
+            finalization_reward_votes_reset_generation: 0,
+            chain,
+        }
+    }
+}
 
 /// Stable PBFT manager state codes used by the CXX bridge.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]

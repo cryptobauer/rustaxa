@@ -6,6 +6,7 @@
 //! advances.
 
 use crate::dag_transaction_service::BridgeDagTransactionService;
+use rustaxa_consensus::pbft_manager::PbftFinalizationSortitionPreparation;
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup,
     PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
@@ -75,22 +76,6 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerFinalizedStatusCommandReport as FfiTransactionManagerFinalizedStatusCommandReport,
 };
 use crate::ffi::{BridgePbftManagerRuntimeState, BridgePbftService, BridgeStorage};
-
-/// Exact sortition preview retained across primary storage and live commit.
-///
-/// The preparation is created only for a fresh finalization that requests a
-/// sortition update. It binds the canonical period-data counts, pivot fact,
-/// pre-finalization-derived non-empty chain size, and expected optional change
-/// to the active manager cursor. Resume mode never creates it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PbftFinalizationSortitionPreparation {
-    period: u64,
-    has_pivot: bool,
-    unique_transactions: u64,
-    total_dag_transaction_refs: u64,
-    non_empty_pbft_chain_size: u64,
-    expected_change: Option<SortitionParamsChange>,
-}
 use anyhow::{anyhow, Context};
 use rustaxa_consensus::dag::dag_block_period_from_storage;
 #[cfg(test)]
@@ -115,6 +100,7 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationStorageWriteStage,
 };
 use rustaxa_consensus::pbft_manager::{
+    PbftManagerService,
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
@@ -170,7 +156,6 @@ use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainAction, PbftSyncQueueDrainReport, PbftSyncQueueDrainReportResult,
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
-use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
 use rustaxa_consensus::proposed_blocks::ProposedBlocksService;
 use rustaxa_consensus::sortition::SortitionParamsChange;
@@ -516,21 +501,11 @@ pub fn create_pbft_service_from_storage(
     )?;
 
     Ok(Box::new(BridgePbftService {
-        manager: std::sync::Mutex::new(Some(BridgePbftManagerRuntimeState {
-            state: runtime,
-            storage: storage.0.clone(),
-            period_data_queue: PeriodDataQueue::new(),
-            pbft_sync_queue_drain_session: create_domain_pbft_sync_queue_drain_session(),
-            pbft_sync_admission_session: None,
-            state_action_effect_session: None,
-            runtime_session: None,
-            proposal_session: None,
-            finalization_runtime_session: None,
-            finalization_runtime_plan: None,
-            finalization_reward_votes_reset_generation: 0,
-            finalization_sortition_preparation: None,
-            chain: chain.clone(),
-        })),
+        manager: std::sync::Mutex::new(Some(PbftManagerService::new(
+            runtime,
+            storage.0.clone(),
+            chain.clone(),
+        ))),
         chain,
         proposed_blocks,
         verified_votes: Some(restored_verified_votes),

@@ -19,7 +19,6 @@ use crate::vdf::*;
 use ethereum_types::H256;
 use rustaxa_consensus::dag::DagManagerState;
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
-use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::slashing::SlashingProofService;
 use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
@@ -190,29 +189,7 @@ pub struct BridgePillarChainStorage {
 ///   statuses while `state` is updated only after Rust storage commits succeed.
 /// - C++ callers must update live compatibility mirrors only from snapshots
 ///   returned by this runtime.
-pub(crate) struct BridgePbftManagerRuntimeState {
-    pub state: rustaxa_consensus::pbft_manager::PbftManagerRuntime,
-    pub storage: Arc<Storage>,
-    pub period_data_queue: PeriodDataQueue,
-    pub pbft_sync_queue_drain_session: rustaxa_consensus::pbft_sync::PbftSyncQueueDrainSession,
-    pub pbft_sync_admission_session: Option<rustaxa_consensus::pbft_sync::PbftSyncAdmissionSession>,
-    pub state_action_effect_session:
-        Option<rustaxa_consensus::pbft_manager::PbftManagerStateActionEffectSession>,
-    pub runtime_session: Option<rustaxa_consensus::pbft_manager::PbftManagerRuntimeSession>,
-    pub proposal_session: Option<rustaxa_consensus::pbft_manager::PbftManagerProposalSession>,
-    pub finalization_runtime_session:
-        Option<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeState>,
-    pub finalization_runtime_plan: Option<rustaxa_consensus::pbft_finalize::PbftFinalizationPlan>,
-    pub finalization_sortition_preparation:
-        Option<crate::pbft_manager::PbftFinalizationSortitionPreparation>,
-    /// Process-local reset proof bound to the active finalization session.
-    ///
-    /// It is cleared when the session terminates. A same-process resume may
-    /// preserve it only while it still matches the shared storage generation;
-    /// process restart initializes it to zero and requires a new reset commit.
-    pub finalization_reward_votes_reset_generation: u64,
-    pub chain: rustaxa_consensus::pbft_chain::PbftChainService,
-}
+pub(crate) type BridgePbftManagerRuntimeState = rustaxa_consensus::pbft_manager::PbftManagerService;
 
 /// Application-owned PBFT service shared by the C++ manager and chain facades.
 ///
