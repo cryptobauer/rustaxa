@@ -5531,10 +5531,6 @@ pub mod rustaxa_ffi {
             self: &BridgePillarChainStorage,
             period: u64,
         ) -> Result<Vec<u8>>;
-        pub fn pbft_service_pillar_apply_current_block_data(
-            self: &BridgePbftService,
-            data_rlp: Vec<u8>,
-        ) -> Result<()>;
         pub fn pbft_service_pillar_apply_planned_current_block_data(
             self: &BridgePbftService,
             data_rlp: Vec<u8>,

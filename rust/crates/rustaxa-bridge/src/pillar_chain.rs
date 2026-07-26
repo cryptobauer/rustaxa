@@ -168,38 +168,19 @@ impl BridgePillarChainStorage {
 }
 
 impl PillarChainState {
-    /// Persists current pillar-block sidecar data through the runtime-owned
-    /// native Rust storage handle.
-    ///
-    /// Inputs:
-    /// - `data_rlp` is the canonical legacy `CurrentPillarBlockDataDb` payload
-    ///   produced by the temporary C++ pillar-block materializer.
-    ///
-    /// Outputs:
-    /// - Commits the current-block sidecar row used for restart recovery.
-    ///
-    /// Invariants and edge behavior:
-    /// - Empty payloads are rejected by the consensus storage helper.
-    /// - This method does not mutate runtime vote state or C++ live mirrors; the
-    ///   caller remains responsible for installing temporary C++ sidecars until
-    ///   the pillar manager facade is retired.
-    pub fn pillar_state_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        self.pillar_state_apply_current_block_data_inner(data_rlp, None)
-    }
-
     /// Applies one block-creation result only if its sampled anchor is current.
     pub fn pillar_state_apply_planned_current_block_data(
         &self,
         data_rlp: Vec<u8>,
         expected_anchor_generation: u64,
     ) -> Result<()> {
-        self.pillar_state_apply_current_block_data_inner(data_rlp, Some(expected_anchor_generation))
+        self.pillar_state_apply_current_block_data_inner(data_rlp, expected_anchor_generation)
     }
 
     fn pillar_state_apply_current_block_data_inner(
         &self,
         data_rlp: Vec<u8>,
-        expected_anchor_generation: Option<u64>,
+        expected_anchor_generation: u64,
     ) -> Result<()> {
         ensure!(
             !data_rlp.is_empty(),
@@ -220,12 +201,10 @@ impl PillarChainState {
             .current_anchor
             .write()
             .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
-        if let Some(expected) = expected_anchor_generation {
-            ensure!(
-                snapshot.generation == expected,
-                "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
-            );
-        }
+        ensure!(
+            snapshot.generation == expected_anchor_generation,
+            "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
+        );
         let generation = snapshot
             .generation
             .checked_add(1)
@@ -486,9 +465,20 @@ impl BridgePbftService {
         Ok(())
     }
 
+    /// Installs test setup data through the same generation check as production.
+    ///
+    /// This helper is compiled only for crate tests. It samples the current
+    /// anchor generation immediately before delegating to the planned apply;
+    /// malformed payloads and persistence failures are returned unchanged.
+    #[cfg(test)]
     pub fn pbft_service_pillar_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        self.pillar_state(true)?
-            .pillar_state_apply_current_block_data(data_rlp)
+        let state = self.pillar_state(true)?;
+        let expected_anchor_generation = state
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
+            .generation;
+        state.pillar_state_apply_planned_current_block_data(data_rlp, expected_anchor_generation)
     }
 
     /// Publishes a block-creation payload only against its sampled generation.

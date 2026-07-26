@@ -94,7 +94,7 @@ TEST(PillarVoteBundleBridgeTest, currentAnchorDecisionsAndThresholdUseRuntimeSta
   EXPECT_FALSE(decision.selected);
   EXPECT_FALSE(decision.has_current_anchor);
 
-  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
+  pillar_service->pbft_service_pillar_apply_planned_current_block_data(makeBytes(current_anchor.current_data_rlp), 0);
   decision = pillar_service->pbft_service_pillar_plan_current_anchor_decision(request);
   EXPECT_EQ(decision.status, 0);
   EXPECT_TRUE(decision.selected);
@@ -152,7 +152,7 @@ TEST(PillarVoteBundleBridgeTest, preparePillarFinalizationWithCurrentBlockCanRea
   const auto test_dir = tempStoragePath("rustaxa_pillar_finalize_prepare_hash_mismatch");
   auto storage = rustaxa::create_storage(test_dir.string());
   auto pillar_service = createReadyPillarService(*storage);
-  pillar_service->pbft_service_pillar_apply_current_block_data(makeBytes(current_anchor.current_data_rlp));
+  pillar_service->pbft_service_pillar_apply_planned_current_block_data(makeBytes(current_anchor.current_data_rlp), 0);
 
   rustaxa::PillarBlockFinalizationRequest request{};
   request.requested_pillar_block_hash = current_anchor.hash.asArray();

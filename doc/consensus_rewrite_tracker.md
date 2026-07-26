@@ -322,6 +322,14 @@ cloned runtime, while the C++ shim continues to use direct processing, staged st
 clears. This is a `CRW-07` export contraction only: no carrier, handle, shim, module flag, runtime routing, or accepted
 compatibility boundary changes.
 
+The fifth `CRW-10` closeout slice removes the test-only CXX
+`pbft_service_pillar_apply_current_block_data` export. Its two C++ fixtures now install their initial anchor through the
+same generation-checked `pbft_service_pillar_apply_planned_current_block_data` contract used by production, with the
+fresh runtime's expected generation `0`. The unchecked Rust state operation is deleted; a crate-test-only setup helper
+samples the current generation and delegates through the checked operation, while production Rust exposes only the
+generation-checked apply contract. This is a `CRW-07` export/test contraction only: no carrier, handle, shim, module
+flag, production route, or accepted compatibility boundary changes.
+
 The VoteManager threshold sub-slice of `CRW-09I` is routed: `getPbftTwoTPlusOne` no longer collects or interprets generic
 FinalChain DPoS facts in C++. The PBFT service owns cache-first threshold composition, reads its sibling Rust PBFT-chain
 size without a C++ relay, borrows Rust FinalChain only for an exact-period total on cache miss, and returns the existing

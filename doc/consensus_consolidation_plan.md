@@ -4635,6 +4635,13 @@ removed two-step diagnostic path had no C++ consumer. Its now-callerless native
 the actual generation/head-checked processed-clone installation and reload paths. This narrows `CRW-07` by two exports
 without changing carriers, handles, shims, module flags, or runtime routing.
 
+The pillar test-only census removes the CXX `pbft_service_pillar_apply_current_block_data` export. The two C++ bridge
+fixtures that used it now install their initial anchors through the production
+`pbft_service_pillar_apply_planned_current_block_data` contract with the fresh runtime generation `0`. The raw Rust
+state operation is deleted; a crate-test-only setup helper samples the current generation and delegates through the
+checked operation, leaving that operation as the sole production Rust surface. This narrows `CRW-07` by one export and
+one test escape hatch without changing carriers, handles, shims, module flags, or production routing.
+
 ## Historical Execution Order
 
 This was the original consolidation sequence and is retained as implementation history. Do not use it to select current

@@ -183,6 +183,11 @@ Current snapshot after DAG manager verify-result API cleanup:
   `rewards_stats_shim` route continues to use direct processing, staged storage writes, cache reads, and committed
   clearing. No carrier, handle, shim route, or module flag changes.
 
+- The pillar test-only census removes the CXX `pbft_service_pillar_apply_current_block_data` export. Its two bridge
+  fixtures now use the production generation-checked planned-apply API with the fresh runtime generation `0`. The
+  unchecked Rust state operation is deleted; crate-test setup samples the current generation and delegates through the
+  checked operation. No carrier, handle, shim route, module flag, or production behavior changes.
+
 - Direct `*Old::method(...)` forwarding in consensus shims has no current matches. `dag_manager_shim` is fully detached
   from `DagManagerOld`: the overlay directly includes its standalone facade, and feature-on builds exclude the original
   manager source instead of compiling renamed symbols. It owns its public `VerifyBlockReturnType` enum and
