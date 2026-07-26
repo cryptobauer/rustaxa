@@ -394,6 +394,13 @@ not support. Guarded helpers in the upstream-owned `tests/dag_test.cpp` and `tes
 temporary test exceptions: Rust mode injects the full service, while pure-C++ mode retains the original storage
 constructor. The checked topology reaches zero partial factories and zero compatibility-constructor calls.
 
+The next bounded `CRW-12` owner contraction moves the PBFT manager serialization domain and its complete mutable
+runtime/session container into native `rustaxa-consensus::pbft_manager::PbftManagerService`. `BridgePbftService` now
+holds that native owner directly; the bridge-owned mutex, optional manager capability, runtime alias, guard, and
+chain-only bootstrap rejection are deleted. Bridge tests that previously assembled manager-less PBFT roots now use the
+full production composition. The bridge retains construction plus DTO/effect orchestration temporarily, but manager
+state and poison handling no longer belong to `rustaxa-bridge`. The checked bridge budget falls to 50,111 lines.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

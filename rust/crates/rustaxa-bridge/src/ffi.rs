@@ -172,39 +172,19 @@ pub struct BridgePillarChainStorage {
     pub storage: Arc<Storage>,
 }
 
-/// Long-lived Rust PBFT manager runtime used by the C++ compatibility shim.
-///
-/// Purpose:
-/// - Owns the scalar PBFT manager state machine together with the Rust storage
-///   handle required for restart-safe cursor/status persistence.
-///
-/// Inputs/outputs:
-/// - Constructed from a `BridgeStorage` handle during PBFT manager startup.
-/// - Consumed by runtime transition APIs that persist through
-///   `rustaxa-storage` without requiring C++ to pass storage back for each
-///   operation.
-///
-/// Invariants and edge behavior:
-/// - `storage` is the authoritative durable store for PBFT manager fields and
-///   statuses while `state` is updated only after Rust storage commits succeed.
-/// - C++ callers must update live compatibility mirrors only from snapshots
-///   returned by this runtime.
-pub(crate) type BridgePbftManagerRuntimeState = rustaxa_consensus::pbft_manager::PbftManagerService;
-
 /// Application-owned PBFT service shared by the C++ manager and chain facades.
 ///
 /// The service is the sole Rust owner of PBFT manager/session state, PBFT chain
 /// state, proposed-block state, and their common storage handle. Manager
-/// commands are serialized by `manager`; chain and proposed-block reads use
+/// commands are serialized by the native `PbftManagerService`; the bridge does
+/// not own or reproduce that mutex domain. Chain and proposed-block reads use
 /// independent sibling lock domains, and every verified-vote operation is
 /// serialized by `verified_votes`. Slashing planning and its duplicate-proof
-/// cache use the independent `slashing` mutex. Operations that need both
-/// manager and chain acquire `manager` before `chain`; no guard is retained
-/// across a C++ executor call. Legacy chain-only service paths are no longer
-/// materialized in Rust, so full PBFT service construction is the supported
-/// boundary for verified-vote and slashing capability.
+/// cache use the independent `slashing` mutex. Operations that need both the
+/// manager and chain acquire the native manager guard before the chain; no
+/// guard is retained across a C++ executor call.
 pub struct BridgePbftService {
-    pub(crate) manager: Mutex<Option<BridgePbftManagerRuntimeState>>,
+    pub(crate) manager: rustaxa_consensus::pbft_manager::PbftManagerService,
     pub(crate) chain: rustaxa_consensus::pbft_chain::PbftChainService,
     pub(crate) proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService,
     pub(crate) verified_votes: Option<PbftVerifiedVotesService>,
@@ -224,29 +204,14 @@ pub struct BridgePbftService {
     pub(crate) pillar_readiness: PbftServiceReadiness,
 }
 
-pub(crate) struct BridgePbftManagerGuard<'a>(MutexGuard<'a, Option<BridgePbftManagerRuntimeState>>);
-
-impl std::ops::Deref for BridgePbftManagerGuard<'_> {
-    type Target = BridgePbftManagerRuntimeState;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-            .as_ref()
-            .expect("PBFT manager operation requires a production service")
-    }
-}
-
-impl std::ops::DerefMut for BridgePbftManagerGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
-            .as_mut()
-            .expect("PBFT manager operation requires a production service")
-    }
-}
-
 impl BridgePbftService {
-    pub(crate) fn manager_state(&self) -> BridgePbftManagerGuard<'_> {
-        BridgePbftManagerGuard(self.manager.lock().expect("PBFT manager lock poisoned"))
+    /// Locks the native PBFT manager runtime for one bridge operation.
+    ///
+    /// The returned native guard preserves field-oriented bridge adapters while
+    /// keeping mutex ownership and poison handling inside `rustaxa-consensus`.
+    /// Callers must drop it before invoking any external C++ executor.
+    pub(crate) fn manager_state(&self) -> rustaxa_consensus::pbft_manager::PbftManagerGuard<'_> {
+        self.manager.lock()
     }
 
     pub(crate) fn pillar_state(

@@ -34,7 +34,8 @@ use rlp::RlpStream;
 use rustaxa_storage::{Storage, StorageWriteBatch};
 use rustaxa_types::codec::rlp::dag::FinalizedDagBlockBundleRlp;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tiny_keccak::{Hasher, Keccak};
 
 const PBFT_MGR_FIELD_ROUND: u8 = 0;
@@ -47,53 +48,127 @@ const PBFT_MGR_STATUS_NEXT_VOTED_NULL_BLOCK_HASH: u8 = 3;
 /// Exact sortition preview retained across primary storage and live commit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PbftFinalizationSortitionPreparation {
+    /// PBFT period whose finalization sampled the sortition inputs.
     pub period: u64,
+    /// Whether the finalized period contains a non-null DAG pivot.
     pub has_pivot: bool,
+    /// Number of unique transactions in the finalized DAG order.
     pub unique_transactions: u64,
+    /// Total transaction references before duplicate elimination.
     pub total_dag_transaction_refs: u64,
+    /// Non-empty PBFT chain size sampled before finalization publication.
     pub non_empty_pbft_chain_size: u64,
+    /// Exact optional sortition change expected from the external commit.
     pub expected_change: Option<crate::sortition::SortitionParamsChange>,
 }
 
-/// Long-lived Rust PBFT manager runtime and session container.
-pub struct PbftManagerService {
+/// Lock-protected mutable state owned by the native PBFT manager service.
+///
+/// The state groups the deterministic manager runtime, its in-flight sessions,
+/// and the PBFT chain/storage dependencies that must be mutated under the same
+/// serialization domain. Callers access it only through
+/// [`PbftManagerService::lock`]; no state guard may be retained across an
+/// external executor, network, or C++ callback.
+pub struct PbftManagerRuntimeState {
+    /// Deterministic PBFT manager scalar state restored from durable storage.
     pub state: PbftManagerRuntime,
+    /// Shared native storage used by manager persistence and startup replay.
     pub storage: Arc<Storage>,
+    /// Ordered finalized-period queue consumed by PBFT synchronization.
     pub period_data_queue: crate::period_data_queue::PeriodDataQueue,
+    /// Active queue-drain cursor, reset whenever a new drain begins.
     pub pbft_sync_queue_drain_session: crate::pbft_sync::PbftSyncQueueDrainSession,
+    /// Optional admission cursor for the PBFT sync item currently being checked.
     pub pbft_sync_admission_session: Option<crate::pbft_sync::PbftSyncAdmissionSession>,
+    /// Optional cursor for applying one manager state-action effect sequence.
     pub state_action_effect_session: Option<PbftManagerStateActionEffectSession>,
+    /// Optional daemon-tick planning cursor.
     pub runtime_session: Option<PbftManagerRuntimeSession>,
+    /// Optional PBFT block-proposal planning cursor.
     pub proposal_session: Option<PbftManagerProposalSession>,
+    /// Optional finalization executor state for the current PBFT block.
     pub finalization_runtime_session: Option<crate::pbft_finalize::PbftFinalizationRuntimeState>,
+    /// Optional immutable plan paired with the active finalization executor.
     pub finalization_runtime_plan: Option<crate::pbft_finalize::PbftFinalizationPlan>,
+    /// Optional sortition preview retained until finalization commits.
     pub finalization_sortition_preparation: Option<PbftFinalizationSortitionPreparation>,
     /// Process-local reset proof bound to the active finalization session.
     pub finalization_reward_votes_reset_generation: u64,
+    /// Native PBFT chain owner used by manager operations in the same lock domain.
     pub chain: crate::pbft_chain::PbftChainService,
 }
 
+/// Native owner of the PBFT manager serialization and runtime-state domain.
+///
+/// Construction consumes a restored manager runtime, shared storage, and PBFT
+/// chain service. [`Self::lock`] serializes every manager/session mutation and
+/// returns a guard that dereferences to [`PbftManagerRuntimeState`]. A poisoned
+/// lock is treated as an unrecoverable consensus invariant failure.
+pub struct PbftManagerService {
+    runtime: Mutex<PbftManagerRuntimeState>,
+}
+
+/// Exclusive native PBFT manager runtime guard.
+///
+/// The guard is produced by [`PbftManagerService::lock`], provides immutable
+/// and mutable field access through `Deref`/`DerefMut`, and releases the native
+/// manager serialization domain when dropped.
+pub struct PbftManagerGuard<'a>(MutexGuard<'a, PbftManagerRuntimeState>);
+
+impl Deref for PbftManagerGuard<'_> {
+    type Target = PbftManagerRuntimeState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for PbftManagerGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 impl PbftManagerService {
+    /// Creates the native PBFT manager owner.
+    ///
+    /// The supplied runtime, storage, and chain are installed atomically into
+    /// one initially idle runtime state. All session slots start empty, queue
+    /// draining starts from a fresh cursor, and the reward-vote reset
+    /// generation starts at zero.
     pub fn new(
         state: PbftManagerRuntime,
         storage: Arc<Storage>,
         chain: crate::pbft_chain::PbftChainService,
     ) -> Self {
         Self {
-            state,
-            storage,
-            period_data_queue: crate::period_data_queue::PeriodDataQueue::new(),
-            pbft_sync_queue_drain_session: crate::pbft_sync::create_pbft_sync_queue_drain_session(),
-            pbft_sync_admission_session: None,
-            state_action_effect_session: None,
-            runtime_session: None,
-            proposal_session: None,
-            finalization_runtime_session: None,
-            finalization_runtime_plan: None,
-            finalization_sortition_preparation: None,
-            finalization_reward_votes_reset_generation: 0,
-            chain,
+            runtime: Mutex::new(PbftManagerRuntimeState {
+                state,
+                storage,
+                period_data_queue: crate::period_data_queue::PeriodDataQueue::new(),
+                pbft_sync_queue_drain_session:
+                    crate::pbft_sync::create_pbft_sync_queue_drain_session(),
+                pbft_sync_admission_session: None,
+                state_action_effect_session: None,
+                runtime_session: None,
+                proposal_session: None,
+                finalization_runtime_session: None,
+                finalization_runtime_plan: None,
+                finalization_sortition_preparation: None,
+                finalization_reward_votes_reset_generation: 0,
+                chain,
+            }),
         }
+    }
+
+    /// Locks the complete native PBFT manager runtime state.
+    ///
+    /// The returned guard permits field-level access for bridge adapters while
+    /// keeping lock ownership in `rustaxa-consensus`. Lock poisoning panics
+    /// because continuing after a panic during consensus mutation could expose
+    /// a partially updated in-memory state.
+    pub fn lock(&self) -> PbftManagerGuard<'_> {
+        PbftManagerGuard(self.runtime.lock().expect("PBFT manager lock poisoned"))
     }
 }
 
@@ -8045,6 +8120,36 @@ mod tests {
                     .expect("normalized step should load"),
                 Some(4),
             );
+        }
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn native_service_owns_manager_runtime_lock_domain() {
+        let temp_dir = unique_temp_dir("rustaxa_consensus_pbft_manager_native_service");
+        {
+            let storage = Arc::new(
+                Storage::new(Config::new(temp_dir.clone())).expect("storage should initialize"),
+            );
+            let runtime =
+                create_pbft_manager_runtime_from_storage(storage.as_ref(), storage_startup_fact())
+                    .expect("runtime should restore from Rust storage");
+            let chain = crate::pbft_chain::PbftChainService::restore(storage.clone())
+                .expect("PBFT chain should restore");
+            let service = PbftManagerService::new(runtime, storage, chain);
+
+            {
+                let mut state = service.lock();
+                state.finalization_reward_votes_reset_generation = 9;
+                state.runtime_session = Some(create_pbft_manager_runtime_session(fact(
+                    PbftManagerRuntimeStateCode::Filter,
+                )));
+            }
+
+            let state = service.lock();
+            assert_eq!(state.finalization_reward_votes_reset_generation, 9);
+            assert!(state.runtime_session.is_some());
         }
 
         let _ = fs::remove_dir_all(temp_dir);

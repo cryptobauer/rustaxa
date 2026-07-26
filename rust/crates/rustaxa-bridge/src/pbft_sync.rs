@@ -121,7 +121,7 @@ pub fn pbft_manager_runtime_pbft_sync_admission_report_transactions(
 }
 
 fn clear_terminal_sync_admission(
-    runtime: &mut crate::ffi::BridgePbftManagerRuntimeState,
+    runtime: &mut rustaxa_consensus::pbft_manager::PbftManagerRuntimeState,
     step: &FfiPbftSyncAdmissionSessionStep,
 ) {
     if step.complete || !step.can_continue {

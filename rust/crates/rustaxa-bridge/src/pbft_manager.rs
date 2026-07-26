@@ -6,7 +6,6 @@
 //! advances.
 
 use crate::dag_transaction_service::BridgeDagTransactionService;
-use rustaxa_consensus::pbft_manager::PbftFinalizationSortitionPreparation;
 use crate::ffi::rustaxa_ffi::{
     BlockPeriodLookup as FfiBlockPeriodLookup,
     PbftDynamicLambdaConfig as FfiPbftDynamicLambdaConfig,
@@ -75,7 +74,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
     TransactionManagerFinalizedStatusCommandReport as FfiTransactionManagerFinalizedStatusCommandReport,
 };
-use crate::ffi::{BridgePbftManagerRuntimeState, BridgePbftService, BridgeStorage};
+use crate::ffi::{BridgePbftService, BridgeStorage};
 use anyhow::{anyhow, Context};
 use rustaxa_consensus::dag::dag_block_period_from_storage;
 #[cfg(test)]
@@ -99,8 +98,8 @@ use rustaxa_consensus::pbft_finalize::{
     PbftFinalizationRuntimeStatus, PbftFinalizationStatus, PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage,
 };
+use rustaxa_consensus::pbft_manager::PbftFinalizationSortitionPreparation;
 use rustaxa_consensus::pbft_manager::{
-    PbftManagerService,
     abort_pbft_manager_runtime_session as abort_domain_pbft_manager_runtime_session,
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
@@ -141,8 +140,9 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerProposalInitialFact, PbftManagerProposalSessionStep, PbftManagerProposalStatus,
     PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
     PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
-    PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus, PbftManagerRuntimeTickFact,
-    PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
+    PbftManagerRuntimeState, PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus,
+    PbftManagerRuntimeTickFact, PbftManagerService, PbftManagerSleepPlan,
+    PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
     PbftManagerStateActionEffect, PbftManagerStateActionEffectReport,
     PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
     PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
@@ -501,11 +501,7 @@ pub fn create_pbft_service_from_storage(
     )?;
 
     Ok(Box::new(BridgePbftService {
-        manager: std::sync::Mutex::new(Some(PbftManagerService::new(
-            runtime,
-            storage.0.clone(),
-            chain.clone(),
-        ))),
+        manager: PbftManagerService::new(runtime, storage.0.clone(), chain.clone()),
         chain,
         proposed_blocks,
         verified_votes: Some(restored_verified_votes),
@@ -527,14 +523,6 @@ pub fn create_pbft_service_from_storage(
 /// daemon, proposal, and sync-session entry points remain fail-closed until the
 /// application completes replay and calls this function.
 pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> anyhow::Result<()> {
-    if service
-        .manager
-        .lock()
-        .expect("PBFT manager lock poisoned")
-        .is_none()
-    {
-        return Err(anyhow!("PBFT_SERVICE_CHAIN_ONLY"));
-    }
     service.readiness.mark_ready();
     Ok(())
 }
@@ -2049,7 +2037,7 @@ impl From<rustaxa_consensus::pbft_finalize::PbftFinalizationRuntimeStep>
 }
 
 fn finalization_drain_result(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     drain: &FinalizationOwnedActionDrainState,
     next_step: FinalizationRuntimeSessionStep,
     error_code: String,
@@ -2070,7 +2058,7 @@ fn finalization_drain_result(
 }
 
 fn finalization_executor_state_from_step(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     step: FinalizationRuntimeSessionStep,
     error_code: String,
 ) -> FfiPbftManagerFinalizationExecutorState {
@@ -2099,7 +2087,7 @@ fn finalization_executor_state_from_step(
 }
 
 fn finalization_executor_state_from_drain(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     drain: FinalizationOwnedActionDrainResult,
 ) -> FfiPbftManagerFinalizationExecutorState {
     FfiPbftManagerFinalizationExecutorState {
@@ -2127,13 +2115,13 @@ fn finalization_executor_state_from_drain(
 }
 
 fn drain_finalization_executor_state(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     let drain = pbft_manager_runtime_drain_owned_finalization_actions(runtime)?;
     Ok(finalization_executor_state_from_drain(runtime, drain))
 }
 
-fn clear_finalization_runtime(runtime: &mut BridgePbftManagerRuntimeState) {
+fn clear_finalization_runtime(runtime: &mut PbftManagerRuntimeState) {
     runtime.finalization_runtime_session = None;
     runtime.finalization_runtime_plan = None;
     runtime.finalization_reward_votes_reset_generation = 0;
@@ -2149,7 +2137,7 @@ fn finalization_executor_state_is_terminal(
 }
 
 fn finish_finalization_executor_boundary(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     result: anyhow::Result<FfiPbftManagerFinalizationExecutorState>,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
     match result {
@@ -2167,7 +2155,7 @@ fn finish_finalization_executor_boundary(
 }
 
 fn stored_finalization_plan(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
 ) -> anyhow::Result<PbftFinalizationPlan> {
     runtime
         .finalization_runtime_plan
@@ -2220,7 +2208,7 @@ fn base_finalization_live_report(
 /// operate on this manager-owned session. Starting a new session replaces any
 /// incomplete prior finalization cursor.
 fn pbft_manager_runtime_begin_finalization_session(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     plan: &FfiPbftFinalizationIntentPlan,
 ) {
     runtime.finalization_reward_votes_reset_generation = 0;
@@ -2238,7 +2226,7 @@ fn pbft_manager_runtime_begin_finalization_session(
 /// pillar side effects, but the action cursor and terminal status stay on the
 /// existing manager runtime.
 fn pbft_manager_runtime_begin_finalization_resume_session(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     plan: PbftFinalizationResumePlan,
 ) {
     runtime.finalization_runtime_session = Some(start_pbft_finalization_resume_runtime(&plan));
@@ -2246,7 +2234,7 @@ fn pbft_manager_runtime_begin_finalization_resume_session(
 
 /// Returns the next manager-owned PBFT finalization action without advancing the cursor.
 fn pbft_manager_runtime_finalization_session_next(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
 ) -> FinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_ref() else {
         return pbft_finalization_session_missing_step();
@@ -2261,7 +2249,7 @@ fn pbft_manager_runtime_finalization_session_next(
 /// session into a terminal status and returns that terminal step.
 #[cfg(test)]
 fn pbft_manager_runtime_finalization_session_report(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     cursor: u32,
     action: u8,
     success: bool,
@@ -2289,7 +2277,7 @@ fn pbft_manager_runtime_finalization_session_report(
 /// after terminal statuses until C++ explicitly aborts it or starts the next
 /// finalization session.
 fn pbft_manager_runtime_finalization_session_report_action(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     report: FinalizationRuntimeActionReport,
 ) -> FinalizationRuntimeSessionStep {
     let Some(session) = runtime.finalization_runtime_session.as_mut() else {
@@ -2352,7 +2340,7 @@ fn pbft_manager_runtime_finalization_session_report_action(
 /// - Unknown actions and cursor mismatches are still handled by the shared
 ///   `pbft_manager_runtime_finalization_session_report_action` contract.
 fn pbft_manager_runtime_report_finalization_live_mutation(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     report: PbftFinalizationLiveMutationReport,
 ) -> anyhow::Result<FinalizationRuntimeSessionStep> {
     let current_step = pbft_manager_runtime_finalization_session_next(runtime);
@@ -2431,7 +2419,7 @@ pub fn pbft_manager_runtime_start_finalization_executor(
 }
 
 fn pbft_manager_runtime_start_finalization_executor_inner(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     dag_transaction_service: &BridgeDagTransactionService,
     request: FfiPbftFinalizationExecutorStartRequest,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
@@ -2520,7 +2508,7 @@ fn pbft_manager_runtime_start_finalization_executor_inner(
 }
 
 fn prepare_finalization_sortition(
-    runtime: &BridgePbftManagerRuntimeState,
+    runtime: &PbftManagerRuntimeState,
     dag_transaction_service: &BridgeDagTransactionService,
     write_set: &PbftFinalizationStorageWriteIntent,
 ) -> anyhow::Result<PbftFinalizationSortitionPreparation> {
@@ -2588,7 +2576,7 @@ fn prepare_finalization_sortition(
 ///   manager-owned finalization cursor.
 /// - External side effects are never executed here.
 fn pbft_manager_runtime_advance_finalization_live_mutation(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     cursor: u32,
     build_report: impl FnOnce(
         PbftFinalizationRuntimeAction,
@@ -2604,7 +2592,7 @@ fn pbft_manager_runtime_advance_finalization_live_mutation(
 }
 
 fn pbft_manager_runtime_advance_finalization_live_mutation_inner(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     cursor: u32,
     build_report: impl FnOnce(
         PbftFinalizationRuntimeAction,
@@ -2703,7 +2691,7 @@ pub fn pbft_manager_runtime_fail_finalization_external_effect(
 }
 
 fn pbft_manager_runtime_fail_finalization_external_effect_inner(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     cursor: u32,
     status: u8,
     error_code: String,
@@ -2886,7 +2874,7 @@ pub fn pbft_manager_runtime_advance_finalization_sortition_commit(
 }
 
 fn pbft_manager_runtime_advance_finalization_sortition_commit_inner(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
     dag_transaction_service: &BridgeDagTransactionService,
     cursor: u32,
 ) -> anyhow::Result<FfiPbftManagerFinalizationExecutorState> {
@@ -3208,7 +3196,7 @@ pub fn pbft_manager_runtime_advance_finalization_advance_period(
 ///   by C++ for external actions, so cursor mismatch/failure semantics stay
 ///   centralized.
 fn pbft_manager_runtime_drain_owned_finalization_actions(
-    runtime: &mut BridgePbftManagerRuntimeState,
+    runtime: &mut PbftManagerRuntimeState,
 ) -> anyhow::Result<FinalizationOwnedActionDrainResult> {
     let domain_plan = stored_finalization_plan(runtime)?;
     let write_set = domain_plan.storage_write_intent.clone();

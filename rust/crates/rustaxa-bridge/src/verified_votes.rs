@@ -2409,9 +2409,9 @@ impl From<VerifiedVote> for VerifiedVotePayload {
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi;
+    use crate::ffi::rustaxa_ffi::PbftServiceConfig;
     use crate::final_chain::create_final_chain;
     use crate::pillar_chain::create_pillar_test_service_from_storage as full_service;
-    use rustaxa_consensus::pbft_chain::PbftChainHead;
     use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyStatus;
     use rustaxa_consensus::pbft_vote_admission::{
         PbftVoteAdmissionExecution, PbftVoteAdmissionPrecheck, PbftVoteAdmissionStatus,
@@ -2428,8 +2428,7 @@ mod tests {
     };
     use rustaxa_consensus::pbft_vote_validation::PbftVoteValidationStatus;
     use rustaxa_consensus::{
-        build_weighted_pbft_vote_payload, generate_pbft_vote, PbftVerifiedVotesService,
-        PbftVoteGenerationInput,
+        build_weighted_pbft_vote_payload, generate_pbft_vote, PbftVoteGenerationInput,
     };
     use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::vrf;
@@ -2441,35 +2440,24 @@ mod tests {
     fn verified_votes_service_for_test(
         storage: Option<&BridgeStorage>,
     ) -> Result<Box<BridgePbftService>, anyhow::Error> {
-        let owner_storage = storage
-            .map(|storage| storage.0.clone())
-            .unwrap_or_else(|| temp_bridge_storage("native_owner_fixture").0);
-        let verified_votes = PbftVerifiedVotesService::restore(owner_storage.clone())?;
-        let chain = rustaxa_consensus::pbft_chain::PbftChainService::from_parts(
-            Some(owner_storage.clone()),
-            PbftChainHead {
-                head_hash: H256::zero(),
-                size: 0,
-                non_empty_size: 0,
-                last_pbft_block_hash: H256::zero(),
-                last_non_null_pbft_dag_anchor_hash: H256::zero(),
+        let storage = storage
+            .map(|storage| BridgeStorage(storage.0.clone()))
+            .unwrap_or_else(|| temp_bridge_storage("native_owner_fixture"));
+        crate::pbft_manager::create_pbft_service_from_storage(
+            &storage,
+            PbftServiceConfig {
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 100,
+                cacti_lambda_default_ms: 100,
+                cacti_block: u64::MAX,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 400,
+                polling_interval_ms: 100,
+                report_malicious_behaviour: true,
+                magnolia_activation_period: 0,
             },
-            true,
-        )?;
-        Ok(Box::new(BridgePbftService {
-            manager: std::sync::Mutex::new(None),
-            chain,
-            proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService::from_parts(
-                Some(owner_storage.clone()),
-                rustaxa_consensus::proposed_blocks::ProposedBlocks::new(),
-            ),
-            verified_votes: Some(verified_votes),
-            slashing: None,
-            storage: Some(owner_storage),
-            readiness: rustaxa_consensus::PbftServiceReadiness::ready(),
-            pillar: None,
-            pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
-        }))
+        )
     }
 
     const NODE_SECRET: [u8; 32] = [0x35; 32];

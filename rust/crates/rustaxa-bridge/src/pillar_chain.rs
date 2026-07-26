@@ -839,7 +839,7 @@ mod tests {
         let service = create_pillar_test_service_from_storage(&storage).unwrap();
         assert!(service.pbft_service_has_pillar());
         assert!(service.pbft_service_pillar_ready());
-        assert!(service.manager.lock().unwrap().is_some());
+        assert_eq!(service.manager.lock().state.snapshot().period, 1);
         assert!(service.verified_votes.is_some());
         assert!(service.slashing.is_some());
         assert_eq!(

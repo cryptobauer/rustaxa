@@ -188,13 +188,14 @@ fn rejected(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi::rustaxa_ffi::PbftServiceConfig;
+    use crate::ffi::BridgeStorage;
     use ethereum_types::{H160, H256};
-    use rustaxa_consensus::pbft_chain::PbftChainHead;
     use rustaxa_consensus::verified_votes::{PbftVoteType, VerifiedVote};
-    use rustaxa_consensus::{PbftVerifiedVotesService, PbftVoteAdmissionRuntime};
+    use rustaxa_consensus::PbftVoteAdmissionRuntime;
     use rustaxa_storage::{Column, Config};
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_storage(name: &str) -> (Arc<Storage>, PathBuf) {
@@ -211,41 +212,28 @@ mod tests {
 
     fn service(
         storage: Option<Arc<Storage>>,
-        runtime: Option<PbftVoteAdmissionRuntime>,
+        runtime: PbftVoteAdmissionRuntime,
     ) -> BridgePbftService {
-        let verified_votes = runtime.map(|runtime| {
-            let owner_storage = storage
-                .clone()
-                .unwrap_or_else(|| test_storage("verified_votes_fixture").0);
-            let service = PbftVerifiedVotesService::restore(owner_storage).unwrap();
-            *service.lock().unwrap() = runtime;
-            service
-        });
-        BridgePbftService {
-            manager: Mutex::new(None),
-            chain: rustaxa_consensus::pbft_chain::PbftChainService::from_parts(
-                storage.clone(),
-                PbftChainHead {
-                    head_hash: H256::zero(),
-                    size: 0,
-                    non_empty_size: 0,
-                    last_pbft_block_hash: H256::zero(),
-                    last_non_null_pbft_dag_anchor_hash: H256::zero(),
-                },
-                true,
-            )
-            .unwrap(),
-            proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService::from_parts(
-                storage.clone(),
-                Default::default(),
-            ),
-            verified_votes,
-            slashing: None,
-            storage,
-            readiness: rustaxa_consensus::PbftServiceReadiness::ready(),
-            pillar: None,
-            pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
-        }
+        let storage =
+            BridgeStorage(storage.unwrap_or_else(|| test_storage("verified_votes_fixture").0));
+        let service = crate::pbft_manager::create_pbft_service_from_storage(
+            &storage,
+            PbftServiceConfig {
+                genesis_lambda_ms: 100,
+                cacti_lambda_max_ms: 100,
+                cacti_lambda_default_ms: 100,
+                cacti_block: u64::MAX,
+                max_exponential_lambda_ms: 60_000,
+                max_steps: 13,
+                deadline_ms: 400,
+                polling_interval_ms: 100,
+                report_malicious_behaviour: true,
+                magnolia_activation_period: 0,
+            },
+        )
+        .unwrap();
+        *service.verified_votes.as_ref().unwrap().lock().unwrap() = runtime;
+        *service
     }
 
     fn vote(hash: u64, period: u64) -> VerifiedVote {
@@ -274,7 +262,7 @@ mod tests {
             .verified_votes_mut()
             .add_verified_vote(vote(2, 12), None)
             .unwrap();
-        let service = service(Some(storage.clone()), Some(runtime));
+        let service = service(Some(storage.clone()), runtime);
         let old_hash = H256::from_low_u64_be(900);
         let kept_hash = H256::from_low_u64_be(901);
         service
@@ -382,8 +370,8 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_noop_invalid_relation_and_chain_only_are_typed() {
-        let empty = service(None, Some(PbftVoteAdmissionRuntime::new()));
+    fn cleanup_noop_and_invalid_relation_are_typed() {
+        let empty = service(None, PbftVoteAdmissionRuntime::new());
         let no_op = empty.pbft_service_cleanup_period_state(12, 13).unwrap();
         assert_eq!(no_op.status, CLEANUP_NOT_REQUIRED);
         assert!(no_op.transition_published);
@@ -400,16 +388,5 @@ mod tests {
             .pbft_service_cleanup_period_state(u64::MAX, u64::MAX)
             .unwrap();
         assert_eq!(overflow.status, CLEANUP_REJECTED);
-
-        let chain_only = service(None, None);
-        let rejected = chain_only
-            .pbft_service_cleanup_period_state(12, 13)
-            .unwrap();
-        assert_eq!(rejected.status, CLEANUP_REJECTED);
-        assert_eq!(
-            rejected.error_code,
-            "PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"
-        );
-        assert!(!rejected.transition_published);
     }
 }

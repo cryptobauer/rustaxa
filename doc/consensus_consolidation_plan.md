@@ -92,8 +92,11 @@ comes from the native sibling owner responsible for each operation, while only l
 configuration, duplicate-cache state, and its mutex; the slashing bridge now performs only DTO/status conversion around
 task-oriented plan/report calls. Native `rustaxa-consensus::pbft_readiness::PbftServiceReadiness` also owns the
 independent monotonic PBFT and pillar-bootstrap readiness atomics plus their acquire/release publication contracts; the
-bridge root retains only those native capabilities. The PBFT manager/pillar owner and the
-DAG/transaction/sortition owner remain in this workstream.
+bridge root retains only those native capabilities. Native
+`rustaxa-consensus::pbft_manager::PbftManagerService` now owns the manager mutex and complete runtime/session container;
+the bridge root retains a direct native service and exposes only a short-lived native guard to DTO/effect adapters.
+PBFT construction/orchestration tests, the pillar owner, and the DAG/transaction/sortition owner remain in this
+workstream.
 
 ### 3. Collapse configuration topology
 

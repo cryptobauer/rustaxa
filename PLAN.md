@@ -868,7 +868,8 @@ contracts. Logging is explicitly not a boundary; it can stay temporarily in the 
 Rust statuses and telemetry.
 
 Current status: PBFT manager ownership is complete for this protocol-runtime boundary. Rust owns the manager scalar
-runtime, daemon-tick and state-action cursors, transition persistence, broadcast planning, sync-period admission,
+runtime, its native mutex and complete session container, daemon-tick and state-action cursors, transition persistence,
+broadcast planning, sync-period admission,
 queue-backed compact facts and canonical transaction/cert-vote payload sources, proposal ranking, finalization planning,
 dynamic-lambda decisions, and bounded restart/duplicate classification. Remaining `PbftBlock`, `PbftVote`,
 `PeriodData`, `DagBlock`, `Transaction`, pillar sidecar, network, timer, FinalChain/EVM, and public API materialization
@@ -1168,7 +1169,9 @@ The current Rust consensus footprint is broad but still incomplete:
    retains its live-vote overload's slot precheck and compatibility materialization until the remaining network caller
    supplies Rust-normalized evidence directly. Native `PbftServiceReadiness` instances own the independent PBFT and
    pillar-bootstrap atomics plus their monotonic acquire/release publication contracts; the bridge root now retains
-   those native capabilities instead of owning lifecycle control state.
+   those native capabilities instead of owning lifecycle control state. Native `PbftManagerService` likewise owns the
+   manager mutex, poison policy, and complete runtime/session container; bridge adapters borrow only a short-lived
+   native guard.
    C++ keeps daemon threads, networking, timers,
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
    sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT
