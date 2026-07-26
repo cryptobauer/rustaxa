@@ -44,15 +44,15 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 50441 |
-| `shim_lines` | 19223 |
-| `cxx_functions` | 422 |
+| `bridge_lines` | 50440 |
+| `shim_lines` | 19204 |
+| `cxx_functions` | 421 |
 | `cxx_carriers` | 359 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 15 |
 | `granular_flags` | 9 |
-| `partial_service_factories` | 4 |
-| `compatibility_constructor_calls` | 4 |
+| `partial_service_factories` | 3 |
+| `compatibility_constructor_calls` | 3 |
 | `non_test_cpp_consumers` | 43 |
 
 ## CXX Box Factory Inventory
@@ -73,7 +73,6 @@ not compatibility promises. The guard requires exact set equality with the parse
 | `create_final_chain_with_rewards_config` | Production root debt | `App`/FinalChain bootstrap | Native application owns FinalChain construction and passes only an executor adapter. |
 | `create_pbft_chain_service_from_storage` | Partial service | `pbft_chain_shim.cpp` | Delete with chain-only compatibility construction. |
 | `create_pbft_service_from_storage` | Production root debt | `App` bootstrap | Native application construction replaces the bridge-owned service. |
-| `create_pillar_capable_pbft_service_for_compatibility` | Partial service | `pillar_chain_manager_shim.cpp` | Delete with pillar-only compatibility construction. |
 | `create_storage` | Production root debt | `DbStorage`/`App` bootstrap | Native application storage construction replaces broad C++ bootstrap ownership. |
 | `create_dag_storage_queries` | Compatibility facade | storage shim | Native DAG/query fixtures replace it. |
 | `create_final_chain_storage_queries` | Compatibility facade | storage shim | FinalChain/query APIs replace it. |
@@ -100,7 +99,6 @@ and mechanically compared with bridge-shaped C++ call sites.
 | `create_dag_transaction_service_for_transaction_manager` | `libraries/core_libs/consensus/shims/transaction_manager_shim/src/transaction_manager_shim.cpp` | 1 | Native fixtures replace transaction-only construction. |
 | `create_dag_transaction_service_for_gas_pricer` | `libraries/core_libs/consensus/shims/gas_pricer_shim/src/gas_pricer_shim.cpp` | 1 | Gas clients use the production transaction service/query API. |
 | `create_pbft_chain_service_from_storage` | `libraries/core_libs/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp` | 1 | Network and public readers use native service/query APIs. |
-| `create_pillar_capable_pbft_service_for_compatibility` | `libraries/core_libs/consensus/shims/pillar_chain_manager_shim/src/pillar_chain_manager_shim.cpp` | 1 | Pillar behavior/tests use the native PBFT application owner. |
 
 ## Test-Only CXX Export Allowlist
 

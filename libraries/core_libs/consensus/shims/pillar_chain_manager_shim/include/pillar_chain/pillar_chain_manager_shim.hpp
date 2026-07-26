@@ -326,17 +326,6 @@ class PillarChainManager {
                      std::shared_ptr<KeyManager> key_manager, addr_t node_addr);
 
   /**
-   * Compatibility constructor for direct C++ callers that do not own the application PBFT service.
-   *
-   * This overload creates the narrowly scoped pillar-capable compatibility service from `db`. Production `App`
-   * wiring must use the injected-service overload so pillar and PBFT state share one Rust lifetime. Missing pillar
-   * capability or incomplete bootstrap is reported as an exception; no independent production runtime is restored.
-   */
-  PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
-                     std::shared_ptr<final_chain::FinalChain> final_chain, std::shared_ptr<KeyManager> key_manager,
-                     addr_t node_addr);
-
-  /**
    * Creates and persists a new current pillar block for `period`.
    *
    * Returns:

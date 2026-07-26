@@ -106,10 +106,12 @@ pub(crate) fn restore_pillar_chain_state(storage: &BridgeStorage) -> Result<Pill
     Ok(runtime)
 }
 
-/// Creates a pillar-capable partial PBFT service for compatibility tests and
-/// transitional callers that do not own the production PBFT manager runtime.
-/// Production App construction must use `create_pbft_service_from_storage`.
-pub fn create_pillar_capable_pbft_service_for_compatibility(
+/// Creates a test-only pillar-capable PBFT service.
+///
+/// This constructor is intentionally test-scoped; production Rust callers must
+/// use `crate::pbft_manager::create_pbft_service_from_storage`.
+#[cfg(test)]
+pub(crate) fn create_pillar_test_service_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePbftService>> {
     let mut service = crate::pbft_chain::create_pbft_chain_service_from_storage(storage)?;
@@ -843,7 +845,7 @@ mod tests {
     fn compatibility_service_has_only_pillar_partial_capability() {
         let temp_dir = unique_temp_dir("pillar_compatibility_capability");
         let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-        let service = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+        let service = create_pillar_test_service_from_storage(&storage).unwrap();
         assert!(service.pbft_service_has_pillar());
         assert!(service.pbft_service_pillar_ready());
         assert!(service.manager.lock().unwrap().is_none());
@@ -991,7 +993,7 @@ mod tests {
             )
             .unwrap();
 
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let creation = runtime
                 .pbft_service_pillar_plan_block_creation(
                     FfiPillarBlockCreationRequest {
@@ -1128,7 +1130,7 @@ mod tests {
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
             let pillar_storage = create_pillar_chain_storage(&storage);
-            let pillar_runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            let pillar_runtime = create_pillar_test_service_from_storage(&storage)
                 .expect("pillar runtime should initialize");
             let current_data = canonical_current_data(41);
 
@@ -1174,7 +1176,7 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            let runtime = create_pillar_test_service_from_storage(&storage)
                 .expect("pillar runtime should initialize");
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_data.clone())
@@ -1195,7 +1197,7 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should reopen");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            let runtime = create_pillar_test_service_from_storage(&storage)
                 .expect("pillar runtime should initialize");
             let bootstrap = runtime
                 .pbft_service_pillar_load_startup_bootstrap()
@@ -1225,7 +1227,7 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            let runtime = create_pillar_test_service_from_storage(&storage)
                 .expect("pillar runtime should initialize");
             let bootstrap = runtime
                 .pbft_service_pillar_load_startup_bootstrap()
@@ -1250,7 +1252,7 @@ mod tests {
         let before;
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_data.clone())
                 .unwrap();
@@ -1270,7 +1272,7 @@ mod tests {
         }
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let after = runtime
                 .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
@@ -1304,7 +1306,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
             save_current_pillar_block_data_storage(storage.0.as_ref(), &[0xC1, 0x01]).unwrap();
-            let error = match create_pillar_capable_pbft_service_for_compatibility(&storage) {
+            let error = match create_pillar_test_service_from_storage(&storage) {
                 Ok(_) => panic!("malformed current data must reject construction"),
                 Err(error) => error,
             };
@@ -1320,7 +1322,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_malformed_current_apply");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let current_data = canonical_current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_data.clone())
@@ -1366,7 +1368,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_anchor_tags");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let missing = runtime
                 .pbft_service_pillar_plan_current_anchor_decision(
                     FfiPillarCurrentAnchorDecisionRequest {
@@ -1414,7 +1416,7 @@ mod tests {
                     .expect("storage should initialize");
             save_finalized_pillar_block_storage(storage.0.as_ref(), 42, &[0xC1, 0x01])
                 .expect("malformed latest bytes should persist opaquely");
-            let error = match create_pillar_capable_pbft_service_for_compatibility(&storage) {
+            let error = match create_pillar_test_service_from_storage(&storage) {
                 Ok(_) => panic!("malformed latest block should reject runtime construction"),
                 Err(error) => error,
             };
@@ -1473,7 +1475,7 @@ mod tests {
                 .expect_err("empty own vote should reject")
                 .to_string()
                 .contains("PILLAR_OWN_VOTE_EMPTY_PAYLOAD"));
-            let pillar_runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            let pillar_runtime = create_pillar_test_service_from_storage(&storage)
                 .expect("pillar runtime should initialize");
             assert!(pillar_runtime
                 .pbft_service_pillar_apply_current_block_data(Vec::new())
@@ -1501,7 +1503,7 @@ mod tests {
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
             let final_chain = final_chain_with_validator(&storage, [9; 20]);
-            let service = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let service = create_pillar_test_service_from_storage(&storage).unwrap();
             service.pbft_service_complete_pillar_bootstrap().unwrap();
 
             let threshold = service

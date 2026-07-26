@@ -15,8 +15,15 @@ namespace taraxa::core_tests {
 
 #ifdef RUSTAXA_ENABLE
 SharedPbftService makeInjectedPillarTestService(const std::shared_ptr<DbStorage>& db) {
-  return std::make_shared<PbftService>(
-      rustaxa::create_pillar_capable_pbft_service_for_compatibility(db->rustStorage()));
+  rustaxa::PbftServiceConfig service_config{};
+  service_config.genesis_lambda_ms = 1000;
+  service_config.cacti_lambda_max_ms = 1000;
+  service_config.cacti_lambda_default_ms = 1000;
+  service_config.max_exponential_lambda_ms = 60000;
+  service_config.max_steps = 13;
+  service_config.deadline_ms = 4000;
+  service_config.polling_interval_ms = 100;
+  return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), service_config));
 }
 #endif
 
@@ -491,7 +498,7 @@ TEST_F(PillarChainTest, validatePillarVote_usesRustRecoveredIdentityForUniquenes
 #endif
 }
 
-TEST_F(PillarChainTest, compatibilityConstructor_rejectsInvalidRustInspectedSignature) {
+TEST_F(PillarChainTest, injectedService_rejectsInvalidRustInspectedSignature) {
 #ifdef RUSTAXA_ENABLE_PILLAR_VOTES
   auto cfg = make_node_cfgs(1, 1, 10).front();
   cfg.genesis.state.dpos.delegation_delay = 1;
@@ -503,8 +510,9 @@ TEST_F(PillarChainTest, compatibilityConstructor_rejectsInvalidRustInspectedSign
   const auto current_pillar_block = std::make_shared<pillar_chain::PillarBlock>(
       0, h256{}, blk_hash_t{}, h256{}, 0, std::vector<pillar_chain::PillarBlock::ValidatorVoteCountChange>{});
   db->saveCurrentPillarBlockData({current_pillar_block, {}});
-  auto pillar_chain_manager = pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, final_chain,
-                                                               nullptr, cfg.getFirstWallet().node_addr);
+  auto pillar_chain_manager =
+      pillar_chain::PillarChainManager(cfg.genesis.state.hardforks.ficus_hf, db, makeInjectedPillarTestService(db),
+                                       final_chain, nullptr, cfg.getFirstWallet().node_addr);
 
   const auto valid_vote = PillarVote(cfg.getFirstWallet().node_secret, PbftPeriod{1}, current_pillar_block->getHash());
   auto signature = valid_vote.getVoteSignature();

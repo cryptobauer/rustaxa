@@ -500,14 +500,6 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
   }
 }
 
-PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_config, std::shared_ptr<DbStorage> db,
-                                       std::shared_ptr<final_chain::FinalChain> final_chain,
-                                       std::shared_ptr<KeyManager> key_manager, addr_t node_addr)
-    : PillarChainManager(ficus_hf_config, db,
-                         std::make_shared<PbftService>(
-                             rustaxa::create_pillar_capable_pbft_service_for_compatibility(db->rustStorage())),
-                         std::move(final_chain), std::move(key_manager), node_addr) {}
-
 std::shared_ptr<PillarBlock> PillarChainManager::createPillarBlock(
     PbftPeriod period, const std::shared_ptr<const final_chain::BlockHeader>& block_header, const h256& bridge_root,
     const h256& bridge_epoch) {

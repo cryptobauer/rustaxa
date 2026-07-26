@@ -365,6 +365,14 @@ test only when `RUSTAXA_ENABLE_FINAL_CHAIN=OFF`; the existing Rust-mode core-lib
 registering the deleted shim. Remaining `CRW-14` families are blocked on `CRW-12` because their C++ facades call the
 bridge-owned PBFT or DAG/transaction application service.
 
+The next `CRW-13` topology contraction deletes
+`create_pillar_capable_pbft_service_for_compatibility`, its CXX export, and the Rust-mode
+`PillarChainManager` compatibility constructor. Production already injects the full App-owned PBFT service; C++ pillar
+tests now use that production constructor path, and Rust-only pillar behavior retains a private `#[cfg(test)]` fixture.
+The checked topology falls to three partial factories and three compatibility-constructor calls without changing the
+untouched pure-C++ manager constructor. The guarded `tests/pillar_chain_test.cpp` constructor rewiring is the sole
+upstream-owned test exception; it preserves assertions and changes only Rust-enabled fixture construction.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

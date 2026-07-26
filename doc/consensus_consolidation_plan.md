@@ -100,6 +100,8 @@ DAG/transaction/sortition owner remain in this workstream.
 - Define one Rust-enabled production feature bundle.
 - Delete chain-only, pillar-only, transaction-only, and similar partial-service production factories after their tests
   use native fixtures.
+- The pillar-only compatibility factory and Rust-mode manager compatibility constructor are deleted; pillar C++ tests
+  now inject the same full PBFT application service used by production, while Rust unit tests use a private test helper.
 - Remove redundant module flags and CMake dependency matrices in dependency order.
 - Continue to compile untouched legacy implementations in the all-Rust-disabled reference configuration.
 

@@ -5390,9 +5390,6 @@ pub mod rustaxa_ffi {
         pub fn create_pillar_chain_storage(
             storage: &BridgeStorage,
         ) -> Box<BridgePillarChainStorage>;
-        pub fn create_pillar_capable_pbft_service_for_compatibility(
-            storage: &BridgeStorage,
-        ) -> Result<Box<BridgePbftService>>;
         pub fn pbft_service_has_pillar(self: &BridgePbftService) -> bool;
         pub fn pbft_service_pillar_ready(self: &BridgePbftService) -> bool;
         pub fn pbft_service_complete_pillar_bootstrap(self: &BridgePbftService) -> Result<()>;

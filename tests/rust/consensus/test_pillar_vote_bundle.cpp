@@ -70,8 +70,20 @@ std::filesystem::path tempStoragePath(const std::string& name) {
   return path;
 }
 
+rustaxa::PbftServiceConfig makePbftServiceConfig() {
+  rustaxa::PbftServiceConfig config{};
+  config.genesis_lambda_ms = 1000;
+  config.cacti_lambda_max_ms = 1000;
+  config.cacti_lambda_default_ms = 1000;
+  config.max_exponential_lambda_ms = 60000;
+  config.max_steps = 13;
+  config.deadline_ms = 4000;
+  config.polling_interval_ms = 100;
+  return config;
+}
+
 rust::Box<rustaxa::BridgePbftService> createReadyPillarService(const rustaxa::BridgeStorage& storage) {
-  auto service = rustaxa::create_pillar_capable_pbft_service_for_compatibility(storage);
+  auto service = rustaxa::create_pbft_service_from_storage(storage, makePbftServiceConfig());
   service->pbft_service_complete_pillar_bootstrap();
   return service;
 }

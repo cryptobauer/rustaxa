@@ -2211,7 +2211,7 @@ mod tests {
     use crate::ffi::rustaxa_ffi;
     use crate::final_chain::create_final_chain;
     use crate::pillar_chain::{
-        create_pillar_capable_pbft_service_for_compatibility, create_pillar_chain_storage,
+        create_pillar_chain_storage, create_pillar_test_service_from_storage,
     };
     use crate::storage::create_storage;
     use ethereum_types::H160;
@@ -2488,7 +2488,7 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+            let runtime = create_pillar_test_service_from_storage(&storage)
                 .expect("pillar runtime should initialize");
             let pillar_storage = create_pillar_chain_storage(&storage);
             let (block, current_data_rlp) = current_data(41);
@@ -2575,7 +2575,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_stale_single");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (vote, _) = signed_vote(0x25, 42, 77);
             let prepared = runtime
                 .pbft_service_pillar_prepare_single_vote_admission(
@@ -2617,7 +2617,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_checked_token_reuse");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_rlp)
@@ -2665,7 +2665,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_checked_reprepare");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (old_block, old_current_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(old_current_rlp)
@@ -2741,7 +2741,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_identity_race");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_rlp)
@@ -2799,7 +2799,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_relevance_race");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_rlp)
@@ -2856,7 +2856,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_preparation_bound");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             {
                 let state = runtime.pillar_state(false).unwrap();
                 for value in 0..=MAX_SINGLE_VOTE_PREPARATIONS {
@@ -2904,7 +2904,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_stale_bundle");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_rlp)
@@ -2958,7 +2958,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_finalize_overflow");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(u64::MAX);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_rlp)
@@ -2986,7 +2986,7 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             let pillar_storage = create_pillar_chain_storage(&storage);
             runtime
@@ -3048,7 +3048,7 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_rlp.clone())
@@ -3106,7 +3106,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_finalization_ack_retry");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).expect("storage should open");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let pillar_storage = create_pillar_chain_storage(&storage);
             let (block, current_rlp) = current_data(41);
             runtime
@@ -3200,7 +3200,7 @@ mod tests {
             let storage =
                 create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
                     .expect("storage should initialize");
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let pillar_storage = create_pillar_chain_storage(&storage);
             let (block, current_rlp) = current_data(41);
             runtime
@@ -3260,7 +3260,7 @@ mod tests {
         let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_prep_token_stale_generation");
         {
             let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (block, current_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(current_rlp.clone())
@@ -3618,7 +3618,7 @@ mod tests {
     fn network_bundle_chunks_use_runtime_votes_without_materializing_cpp_votes() {
         let dir = unique_temp_dir("pillar_network_runtime_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+        let runtime = create_pillar_test_service_from_storage(&storage)
             .expect("pillar runtime should initialize");
         let period = 92;
         let (current_block, current_data_rlp) = current_data(period - 1);
@@ -3684,7 +3684,7 @@ mod tests {
     fn network_bundle_chunks_fall_back_to_matching_stored_period_data() {
         let dir = unique_temp_dir("pillar_network_storage_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+        let runtime = create_pillar_test_service_from_storage(&storage)
             .expect("pillar runtime should initialize");
         let period = 93;
         let block = H256::from_low_u64_be(9300);
@@ -3732,7 +3732,7 @@ mod tests {
     fn verified_vote_payload_lookup_falls_back_to_matching_stored_period_data() {
         let dir = unique_temp_dir("pillar_payload_lookup_storage_bundle");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+        let runtime = create_pillar_test_service_from_storage(&storage)
             .expect("pillar runtime should initialize");
         let period = 94;
         let block = H256::from_low_u64_be(9400);
@@ -3776,7 +3776,7 @@ mod tests {
     fn verified_vote_payload_lookup_keeps_live_below_threshold_state() {
         let dir = unique_temp_dir("pillar_payload_lookup_live_below_threshold");
         let storage = create_storage(dir.to_string_lossy().as_ref()).expect("storage should open");
-        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+        let runtime = create_pillar_test_service_from_storage(&storage)
             .expect("pillar runtime should initialize");
         let period = 95;
         let block = H256::from_low_u64_be(9500);
@@ -3915,7 +3915,7 @@ mod tests {
     fn runtime_relevance_derives_known_vote_from_owned_index() {
         let storage_dir = unique_temp_dir("pillar_runtime_relevance");
         let storage = create_storage(storage_dir.to_str().unwrap()).expect("storage should open");
-        let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage)
+        let runtime = create_pillar_test_service_from_storage(&storage)
             .expect("pillar runtime should initialize");
         let vote = vote(31, 888, 1, 0xD4, 6);
         {
@@ -3948,7 +3948,7 @@ mod tests {
         {
             let storage = create_storage(storage_dir.to_str().unwrap()).unwrap();
             let final_chain = final_chain_for_voters(&storage, &[]);
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (anchor, anchor_rlp) = current_data(0);
             runtime
                 .pbft_service_pillar_apply_current_block_data(anchor_rlp)
@@ -3996,7 +3996,7 @@ mod tests {
             let key = SigningKey::from_slice(&[0x72; 32]).unwrap();
             let (_, voter) = signed_vote_with_key(&key, 1, 1);
             let final_chain = final_chain_for_voters(&storage, &[voter]);
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (anchor, anchor_rlp) = current_data(0);
             runtime
                 .pbft_service_pillar_apply_current_block_data(anchor_rlp)
@@ -4030,7 +4030,7 @@ mod tests {
             let key = SigningKey::from_slice(&[0x73; 32]).unwrap();
             let (_, voter) = signed_vote_with_key(&key, 42, 1);
             let final_chain = final_chain_for_voters(&storage, &[voter]);
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (anchor, anchor_rlp) = current_data(41);
             runtime
                 .pbft_service_pillar_apply_current_block_data(anchor_rlp)
@@ -4053,7 +4053,7 @@ mod tests {
         {
             let storage = create_storage(zero_dir.to_str().unwrap()).unwrap();
             let final_chain = final_chain_for_voters(&storage, &[]);
-            let runtime = create_pillar_capable_pbft_service_for_compatibility(&storage).unwrap();
+            let runtime = create_pillar_test_service_from_storage(&storage).unwrap();
             let (anchor, anchor_rlp) = current_data(0);
             runtime
                 .pbft_service_pillar_apply_current_block_data(anchor_rlp)
