@@ -4392,9 +4392,6 @@ pub mod rustaxa_ffi {
             gas_pricer_config: GasPricerConfig,
             proposal_dag_gas_limit: u64,
         ) -> Result<Box<BridgeDagTransactionService>>;
-        pub fn create_dag_transaction_service_for_gas_pricer(
-            gas_pricer_config: GasPricerConfig,
-        ) -> Result<Box<BridgeDagTransactionService>>;
         /// Prepares one canonical add-block transition without mutation.
         pub fn dag_transaction_service_prepare_add_block(
             self: &BridgeDagTransactionService,

@@ -6,10 +6,9 @@ use crate::ffi::{
 };
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use crate::transaction_manager::{
-    append_prepared_dag_transactions_to_batch, build_transaction_state_for_gas_pricer,
-    build_transaction_state_from_storage, dag_save_command_report,
-    prepare_dag_transaction_publication, prepare_transactions_from_dag_block_with_runtime,
-    publish_prepared_dag_transactions,
+    append_prepared_dag_transactions_to_batch, build_transaction_state_from_storage,
+    dag_save_command_report, prepare_dag_transaction_publication,
+    prepare_transactions_from_dag_block_with_runtime, publish_prepared_dag_transactions,
 };
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::H256;
@@ -167,19 +166,6 @@ pub fn create_dag_transaction_service_for_transaction_manager(
         gas_pricer_config,
         proposal_dag_gas_limit,
     )?;
-    Ok(Box::new(BridgeDagTransactionService {
-        transaction: Mutex::new(transaction),
-        dag: Mutex::new(None),
-        sortition: Mutex::new(None),
-        has_sortition: false,
-    }))
-}
-
-/// Constructs a storage-free transaction-only service for standalone GasPricer tests.
-pub fn create_dag_transaction_service_for_gas_pricer(
-    gas_pricer_config: GasPricerConfig,
-) -> Result<Box<BridgeDagTransactionService>> {
-    let transaction = *build_transaction_state_for_gas_pricer(gas_pricer_config)?;
     Ok(Box::new(BridgeDagTransactionService {
         transaction: Mutex::new(transaction),
         dag: Mutex::new(None),
@@ -3653,21 +3639,6 @@ mod tests {
                 .to_string(),
             "SORTITION_SERVICE_UNAVAILABLE"
         );
-        let gas_pricer = create_dag_transaction_service_for_gas_pricer(gas_config()).unwrap();
-        assert!(!gas_pricer.dag_transaction_service_has_sortition());
-        assert_eq!(
-            gas_pricer.transaction_manager_runtime_transaction_count(),
-            0
-        );
-        assert_eq!(
-            gas_pricer
-                .dag_manager_runtime_vertex_count()
-                .unwrap_err()
-                .to_string(),
-            "DAG_SERVICE_UNAVAILABLE"
-        );
-
-        drop(gas_pricer);
         drop(compat);
         drop(restored);
         drop(full);

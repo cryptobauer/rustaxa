@@ -102,6 +102,9 @@ DAG/transaction/sortition owner remain in this workstream.
   use native fixtures.
 - The pillar-only compatibility factory and Rust-mode manager compatibility constructor are deleted; pillar C++ tests
   now inject the same full PBFT application service used by production, while Rust unit tests use a private test helper.
+- The storage-free gas-pricer partial factory and shim-owned compatibility service are deleted. Rust production uses
+  the App-owned transaction service; native oracle tests own deterministic percentile/history behavior, and the
+  untouched standalone C++ test remains reference-only.
 - Remove redundant module flags and CMake dependency matrices in dependency order.
 - Continue to compile untouched legacy implementations in the all-Rust-disabled reference configuration.
 

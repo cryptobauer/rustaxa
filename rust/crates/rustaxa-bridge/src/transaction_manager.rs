@@ -1493,24 +1493,12 @@ pub(crate) fn build_transaction_state_from_storage(
     ))
 }
 
-/// Creates a storage-free transaction runtime for standalone GasPricer tests.
+/// Builds transaction runtime state from validated queue and oracle inputs.
 ///
-/// This compatibility constructor owns an empty one-entry queue and has no
-/// durable transaction authority. Production TransactionManager construction
-/// must use `build_transaction_state_from_storage` so queue/count
-/// and gas history restore from the same cloned storage handle.
-pub(crate) fn build_transaction_state_for_gas_pricer(
-    gas_pricer_config: GasPricerConfig,
-) -> Result<Box<TransactionRuntimeState>> {
-    Ok(build_transaction_state_inner(
-        0,
-        TransactionQueueConfig { max_size: 1 },
-        GasPriceOracle::new(domain_gas_pricer_config(gas_pricer_config))?,
-        0,
-        None,
-    ))
-}
-
+/// Callers may omit storage only for native unit tests. Production
+/// `TransactionManager` construction must use
+/// `build_transaction_state_from_storage` so queue/count and gas history
+/// restore from the same cloned storage handle.
 fn build_transaction_state_inner(
     initial_transaction_count: u64,
     config: TransactionQueueConfig,
@@ -2781,9 +2769,14 @@ mod tests {
     }
 
     #[test]
-    fn transaction_runtime_compatibility_oracle_updates_history_and_ignores_empty_blocks() {
-        let mut runtime =
-            build_transaction_state_for_gas_pricer(bridge_gas_pricer_config(true)).unwrap();
+    fn transaction_runtime_oracle_updates_history_and_ignores_empty_blocks() {
+        let mut runtime = build_transaction_state_inner(
+            0,
+            TransactionQueueConfig { max_size: 1 },
+            GasPriceOracle::new(domain_gas_pricer_config(bridge_gas_pricer_config(true))).unwrap(),
+            0,
+            None,
+        );
         runtime.transaction_manager_runtime_gas_price_update(Vec::new());
         assert_eq!(
             U256::from_big_endian(&runtime.transaction_manager_runtime_gas_price_bid()),
@@ -2799,7 +2792,6 @@ mod tests {
             U256::from_big_endian(&runtime.transaction_manager_runtime_gas_price_bid()),
             U256::from(3_u64)
         );
-        assert!(runtime.storage.is_none());
     }
 
     #[test]

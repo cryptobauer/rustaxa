@@ -44,15 +44,15 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 50440 |
-| `shim_lines` | 19204 |
-| `cxx_functions` | 421 |
+| `bridge_lines` | 50400 |
+| `shim_lines` | 19148 |
+| `cxx_functions` | 420 |
 | `cxx_carriers` | 359 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 15 |
 | `granular_flags` | 9 |
-| `partial_service_factories` | 3 |
-| `compatibility_constructor_calls` | 3 |
+| `partial_service_factories` | 2 |
+| `compatibility_constructor_calls` | 2 |
 | `non_test_cpp_consumers` | 43 |
 
 ## CXX Box Factory Inventory
@@ -67,7 +67,6 @@ not compatibility promises. The guard requires exact set equality with the parse
 | `create_consensus_network_api` | Supported boundary | tarcap transport | Keep only transport execution after `CRW-N01`. |
 | `create_consensus_query_api` | Supported boundary | RPC, GraphQL, debug/Test RPC, light plugin | Keep only stable client-oriented public reads. |
 | `create_dag_transaction_service_from_storage` | Production root debt | `App` bootstrap | Native application construction replaces the bridge-owned service. |
-| `create_dag_transaction_service_for_gas_pricer` | Partial service | `gas_pricer_shim.cpp` | Delete with standalone gas-pricer compatibility construction. |
 | `create_dag_transaction_service_for_transaction_manager` | Partial service | `transaction_manager_shim.cpp` | Delete with transaction-only compatibility construction. |
 | `create_final_chain_execution_session` | Supported boundary | FinalChain/StateAPI executor adapter | Narrow to concrete executor inputs/results during `CRW-E01`. |
 | `create_final_chain_with_rewards_config` | Production root debt | `App`/FinalChain bootstrap | Native application owns FinalChain construction and passes only an executor adapter. |
@@ -97,7 +96,6 @@ and mechanically compared with bridge-shaped C++ call sites.
 | CXX factory | Compatibility constructor client path | Exact calls | Delete when |
 | --- | --- | ---: | --- |
 | `create_dag_transaction_service_for_transaction_manager` | `libraries/core_libs/consensus/shims/transaction_manager_shim/src/transaction_manager_shim.cpp` | 1 | Native fixtures replace transaction-only construction. |
-| `create_dag_transaction_service_for_gas_pricer` | `libraries/core_libs/consensus/shims/gas_pricer_shim/src/gas_pricer_shim.cpp` | 1 | Gas clients use the production transaction service/query API. |
 | `create_pbft_chain_service_from_storage` | `libraries/core_libs/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp` | 1 | Network and public readers use native service/query APIs. |
 
 ## Test-Only CXX Export Allowlist

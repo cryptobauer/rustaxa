@@ -124,9 +124,12 @@ add_executable(tarcap_threadpool_test tarcap_threadpool_test.cpp)
 target_link_libraries(tarcap_threadpool_test test_util)
 add_test(tarcap_threadpool_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tarcap_threadpool_test)
 
-add_executable(gas_pricer_test gas_pricer_test.cpp)
-target_link_libraries(gas_pricer_test test_util)
-add_test(gas_pricer_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gas_pricer_test)
+if(NOT RUSTAXA_ENABLE)
+    # Preserve untouched pure-C++ implementation and its tests.
+    add_executable(gas_pricer_test gas_pricer_test.cpp)
+    target_link_libraries(gas_pricer_test test_util)
+    add_test(gas_pricer_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/gas_pricer_test)
+endif()
 
 add_executable(rpc_test rpc_test.cpp)
 target_link_libraries(rpc_test test_util)

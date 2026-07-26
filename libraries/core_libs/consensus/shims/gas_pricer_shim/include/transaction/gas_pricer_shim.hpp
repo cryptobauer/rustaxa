@@ -1,11 +1,9 @@
 #pragma once
 
 #include <memory>
-#include <shared_mutex>
 
 #include "config/genesis.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
-#include "transaction/dag_transaction_service.hpp"
 #include "transaction/transaction.hpp"
 
 namespace taraxa {
@@ -23,10 +21,8 @@ class TransactionManager;
  *
  * Behavior notes:
  * - Production instances route block and pool bids through `TransactionManager`;
- *   pool queue inspection and oracle combination remain inside its combined runtime.
+ *   pool queue inspection and oracle combination remain inside its `TransactionManager`.
  * - `update` forwards finalized-block transactions to that same runtime.
- * - A null-manager block-mode instance owns a storage-free combined runtime solely
- *   for standalone compatibility tests. It is never production authority.
  * - No fallback to the legacy C++ pricing logic is performed in Rust mode.
  */
 class GasPricer {
@@ -58,9 +54,6 @@ class GasPricer {
   const bool kIsLightNode;
   const bool kBlocksGasPricer;
   std::shared_ptr<TransactionManager> trx_mgr_;
-
-  mutable std::shared_mutex mutex_;
-  SharedDagTransactionService compatibility_service_;
 };
 
 }  // namespace taraxa
