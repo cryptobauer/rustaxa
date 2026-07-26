@@ -4522,7 +4522,7 @@ mod tests {
             "PBFT_SERVICE_PILLAR_UNAVAILABLE"
         );
         let identity_before = {
-            let state = service.pillar_state(false).unwrap();
+            let state = service.pillar.lock(false).unwrap();
             let generation = state.current_anchor.read().unwrap().generation;
             (
                 &*state as *const rustaxa_consensus::PillarChainState as usize,
@@ -4540,7 +4540,7 @@ mod tests {
             6
         );
         let identity_after = {
-            let state = service.pillar_state(true).unwrap();
+            let state = service.pillar.lock(true).unwrap();
             let generation = state.current_anchor.read().unwrap().generation;
             (
                 &*state as *const rustaxa_consensus::PillarChainState as usize,

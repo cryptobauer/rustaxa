@@ -4,10 +4,10 @@
 //! Rust pillar runtime: shared storage, startup restoration, pillar votes, the
 //! canonical current-anchor snapshot, one-time vote/finalization preparation
 //! registries, the outer serialization lock, and monotonic bootstrap readiness.
-//! It has no CXX dependency. Task-oriented methods own storage and anchor
-//! behavior; bridge code may temporarily borrow [`PillarChainGuard`] only for
-//! pillar-vote behavior that has not yet moved, and must release that guard
-//! before calling FinalChain or any C++ executor.
+//! It has no CXX dependency. Task-oriented methods own storage, anchor, vote,
+//! bundle, lookup, and finalization behavior. Production bridge code never
+//! borrows [`PillarChainGuard`]; the guard remains public only for focused
+//! native and bridge-boundary characterization tests.
 
 use crate::{
     PbftServiceReadiness, PillarBlockCreationFact, PillarBlockCreationPlan, PillarBlockLinkageFact,
@@ -148,10 +148,9 @@ pub struct PillarChainStateSnapshot {
 
 /// Native mutable state protected by [`PillarChainService`]'s outer mutex.
 ///
-/// The public fields are a temporary bridge-adapter escape hatch. They do not
-/// cross CXX and must only be accessed through [`PillarChainGuard`]. New native
-/// behavior should prefer task-oriented service methods so this surface can be
-/// narrowed when the remaining bridge orchestration moves into this crate.
+/// The public fields support focused boundary characterization and never cross
+/// CXX. Production behavior must use task-oriented [`PillarChainService`]
+/// methods so no state guard can survive an external executor call.
 pub struct PillarChainState {
     pub storage: Arc<Storage>,
     pub votes: PillarVotes,
@@ -499,9 +498,10 @@ impl PillarChainService {
             .clone())
     }
 
-    /// Borrows the outer serialized state for temporary bridge adaptation.
+    /// Borrows the outer serialized state for focused native characterization.
     ///
-    /// Callers must drop the returned guard before FinalChain or C++ calls.
+    /// Production adapters do not call this method. Characterization callers
+    /// must drop the returned guard before FinalChain or C++ calls.
     /// `require_ready` rejects live work until bootstrap completion, while
     /// startup restoration may explicitly lock the pending service.
     pub fn lock(&self, require_ready: bool) -> Result<PillarChainGuard<'_>> {
@@ -574,11 +574,11 @@ fn plan_block_creation_from_state(
     })
 }
 
-/// Temporary native state guard used by the bridge adapter.
+/// Native state guard used by focused characterization tests.
 ///
-/// The guard proves the outer mutex is owned by `rustaxa-consensus`, not by the
-/// CXX bridge. It dereferences to native state only to support the bounded
-/// bridge migration and must never survive an external executor call.
+/// The guard proves the outer mutex is owned by `rustaxa-consensus`. It must
+/// never survive an external executor call, and production bridge code uses
+/// task-oriented service APIs instead.
 pub struct PillarChainGuard<'a> {
     guard: MutexGuard<'a, PillarChainState>,
 }

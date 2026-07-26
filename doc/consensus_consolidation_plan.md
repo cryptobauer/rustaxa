@@ -100,11 +100,14 @@ null-service and pillar-readiness checks, but no longer probe for capabilities t
 service.
 Native `rustaxa-consensus::pillar_chain_service::PillarChainService` now owns pillar storage and restoration,
 `PillarVotes`, the canonical anchor snapshot, both preparation registries and finalization token sequence, the outer
-serialization mutex, and bootstrap readiness. The bridge temporarily borrows a native guard for DTO-oriented behavior,
-and every FinalChain-composed path drops it before the external query and reacquires it for generation-bound apply.
+serialization mutex, and bootstrap readiness. Native pillar-vote task methods own admission, relevance, weighted
+bundles, payload/network lookup, and finalization preparation/acknowledgement. The temporary bridge guard and raw
+`pillar_state` accessor are deleted; every FinalChain-composed path prepares natively, performs the external query
+without a guard, and enters a generation-bound native apply.
 The service also exposes native task APIs for current-data publication, own-vote persistence, startup bootstrap,
 current-anchor decisions, consensus threshold, block creation/linkage planning, and latest-finalized lookup; the bridge
-only maps those results to CXX carriers. PBFT construction/orchestration tests, pillar-vote task migration, and the
+only maps those results to CXX carriers. Pillar protocol/state tests are native, while the bridge retains only FFI
+conversion and FinalChain-unwrapping coverage. PBFT construction/orchestration tests and the
 DAG/transaction/sortition owner remain in this workstream.
 
 ### 3. Collapse configuration topology

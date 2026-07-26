@@ -206,15 +206,6 @@ impl BridgePbftService {
     pub(crate) fn manager_state(&self) -> rustaxa_consensus::pbft_manager::PbftManagerGuard<'_> {
         self.manager.lock()
     }
-
-    pub(crate) fn pillar_state(
-        &self,
-        require_ready: bool,
-    ) -> anyhow::Result<crate::pillar_chain::PillarChainBridgeGuard<'_>> {
-        self.pillar
-            .lock(require_ready)
-            .map(crate::pillar_chain::PillarChainBridgeGuard)
-    }
 }
 
 /// Private transaction state owned by the application-level DAG/transaction service.

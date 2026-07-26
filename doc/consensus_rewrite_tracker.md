@@ -426,6 +426,15 @@ short native calls and retains the generation check. Native tests cover pending/
 storage, anchor/linkage decisions, block planning, and latest-finalized lookup. The checked bridge budget falls to
 49,669 lines.
 
+The final pillar-owner contraction moves single-vote preparation/admission/relevance, weighted bundle planning and
+apply, verified payload and network-bundle lookup, and pillar finalization prepare/ack behavior into CXX-free native
+Rust. `PillarChainBridgeGuard`, the raw `pillar_state` accessor, and every production bridge state borrow are deleted.
+FinalChain adapters retain the required prepare, unlocked external query, and generation-bound native apply sequence.
+Forty-two protocol/state tests and their fixtures move native; `pillar_votes.rs` retains seven boundary-only tests for
+FFI inspection/conversion and FinalChain unwrapping/error mapping. Independent review confirmed readiness/status
+precedence, the 4,096-entry preparation bound, storage fallback validation, chunking, and finalization token retry
+semantics. The checked bridge budget falls to 46,193 lines.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

@@ -42,33 +42,10 @@ use rustaxa_consensus::{
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
-use rustaxa_consensus::{PillarChainGuard, PillarChainState};
 #[cfg(test)]
 use rustaxa_types::pillar::CurrentPillarBlockDataDb;
 #[cfg(test)]
 use rustaxa_types::pillar::PillarBlock;
-use std::ops::{Deref, DerefMut};
-
-/// Temporary bridge adapter over the native pillar owner guard.
-///
-/// This local wrapper lets the remaining FFI conversion methods stay in the
-/// bridge while the storage/state/lock/readiness topology belongs entirely to
-/// `rustaxa-consensus`. It must be dropped before every FinalChain or C++ call.
-pub(crate) struct PillarChainBridgeGuard<'a>(pub(crate) PillarChainGuard<'a>);
-
-impl Deref for PillarChainBridgeGuard<'_> {
-    type Target = PillarChainState;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for PillarChainBridgeGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 
 /// Creates a typed pillar-chain storage handle from the generic CXX storage
 /// facade.

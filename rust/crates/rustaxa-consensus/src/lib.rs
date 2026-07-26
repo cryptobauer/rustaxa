@@ -25,6 +25,7 @@ pub mod pbft_vote_validation;
 pub mod period_data_queue;
 pub mod pillar_chain;
 pub mod pillar_chain_service;
+pub mod pillar_vote_service;
 pub mod pillar_votes;
 pub mod proposed_blocks;
 pub mod rewards_stats;

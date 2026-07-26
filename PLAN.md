@@ -1174,8 +1174,10 @@ The current Rust consensus footprint is broad but still incomplete:
    native guard. The full PBFT bridge root now structurally requires its verified-vote, slashing, and pillar siblings;
    C++ retains null-root and pillar-readiness checks but no longer probes for optional capabilities. Native
    `PillarChainService` owns pillar storage/restoration, votes, anchor and preparation state, finalization token
-   sequencing, its outer mutex, and readiness; the bridge's temporary guard adapter is released before every
-   FinalChain query and reacquired only for generation-bound apply. Current-data publication, own-vote persistence,
+   sequencing, its outer mutex, and readiness. Native pillar-vote task methods own admission, relevance, weighted
+   bundles, payload/network lookup, and finalization prepare/ack; the temporary bridge guard and raw state accessor are
+   deleted. FinalChain adapters perform their external reads without a pillar guard and enter only generation-bound
+   native apply. Current-data publication, own-vote persistence,
    startup bootstrap, anchor decisions, threshold and block/linkage planning, and latest-finalized lookup now enter
    through task-oriented native service APIs, leaving only FFI result conversion in the pillar-chain bridge.
    C++ keeps daemon threads, networking, timers,
