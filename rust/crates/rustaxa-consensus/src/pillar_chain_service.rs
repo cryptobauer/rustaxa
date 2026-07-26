@@ -5,9 +5,8 @@
 //! canonical current-anchor snapshot, one-time vote/finalization preparation
 //! registries, the outer serialization lock, and monotonic bootstrap readiness.
 //! It has no CXX dependency. Task-oriented methods own storage, anchor, vote,
-//! bundle, lookup, and finalization behavior. Production bridge code never
-//! borrows [`PillarChainGuard`]; the guard remains public only for focused
-//! native and bridge-boundary characterization tests.
+//! bundle, lookup, and finalization behavior. The raw state and its guard are
+//! crate-private implementation details; bridge callers use only service tasks.
 
 use crate::{
     PbftServiceReadiness, PillarBlockCreationFact, PillarBlockCreationPlan, PillarBlockLinkageFact,
@@ -93,17 +92,17 @@ pub struct PillarBlockCreationWithVoteCountsPlan {
 /// generation. Trusted records are reserved for locally generated or
 /// restart-restored votes; external records must be revalidated before apply.
 #[derive(Debug, Clone)]
-pub struct SingleVotePreparation {
-    pub vote_rlp: Vec<u8>,
-    pub anchor_generation: u64,
-    pub period: u64,
-    pub block_hash: H256,
-    pub voter: H160,
-    pub needs_threshold: bool,
-    pub current_anchor: Option<PillarCurrentAnchor>,
-    pub first_pillar_block_period: u64,
-    pub pillar_blocks_interval: u64,
-    pub trusted_local_or_restore: bool,
+pub(crate) struct SingleVotePreparation {
+    pub(crate) vote_rlp: Vec<u8>,
+    pub(crate) anchor_generation: u64,
+    pub(crate) period: u64,
+    pub(crate) block_hash: H256,
+    pub(crate) voter: H160,
+    pub(crate) needs_threshold: bool,
+    pub(crate) current_anchor: Option<PillarCurrentAnchor>,
+    pub(crate) first_pillar_block_period: u64,
+    pub(crate) pillar_blocks_interval: u64,
+    pub(crate) trusted_local_or_restore: bool,
 }
 
 /// Pending single-vote preparations keyed by canonical vote hash.
@@ -112,8 +111,8 @@ pub struct SingleVotePreparation {
 /// applies one-shot. Bridge adapter code currently owns the detailed vote DTO
 /// conversion while this registry and its lock are native.
 #[derive(Debug, Default)]
-pub struct SingleVotePreparationRegistry {
-    pub entries: BTreeMap<H256, SingleVotePreparation>,
+pub(crate) struct SingleVotePreparationRegistry {
+    pub(crate) entries: BTreeMap<H256, SingleVotePreparation>,
 }
 
 /// One-time prepared payload used to acknowledge pillar-block finalization.
@@ -122,12 +121,12 @@ pub struct SingleVotePreparationRegistry {
 /// canonical block bytes. A failed or mismatched durable lookup therefore
 /// leaves the token available for a safe retry.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PillarBlockFinalizationPreparation {
-    pub anchor_generation: u64,
-    pub prepared_pillar_block_period: u64,
-    pub prepared_pillar_block_rlp: Vec<u8>,
-    pub matching_vote_cleanup_min_period: u64,
-    pub should_emit: bool,
+pub(crate) struct PillarBlockFinalizationPreparation {
+    pub(crate) anchor_generation: u64,
+    pub(crate) prepared_pillar_block_period: u64,
+    pub(crate) prepared_pillar_block_rlp: Vec<u8>,
+    pub(crate) matching_vote_cleanup_min_period: u64,
+    pub(crate) should_emit: bool,
 }
 
 /// Runtime-owned canonical pillar-chain snapshot.
@@ -137,33 +136,32 @@ pub struct PillarBlockFinalizationPreparation {
 /// once. Canonical bytes are retained for hashing, persistence parity, and
 /// temporary public C++ materialization.
 #[derive(Debug, Clone)]
-pub struct PillarChainStateSnapshot {
-    pub anchor: Option<PillarCurrentAnchor>,
-    pub current_data_rlp: Vec<u8>,
-    pub current_block_rlp: Vec<u8>,
-    pub latest_finalized_block: Option<PillarBlock>,
-    pub latest_finalized_block_rlp: Vec<u8>,
-    pub generation: u64,
+pub(crate) struct PillarChainStateSnapshot {
+    pub(crate) anchor: Option<PillarCurrentAnchor>,
+    current_data_rlp: Vec<u8>,
+    pub(crate) current_block_rlp: Vec<u8>,
+    pub(crate) latest_finalized_block: Option<PillarBlock>,
+    pub(crate) latest_finalized_block_rlp: Vec<u8>,
+    pub(crate) generation: u64,
 }
 
 /// Native mutable state protected by [`PillarChainService`]'s outer mutex.
 ///
-/// The public fields support focused boundary characterization and never cross
-/// CXX. Production behavior must use task-oriented [`PillarChainService`]
-/// methods so no state guard can survive an external executor call.
-pub struct PillarChainState {
-    pub storage: Arc<Storage>,
-    pub votes: PillarVotes,
-    pub current_anchor: RwLock<PillarChainStateSnapshot>,
-    pub single_vote_preparations: Mutex<SingleVotePreparationRegistry>,
-    pub pillar_block_finalization_preparations:
+/// Fields are visible only to the native pillar service modules that implement
+/// task-oriented operations. No raw state or guard crosses the crate boundary.
+pub(crate) struct PillarChainState {
+    pub(crate) storage: Arc<Storage>,
+    pub(crate) votes: PillarVotes,
+    pub(crate) current_anchor: RwLock<PillarChainStateSnapshot>,
+    pub(crate) single_vote_preparations: Mutex<SingleVotePreparationRegistry>,
+    pub(crate) pillar_block_finalization_preparations:
         Mutex<HashMap<u64, PillarBlockFinalizationPreparation>>,
-    pub next_pillar_block_finalization_preparation_token: u64,
+    next_pillar_block_finalization_preparation_token: u64,
 }
 
 impl PillarChainState {
     /// Returns the current process-local anchor generation.
-    pub fn anchor_generation(&self) -> Result<u64> {
+    pub(crate) fn anchor_generation(&self) -> Result<u64> {
         Ok(self
             .current_anchor
             .read()
@@ -177,7 +175,7 @@ impl PillarChainState {
     /// never observe an in-memory anchor whose canonical storage row failed.
     /// Stale generations, malformed/noncanonical RLP, storage failures, and
     /// generation overflow leave the previous snapshot unchanged.
-    pub fn apply_current_block_data(
+    pub(crate) fn apply_current_block_data(
         &self,
         data_rlp: Vec<u8>,
         expected_anchor_generation: u64,
@@ -229,7 +227,7 @@ impl PillarChainState {
     /// bounded registry is full, the lowest token is evicted. Preserving legacy
     /// ordering, sequence overflow is checked after that cleanup and may
     /// therefore leave stale-entry pruning or one eviction applied.
-    pub fn retain_finalization_preparation(
+    pub(crate) fn retain_finalization_preparation(
         &mut self,
         preparation: PillarBlockFinalizationPreparation,
     ) -> Result<u64> {
@@ -498,13 +496,12 @@ impl PillarChainService {
             .clone())
     }
 
-    /// Borrows the outer serialized state for focused native characterization.
+    /// Borrows the outer serialized state for native pillar task composition.
     ///
-    /// Production adapters do not call this method. Characterization callers
-    /// must drop the returned guard before FinalChain or C++ calls.
+    /// Callers must drop the returned guard before FinalChain or C++ calls.
     /// `require_ready` rejects live work until bootstrap completion, while
     /// startup restoration may explicitly lock the pending service.
-    pub fn lock(&self, require_ready: bool) -> Result<PillarChainGuard<'_>> {
+    pub(crate) fn lock(&self, require_ready: bool) -> Result<PillarChainGuard<'_>> {
         if require_ready && !self.readiness.is_ready() {
             bail!("PBFT_SERVICE_PILLAR_UNAVAILABLE");
         }
@@ -574,25 +571,13 @@ fn plan_block_creation_from_state(
     })
 }
 
-/// Native state guard used by focused characterization tests.
+/// Native state guard used by pillar task implementations and characterization.
 ///
 /// The guard proves the outer mutex is owned by `rustaxa-consensus`. It must
 /// never survive an external executor call, and production bridge code uses
 /// task-oriented service APIs instead.
-pub struct PillarChainGuard<'a> {
+pub(crate) struct PillarChainGuard<'a> {
     guard: MutexGuard<'a, PillarChainState>,
-}
-
-impl PillarChainGuard<'_> {
-    /// Returns the guarded state for temporary bridge field adaptation.
-    pub fn state(&self) -> &PillarChainState {
-        &self.guard
-    }
-
-    /// Returns mutable guarded state for temporary bridge field adaptation.
-    pub fn state_mut(&mut self) -> &mut PillarChainState {
-        &mut self.guard
-    }
 }
 
 impl Deref for PillarChainGuard<'_> {
@@ -611,11 +596,10 @@ impl DerefMut for PillarChainGuard<'_> {
 
 /// Decodes and validates canonical persisted pillar snapshot rows.
 ///
-/// This is exposed for focused bridge boundary characterization while those
-/// tests migrate to the native owner. Production construction should use
-/// [`PillarChainService::restore`]. Malformed RLP, noncanonical bytes, and an
-/// inconsistent current/latest relationship fail without publishing state.
-pub fn decode_pillar_chain_snapshot(
+/// Production construction uses [`PillarChainService::restore`]. Malformed RLP,
+/// noncanonical bytes, and an inconsistent current/latest relationship fail
+/// without publishing state.
+fn decode_pillar_chain_snapshot(
     current_data_rlp: Vec<u8>,
     latest_finalized_block_rlp: Vec<u8>,
     generation: u64,
@@ -728,6 +712,97 @@ mod tests {
                 .collect(),
         }
         .encode_rlp()
+    }
+
+    #[test]
+    fn snapshot_decoder_accepts_empty_current_exact_and_successor_relationships() {
+        assert!(decode_pillar_chain_snapshot(Vec::new(), Vec::new(), 0).is_ok());
+
+        let current_without_latest = pillar_block(41, H256::from_low_u64_be(10));
+        assert!(
+            decode_pillar_chain_snapshot(
+                current_data(current_without_latest, Vec::new()),
+                Vec::new(),
+                0,
+            )
+            .is_ok()
+        );
+
+        let exact = pillar_block(41, H256::from_low_u64_be(11));
+        assert!(
+            decode_pillar_chain_snapshot(
+                current_data(exact.clone(), Vec::new()),
+                exact.encode_rlp(),
+                0,
+            )
+            .is_ok()
+        );
+
+        let latest = pillar_block(41, H256::from_low_u64_be(12));
+        let successor = pillar_block(42, latest.hash());
+        assert!(
+            decode_pillar_chain_snapshot(
+                current_data(successor, Vec::new()),
+                latest.encode_rlp(),
+                0,
+            )
+            .is_ok()
+        );
+
+        let latest_before_gap = pillar_block(4, H256::from_low_u64_be(13));
+        let current_after_gap = pillar_block(8, latest_before_gap.hash());
+        assert!(
+            decode_pillar_chain_snapshot(
+                current_data(current_after_gap, Vec::new()),
+                latest_before_gap.encode_rlp(),
+                0,
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn snapshot_decoder_rejects_invalid_latest_relationships() {
+        let latest_ahead = pillar_block(42, H256::from_low_u64_be(10));
+        let current_behind = pillar_block(41, H256::from_low_u64_be(1));
+        assert!(
+            decode_pillar_chain_snapshot(
+                current_data(current_behind, Vec::new()),
+                latest_ahead.encode_rlp(),
+                0,
+            )
+            .expect_err("latest period ahead of current must fail")
+            .to_string()
+            .contains("PILLAR_ANCHOR_LATEST_AHEAD_OF_CURRENT")
+        );
+
+        let latest_same_period = pillar_block(41, H256::from_low_u64_be(10));
+        let mismatched_current = pillar_block(41, H256::from_low_u64_be(12));
+        assert!(
+            decode_pillar_chain_snapshot(
+                current_data(mismatched_current, Vec::new()),
+                latest_same_period.encode_rlp(),
+                0,
+            )
+            .expect_err("same-period hash mismatch must fail")
+            .to_string()
+            .contains("PILLAR_ANCHOR_CURRENT_LATEST_HASH_MISMATCH")
+        );
+
+        for current_period in [42, 43] {
+            let latest = pillar_block(41, H256::from_low_u64_be(10));
+            let bad_successor = pillar_block(current_period, H256::from_low_u64_be(12));
+            assert!(
+                decode_pillar_chain_snapshot(
+                    current_data(bad_successor, Vec::new()),
+                    latest.encode_rlp(),
+                    0,
+                )
+                .expect_err("successor with wrong previous hash must fail")
+                .to_string()
+                .contains("PILLAR_ANCHOR_BROKEN_SUCCESSOR_PREVIOUS_HASH")
+            );
+        }
     }
 
     #[test]

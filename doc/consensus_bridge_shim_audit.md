@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 46193 |
+| `bridge_lines` | 46074 |
 | `shim_lines` | 19105 |
 | `cxx_functions` | 416 |
 | `cxx_carriers` | 359 |
@@ -121,7 +121,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/pbft_vote_payload.rs` | payload conversion | PBFT/vote shims | Internal bridge route | Call native codecs directly or keep conversion private to FFI. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_progress.rs` | progress adapter | PBFT/vote shims | Internal bridge route | Fold into native PBFT service. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_validation.rs` | validation conversion | PBFT/vote shims | Internal bridge route | Fold into native PBFT service. |
-| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | FFI/storage adapters over native `PillarChainService` | pillar and storage shims | Internal bridge route | Native storage, restoration, current-anchor mutation/decisions, startup bootstrap, threshold/linkage/block planning, latest-finalized lookup, votes, preparation registries, token sequence, outer lock, and readiness live in `rustaxa-consensus`; retain only CXX carrier conversion and the storage compatibility facade. |
+| `rust/crates/rustaxa-bridge/src/pillar_chain.rs` | FFI/storage adapters over native `PillarChainService` | pillar and storage shims | Internal bridge route | Native storage, restoration, current-anchor mutation/decisions, startup bootstrap, threshold/linkage/block planning, latest-finalized lookup, votes, preparation registries, token sequence, private lock/state, and readiness live in `rustaxa-consensus`; retain only CXX carrier conversion and the storage compatibility facade. |
 | `rust/crates/rustaxa-bridge/src/pillar_votes.rs` | FFI and FinalChain adapters over native pillar vote service | pillar/PBFT shims | Internal bridge route | Native admission, relevance, weighted bundles, payload/network lookup, finalization prepare/ack, status behavior, and protocol tests live in `rustaxa-consensus`; retain only CXX conversion and unlocked FinalChain composition until the external read is a native port. |
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | Thin DTO adapters over native `ProposedBlocksService`; stateless storage and temporary-candidate compatibility helpers | proposed-block/PBFT shims | Internal bridge route | Native state, storage, restoration, lock ownership, and standalone behavior moved to `rustaxa-consensus`; cross-domain leader selection and combined cleanup remain PBFT-owner debt; delete the C++ facade under `CRW-14`. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi` | RPC, GraphQL, light plugin | External boundary | Keep a client-oriented read API; remove manager/storage construction elsewhere. |

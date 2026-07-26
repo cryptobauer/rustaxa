@@ -4509,7 +4509,7 @@ mod tests {
     }
 
     #[test]
-    fn full_pbft_service_owns_one_pillar_state_and_separate_readiness() {
+    fn full_pbft_service_publishes_pillar_readiness_without_changing_public_tasks() {
         let path = unique_temp_dir("rustaxa_bridge_pbft_service_pillar_readiness");
         let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
         let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
@@ -4521,34 +4521,32 @@ mod tests {
                 .to_string(),
             "PBFT_SERVICE_PILLAR_UNAVAILABLE"
         );
-        let identity_before = {
-            let state = service.pillar.lock(false).unwrap();
-            let generation = state.current_anchor.read().unwrap().generation;
-            (
-                &*state as *const rustaxa_consensus::PillarChainState as usize,
-                generation,
-                state.next_pillar_block_finalization_preparation_token,
-            )
-        };
-        service
+        let pending_bootstrap = service
             .pbft_service_pillar_load_startup_bootstrap()
             .unwrap();
+        assert!(pending_bootstrap.own_vote_rlp.is_empty());
+        assert!(pending_bootstrap.current_block_data_rlp.is_empty());
+        assert!(pending_bootstrap
+            .latest_pillar_votes_period_data_rlp
+            .is_empty());
         service.pbft_service_complete_pillar_bootstrap().unwrap();
         assert!(service.pbft_service_pillar_ready());
         assert_eq!(
             service.pbft_service_pillar_consensus_threshold(10).unwrap(),
             6
         );
-        let identity_after = {
-            let state = service.pillar.lock(true).unwrap();
-            let generation = state.current_anchor.read().unwrap().generation;
-            (
-                &*state as *const rustaxa_consensus::PillarChainState as usize,
-                generation,
-                state.next_pillar_block_finalization_preparation_token,
-            )
-        };
-        assert_eq!(identity_before, identity_after);
+        let ready_bootstrap = service
+            .pbft_service_pillar_load_startup_bootstrap()
+            .unwrap();
+        assert_eq!(ready_bootstrap.own_vote_rlp, pending_bootstrap.own_vote_rlp);
+        assert_eq!(
+            ready_bootstrap.current_block_data_rlp,
+            pending_bootstrap.current_block_data_rlp
+        );
+        assert_eq!(
+            ready_bootstrap.latest_pillar_votes_period_data_rlp,
+            pending_bootstrap.latest_pillar_votes_period_data_rlp
+        );
         let _ = fs::remove_dir_all(path);
     }
 

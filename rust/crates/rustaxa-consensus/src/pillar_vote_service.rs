@@ -3,15 +3,17 @@
 //! The service owns every stateful operation and uses generation-bound prepare/apply
 //! stages around borrowed FinalChain queries. This module has no CXX dependency.
 
+use crate::pillar_chain_service::{
+    PillarBlockFinalizationPreparation, PillarChainState, SingleVotePreparation,
+};
 use crate::{
-    FinalChain, PillarBlockFinalizationFact, PillarBlockFinalizationPreparation,
-    PillarBlockFinalizationStatus, PillarChainService, PillarChainState, PillarVoteBundlePlanner,
-    PillarVoteFact as ConsensusPillarVoteFact, PillarVoteIdentity as ConsensusPillarVoteIdentity,
+    FinalChain, PillarBlockFinalizationFact, PillarBlockFinalizationStatus, PillarChainService,
+    PillarVoteBundlePlanner, PillarVoteFact as ConsensusPillarVoteFact,
+    PillarVoteIdentity as ConsensusPillarVoteIdentity,
     PillarVoteInspection as ConsensusPillarVoteInspection,
     PillarVoteRelevanceFact as ConsensusPillarVoteRelevanceFact,
-    PillarVoteRelevancePlan as ConsensusPillarVoteRelevancePlan, PillarVotes,
-    SingleVotePreparation, VerifiedPillarVote, inspect_pillar_vote_from_rlp,
-    plan_pillar_block_finalization,
+    PillarVoteRelevancePlan as ConsensusPillarVoteRelevancePlan, PillarVotes, VerifiedPillarVote,
+    inspect_pillar_vote_from_rlp, plan_pillar_block_finalization,
 };
 use anyhow::{Result, anyhow, ensure};
 use ethereum_types::H256;

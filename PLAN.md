@@ -1179,7 +1179,8 @@ The current Rust consensus footprint is broad but still incomplete:
    deleted. FinalChain adapters perform their external reads without a pillar guard and enter only generation-bound
    native apply. Current-data publication, own-vote persistence,
    startup bootstrap, anchor decisions, threshold and block/linkage planning, and latest-finalized lookup now enter
-   through task-oriented native service APIs, leaving only FFI result conversion in the pillar-chain bridge.
+   through task-oriented native service APIs, leaving only FFI result conversion in the pillar-chain bridge. The
+   native mutex guard, mutable state, snapshot, and decoder are crate-private rather than public compatibility APIs.
    C++ keeps daemon threads, networking, timers,
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
    sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT

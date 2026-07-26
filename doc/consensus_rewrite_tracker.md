@@ -435,6 +435,13 @@ FFI inspection/conversion and FinalChain unwrapping/error mapping. Independent r
 precedence, the 4,096-entry preparation bound, storage fallback validation, chunking, and finalization token retry
 semantics. The checked bridge budget falls to 46,193 lines.
 
+The pillar closeout contraction removes the remaining public native escape hatch. `PillarChainState`,
+`PillarChainGuard`, `PillarChainStateSnapshot`, the service lock, and the snapshot decoder become crate-private and
+their re-exports are deleted. Bridge tests no longer inspect state pointers, generations, or token counters; they assert
+readiness/bootstrap/task behavior, while current/latest snapshot relationship tests move to the native module.
+Independent review confirms this is visibility and test-ownership contraction only, with no runtime or FFI behavior
+change. The checked bridge budget falls to 46,074 lines.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

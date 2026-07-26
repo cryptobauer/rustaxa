@@ -109,6 +109,9 @@ current-anchor decisions, consensus threshold, block creation/linkage planning, 
 only maps those results to CXX carriers. Pillar protocol/state tests are native, while the bridge retains only FFI
 conversion and FinalChain-unwrapping coverage. PBFT construction/orchestration tests and the
 DAG/transaction/sortition owner remain in this workstream.
+The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
+re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
+relationship characterization now lives beside the native decoder.
 
 ### 3. Collapse configuration topology
 

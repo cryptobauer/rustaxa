@@ -25,8 +25,6 @@ use anyhow::{bail, Result};
 #[cfg(test)]
 use ethereum_types::H160;
 use ethereum_types::H256;
-#[cfg(test)]
-use rustaxa_consensus::PillarChainStateSnapshot;
 use rustaxa_consensus::{
     load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
     load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
@@ -521,121 +519,6 @@ mod tests {
             6
         );
         let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    fn decode_current_anchor_snapshot_for_test(
-        current_data_rlp: Vec<u8>,
-        latest_finalized_block_rlp: Vec<u8>,
-    ) -> anyhow::Result<PillarChainStateSnapshot> {
-        rustaxa_consensus::decode_pillar_chain_snapshot(
-            current_data_rlp,
-            latest_finalized_block_rlp,
-            0,
-        )
-    }
-
-    fn canonical_current_block_with_previous(period: u64, previous: H256) -> Vec<u8> {
-        CurrentPillarBlockDataDb {
-            pillar_block: PillarBlock {
-                period,
-                state_root: H256::from_low_u64_be(period.saturating_add(2)),
-                previous_pillar_block_hash: previous,
-                bridge_root: H256::from_low_u64_be(period.saturating_add(3)),
-                epoch: period.saturating_add(4),
-                validator_vote_count_changes: Vec::new(),
-            },
-            vote_counts: Vec::new(),
-        }
-        .encode_rlp()
-    }
-
-    fn canonical_pillar_block(period: u64, previous: H256, state_root_offset: u64) -> PillarBlock {
-        PillarBlock {
-            period,
-            state_root: H256::from_low_u64_be(state_root_offset),
-            previous_pillar_block_hash: previous,
-            bridge_root: H256::from_low_u64_be(period.saturating_add(state_root_offset)),
-            epoch: state_root_offset,
-            validator_vote_count_changes: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn decode_current_anchor_snapshot_validates_allowed_relationships() {
-        assert!(decode_current_anchor_snapshot_for_test(Vec::new(), Vec::new()).is_ok());
-
-        assert!(
-            decode_current_anchor_snapshot_for_test(canonical_current_data(41), Vec::new(),)
-                .is_ok()
-        );
-
-        let exact_latest = canonical_pillar_block(41, H256::from_low_u64_be(10), 11);
-        let exact_current = CurrentPillarBlockDataDb {
-            pillar_block: exact_latest.clone(),
-            vote_counts: Vec::new(),
-        }
-        .encode_rlp();
-        assert!(
-            decode_current_anchor_snapshot_for_test(exact_current, exact_latest.encode_rlp(),)
-                .is_ok()
-        );
-
-        let latest = canonical_pillar_block(41, H256::from_low_u64_be(12), 13);
-        let successor = canonical_current_block_with_previous(42, latest.hash());
-        assert!(decode_current_anchor_snapshot_for_test(successor, latest.encode_rlp(),).is_ok());
-
-        let latest_for_gap = canonical_pillar_block(4, H256::from_low_u64_be(10), 11);
-        let current_with_gap = canonical_current_block_with_previous(8, latest_for_gap.hash());
-        assert!(decode_current_anchor_snapshot_for_test(
-            current_with_gap,
-            latest_for_gap.encode_rlp(),
-        )
-        .is_ok());
-    }
-
-    #[test]
-    fn decode_current_anchor_snapshot_rejects_invalid_latest_relationships() {
-        let latest_ahead = canonical_pillar_block(42, H256::from_low_u64_be(10), 11).encode_rlp();
-        assert!(decode_current_anchor_snapshot_for_test(
-            canonical_current_block_with_previous(41, H256::from_low_u64_be(1)),
-            latest_ahead.clone(),
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("PILLAR_ANCHOR_LATEST_AHEAD_OF_CURRENT"));
-
-        let latest_same_period =
-            canonical_pillar_block(41, H256::from_low_u64_be(10), 11).encode_rlp();
-        let mismatched_current =
-            canonical_current_block_with_previous(41, H256::from_low_u64_be(12));
-        assert!(decode_current_anchor_snapshot_for_test(
-            mismatched_current,
-            latest_same_period.clone(),
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("PILLAR_ANCHOR_CURRENT_LATEST_HASH_MISMATCH"));
-
-        let latest_gap = canonical_pillar_block(41, H256::from_low_u64_be(10), 11).encode_rlp();
-        let successor_gap = canonical_current_block_with_previous(43, H256::from_low_u64_be(1));
-        assert!(
-            decode_current_anchor_snapshot_for_test(successor_gap, latest_gap.clone(),)
-                .unwrap_err()
-                .to_string()
-                .contains("PILLAR_ANCHOR_BROKEN_SUCCESSOR_PREVIOUS_HASH")
-        );
-
-        let latest_with_previous =
-            canonical_pillar_block(41, H256::from_low_u64_be(10), 11).encode_rlp();
-        let successor_bad_previous =
-            canonical_current_block_with_previous(42, H256::from_low_u64_be(12));
-        assert!(decode_current_anchor_snapshot_for_test(
-            successor_bad_previous,
-            latest_with_previous,
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("PILLAR_ANCHOR_BROKEN_SUCCESSOR_PREVIOUS_HASH"));
     }
 
     #[test]
