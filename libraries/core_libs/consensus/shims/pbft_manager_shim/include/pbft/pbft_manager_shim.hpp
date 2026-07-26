@@ -27,7 +27,6 @@
 #include "pbft/pbft_block_extra_data.hpp"
 #include "pbft/pbft_service.hpp"
 #include "pbft/period_data.hpp"
-#include "pbft/proposed_blocks.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "transaction/dag_transaction_service.hpp"
 #include "transaction/transaction_manager_bridge_types.hpp"
@@ -363,7 +362,7 @@ class PbftManager {
   blk_hash_t getLastPbftBlockHash();
 
   /**
-   * @brief Push proposed block into the proposed_blocks_ in case it is not there yet
+   * @brief Publish a proposed block through the native PBFT service.
    *
    * @param proposed_block
    */
@@ -670,16 +669,23 @@ class PbftManager {
   bool pushPbftBlock_(PeriodData &&period_data, std::vector<std::shared_ptr<PbftVote>> &&cert_votes);
 
   /**
-   * @brief Get valid proposed pbft block. It will retrieve block from proposed_blocks and then validate it if not
-   *        already validated
+   * @brief Get a proposed PBFT block from the native service and validate it if not already validated.
    *
-   * @param proposed_blocks
    * @param period
    * @param block_hash
    * @return valid proposed pbft block or nullptr
    */
-  std::shared_ptr<PbftBlock> getValidPbftProposedBlock(ProposedBlocks &proposed_blocks, PbftPeriod period,
-                                                       const blk_hash_t &block_hash);
+  std::shared_ptr<PbftBlock> getValidPbftProposedBlock(PbftPeriod period, const blk_hash_t &block_hash);
+
+  /**
+   * Publishes one materialized proposal through the native PBFT service.
+   *
+   * The native owner validates canonical identity facts, unconditionally
+   * persists before live duplicate detection, and returns whether the
+   * period/hash was newly published. Null input is rejected before crossing
+   * the bridge.
+   */
+  bool publishProposedBlock(const std::shared_ptr<PbftBlock> &proposed_block);
 
   /**
    * @brief Resolves a Rust-planned PBFT state-action block hash through the Rust proposed-block admission planner.
@@ -857,9 +863,6 @@ class PbftManager {
   mutable std::shared_mutex period_data_queue_access_;
   std::deque<QueuedPeriodDataPayload> period_data_queue_payloads_;
   uint64_t next_period_data_queue_entry_id_{1};
-
-  // Proposed blocks based on received propose votes
-  ProposedBlocks proposed_blocks_;
 
   // Wallets with flag if they are/are not dpos eligible for specified period
   EligibleWallets eligible_wallets_;

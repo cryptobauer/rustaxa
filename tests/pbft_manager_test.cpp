@@ -456,6 +456,23 @@ TEST_F(PbftManagerTest, propose_block_and_vote_broadcast) {
   ASSERT_TRUE(block1_from_node1);
   EXPECT_EQ(block1_from_node1->getJsonStr(), proposed_pbft_block->getJsonStr());
 
+#ifdef RUSTAXA_ENABLE_PROPOSED_BLOCKS
+  auto proposed_block_is_persisted = [&] {
+    const auto persisted_blocks = node1->getDB()->getProposedPbftBlocks();
+    return std::any_of(persisted_blocks.begin(), persisted_blocks.end(), [&](const auto &block) {
+      return block->getBlockHash() == proposed_pbft_block->getBlockHash();
+    });
+  };
+  ASSERT_TRUE(proposed_block_is_persisted());
+  auto batch = node1->getDB()->createWriteBatch();
+  node1->getDB()->removeProposedPbftBlock(proposed_pbft_block->getBlockHash(), batch);
+  node1->getDB()->commitWriteBatch(batch);
+  ASSERT_FALSE(proposed_block_is_persisted());
+
+  pbft_mgr1->processProposedBlock(proposed_pbft_block);
+  EXPECT_FALSE(proposed_block_is_persisted());
+#endif
+
   nw1->getSpecificHandler<network::tarcap::IVotePacketHandler>(network::SubprotocolPacketType::kVotePacket)
       ->onNewPbftVote(propose_vote, proposed_pbft_block);
 
@@ -680,19 +697,10 @@ TEST_F(PbftManagerWithDagCreation, produce_overweighted_block) {
   EXPECT_FALSE(node->getPbftManager()->checkBlockWeight(period_data->dag_blocks, period));
 }
 
+#ifndef RUSTAXA_ENABLE_PROPOSED_BLOCKS
 TEST_F(PbftManagerWithDagCreation, proposed_blocks) {
   auto db = std::make_shared<DbStorage>(data_dir);
-  rustaxa::PbftServiceConfig service_config{};
-  service_config.genesis_lambda_ms = 1000;
-  service_config.cacti_lambda_max_ms = 1000;
-  service_config.cacti_lambda_default_ms = 1000;
-  service_config.max_exponential_lambda_ms = 60000;
-  service_config.max_steps = 13;
-  service_config.deadline_ms = 4000;
-  service_config.polling_interval_ms = 100;
-  auto service =
-      std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), service_config));
-  ProposedBlocks proposed_blocks(std::move(service));
+  ProposedBlocks proposed_blocks(db);
 
   std::map<blk_hash_t, std::shared_ptr<PbftBlock>> blocks;
   // Create blocks
@@ -727,6 +735,7 @@ TEST_F(PbftManagerWithDagCreation, proposed_blocks) {
   blocks_from_db = db->getProposedPbftBlocks();
   EXPECT_EQ(blocks_from_db.size(), 0);
 }
+#endif
 
 TEST_F(PbftManagerWithDagCreation, state_root_hash) {
   makeNode();

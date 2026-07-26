@@ -1926,17 +1926,6 @@ pub mod rustaxa_ffi {
         block_rlp: Vec<u8>,
     }
 
-    struct ProposedBlockMetadataLookup {
-        found: bool,
-        is_valid: bool,
-        pivot_hash: [u8; 32],
-    }
-
-    struct ProposedBlockPeriodHashes {
-        period: u64,
-        block_hashes: Vec<DagHash>,
-    }
-
     struct ProposedBlockSnapshotEntry {
         period: u64,
         block_hash: [u8; 32],
@@ -4776,7 +4765,7 @@ pub mod rustaxa_ffi {
         pub fn abort_pbft_manager_runtime_session(runtime: &BridgePbftService);
         // Consensus proposed PBFT blocks
 
-        pub fn pbft_service_proposed_blocks_push_with_storage(
+        pub fn pbft_service_publish_proposed_block(
             self: &BridgePbftService,
             period: u64,
             block_hash: &[u8; 32],
@@ -4793,20 +4782,6 @@ pub mod rustaxa_ffi {
             period: u64,
             block_hash: &[u8; 32],
         ) -> ProposedBlockLookup;
-        pub fn pbft_service_proposed_blocks_metadata(
-            self: &BridgePbftService,
-            period: u64,
-            block_hash: &[u8; 32],
-        ) -> ProposedBlockMetadataLookup;
-        pub fn pbft_service_proposed_blocks_contains(
-            self: &BridgePbftService,
-            period: u64,
-            block_hash: &[u8; 32],
-        ) -> bool;
-        pub fn pbft_service_proposed_blocks_cleanup_with_storage(
-            self: &BridgePbftService,
-            period: u64,
-        ) -> Result<Vec<ProposedBlockPeriodHashes>>;
         pub fn pbft_service_proposed_blocks_snapshot_entries(
             self: &BridgePbftService,
         ) -> Vec<ProposedBlockSnapshotEntry>;

@@ -924,6 +924,16 @@ mod tests {
                 )
                 .unwrap()
         );
+        storage
+            .pbft()
+            .remove_proposed(live_link.block_hash)
+            .unwrap();
+        assert!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, live_link.block_hash.as_bytes())
+                .unwrap()
+                .is_none()
+        );
         assert!(
             !service
                 .push_with_storage(
@@ -933,6 +943,12 @@ mod tests {
                     live_rlp.clone(),
                 )
                 .unwrap()
+        );
+        assert_eq!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, live_link.block_hash.as_bytes())
+                .unwrap(),
+            Some(live_rlp.clone())
         );
         service
             .mark_valid(live_link.period, live_link.block_hash)

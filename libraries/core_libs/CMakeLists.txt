@@ -81,8 +81,9 @@ if(RUSTAXA_ENABLE_VERIFIED_VOTES)
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/vote_manager/verified_votes\\.cpp$")
 endif()
 if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
-    # The Rust-mode ProposedBlocks overlay is a standalone facade. Keep the
-    # untouched legacy implementation only in module-disabled and pure C++ builds.
+    # Native PBFT service ownership replaces the Rust-mode C++ ProposedBlocks
+    # facade. Keep the untouched legacy implementation only in module-disabled
+    # and pure C++ builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/pbft/proposed_blocks\\.cpp$")
 endif()
 if(RUSTAXA_ENABLE_PILLAR_VOTES)
@@ -251,10 +252,6 @@ if(RUSTAXA_ENABLE_PROPOSED_BLOCKS)
     if(NOT RUSTAXA_ENABLE)
         message(FATAL_ERROR "RUSTAXA_ENABLE_PROPOSED_BLOCKS requires RUSTAXA_ENABLE")
     endif()
-
-    # In Rust proposed-blocks mode, inject the standalone Rust-backed facade.
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/proposed_blocks_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/proposed_blocks_shim/src/proposed_blocks_shim.cpp)
 endif()
 
 if(RUSTAXA_ENABLE_VERIFIED_VOTES)

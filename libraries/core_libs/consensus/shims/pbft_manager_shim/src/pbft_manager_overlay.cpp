@@ -483,6 +483,8 @@ rust::Vec<uint8_t> toBridgeBytes(const Bytes &bytes) {
   return out;
 }
 
+dev::bytes fromBridgeBytes(const rust::Vec<uint8_t> &bytes) { return dev::bytes(bytes.begin(), bytes.end()); }
+
 template <typename Hash>
 rust::Vec<rustaxa::PbftFinalizationHash> toBridgeFinalizationHashes(const std::vector<Hash> &hashes) {
   rust::Vec<rustaxa::PbftFinalizationHash> out;
@@ -807,7 +809,6 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
       dynamic_lambda_(conf.genesis.state.hardforks.cacti_hf.lambda_max),
       dag_genesis_block_hash_(conf.genesis.dag_genesis_block.getHash()),
       kGenesisConfig(conf.genesis),
-      proposed_blocks_(pbft_service_),
       eligible_wallets_(conf.wallets) {
   if (!pbft_service_) {
     throw std::invalid_argument("PBFT manager requires a shared PBFT service");
@@ -1439,7 +1440,7 @@ bool PbftManager::tryPushCertVotesBlock() {
   LOG(log_nf_) << "Found enough cert votes for PBFT block " << certified_block_hash << ", period "
                << current_pbft_period << ", round " << current_pbft_round;
 
-  auto pbft_block = getValidPbftProposedBlock(proposed_blocks_, current_pbft_period, certified_block_hash);
+  auto pbft_block = getValidPbftProposedBlock(current_pbft_period, certified_block_hash);
   if (!pbft_block) {
     LOG(log_er_) << "Invalid certified block " << certified_block_hash;
     return false;
@@ -1721,7 +1722,7 @@ void PbftManager::initialState() {
     assert(payload_rlp.itemCount() == 2);
     const auto cert_voted_block_round = payload_rlp[0].toInt<PbftRound>();
     const auto cert_voted_block = std::make_shared<PbftBlock>(payload_rlp[1]);
-    if (proposed_blocks_.pushProposedPbftBlock(cert_voted_block)) {
+    if (publishProposedBlock(cert_voted_block)) {
       LOG(log_nf_) << "Last cert voted block " << cert_voted_block->getBlockHash() << " with period "
                    << cert_voted_block->getPeriod() << ", round " << cert_voted_block_round
                    << " pushed into proposed blocks";
@@ -1963,8 +1964,16 @@ void PbftManager::printVotingSummary() const {
   LOG(log_nf_) << "Voting summary: " << jsonToUnstyledString(json_obj);
 }
 
-std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks &proposed_blocks, PbftPeriod period,
-                                                                  const blk_hash_t &block_hash) {
+bool PbftManager::publishProposedBlock(const std::shared_ptr<PbftBlock> &proposed_block) {
+  if (!proposed_block) {
+    throw std::runtime_error("Cannot publish null proposed PBFT block");
+  }
+  return pbft_service_->service().pbft_service_publish_proposed_block(
+      proposed_block->getPeriod(), toBridgeHash(proposed_block->getBlockHash()),
+      toBridgeHash(proposed_block->getPivotDagBlockHash()), toBridgeBytes(proposed_block->rlp(true)));
+}
+
+std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(PbftPeriod period, const blk_hash_t &block_hash) {
   rustaxa::PbftManagerCandidateAdmissionFact fact;
   fact.period = period;
   fact.block_hash = toBridgeHash(block_hash);
@@ -1974,20 +1983,20 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
   fact.validation_status = kPbftManagerCandidateAdmissionValidationNotChecked;
 
   std::shared_ptr<PbftBlock> block;
+  std::optional<rustaxa::ProposedBlockLookup> lookup;
   while (true) {
     const auto plan = rustaxa::plan_pbft_manager_candidate_admission(fact);
     if (plan.action == kPbftManagerCandidateAdmissionActionAccept) {
       if (!block) {
-        // Rust admission decisions use compact proposed-block metadata. C++ materializes the accepted block only at
+        // Rust admission decisions use owned proposed-block lookup facts. C++ materializes the accepted block only at
         // this vote-generation/executor boundary.
-        const auto block_data = proposed_blocks.getPbftProposedBlock(period, block_hash);
-        if (!block_data.has_value()) {
+        if (!lookup.has_value() || !lookup->found) {
           throw std::runtime_error("Rust PBFT proposed-block admission accepted missing materialized block");
         }
-        block = block_data->first;
+        block = std::make_shared<PbftBlock>(fromBridgeBytes(lookup->block_rlp));
       }
       if (plan.mark_valid) {
-        proposed_blocks.markBlockAsValid(period, block_hash);
+        pbft_service_->service().pbft_service_proposed_blocks_mark_valid(period, toBridgeHash(block_hash));
       }
       return block;
     }
@@ -2007,28 +2016,27 @@ std::shared_ptr<PbftBlock> PbftManager::getValidPbftProposedBlock(ProposedBlocks
     }
 
     if (plan.action == kPbftManagerCandidateAdmissionActionRequestLookup) {
-      const auto block_metadata = proposed_blocks.getPbftProposedBlockMetadata(period, block_hash);
+      lookup = pbft_service_->service().pbft_service_proposed_blocks_get(period, toBridgeHash(block_hash));
       fact.lookup_performed = true;
-      if (!block_metadata.has_value()) {
+      if (!lookup->found) {
         LOG(log_er_) << "Unable to find proposed block " << block_hash << ", period " << period;
         fact.proposed_block_found = false;
         continue;
       }
 
       fact.proposed_block_found = true;
-      fact.proposed_block_already_valid = block_metadata->is_valid;
+      fact.proposed_block_already_valid = lookup->is_valid;
       continue;
     }
 
     if (plan.action == kPbftManagerCandidateAdmissionActionRequestValidation) {
       if (!block) {
-        const auto block_data = proposed_blocks.getPbftProposedBlock(period, block_hash);
-        if (!block_data.has_value()) {
+        if (!lookup.has_value() || !lookup->found) {
           LOG(log_er_) << "Unable to materialize proposed block " << block_hash << " for validation, period " << period;
           fact.validation_status = kPbftManagerCandidateAdmissionValidationInvalid;
           continue;
         }
-        block = block_data->first;
+        block = std::make_shared<PbftBlock>(fromBridgeBytes(lookup->block_rlp));
       }
       if (!validatePbftBlock(block)) {
         LOG(log_er_) << "Proposed block " << block_hash << " failed validation, period " << period;
@@ -2056,7 +2064,7 @@ std::shared_ptr<PbftBlock> PbftManager::admitStateActionPbftBlock(const rustaxa:
                              ": Rust PBFT state-action effect sidecar hash does not match effect hash");
   }
 
-  auto block = getValidPbftProposedBlock(proposed_blocks_, period, block_hash);
+  auto block = getValidPbftProposedBlock(period, block_hash);
   if (!block) {
     LOG(log_er_) << action_context << ": Rust proposed-block admission rejected " << block_hash << ". Period " << period
                  << ", round " << getPbftRound();
@@ -2496,7 +2504,7 @@ void PbftManager::firstFinish_() {
             if (cert_voted_block->getBlockHash() != fromBridgeHash(action_snapshot.cert_voted_block_hash)) {
               throw std::runtime_error("Rust PBFT cert-voted payload hash does not match runtime metadata");
             }
-            if (proposed_blocks_.pushProposedPbftBlock(cert_voted_block)) {
+            if (publishProposedBlock(cert_voted_block)) {
               LOG(log_nf_) << "Materialized Rust cert-voted block " << cert_voted_block->getBlockHash()
                            << " for first-finish next vote in period " << period << ", round " << round;
             }
@@ -2648,7 +2656,7 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
       return {};
     }
 
-    proposed_blocks_.pushProposedPbftBlock(leader_block_data->first);
+    publishProposedBlock(leader_block_data->first);
 
     return PbftManager::ProposedBlockData{std::move(leader_block_data->first),
                                           std::move(reward_vote_payload.reward_votes),
@@ -2660,11 +2668,12 @@ std::optional<PbftManager::ProposedBlockData> PbftManager::generatePbftBlock(
 }
 
 void PbftManager::processProposedBlock(const std::shared_ptr<PbftBlock> &proposed_block) {
-  if (proposed_blocks_.isInProposedBlocks(proposed_block->getPeriod(), proposed_block->getBlockHash())) {
+  const auto existing = pbft_service_->service().pbft_service_proposed_blocks_get(
+      proposed_block->getPeriod(), toBridgeHash(proposed_block->getBlockHash()));
+  if (existing.found) {
     return;
   }
-
-  proposed_blocks_.pushProposedPbftBlock(proposed_block);
+  (void)publishProposedBlock(proposed_block);
 }
 
 blk_hash_t PbftManager::calculateOrderHash(const std::vector<blk_hash_t> &dag_block_hashes) {
@@ -4213,7 +4222,12 @@ bool PbftManager::validatePbftBlockPillarVotes(const PeriodData &period_data) co
 }
 
 std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> PbftManager::getProposedBlocks() const {
-  return proposed_blocks_.getProposedBlocks();
+  std::map<PbftPeriod, std::vector<std::shared_ptr<PbftBlock>>> result;
+  auto snapshot = pbft_service_->service().pbft_service_proposed_blocks_snapshot_entries();
+  for (const auto &entry : snapshot) {
+    result[entry.period].push_back(std::make_shared<PbftBlock>(fromBridgeBytes(entry.block_rlp)));
+  }
+  return result;
 }
 
 blk_hash_t PbftManager::lastPbftBlockHashFromQueueOrChain() {
@@ -4333,12 +4347,12 @@ bool PbftManager::checkBlockWeight(const std::vector<std::shared_ptr<DagBlock>> 
 blk_hash_t PbftManager::getLastPbftBlockHash() { return pbft_chain_->getLastPbftBlockHash(); }
 
 std::shared_ptr<PbftBlock> PbftManager::getPbftProposedBlock(PbftPeriod period, const blk_hash_t &block_hash) const {
-  auto proposed_block = proposed_blocks_.getPbftProposedBlock(period, block_hash);
-  if (!proposed_block.has_value()) {
+  auto proposed_block = pbft_service_->service().pbft_service_proposed_blocks_get(period, toBridgeHash(block_hash));
+  if (!proposed_block.found) {
     return nullptr;
   }
 
-  return proposed_block->first;
+  return std::make_shared<PbftBlock>(fromBridgeBytes(proposed_block.block_rlp));
 }
 
 PbftManager::EligibleWallets::EligibleWallets(const std::vector<WalletConfig> &wallets) {

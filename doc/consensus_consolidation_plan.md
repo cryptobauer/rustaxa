@@ -144,7 +144,7 @@ capability matrix.
 Start with surfaces whose audit already says they own no production state:
 
 1. ~~`rewards_stats_shim` and `BridgeRewardsStatsRuntime`~~ — retired by the first `CRW-14` contraction slice
-2. `proposed_blocks_shim`
+2. ~~`proposed_blocks_shim`~~ — retired after PBFT manager callers moved to the native service
 3. `verified_votes_shim`
 4. ~~`sortition_params_manager_shim`~~ — retired after native `SortitionService` ownership landed
 5. `gas_pricer_shim`

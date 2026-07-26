@@ -84,29 +84,21 @@ TEST_F(RustProposedBlocksTest, PushGetMarkValidAndSnapshotEntries) {
   auto service = create_pbft_service_from_storage(*storage, serviceConfig());
   auto block = proposedBlock(2, 0x99);
 
-  EXPECT_TRUE(service->pbft_service_proposed_blocks_push_with_storage(
-      2, block.block_hash, block.pivot_hash, copy(block.block_rlp)));
-  EXPECT_FALSE(service->pbft_service_proposed_blocks_push_with_storage(
-      2, block.block_hash, block.pivot_hash, copy(block.block_rlp)));
+  EXPECT_TRUE(
+      service->pbft_service_publish_proposed_block(2, block.block_hash, block.pivot_hash, copy(block.block_rlp)));
+  EXPECT_FALSE(
+      service->pbft_service_publish_proposed_block(2, block.block_hash, block.pivot_hash, copy(block.block_rlp)));
 
   auto lookup = service->pbft_service_proposed_blocks_get(2, block.block_hash);
   EXPECT_TRUE(lookup.found);
   EXPECT_FALSE(lookup.is_valid);
   EXPECT_EQ(lookup.pivot_hash, block.pivot_hash);
   EXPECT_EQ(to_std(lookup.block_rlp), to_std(block.block_rlp));
-  auto metadata = service->pbft_service_proposed_blocks_metadata(2, block.block_hash);
-  EXPECT_TRUE(metadata.found);
-  EXPECT_FALSE(metadata.is_valid);
-  EXPECT_EQ(metadata.pivot_hash, block.pivot_hash);
-
-  EXPECT_TRUE(service->pbft_service_proposed_blocks_contains(2, block.block_hash));
-  EXPECT_FALSE(service->pbft_service_proposed_blocks_contains(2, h256(0x12)));
+  EXPECT_FALSE(service->pbft_service_proposed_blocks_get(2, h256(0x12)).found);
 
   service->pbft_service_proposed_blocks_mark_valid(2, block.block_hash);
   lookup = service->pbft_service_proposed_blocks_get(2, block.block_hash);
   EXPECT_TRUE(lookup.is_valid);
-  metadata = service->pbft_service_proposed_blocks_metadata(2, block.block_hash);
-  EXPECT_TRUE(metadata.is_valid);
 
   auto entries = service->pbft_service_proposed_blocks_snapshot_entries();
   ASSERT_EQ(entries.size(), 1);

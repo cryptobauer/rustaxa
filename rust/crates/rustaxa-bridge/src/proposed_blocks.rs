@@ -1,6 +1,5 @@
 use crate::ffi::rustaxa_ffi::{
-    DagHash, ProposedBlockIdentity, ProposedBlockLookup, ProposedBlockMetadataLookup,
-    ProposedBlockPeriodHashes, ProposedBlockSnapshotEntry,
+    ProposedBlockIdentity, ProposedBlockLookup, ProposedBlockSnapshotEntry,
 };
 use crate::ffi::{BridgePbftService, BridgeStorage};
 use ethereum_types::H256;
@@ -9,14 +8,15 @@ use rustaxa_consensus::proposed_blocks::{
 };
 
 impl BridgePbftService {
-    /// Persists a proposed PBFT block through Rust storage, then inserts it into
-    /// the Rust-owned live index.
+    /// Publishes a proposed PBFT block through the native PBFT service.
     ///
     /// Storage is committed before live index mutation so failed writes or
     /// sidecar/RLP mismatches cannot leave memory ahead of durable state.
-    /// Existing storage rows are overwritten before duplicate detection,
-    /// matching the legacy `DbStorage::saveProposedPbftBlock` ordering.
-    pub fn pbft_service_proposed_blocks_push_with_storage(
+    /// Existing live entries return `false` after their durable row is
+    /// overwritten. The native service holds one write guard across the
+    /// unconditional storage write and live duplicate detection, preserving
+    /// the legacy durability and repair ordering.
+    pub fn pbft_service_publish_proposed_block(
         &self,
         period: u64,
         block_hash: &[u8; 32],
@@ -70,77 +70,6 @@ impl BridgePbftService {
                 pivot_hash: [0; 32],
                 block_rlp: Vec::new(),
             })
-    }
-
-    /// Looks up compact proposed-block metadata without returning block RLP.
-    ///
-    /// The period and hash identify the entry. Missing entries produce
-    /// `found = false`; reads acquire only the proposed-block sibling lock and
-    /// never expose an internal Rust reference.
-    pub fn pbft_service_proposed_blocks_metadata(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-    ) -> ProposedBlockMetadataLookup {
-        self.proposed_blocks
-            .metadata(period, H256::from(*block_hash))
-            .map(|entry| ProposedBlockMetadataLookup {
-                found: true,
-                is_valid: entry.is_valid,
-                pivot_hash: entry.pivot_hash.into(),
-            })
-            .unwrap_or(ProposedBlockMetadataLookup {
-                found: false,
-                is_valid: false,
-                pivot_hash: [0; 32],
-            })
-    }
-
-    /// Returns whether the supplied period/hash exists in service-owned state.
-    ///
-    /// This read is side-effect free, does not access storage, and acquires no
-    /// manager or chain lock.
-    pub fn pbft_service_proposed_blocks_contains(
-        &self,
-        period: u64,
-        block_hash: &[u8; 32],
-    ) -> bool {
-        self.proposed_blocks
-            .contains(period, H256::from(*block_hash))
-    }
-
-    /// Cleans stale proposed PBFT blocks from Rust storage and memory.
-    ///
-    /// The bridge uses its internally owned shared Rust storage handle for
-    /// proposed-block deletes. `period` is the first period to keep; all lower
-    /// periods are removed.
-    ///
-    /// Output:
-    /// - deterministic period/hash groups that were deleted and removed.
-    ///
-    /// Behavior:
-    /// - plans cleanup from the Rust in-memory index without mutation
-    /// - deletes all stale proposed-block storage keys in one write batch
-    /// - mutates the Rust in-memory index only after storage commit succeeds
-    /// - returns an empty list without creating a write batch when no stale
-    ///   periods exist.
-    pub fn pbft_service_proposed_blocks_cleanup_with_storage(
-        &self,
-        period: u64,
-    ) -> Result<Vec<ProposedBlockPeriodHashes>, anyhow::Error> {
-        Ok(self
-            .proposed_blocks
-            .cleanup_with_storage(period)?
-            .into_iter()
-            .map(|value| ProposedBlockPeriodHashes {
-                period: value.period,
-                block_hashes: value
-                    .block_hashes
-                    .into_iter()
-                    .map(|hash| DagHash { hash: hash.into() })
-                    .collect(),
-            })
-            .collect())
     }
 
     /// Returns an owned snapshot of all live proposed-block entries.
@@ -369,7 +298,11 @@ mod tests {
             assert!(!lookup.is_valid);
             assert_eq!(lookup.block_rlp, rlp);
             assert!(!lookups[1].found);
-            assert!(!service.pbft_service_proposed_blocks_contains(link.period, &link.block_hash.0));
+            assert!(
+                !service
+                    .pbft_service_proposed_blocks_get(link.period, &link.block_hash.0)
+                    .found
+            );
             assert!(storage.0.pbft().proposed_rlp().unwrap().is_empty());
         }
         let _ = fs::remove_dir_all(temp_dir);

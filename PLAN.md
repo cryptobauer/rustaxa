@@ -1158,7 +1158,10 @@ The current Rust consensus footprint is broad but still incomplete:
    orchestration storage slice now restores proposed-block metadata directly from Rust storage and removes stale
    proposed-block storage keys through Rust-batched cleanup. The first aggressive `CRW-12` extraction moves the
    proposed-block storage handle, restoration, sibling lock, storage-first publication/cleanup behavior, and behavioral
-   tests into the CXX-free native `ProposedBlocksService`; the bridge retains DTO conversion only for this owner while
+   tests into the CXX-free native `ProposedBlocksService`. The Rust-mode C++ `ProposedBlocks` facade is deleted; the
+   PBFT manager calls native publication, lookup, validation marking, and snapshot operations directly and materializes
+   `PbftBlock` only at retained validation/network boundaries. The bridge retains DTO conversion plus separately
+   classified stateless storage and vote-candidate helpers while
    the CXX-free native `PbftVerifiedVotesService` now owns verified-vote storage lifetime, restoration, the admission
    runtime, and its shared mutex. The bridge temporarily borrows that native guard for cross-domain validation,
    leader-selection, finalization, and typed effect conversion but owns no verified-vote runtime state or lock. The
