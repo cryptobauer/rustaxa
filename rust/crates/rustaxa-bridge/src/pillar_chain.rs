@@ -21,34 +21,29 @@ use crate::ffi::rustaxa_ffi::{
     PillarValidatorVoteCountChange as FfiPillarValidatorVoteCountChange,
 };
 use crate::ffi::{BridgeFinalChain, BridgePbftService, BridgePillarChainStorage, BridgeStorage};
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{bail, Result};
 #[cfg(test)]
 use ethereum_types::H160;
 use ethereum_types::H256;
-#[cfg(test)]
-use rustaxa_consensus::plan_pillar_consensus_threshold as consensus_plan_pillar_consensus_threshold;
 #[cfg(test)]
 use rustaxa_consensus::PillarChainStateSnapshot;
 use rustaxa_consensus::{
     load_current_pillar_block_data_storage as consensus_load_current_pillar_block_data_storage,
     load_latest_pillar_block_storage as consensus_load_latest_pillar_block_storage,
     load_own_pillar_block_vote_storage as consensus_load_own_pillar_block_vote_storage,
-    load_pillar_period_data_storage as consensus_load_pillar_period_data_storage,
-    plan_pillar_block_creation as consensus_plan_pillar_block_creation,
-    plan_pillar_block_linkage as consensus_plan_pillar_block_linkage,
-    plan_pillar_current_anchor_decision as consensus_plan_pillar_current_anchor_decision,
-    plan_pillar_vote_count_changes as consensus_plan_vote_count_changes,
     save_current_pillar_block_data_storage, save_finalized_pillar_block_storage,
     save_own_pillar_block_vote_storage,
-    PillarBlockCreationFact as ConsensusPillarBlockCreationFact,
-    PillarBlockCreationPlan as ConsensusPillarBlockCreationPlan,
-    PillarBlockLinkageFact as ConsensusPillarBlockLinkageFact,
+    PillarBlockCreationRequest as ConsensusPillarBlockCreationRequest,
+    PillarBlockCreationWithVoteCountsPlan as ConsensusPillarBlockCreationWithVoteCountsPlan,
     PillarBlockLinkagePlan as ConsensusPillarBlockLinkagePlan,
+    PillarBlockLinkageRequest as ConsensusPillarBlockLinkageRequest,
     PillarCurrentAnchorDecisionRequest as ConsensusPillarCurrentAnchorDecisionRequest,
+    PillarCurrentAnchorDecisionResult as ConsensusPillarCurrentAnchorDecisionResult,
     PillarValidatorVoteCount as ConsensusPillarValidatorVoteCount,
     PillarValidatorVoteCountChange as ConsensusPillarValidatorVoteCountChange,
 };
 use rustaxa_consensus::{PillarChainGuard, PillarChainState};
+#[cfg(test)]
 use rustaxa_types::pillar::CurrentPillarBlockDataDb;
 #[cfg(test)]
 use rustaxa_types::pillar::PillarBlock;
@@ -97,16 +92,16 @@ pub fn create_pillar_chain_storage(storage: &BridgeStorage) -> Box<BridgePillarC
 /// is a valid process-local baseline, and each successful apply increments it.
 /// Malformed persisted current data makes construction fail before a runtime is
 /// published.
-/// Creates a test-only ready PBFT service using the production composition.
+/// Creates a test-only pending PBFT service using the production composition.
 ///
 /// The production constructor restores every PBFT capability, including pillar
-/// state. This wrapper supplies deterministic test configuration and completes
-/// the pillar bootstrap gate; it does not create a partial service topology.
+/// state. This wrapper supplies deterministic test configuration but leaves the
+/// bootstrap gate pending so boundary tests can verify readiness precedence.
 #[cfg(test)]
-pub(crate) fn create_pillar_test_service_from_storage(
+fn create_pending_pillar_test_service_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePbftService>> {
-    let service = crate::pbft_manager::create_pbft_service_from_storage(
+    crate::pbft_manager::create_pbft_service_from_storage(
         storage,
         crate::ffi::rustaxa_ffi::PbftServiceConfig {
             genesis_lambda_ms: 100,
@@ -120,7 +115,18 @@ pub(crate) fn create_pillar_test_service_from_storage(
             report_malicious_behaviour: true,
             magnolia_activation_period: 0,
         },
-    )?;
+    )
+}
+
+/// Creates a test-only ready PBFT service using the production composition.
+///
+/// This wrapper publishes the pending fixture's pillar bootstrap gate and does
+/// not create a partial service topology.
+#[cfg(test)]
+pub(crate) fn create_pillar_test_service_from_storage(
+    storage: &BridgeStorage,
+) -> Result<Box<BridgePbftService>> {
+    let service = create_pending_pillar_test_service_from_storage(storage)?;
     service.pbft_service_complete_pillar_bootstrap()?;
     Ok(service)
 }
@@ -172,249 +178,13 @@ impl BridgePillarChainStorage {
     }
 }
 
-impl PillarChainBridgeGuard<'_> {
-    /// Applies one block-creation result only if its sampled anchor is current.
-    pub fn pillar_state_apply_planned_current_block_data(
-        &self,
-        data_rlp: Vec<u8>,
-        expected_anchor_generation: u64,
-    ) -> Result<()> {
-        self.apply_current_block_data(data_rlp, expected_anchor_generation)
-    }
-
-    /// Persists this node's own pillar-block vote through the runtime-owned
-    /// native Rust storage handle.
-    ///
-    /// Inputs:
-    /// - `vote_rlp` is the canonical legacy `PillarVote` payload selected by the
-    ///   temporary C++ vote materializer.
-    ///
-    /// Outputs:
-    /// - Commits the own-vote row used for restart recovery.
-    ///
-    /// Invariants and edge behavior:
-    /// - Empty payloads are rejected by the consensus storage helper.
-    /// - Vote admission into the live runtime index remains a separate operation;
-    ///   this API only owns the persistence write that used to route through the
-    ///   storage-only bridge handle.
-    pub fn pillar_state_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
-        save_own_pillar_block_vote_storage(self.storage.as_ref(), &vote_rlp)
-    }
-
-    /// Loads the durable rows required to reconstruct pillar-manager state.
-    ///
-    /// Inputs:
-    /// - Uses the native Rust storage handle owned by this runtime; C++ does not
-    ///   choose storage keys or compose a separate storage bridge handle.
-    ///
-    /// Outputs:
-    /// - Returns this node's own vote, current pillar sidecar, and the
-    ///   period-data row following the runtime-owned latest finalized block.
-    /// - Missing rows are represented by empty byte vectors.
-    ///
-    /// Invariants and edge behavior:
-    /// - When a latest block exists, Rust decodes its canonical RLP and derives
-    ///   the pillar-vote recovery lookup as `latest.period + 1`.
-    /// - Malformed latest-block RLP and period overflow are returned as errors,
-    ///   preventing startup from silently reconstructing inconsistent state.
-    /// - When no latest block exists, no period-data lookup is needed and the
-    ///   corresponding output is empty.
-    pub fn pillar_state_load_startup_bootstrap(&self) -> Result<FfiPillarChainStartupBootstrap> {
-        let own_vote_rlp = consensus_load_own_pillar_block_vote_storage(self.storage.as_ref())?;
-        let current_block_data_rlp = self
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
-            .current_data_rlp
-            .clone();
-        let snapshot = self
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
-        let latest_pillar_votes_period_data_rlp =
-            if let Some(latest_block) = &snapshot.latest_finalized_block {
-                let vote_period = latest_block
-                    .period
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow::anyhow!("latest pillar block period overflow"))?;
-                consensus_load_pillar_period_data_storage(self.storage.as_ref(), vote_period)?
-            } else {
-                Vec::new()
-            };
-
-        Ok(FfiPillarChainStartupBootstrap {
-            own_vote_rlp,
-            current_block_data_rlp,
-            latest_pillar_votes_period_data_rlp,
-        })
-    }
-
-    /// Plans one operation against the runtime-owned current anchor snapshot.
-    ///
-    /// The operation tag selects candidate validation, previous-period anchor
-    /// selection, or restart-due selection. Unknown tags return an error. The
-    /// result includes the exact anchor generation used for the decision.
-    pub fn pillar_state_plan_current_anchor_decision(
-        &self,
-        request: FfiPillarCurrentAnchorDecisionRequest,
-    ) -> Result<FfiPillarCurrentAnchorDecisionResult> {
-        let snapshot = self
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
-        let consensus_request = match request.operation {
-            0 => ConsensusPillarCurrentAnchorDecisionRequest::ValidateCandidate {
-                candidate_hash: request
-                    .has_candidate_hash
-                    .then_some(H256::from(request.candidate_hash)),
-            },
-            1 => ConsensusPillarCurrentAnchorDecisionRequest::SelectPreviousPeriod {
-                pbft_period: request.pbft_period,
-            },
-            2 => ConsensusPillarCurrentAnchorDecisionRequest::RestartPostProcessing {
-                pbft_period: request.pbft_period,
-                pillar_blocks_interval: request.pillar_blocks_interval,
-            },
-            operation => bail!("unknown current pillar anchor operation: {operation}"),
-        };
-        let plan =
-            consensus_plan_pillar_current_anchor_decision(snapshot.anchor, consensus_request);
-        let (has_current_anchor, current_period, current_hash) = snapshot
-            .anchor
-            .map(|anchor| (true, anchor.period, anchor.hash.into()))
-            .unwrap_or((false, 0, [0; 32]));
-        Ok(FfiPillarCurrentAnchorDecisionResult {
-            status: plan.status.as_u8(),
-            selected: plan.selected,
-            has_current_anchor,
-            current_period,
-            current_hash,
-            anchor_generation: snapshot.generation,
-        })
-    }
-
-    /// Computes the strict-majority threshold from an external total-vote fact.
-    #[cfg(test)]
-    pub fn pillar_state_consensus_threshold(&self, total_vote_count: u64) -> u64 {
-        consensus_plan_pillar_consensus_threshold(total_vote_count)
-    }
-
-    /// Plans pillar-block construction from external FinalChain facts and the
-    /// runtime-owned current/latest pillar snapshots.
-    pub fn pillar_state_plan_block_creation(
-        &self,
-        request: FfiPillarBlockCreationRequest,
-        current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
-    ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
-        let snapshot = self
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
-        let (last_finalized_period, last_finalized_hash) = snapshot
-            .latest_finalized_block
-            .as_ref()
-            .map(|block| (Some(block.period), Some(block.hash())))
-            .unwrap_or((None, None));
-        let creation_plan =
-            consensus_plan_pillar_block_creation(ConsensusPillarBlockCreationFact {
-                pillar_block_period: request.pillar_block_period,
-                state_root: H256::from(request.state_root),
-                bridge_root: H256::from(request.bridge_root),
-                bridge_epoch: H256::from(request.bridge_epoch),
-                first_pillar_block_period: request.first_pillar_block_period,
-                pillar_blocks_interval: request.pillar_blocks_interval,
-                last_finalized_period,
-                last_finalized_hash,
-            })?;
-        let consensus_vote_counts = current_vote_counts
-            .iter()
-            .map(|value| ConsensusPillarValidatorVoteCount {
-                address: value.address.into(),
-                vote_count: value.vote_count,
-            })
-            .collect::<Vec<_>>();
-        let previous_vote_counts =
-            if request.pillar_block_period == request.first_pillar_block_period {
-                Vec::new()
-            } else {
-                ensure!(
-                    !snapshot.current_data_rlp.is_empty(),
-                    "current pillar vote-count snapshot is missing"
-                );
-                CurrentPillarBlockDataDb::decode_rlp(&snapshot.current_data_rlp)?
-                    .vote_counts
-                    .into_iter()
-                    .map(|vote_count| ConsensusPillarValidatorVoteCount {
-                        address: vote_count.address,
-                        vote_count: vote_count.vote_count,
-                    })
-                    .collect()
-            };
-        let vote_count_changes = consensus_plan_vote_count_changes(
-            consensus_vote_counts.as_slice(),
-            previous_vote_counts.as_slice(),
-        )?
-        .into_iter()
-        .map(FfiPillarValidatorVoteCountChange::from)
-        .collect();
-        Ok(
-            FfiPillarBlockCreationWithVoteCountsPlan::from_creation_plan(
-                creation_plan,
-                vote_count_changes,
-                current_vote_counts,
-                snapshot.generation,
-            ),
-        )
-    }
-
-    /// Validates candidate linkage against the runtime-owned latest finalized
-    /// pillar block.
-    pub fn pillar_state_plan_block_linkage(
-        &self,
-        request: FfiPillarBlockLinkageRequest,
-    ) -> Result<FfiPillarBlockLinkagePlan> {
-        let snapshot = self
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
-        let (last_finalized_period, last_finalized_hash) = snapshot
-            .latest_finalized_block
-            .as_ref()
-            .map(|block| (Some(block.period), Some(block.hash())))
-            .unwrap_or((None, None));
-        Ok(FfiPillarBlockLinkagePlan::from(
-            consensus_plan_pillar_block_linkage(ConsensusPillarBlockLinkageFact {
-                pillar_block_period: request.pillar_block_period,
-                pillar_block_previous_hash: H256::from(request.pillar_block_previous_hash),
-                first_pillar_block_period: request.first_pillar_block_period,
-                pillar_blocks_interval: request.pillar_blocks_interval,
-                last_finalized_period,
-                last_finalized_hash,
-            })?,
-        ))
-    }
-
-    /// Returns canonical latest-finalized pillar bytes solely for the public
-    /// C++ compatibility getter.
-    pub fn pillar_state_latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
-        Ok(self
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
-            .latest_finalized_block_rlp
-            .clone())
-    }
-}
-
 impl BridgePbftService {
     pub fn pbft_service_pillar_ready(&self) -> bool {
         self.pillar.is_ready()
     }
 
     pub fn pbft_service_complete_pillar_bootstrap(&self) -> Result<()> {
-        drop(self.pillar_state(false)?);
-        self.pillar.mark_ready();
-        Ok(())
+        self.pillar.complete_bootstrap()
     }
 
     /// Installs test setup data through the same generation check as production.
@@ -424,13 +194,9 @@ impl BridgePbftService {
     /// malformed payloads and persistence failures are returned unchanged.
     #[cfg(test)]
     pub fn pbft_service_pillar_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        let state = self.pillar_state(true)?;
-        let expected_anchor_generation = state
-            .current_anchor
-            .read()
-            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
-            .generation;
-        state.pillar_state_apply_planned_current_block_data(data_rlp, expected_anchor_generation)
+        let expected_anchor_generation = self.pillar.sample_anchor_generation()?;
+        self.pillar
+            .apply_planned_current_block_data(data_rlp, expected_anchor_generation)
     }
 
     /// Publishes a block-creation payload only against its sampled generation.
@@ -439,34 +205,34 @@ impl BridgePbftService {
         data_rlp: Vec<u8>,
         expected_anchor_generation: u64,
     ) -> Result<()> {
-        self.pillar_state(true)?
-            .pillar_state_apply_planned_current_block_data(data_rlp, expected_anchor_generation)
+        self.pillar
+            .apply_planned_current_block_data(data_rlp, expected_anchor_generation)
     }
 
     pub fn pbft_service_pillar_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
-        self.pillar_state(true)?
-            .pillar_state_apply_own_vote(vote_rlp)
+        self.pillar.apply_own_vote(vote_rlp)
     }
 
     pub fn pbft_service_pillar_load_startup_bootstrap(
         &self,
     ) -> Result<FfiPillarChainStartupBootstrap> {
-        self.pillar_state(false)?
-            .pillar_state_load_startup_bootstrap()
+        self.pillar.load_startup_bootstrap().map(Into::into)
     }
 
     pub fn pbft_service_pillar_plan_current_anchor_decision(
         &self,
         request: FfiPillarCurrentAnchorDecisionRequest,
     ) -> Result<FfiPillarCurrentAnchorDecisionResult> {
-        self.pillar_state(true)?
-            .pillar_state_plan_current_anchor_decision(request)
+        self.pillar.sample_anchor_generation()?;
+        let request = ConsensusPillarCurrentAnchorDecisionRequest::try_from(request)?;
+        self.pillar
+            .plan_current_anchor_decision(request)
+            .map(Into::into)
     }
 
     #[cfg(test)]
     pub fn pbft_service_pillar_consensus_threshold(&self, total_vote_count: u64) -> Result<u64> {
-        let state = self.pillar_state(true)?;
-        Ok(state.pillar_state_consensus_threshold(total_vote_count))
+        self.pillar.consensus_threshold(total_vote_count)
     }
 
     #[cfg(test)]
@@ -475,8 +241,12 @@ impl BridgePbftService {
         request: FfiPillarBlockCreationRequest,
         current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
     ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
-        self.pillar_state(true)?
-            .pillar_state_plan_block_creation(request, current_vote_counts)
+        self.pillar
+            .plan_block_creation(
+                request.into(),
+                current_vote_counts.into_iter().map(Into::into).collect(),
+            )
+            .map(Into::into)
     }
 
     /// Plans a pillar block while keeping the validator snapshot query inside Rust.
@@ -493,48 +263,32 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         request: FfiPillarBlockCreationRequest,
     ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
-        let generation = {
-            let state = self.pillar_state(true)?;
-            let generation = state
-                .current_anchor
-                .read()
-                .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
-                .generation;
-            generation
-        };
+        let generation = self.pillar.sample_anchor_generation()?;
         let current_vote_counts = final_chain
             .0
             .dpos_validators_eligible_vote_counts(request.pillar_block_period.into())?
             .into_iter()
-            .map(|value| FfiPillarValidatorVoteCount {
-                address: value.address,
+            .map(|value| ConsensusPillarValidatorVoteCount {
+                address: value.address.into(),
                 vote_count: value.vote_count,
             })
             .collect();
-        let state = self.pillar_state(true)?;
-        ensure!(
-            state
-                .current_anchor
-                .read()
-                .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
-                .generation
-                == generation,
-            "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
-        );
-        state.pillar_state_plan_block_creation(request, current_vote_counts)
+        self.pillar
+            .plan_block_creation_for_generation(request.into(), current_vote_counts, generation)
+            .map(Into::into)
     }
 
     pub fn pbft_service_pillar_plan_block_linkage(
         &self,
         request: FfiPillarBlockLinkageRequest,
     ) -> Result<FfiPillarBlockLinkagePlan> {
-        self.pillar_state(true)?
-            .pillar_state_plan_block_linkage(request)
+        self.pillar
+            .plan_block_linkage(request.into())
+            .map(Into::into)
     }
 
     pub fn pbft_service_pillar_latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
-        self.pillar_state(true)?
-            .pillar_state_latest_finalized_block_rlp()
+        self.pillar.latest_finalized_block_rlp()
     }
 }
 
@@ -543,6 +297,99 @@ impl From<ConsensusPillarValidatorVoteCountChange> for FfiPillarValidatorVoteCou
         Self {
             address: value.address.into(),
             vote_count_change: value.vote_count_change,
+        }
+    }
+}
+
+impl From<FfiPillarValidatorVoteCount> for ConsensusPillarValidatorVoteCount {
+    fn from(value: FfiPillarValidatorVoteCount) -> Self {
+        Self {
+            address: value.address.into(),
+            vote_count: value.vote_count,
+        }
+    }
+}
+
+impl From<ConsensusPillarValidatorVoteCount> for FfiPillarValidatorVoteCount {
+    fn from(value: ConsensusPillarValidatorVoteCount) -> Self {
+        Self {
+            address: value.address.into(),
+            vote_count: value.vote_count,
+        }
+    }
+}
+
+impl From<FfiPillarBlockCreationRequest> for ConsensusPillarBlockCreationRequest {
+    fn from(value: FfiPillarBlockCreationRequest) -> Self {
+        Self {
+            pillar_block_period: value.pillar_block_period,
+            state_root: value.state_root.into(),
+            bridge_root: value.bridge_root.into(),
+            bridge_epoch: value.bridge_epoch.into(),
+            first_pillar_block_period: value.first_pillar_block_period,
+            pillar_blocks_interval: value.pillar_blocks_interval,
+        }
+    }
+}
+
+impl From<FfiPillarBlockLinkageRequest> for ConsensusPillarBlockLinkageRequest {
+    fn from(value: FfiPillarBlockLinkageRequest) -> Self {
+        Self {
+            pillar_block_period: value.pillar_block_period,
+            pillar_block_previous_hash: value.pillar_block_previous_hash.into(),
+            first_pillar_block_period: value.first_pillar_block_period,
+            pillar_blocks_interval: value.pillar_blocks_interval,
+        }
+    }
+}
+
+impl TryFrom<FfiPillarCurrentAnchorDecisionRequest>
+    for ConsensusPillarCurrentAnchorDecisionRequest
+{
+    type Error = anyhow::Error;
+
+    fn try_from(value: FfiPillarCurrentAnchorDecisionRequest) -> Result<Self> {
+        match value.operation {
+            0 => Ok(Self::ValidateCandidate {
+                candidate_hash: value
+                    .has_candidate_hash
+                    .then_some(H256::from(value.candidate_hash)),
+            }),
+            1 => Ok(Self::SelectPreviousPeriod {
+                pbft_period: value.pbft_period,
+            }),
+            2 => Ok(Self::RestartPostProcessing {
+                pbft_period: value.pbft_period,
+                pillar_blocks_interval: value.pillar_blocks_interval,
+            }),
+            operation => bail!("unknown current pillar anchor operation: {operation}"),
+        }
+    }
+}
+
+impl From<rustaxa_consensus::PillarChainStartupBootstrap> for FfiPillarChainStartupBootstrap {
+    fn from(value: rustaxa_consensus::PillarChainStartupBootstrap) -> Self {
+        Self {
+            own_vote_rlp: value.own_vote_rlp,
+            current_block_data_rlp: value.current_block_data_rlp,
+            latest_pillar_votes_period_data_rlp: value.latest_pillar_votes_period_data_rlp,
+        }
+    }
+}
+
+impl From<ConsensusPillarCurrentAnchorDecisionResult> for FfiPillarCurrentAnchorDecisionResult {
+    fn from(value: ConsensusPillarCurrentAnchorDecisionResult) -> Self {
+        let (has_current_anchor, current_period, current_hash) = value
+            .current_anchor
+            .map(|anchor| (true, anchor.period, anchor.hash.into()))
+            .unwrap_or((false, 0, [0; 32]));
+        Self {
+            status: value.plan.status.as_u8(),
+            selected: value.plan.selected,
+            has_current_anchor,
+            current_period,
+            current_hash,
+            anchor_generation: value.anchor_generation,
         }
     }
 }
@@ -557,24 +404,29 @@ impl From<ConsensusPillarBlockLinkagePlan> for FfiPillarBlockLinkagePlan {
     }
 }
 
-impl FfiPillarBlockCreationWithVoteCountsPlan {
-    fn from_creation_plan(
-        value: ConsensusPillarBlockCreationPlan,
-        vote_count_changes: Vec<FfiPillarValidatorVoteCountChange>,
-        current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
-        anchor_generation: u64,
-    ) -> Self {
+impl From<ConsensusPillarBlockCreationWithVoteCountsPlan>
+    for FfiPillarBlockCreationWithVoteCountsPlan
+{
+    fn from(value: ConsensusPillarBlockCreationWithVoteCountsPlan) -> Self {
         Self {
-            status: value.status as u8,
-            valid: value.valid,
-            expected_previous_period: value.expected_previous_period,
-            previous_pillar_block_hash: value.previous_pillar_block_hash.0,
-            state_root: value.state_root.0,
-            bridge_root: value.bridge_root.0,
-            bridge_epoch: value.bridge_epoch.0,
-            vote_count_changes,
-            current_vote_counts,
-            anchor_generation,
+            status: value.creation.status.as_u8(),
+            valid: value.creation.valid,
+            expected_previous_period: value.creation.expected_previous_period,
+            previous_pillar_block_hash: value.creation.previous_pillar_block_hash.0,
+            state_root: value.creation.state_root.0,
+            bridge_root: value.creation.bridge_root.0,
+            bridge_epoch: value.creation.bridge_epoch.0,
+            vote_count_changes: value
+                .vote_count_changes
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            current_vote_counts: value
+                .current_vote_counts
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            anchor_generation: value.anchor_generation,
         }
     }
 }
@@ -1244,6 +1096,29 @@ mod tests {
                     .unwrap(),
                 (u64::MAX / 2) + 1
             );
+        }
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn pending_readiness_precedes_unknown_current_anchor_operation() {
+        let temp_dir = unique_temp_dir("rustaxa_bridge_pillar_pending_anchor_tag");
+        {
+            let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
+            let runtime = create_pending_pillar_test_service_from_storage(&storage).unwrap();
+            let error = runtime
+                .pbft_service_pillar_plan_current_anchor_decision(
+                    FfiPillarCurrentAnchorDecisionRequest {
+                        operation: 99,
+                        has_candidate_hash: false,
+                        candidate_hash: [0; 32],
+                        pbft_period: 0,
+                        pillar_blocks_interval: 0,
+                    },
+                )
+                .err()
+                .expect("pending readiness must reject before FFI tag validation");
+            assert_eq!(error.to_string(), "PBFT_SERVICE_PILLAR_UNAVAILABLE");
         }
         let _ = fs::remove_dir_all(temp_dir);
     }

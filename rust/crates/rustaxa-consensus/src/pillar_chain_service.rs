@@ -4,13 +4,20 @@
 //! Rust pillar runtime: shared storage, startup restoration, pillar votes, the
 //! canonical current-anchor snapshot, one-time vote/finalization preparation
 //! registries, the outer serialization lock, and monotonic bootstrap readiness.
-//! It has no CXX dependency. Bridge code may temporarily borrow
-//! [`PillarChainGuard`] to adapt existing FFI DTOs, but must release that guard
+//! It has no CXX dependency. Task-oriented methods own storage and anchor
+//! behavior; bridge code may temporarily borrow [`PillarChainGuard`] only for
+//! pillar-vote behavior that has not yet moved, and must release that guard
 //! before calling FinalChain or any C++ executor.
 
 use crate::{
-    PbftServiceReadiness, PillarCurrentAnchor, PillarVotes, load_current_pillar_block_data_storage,
-    load_latest_pillar_block_storage, save_current_pillar_block_data_storage,
+    PbftServiceReadiness, PillarBlockCreationFact, PillarBlockCreationPlan, PillarBlockLinkageFact,
+    PillarBlockLinkagePlan, PillarCurrentAnchor, PillarCurrentAnchorDecisionPlan,
+    PillarCurrentAnchorDecisionRequest, PillarValidatorVoteCount, PillarValidatorVoteCountChange,
+    PillarVotes, load_current_pillar_block_data_storage, load_latest_pillar_block_storage,
+    load_own_pillar_block_vote_storage, load_pillar_period_data_storage,
+    plan_pillar_block_creation, plan_pillar_block_linkage, plan_pillar_consensus_threshold,
+    plan_pillar_current_anchor_decision, plan_pillar_vote_count_changes,
+    save_current_pillar_block_data_storage, save_own_pillar_block_vote_storage,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use ethereum_types::{H160, H256};
@@ -22,6 +29,63 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 /// Maximum unresolved pillar-finalization preparations retained by one service.
 pub const MAX_PILLAR_BLOCK_FINALIZATION_PREPARATIONS: usize = 16;
+
+/// Durable pillar rows used to reconstruct the C++ manager during startup.
+///
+/// Missing rows are returned as empty canonical-byte vectors. The period-data
+/// row, when needed, is selected from `latest_finalized.period + 1`; malformed
+/// restored state and period overflow are returned as errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PillarChainStartupBootstrap {
+    pub own_vote_rlp: Vec<u8>,
+    pub current_block_data_rlp: Vec<u8>,
+    pub latest_pillar_votes_period_data_rlp: Vec<u8>,
+}
+
+/// Current-anchor decision enriched with the exact sampled native snapshot.
+///
+/// The generation lets callers bind later work to the decision. A missing
+/// anchor is represented by `current_anchor: None`, while the planner status
+/// retains the operation-specific reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PillarCurrentAnchorDecisionResult {
+    pub plan: PillarCurrentAnchorDecisionPlan,
+    pub current_anchor: Option<PillarCurrentAnchor>,
+    pub anchor_generation: u64,
+}
+
+/// Candidate fields for linkage validation against native finalized state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PillarBlockLinkageRequest {
+    pub pillar_block_period: u64,
+    pub pillar_block_previous_hash: H256,
+    pub first_pillar_block_period: u64,
+    pub pillar_blocks_interval: u64,
+}
+
+/// External block fields used with a native validator vote-count snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PillarBlockCreationRequest {
+    pub pillar_block_period: u64,
+    pub state_root: H256,
+    pub bridge_root: H256,
+    pub bridge_epoch: H256,
+    pub first_pillar_block_period: u64,
+    pub pillar_blocks_interval: u64,
+}
+
+/// Native block-creation output plus the snapshot facts retained by C++.
+///
+/// `anchor_generation` authenticates a later current-data apply. Current vote
+/// counts preserve FinalChain order, while changes follow the deterministic
+/// pillar planner's ordering and checked signed-range behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PillarBlockCreationWithVoteCountsPlan {
+    pub creation: PillarBlockCreationPlan,
+    pub vote_count_changes: Vec<PillarValidatorVoteCountChange>,
+    pub current_vote_counts: Vec<PillarValidatorVoteCount>,
+    pub anchor_generation: u64,
+}
 
 /// Runtime-internal one-time preparation state for one canonical pillar vote.
 ///
@@ -254,6 +318,187 @@ impl PillarChainService {
         self.readiness.mark_ready();
     }
 
+    /// Completes startup bootstrap after proving the pending state is lockable.
+    ///
+    /// This preserves the durable-before-publish lifecycle contract: mutex
+    /// poisoning fails without publishing readiness, while success performs the
+    /// monotonic release-store transition used by all later live operations.
+    pub fn complete_bootstrap(&self) -> Result<()> {
+        drop(self.lock(false)?);
+        self.mark_ready();
+        Ok(())
+    }
+
+    /// Applies canonical current-pillar data for an exact sampled generation.
+    ///
+    /// Live readiness is required. Persistence completes while the snapshot
+    /// write lock is held and before publication; stale generations, malformed
+    /// or noncanonical RLP, storage failure, and overflow leave the published
+    /// snapshot unchanged.
+    pub fn apply_planned_current_block_data(
+        &self,
+        data_rlp: Vec<u8>,
+        expected_anchor_generation: u64,
+    ) -> Result<()> {
+        self.lock(true)?
+            .apply_current_block_data(data_rlp, expected_anchor_generation)
+    }
+
+    /// Persists this node's canonical own-vote bytes for restart recovery.
+    ///
+    /// Live readiness is required. Empty payloads and storage errors are
+    /// returned unchanged; admission into the in-memory vote index remains a
+    /// separate pillar-vote task.
+    pub fn apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
+        let state = self.lock(true)?;
+        save_own_pillar_block_vote_storage(state.storage.as_ref(), &vote_rlp)
+    }
+
+    /// Loads the durable rows needed by startup reconstruction.
+    ///
+    /// This is the only task API that intentionally accepts pending readiness.
+    /// The current row comes from the validated restored snapshot. If a latest
+    /// finalized block exists, its successor period selects the opaque PBFT
+    /// period-data row; checked overflow and storage errors abort bootstrap.
+    pub fn load_startup_bootstrap(&self) -> Result<PillarChainStartupBootstrap> {
+        let state = self.lock(false)?;
+        let own_vote_rlp = load_own_pillar_block_vote_storage(state.storage.as_ref())?;
+        let snapshot = state
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let current_block_data_rlp = snapshot.current_data_rlp.clone();
+        let latest_pillar_votes_period_data_rlp =
+            if let Some(latest_block) = &snapshot.latest_finalized_block {
+                let vote_period = latest_block
+                    .period
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("latest pillar block period overflow"))?;
+                load_pillar_period_data_storage(state.storage.as_ref(), vote_period)?
+            } else {
+                Vec::new()
+            };
+        Ok(PillarChainStartupBootstrap {
+            own_vote_rlp,
+            current_block_data_rlp,
+            latest_pillar_votes_period_data_rlp,
+        })
+    }
+
+    /// Plans one current-anchor task against a single ready snapshot.
+    ///
+    /// The native operation enum rejects no tags because FFI tag validation
+    /// belongs in the bridge. The result always carries the sampled anchor and
+    /// generation, including terminal missing/mismatch outcomes.
+    pub fn plan_current_anchor_decision(
+        &self,
+        request: PillarCurrentAnchorDecisionRequest,
+    ) -> Result<PillarCurrentAnchorDecisionResult> {
+        let state = self.lock(true)?;
+        let snapshot = state
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        Ok(PillarCurrentAnchorDecisionResult {
+            plan: plan_pillar_current_anchor_decision(snapshot.anchor, request),
+            current_anchor: snapshot.anchor,
+            anchor_generation: snapshot.generation,
+        })
+    }
+
+    /// Computes the strict-majority threshold for a supplied total vote count.
+    ///
+    /// Live readiness is required even though the arithmetic is pure, matching
+    /// the previous bridge task contract. Every `u64` input is representable.
+    pub fn consensus_threshold(&self, total_vote_count: u64) -> Result<u64> {
+        drop(self.lock(true)?);
+        Ok(plan_pillar_consensus_threshold(total_vote_count))
+    }
+
+    /// Samples the ready current-anchor generation before an external query.
+    ///
+    /// Callers must not retain a state guard across that query and must pass the
+    /// returned generation to [`Self::plan_block_creation_for_generation`].
+    pub fn sample_anchor_generation(&self) -> Result<u64> {
+        self.lock(true)?.anchor_generation()
+    }
+
+    /// Plans block creation from native request and validator-count DTOs.
+    ///
+    /// This ready-required variant holds the outer state lock throughout the
+    /// operation and returns the sampled generation for later durable apply.
+    pub fn plan_block_creation(
+        &self,
+        request: PillarBlockCreationRequest,
+        current_vote_counts: Vec<PillarValidatorVoteCount>,
+    ) -> Result<PillarBlockCreationWithVoteCountsPlan> {
+        let state = self.lock(true)?;
+        plan_block_creation_from_state(&state, request, current_vote_counts, None)
+    }
+
+    /// Plans block creation only if an earlier external query's generation is current.
+    ///
+    /// The ready state is re-locked after the caller's external query. A
+    /// generation mismatch returns `PILLAR_BLOCK_CREATION_STALE_ANCHOR` before
+    /// any plan is returned or state is published.
+    pub fn plan_block_creation_for_generation(
+        &self,
+        request: PillarBlockCreationRequest,
+        current_vote_counts: Vec<PillarValidatorVoteCount>,
+        expected_anchor_generation: u64,
+    ) -> Result<PillarBlockCreationWithVoteCountsPlan> {
+        let state = self.lock(true)?;
+        plan_block_creation_from_state(
+            &state,
+            request,
+            current_vote_counts,
+            Some(expected_anchor_generation),
+        )
+    }
+
+    /// Validates candidate parent linkage against native finalized state.
+    ///
+    /// Live readiness is required. Missing finalized state, interval overflow,
+    /// period mismatch, and hash mismatch are represented by the native plan's
+    /// stable status rather than bridge-shaped fields.
+    pub fn plan_block_linkage(
+        &self,
+        request: PillarBlockLinkageRequest,
+    ) -> Result<PillarBlockLinkagePlan> {
+        let state = self.lock(true)?;
+        let snapshot = state
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+        let (last_finalized_period, last_finalized_hash) = snapshot
+            .latest_finalized_block
+            .as_ref()
+            .map(|block| (Some(block.period), Some(block.hash())))
+            .unwrap_or((None, None));
+        plan_pillar_block_linkage(PillarBlockLinkageFact {
+            pillar_block_period: request.pillar_block_period,
+            pillar_block_previous_hash: request.pillar_block_previous_hash,
+            first_pillar_block_period: request.first_pillar_block_period,
+            pillar_blocks_interval: request.pillar_blocks_interval,
+            last_finalized_period,
+            last_finalized_hash,
+        })
+    }
+
+    /// Returns canonical latest-finalized block bytes for compatibility queries.
+    ///
+    /// Live readiness is required. Missing finalized state returns an empty
+    /// vector, and the bytes are cloned directly from the validated snapshot.
+    pub fn latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
+        let state = self.lock(true)?;
+        Ok(state
+            .current_anchor
+            .read()
+            .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?
+            .latest_finalized_block_rlp
+            .clone())
+    }
+
     /// Borrows the outer serialized state for temporary bridge adaptation.
     ///
     /// Callers must drop the returned guard before FinalChain or C++ calls.
@@ -270,6 +515,63 @@ impl PillarChainService {
                 .map_err(|_| anyhow!("PBFT service pillar lock poisoned"))?,
         })
     }
+}
+
+fn plan_block_creation_from_state(
+    state: &PillarChainState,
+    request: PillarBlockCreationRequest,
+    current_vote_counts: Vec<PillarValidatorVoteCount>,
+    expected_anchor_generation: Option<u64>,
+) -> Result<PillarBlockCreationWithVoteCountsPlan> {
+    let snapshot = state
+        .current_anchor
+        .read()
+        .map_err(|_| anyhow!("current pillar anchor lock poisoned"))?;
+    if let Some(expected) = expected_anchor_generation {
+        ensure!(
+            snapshot.generation == expected,
+            "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
+        );
+    }
+    let (last_finalized_period, last_finalized_hash) = snapshot
+        .latest_finalized_block
+        .as_ref()
+        .map(|block| (Some(block.period), Some(block.hash())))
+        .unwrap_or((None, None));
+    let creation = plan_pillar_block_creation(PillarBlockCreationFact {
+        pillar_block_period: request.pillar_block_period,
+        state_root: request.state_root,
+        bridge_root: request.bridge_root,
+        bridge_epoch: request.bridge_epoch,
+        first_pillar_block_period: request.first_pillar_block_period,
+        pillar_blocks_interval: request.pillar_blocks_interval,
+        last_finalized_period,
+        last_finalized_hash,
+    })?;
+    let previous_vote_counts = if request.pillar_block_period == request.first_pillar_block_period {
+        Vec::new()
+    } else {
+        ensure!(
+            !snapshot.current_data_rlp.is_empty(),
+            "current pillar vote-count snapshot is missing"
+        );
+        CurrentPillarBlockDataDb::decode_rlp(&snapshot.current_data_rlp)?
+            .vote_counts
+            .into_iter()
+            .map(|value| PillarValidatorVoteCount {
+                address: value.address,
+                vote_count: value.vote_count,
+            })
+            .collect()
+    };
+    let vote_count_changes =
+        plan_pillar_vote_count_changes(&current_vote_counts, &previous_vote_counts)?;
+    Ok(PillarBlockCreationWithVoteCountsPlan {
+        creation,
+        vote_count_changes,
+        current_vote_counts,
+        anchor_generation: snapshot.generation,
+    })
 }
 
 /// Temporary native state guard used by the bridge adapter.
@@ -388,6 +690,7 @@ fn validate_current_latest_relationship(snapshot: &PillarChainStateSnapshot) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::save_finalized_pillar_block_storage;
     use rustaxa_storage::{Config, Storage};
     use rustaxa_types::pillar::CurrentPillarBlockDataDb;
     use std::path::PathBuf;
@@ -400,6 +703,31 @@ mod tests {
             .as_nanos();
         let path: PathBuf = std::env::temp_dir().join(format!("{name}_{nonce}"));
         Arc::new(Storage::new(Config::new(path)).expect("storage opens"))
+    }
+
+    fn pillar_block(period: u64, previous_pillar_block_hash: H256) -> PillarBlock {
+        PillarBlock {
+            period,
+            state_root: H256::from_low_u64_be(1),
+            previous_pillar_block_hash,
+            bridge_root: H256::from_low_u64_be(2),
+            epoch: 3,
+            validator_vote_count_changes: Vec::new(),
+        }
+    }
+
+    fn current_data(block: PillarBlock, vote_counts: Vec<PillarValidatorVoteCount>) -> Vec<u8> {
+        CurrentPillarBlockDataDb {
+            pillar_block: block,
+            vote_counts: vote_counts
+                .into_iter()
+                .map(|value| rustaxa_types::pillar::ValidatorVoteCount {
+                    address: value.address,
+                    vote_count: value.vote_count,
+                })
+                .collect(),
+        }
+        .encode_rlp()
     }
 
     #[test]
@@ -566,5 +894,226 @@ mod tests {
         assert_eq!(snapshot.generation, 0);
         assert_eq!(snapshot.anchor.expect("anchor").period, 7);
         assert_eq!(snapshot.current_data_rlp, current);
+    }
+
+    #[test]
+    fn live_tasks_require_ready_while_startup_bootstrap_accepts_pending() {
+        let service =
+            PillarChainService::restore(temp_storage("pillar_native_readiness")).expect("restore");
+
+        assert_eq!(
+            service
+                .load_startup_bootstrap()
+                .expect("pending startup load"),
+            PillarChainStartupBootstrap {
+                own_vote_rlp: Vec::new(),
+                current_block_data_rlp: Vec::new(),
+                latest_pillar_votes_period_data_rlp: Vec::new(),
+            }
+        );
+        assert_eq!(
+            service
+                .consensus_threshold(10)
+                .expect_err("live threshold must reject pending")
+                .to_string(),
+            "PBFT_SERVICE_PILLAR_UNAVAILABLE"
+        );
+        assert_eq!(
+            service
+                .latest_finalized_block_rlp()
+                .expect_err("live latest query must reject pending")
+                .to_string(),
+            "PBFT_SERVICE_PILLAR_UNAVAILABLE"
+        );
+        for error in [
+            service
+                .apply_planned_current_block_data(Vec::new(), 0)
+                .expect_err("live apply must reject pending"),
+            service
+                .apply_own_vote(vec![0xc0])
+                .expect_err("live own vote must reject pending"),
+            service
+                .plan_current_anchor_decision(
+                    PillarCurrentAnchorDecisionRequest::SelectPreviousPeriod { pbft_period: 1 },
+                )
+                .expect_err("live anchor decision must reject pending"),
+            service
+                .plan_block_linkage(PillarBlockLinkageRequest {
+                    pillar_block_period: 0,
+                    pillar_block_previous_hash: H256::zero(),
+                    first_pillar_block_period: 0,
+                    pillar_blocks_interval: 1,
+                })
+                .expect_err("live linkage must reject pending"),
+            service
+                .plan_block_creation(
+                    PillarBlockCreationRequest {
+                        pillar_block_period: 0,
+                        state_root: H256::zero(),
+                        bridge_root: H256::zero(),
+                        bridge_epoch: H256::zero(),
+                        first_pillar_block_period: 0,
+                        pillar_blocks_interval: 1,
+                    },
+                    Vec::new(),
+                )
+                .expect_err("live creation must reject pending"),
+            service
+                .sample_anchor_generation()
+                .expect_err("live generation sample must reject pending"),
+        ] {
+            assert_eq!(error.to_string(), "PBFT_SERVICE_PILLAR_UNAVAILABLE");
+        }
+
+        service.complete_bootstrap().expect("publish bootstrap");
+        assert_eq!(service.consensus_threshold(10).expect("threshold"), 6);
+    }
+
+    #[test]
+    fn startup_bootstrap_derives_successor_period_from_restored_latest_block() {
+        let storage = temp_storage("pillar_native_bootstrap");
+        let latest = pillar_block(42, H256::from_low_u64_be(9));
+        let current = current_data(latest.clone(), Vec::new());
+        save_current_pillar_block_data_storage(storage.as_ref(), &current)
+            .expect("save current data");
+        save_finalized_pillar_block_storage(storage.as_ref(), latest.period, &latest.encode_rlp())
+            .expect("save latest");
+        save_own_pillar_block_vote_storage(storage.as_ref(), &[0xc1, 0x01]).expect("save own vote");
+        storage
+            .period()
+            .write(43, &[0xc1, 0x02])
+            .expect("save successor period data");
+
+        let service = PillarChainService::restore(storage).expect("restore");
+        assert_eq!(
+            service.load_startup_bootstrap().expect("bootstrap"),
+            PillarChainStartupBootstrap {
+                own_vote_rlp: vec![0xc1, 0x01],
+                current_block_data_rlp: current,
+                latest_pillar_votes_period_data_rlp: vec![0xc1, 0x02],
+            }
+        );
+    }
+
+    #[test]
+    fn native_anchor_tasks_preserve_durable_generation_and_snapshot_semantics() {
+        let storage = temp_storage("pillar_native_anchor_tasks");
+        let service = PillarChainService::restore(storage.clone()).expect("restore");
+        service.complete_bootstrap().expect("ready");
+        let block = pillar_block(7, H256::zero());
+        let data = current_data(block.clone(), Vec::new());
+
+        service
+            .apply_planned_current_block_data(data.clone(), 0)
+            .expect("generation-bound apply");
+        service
+            .apply_own_vote(vec![0xc1, 0x04])
+            .expect("own vote apply");
+        assert_eq!(
+            load_current_pillar_block_data_storage(storage.as_ref()).expect("durable current"),
+            data
+        );
+        assert_eq!(
+            load_own_pillar_block_vote_storage(storage.as_ref()).expect("durable own vote"),
+            vec![0xc1, 0x04]
+        );
+        assert_eq!(
+            service
+                .apply_planned_current_block_data(current_data(block.clone(), Vec::new()), 0)
+                .expect_err("stale apply")
+                .to_string(),
+            "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
+        );
+
+        let decision = service
+            .plan_current_anchor_decision(PillarCurrentAnchorDecisionRequest::ValidateCandidate {
+                candidate_hash: Some(block.hash()),
+            })
+            .expect("anchor decision");
+        assert!(decision.plan.selected);
+        assert_eq!(decision.current_anchor.expect("anchor").period, 7);
+        assert_eq!(decision.anchor_generation, 1);
+        assert!(
+            service
+                .latest_finalized_block_rlp()
+                .expect("latest bytes")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn native_linkage_and_block_creation_use_restored_finalized_and_vote_count_state() {
+        let storage = temp_storage("pillar_native_planning");
+        let latest = pillar_block(10, H256::from_low_u64_be(9));
+        let previous_counts = vec![
+            PillarValidatorVoteCount {
+                address: H160::from_low_u64_be(1),
+                vote_count: 3,
+            },
+            PillarValidatorVoteCount {
+                address: H160::from_low_u64_be(2),
+                vote_count: 8,
+            },
+        ];
+        save_current_pillar_block_data_storage(
+            storage.as_ref(),
+            &current_data(latest.clone(), previous_counts),
+        )
+        .expect("save current");
+        save_finalized_pillar_block_storage(storage.as_ref(), 10, &latest.encode_rlp())
+            .expect("save latest");
+        let service = PillarChainService::restore(storage).expect("restore");
+        service.complete_bootstrap().expect("ready");
+
+        let linkage = service
+            .plan_block_linkage(PillarBlockLinkageRequest {
+                pillar_block_period: 20,
+                pillar_block_previous_hash: latest.hash(),
+                first_pillar_block_period: 10,
+                pillar_blocks_interval: 10,
+            })
+            .expect("linkage");
+        assert!(linkage.valid);
+        assert_eq!(
+            service.latest_finalized_block_rlp().expect("latest bytes"),
+            latest.encode_rlp()
+        );
+
+        let request = PillarBlockCreationRequest {
+            pillar_block_period: 20,
+            state_root: H256::from_low_u64_be(0xa1),
+            bridge_root: H256::from_low_u64_be(0xb2),
+            bridge_epoch: H256::from_low_u64_be(0xc3),
+            first_pillar_block_period: 10,
+            pillar_blocks_interval: 10,
+        };
+        let current_counts = vec![
+            PillarValidatorVoteCount {
+                address: H160::from_low_u64_be(1),
+                vote_count: 3,
+            },
+            PillarValidatorVoteCount {
+                address: H160::from_low_u64_be(3),
+                vote_count: 9,
+            },
+        ];
+        let plan = service
+            .plan_block_creation_for_generation(request, current_counts, 0)
+            .expect("generation-bound plan");
+        assert!(plan.creation.valid);
+        assert_eq!(plan.creation.previous_pillar_block_hash, latest.hash());
+        assert_eq!(plan.anchor_generation, 0);
+        assert_eq!(plan.vote_count_changes.len(), 2);
+        assert_eq!(plan.vote_count_changes[0].address, H160::from_low_u64_be(2));
+        assert_eq!(plan.vote_count_changes[0].vote_count_change, -8);
+        assert_eq!(plan.vote_count_changes[1].address, H160::from_low_u64_be(3));
+        assert_eq!(plan.vote_count_changes[1].vote_count_change, 9);
+        assert_eq!(
+            service
+                .plan_block_creation_for_generation(request, Vec::new(), 1)
+                .expect_err("stale generation")
+                .to_string(),
+            "PILLAR_BLOCK_CREATION_STALE_ANCHOR"
+        );
     }
 }

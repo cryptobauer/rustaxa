@@ -102,8 +102,10 @@ Native `rustaxa-consensus::pillar_chain_service::PillarChainService` now owns pi
 `PillarVotes`, the canonical anchor snapshot, both preparation registries and finalization token sequence, the outer
 serialization mutex, and bootstrap readiness. The bridge temporarily borrows a native guard for DTO-oriented behavior,
 and every FinalChain-composed path drops it before the external query and reacquires it for generation-bound apply.
-PBFT construction/orchestration tests, task-oriented pillar method migration, and the DAG/transaction/sortition owner
-remain in this workstream.
+The service also exposes native task APIs for current-data publication, own-vote persistence, startup bootstrap,
+current-anchor decisions, consensus threshold, block creation/linkage planning, and latest-finalized lookup; the bridge
+only maps those results to CXX carriers. PBFT construction/orchestration tests, pillar-vote task migration, and the
+DAG/transaction/sortition owner remain in this workstream.
 
 ### 3. Collapse configuration topology
 

@@ -288,8 +288,10 @@ pub use pillar_chain::{
     save_finalized_pillar_block_storage, save_own_pillar_block_vote_storage,
 };
 pub use pillar_chain_service::{
-    PillarBlockFinalizationPreparation, PillarChainGuard, PillarChainService, PillarChainState,
-    PillarChainStateSnapshot, SingleVotePreparation, SingleVotePreparationRegistry,
+    PillarBlockCreationRequest, PillarBlockCreationWithVoteCountsPlan,
+    PillarBlockFinalizationPreparation, PillarBlockLinkageRequest, PillarChainGuard,
+    PillarChainService, PillarChainStartupBootstrap, PillarChainState, PillarChainStateSnapshot,
+    PillarCurrentAnchorDecisionResult, SingleVotePreparation, SingleVotePreparationRegistry,
     decode_pillar_chain_snapshot,
 };
 pub use pillar_votes::{

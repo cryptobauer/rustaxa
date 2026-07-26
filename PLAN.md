@@ -1175,7 +1175,9 @@ The current Rust consensus footprint is broad but still incomplete:
    C++ retains null-root and pillar-readiness checks but no longer probes for optional capabilities. Native
    `PillarChainService` owns pillar storage/restoration, votes, anchor and preparation state, finalization token
    sequencing, its outer mutex, and readiness; the bridge's temporary guard adapter is released before every
-   FinalChain query and reacquired only for generation-bound apply.
+   FinalChain query and reacquired only for generation-bound apply. Current-data publication, own-vote persistence,
+   startup bootstrap, anchor decisions, threshold and block/linkage planning, and latest-finalized lookup now enter
+   through task-oriented native service APIs, leaving only FFI result conversion in the pillar-chain bridge.
    C++ keeps daemon threads, networking, timers,
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
    sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT

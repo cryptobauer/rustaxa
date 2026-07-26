@@ -417,6 +417,15 @@ paths preserve prepare, guard release, external query, and generation-bound relo
 restoration, readiness publication, clone-visible state, token reuse/generation scoping, and durable generation
 recovery. The checked bridge budget falls to 49,794 lines.
 
+The following pillar contraction moves non-external storage and anchor tasks behind `PillarChainService` methods.
+Native DTOs now carry startup bootstrap, anchor decisions, block creation/linkage plans, and validator vote-count
+changes. The service owns readiness enforcement, generation sampling and revalidation, current-data and own-vote
+persistence, threshold planning, canonical latest-finalized lookup, and all related state access; bridge methods only
+convert CXX carriers. The FinalChain block-creation adapter still performs its external validator snapshot between two
+short native calls and retains the generation check. Native tests cover pending/ready behavior, bootstrap and own-vote
+storage, anchor/linkage decisions, block planning, and latest-finalized lookup. The checked bridge budget falls to
+49,669 lines.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
