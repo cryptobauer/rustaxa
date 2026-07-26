@@ -4386,12 +4386,6 @@ pub mod rustaxa_ffi {
             gas_pricer_config: GasPricerConfig,
             proposal_dag_gas_limit: u64,
         ) -> Result<Box<BridgeDagTransactionService>>;
-        pub fn create_dag_transaction_service_for_transaction_manager(
-            storage: &BridgeStorage,
-            transaction_queue_config: TransactionQueueConfig,
-            gas_pricer_config: GasPricerConfig,
-            proposal_dag_gas_limit: u64,
-        ) -> Result<Box<BridgeDagTransactionService>>;
         /// Prepares one canonical add-block transition without mutation.
         pub fn dag_transaction_service_prepare_add_block(
             self: &BridgeDagTransactionService,

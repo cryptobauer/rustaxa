@@ -380,6 +380,12 @@ standalone Rust compatibility behavior, while `gas_pricer_test` remains pure-C++
 falls to two partial factories and two compatibility-constructor calls. The guarded `tests/CMakeLists.txt` source
 selection is the sole upstream-owned exception for this slice.
 
+The next `CRW-13` contraction deletes `create_dag_transaction_service_for_transaction_manager`, its CXX export, and the
+transaction-only Rust service shape. Production already injects the fully restored DAG/transaction/sortition service;
+the retained four-argument Rust-mode facade constructor now restores that same composition for standalone C++ callers.
+Bridge tests keep full-service restoration and cursor-safety coverage while dropping unavailable-domain assertions for
+the retired topology. The checked topology falls to one partial factory and one compatibility-constructor call.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

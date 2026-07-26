@@ -105,6 +105,9 @@ DAG/transaction/sortition owner remain in this workstream.
 - The storage-free gas-pricer partial factory and shim-owned compatibility service are deleted. Rust production uses
   the App-owned transaction service; native oracle tests own deterministic percentile/history behavior, and the
   untouched standalone C++ test remains reference-only.
+- The transaction-only DAG/transaction partial factory is deleted. Every Rust-mode `TransactionManager` constructor now
+  restores the same fully composed DAG/transaction/sortition service shape used by production; native bridge tests no
+  longer preserve unavailable-domain behavior for a topology the application does not support.
 - Remove redundant module flags and CMake dependency matrices in dependency order.
 - Continue to compile untouched legacy implementations in the all-Rust-disabled reference configuration.
 

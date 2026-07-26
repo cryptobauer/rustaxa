@@ -324,16 +324,9 @@ SharedDagTransactionService createDagTransactionService(const FullNodeConfig& co
       config.propose_dag_gas_limit));
 }
 
-SharedDagTransactionService createTransactionManagerCompatibilityService(const FullNodeConfig& config, DbStorage& db) {
-  return std::make_shared<DagTransactionService>(rustaxa::create_dag_transaction_service_for_transaction_manager(
-      db.rustStorage(), rustaxa::TransactionQueueConfig{config.transactions_pool_size},
-      gasPricerConfigFromNodeConfig(config), config.propose_dag_gas_limit));
-}
-
 TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_ptr<DbStorage> db,
                                        std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr)
-    : TransactionManager(conf, db, std::move(final_chain), node_addr,
-                         createTransactionManagerCompatibilityService(conf, *db)) {}
+    : TransactionManager(conf, db, std::move(final_chain), node_addr, createDagTransactionService(conf, *db)) {}
 
 TransactionManager::TransactionManager(const FullNodeConfig& conf, std::shared_ptr<DbStorage> db,
                                        std::shared_ptr<final_chain::FinalChain> final_chain, addr_t node_addr,

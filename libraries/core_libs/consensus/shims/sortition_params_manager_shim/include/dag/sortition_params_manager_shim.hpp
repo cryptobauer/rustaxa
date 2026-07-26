@@ -78,9 +78,9 @@ class SortitionParamsManager {
   /**
    * Creates a facade over the canonical DAG/transaction application service.
    *
-   * The service must be non-null and expose sortition capability. Construction
-   * throws for transaction-only compatibility services; `db` remains in the
-   * signature for source compatibility but the service owns native storage.
+   * The service must be non-null and expose sortition capability. `db` remains
+   * in the signature for source compatibility but the service owns native
+   * storage.
    */
   SortitionParamsManager([[maybe_unused]] const addr_t& node_addr, const FullNodeConfig& config,
                          std::shared_ptr<DbStorage> db, SharedDagTransactionService dag_transaction_service);

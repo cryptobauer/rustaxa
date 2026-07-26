@@ -67,14 +67,11 @@ TEST_F(SortitionParamsManagerShimDataTest, startupPersistsDefaultChangeThroughRu
   EXPECT_EQ(manager.getSortitionParams().vrf.threshold_upper, 10000);
 }
 
-TEST_F(SortitionParamsManagerShimDataTest, constructionRejectsMissingOrTransactionOnlyService) {
+TEST_F(SortitionParamsManagerShimDataTest, constructionRejectsMissingService) {
   auto db = std::make_shared<DbStorage>(data_dir);
   const auto config = sortitionShimConfig();
 
   EXPECT_THROW((SortitionParamsManager({}, config, db, {})), std::invalid_argument);
-
-  auto transaction_only_service = createTransactionManagerCompatibilityService(config, *db);
-  EXPECT_THROW((SortitionParamsManager({}, config, db, transaction_only_service)), std::invalid_argument);
 }
 
 TEST_F(SortitionParamsManagerShimDataTest, finalizedPeriodPersistenceIgnoresCompatibilityBatch) {

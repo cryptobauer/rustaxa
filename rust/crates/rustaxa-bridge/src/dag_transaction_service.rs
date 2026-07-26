@@ -21,16 +21,13 @@ use std::sync::{Mutex, MutexGuard};
 
 /// Application-owned consensus service containing sibling DAG, sortition, and transaction runtimes.
 ///
-/// Full production construction initializes all three domains from one shared Rust storage
-/// handle before publishing the service. Compatibility construction omits DAG and sortition
-/// state for standalone TransactionManager or GasPricer tests; unavailable calls fail with
-/// stable domain-specific errors. Calls hold one domain mutex unless they explicitly compose
-/// sibling state, in which case they acquire locks only in the universal
-/// DAG-then-sortition-then-transaction order. Proposer and verification FinalChain-fact collection
-/// snapshot under DAG and release every service lock for the FinalChain query. Proposer collection
-/// then reacquires DAG followed by sortition; verification reacquires only DAG. Both revalidate the
-/// exact cursor before applying, and matching infrastructure failures clean only their owning
-/// cursor. No guard crosses an external executor callback.
+/// Production construction initializes all three domains from one shared Rust storage handle before
+/// publishing the service. Calls hold one domain mutex unless they explicitly compose sibling state,
+/// in which case they acquire locks only in the universal DAG-then-sortition-then-transaction order.
+/// Proposer and verification FinalChain-fact collection snapshot under DAG and release every service lock
+/// for the FinalChain query. Proposer collection then reacquires DAG followed by sortition; verification
+/// reacquires only DAG. Both revalidate the exact cursor before applying, and matching infrastructure
+/// failures clean only their owning cursor. No guard crosses an external executor callback.
 pub struct BridgeDagTransactionService {
     transaction: Mutex<TransactionRuntimeState>,
     dag: Mutex<Option<DagRuntimeState>>,
@@ -41,8 +38,7 @@ pub struct BridgeDagTransactionService {
 
 /// Validated guard for the sortition domain of a fully composed service.
 ///
-/// Construction fails with `SORTITION_SERVICE_UNAVAILABLE` before this guard
-/// is returned for transaction-only compatibility services.
+/// Construction fails with `SORTITION_SERVICE_UNAVAILABLE` when sortition is absent.
 pub(crate) struct BridgeSortitionGuard<'a>(MutexGuard<'a, Option<SortitionParamsManager>>);
 
 impl std::ops::Deref for BridgeSortitionGuard<'_> {
@@ -100,9 +96,7 @@ impl BridgeDagTransactionService {
 
     /// Reports whether this service owns sortition runtime state.
     ///
-    /// Full application services return `true`; transaction-only and gas-pricer
-    /// compatibility services return `false`. The value is immutable after
-    /// construction, so callers may fail fast without acquiring a service lock.
+    /// The value is immutable after construction, so callers may fail fast without acquiring a service lock.
     pub fn dag_transaction_service_has_sortition(&self) -> bool {
         self.has_sortition
     }
@@ -150,27 +144,6 @@ pub fn create_dag_transaction_service_from_storage(
         dag: Mutex::new(Some(dag)),
         sortition: Mutex::new(Some(sortition)),
         has_sortition: true,
-    }))
-}
-
-/// Constructs a storage-backed transaction-only compatibility service.
-pub fn create_dag_transaction_service_for_transaction_manager(
-    storage: &BridgeStorage,
-    transaction_queue_config: TransactionQueueConfig,
-    gas_pricer_config: GasPricerConfig,
-    proposal_dag_gas_limit: u64,
-) -> Result<Box<BridgeDagTransactionService>> {
-    let transaction = *build_transaction_state_from_storage(
-        storage,
-        transaction_queue_config,
-        gas_pricer_config,
-        proposal_dag_gas_limit,
-    )?;
-    Ok(Box::new(BridgeDagTransactionService {
-        transaction: Mutex::new(transaction),
-        dag: Mutex::new(None),
-        sortition: Mutex::new(None),
-        has_sortition: false,
     }))
 }
 
@@ -831,7 +804,7 @@ pub fn dag_transaction_service_proposer_pack_finalize(
 
 /// Idempotently aborts the matching transaction and DAG proposer cursors.
 ///
-/// Transaction-only services return `DAG_SERVICE_UNAVAILABLE` before acquiring or mutating transaction state. The return
+/// Services without DAG state return `DAG_SERVICE_UNAVAILABLE` before acquiring or mutating transaction state. The return
 /// value is true when either matching cursor was removed; wrong-owner transaction cursors are preserved.
 pub fn dag_transaction_service_proposer_pack_abort(
     service: &BridgeDagTransactionService,
@@ -3558,7 +3531,7 @@ mod tests {
     }
 
     #[test]
-    fn full_service_restores_all_domains_and_transaction_only_rejects_dag_and_sortition() {
+    fn full_service_restores_all_domains() {
         let dir = unique_temp_dir("rustaxa_dag_transaction_service");
         let storage = create_storage(dir.to_str().unwrap()).unwrap();
         let full = create_dag_transaction_service_from_storage(
@@ -3609,37 +3582,6 @@ mod tests {
                     .unwrap();
             });
         });
-
-        let compat = create_dag_transaction_service_for_transaction_manager(
-            &storage,
-            queue_config(),
-            gas_config(),
-            u64::MAX,
-        )
-        .unwrap();
-        assert!(!compat.dag_transaction_service_has_sortition());
-        assert_eq!(compat.transaction_manager_runtime_transaction_count(), 0);
-        let error = match compat.dag() {
-            Ok(_) => panic!("transaction-only service unexpectedly exposed DAG state"),
-            Err(error) => error,
-        };
-        assert_eq!(error.to_string(), "DAG_SERVICE_UNAVAILABLE");
-        assert_eq!(
-            compat
-                .dag_manager_runtime_vertex_count()
-                .unwrap_err()
-                .to_string(),
-            "DAG_SERVICE_UNAVAILABLE"
-        );
-        assert_eq!(
-            compat
-                .sortition_params_for_period_from_storage(0)
-                .err()
-                .expect("transaction-only service unexpectedly exposed sortition state")
-                .to_string(),
-            "SORTITION_SERVICE_UNAVAILABLE"
-        );
-        drop(compat);
         drop(restored);
         drop(full);
         drop(storage);
@@ -3839,30 +3781,28 @@ mod tests {
     }
 
     #[test]
-    fn transaction_only_proposer_pack_fails_before_transaction_mutation() {
+    fn proposer_pack_without_active_session_does_not_mutate_transaction_cursor() {
         let dir = unique_temp_dir("rustaxa_dag_transaction_service_pack_unavailable");
         let storage = create_storage(dir.to_str().unwrap()).unwrap();
-        let service = create_dag_transaction_service_for_transaction_manager(
+        let service = create_dag_transaction_service_from_storage(
             &storage,
+            &[1; 32],
+            32,
+            100,
+            sortition_config(),
             queue_config(),
             gas_config(),
             u64::MAX,
         )
         .unwrap();
 
-        let error = service
+        assert!(service
             .dag_transaction_service_proposer_pack_prepare(7, false, 21_000, 0, 0)
-            .err()
-            .expect("transaction-only service must reject proposer pack");
-        assert_eq!(error.to_string(), "DAG_SERVICE_UNAVAILABLE");
+            .is_err());
         assert!(service.transaction().transaction_pack_session.is_none());
-        assert_eq!(
-            service
-                .dag_transaction_service_proposer_pack_abort(7)
-                .unwrap_err()
-                .to_string(),
-            "DAG_SERVICE_UNAVAILABLE"
-        );
+        assert!(!service
+            .dag_transaction_service_proposer_pack_abort(7)
+            .unwrap());
         assert!(service.transaction().transaction_pack_session.is_none());
 
         drop(service);

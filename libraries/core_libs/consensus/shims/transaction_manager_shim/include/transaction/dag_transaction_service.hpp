@@ -47,12 +47,4 @@ using SharedDagTransactionService = std::shared_ptr<DagTransactionService>;
 /** Builds the fully composed, storage-restored service used by `App`. */
 SharedDagTransactionService createDagTransactionService(const FullNodeConfig& config, DbStorage& db);
 
-/**
- * Builds the transaction-only compatibility service used by standalone facade tests.
- *
- * DAG operations on this service fail explicitly; production construction must
- * use `createDagTransactionService` and share its result with both facades.
- */
-SharedDagTransactionService createTransactionManagerCompatibilityService(const FullNodeConfig& config, DbStorage& db);
-
 }  // namespace taraxa
