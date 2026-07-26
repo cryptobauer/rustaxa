@@ -12,6 +12,18 @@
 namespace taraxa::core_tests {
 namespace {
 
+SharedPbftService makeService(const std::shared_ptr<DbStorage>& db) {
+  rustaxa::PbftServiceConfig config{};
+  config.genesis_lambda_ms = 1000;
+  config.cacti_lambda_max_ms = 1000;
+  config.cacti_lambda_default_ms = 1000;
+  config.max_exponential_lambda_ms = 60000;
+  config.max_steps = 13;
+  config.deadline_ms = 4000;
+  config.polling_interval_ms = 100;
+  return std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
+}
+
 std::shared_ptr<PbftBlock> makeBlock(PbftPeriod period, uint64_t seed) {
   std::vector<vote_hash_t> reward_votes_hashes;
   return std::make_shared<PbftBlock>(kNullBlockHash, blk_hash_t(seed), kNullBlockHash, kNullBlockHash, period, addr_t{},
@@ -29,7 +41,7 @@ TEST_F(PbftChainShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
   db->savePeriodData(PeriodData(block, {}), batch);
   db->commitWriteBatch(batch);
 
-  PbftChain chain(addr_t{}, db);
+  PbftChain chain(addr_t{}, makeService(db));
   db.reset();
 
   EXPECT_TRUE(chain.findPbftBlockInChain(block->getBlockHash()));
@@ -50,7 +62,7 @@ TEST_F(PbftChainShimDataTest, retainedRustStorageOutlivesCppDbOwner) {
 TEST_F(PbftChainShimDataTest, sharedServicePublishesOneChainStateAcrossFacades) {
   const auto block = makeBlock(1, 505);
   auto db = std::make_shared<DbStorage>(data_dir);
-  auto service = std::make_shared<PbftService>(rustaxa::create_pbft_chain_service_from_storage(db->rustStorage()));
+  auto service = makeService(db);
 
   PbftChain writer(addr_t{}, service);
   PbftChain reader(addr_t{}, service);

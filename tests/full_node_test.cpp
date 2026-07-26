@@ -24,6 +24,26 @@
 
 // TODO rename this namespace to `tests`
 namespace taraxa::core_tests {
+namespace {
+
+std::shared_ptr<PbftChain> makeTestPbftChain(const std::shared_ptr<DbStorage> &db) {
+#ifdef RUSTAXA_ENABLE
+  rustaxa::PbftServiceConfig config{};
+  config.genesis_lambda_ms = 1000;
+  config.cacti_lambda_max_ms = 1000;
+  config.cacti_lambda_default_ms = 1000;
+  config.max_exponential_lambda_ms = 60000;
+  config.max_steps = 13;
+  config.deadline_ms = 4000;
+  config.polling_interval_ms = 100;
+  auto service = std::make_shared<PbftService>(rustaxa::create_pbft_service_from_storage(db->rustStorage(), config));
+  return std::make_shared<PbftChain>(addr_t(), std::move(service));
+#else
+  return std::make_shared<PbftChain>(addr_t(), db);
+#endif
+}
+
+}  // namespace
 
 const unsigned NUM_TRX = 200;
 const unsigned SYNC_TIMEOUT = 400;
@@ -289,18 +309,18 @@ TEST_F(FullNodeTest, db_test) {
   }
 
   // pbft_blocks (head)
-  PbftChain pbft_chain(addr_t(), db_ptr);
-  db.savePbftHead(pbft_chain.getHeadHash(), pbft_chain.getJsonStr());
-  EXPECT_EQ(db.getPbftHead(pbft_chain.getHeadHash()), pbft_chain.getJsonStr());
+  auto pbft_chain = makeTestPbftChain(db_ptr);
+  db.savePbftHead(pbft_chain->getHeadHash(), pbft_chain->getJsonStr());
+  EXPECT_EQ(db.getPbftHead(pbft_chain->getHeadHash()), pbft_chain->getJsonStr());
   batch = db.createWriteBatch();
-  pbft_chain.updatePbftChain(blk_hash_t(123), blk_hash_t(1));
-  db.addPbftHeadToBatch(pbft_chain.getHeadHash(), pbft_chain.getJsonStr(), batch);
+  pbft_chain->updatePbftChain(blk_hash_t(123), blk_hash_t(1));
+  db.addPbftHeadToBatch(pbft_chain->getHeadHash(), pbft_chain->getJsonStr(), batch);
   db.commitWriteBatch(batch);
-  EXPECT_EQ(db.getPbftHead(pbft_chain.getHeadHash()), pbft_chain.getJsonStr());
+  EXPECT_EQ(db.getPbftHead(pbft_chain->getHeadHash()), pbft_chain->getJsonStr());
   batch = db.createWriteBatch();
-  db.addPbftHeadToBatch(pbft_chain.getHeadHash(), pbft_chain.getJsonStr(), batch);
+  db.addPbftHeadToBatch(pbft_chain->getHeadHash(), pbft_chain->getJsonStr(), batch);
   db.commitWriteBatch(batch);
-  EXPECT_EQ(db.getPbftHead(pbft_chain.getHeadHash()), pbft_chain.getJsonStr());
+  EXPECT_EQ(db.getPbftHead(pbft_chain->getHeadHash()), pbft_chain->getJsonStr());
 
   // status
   db.saveStatusField(StatusDbField::TrxCount, 5);

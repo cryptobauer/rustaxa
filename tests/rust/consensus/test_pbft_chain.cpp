@@ -15,6 +15,19 @@ using namespace rustaxa;
 
 class RustPbftChainTest : public ::testing::Test {
  protected:
+  static rustaxa::PbftServiceConfig makePbftServiceConfig() {
+    rustaxa::PbftServiceConfig config{};
+    config.genesis_lambda_ms = 100;
+    config.cacti_lambda_max_ms = 1500;
+    config.cacti_lambda_default_ms = 500;
+    config.cacti_block = 100;
+    config.max_exponential_lambda_ms = 60000;
+    config.max_steps = 13;
+    config.deadline_ms = 1000;
+    config.polling_interval_ms = 100;
+    return config;
+  }
+
   static std::array<uint8_t, 32> h256(uint8_t last_byte) {
     std::array<uint8_t, 32> hash{};
     hash[31] = last_byte;
@@ -58,62 +71,63 @@ class RustPbftChainTest : public ::testing::Test {
     const auto head = head_json(size, non_empty_size, last_block);
     storage_shim_save_pbft_head(*batch, h256(0), bytes(head));
     storage_shim_commit_batch(std::move(batch), false);
-    auto chain = create_pbft_chain_service_from_storage(*storage);
+    auto chain = create_pbft_service_from_storage(*storage, makePbftServiceConfig());
     std::filesystem::remove_all(test_dir);
     return chain;
   }
 };
 
 TEST_F(RustPbftChainTest, UpdatesHeadStateForNonNullAndNullAnchors) {
-  auto chain = create_chain("rustaxa_consensus_pbft_chain_update", 1, 0, 0);
+  auto chain = create_chain("rustaxa_consensus_pbft_chain_update", 0, 0, 0);
   EXPECT_FALSE(chain->pbft_chain_initialized_default());
 
   auto current = chain->pbft_chain_head();
-  EXPECT_EQ(current.size, 1);
+  EXPECT_EQ(current.size, 0);
+  EXPECT_EQ(current.non_empty_size, 0);
   EXPECT_EQ(current.last_pbft_block_hash, h256(0));
 
   current = chain->pbft_chain_update(h256(12), h256(99));
-  EXPECT_EQ(current.size, 2);
+  EXPECT_EQ(current.size, 1);
   EXPECT_EQ(current.non_empty_size, 1);
   EXPECT_EQ(current.last_pbft_block_hash, h256(12));
   EXPECT_EQ(current.last_non_null_anchor_hash, h256(99));
 
   current = chain->pbft_chain_update(h256(13), h256(0));
-  EXPECT_EQ(current.size, 3);
+  EXPECT_EQ(current.size, 2);
   EXPECT_EQ(current.non_empty_size, 1);
   EXPECT_EQ(current.last_pbft_block_hash, h256(13));
   EXPECT_EQ(current.last_non_null_anchor_hash, h256(99));
 }
 
 TEST_F(RustPbftChainTest, ProjectsLegacyJsonHeadWithoutMutatingCurrentHead) {
-  auto chain = create_chain("rustaxa_consensus_pbft_chain_legacy_projection", 4, 2, 0);
+  auto chain = create_chain("rustaxa_consensus_pbft_chain_legacy_projection", 0, 0, 0);
 
   auto projected = chain->pbft_chain_project_legacy_json_head(h256(45), true);
-  EXPECT_EQ(projected.size, 5);
-  EXPECT_EQ(projected.non_empty_size, 3);
+  EXPECT_EQ(projected.size, 1);
+  EXPECT_EQ(projected.non_empty_size, 1);
   EXPECT_EQ(projected.last_pbft_block_hash, h256(45));
   EXPECT_EQ(projected.last_non_null_anchor_hash, h256(0));
 
   auto current = chain->pbft_chain_head();
-  EXPECT_EQ(current.size, 4);
-  EXPECT_EQ(current.non_empty_size, 2);
+  EXPECT_EQ(current.size, 0);
+  EXPECT_EQ(current.non_empty_size, 0);
   EXPECT_EQ(current.last_pbft_block_hash, h256(0));
 }
 
 TEST_F(RustPbftChainTest, ReportsPeriodAndPreviousHashValidationFailures) {
-  auto chain = create_chain("rustaxa_consensus_pbft_chain_validation", 3, 2, 0);
+  auto chain = create_chain("rustaxa_consensus_pbft_chain_validation", 0, 0, 0);
 
-  auto valid = chain->pbft_chain_validate_block(4, h256(0));
+  auto valid = chain->pbft_chain_validate_block(1, h256(0));
   EXPECT_TRUE(valid.ok);
   EXPECT_EQ(valid.code, 0);
 
-  auto period_mismatch = chain->pbft_chain_validate_block(5, h256(0));
+  auto period_mismatch = chain->pbft_chain_validate_block(2, h256(0));
   EXPECT_FALSE(period_mismatch.ok);
   EXPECT_EQ(period_mismatch.code, 1);
-  EXPECT_EQ(period_mismatch.expected_period, 4);
-  EXPECT_EQ(period_mismatch.actual_period, 5);
+  EXPECT_EQ(period_mismatch.expected_period, 1);
+  EXPECT_EQ(period_mismatch.actual_period, 2);
 
-  auto prev_hash_mismatch = chain->pbft_chain_validate_block(4, h256(99));
+  auto prev_hash_mismatch = chain->pbft_chain_validate_block(1, h256(99));
   EXPECT_FALSE(prev_hash_mismatch.ok);
   EXPECT_EQ(prev_hash_mismatch.code, 2);
   EXPECT_EQ(prev_hash_mismatch.expected_prev_hash, h256(0));

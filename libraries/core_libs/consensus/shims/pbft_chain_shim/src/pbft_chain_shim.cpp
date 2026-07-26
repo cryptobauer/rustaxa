@@ -5,7 +5,6 @@
 #include <stdexcept>
 
 #include "pbft/pbft_chain.hpp"
-#include "storage/storage.hpp"
 
 namespace taraxa {
 namespace {
@@ -31,17 +30,6 @@ Json::Value head_json(rustaxa::PbftChainHeadPayload const& head) {
 std::string head_json_string(rustaxa::PbftChainHeadPayload const& head) { return head_json(head).toStyledString(); }
 
 }  // namespace
-
-PbftChain::PbftChain([[maybe_unused]] addr_t node_addr, std::shared_ptr<DbStorage> db) {
-  LOG_OBJECTS_CREATE("PBFT_CHAIN");
-
-  pbft_service_ = std::make_shared<PbftService>(rustaxa::create_pbft_chain_service_from_storage(db->rustStorage()));
-  if (pbft_service_->service().pbft_chain_initialized_default()) {
-    LOG(log_nf_) << "Initialize PBFT chain head " << getJsonStr();
-    return;
-  }
-  LOG(log_nf_) << "Retrieve from DB, PBFT chain head " << getJsonStr();
-}
 
 PbftChain::PbftChain([[maybe_unused]] addr_t node_addr, SharedPbftService pbft_service)
     : pbft_service_(std::move(pbft_service)) {

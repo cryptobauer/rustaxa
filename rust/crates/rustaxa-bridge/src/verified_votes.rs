@@ -2410,6 +2410,7 @@ mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi;
     use crate::final_chain::create_final_chain;
+    use crate::pillar_chain::create_pillar_test_service_from_storage as full_service;
     use rustaxa_consensus::pbft_chain::PbftChainHead;
     use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyStatus;
     use rustaxa_consensus::pbft_vote_admission::{
@@ -2490,35 +2491,9 @@ mod tests {
     }
 
     #[test]
-    fn chain_only_service_rejects_verified_vote_operations_explicitly() {
-        let storage = temp_bridge_storage("chain_only_unavailable");
-        let service = crate::pbft_chain::create_pbft_chain_service_from_storage(&storage).unwrap();
-        let error = service
-            .pbft_service_verified_votes_size()
-            .expect_err("chain-only services have no verified-votes runtime");
-        assert!(error
-            .to_string()
-            .contains("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"));
-        let vote = generated_vote([0x40; 32], NODE_SECRET);
-        let error = match service.pbft_service_verified_votes_admit_and_persist(
-            &vote.vote_rlp,
-            validation_facts(),
-            runtime_flags(),
-            runtime_context(80),
-        ) {
-            Ok(_) => panic!("chain-only services cannot admit verified votes"),
-            Err(error) => error,
-        };
-        assert!(error
-            .to_string()
-            .contains("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"));
-        let error = match service.pbft_service_prepare_leader_selection(12, 2) {
-            Ok(_) => panic!("chain-only service must reject leader preparation"),
-            Err(error) => error,
-        };
-        assert!(error
-            .to_string()
-            .contains("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"));
+    fn full_service_supports_verified_votes_runtime_by_default() {
+        let service = full_service(&temp_bridge_storage("full")).unwrap();
+        assert_eq!(service.pbft_service_verified_votes_size().unwrap(), 0);
     }
 
     #[test]

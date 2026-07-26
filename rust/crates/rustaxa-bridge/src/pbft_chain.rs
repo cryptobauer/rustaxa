@@ -1,6 +1,6 @@
 //! PBFT-chain bridge adapters backed by the Rust consensus and storage implementations.
 //!
-//! Both production and chain-only compatibility construction return the same
+//! `PbftChain`-facing queries and storage lookups are implemented on
 //! [`BridgePbftService`]. Chain state is protected by its own read/write lock,
 //! so public reads do not contend on the separately synchronized manager.
 
@@ -8,42 +8,13 @@ use crate::ffi::rustaxa_ffi::{
     PbftBlockStorageLookup as FfiPbftBlockStorageLookup, PbftBlockValidationResult,
     PbftChainHeadPayload,
 };
-use crate::ffi::{BridgePbftService, BridgeStorage};
+use crate::ffi::BridgePbftService;
 use ethereum_types::H256;
-use rustaxa_consensus::pbft_chain::{
-    PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead, PbftChainService,
-};
-use rustaxa_consensus::proposed_blocks::ProposedBlocksService;
+use rustaxa_consensus::pbft_chain::{PbftBlockStorageLookup, PbftBlockValidation, PbftChainHead};
 
 const PBFT_VALIDATION_VALID: u8 = 0;
 const PBFT_VALIDATION_PERIOD_MISMATCH: u8 = 1;
 const PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH: u8 = 2;
-/// Creates a Rust PBFT chain state model directly from native Rust storage.
-///
-/// The bridge is only a DTO adapter: storage recovery, legacy head parsing,
-/// default-head initialization, and last-anchor recovery are owned by
-/// `rustaxa-consensus`. The returned [`BridgePbftService`] clones and owns the
-/// storage `Arc`, so its compatibility lookups do not depend on the lifetime
-/// of the supplied bridge handle or the originating C++ `DbStorage` object.
-pub fn create_pbft_chain_service_from_storage(
-    storage: &BridgeStorage,
-) -> Result<Box<BridgePbftService>, anyhow::Error> {
-    let chain = PbftChainService::restore(storage.0.clone())?;
-    let proposed_blocks = ProposedBlocksService::restore(storage.0.clone())?;
-    Ok(Box::new(BridgePbftService {
-        manager: std::sync::Mutex::new(None),
-        chain,
-        proposed_blocks,
-        verified_votes: None,
-        slashing: None,
-        #[cfg(test)]
-        storage: Some(storage.0.clone()),
-        readiness: rustaxa_consensus::PbftServiceReadiness::ready(),
-        pillar: None,
-        pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
-    }))
-}
-
 impl BridgePbftService {
     /// Returns whether storage recovery initialized the default PBFT chain head.
     pub fn pbft_chain_initialized_default(&self) -> bool {

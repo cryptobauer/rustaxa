@@ -139,7 +139,7 @@ class VerifiedVotes {
    *
    * The service must already contain the restored authoritative verified-vote
    * and reward-cursor runtime. A missing service is rejected; receiver errors,
-   * including use of a chain-only service, propagate to the caller.
+   * including use of an invalid service composition, propagate to the caller.
    */
   VerifiedVotes(addr_t node_addr, SharedPbftService pbft_service);
 

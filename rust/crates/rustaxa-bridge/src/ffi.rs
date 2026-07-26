@@ -2,7 +2,6 @@ use crate::dag::*;
 use crate::dag_transaction_service::*;
 use crate::final_chain::*;
 use crate::network::*;
-use crate::pbft_chain::*;
 use crate::pbft_manager::*;
 use crate::pbft_period_cleanup::*;
 use crate::pbft_sync::*;
@@ -224,10 +223,9 @@ pub(crate) struct BridgePbftManagerRuntimeState {
 /// serialized by `verified_votes`. Slashing planning and its duplicate-proof
 /// cache use the independent `slashing` mutex. Operations that need both
 /// manager and chain acquire `manager` before `chain`; no guard is retained
-/// across a C++ executor call. A chain-only compatibility instance has neither
-/// manager, verified-vote, nor slashing state and is held privately by the C++
-/// `PbftChain` adapter. Reaching an unavailable receiver through that adapter
-/// is a bridge-wiring bug and returns an explicit error.
+/// across a C++ executor call. Legacy chain-only service paths are no longer
+/// materialized in Rust, so full PBFT service construction is the supported
+/// boundary for verified-vote and slashing capability.
 pub struct BridgePbftService {
     pub(crate) manager: Mutex<Option<BridgePbftManagerRuntimeState>>,
     pub(crate) chain: rustaxa_consensus::pbft_chain::PbftChainService,
@@ -4639,9 +4637,6 @@ pub mod rustaxa_ffi {
 
         type BridgePbftService;
 
-        pub fn create_pbft_chain_service_from_storage(
-            storage: &BridgeStorage,
-        ) -> Result<Box<BridgePbftService>>;
         pub fn pbft_chain_initialized_default(self: &BridgePbftService) -> bool;
         pub fn pbft_chain_head(self: &BridgePbftService) -> PbftChainHeadPayload;
         pub fn pbft_chain_project_legacy_json_head(

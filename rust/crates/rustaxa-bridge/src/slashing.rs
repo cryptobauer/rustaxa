@@ -267,36 +267,10 @@ mod tests {
     }
 
     #[test]
-    fn chain_only_service_reports_slashing_unavailable() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should follow epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("rustaxa_bridge_slashing_chain_{nonce}"));
-        let storage = create_storage(path.to_str().expect("UTF-8 temp path"))
-            .expect("storage should initialize");
-        let service = crate::pbft_chain::create_pbft_chain_service_from_storage(&storage)
-            .expect("chain-only service should initialize");
-
-        assert!(!service.pbft_service_has_slashing());
-        let plan_error = service
-            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-            .err()
-            .expect("chain-only planning must reject unavailable slashing");
-        assert_eq!(plan_error.to_string(), "PBFT_SERVICE_SLASHING_UNAVAILABLE");
-        let report_error = service
-            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
-                proof_hash: h256(3).0,
-                transaction_inserted: true,
-            })
-            .unwrap_err();
-        assert_eq!(
-            report_error.to_string(),
-            "PBFT_SERVICE_SLASHING_UNAVAILABLE"
-        );
-
+    fn service_exposes_slashing_by_default() {
+        let (service, path) = service(true, 0);
+        assert!(service.pbft_service_has_slashing());
         drop(service);
-        drop(storage);
         std::fs::remove_dir_all(path).unwrap();
     }
 

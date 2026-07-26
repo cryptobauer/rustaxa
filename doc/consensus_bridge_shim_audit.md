@@ -44,15 +44,15 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 50334 |
-| `shim_lines` | 19133 |
-| `cxx_functions` | 419 |
+| `bridge_lines` | 50241 |
+| `shim_lines` | 19108 |
+| `cxx_functions` | 418 |
 | `cxx_carriers` | 359 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 15 |
 | `granular_flags` | 9 |
-| `partial_service_factories` | 1 |
-| `compatibility_constructor_calls` | 1 |
+| `partial_service_factories` | 0 |
+| `compatibility_constructor_calls` | 0 |
 | `non_test_cpp_consumers` | 43 |
 
 ## CXX Box Factory Inventory
@@ -69,7 +69,6 @@ not compatibility promises. The guard requires exact set equality with the parse
 | `create_dag_transaction_service_from_storage` | Production root debt | `App` bootstrap | Native application construction replaces the bridge-owned service. |
 | `create_final_chain_execution_session` | Supported boundary | FinalChain/StateAPI executor adapter | Narrow to concrete executor inputs/results during `CRW-E01`. |
 | `create_final_chain_with_rewards_config` | Production root debt | `App`/FinalChain bootstrap | Native application owns FinalChain construction and passes only an executor adapter. |
-| `create_pbft_chain_service_from_storage` | Partial service | `pbft_chain_shim.cpp` | Delete with chain-only compatibility construction. |
 | `create_pbft_service_from_storage` | Production root debt | `App` bootstrap | Native application construction replaces the bridge-owned service. |
 | `create_storage` | Production root debt | `DbStorage`/`App` bootstrap | Native application storage construction replaces broad C++ bootstrap ownership. |
 | `create_dag_storage_queries` | Compatibility facade | storage shim | Native DAG/query fixtures replace it. |
@@ -94,7 +93,6 @@ and mechanically compared with bridge-shaped C++ call sites.
 
 | CXX factory | Compatibility constructor client path | Exact calls | Delete when |
 | --- | --- | ---: | --- |
-| `create_pbft_chain_service_from_storage` | `libraries/core_libs/consensus/shims/pbft_chain_shim/src/pbft_chain_shim.cpp` | 1 | Network and public readers use native service/query APIs. |
 
 ## Test-Only CXX Export Allowlist
 
@@ -114,7 +112,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | ingress, planning, effects | tarcap handlers | External boundary | Complete `CRW-N01`; retain transport-only execution API. |
-| `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | Thin DTO adapters over native `PbftChainService` plus chain-only compatibility construction | PBFT chain/manager shims | Internal bridge route | Native storage, restoration, lock ownership, transitions, validation, and lookup live in `rustaxa-consensus`; migrate named C++ readers and delete the facade. |
+| `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | Thin DTO adapters over native `PbftChainService` | PBFT chain/manager shims | Internal bridge route | Native storage, restoration, lock ownership, transitions, validation, and lookup live in `rustaxa-consensus`; migrate named C++ readers and delete the facade. |
 | `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftService`, manager runtime | App, PBFT/vote/pillar shims | Native service wrapper | Move application service and behavioral tests out of bridge. The production root no longer owns duplicate storage or lifecycle atomic state; manager/native sibling owners retain their exact storage and native `PbftServiceReadiness` instances own monotonic PBFT and pillar bootstrap publication. |
 | `rust/crates/rustaxa-bridge/src/pbft_period_cleanup.rs` | combined cleanup operation | PBFT manager shim | Internal bridge route | Native PBFT service owns operation without CXX-shaped API. |
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | sync admission/runtime methods | PBFT manager and tarcap | Internal bridge route | Fold into native PBFT/network pipeline APIs. |

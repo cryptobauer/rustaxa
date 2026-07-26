@@ -106,17 +106,31 @@ pub(crate) fn restore_pillar_chain_state(storage: &BridgeStorage) -> Result<Pill
     Ok(runtime)
 }
 
-/// Creates a test-only pillar-capable PBFT service.
+/// Creates a test-only ready PBFT service using the production composition.
 ///
-/// This constructor is intentionally test-scoped; production Rust callers must
-/// use `crate::pbft_manager::create_pbft_service_from_storage`.
+/// The production constructor restores every PBFT capability, including pillar
+/// state. This wrapper supplies deterministic test configuration and completes
+/// the pillar bootstrap gate; it does not create a partial service topology.
 #[cfg(test)]
 pub(crate) fn create_pillar_test_service_from_storage(
     storage: &BridgeStorage,
 ) -> Result<Box<BridgePbftService>> {
-    let mut service = crate::pbft_chain::create_pbft_chain_service_from_storage(storage)?;
-    service.pillar = Some(std::sync::Mutex::new(restore_pillar_chain_state(storage)?));
-    service.pillar_readiness.mark_ready();
+    let service = crate::pbft_manager::create_pbft_service_from_storage(
+        storage,
+        crate::ffi::rustaxa_ffi::PbftServiceConfig {
+            genesis_lambda_ms: 100,
+            cacti_lambda_max_ms: 100,
+            cacti_lambda_default_ms: 100,
+            cacti_block: u64::MAX,
+            max_exponential_lambda_ms: 60_000,
+            max_steps: 13,
+            deadline_ms: 400,
+            polling_interval_ms: 100,
+            report_malicious_behaviour: true,
+            magnolia_activation_period: 0,
+        },
+    )?;
+    service.pbft_service_complete_pillar_bootstrap()?;
     Ok(service)
 }
 
@@ -819,37 +833,15 @@ mod tests {
     }
 
     #[test]
-    fn chain_only_service_rejects_pillar_reads_mutations_and_threshold() {
-        let temp_dir = unique_temp_dir("pillar_chain_only_capability");
-        let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
-        let service = crate::pbft_chain::create_pbft_chain_service_from_storage(&storage).unwrap();
-        assert!(!service.pbft_service_has_pillar());
-        assert!(!service.pbft_service_pillar_ready());
-        for error in [
-            service
-                .pbft_service_pillar_latest_finalized_block_rlp()
-                .unwrap_err(),
-            service
-                .pbft_service_pillar_apply_own_vote(vec![0xc0])
-                .unwrap_err(),
-            service
-                .pbft_service_pillar_consensus_threshold(10)
-                .unwrap_err(),
-        ] {
-            assert_eq!(error.to_string(), "PBFT_SERVICE_PILLAR_UNAVAILABLE");
-        }
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn compatibility_service_has_only_pillar_partial_capability() {
-        let temp_dir = unique_temp_dir("pillar_compatibility_capability");
+    fn full_pbft_fixture_exposes_ready_pillar_capability() {
+        let temp_dir = unique_temp_dir("pillar_full_service_capability");
         let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
         let service = create_pillar_test_service_from_storage(&storage).unwrap();
         assert!(service.pbft_service_has_pillar());
         assert!(service.pbft_service_pillar_ready());
-        assert!(service.manager.lock().unwrap().is_none());
-        assert!(service.verified_votes.is_none());
+        assert!(service.manager.lock().unwrap().is_some());
+        assert!(service.verified_votes.is_some());
+        assert!(service.slashing.is_some());
         assert_eq!(
             service.pbft_service_pillar_consensus_threshold(10).unwrap(),
             6

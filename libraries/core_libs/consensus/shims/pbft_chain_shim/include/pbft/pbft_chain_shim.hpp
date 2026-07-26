@@ -15,37 +15,24 @@ namespace taraxa {
  * @{
  */
 
-class DbStorage;
-
 /**
  * Rust-mode PBFT chain facade.
  *
  * This class preserves the public C++ `PbftChain` API while routing deterministic head state transitions and validation
- * checks to the application-owned Rust PBFT service. It does not inherit from or delegate to the legacy C++
+ * checks to the shared Rust `PbftService` holder. It does not inherit from or delegate to the legacy C++
  * implementation.
  *
  * Invariants:
- * - Rust restores persisted PBFT head JSON and recovers the hidden last non-null DAG anchor from native storage
- * - public PBFT head JSON formatting remains owned by the C++ shim for compatibility with existing callers
- * - the shared PBFT service owns in-memory size, non-empty-size, latest block hash, and latest non-null DAG anchor
- * state
+ * - Rust owns persisted PBFT chain state, and restores it into the shared service on construction.
+ * - JSON rendering for head state remains owned by the C++ shim for C++-side API compatibility.
+ * - in-memory chain fields and runtime validation state are held by the shared Rust service.
  * - `getJsonStrForBlock` is a pure preview and does not mutate state or write storage
  * - `updatePbftChain` mutates only in-memory state; `PbftManager` remains responsible for batched persistence
  */
 class PbftChain {
  public:
   /**
-   * Creates a chain-only compatibility PBFT service and restores head state through `rustaxa-storage`.
-   *
-   * `db` must be non-null and expose a Rust storage handle. The Rust service clones that storage owner during
-   * construction, so later block lookups do not depend on the C++ `DbStorage` lifetime.
-   *
-   * If no persisted head exists, Rust initializes the legacy zero-head record through the native storage module.
-   */
-  explicit PbftChain([[maybe_unused]] addr_t node_addr, std::shared_ptr<DbStorage> db);
-
-  /**
-   * Creates the production compatibility facade over the application-owned PBFT service.
+   * Creates the PBFT chain facade over an already-configured shared Rust service.
    *
    * The shared holder keeps the Rust service alive for every facade operation; no nested Rust reference is retained.
    */
