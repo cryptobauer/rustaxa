@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <libdevcore/SHA3.h>
 
+#include <type_traits>
+
 #include "common/init.hpp"
 #include "logger/logger.hpp"
 #include "network/network.hpp"
@@ -24,6 +26,42 @@ auto g_sk = Lazy([] {
                   dev::Secret::ConstructFromStringType::FromHex);
 });
 struct VoteTest : NodesTest {};
+
+TEST(VoteManagerCarrierTest, verifiedVoteViewValuesShapesAndDefaultsRemainStable) {
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::SoftVotedBlock) == 0);
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::CertVotedBlock) == 1);
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedBlock) == 2);
+  static_assert(static_cast<uint8_t>(TwoTPlusOneVotedBlockType::NextVotedNullBlock) == 3);
+  static_assert(std::is_same_v<TwoTVotedBlockMap, std::unordered_map<TwoTPlusOneVotedBlockType, VotedBlock>>);
+  static_assert(std::is_same_v<decltype(VotedBlock::hash), blk_hash_t>);
+  static_assert(std::is_same_v<decltype(VotedBlock::step), PbftStep>);
+  static_assert(std::is_same_v<decltype(VotesWithWeight::weight), uint64_t>);
+  static_assert(
+      std::is_same_v<decltype(VotesWithWeight::votes), std::unordered_map<vote_hash_t, std::shared_ptr<PbftVote>>>);
+  static_assert(
+      std::is_same_v<UniqueVotersMap,
+                     std::unordered_map<addr_t, std::pair<std::shared_ptr<PbftVote>, std::shared_ptr<PbftVote>>>>);
+  static_assert(std::is_same_v<decltype(StepVotes::votes), std::unordered_map<blk_hash_t, VotesWithWeight>>);
+  static_assert(std::is_same_v<decltype(StepVotes::unique_voters), UniqueVotersMap>);
+  static_assert(std::is_same_v<StepVotesMap, std::map<PbftStep, StepVotes>>);
+  static_assert(std::is_same_v<decltype(RoundVerifiedVotes::two_t_plus_one_voted_blocks_), TwoTVotedBlockMap>);
+  static_assert(std::is_same_v<decltype(RoundVerifiedVotes::step_votes), StepVotesMap>);
+  static_assert(std::is_same_v<decltype(RoundVerifiedVotes::network_t_plus_one_step), PbftStep>);
+
+  const VotedBlock voted_block{};
+  EXPECT_EQ(voted_block.hash, blk_hash_t{});
+  EXPECT_EQ(voted_block.step, PbftStep{});
+  const VotesWithWeight votes_with_weight{};
+  EXPECT_EQ(votes_with_weight.weight, 0);
+  EXPECT_TRUE(votes_with_weight.votes.empty());
+  const StepVotes step_votes{};
+  EXPECT_TRUE(step_votes.votes.empty());
+  EXPECT_TRUE(step_votes.unique_voters.empty());
+  const RoundVerifiedVotes round_votes{};
+  EXPECT_TRUE(round_votes.two_t_plus_one_voted_blocks_.empty());
+  EXPECT_TRUE(round_votes.step_votes.empty());
+  EXPECT_EQ(round_votes.network_t_plus_one_step, PbftStep{});
+}
 
 TEST_F(VoteTest, verified_votes) {
   auto node = create_nodes(1, true /*start*/).front();

@@ -2696,28 +2696,6 @@ pub mod rustaxa_ffi {
         latest_finalized_hash: [u8; 32],
     }
 
-    struct UniqueVoterInsertOutcome {
-        accepted: bool,
-        conflict_found: bool,
-        conflicting_vote_hash: [u8; 32],
-        conflicting_vote_found: bool,
-        conflicting_vote: PbftVoteStorageRecord,
-        bucket_found: bool,
-        bucket: VerifiedStepVotePayloadEntry,
-        used_secondary_slot: bool,
-        duplicate_vote_hash: bool,
-    }
-
-    struct VotedValueInsertOutcome {
-        inserted: bool,
-        total_weight: u64,
-        votes_count: usize,
-        conflicting_vote_found: bool,
-        conflicting_vote: PbftVoteStorageRecord,
-        bucket_found: bool,
-        bucket: VerifiedStepVotePayloadEntry,
-    }
-
     struct VerifiedVoteAddOutcome {
         vote: VerifiedVotePayload,
         inserted: bool,
@@ -2739,35 +2717,6 @@ pub mod rustaxa_ffi {
         two_t_plus_one_kind: u8,
         two_t_plus_one_round_found: bool,
         two_t_plus_one_inserted: bool,
-    }
-
-    struct AtomicVoteInsertOutcome {
-        inserted: bool,
-        total_weight: u64,
-        votes_count: usize,
-        conflict_found: bool,
-        conflicting_vote_hash: [u8; 32],
-        conflicting_vote_found: bool,
-        conflicting_vote: PbftVoteStorageRecord,
-        bucket_found: bool,
-        bucket: VerifiedStepVotePayloadEntry,
-        used_secondary_slot: bool,
-        duplicate_vote_hash: bool,
-    }
-
-    struct ThresholdDecisionOutcome {
-        t_plus_one_reached: bool,
-        network_t_plus_one_step_updated: bool,
-        two_t_plus_one_reached: bool,
-        two_t_plus_one_kind_found: bool,
-        two_t_plus_one_kind: u8,
-        two_t_plus_one_round_found: bool,
-        two_t_plus_one_inserted: bool,
-    }
-
-    struct TwoTPlusOneInsertOutcome {
-        round_found: bool,
-        inserted: bool,
     }
 
     struct DetermineNewRoundOutcome {
@@ -4995,46 +4944,11 @@ pub mod rustaxa_ffi {
             flags: PbftVoteEventFactFlags,
             context: PbftVoteProgressContext,
         ) -> Result<PbftVoteAdmissionRuntimeResult>;
-        pub fn pbft_service_verified_votes_insert_unique_voter(
-            self: &BridgePbftService,
-            vote: VerifiedVotePayload,
-            weighted_vote: PbftVoteStorageRecord,
-        ) -> Result<UniqueVoterInsertOutcome>;
-        pub fn pbft_service_verified_votes_insert_voted_value(
-            self: &BridgePbftService,
-            vote: VerifiedVotePayload,
-            weighted_vote: PbftVoteStorageRecord,
-        ) -> Result<VotedValueInsertOutcome>;
-        pub fn pbft_service_verified_votes_insert_vote_atomic(
-            self: &BridgePbftService,
-            vote: VerifiedVotePayload,
-            weighted_vote: PbftVoteStorageRecord,
-        ) -> Result<AtomicVoteInsertOutcome>;
-        pub fn pbft_service_verified_votes_apply_threshold_decision(
-            self: &BridgePbftService,
-            vote: VerifiedVotePayload,
-            total_weight: u64,
-            two_t_plus_one_threshold: u64,
-        ) -> Result<ThresholdDecisionOutcome>;
-        pub fn pbft_service_verified_votes_set_network_t_plus_one_step(
-            self: &BridgePbftService,
-            period: u64,
-            round: u64,
-            step: u64,
-        ) -> Result<bool>;
         pub fn pbft_service_verified_votes_determine_new_round(
             self: &BridgePbftService,
             period: u64,
             current_round: u64,
         ) -> Result<DetermineNewRoundOutcome>;
-        pub fn pbft_service_verified_votes_insert_two_t_plus_one_voted_block(
-            self: &BridgePbftService,
-            period: u64,
-            round: u64,
-            kind: u8,
-            block_hash: &[u8; 32],
-            step: u64,
-        ) -> Result<TwoTPlusOneInsertOutcome>;
         pub fn pbft_service_verified_votes_get_two_t_plus_one_voted_block(
             self: &BridgePbftService,
             period: u64,
@@ -5060,13 +4974,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             pbft_period: u64,
         ) -> Result<()>;
-        pub fn pbft_service_verified_votes_add_verified_vote(
-            self: &BridgePbftService,
-            vote: VerifiedVotePayload,
-            weighted_vote: PbftVoteStorageRecord,
-            two_t_plus_one_threshold: u64,
-            apply_threshold_decision: bool,
-        ) -> Result<VerifiedVoteAddOutcome>;
         pub fn pbft_service_verified_votes_select_reward_vote_payloads(
             self: &BridgePbftService,
             block_period: u64,
@@ -5106,12 +5013,6 @@ pub mod rustaxa_ffi {
             self: &BridgePbftService,
             write: PbftVoteProgressPersistenceWrite,
         ) -> Result<PbftVotePersistenceResult>;
-        pub fn pbft_service_verified_votes_apply_pbft_finalization_storage_writes(
-            self: &BridgePbftService,
-            write_intent: &PbftFinalizationStorageWritePlan,
-            stages: Vec<PbftFinalizationStorageWriteStage>,
-            sync: bool,
-        ) -> Result<PbftFinalizedPeriodApplyResult>;
         pub fn pbft_service_verified_votes_prepare_reward_votes_reset_stage(
             self: &BridgePbftService,
             write_intent: &PbftFinalizationStorageWritePlan,

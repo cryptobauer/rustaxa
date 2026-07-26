@@ -95,6 +95,114 @@ dev::bytes fromBridgeBytes(const rust::Vec<uint8_t>& bytes) {
   return out;
 }
 
+std::runtime_error verifiedVoteViewError(const std::string& msg) {
+  return std::runtime_error("VoteManager verified-vote view: " + msg);
+}
+
+std::shared_ptr<PbftVote> materializeWeightedVote(const rustaxa::PbftVoteStorageRecord& record) {
+  auto vote = std::make_shared<PbftVote>(fromBridgeBytes(record.vote_rlp));
+  if (vote->getHash() != fromBridgeHash(record.hash)) {
+    throw verifiedVoteViewError("native retained payload hash mismatches materialized vote");
+  }
+  if (!vote->getWeight().has_value() || *vote->getWeight() == 0) {
+    throw verifiedVoteViewError("native retained payload decoded without non-zero weight");
+  }
+  return vote;
+}
+
+StepVotes materializeStepVotes(const rustaxa::VerifiedStepVotePayloadsLookup& lookup, PbftPeriod period,
+                               PbftRound round, PbftStep step) {
+  StepVotes result;
+  if (!lookup.found) {
+    return result;
+  }
+
+  for (const auto& entry : lookup.entries) {
+    const auto block_hash = fromBridgeHash(entry.block_hash);
+    auto& voted_value = result.votes[block_hash];
+    voted_value.weight = entry.total_weight;
+    for (const auto& record : entry.votes) {
+      auto vote = materializeWeightedVote(record);
+      if (vote->getPeriod() != period || vote->getRound() != round || vote->getStep() != step ||
+          vote->getBlockHash() != block_hash) {
+        throw verifiedVoteViewError("native step payload mismatches requested vote bucket");
+      }
+
+      const auto vote_hash = vote->getHash();
+      voted_value.votes.insert({vote_hash, vote});
+      auto& unique_votes = result.unique_voters[vote->getVoterAddr()];
+      if (!unique_votes.first) {
+        unique_votes.first = vote;
+      } else if (unique_votes.first->getHash() != vote_hash) {
+        if (!unique_votes.second) {
+          const auto first_is_null = unique_votes.first->getBlockHash() == kNullBlockHash;
+          const auto second_is_null = vote->getBlockHash() == kNullBlockHash;
+          if (vote->getType() == PbftVoteTypes::next_vote && (vote->getStep() % 2) && first_is_null != second_is_null) {
+            unique_votes.second = vote;
+          }
+        } else if (unique_votes.second->getHash() != vote_hash) {
+          throw verifiedVoteViewError("unexpected native unique-voter step conflict");
+        }
+      }
+    }
+  }
+  return result;
+}
+
+RoundVerifiedVotes materializeRoundVotes(const rustaxa::VerifiedVotesStateSnapshot& snapshot, PbftPeriod period,
+                                         PbftRound round) {
+  RoundVerifiedVotes result;
+  for (const auto& entry : snapshot.votes) {
+    if (entry.vote.period != period || entry.vote.round != round) {
+      continue;
+    }
+    auto vote = materializeWeightedVote(entry.weighted_vote);
+    if (vote->getBlockHash() != fromBridgeHash(entry.vote.block_hash) || vote->getStep() != entry.vote.step ||
+        static_cast<uint8_t>(vote->getType()) != entry.vote.vote_type || *vote->getWeight() != entry.vote.weight) {
+      throw verifiedVoteViewError("native snapshot metadata mismatches retained payload");
+    }
+    auto& step_votes = result.step_votes[static_cast<PbftStep>(entry.vote.step)];
+    auto& voted_value = step_votes.votes[vote->getBlockHash()];
+    voted_value.weight += entry.vote.weight;
+    voted_value.votes.insert({vote->getHash(), vote});
+    auto& unique_votes = step_votes.unique_voters[vote->getVoterAddr()];
+    if (!unique_votes.first) {
+      unique_votes.first = vote;
+    } else if (unique_votes.first->getHash() != vote->getHash()) {
+      if (!unique_votes.second) {
+        const auto first_is_null = unique_votes.first->getBlockHash() == kNullBlockHash;
+        const auto second_is_null = vote->getBlockHash() == kNullBlockHash;
+        if (vote->getType() == PbftVoteTypes::next_vote && (vote->getStep() % 2) && first_is_null != second_is_null) {
+          unique_votes.second = vote;
+        }
+      } else if (unique_votes.second->getHash() != vote->getHash()) {
+        throw verifiedVoteViewError("unexpected native unique-voter snapshot conflict");
+      }
+    }
+  }
+  for (const auto& marker : snapshot.round_markers) {
+    if (marker.period == period && marker.round == round) {
+      result.network_t_plus_one_step = static_cast<PbftStep>(marker.network_t_plus_one_step);
+    }
+  }
+  for (const auto& entry : snapshot.two_t_plus_one) {
+    if (entry.period == period && entry.round == round) {
+      result.two_t_plus_one_voted_blocks_[static_cast<TwoTPlusOneVotedBlockType>(entry.kind)] =
+          VotedBlock{fromBridgeHash(entry.block_hash), static_cast<PbftStep>(entry.step)};
+    }
+  }
+  return result;
+}
+
+rust::Vec<rustaxa::PbftFinalizationHash> toBridgeVoteHashes(const std::vector<vote_hash_t>& hashes) {
+  rust::Vec<rustaxa::PbftFinalizationHash> out;
+  out.reserve(hashes.size());
+  for (const auto& hash : hashes) {
+    out.push_back(rustaxa::PbftFinalizationHash{hash.asArray()});
+  }
+  return out;
+}
+
 rust::Slice<const uint8_t> toBridgeByteSlice(const rust::Vec<uint8_t>& bytes) {
   return rust::Slice<const uint8_t>(bytes.data(), bytes.size());
 }
@@ -204,7 +312,7 @@ void requireApplied(const rustaxa::PbftVotePersistenceResult& result, const char
   throw std::runtime_error(err.str());
 }
 
-void persistVoteProgressToRustStorage(const VerifiedVotes& verified_votes,
+void persistVoteProgressToRustStorage(const SharedPbftService& pbft_service,
                                       const std::shared_ptr<PbftVote>& extra_reward_vote,
                                       std::optional<TwoTPlusOneVotedBlockType> two_t_plus_one_type,
                                       const std::vector<std::shared_ptr<PbftVote>>& two_t_plus_one_votes) {
@@ -219,7 +327,8 @@ void persistVoteProgressToRustStorage(const VerifiedVotes& verified_votes,
     write.two_t_plus_one_bundle = makeTwoTPlusOneVoteBundle(*two_t_plus_one_type, two_t_plus_one_votes);
   }
 
-  requireApplied(verified_votes.persistPbftVoteProgress(std::move(write)), "vote progress");
+  requireApplied(pbft_service->service().pbft_service_verified_votes_persist_pbft_vote_progress(std::move(write)),
+                 "vote progress");
 }
 
 rustaxa::PbftVoteEventFactFlags makeVoteEventFactFlags() {
@@ -413,8 +522,7 @@ VoteManager::VoteManager(const FullNodeConfig& config, SharedPbftService pbft_se
       pbft_chain_(std::move(pbft_chain)),
       final_chain_(std::move(final_chain)),
       slashing_manager_(std::move(slashing_manager)),
-      pbft_service_(std::move(pbft_service)),
-      verified_votes_(dev::toAddress(config.getFirstWallet().node_secret), pbft_service_) {
+      pbft_service_(std::move(pbft_service)) {
   (void)key_manager;
   const auto node_addr = dev::toAddress(config.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("VOTE_MGR");
@@ -551,7 +659,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
                  << " during canonical inspection, status: " << static_cast<uint32_t>(inspection.status)
                  << ", error: " << static_cast<std::string>(inspection.error_code);
     if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
-      verified_votes_.replayInsert(fromBridgeVoteHash(inspection.vote_hash));
+      pbft_service_->service().pbft_service_verified_votes_replay_insert(inspection.vote_hash);
     }
     return report;
   }
@@ -572,7 +680,7 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
     }
   }
 
-  const auto runtime_result = verified_votes_.admitAndPersistValidatedVote(
+  const auto runtime_result = pbft_service_->service().pbft_service_verified_votes_admit_and_persist_with_final_chain(
       final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), std::move(admission_request),
       makeVoteEventFactFlags(), progress_context);
   if (runtime_result.persistence_status == kPbftVoteAdmissionPersistenceRejected) {
@@ -680,13 +788,15 @@ VoteManager::PbftVoteAdmissionReport VoteManager::addVerifiedVoteWithReport(cons
 }
 
 bool VoteManager::voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const {
-  const auto step_votes_map = verified_votes_.getStepVotes(vote->getPeriod(), vote->getRound(), vote->getStep());
-  if (!step_votes_map) {
+  const auto lookup = pbft_service_->service().pbft_service_verified_votes_step_payloads(
+      vote->getPeriod(), vote->getRound(), vote->getStep());
+  if (!lookup.found) {
     return false;
   }
+  const auto step_votes_map = materializeStepVotes(lookup, vote->getPeriod(), vote->getRound(), vote->getStep());
 
-  const auto found_voted_value_it = step_votes_map->votes.find(vote->getBlockHash());
-  if (found_voted_value_it == step_votes_map->votes.end()) {
+  const auto found_voted_value_it = step_votes_map.votes.find(vote->getBlockHash());
+  if (found_voted_value_it == step_votes_map.votes.end()) {
     return false;
   }
 
@@ -694,13 +804,15 @@ bool VoteManager::voteInVerifiedMap(std::shared_ptr<PbftVote> const& vote) const
 }
 
 std::pair<bool, std::shared_ptr<PbftVote>> VoteManager::isUniqueVote(const std::shared_ptr<PbftVote>& vote) const {
-  const auto step_votes_map = verified_votes_.getStepVotes(vote->getPeriod(), vote->getRound(), vote->getStep());
-  if (!step_votes_map) {
+  const auto lookup = pbft_service_->service().pbft_service_verified_votes_step_payloads(
+      vote->getPeriod(), vote->getRound(), vote->getStep());
+  if (!lookup.found) {
     return {true, nullptr};
   }
+  const auto step_votes_map = materializeStepVotes(lookup, vote->getPeriod(), vote->getRound(), vote->getStep());
 
-  const auto found_voter_it = step_votes_map->unique_voters.find(vote->getVoterAddr());
-  if (found_voter_it == step_votes_map->unique_voters.end()) {
+  const auto found_voter_it = step_votes_map.unique_voters.find(vote->getVoterAddr());
+  if (found_voter_it == step_votes_map.unique_voters.end()) {
     return {true, nullptr};
   }
 
@@ -740,20 +852,40 @@ std::pair<bool, std::shared_ptr<PbftVote>> VoteManager::isUniqueVote(const std::
   return {false, found_voter_it->second.first};
 }
 
-std::vector<std::shared_ptr<PbftVote>> VoteManager::getVerifiedVotes() const { return verified_votes_.votes(); }
+std::vector<std::shared_ptr<PbftVote>> VoteManager::getVerifiedVotes() const {
+  const auto snapshot = pbft_service_->service().pbft_service_verified_votes_state_snapshot();
+  std::vector<std::shared_ptr<PbftVote>> votes;
+  votes.reserve(snapshot.votes.size());
+  for (const auto& entry : snapshot.votes) {
+    auto vote = materializeWeightedVote(entry.weighted_vote);
+    if (vote->getBlockHash() != fromBridgeHash(entry.vote.block_hash) || vote->getPeriod() != entry.vote.period ||
+        vote->getRound() != entry.vote.round || vote->getStep() != entry.vote.step ||
+        static_cast<uint8_t>(vote->getType()) != entry.vote.vote_type || *vote->getWeight() != entry.vote.weight) {
+      throw verifiedVoteViewError("native snapshot metadata mismatches retained payload");
+    }
+    votes.push_back(std::move(vote));
+  }
+  return votes;
+}
 
-uint64_t VoteManager::getVerifiedVotesSize() const { return verified_votes_.size(); }
+uint64_t VoteManager::getVerifiedVotesSize() const {
+  return pbft_service_->service().pbft_service_verified_votes_size();
+}
 
-void VoteManager::cleanupVotesByPeriod(PbftPeriod pbft_period) { verified_votes_.cleanupVotesByPeriod(pbft_period); }
+void VoteManager::cleanupVotesByPeriod(PbftPeriod pbft_period) {
+  pbft_service_->service().pbft_service_verified_votes_cleanup_votes_by_period(pbft_period);
+}
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getProposalVotes(PbftPeriod period, PbftRound round) const {
-  const auto& step_votes = verified_votes_.getStepVotes(period, round, PbftStates::value_proposal_state);
-  if (!step_votes) {
+  const auto lookup = pbft_service_->service().pbft_service_verified_votes_step_payloads(
+      period, round, PbftStates::value_proposal_state);
+  if (!lookup.found) {
     return {};
   }
+  const auto step_votes = materializeStepVotes(lookup, period, round, PbftStates::value_proposal_state);
 
   std::vector<std::shared_ptr<PbftVote>> proposal_votes;
-  for (const auto& voted_value : step_votes->votes) {
+  for (const auto& voted_value : step_votes.votes) {
     for (const auto& vote_pair : voted_value.second.votes) {
       proposal_votes.emplace_back(vote_pair.second);
     }
@@ -967,17 +1099,18 @@ std::optional<PbftRound> VoteManager::determineNewRound(PbftPeriod current_pbft_
 VoteManager::RoundAdvanceDecision VoteManager::roundAdvanceDecision(PbftPeriod current_pbft_period,
                                                                     PbftRound current_pbft_round) {
   RoundAdvanceDecision result;
-  const auto decision = verified_votes_.determineRoundAdvance(current_pbft_period, current_pbft_round);
-  if (!decision) {
+  const auto decision =
+      pbft_service_->service().pbft_service_verified_votes_determine_new_round(current_pbft_period, current_pbft_round);
+  if (!decision.found) {
     return result;
   }
 
-  LOG(log_nf_) << "New round " << decision->new_round << " determined for period " << current_pbft_period
-               << ". Found 2t+1 votes for block " << decision->voted_block.hash << " in round "
-               << decision->supporting_round << ", step " << decision->voted_block.step;
+  LOG(log_nf_) << "New round " << decision.new_round << " determined for period " << current_pbft_period
+               << ". Found 2t+1 votes for block " << fromBridgeHash(decision.block_hash) << " in round "
+               << decision.source_round << ", step " << decision.step;
 
   result.has_new_round = true;
-  result.new_round = decision->new_round;
+  result.new_round = decision.new_round;
   return result;
 }
 
@@ -1015,11 +1148,26 @@ std::pair<bool, std::vector<std::shared_ptr<PbftVote>>> VoteManager::checkReward
 VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
     PbftPeriod block_period, const blk_hash_t& block_hash, const blk_hash_t& prev_block_hash,
     const std::vector<vote_hash_t>& reward_vote_hashes, bool copy_votes) {
-  const auto cursor = verified_votes_.rewardVoteCursor();
+  const auto cursor = pbft_service_->service().pbft_service_verified_votes_reward_vote_cursor();
 
-  VerifiedVotes::RewardVotePayloadSelection selection{};
+  rustaxa::PbftRewardVotePayloadSelection selection{};
+  std::vector<std::shared_ptr<PbftVote>> selected_votes;
   try {
-    selection = verified_votes_.selectRewardVotePayloads(block_period, reward_vote_hashes, copy_votes);
+    selection = pbft_service_->service().pbft_service_verified_votes_select_reward_vote_payloads(
+        block_period, toBridgeVoteHashes(reward_vote_hashes));
+    if (selection.accepted && copy_votes) {
+      selected_votes.reserve(selection.selected_records.size());
+      const auto expected_block_hash = fromBridgeHash(selection.selected_block_hash);
+      for (const auto& record : selection.selected_records) {
+        auto vote = materializeWeightedVote(record);
+        if (vote->getPeriod() != selection.selected_period || vote->getRound() != selection.selected_round ||
+            vote->getStep() != static_cast<PbftStep>(PbftVoteTypes::cert_vote) ||
+            vote->getBlockHash() != expected_block_hash) {
+          throw verifiedVoteViewError("native reward-vote selection returned mismatched weighted payload");
+        }
+        selected_votes.push_back(std::move(vote));
+      }
+    }
   } catch (const std::exception& e) {
     LOG(log_er_) << "Rust reward-vote payload selection failed for block " << block_hash << ", period: " << block_period
                  << ", reward cursor found: " << cursor.found << ", reward cursor period: " << cursor.period
@@ -1031,7 +1179,7 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
     return result;
   }
 
-  const auto& plan = selection.report;
+  const auto& plan = selection;
   RewardVoteValidationResult result;
   result.accepted = plan.accepted;
   result.status = plan.status;
@@ -1040,7 +1188,7 @@ VoteManager::RewardVoteValidationResult VoteManager::checkRewardVotesDetailed(
   result.selected_round = plan.selected_round;
   result.selected_block_hash = fromBridgeHash(plan.selected_block_hash);
   result.missing_vote_hash = fromBridgeHash(plan.missing_vote_hash);
-  result.votes = std::move(selection.votes);
+  result.votes = std::move(selected_votes);
 
   if (!plan.accepted) {
     LOG(log_er_) << "No (or not enough) reward votes found for block " << block_hash << ", period: " << block_period
@@ -1081,7 +1229,19 @@ std::optional<std::vector<std::shared_ptr<PbftVote>>> VoteManager::collectReward
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getRewardVotes() {
   try {
-    return verified_votes_.currentRewardVotes();
+    const auto snapshot = pbft_service_->service().pbft_service_verified_votes_current_reward_snapshot();
+    std::vector<std::shared_ptr<PbftVote>> votes;
+    votes.reserve(snapshot.records.size());
+    for (const auto& record : snapshot.records) {
+      auto vote = materializeWeightedVote(record);
+      if (!snapshot.cursor.found || vote->getPeriod() != snapshot.cursor.period ||
+          vote->getRound() != snapshot.cursor.round || vote->getStep() != snapshot.cursor.step ||
+          vote->getBlockHash() != fromBridgeHash(snapshot.cursor.block_hash)) {
+        throw verifiedVoteViewError("native current reward-vote payload mismatches authoritative cursor");
+      }
+      votes.push_back(std::move(vote));
+    }
+    return votes;
   } catch (const std::exception& e) {
     LOG(log_er_) << "Rust current reward-vote payload lookup failed: " << e.what();
     assert(false);
@@ -1123,18 +1283,21 @@ VoteManager::ProposalRewardVotes VoteManager::proposalRewardVotesForPeriod(PbftP
   return result;
 }
 
-PbftPeriod VoteManager::getRewardVotesPbftBlockPeriod() { return verified_votes_.rewardVotePeriod(); }
+PbftPeriod VoteManager::getRewardVotesPbftBlockPeriod() {
+  return pbft_service_->service().pbft_service_verified_votes_reward_vote_period();
+}
 
 void VoteManager::saveOwnVerifiedVote(const std::shared_ptr<PbftVote>& vote) {
   if (!vote) {
     throw std::runtime_error("VoteManager cannot persist a null own verified vote");
   }
   auto record = makeVoteStorageRecord(vote);
-  requireApplied(verified_votes_.saveOwnVerifiedVote(std::move(record)), "own verified vote");
+  requireApplied(pbft_service_->service().pbft_service_verified_votes_save_own_verified_vote(std::move(record)),
+                 "own verified vote");
 }
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() {
-  const auto records = verified_votes_.ownVoteRecords();
+  const auto records = pbft_service_->service().pbft_service_verified_votes_own_vote_records();
   std::vector<std::shared_ptr<PbftVote>> votes;
   votes.reserve(records.size());
   for (const auto& record : records) {
@@ -1145,7 +1308,8 @@ std::vector<std::shared_ptr<PbftVote>> VoteManager::getOwnVerifiedVotes() {
 
 void VoteManager::clearOwnVerifiedVotes(Batch& write_batch) {
   (void)write_batch;
-  requireApplied(verified_votes_.clearOwnVerifiedVotes(), "own verified vote cleanup");
+  requireApplied(pbft_service_->service().pbft_service_verified_votes_clear_own_verified_votes(),
+                 "own verified vote cleanup");
 }
 
 std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& blockhash, PbftVoteTypes vote_type,
@@ -1153,7 +1317,7 @@ std::shared_ptr<PbftVote> VoteManager::generateVoteWithWeight(const blk_hash_t& 
                                                               const WalletConfig& wallet) {
   const auto generation_input = makeVoteGenerationInput(blockhash, vote_type, period, round, step, wallet);
   try {
-    const auto generated = verified_votes_.generateSignedVoteWithWeight(
+    const auto generated = pbft_service_->service().pbft_service_generate_signed_vote_with_weight(
         final_chain_->rustFinalChain(), generation_input, kPbftConfig.committee_size, kPbftConfig.number_of_proposers);
     if (generated.status == kPbftVoteGenerationStatusZeroStake) {
       requireRustVoteGenerationRejected(generated, kPbftVoteGenerationStatusZeroStake, "zero-stake weighted vote");
@@ -1261,7 +1425,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
   }
 
   if (inspection.status == kPbftCanonicalVoteInspectionStatusInvalidSignature) {
-    verified_votes_.replayInsert(fromBridgeVoteHash(inspection.vote_hash));
+    pbft_service_->service().pbft_service_verified_votes_replay_insert(inspection.vote_hash);
     err_msg << "Invalid vote " << vote->getHash() << ": invalid signature";
     return {false, err_msg.str()};
   }
@@ -1277,7 +1441,7 @@ std::pair<bool, std::string> VoteManager::validateVote(const std::shared_ptr<Pbf
   rustaxa::PbftCanonicalVoteValidation validation{};
 
   try {
-    validation_result = verified_votes_.validateCanonicalVoteWithFinalChain(
+    validation_result = pbft_service_->service().pbft_service_verified_votes_validate_with_final_chain(
         final_chain_->rustFinalChain(), toBridgeByteSlice(canonical_vote_rlp), strict, kPbftConfig.committee_size,
         kPbftConfig.number_of_proposers);
     validation = validation_result.validation;
@@ -1367,7 +1531,8 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
 
   rustaxa::PbftTwoTPlusOneThresholdPlan threshold_plan{};
   try {
-    threshold_plan = verified_votes_.twoTPlusOneThresholdWithFinalChain(final_chain_->rustFinalChain(), threshold_fact);
+    threshold_plan = pbft_service_->service().pbft_service_verified_votes_two_t_plus_one_threshold_with_final_chain(
+        final_chain_->rustFinalChain(), threshold_fact);
   } catch (const std::exception& e) {
     LOG(log_er_) << "Unable to calculate 2t + 1 for period: " << pbft_period << ". Err msg: " << e.what()
                  << ". Rust composed threshold lookup failed";
@@ -1389,15 +1554,16 @@ std::optional<uint64_t> VoteManager::getPbftTwoTPlusOne(PbftPeriod pbft_period, 
 }
 
 bool VoteManager::voteAlreadyValidated(const vote_hash_t& vote_hash) const {
-  return verified_votes_.replayContains(vote_hash);
+  const auto bridge_hash = toBridgeHash(vote_hash);
+  return pbft_service_->service().pbft_service_verified_votes_replay_contains(bridge_hash);
 }
 
 bool VoteManager::genAndValidateVrfSortition(PbftPeriod pbft_period, PbftRound pbft_round,
                                              const WalletConfig& wallet) const {
   try {
     auto sortition_request = makeProposerSortitionRequest(pbft_period, pbft_round, wallet, kPbftConfig);
-    const auto sortition_result = verified_votes_.generateAndValidateProposerSortition(final_chain_->rustFinalChain(),
-                                                                                       std::move(sortition_request));
+    const auto sortition_result = pbft_service_->service().pbft_service_generate_and_validate_proposer_sortition(
+        final_chain_->rustFinalChain(), std::move(sortition_request));
     if (sortition_result.accepted) {
       return true;
     }
@@ -1453,11 +1619,12 @@ VoteManager::ProposalWalletFacts VoteManager::proposalWalletFacts(
 
 std::optional<blk_hash_t> VoteManager::getTwoTPlusOneVotedBlock(PbftPeriod period, PbftRound round,
                                                                 TwoTPlusOneVotedBlockType type) const {
-  const auto voted_block = verified_votes_.getTwoTPlusOneVotedBlock(period, round, type);
-  if (!voted_block) {
+  const auto voted_block = pbft_service_->service().pbft_service_verified_votes_get_two_t_plus_one_voted_block(
+      period, round, static_cast<uint8_t>(type));
+  if (!voted_block.found) {
     return {};
   }
-  return voted_block->hash;
+  return fromBridgeHash(voted_block.block_hash);
 }
 
 VoteManager::StateActionVoteFacts VoteManager::stateActionVoteFacts(PbftPeriod period, PbftRound round,
@@ -1545,17 +1712,34 @@ VoteManager::StuckRoundVoteBroadcastPayloads VoteManager::stuckRoundVoteBroadcas
 
 std::vector<std::shared_ptr<PbftVote>> VoteManager::getTwoTPlusOneVotedBlockVotes(
     PbftPeriod period, PbftRound round, TwoTPlusOneVotedBlockType type) const {
-  return verified_votes_.getTwoTPlusOneVotedBlockVotes(period, round, type);
+  const auto lookup = pbft_service_->service().pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(
+      period, round, static_cast<uint8_t>(type));
+  if (!lookup.found) {
+    return {};
+  }
+
+  std::vector<std::shared_ptr<PbftVote>> votes;
+  votes.reserve(lookup.votes.size());
+  const auto expected_block_hash = fromBridgeHash(lookup.block_hash);
+  for (const auto& record : lookup.votes) {
+    auto vote = materializeWeightedVote(record);
+    if (vote->getPeriod() != period || vote->getRound() != round || vote->getStep() != lookup.step ||
+        vote->getBlockHash() != expected_block_hash) {
+      throw verifiedVoteViewError("native retained 2t+1 payload mismatches mapped voted block");
+    }
+    votes.push_back(std::move(vote));
+  }
+  return votes;
 }
 
 rustaxa::PbftNextVotesBundleEgressPlan VoteManager::planNextVotesBundleEgress(PbftPeriod period,
                                                                               PbftRound round) const {
-  return verified_votes_.planNextVotesBundleEgress(period, round);
+  return pbft_service_->service().pbft_service_verified_votes_plan_next_votes_bundle_egress(period, round);
 }
 
 rustaxa::PbftOptimizedVoteBundleBuildResult VoteManager::buildOptimizedVotesBundleEgress(
     rustaxa::PbftOptimizedVoteBundleBuildRequest request) const {
-  return verified_votes_.buildOptimizedVotesBundleEgress(std::move(request));
+  return pbft_service_->service().pbft_service_verified_votes_build_optimized_votes_bundle_egress(std::move(request));
 }
 
 std::string VoteManager::softVoteDebugMessage(PbftPeriod period, PbftRound round) const {
@@ -1579,7 +1763,8 @@ std::string VoteManager::softVoteDebugMessage(PbftPeriod period, PbftRound round
 }
 
 StepVotes VoteManager::getStepVotes(PbftPeriod period, PbftRound round, PbftStep step) const {
-  return verified_votes_.getStepVotes(period, round, step).value_or(StepVotes{});
+  const auto lookup = pbft_service_->service().pbft_service_verified_votes_step_payloads(period, round, step);
+  return materializeStepVotes(lookup, period, round, step);
 }
 
 bool VoteManager::submitRustPlannedSlashingProof(const SlashingDoubleVoteEvidence& evidence) {
@@ -1590,20 +1775,22 @@ void VoteManager::setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound
   current_pbft_period_ = pbft_period;
   current_pbft_round_ = pbft_round;
 
-  auto round_votes = verified_votes_.getRoundVotes(pbft_period, pbft_round);
-  if (!round_votes) {
+  const auto snapshot = pbft_service_->service().pbft_service_verified_votes_state_snapshot();
+  auto round_votes = materializeRoundVotes(snapshot, pbft_period, pbft_round);
+  if (round_votes.step_votes.empty() && round_votes.two_t_plus_one_voted_blocks_.empty() &&
+      round_votes.network_t_plus_one_step == 0) {
     return;
   }
 
-  for (const auto& two_t_plus_one_voted_block : round_votes->two_t_plus_one_voted_blocks_) {
+  for (const auto& two_t_plus_one_voted_block : round_votes.two_t_plus_one_voted_blocks_) {
     const auto two_t_plus_one_voted_block_type = two_t_plus_one_voted_block.first;
     if (two_t_plus_one_voted_block_type == TwoTPlusOneVotedBlockType::CertVotedBlock) {
       continue;
     }
 
     const auto& [two_t_plus_one_voted_block_hash, two_t_plus_one_voted_block_step] = two_t_plus_one_voted_block.second;
-    const auto found_step_votes_it = round_votes->step_votes.find(two_t_plus_one_voted_block_step);
-    if (found_step_votes_it == round_votes->step_votes.end()) {
+    const auto found_step_votes_it = round_votes.step_votes.find(two_t_plus_one_voted_block_step);
+    if (found_step_votes_it == round_votes.step_votes.end()) {
       LOG(log_er_) << "Unable to find 2t+1 votes in verified_votes for period " << pbft_period << ", round "
                    << pbft_round << ", step " << two_t_plus_one_voted_block_step;
       assert(false);
@@ -1625,22 +1812,18 @@ void VoteManager::setCurrentPbftPeriodAndRound(PbftPeriod pbft_period, PbftRound
       votes.push_back(vote.second);
     }
 
-    persistVoteProgressToRustStorage(verified_votes_, nullptr, two_t_plus_one_voted_block_type, votes);
+    persistVoteProgressToRustStorage(pbft_service_, nullptr, two_t_plus_one_voted_block_type, votes);
   }
 }
 
 PbftStep VoteManager::getNetworkTplusOneNextVotingStep(PbftPeriod period, PbftRound round) const {
-  auto round_votes = verified_votes_.getRoundVotes(period, round);
-  if (!round_votes) {
-    return 0;
-  }
-
-  return round_votes->network_t_plus_one_step;
+  const auto snapshot = pbft_service_->service().pbft_service_verified_votes_state_snapshot();
+  return materializeRoundVotes(snapshot, period, round).network_t_plus_one_step;
 }
 
 rustaxa::PbftFinalizationStorageWriteStage VoteManager::rewardVotesResetStageForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent) {
-  return verified_votes_.prepareRewardVotesResetStage(write_intent);
+  return pbft_service_->service().pbft_service_verified_votes_prepare_reward_votes_reset_stage(write_intent);
 }
 
 rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFinalization(
@@ -1654,7 +1837,8 @@ rustaxa::PbftRewardVotesResetRequest VoteManager::rewardVotesResetRequestForFina
 
 RewardVotesFinalizationResetReport VoteManager::commitRewardVotesResetForFinalization(
     const rustaxa::PbftFinalizationStorageWritePlan& write_intent, uint64_t reward_votes_reset_generation) {
-  const auto result = verified_votes_.commitRewardVoteCursor(write_intent, reward_votes_reset_generation);
+  const auto result = pbft_service_->service().pbft_service_verified_votes_commit_reward_vote_cursor(
+      write_intent, reward_votes_reset_generation);
   if (result.status > 1) {
     throw std::runtime_error("Rust reward-vote cursor commit rejected: " + static_cast<std::string>(result.error_code));
   }
@@ -1677,7 +1861,7 @@ rustaxa::PbftFinalizedPeriodApplyResult VoteManager::resetRewardVotesForFinaliza
     return rewardResetResult(kPbftFinalizedPeriodApplyStatusRejected, period, block_hash, e.what());
   }
 
-  auto result = verified_votes_.applyRewardVotesReset(std::move(request));
+  auto result = pbft_service_->service().pbft_service_verified_votes_apply_reward_votes_reset(std::move(request));
   if (result.status != kPbftFinalizedPeriodApplyStatusApplied &&
       result.status != kPbftFinalizedPeriodApplyStatusAlreadyApplied) {
     return result;

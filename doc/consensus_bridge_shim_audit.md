@@ -44,16 +44,16 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 45472 |
-| `shim_lines` | 18572 |
-| `cxx_functions` | 406 |
-| `cxx_carriers` | 355 |
+| `bridge_lines` | 45383 |
+| `shim_lines` | 17629 |
+| `cxx_functions` | 398 |
+| `cxx_carriers` | 350 |
 | `cxx_handles` | 20 |
-| `shim_directories` | 13 |
+| `shim_directories` | 12 |
 | `granular_flags` | 9 |
 | `partial_service_factories` | 0 |
 | `compatibility_constructor_calls` | 0 |
-| `non_test_cpp_consumers` | 41 |
+| `non_test_cpp_consumers` | 40 |
 
 ## CXX Box Factory Inventory
 
@@ -131,7 +131,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | transaction runtime and adapters | transaction/DAG/PBFT shims | Internal bridge route | Move runtime/tests native and reduce C++ to submission/EVM leaf adapters. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF operations/cancellation | VDF and proposer C++ | External boundary | Keep until VDF execution is a native or dedicated external API. |
-| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over native `PbftVerifiedVotesService`, plus cross-domain FinalChain and leader/finalization composition | verified-votes/vote/PBFT shims | Internal bridge route | Native storage lifetime, restoration, and vote-runtime lock ownership live in `rustaxa-consensus`; move the remaining cross-domain workflows into the native PBFT owner and delete the materialization facade. |
+| `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over native `PbftVerifiedVotesService`, plus cross-domain FinalChain and leader/finalization composition | vote and PBFT adapters | Internal bridge route | Native storage lifetime, restoration, vote-runtime lock ownership, and all former facade operations live in `rustaxa-consensus`; move the remaining cross-domain workflows into the native PBFT owner and keep only carrier conversion at retained executor boundaries. |
 
 ## Exported CXX Bridge Handles
 
@@ -170,7 +170,6 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `slashing_manager_shim` | slashing transaction executor | vote/slashing paths | Compatibility facade | Native plan plus signer/submission leaf ports replaces class. |
 | `storage_shim` | broad `DbStorage` compatibility overlay plus stable sortition-change codec | App/admin/query/tests | Compatibility facade | Native bootstrap and narrow admin/query clients replace the broad facade; retain the codec only while the stable storage API exposes `SortitionParamsChange`. |
 | `transaction_manager_shim` | transaction materialization/submission/EVM facade | App, RPC, PBFT, DAG | Compatibility facade | Native service and leaf submission/EVM APIs replace class. |
-| `verified_votes_shim` | materialized verified-vote view | VoteManager/PBFT/network | Compatibility facade | Named callers use PBFT service/transport views. |
 | `vote_manager_shim` | vote runtime/materialization/network facade | PBFT, DAG, network | Internal bridge route | Native PBFT vote service and network pipeline replace class. |
 
 ## Guarded Exceptions

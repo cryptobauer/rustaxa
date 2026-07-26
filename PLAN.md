@@ -944,9 +944,9 @@ The current Rust consensus footprint is broad but still incomplete:
   storage/slashing vote payload sidecars, and typed executor intents for peer-known marking, proposed-block sidecar
   routing, gossip, and PBFT progress. The Rust-mode `VoteManager` shim exposes those intents through a temporary
   admission report consumed by latest-tarcap vote handlers, so single-vote and bundle paths mark peers/votes known,
-  report slashing, and gossip only after Rust admission has accepted the vote. Generic legacy snapshot and 2t+1 APIs on
-  the `VerifiedVotes` overlay now materialize temporary `PbftVote` sidecars from Rust-retained weighted payload bytes
-  instead of skipping missing live sidecars. Reward-vote validation and materialization now enter the same runtime:
+  report slashing, and gossip only after Rust admission has accepted the vote. VoteManager's compatibility snapshot and
+  2t+1 materializers consume direct native-service payloads to build temporary `PbftVote` sidecars instead of skipping
+  missing live sidecars. Reward-vote validation and materialization now enter the same runtime:
   Rust builds preferred-round and reverse-period candidates from Rust-owned verified-vote metadata and returns selected
   retained weighted records in PBFT-block requested order. All compatibility materialization uses Rust-retained payloads;
   missing retained payloads for Rust-owned selected votes are invariant errors. The crate also contains a side-effect-free
@@ -1280,8 +1280,9 @@ The current Rust consensus footprint is broad but still incomplete:
    approved temporary protected-state hook to inherit unported behavior from `VoteManagerOld` while owning reward-vote
    reset persistence handoff in shim code: it selects the live cert-vote bundle in C++, passes the stage-4 Rust storage
    facts into the Rust-owned finalization apply batch, and mutates live reward metadata only after Rust commits the
-   stage. The same overlay now routes deterministic verified-vote live
-   state methods through the Rust-backed `VerifiedVotes` facade instead of `VoteManagerOld`: insertion/uniqueness,
+   stage. The standalone Rust-mode `VerifiedVotes` facade is deleted; the same overlay now routes deterministic
+   verified-vote live state methods directly through the shared native `PbftVerifiedVotesService` instead of
+   `VoteManagerOld`: insertion/uniqueness,
    vote presence and snapshots, proposal-vote selection, cleanup, 2t+1 block/bundle lookups, next-round detection,
    current round persistence of non-cert bundles, and network t+1 step reads use Rust-owned metadata. `addVerifiedVote`
    now enters a validation-backed Rust PBFT vote admission runtime: the shim collects only FinalChain/key-manager

@@ -1,7 +1,7 @@
 use crate::ffi::rustaxa_ffi::{
-    AtomicVoteInsertOutcome, DetermineNewRoundOutcome, PbftFinalizationHash,
-    PbftLeaderCandidateSnapshot, PbftLeaderCandidateValidation, PbftLeaderSelectionFinishRequest,
-    PbftLeaderSelectionResult, PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPlan,
+    DetermineNewRoundOutcome, PbftFinalizationHash, PbftLeaderCandidateSnapshot,
+    PbftLeaderCandidateValidation, PbftLeaderSelectionFinishRequest, PbftLeaderSelectionResult,
+    PbftLeaderSelectionSnapshot, PbftNextVotesBundleEgressPlan,
     PbftOptimizedVoteBundleBuildRequest, PbftOptimizedVoteBundleBuildResult,
     PbftOptimizedVoteBundlePlan,
     PbftRewardVotePayloadSelection as FfiPbftRewardVotePayloadSelection,
@@ -12,11 +12,10 @@ use crate::ffi::rustaxa_ffi::{
     PbftVoteProgressContext as FfiPbftVoteProgressContext, PbftVoteRuntimeValidationResult,
     PbftVoteStorageRecord, RewardVoteCursorCommitResult as FfiRewardVoteCursorCommitResult,
     RewardVoteCursorSnapshot as FfiRewardVoteCursorSnapshot, RewardVotePayloadSnapshot,
-    RoundMarkerSnapshot, ThresholdDecisionOutcome, TwoTPlusOneInsertOutcome,
-    TwoTPlusOneSnapshotEntry, TwoTPlusOneVotePayloadsLookup, TwoTPlusOneVotedBlockLookup,
-    UniqueVoterInsertOutcome, VerifiedStepVotePayloadEntry, VerifiedStepVotePayloadsLookup,
+    RoundMarkerSnapshot, TwoTPlusOneSnapshotEntry, TwoTPlusOneVotePayloadsLookup,
+    TwoTPlusOneVotedBlockLookup, VerifiedStepVotePayloadEntry, VerifiedStepVotePayloadsLookup,
     VerifiedVoteAddOutcome as FfiVerifiedVoteAddOutcome, VerifiedVotePayload,
-    VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot, VotedValueInsertOutcome,
+    VerifiedVoteStateSnapshotEntry, VerifiedVotesStateSnapshot,
 };
 #[cfg(test)]
 use crate::ffi::BridgeStorage;
@@ -47,13 +46,18 @@ struct PbftVoteValidationExternalFacts {
     preverified_weight: u64,
 }
 use crate::pbft_vote_validation::threshold_plan_to_ffi;
-use ethereum_types::{H160, H256};
+#[cfg(test)]
+use ethereum_types::H160;
+use ethereum_types::H256;
 use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
+#[cfg(test)]
 use rustaxa_consensus::pbft_finalize::{
-    apply_pbft_finalization_storage_writes, apply_pbft_reward_votes_reset_storage,
-    PbftFinalizationStorageWriteIntent,
+    apply_pbft_finalization_storage_writes, PbftFinalizationStorageWriteIntent,
     PbftFinalizationStorageWriteStage as DomainPbftFinalizationStorageWriteStage,
-    PbftFinalizedPeriodApplyResult, PbftRewardVotesResetStorageRequest,
+};
+use rustaxa_consensus::pbft_finalize::{
+    apply_pbft_reward_votes_reset_storage, PbftFinalizedPeriodApplyResult,
+    PbftRewardVotesResetStorageRequest,
 };
 use rustaxa_consensus::pbft_manager::{
     plan_pbft_manager_leader_candidates, PbftManagerLeaderBlockValidationStatus,
@@ -64,9 +68,10 @@ use rustaxa_consensus::pbft_thresholds::{
     PbftTwoTPlusOneThresholdFact, PbftTwoTPlusOneThresholdPlan, PbftTwoTPlusOneThresholdStatus,
 };
 use rustaxa_consensus::pbft_vote_event::PbftVoteEventFactFlags as DomainPbftVoteEventFactFlags;
+#[cfg(test)]
+use rustaxa_consensus::pbft_vote_payload::PbftVotePayloadRecord as DomainPbftVotePayloadRecord;
 use rustaxa_consensus::pbft_vote_payload::{
     build_optimized_pbft_vote_bundle, build_weighted_pbft_vote_payload,
-    PbftVotePayloadRecord as DomainPbftVotePayloadRecord,
 };
 use rustaxa_consensus::pbft_vote_storage::{
     clear_own_verified_votes, persist_pbft_vote_progress, save_own_verified_vote,
@@ -80,9 +85,7 @@ use rustaxa_consensus::pbft_vote_validation::{
 use rustaxa_consensus::verified_votes::{
     AddVerifiedVoteOutcome as ConsensusAddVerifiedVoteOutcome,
     DetermineNewRoundOutcome as ConsensusDetermineNewRoundOutcome, PbftVoteType,
-    ThresholdDecisionOutcome as ConsensusThresholdDecisionOutcome,
-    TwoTPlusOneInsertOutcome as ConsensusTwoTPlusOneInsertOutcome, TwoTPlusOneVotedBlockType,
-    VerifiedVote,
+    TwoTPlusOneVotedBlockType, VerifiedVote,
 };
 use rustaxa_consensus::{
     PbftTwoTPlusOneVoteBundle as DomainPbftTwoTPlusOneVoteBundle, PbftVoteAdmissionRuntime,
@@ -114,6 +117,45 @@ const PBFT_LEADER_STALE_SNAPSHOT: u8 = 3;
 const PBFT_LEADER_INVALID_VALIDATION_REPORT: u8 = 4;
 const PBFT_LEADER_VALIDATED: u8 = 1;
 const PBFT_LEADER_REJECTED: u8 = 2;
+
+#[cfg(test)]
+struct UniqueVoterInsertOutcome {
+    accepted: bool,
+    conflict_found: bool,
+    conflicting_vote_hash: [u8; 32],
+    conflicting_vote_found: bool,
+    conflicting_vote: PbftVoteStorageRecord,
+    bucket_found: bool,
+    bucket: VerifiedStepVotePayloadEntry,
+    used_secondary_slot: bool,
+    duplicate_vote_hash: bool,
+}
+
+#[cfg(test)]
+struct VotedValueInsertOutcome {
+    inserted: bool,
+    total_weight: u64,
+    votes_count: usize,
+    conflicting_vote_found: bool,
+    conflicting_vote: PbftVoteStorageRecord,
+    bucket_found: bool,
+    bucket: VerifiedStepVotePayloadEntry,
+}
+
+#[cfg(test)]
+struct AtomicVoteInsertOutcome {
+    inserted: bool,
+    total_weight: u64,
+    votes_count: usize,
+    conflict_found: bool,
+    conflicting_vote_hash: [u8; 32],
+    conflicting_vote_found: bool,
+    conflicting_vote: PbftVoteStorageRecord,
+    bucket_found: bool,
+    bucket: VerifiedStepVotePayloadEntry,
+    used_secondary_slot: bool,
+    duplicate_vote_hash: bool,
+}
 
 fn threshold_fact_from_request(
     fact: &FfiPbftTwoTPlusOneThresholdFact,
@@ -232,6 +274,7 @@ fn vote_progress_write_to_domain(
 }
 
 impl VerifiedVotesAccess<'_> {
+    #[cfg(test)]
     fn retained_vote_payload(&self, vote_hash: Option<H256>) -> (bool, PbftVoteStorageRecord) {
         vote_hash
             .and_then(|hash| self.runtime.weighted_payload(hash).cloned())
@@ -239,6 +282,7 @@ impl VerifiedVotesAccess<'_> {
             .unwrap_or_else(|| (false, empty_storage_record()))
     }
 
+    #[cfg(test)]
     fn retained_vote_bucket(&self, vote: &VerifiedVote) -> (bool, VerifiedStepVotePayloadEntry) {
         let Some(bucket) = self
             .runtime
@@ -346,7 +390,8 @@ impl VerifiedVotesAccess<'_> {
     }
 
     /// Inserts `vote` into unique-voter tracking.
-    pub fn verified_votes_insert_unique_voter(
+    #[cfg(test)]
+    fn verified_votes_insert_unique_voter(
         &mut self,
         vote: VerifiedVotePayload,
         weighted_vote: PbftVoteStorageRecord,
@@ -376,7 +421,8 @@ impl VerifiedVotesAccess<'_> {
     ///
     /// Compatibility/test helper only; production admission must retain the
     /// canonical vote payload sidecars through `verified_votes_admit_and_persist`.
-    pub fn verified_votes_insert_voted_value(
+    #[cfg(test)]
+    fn verified_votes_insert_voted_value(
         &mut self,
         vote: VerifiedVotePayload,
         weighted_vote: PbftVoteStorageRecord,
@@ -409,7 +455,8 @@ impl VerifiedVotesAccess<'_> {
     /// Compatibility/test helper only; production routing should not bypass the
     /// canonical admission runtime because threshold bundles and slashing
     /// evidence require retained payload records.
-    pub fn verified_votes_insert_vote_atomic(
+    #[cfg(test)]
+    fn verified_votes_insert_vote_atomic(
         &mut self,
         vote: VerifiedVotePayload,
         weighted_vote: PbftVoteStorageRecord,
@@ -441,40 +488,6 @@ impl VerifiedVotesAccess<'_> {
         })
     }
 
-    /// Applies deterministic threshold decisions to verified-votes state.
-    ///
-    /// The caller provides `total_weight` for vote's voted-value bucket and
-    /// `two_t_plus_one_threshold` for this vote type/period.
-    /// Compatibility/test helper only. Production admission applies threshold
-    /// decisions inside `verified_votes_admit_and_persist` so bundle
-    /// persistence can use Rust-retained weighted payloads.
-    pub fn verified_votes_apply_threshold_decision(
-        &mut self,
-        vote: VerifiedVotePayload,
-        total_weight: u64,
-        two_t_plus_one_threshold: u64,
-    ) -> Result<ThresholdDecisionOutcome, anyhow::Error> {
-        let vote = payload_to_vote(vote)?;
-        let outcome = self.runtime.verified_votes_mut().apply_threshold_decision(
-            &vote,
-            total_weight,
-            two_t_plus_one_threshold,
-        )?;
-        Ok(outcome.into())
-    }
-
-    /// Sets network t+1 step marker for one round.
-    pub fn verified_votes_set_network_t_plus_one_step(
-        &mut self,
-        period: u64,
-        round: u64,
-        step: u64,
-    ) -> bool {
-        self.runtime
-            .verified_votes_mut()
-            .set_network_t_plus_one_step(period, round, step)
-    }
-
     /// Determines next round from Rust-owned next-vote 2t+1 mappings.
     pub fn verified_votes_determine_new_round(
         &self,
@@ -493,23 +506,6 @@ impl VerifiedVotesAccess<'_> {
                 block_hash: [0u8; 32],
                 step: 0,
             })
-    }
-
-    /// Inserts one 2t+1 voted-block mapping for existing round.
-    pub fn verified_votes_insert_two_t_plus_one_voted_block(
-        &mut self,
-        period: u64,
-        round: u64,
-        kind: u8,
-        block_hash: &[u8; 32],
-        step: u64,
-    ) -> Result<TwoTPlusOneInsertOutcome, anyhow::Error> {
-        let kind = TwoTPlusOneVotedBlockType::try_from(kind)?;
-        Ok(self
-            .runtime
-            .verified_votes_mut()
-            .insert_two_t_plus_one_voted_block(period, round, kind, H256::from(*block_hash), step)
-            .into())
     }
 
     /// Gets one 2t+1 voted-block mapping.
@@ -726,7 +722,8 @@ impl VerifiedVotesAccess<'_> {
     }
 
     /// Adds one vote fact with optional threshold side effects.
-    pub fn verified_votes_add_verified_vote(
+    #[cfg(test)]
+    fn verified_votes_add_verified_vote(
         &mut self,
         vote: VerifiedVotePayload,
         weighted_vote: PbftVoteStorageRecord,
@@ -999,7 +996,8 @@ impl VerifiedVotesAccess<'_> {
     /// Reward-reset stages never trust caller-provided delete keys. The Rust
     /// storage executor locks and enumerates authoritative extra-reward rows
     /// immediately before constructing and committing its batch.
-    pub fn verified_votes_apply_pbft_finalization_storage_writes(
+    #[cfg(test)]
+    fn verified_votes_apply_pbft_finalization_storage_writes(
         &self,
         write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan,
         stages: Vec<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>,
@@ -1791,7 +1789,6 @@ service_verified_votes_plain! {
     fn pbft_service_verified_votes_size() -> u64 => verified_votes_size;
     fn pbft_service_verified_votes_replay_contains(vote_hash: &[u8; 32]) -> bool => verified_votes_replay_contains;
     fn pbft_service_verified_votes_replay_insert(vote_hash: &[u8; 32]) -> bool => verified_votes_replay_insert;
-    fn pbft_service_verified_votes_set_network_t_plus_one_step(period: u64, round: u64, step: u64) -> bool => verified_votes_set_network_t_plus_one_step;
     fn pbft_service_verified_votes_determine_new_round(period: u64, current_round: u64) -> DetermineNewRoundOutcome => verified_votes_determine_new_round;
     fn pbft_service_verified_votes_plan_next_votes_bundle_egress(period: u64, round: u64) -> PbftNextVotesBundleEgressPlan => verified_votes_plan_next_votes_bundle_egress;
     fn pbft_service_verified_votes_build_optimized_votes_bundle_egress(request: PbftOptimizedVoteBundleBuildRequest) -> PbftOptimizedVoteBundleBuildResult => verified_votes_build_optimized_votes_bundle_egress;
@@ -1802,20 +1799,13 @@ service_verified_votes_plain! {
 
 service_verified_votes_fallible! {
     fn pbft_service_verified_votes_own_vote_records() -> Vec<PbftVoteStorageRecord> => verified_votes_own_vote_records;
-    fn pbft_service_verified_votes_insert_unique_voter(vote: VerifiedVotePayload, weighted_vote: PbftVoteStorageRecord) -> UniqueVoterInsertOutcome => verified_votes_insert_unique_voter;
-    fn pbft_service_verified_votes_insert_voted_value(vote: VerifiedVotePayload, weighted_vote: PbftVoteStorageRecord) -> VotedValueInsertOutcome => verified_votes_insert_voted_value;
-    fn pbft_service_verified_votes_insert_vote_atomic(vote: VerifiedVotePayload, weighted_vote: PbftVoteStorageRecord) -> AtomicVoteInsertOutcome => verified_votes_insert_vote_atomic;
-    fn pbft_service_verified_votes_apply_threshold_decision(vote: VerifiedVotePayload, total_weight: u64, two_t_plus_one_threshold: u64) -> ThresholdDecisionOutcome => verified_votes_apply_threshold_decision;
-    fn pbft_service_verified_votes_insert_two_t_plus_one_voted_block(period: u64, round: u64, kind: u8, block_hash: &[u8; 32], step: u64) -> TwoTPlusOneInsertOutcome => verified_votes_insert_two_t_plus_one_voted_block;
     fn pbft_service_verified_votes_get_two_t_plus_one_voted_block(period: u64, round: u64, kind: u8) -> TwoTPlusOneVotedBlockLookup => verified_votes_get_two_t_plus_one_voted_block;
     fn pbft_service_verified_votes_get_two_t_plus_one_voted_block_payloads(period: u64, round: u64, kind: u8) -> TwoTPlusOneVotePayloadsLookup => verified_votes_get_two_t_plus_one_voted_block_payloads;
-    fn pbft_service_verified_votes_add_verified_vote(vote: VerifiedVotePayload, weighted_vote: PbftVoteStorageRecord, two_t_plus_one_threshold: u64, apply_threshold_decision: bool) -> FfiVerifiedVoteAddOutcome => verified_votes_add_verified_vote;
     fn pbft_service_verified_votes_select_reward_vote_payloads(block_period: u64, requested_vote_hashes: Vec<PbftFinalizationHash>) -> FfiPbftRewardVotePayloadSelection => verified_votes_select_reward_vote_payloads;
     fn pbft_service_verified_votes_commit_reward_vote_cursor(write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan, reset_generation: u64) -> FfiRewardVoteCursorCommitResult => verified_votes_commit_reward_vote_cursor;
     fn pbft_service_verified_votes_save_own_verified_vote(record: PbftVoteStorageRecord) -> crate::ffi::rustaxa_ffi::PbftVotePersistenceResult => verified_votes_save_own_verified_vote;
     fn pbft_service_verified_votes_clear_own_verified_votes() -> crate::ffi::rustaxa_ffi::PbftVotePersistenceResult => verified_votes_clear_own_verified_votes;
     fn pbft_service_verified_votes_persist_pbft_vote_progress(write: crate::ffi::rustaxa_ffi::PbftVoteProgressPersistenceWrite) -> crate::ffi::rustaxa_ffi::PbftVotePersistenceResult => verified_votes_persist_pbft_vote_progress;
-    fn pbft_service_verified_votes_apply_pbft_finalization_storage_writes(write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan, stages: Vec<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>, sync: bool) -> crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult => verified_votes_apply_pbft_finalization_storage_writes;
     fn pbft_service_verified_votes_prepare_reward_votes_reset_stage(write_intent: &crate::ffi::rustaxa_ffi::PbftFinalizationStorageWritePlan) -> crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage => verified_votes_prepare_reward_votes_reset_stage;
     fn pbft_service_verified_votes_apply_reward_votes_reset(request: FfiPbftRewardVotesResetRequest) -> crate::ffi::rustaxa_ffi::PbftFinalizedPeriodApplyResult => verified_votes_apply_reward_votes_reset;
     fn pbft_service_verified_votes_state_snapshot() -> VerifiedVotesStateSnapshot => verified_votes_state_snapshot;
@@ -1825,6 +1815,53 @@ service_verified_votes_fallible! {
 
 #[cfg(test)]
 impl BridgePbftService {
+    fn pbft_service_verified_votes_insert_unique_voter(
+        &self,
+        vote: VerifiedVotePayload,
+        weighted_vote: PbftVoteStorageRecord,
+    ) -> Result<UniqueVoterInsertOutcome, anyhow::Error> {
+        self.with_verified_votes(|votes| {
+            votes.verified_votes_insert_unique_voter(vote, weighted_vote)
+        })
+    }
+
+    fn pbft_service_verified_votes_insert_voted_value(
+        &self,
+        vote: VerifiedVotePayload,
+        weighted_vote: PbftVoteStorageRecord,
+    ) -> Result<VotedValueInsertOutcome, anyhow::Error> {
+        self.with_verified_votes(|votes| {
+            votes.verified_votes_insert_voted_value(vote, weighted_vote)
+        })
+    }
+
+    fn pbft_service_verified_votes_insert_vote_atomic(
+        &self,
+        vote: VerifiedVotePayload,
+        weighted_vote: PbftVoteStorageRecord,
+    ) -> Result<AtomicVoteInsertOutcome, anyhow::Error> {
+        self.with_verified_votes(|votes| {
+            votes.verified_votes_insert_vote_atomic(vote, weighted_vote)
+        })
+    }
+
+    fn pbft_service_verified_votes_add_verified_vote(
+        &self,
+        vote: VerifiedVotePayload,
+        weighted_vote: PbftVoteStorageRecord,
+        two_t_plus_one_threshold: u64,
+        apply_threshold_decision: bool,
+    ) -> Result<FfiVerifiedVoteAddOutcome, anyhow::Error> {
+        self.with_verified_votes(|votes| {
+            votes.verified_votes_add_verified_vote(
+                vote,
+                weighted_vote,
+                two_t_plus_one_threshold,
+                apply_threshold_decision,
+            )
+        })
+    }
+
     /// Exercises the retired externally supplied-facts admission path in native
     /// Rust tests without restoring it to the CXX surface.
     fn pbft_service_verified_votes_admit_and_persist(
@@ -2222,6 +2259,7 @@ fn empty_step_vote_payload_entry() -> VerifiedStepVotePayloadEntry {
     }
 }
 
+#[cfg(test)]
 fn payload_to_vote(value: VerifiedVotePayload) -> Result<VerifiedVote, anyhow::Error> {
     VerifiedVote::new(
         H256::from(value.vote_hash),
@@ -2235,6 +2273,7 @@ fn payload_to_vote(value: VerifiedVotePayload) -> Result<VerifiedVote, anyhow::E
     )
 }
 
+#[cfg(test)]
 fn validate_mutation_weighted_vote(
     vote: &VerifiedVote,
     record: PbftVoteStorageRecord,
@@ -2265,6 +2304,7 @@ fn validate_mutation_weighted_vote(
     })
 }
 
+#[cfg(test)]
 impl From<rustaxa_consensus::verified_votes::VotedValueInsertOutcome> for VotedValueInsertOutcome {
     fn from(value: rustaxa_consensus::verified_votes::VotedValueInsertOutcome) -> Self {
         Self {
@@ -2342,15 +2382,6 @@ fn outcome_to_ffi_add_vote_outcome(
     }
 }
 
-impl From<ConsensusTwoTPlusOneInsertOutcome> for TwoTPlusOneInsertOutcome {
-    fn from(value: ConsensusTwoTPlusOneInsertOutcome) -> Self {
-        Self {
-            round_found: value.round_found,
-            inserted: value.inserted,
-        }
-    }
-}
-
 impl From<ConsensusDetermineNewRoundOutcome> for DetermineNewRoundOutcome {
     fn from(value: ConsensusDetermineNewRoundOutcome) -> Self {
         Self {
@@ -2360,29 +2391,6 @@ impl From<ConsensusDetermineNewRoundOutcome> for DetermineNewRoundOutcome {
             source_kind: value.source_kind.into(),
             block_hash: value.block_hash.into(),
             step: value.step,
-        }
-    }
-}
-
-impl From<ConsensusThresholdDecisionOutcome> for ThresholdDecisionOutcome {
-    fn from(value: ConsensusThresholdDecisionOutcome) -> Self {
-        let (kind_found, kind) = value
-            .two_t_plus_one_kind
-            .map(|kind| (true, kind.into()))
-            .unwrap_or((false, 0));
-        let (round_found, inserted) = value
-            .two_t_plus_one_insert_outcome
-            .map(|outcome| (outcome.round_found, outcome.inserted))
-            .unwrap_or((false, false));
-
-        Self {
-            t_plus_one_reached: value.t_plus_one_reached,
-            network_t_plus_one_step_updated: value.network_t_plus_one_step_updated,
-            two_t_plus_one_reached: value.two_t_plus_one_reached,
-            two_t_plus_one_kind_found: kind_found,
-            two_t_plus_one_kind: kind,
-            two_t_plus_one_round_found: round_found,
-            two_t_plus_one_inserted: inserted,
         }
     }
 }
@@ -4149,11 +4157,13 @@ mod tests {
         };
 
         let result = votes
-            .pbft_service_verified_votes_apply_pbft_finalization_storage_writes(
-                &write_intent,
-                vec![primary_stage],
-                false,
-            )
+            .with_verified_votes(|runtime| {
+                runtime.verified_votes_apply_pbft_finalization_storage_writes(
+                    &write_intent,
+                    vec![primary_stage],
+                    false,
+                )
+            })
             .expect("rejected write-set reports through bridge");
 
         assert_eq!(

@@ -16,7 +16,7 @@
 #include "pbft/pbft_service.hpp"
 #include "rustaxa-bridge/ffi.rs.h"
 #include "vote/pbft_vote.hpp"
-#include "vote_manager/verified_votes.hpp"
+#include "vote_manager/verified_vote_view_types.hpp"
 
 namespace taraxa {
 
@@ -317,7 +317,7 @@ class VoteManager {
    * - `new_round` carries that candidate round and is zero otherwise.
    *
    * Invariants:
-   * - VoteManager/VerifiedVotes owns the `2t+1` next-vote lookup and
+   * - The native verified-vote service owns the `2t+1` next-vote lookup and
    *   preference rules.
    * - PBFT manager receives only runtime report facts and does not inspect
    *   supporting vote sidecars for this decision.
@@ -659,7 +659,7 @@ class VoteManager {
    * - Current-round soft-value status.
    *
    * Invariants:
-   * - VoteManager/VerifiedVotes owns the Rust-backed `2t+1` lookup details.
+   * - The native verified-vote service owns the Rust-backed `2t+1` lookup details.
    * - PBFT manager receives only compact booleans and hashes for planner input.
    */
   struct StateActionVoteFacts {
@@ -938,8 +938,6 @@ class VoteManager {
 
   std::atomic<PbftPeriod> current_pbft_period_{0};
   std::atomic<PbftRound> current_pbft_round_{0};
-  VerifiedVotes verified_votes_;
-
   LOG_OBJECTS_DEFINE
 };
 
