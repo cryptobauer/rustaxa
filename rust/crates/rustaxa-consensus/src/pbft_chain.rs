@@ -1,4 +1,4 @@
-//! PBFT chain in-memory runtime state for the Rust rewrite shim.
+//! Native PBFT-chain state and application runtime.
 //!
 //! This module models the PBFT head fields and validation/update rules from the
 //! legacy `PbftChain` class and owns Rust-mode PBFT-chain storage recovery over
@@ -9,6 +9,7 @@ use ethereum_types::H256;
 use rustaxa_storage::Storage;
 use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
+use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 const PBFT_BLOCK_POS_IN_PERIOD_DATA: usize = 0;
 
@@ -108,8 +109,8 @@ pub enum PbftBlockValidation {
 /// - project and apply head updates for accepted PBFT blocks
 /// - validate next-block period and previous-hash linkage
 ///
-/// Storage/database lookup and JSON formatting are intentionally handled by the
-/// bridge/shim layer to preserve existing persistence ownership boundaries.
+/// Storage/database lookup is composed by [`PbftChainService`]. Legacy JSON
+/// formatting remains a public C++ compatibility concern.
 #[derive(Debug, Clone)]
 pub struct PbftChain {
     head: PbftChainHead,
@@ -244,6 +245,139 @@ impl PbftChain {
         }
 
         PbftBlockValidation::Valid
+    }
+}
+
+/// Lock-protected native PBFT-chain state.
+///
+/// `initialized_default` records whether restoration created the legacy
+/// default head row. The state never contains bridge or CXX carriers.
+pub struct PbftChainState {
+    /// Deterministic in-memory head state and transition rules.
+    pub state: PbftChain,
+    /// Whether startup restoration persisted the missing legacy default head.
+    pub initialized_default: bool,
+}
+
+/// Application-owned PBFT-chain runtime.
+///
+/// This CXX-free owner binds storage lifetime, startup restoration, the sibling
+/// chain lock, head transitions, validation, and storage-backed block lookup.
+/// Storage is retained by `Arc`, so public compatibility readers remain valid
+/// after the originating C++ database wrapper is destroyed.
+#[derive(Clone)]
+pub struct PbftChainService {
+    storage: Option<Arc<Storage>>,
+    state: Arc<RwLock<PbftChainState>>,
+}
+
+impl PbftChainService {
+    /// Restores the canonical PBFT head before publishing the runtime.
+    pub fn restore(storage: Arc<Storage>) -> Result<Self> {
+        let restored = restore_pbft_chain_from_storage(storage.as_ref())?;
+        Ok(Self {
+            storage: Some(storage),
+            state: Arc::new(RwLock::new(PbftChainState {
+                state: PbftChain::new(restored.head)?,
+                initialized_default: restored.initialized_default,
+            })),
+        })
+    }
+
+    /// Creates a native runtime from explicit compatibility parts.
+    ///
+    /// This temporary constructor supports bridge fixtures until the complete
+    /// PBFT application owner moves native. Storage-backed lookup methods fail
+    /// with `PBFT_CHAIN_STORAGE_HANDLE_MISSING` when `storage` is absent.
+    pub fn from_parts(
+        storage: Option<Arc<Storage>>,
+        head: PbftChainHead,
+        initialized_default: bool,
+    ) -> Result<Self> {
+        Ok(Self {
+            storage,
+            state: Arc::new(RwLock::new(PbftChainState {
+                state: PbftChain::new(head)?,
+                initialized_default,
+            })),
+        })
+    }
+
+    /// Borrows chain state for a cross-domain PBFT operation.
+    ///
+    /// This temporary escape hatch supports finalization and leader selection
+    /// until their application owner moves out of the bridge.
+    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, PbftChainState>> {
+        self.state.read()
+    }
+
+    /// Mutably borrows chain state for a cross-domain PBFT operation.
+    pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, PbftChainState>> {
+        self.state.write()
+    }
+
+    /// Reports whether restore initialized the legacy default head row.
+    pub fn initialized_default(&self) -> bool {
+        self.state
+            .read()
+            .expect("PBFT chain lock poisoned")
+            .initialized_default
+    }
+
+    /// Returns the current head snapshot.
+    pub fn head(&self) -> PbftChainHead {
+        self.state
+            .read()
+            .expect("PBFT chain lock poisoned")
+            .state
+            .head()
+    }
+
+    /// Projects legacy persisted-head fields without mutation.
+    pub fn project_legacy_json_head(
+        &self,
+        block_hash: H256,
+        increments_non_empty_size: bool,
+    ) -> Result<PbftChainHead> {
+        self.state
+            .read()
+            .expect("PBFT chain lock poisoned")
+            .state
+            .project_legacy_json_head(block_hash, increments_non_empty_size)
+    }
+
+    /// Applies one in-memory accepted-block head transition.
+    pub fn update(&self, block_hash: H256, anchor_hash: H256) -> Result<PbftChainHead> {
+        self.state
+            .write()
+            .expect("PBFT chain lock poisoned")
+            .state
+            .update(block_hash, anchor_hash)
+    }
+
+    /// Checks whether the runtime-owned storage contains a finalized block.
+    pub fn block_exists(&self, block_hash: H256) -> Result<bool> {
+        pbft_block_exists_in_storage(self.storage()?, block_hash)
+    }
+
+    /// Loads one canonical finalized PBFT block payload from runtime storage.
+    pub fn block_rlp(&self, block_hash: H256) -> Result<PbftBlockStorageLookup> {
+        load_pbft_block_from_storage(self.storage()?, block_hash)
+    }
+
+    /// Validates whether a candidate period/previous hash extends the head.
+    pub fn validate_block(&self, period: u64, prev_hash: H256) -> PbftBlockValidation {
+        self.state
+            .read()
+            .expect("PBFT chain lock poisoned")
+            .state
+            .validate_next_block(period, prev_hash)
+    }
+
+    fn storage(&self) -> Result<&Storage> {
+        self.storage
+            .as_deref()
+            .ok_or_else(|| anyhow!("PBFT_CHAIN_STORAGE_HANDLE_MISSING"))
     }
 }
 
@@ -476,6 +610,7 @@ mod tests {
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
     use std::fs;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn hash(v: u64) -> H256 {
@@ -661,5 +796,36 @@ mod tests {
         assert_eq!(loaded.block_rlp, block);
         assert!(!missing.found);
         assert!(missing.block_rlp.is_empty());
+    }
+
+    #[test]
+    fn service_owns_restore_lock_transitions_and_storage_lifetime_without_cxx() {
+        let storage = Arc::new(temp_storage("rustaxa_consensus_pbft_chain_service"));
+        let block = pbft_block_rlp(H256::zero(), hash(9), 1);
+        let block_hash = PbftBlockLink::try_from(SignedPbftBlockRlp::new(&block))
+            .unwrap()
+            .block_hash;
+        storage.period().write(1, &period_data_rlp(&block)).unwrap();
+        storage.period().write_pbft_period(block_hash, 1).unwrap();
+
+        let service = PbftChainService::restore(storage.clone()).unwrap();
+        drop(storage);
+
+        assert!(service.initialized_default());
+        assert_eq!(service.head().size, 0);
+        assert!(service.block_exists(block_hash).unwrap());
+        assert_eq!(service.block_rlp(block_hash).unwrap().block_rlp, block);
+        assert_eq!(
+            service.validate_block(1, H256::zero()),
+            PbftBlockValidation::Valid
+        );
+
+        let projected = service.project_legacy_json_head(block_hash, true).unwrap();
+        assert_eq!(projected.size, 1);
+        assert_eq!(service.head().size, 0);
+        let updated = service.update(block_hash, hash(9)).unwrap();
+        assert_eq!(updated.size, 1);
+        assert_eq!(updated.non_empty_size, 1);
+        assert_eq!(service.head(), updated);
     }
 }

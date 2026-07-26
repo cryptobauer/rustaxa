@@ -217,7 +217,6 @@ class DbStorage : public DbStorageOld {
 
   std::unordered_map<PbftPeriod, rewards::BlockStats> getBlocksRewardsStats() const;
   void saveBlockRewardsStats(uint64_t period, const rewards::BlockStats& stats, Batch& write_batch);
-  void appendRewardsStatsStorageWrites(const rustaxa::RewardsStatsProcessResult& plan, Batch& write_batch);
   bool hasMajorVersionChanged();
   void compactColumn(Column const& column);
   rustaxa::BridgeStorage& rustStorage();

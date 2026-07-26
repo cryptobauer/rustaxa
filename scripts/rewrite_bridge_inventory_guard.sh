@@ -3,19 +3,29 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: scripts/rewrite_bridge_inventory_guard.sh [--self-test]
+Usage: scripts/rewrite_bridge_inventory_guard.sh [--self-test] [--base-ref REF]
 
 Checks that every exported CXX `Bridge*` handle, Rust bridge module, and
 consensus shim directory is documented in doc/consensus_bridge_shim_audit.md,
-and reports stale inventory rows after deletion.
+reports stale inventory rows after deletion, and prevents checked surface
+budgets from increasing relative to the selected base revision.
 EOF
 }
 
 self_test=0
+base_ref=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --self-test)
       self_test=1
+      ;;
+    --base-ref)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "--base-ref requires a revision" >&2
+        exit 2
+      fi
+      base_ref="$1"
       ;;
     -h|--help)
       usage
@@ -32,6 +42,7 @@ done
 
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+inventory_parser="$repo_root/scripts/rewrite_bridge_inventory.py"
 
 extract_ffi_bridge_types() {
   sed -n 's/^[[:space:]]*type \(Bridge[A-Za-z0-9_]*\);[[:space:]]*$/\1/p' "$1" | sort -u
@@ -86,6 +97,402 @@ extract_audited_shim_directories() {
       print value
     }
   ' "$1" | sort -u
+}
+
+extract_cxx_functions() {
+  python3 "$inventory_parser" ffi-functions "$1"
+}
+
+extract_partial_service_factories() {
+  extract_audited_partial_service_factories "$2"
+}
+
+extract_cxx_box_factories() {
+  python3 "$inventory_parser" ffi-factories "$1"
+}
+
+extract_audited_cxx_box_factories() {
+  awk '
+    /^## CXX Box Factory Inventory/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && match($0, /^\| `[a-z0-9_]+` \|/) {
+      value = substr($0, RSTART + 3, RLENGTH - 6)
+      print value
+    }
+  ' "$1" | sort -u
+}
+
+extract_audited_partial_service_factories() {
+  awk -F '|' '
+    /^## CXX Box Factory Inventory/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && $3 ~ /^[[:space:]]*Partial service[[:space:]]*$/ {
+      value = $2
+      gsub(/[ `]/, "", value)
+      print value
+    }
+  ' "$1" | sort -u
+}
+
+extract_test_only_export_allowlist() {
+  awk '
+    /^## Test-Only CXX Export Allowlist/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && match($0, /^\| `[a-z0-9_]+` \|/) {
+      value = substr($0, RSTART + 3, RLENGTH - 6)
+      print value
+    }
+  ' "$1" | sort -u
+}
+
+extract_audited_partial_factory_sites() {
+  awk -F '|' '
+    /^## Partial-Service Factory Inventory/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && $2 ~ /`create_[a-z0-9_]+`/ {
+      factory = $2
+      path = $3
+      gsub(/[ `]/, "", factory)
+      gsub(/[ `]/, "", path)
+      print factory "\t" path
+    }
+  ' "$1" | sort -u
+}
+
+extract_audited_partial_factory_counts() {
+  awk -F '|' '
+    /^## Partial-Service Factory Inventory/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && $2 ~ /`create_[a-z0-9_]+`/ {
+      factory = $2
+      count = $4
+      gsub(/[ `]/, "", factory)
+      gsub(/[ ]/, "", count)
+      if (count !~ /^[0-9]+$/) {
+        print "invalid partial factory call count for " factory >"/dev/stderr"
+        failed = 1
+      } else {
+        print factory "\t" count
+      }
+    }
+    END { exit failed }
+  ' "$1" | sort -u
+}
+
+check_factory_inventory_rows() {
+  audit_file="$1"
+  if ! awk -F '|' '
+    /^## CXX Box Factory Inventory/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section && $2 ~ /`[a-z0-9_]+`/ {
+      factory = $2
+      classification = $3
+      owner = $4
+      condition = $5
+      gsub(/[ `]/, "", factory)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", classification)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", owner)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", condition)
+      if (++seen[factory] != 1) {
+        print "duplicate factory row: " factory >"/dev/stderr"
+        failed = 1
+      }
+      if (classification != "Supported boundary" &&
+          classification != "Production root debt" &&
+          classification != "Partial service" &&
+          classification != "Compatibility facade") {
+        print "invalid factory classification for " factory ": " classification >"/dev/stderr"
+        failed = 1
+      }
+      if (owner == "" || condition == "") {
+        print "factory row lacks a named owner or deletion condition: " factory >"/dev/stderr"
+        failed = 1
+      }
+    }
+    END { exit failed }
+  ' "$audit_file"; then
+    echo "Rust bridge inventory guard failed: malformed CXX Box factory inventory." >&2
+    return 1
+  fi
+}
+
+collect_cpp_call_names() {
+  ffi_file="$1"
+  root="$2"
+  if [ ! -d "$root" ]; then
+    return
+  fi
+  python3 "$inventory_parser" cpp-calls --ffi "$ffi_file" "$root"
+}
+
+check_cxx_export_callers() {
+  ffi_file="$1"
+  audit_file="$2"
+  production_root_one="$3"
+  production_root_two="$4"
+  test_root="$5"
+  temp_dir="$6"
+
+  exports="$temp_dir/cxx_exports"
+  production_identifiers="$temp_dir/production_identifiers"
+  test_identifiers="$temp_dir/test_identifiers"
+  non_production_exports="$temp_dir/non_production_exports"
+  test_only_exports="$temp_dir/test_only_exports"
+  no_caller_exports="$temp_dir/no_caller_exports"
+  allowlisted_exports="$temp_dir/allowlisted_test_only_exports"
+  missing_allowlist="$temp_dir/missing_test_only_allowlist"
+  stale_allowlist="$temp_dir/stale_test_only_allowlist"
+
+  extract_cxx_functions "$ffi_file" >"$exports"
+  {
+    collect_cpp_call_names "$ffi_file" "$production_root_one"
+    collect_cpp_call_names "$ffi_file" "$production_root_two"
+  } | sort -u >"$production_identifiers"
+  collect_cpp_call_names "$ffi_file" "$test_root" >"$test_identifiers"
+  extract_test_only_export_allowlist "$audit_file" >"$allowlisted_exports"
+
+  comm -23 "$exports" "$production_identifiers" >"$non_production_exports"
+  comm -12 "$non_production_exports" "$test_identifiers" >"$test_only_exports"
+  comm -23 "$non_production_exports" "$test_identifiers" >"$no_caller_exports"
+  comm -23 "$test_only_exports" "$allowlisted_exports" >"$missing_allowlist"
+  comm -13 "$test_only_exports" "$allowlisted_exports" >"$stale_allowlist"
+
+  failed=0
+  if [ -s "$no_caller_exports" ]; then
+    echo "Rust bridge inventory guard failed: CXX functions have no C++ caller:" >&2
+    cat "$no_caller_exports" >&2
+    failed=1
+  fi
+  if [ -s "$missing_allowlist" ]; then
+    echo "Rust bridge inventory guard failed: test-only CXX functions are not allowlisted:" >&2
+    cat "$missing_allowlist" >&2
+    failed=1
+  fi
+  if [ -s "$stale_allowlist" ]; then
+    echo "Rust bridge inventory guard failed: stale test-only CXX export allowlist entries exist:" >&2
+    cat "$stale_allowlist" >&2
+    failed=1
+  fi
+  if [ "$failed" -ne 0 ]; then
+    return 1
+  fi
+}
+
+check_partial_factory_sites() {
+  ffi_file="$1"
+  audit_file="$2"
+  production_root_one="$3"
+  production_root_two="$4"
+  temp_dir="$5"
+
+  partial_factories="$temp_dir/partial_factories"
+  all_sites="$temp_dir/all_bridge_call_sites"
+  live_sites="$temp_dir/live_partial_factory_sites"
+  audited_sites="$temp_dir/audited_partial_factory_sites"
+  live_counts="$temp_dir/live_partial_factory_counts"
+  audited_counts="$temp_dir/audited_partial_factory_counts"
+  missing_sites="$temp_dir/missing_partial_factory_sites"
+  stale_sites="$temp_dir/stale_partial_factory_sites"
+
+  extract_audited_partial_service_factories "$audit_file" >"$partial_factories"
+  python3 "$inventory_parser" cpp-call-sites --ffi "$ffi_file" \
+    "$production_root_one" "$production_root_two" >"$all_sites"
+  : >"$live_sites"
+  : >"$live_counts"
+  while IFS= read -r factory; do
+    [ -n "$factory" ] || continue
+    awk -F '\t' -v wanted="$factory" '$1 == wanted { print $1 "\t" $2 }' "$all_sites" >>"$live_sites"
+    count="$(awk -F '\t' -v wanted="$factory" '$1 == wanted { count += 1 } END { print count + 0 }' "$all_sites")"
+    echo "$factory	$count" >>"$live_counts"
+  done <"$partial_factories"
+  sort -u -o "$live_sites" "$live_sites"
+  sort -u -o "$live_counts" "$live_counts"
+  extract_audited_partial_factory_sites "$audit_file" >"$audited_sites"
+  extract_audited_partial_factory_counts "$audit_file" >"$audited_counts"
+  comm -23 "$live_sites" "$audited_sites" >"$missing_sites"
+  comm -13 "$live_sites" "$audited_sites" >"$stale_sites"
+
+  if [ -s "$missing_sites" ]; then
+    echo "Rust bridge inventory guard failed: partial-service factory call sites are undocumented:" >&2
+    cat "$missing_sites" >&2
+    return 1
+  fi
+  if [ -s "$stale_sites" ]; then
+    echo "Rust bridge inventory guard failed: stale or incorrect partial-service factory call sites exist:" >&2
+    cat "$stale_sites" >&2
+    return 1
+  fi
+  if ! cmp -s "$live_counts" "$audited_counts"; then
+    echo "Rust bridge inventory guard failed: partial-service factory call counts differ:" >&2
+    diff -u "$audited_counts" "$live_counts" >&2 || true
+    return 1
+  fi
+}
+
+extract_surface_budget() {
+  metric="$1"
+  audit_file="$2"
+  awk -F '|' -v wanted="$metric" '
+    /^## Checked Surface Budgets/ { in_section = 1; next }
+    /^## / && in_section { exit }
+    in_section {
+      name = $2
+      value = $3
+      gsub(/[ `]/, "", name)
+      gsub(/[ ]/, "", value)
+      if (name == wanted && value ~ /^[0-9]+$/) {
+        print value
+        found = 1
+      }
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$audit_file"
+}
+
+count_shim_source_lines() {
+  find "$1" -type f \( -name '*.hpp' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \) \
+    -exec wc -l {} + | awk '$2 != "total" { total += $1 } END { print total + 0 }'
+}
+
+count_cxx_carriers() {
+  python3 "$inventory_parser" ffi-carriers "$1" | wc -l
+}
+
+count_cxx_function_declarations() {
+  python3 "$inventory_parser" ffi-function-count "$1"
+}
+
+count_cxx_opaque_handles() {
+  python3 "$inventory_parser" ffi-handles "$1" | wc -l
+}
+
+count_compatibility_constructor_calls() {
+  ffi_file="$1"
+  audit_file="$2"
+  production_root_one="$3"
+  production_root_two="$4"
+  temp_dir="$(mktemp -d)"
+  extract_partial_service_factories "$ffi_file" "$audit_file" >"$temp_dir/factories"
+  python3 "$inventory_parser" cpp-call-sites --ffi "$ffi_file" \
+    "$production_root_one" "$production_root_two" >"$temp_dir/sites"
+  awk -F '\t' 'NR == FNR { wanted[$1] = 1; next } wanted[$1] { count += 1 } END { print count + 0 }' \
+    "$temp_dir/factories" "$temp_dir/sites"
+  rm -rf "$temp_dir"
+}
+
+check_surface_metric() {
+  metric="$1"
+  actual="$2"
+  audit_file="$3"
+  expected="$(extract_surface_budget "$metric" "$audit_file")"
+  if [ "$actual" -ne "$expected" ]; then
+    echo "Rust bridge inventory guard failed: $metric is $actual; checked budget is $expected." >&2
+    echo "Delete compensating surface or lower the budget with the deletion slice." >&2
+    return 1
+  fi
+  echo "$metric=$actual"
+}
+
+check_budget_ratchet() {
+  audit_file="$1"
+  base_audit_file="$2"
+  ratchet_failed=0
+  for metric in bridge_lines shim_lines cxx_functions cxx_carriers cxx_handles shim_directories \
+    granular_flags partial_service_factories compatibility_constructor_calls non_test_cpp_consumers; do
+    current="$(extract_surface_budget "$metric" "$audit_file")"
+    if ! base="$(extract_surface_budget "$metric" "$base_audit_file" 2>/dev/null)"; then
+      continue
+    fi
+    if [ "$current" -gt "$base" ]; then
+      echo "Rust bridge inventory guard failed: $metric budget increased from $base to $current." >&2
+      ratchet_failed=1
+    fi
+  done
+  if [ "$ratchet_failed" -ne 0 ]; then
+    return 1
+  fi
+}
+
+check_budget_history() {
+  history_current_audit="$1"
+  history_repo="$2"
+  history_tip="$3"
+  stop_revision="$4"
+  history_temp_dir="$5"
+
+  revision_args="$history_tip"
+  if [ -n "$stop_revision" ]; then
+    revision_args="$revision_args ^$stop_revision"
+  fi
+  index=0
+  seen_budget=0
+  history_failed=0
+  for revision in $(git -C "$history_repo" rev-list $revision_args); do
+    historical_audit="$history_temp_dir/history_audit_$index.md"
+    index=$((index + 1))
+    if ! git -C "$history_repo" show \
+      "$revision:doc/consensus_bridge_shim_audit.md" >"$historical_audit" 2>/dev/null; then
+      if [ "$seen_budget" -eq 1 ] && [ -z "$stop_revision" ]; then
+        break
+      fi
+      continue
+    fi
+    if extract_surface_budget bridge_lines "$historical_audit" >/dev/null 2>&1; then
+      seen_budget=1
+      if ! check_budget_ratchet "$history_current_audit" "$historical_audit"; then
+        history_failed=1
+      fi
+    elif [ "$seen_budget" -eq 1 ] && [ -z "$stop_revision" ]; then
+      break
+    fi
+  done
+  if [ "$history_failed" -ne 0 ]; then
+    return 1
+  fi
+}
+
+check_surface_budgets() {
+  repo_root="$1"
+  audit_file="$2"
+  ffi_file="$repo_root/rust/crates/rustaxa-bridge/src/ffi.rs"
+  bridge_root="$repo_root/rust/crates/rustaxa-bridge/src"
+  shim_root="$repo_root/libraries/core_libs/consensus/shims"
+
+  bridge_lines="$(find "$bridge_root" -type f -name '*.rs' -exec wc -l {} + |
+    awk '$2 != "total" { total += $1 } END { print total + 0 }')"
+  shim_lines="$(count_shim_source_lines "$shim_root")"
+  cxx_functions="$(count_cxx_function_declarations "$ffi_file")"
+  cxx_carriers="$(count_cxx_carriers "$ffi_file")"
+  cxx_handles="$(count_cxx_opaque_handles "$ffi_file")"
+  shim_directories="$(extract_shim_directories "$shim_root" | wc -l)"
+  granular_flags="$(
+    sed -n 's/^option(\(RUSTAXA_ENABLE_[A-Z_]*\).*/\1/p' "$repo_root/CMakeLists.txt" | sort -u | wc -l
+  )"
+  partial_service_factories="$(extract_partial_service_factories "$ffi_file" "$audit_file" | wc -l)"
+  compatibility_constructor_calls="$(
+    count_compatibility_constructor_calls "$ffi_file" "$audit_file" "$repo_root/libraries" "$repo_root/programs"
+  )"
+  non_test_cpp_consumers="$(
+    {
+      rg -l '#include [<"]rustaxa-bridge/ffi.rs.h[>"]' "$repo_root/libraries" "$repo_root/programs" \
+        --glob '*.cpp' --glob '*.cc' --glob '*.hpp' --glob '*.h' || true
+    } | wc -l
+  )"
+
+  check_surface_metric bridge_lines "$bridge_lines" "$audit_file"
+  check_surface_metric shim_lines "$shim_lines" "$audit_file"
+  check_surface_metric cxx_functions "$cxx_functions" "$audit_file"
+  check_surface_metric cxx_carriers "$cxx_carriers" "$audit_file"
+  check_surface_metric cxx_handles "$cxx_handles" "$audit_file"
+  check_surface_metric shim_directories "$shim_directories" "$audit_file"
+  check_surface_metric granular_flags "$granular_flags" "$audit_file"
+  check_surface_metric partial_service_factories "$partial_service_factories" "$audit_file"
+  check_surface_metric compatibility_constructor_calls "$compatibility_constructor_calls" "$audit_file"
+  check_surface_metric non_test_cpp_consumers "$non_test_cpp_consumers" "$audit_file"
 }
 
 check_inventory() {
@@ -337,6 +744,176 @@ EOF
     exit 1
   fi
 
+  mkdir "$temp_dir/production" "$temp_dir/tests"
+  cat >"$temp_dir/caller_ffi.rs" <<'EOF'
+#[cxx::bridge]
+mod ffi {
+    extern "Rust" {
+        type ProductionHandle;
+        pub fn production_export() -> bool;
+        pub unsafe fn unsafe_production_export(
+            pointer: *const u8,
+        ) -> bool;
+        pub fn test_only_export() -> bool;
+        pub fn method_test_only_export(self: &ProductionHandle) -> bool;
+    }
+}
+EOF
+  cat >"$temp_dir/production/consumer.cpp" <<'EOF'
+#include "rustaxa-bridge/ffi.rs.h"
+void consume() {
+  rustaxa::production_export();
+  rustaxa::unsafe_production_export(nullptr);
+}
+struct FakeBridgeLookalike {
+  bool method_test_only_export();
+};
+void unrelated(FakeBridgeLookalike& fake) { fake.method_test_only_export(); }
+// rustaxa::test_only_export();
+void test_only_export();
+const char* ignored_call_text = "rustaxa::test_only_export()";
+#if 0
+void disabled() { rustaxa::test_only_export(); }
+#endif
+EOF
+  cat >"$temp_dir/tests/consumer.cpp" <<'EOF'
+#include "rustaxa-bridge/ffi.rs.h"
+void test_consume(rustaxa::ProductionHandle& handle) {
+  rustaxa::test_only_export();
+  handle.method_test_only_export();
+}
+EOF
+  cat >"$temp_dir/caller_audit.md" <<'EOF'
+# Audit
+
+## Test-Only CXX Export Allowlist
+
+| Export | Named test client | Removal condition |
+| --- | --- | --- |
+| `method_test_only_export` | `tests/consumer.cpp` | remove |
+| `test_only_export` | `tests/consumer.cpp` | remove |
+
+## Checked Surface Budgets
+
+| Metric | Exact budget |
+| --- | ---: |
+| `bridge_lines` | 3 |
+EOF
+  if [ "$(count_cxx_function_declarations "$temp_dir/caller_ffi.rs")" -ne 4 ]; then
+    echo "bridge inventory guard self-test failed: multiline/unsafe CXX function was not counted" >&2
+    exit 1
+  fi
+  if [ "$(count_cxx_opaque_handles "$temp_dir/caller_ffi.rs")" -ne 1 ]; then
+    echo "bridge inventory guard self-test failed: non-Bridge opaque handle was not counted" >&2
+    exit 1
+  fi
+  check_cxx_export_callers "$temp_dir/caller_ffi.rs" "$temp_dir/caller_audit.md" \
+    "$temp_dir/production" "$temp_dir/missing_production_root" "$temp_dir/tests" "$temp_dir"
+  sed '/test_only_export/d' "$temp_dir/caller_audit.md" >"$temp_dir/caller_audit_missing.md"
+  if check_cxx_export_callers "$temp_dir/caller_ffi.rs" "$temp_dir/caller_audit_missing.md" \
+    "$temp_dir/production" "$temp_dir/missing_production_root" "$temp_dir/tests" "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: unallowlisted test-only export was accepted" >&2
+    exit 1
+  fi
+  check_surface_metric bridge_lines 3 "$temp_dir/caller_audit.md" >/dev/null
+  if check_surface_metric bridge_lines 4 "$temp_dir/caller_audit.md" >/dev/null 2>&1; then
+    echo "bridge inventory guard self-test failed: surface budget mismatch was accepted" >&2
+    exit 1
+  fi
+  sed 's/| `bridge_lines` | 3 |/| `bridge_lines` | 4 |/' \
+    "$temp_dir/caller_audit.md" >"$temp_dir/caller_audit_raised_budget.md"
+  if check_budget_ratchet "$temp_dir/caller_audit_raised_budget.md" "$temp_dir/caller_audit.md" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: raised surface budget was accepted" >&2
+    exit 1
+  fi
+  history_repo="$temp_dir/history_repo"
+  mkdir -p "$history_repo/doc" "$temp_dir/history_checks"
+  git -C "$history_repo" init -q
+  git -C "$history_repo" config user.name "inventory self-test"
+  git -C "$history_repo" config user.email "inventory-self-test@example.invalid"
+  git -C "$history_repo" config commit.gpgsign false
+  sed 's/| `bridge_lines` | 3 |/| `bridge_lines` | 100 |/' \
+    "$temp_dir/caller_audit.md" >"$history_repo/doc/consensus_bridge_shim_audit.md"
+  git -C "$history_repo" add doc/consensus_bridge_shim_audit.md
+  git -C "$history_repo" commit -qm "budget 100"
+  sed -i 's/| `bridge_lines` | 100 |/| `bridge_lines` | 50 |/' \
+    "$history_repo/doc/consensus_bridge_shim_audit.md"
+  git -C "$history_repo" commit -qam "budget 50"
+  sed -i 's/| `bridge_lines` | 50 |/| `bridge_lines` | 60 |/' \
+    "$history_repo/doc/consensus_bridge_shim_audit.md"
+  git -C "$history_repo" commit -qam "budget 60"
+  if check_budget_history "$history_repo/doc/consensus_bridge_shim_audit.md" \
+    "$history_repo" HEAD "" "$temp_dir/history_checks" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: multi-commit budget re-increase was accepted" >&2
+    exit 1
+  fi
+
+  cat >"$temp_dir/factory_ffi.rs" <<'EOF'
+#[cxx::bridge]
+mod ffi {
+    extern "Rust" {
+        type FactoryHandle;
+        pub fn create_known_factory(input: &[u8; 32]) -> Box<FactoryHandle>;
+        pub fn create_unknown_factory() -> Result<Box<FactoryHandle>>;
+    }
+}
+EOF
+  cat >"$temp_dir/factory_audit_missing.md" <<'EOF'
+# Audit
+
+## CXX Box Factory Inventory
+
+| Factory | Classification | Named client or owner | Delete or narrow when |
+| --- | --- | --- | --- |
+| `create_known_factory` | Partial service | fixture | remove |
+EOF
+  if check_documented_inventory box_factory "$temp_dir/factory_ffi.rs" "$temp_dir/factory_audit_missing.md" \
+    extract_cxx_box_factories extract_audited_cxx_box_factories "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: unknown Box factory was accepted" >&2
+    exit 1
+  fi
+  cat >"$temp_dir/factory_audit_template.md" <<'EOF'
+# Audit
+
+## CXX Box Factory Inventory
+
+| Factory | Classification | Named client or owner | Delete or narrow when |
+| --- | --- | --- | --- |
+| `create_known_factory` | Partial service | fixture | remove |
+| `create_unknown_factory` | Production root debt | fixture | remove |
+
+## Partial-Service Factory Inventory
+
+| CXX factory | Compatibility constructor client path | Exact calls | Delete when |
+| --- | --- | ---: | --- |
+| `create_known_factory` | `production/consumer.cpp` | 1 | remove |
+EOF
+  sed "s#production/consumer.cpp#$temp_dir/production/consumer.cpp#" \
+    "$temp_dir/factory_audit_template.md" >"$temp_dir/factory_audit.md"
+  cat >"$temp_dir/production/consumer.cpp" <<'EOF'
+#include "rustaxa-bridge/ffi.rs.h"
+void consume() { rustaxa::create_known_factory({}); }
+EOF
+  check_documented_inventory box_factory "$temp_dir/factory_ffi.rs" "$temp_dir/factory_audit.md" \
+    extract_cxx_box_factories extract_audited_cxx_box_factories "$temp_dir"
+  check_partial_factory_sites "$temp_dir/factory_ffi.rs" "$temp_dir/factory_audit.md" \
+    "$temp_dir/production" "$temp_dir/missing_production_root" "$temp_dir"
+  cp "$temp_dir/production/consumer.cpp" "$temp_dir/production/consumer_once.cpp"
+  echo 'void consume_again() { rustaxa::create_known_factory({}); }' >>"$temp_dir/production/consumer.cpp"
+  if check_partial_factory_sites "$temp_dir/factory_ffi.rs" "$temp_dir/factory_audit.md" \
+    "$temp_dir/production" "$temp_dir/missing_production_root" "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: duplicate partial-factory call was accepted" >&2
+    exit 1
+  fi
+  mv "$temp_dir/production/consumer_once.cpp" "$temp_dir/production/consumer.cpp"
+  sed 's#consumer.cpp#wrong.cpp#' \
+    "$temp_dir/factory_audit.md" >"$temp_dir/factory_audit_wrong_site.md"
+  if check_partial_factory_sites "$temp_dir/factory_ffi.rs" "$temp_dir/factory_audit_wrong_site.md" \
+    "$temp_dir/production" "$temp_dir/missing_production_root" "$temp_dir" 2>/dev/null; then
+    echo "bridge inventory guard self-test failed: wrong partial-factory call site was accepted" >&2
+    exit 1
+  fi
+
   echo "Rust bridge inventory guard self-test passed."
   exit 0
 fi
@@ -381,5 +958,50 @@ check_documented_inventory \
 check_documented_inventory \
   shim libraries/core_libs/consensus/shims doc/consensus_bridge_shim_audit.md \
   extract_shim_directories extract_audited_shim_directories "$inventory_temp_dir"
+check_documented_inventory \
+  box_factory rust/crates/rustaxa-bridge/src/ffi.rs doc/consensus_bridge_shim_audit.md \
+  extract_cxx_box_factories extract_audited_cxx_box_factories "$inventory_temp_dir"
+check_factory_inventory_rows doc/consensus_bridge_shim_audit.md
+check_partial_factory_sites \
+  rust/crates/rustaxa-bridge/src/ffi.rs doc/consensus_bridge_shim_audit.md \
+  libraries programs "$inventory_temp_dir"
+check_cxx_export_callers \
+  rust/crates/rustaxa-bridge/src/ffi.rs doc/consensus_bridge_shim_audit.md \
+  libraries programs tests "$inventory_temp_dir"
+check_surface_budgets "$repo_root" "$repo_root/doc/consensus_bridge_shim_audit.md"
+
+if ! git diff HEAD --quiet -- doc/consensus_bridge_shim_audit.md; then
+  local_budget_base="HEAD"
+else
+  local_budget_base="HEAD^"
+fi
+
+target_ref="$base_ref"
+if [ -z "$target_ref" ] && [ -n "${RUSTAXA_INVENTORY_BASE_REF:-}" ]; then
+  target_ref="$RUSTAXA_INVENTORY_BASE_REF"
+fi
+if [ -z "$target_ref" ] && [ -n "${GITHUB_BASE_REF:-}" ]; then
+  target_ref="origin/$GITHUB_BASE_REF"
+fi
+if [ -z "$target_ref" ] && git rev-parse --verify origin/main >/dev/null 2>&1; then
+  target_ref="origin/main"
+fi
+
+target_budget_base=""
+if [ -n "$target_ref" ]; then
+  if ! target_budget_base="$(git merge-base HEAD "$target_ref" 2>/dev/null)"; then
+    echo "Rust bridge inventory guard failed: cannot resolve target/base revision $target_ref." >&2
+    exit 1
+  fi
+fi
+
+if [ -n "$target_budget_base" ]; then
+  target_audit_file="$inventory_temp_dir/target_base_audit.md"
+  if git show "$target_budget_base:doc/consensus_bridge_shim_audit.md" >"$target_audit_file" 2>/dev/null; then
+    check_budget_ratchet doc/consensus_bridge_shim_audit.md "$target_audit_file"
+  fi
+fi
+check_budget_history \
+  doc/consensus_bridge_shim_audit.md "$repo_root" "$local_budget_base" "$target_budget_base" "$inventory_temp_dir"
 
 echo "Rust bridge inventory guard passed."

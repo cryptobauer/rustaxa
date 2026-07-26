@@ -8,6 +8,7 @@ pub mod network_api;
 pub mod pbft_chain;
 pub mod pbft_finalize;
 pub mod pbft_manager;
+pub mod pbft_readiness;
 pub mod pbft_reward_votes;
 pub mod pbft_sync;
 pub mod pbft_thresholds;
@@ -200,6 +201,7 @@ pub use pbft_manager::{
     report_pbft_manager_broadcast, report_pbft_manager_proposal_dag_order,
     report_pbft_manager_runtime_action, report_pbft_manager_state_action_effect_session,
 };
+pub use pbft_readiness::PbftServiceReadiness;
 pub use pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
     PbftRewardVotesStatus, plan_pbft_reward_votes,
@@ -247,10 +249,11 @@ pub use pbft_vote_progress::{
     PbftVoteProgressPlan, PbftVoteProgressStatus, plan_pbft_vote_progress,
 };
 pub use pbft_vote_runtime::{
-    PbftRewardVotePayloadSelection, PbftVoteAdmissionPersistenceStatus, PbftVoteAdmissionRuntime,
-    PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome, PbftVoteRuntimeBundle,
-    PbftVoteRuntimeCleanupPlan, PbftVoteRuntimePayload, PbftVoteRuntimeSlashingPayloads,
-    RewardVoteCursor, RewardVoteCursorCommitResult, RewardVoteCursorCommitStatus,
+    PbftRewardVotePayloadSelection, PbftVerifiedVotesService, PbftVoteAdmissionPersistenceStatus,
+    PbftVoteAdmissionRuntime, PbftVoteAdmissionTransactionResult, PbftVoteRuntimeAdmissionOutcome,
+    PbftVoteRuntimeBundle, PbftVoteRuntimeCleanupPlan, PbftVoteRuntimePayload,
+    PbftVoteRuntimeSlashingPayloads, RewardVoteCursor, RewardVoteCursorCommitResult,
+    RewardVoteCursorCommitStatus,
 };
 pub use pbft_vote_storage::{
     PbftTwoTPlusOneVoteBundle, PbftVotePersistenceResult, PbftVotePersistenceStatus,
@@ -295,12 +298,9 @@ pub use proposed_blocks::{
 };
 pub use rewards_stats::{
     FinalizedRewardsPeriodFact, RewardCertVoteFact, RewardDagBlockFact, RewardTransactionFact,
-    RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsApplyStatus, RewardsStatsConfig,
-    RewardsStatsPeriodRlp, RewardsStatsProcessPlan, RewardsStatsRuntime, RewardsStatsStatus,
-    RewardsStatsStorageApplyResult, RewardsValidatorDistribution,
-    append_rewards_stats_storage_writes_to_batch, apply_rewards_stats_storage_writes,
-    clear_rewards_stats_storage, decode_rewards_block_distributions,
-    rewards_stats_runtime_from_storage,
+    RewardsBlockDistribution, RewardsFrequencyRule, RewardsStatsConfig, RewardsStatsPeriodRlp,
+    RewardsStatsProcessPlan, RewardsStatsRuntime, RewardsStatsStatus, RewardsValidatorDistribution,
+    decode_rewards_block_distributions, rewards_stats_runtime_from_storage,
 };
 pub use rustaxa_types::{
     Account, DposValidatorMetadata, DposValidatorStake, DposValidatorVoteCount,
@@ -310,7 +310,8 @@ pub use rustaxa_types::{
 };
 pub use slashing::{
     DoubleVotingProofInput, DoubleVotingProofPlan, DoubleVotingProofPlanStatus,
-    SlashingProofPlanner, SlashingSubmitterFact,
+    DoubleVotingProofSubmissionPlan, DoubleVotingProofSubmissionStatus, SlashingProofPlanner,
+    SlashingProofService, SlashingSubmitterFact,
 };
 pub use transaction_manager::{
     DagTransactionSaveFact, DagTransactionSavePayload, DagTransactionSavePlan,

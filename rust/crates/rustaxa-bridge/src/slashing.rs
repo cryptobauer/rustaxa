@@ -9,10 +9,10 @@ use crate::ffi::rustaxa_ffi::{
     SlashingSubmitterFact,
 };
 use crate::ffi::BridgePbftService;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::slashing::{
-    DoubleVotingProofPlanStatus, SlashingProofPlanner,
+    DoubleVotingProofPlanStatus, SlashingProofService,
     SlashingSubmitterFact as ConsensusSubmitterFact,
 };
 
@@ -28,13 +28,13 @@ const SLASHING_PROOF_CACHE_DELETE_STEP: usize = 100;
 pub(crate) fn create_slashing_state(
     report_malicious_behaviour: bool,
     magnolia_activation_period: u64,
-) -> Result<std::sync::Mutex<SlashingProofPlanner>> {
-    Ok(std::sync::Mutex::new(SlashingProofPlanner::new(
+) -> Result<SlashingProofService> {
+    SlashingProofService::new(
         report_malicious_behaviour,
         magnolia_activation_period,
         SLASHING_PROOF_CACHE_MAX_SIZE,
         SLASHING_PROOF_CACHE_DELETE_STEP,
-    )?))
+    )
 }
 
 impl BridgePbftService {
@@ -59,8 +59,10 @@ impl BridgePbftService {
         input: DoubleVotingProofInput,
     ) -> Result<DoubleVotingProofPlan> {
         Ok(self
-            .slashing_state()?
-            .plan_double_voting_proof(input.into())
+            .slashing
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_SLASHING_UNAVAILABLE"))?
+            .plan_double_voting_proof(input.into())?
             .into())
     }
 
@@ -74,20 +76,14 @@ impl BridgePbftService {
         report: DoubleVotingProofSubmissionReport,
     ) -> Result<bool> {
         Ok(self
-            .slashing_state()?
+            .slashing
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_SLASHING_UNAVAILABLE"))?
             .report_double_voting_proof_submission(
                 H256::from(report.proof_hash),
                 report.transaction_inserted,
-            )
+            )?
             .submitted)
-    }
-
-    fn slashing_state(&self) -> Result<std::sync::MutexGuard<'_, SlashingProofPlanner>> {
-        self.slashing
-            .as_ref()
-            .ok_or_else(|| anyhow!("PBFT_SERVICE_SLASHING_UNAVAILABLE"))?
-            .lock()
-            .map_err(|_| anyhow!("slashing proof planner mutex poisoned"))
     }
 }
 
@@ -157,7 +153,6 @@ mod tests {
     use crate::storage::create_storage;
     use rustaxa_consensus::DoubleVotingProofPlanStatus;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn service(
@@ -272,24 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn service_constructor_propagates_disabled_slashing_config() {
-        let (service, path) = service(false, 0);
-
-        assert!(service.pbft_service_has_slashing());
-        let plan = service
-            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-            .unwrap();
-
-        assert_eq!(
-            plan.status,
-            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::Disabled)
-        );
-        assert!(!plan.should_submit);
-        drop(service);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
     fn chain_only_service_reports_slashing_unavailable() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -302,6 +279,21 @@ mod tests {
             .expect("chain-only service should initialize");
 
         assert!(!service.pbft_service_has_slashing());
+        let plan_error = service
+            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
+            .err()
+            .expect("chain-only planning must reject unavailable slashing");
+        assert_eq!(plan_error.to_string(), "PBFT_SERVICE_SLASHING_UNAVAILABLE");
+        let report_error = service
+            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
+                proof_hash: h256(3).0,
+                transaction_inserted: true,
+            })
+            .unwrap_err();
+        assert_eq!(
+            report_error.to_string(),
+            "PBFT_SERVICE_SLASHING_UNAVAILABLE"
+        );
 
         drop(service);
         drop(storage);
@@ -400,69 +392,6 @@ mod tests {
         });
         assert_eq!(plan.contract_address[19], 0xee);
         assert_eq!(plan.value, [0u8; 32]);
-        drop(service);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
-    fn bridge_report_marks_submission_once() {
-        let (service, path) = service(true, 0);
-        let plan = service
-            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-            .unwrap();
-
-        let submitted = service
-            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
-                proof_hash: plan.proof_hash,
-                transaction_inserted: true,
-            })
-            .unwrap();
-        assert!(submitted);
-        assert_eq!(
-            service
-                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-                .unwrap()
-                .status,
-            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::DuplicateProof),
-        );
-
-        let duplicate = service
-            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
-                proof_hash: plan.proof_hash,
-                transaction_inserted: true,
-            })
-            .unwrap();
-        assert!(!duplicate);
-        drop(service);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
-    fn service_owned_duplicate_cache_is_shared_across_facade_callers() {
-        let (service, path) = service(true, 0);
-        let service: Arc<BridgePbftService> = Arc::from(service);
-        let planning_facade = Arc::clone(&service);
-        let reporting_facade = Arc::clone(&service);
-
-        let plan = planning_facade
-            .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)]))
-            .unwrap();
-        assert!(reporting_facade
-            .slashing_report_double_voting_proof_submission(DoubleVotingProofSubmissionReport {
-                proof_hash: plan.proof_hash,
-                transaction_inserted: true,
-            },)
-            .unwrap());
-        assert_eq!(
-            planning_facade
-                .slashing_plan_double_voting_proof(proof_input(1, 2, vec![submitter(0, true, 1)],))
-                .unwrap()
-                .status,
-            double_voting_proof_plan_status_code(DoubleVotingProofPlanStatus::DuplicateProof),
-        );
-
-        drop(planning_facade);
-        drop(reporting_facade);
         drop(service);
         std::fs::remove_dir_all(path).unwrap();
     }

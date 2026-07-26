@@ -12,6 +12,7 @@ use anyhow::{Result, anyhow, ensure};
 use ethereum_types::{H160, H256, U256};
 use rlp::{Rlp, RlpStream};
 use std::collections::{HashSet, VecDeque};
+use std::sync::{Arc, Mutex};
 use tiny_keccak::{Hasher, Keccak};
 
 const DOUBLE_VOTING_PROOF_FUNCTION: &str = "commitDoubleVotingProof(bytes,bytes)";
@@ -359,6 +360,99 @@ pub struct SlashingSubmitterFact {
     pub wallet_index: usize,
     pub nonce: U256,
     pub balance: U256,
+}
+
+/// Concurrency-safe service boundary for slashing proof planning.
+///
+/// Purpose:
+/// - Own and serialize mutable slashing planning state for double-voting proofs.
+/// - Preserve Rust-native planner behavior while exposing a narrow, CXX-free API.
+///
+/// Inputs:
+/// - Runtime configuration captured at construction (`report_malicious_behaviour`,
+///   `magnolia_activation_period`, cache sizes).
+/// - Per-proof inputs (`DoubleVotingProofInput`) and executor outcomes.
+///
+/// Outputs:
+/// - Pure slashing plans for bridge-adjacent callers.
+/// - Submission reports that drive duplicate-cache mutation only after executor
+///   insertion success.
+///
+/// Invariants:
+/// - All mutable planner state lives in one shared `Mutex`, including duplicate
+///   cache order for sequential report calls.
+/// - Locking is strictly required for each public operation and lock poison
+///   is surfaced as an actionable `Err`.
+#[derive(Clone)]
+pub struct SlashingProofService {
+    planner: Arc<Mutex<SlashingProofPlanner>>,
+}
+
+impl SlashingProofService {
+    /// Builds a shared service from planner configuration.
+    ///
+    /// Inputs:
+    /// - `report_malicious_behaviour`: toggles whether any plan can be produced.
+    /// - `magnolia_activation_period`: first eligible Vote-A period for planning.
+    /// - `cache_max_size`: bounded proof-hash duplicate cache capacity.
+    /// - `cache_delete_step`: number of oldest hashes to evict when over capacity.
+    ///
+    /// Outputs:
+    /// - A cloneable service handle whose clones share planner state.
+    ///
+    /// Error behavior:
+    /// - Invalid planner bounds are returned by `SlashingProofPlanner::new`.
+    pub fn new(
+        report_malicious_behaviour: bool,
+        magnolia_activation_period: u64,
+        cache_max_size: usize,
+        cache_delete_step: usize,
+    ) -> Result<Self> {
+        Ok(Self {
+            planner: Arc::new(Mutex::new(SlashingProofPlanner::new(
+                report_malicious_behaviour,
+                magnolia_activation_period,
+                cache_max_size,
+                cache_delete_step,
+            )?)),
+        })
+    }
+
+    /// Returns a new double-voting plan under service-level planner locking.
+    ///
+    /// The lock is acquired once per call and released immediately after planning.
+    /// Lock poisoning returns an error instead of panicking so callers can decide
+    /// on caller-visible recovery behavior.
+    pub fn plan_double_voting_proof(
+        &self,
+        input: DoubleVotingProofInput,
+    ) -> Result<DoubleVotingProofPlan> {
+        let planner = self.planner.lock().map_err(|_| {
+            anyhow!("SLASHING_PROOF_SERVICE_PLAN_DOUBLE_VOTING_PROOF_LOCK_POISONED")
+        })?;
+        Ok(planner.plan_double_voting_proof(input))
+    }
+
+    /// Reports executor insertion and updates shared duplicate-cache state.
+    ///
+    /// `transaction_inserted` must be true only when the upstream executor
+    /// accepted transaction insertion. On false, the proof hash is left in cache
+    /// state unchanged and remains eligible for retry attempts.
+    pub fn report_double_voting_proof_submission(
+        &self,
+        proof_hash: H256,
+        transaction_inserted: bool,
+    ) -> Result<DoubleVotingProofSubmissionPlan> {
+        Ok(self
+            .planner
+            .lock()
+            .map_err(|_| {
+                anyhow!(
+                    "SLASHING_PROOF_SERVICE_REPORT_DOUBLE_VOTING_PROOF_SUBMISSION_LOCK_POISONED"
+                )
+            })?
+            .report_double_voting_proof_submission(proof_hash, transaction_inserted))
+    }
 }
 
 /// Facts from two candidate PBFT votes needed to plan a slashing proof.
@@ -1465,5 +1559,100 @@ mod tests {
             plan.call_data.len(),
             4 + 2 * WORD_SIZE + (WORD_SIZE + WORD_SIZE + WORD_SIZE) * 2
         );
+    }
+
+    #[test]
+    fn service_caches_duplicates_across_sequential_clones() {
+        let service = SlashingProofService::new(true, 0, 1000, 100).unwrap();
+        let service_a = service.clone();
+        let service_b = service.clone();
+
+        let first = service_a
+            .plan_double_voting_proof(input(0x11, 0x22))
+            .unwrap();
+        assert!(first.should_submit);
+        assert_eq!(first.status, DoubleVotingProofPlanStatus::Planned);
+
+        let first_report = service_b
+            .report_double_voting_proof_submission(first.proof_hash, true)
+            .unwrap();
+        assert_eq!(
+            first_report.status,
+            DoubleVotingProofSubmissionStatus::Accepted
+        );
+        assert!(first_report.submitted);
+
+        let duplicate_report = service_a
+            .report_double_voting_proof_submission(first.proof_hash, true)
+            .unwrap();
+        assert_eq!(
+            duplicate_report.status,
+            DoubleVotingProofSubmissionStatus::DuplicateProof
+        );
+        assert!(!duplicate_report.submitted);
+        assert!(!duplicate_report.mark_inserted);
+
+        let duplicate = service.plan_double_voting_proof(input(0x11, 0x22)).unwrap();
+        assert_eq!(
+            duplicate.status,
+            DoubleVotingProofPlanStatus::DuplicateProof
+        );
+    }
+
+    #[test]
+    fn service_constructor_propagates_disabled_magnolia_and_cache_config() {
+        let disabled = SlashingProofService::new(false, 99, 2, 1).unwrap();
+        let disabled_plan = disabled
+            .plan_double_voting_proof(input(0x11, 0x22))
+            .unwrap();
+        assert_eq!(disabled_plan.status, DoubleVotingProofPlanStatus::Disabled);
+
+        let bounded = SlashingProofService::new(true, 10, 2, 1).unwrap();
+        let mut before_activation = input(0x11, 0x22);
+        before_activation.vote_a_period = 9;
+        before_activation.vote_b_period = 9;
+        assert_eq!(
+            bounded
+                .plan_double_voting_proof(before_activation)
+                .unwrap()
+                .status,
+            DoubleVotingProofPlanStatus::BeforeMagnoliaActivation
+        );
+
+        let mut a = input(0x11, 0x22);
+        a.vote_a_period = 10;
+        a.vote_b_period = 10;
+        let mut b = input(0x33, 0x44);
+        b.vote_a_period = 11;
+        b.vote_b_period = 11;
+        let mut c = input(0x55, 0x66);
+        c.vote_a_period = 12;
+        c.vote_b_period = 12;
+
+        let a_plan = bounded.plan_double_voting_proof(a).unwrap();
+        let b_plan = bounded.plan_double_voting_proof(b).unwrap();
+        let c_plan = bounded.plan_double_voting_proof(c).unwrap();
+
+        assert!(
+            bounded
+                .report_double_voting_proof_submission(a_plan.proof_hash, true)
+                .unwrap()
+                .submitted
+        );
+        assert!(
+            bounded
+                .report_double_voting_proof_submission(b_plan.proof_hash, true)
+                .unwrap()
+                .submitted
+        );
+        assert!(
+            bounded
+                .report_double_voting_proof_submission(c_plan.proof_hash, true)
+                .unwrap()
+                .submitted
+        );
+
+        let replay = bounded.plan_double_voting_proof(input(0x11, 0x22)).unwrap();
+        assert_eq!(replay.status, DoubleVotingProofPlanStatus::Planned);
     }
 }

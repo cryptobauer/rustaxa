@@ -13,7 +13,6 @@ use crate::pillar_chain::*;
 use crate::pillar_votes::*;
 use crate::proposed_blocks::*;
 use crate::query::*;
-use crate::rewards_stats::*;
 use crate::storage::*;
 use crate::transaction::*;
 use crate::transaction_manager::*;
@@ -21,9 +20,8 @@ use crate::vdf::*;
 use ethereum_types::H256;
 use rustaxa_consensus::dag::DagManagerState;
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
-use rustaxa_consensus::pbft_chain::PbftChain;
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
-use rustaxa_consensus::slashing::SlashingProofPlanner;
+use rustaxa_consensus::slashing::SlashingProofService;
 use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
 };
@@ -32,14 +30,13 @@ use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::ConsensusQueryApi;
 use rustaxa_consensus::FinalChain;
-use rustaxa_consensus::PbftVoteAdmissionRuntime;
+use rustaxa_consensus::PbftServiceReadiness;
+use rustaxa_consensus::PbftVerifiedVotesService;
 use rustaxa_consensus::PillarCurrentAnchor;
 use rustaxa_consensus::PillarVotes;
-use rustaxa_consensus::RewardsStatsRuntime;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -168,22 +165,6 @@ pub(crate) struct DagRuntimeState {
     pub pending_add_block: Option<crate::dag::DagAddBlockSession>,
 }
 
-/// PBFT chain runtime wrapper. Pure state-only instances are used by unit tests
-/// and deterministic head transitions; storage-backed instances own the shared
-/// Rust storage handle used for PBFT block lookup/materialization.
-pub(crate) struct BridgePbftChainState {
-    pub state: PbftChain,
-    pub initialized_default: bool,
-}
-
-/// Rewards-stat runtime wrapper coupling deterministic in-memory state with
-/// the shared Rust storage handle used for cache reload, write, and clear
-/// operations.
-pub struct BridgeRewardsStatsRuntime {
-    pub state: RewardsStatsRuntime,
-    pub storage: Arc<Storage>,
-}
-
 /// Pillar-chain storage wrapper used by the C++ manager shim.
 ///
 /// The wrapper owns a cloned Rust storage handle so production pillar-chain
@@ -231,7 +212,7 @@ pub(crate) struct BridgePbftManagerRuntimeState {
     /// preserve it only while it still matches the shared storage generation;
     /// process restart initializes it to zero and requires a new reset commit.
     pub finalization_reward_votes_reset_generation: u64,
-    pub chain: Arc<RwLock<BridgePbftChainState>>,
+    pub chain: rustaxa_consensus::pbft_chain::PbftChainService,
 }
 
 /// Application-owned PBFT service shared by the C++ manager and chain facades.
@@ -249,18 +230,23 @@ pub(crate) struct BridgePbftManagerRuntimeState {
 /// is a bridge-wiring bug and returns an explicit error.
 pub struct BridgePbftService {
     pub(crate) manager: Mutex<Option<BridgePbftManagerRuntimeState>>,
-    pub(crate) chain: Arc<RwLock<BridgePbftChainState>>,
-    pub(crate) proposed_blocks: RwLock<rustaxa_consensus::proposed_blocks::ProposedBlocks>,
-    pub(crate) verified_votes: Mutex<Option<PbftVoteAdmissionRuntime>>,
-    pub(crate) slashing: Option<Mutex<SlashingProofPlanner>>,
+    pub(crate) chain: rustaxa_consensus::pbft_chain::PbftChainService,
+    pub(crate) proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService,
+    pub(crate) verified_votes: Option<PbftVerifiedVotesService>,
+    pub(crate) slashing: Option<SlashingProofService>,
+    /// Test-only compatibility handle for legacy bridge fixtures.
+    ///
+    /// Production application services source storage from their native
+    /// manager, chain, proposed-block, verified-vote, and pillar owners.
+    #[cfg(test)]
     pub(crate) storage: Option<Arc<Storage>>,
-    pub(crate) bootstrap_complete: AtomicBool,
+    pub(crate) readiness: PbftServiceReadiness,
     /// Service-owned pillar state. The pillar mutex is never acquired while a
     /// PBFT manager guard is held and is released before returning any plan to
     /// C++ for FinalChain, network, or executor effects.
     pub(crate) pillar: Option<Mutex<PillarChainState>>,
     /// Pillar replay readiness is independent from PBFT manager bootstrap.
-    pub(crate) pillar_ready: AtomicBool,
+    pub(crate) pillar_readiness: PbftServiceReadiness,
 }
 
 pub(crate) struct BridgePbftManagerGuard<'a>(MutexGuard<'a, Option<BridgePbftManagerRuntimeState>>);
@@ -288,15 +274,11 @@ impl BridgePbftService {
         BridgePbftManagerGuard(self.manager.lock().expect("PBFT manager lock poisoned"))
     }
 
-    pub(crate) fn accepts_live_commands(&self) -> bool {
-        self.bootstrap_complete.load(Ordering::Acquire)
-    }
-
     pub(crate) fn pillar_state(
         &self,
         require_ready: bool,
     ) -> anyhow::Result<MutexGuard<'_, PillarChainState>> {
-        if require_ready && !self.pillar_ready.load(Ordering::Acquire) {
+        if require_ready && !self.pillar_readiness.is_ready() {
             anyhow::bail!("PBFT_SERVICE_PILLAR_UNAVAILABLE");
         }
         self.pillar
@@ -575,36 +557,10 @@ pub mod rustaxa_ffi {
         data: Vec<u8>,
     }
 
-    /// Generic 32-byte hash fact used by rewards-stat bridge payloads.
-    struct RewardsHash {
-        hash: [u8; 32],
-    }
-
-    /// Hardfork and committee configuration for Rust rewards-stat planning.
-    struct RewardsStatsConfig {
-        committee_size: u32,
-        magnolia_period: u64,
-        aspen_part_one_period: u64,
-    }
-
     /// Rewards distribution frequency rule active from `from_period` onward.
     struct RewardsFrequencyRule {
         from_period: u64,
         frequency: u32,
-    }
-
-    /// Finalized transaction fee fact for one PBFT period.
-    struct RewardsTransactionFact {
-        hash: [u8; 32],
-        gas_price_be: Vec<u8>,
-        gas_used: u64,
-    }
-
-    /// Finalized DAG block fact for rewards-stat planning.
-    struct RewardsDagBlockFact {
-        author: [u8; 20],
-        difficulty: u16,
-        transaction_hashes: Vec<RewardsHash>,
     }
 
     /// Previous-block cert-vote fact for rewards-stat planning.
@@ -612,41 +568,6 @@ pub mod rustaxa_ffi {
         voter: [u8; 20],
         weight: u64,
         period: u64,
-    }
-
-    /// C++-originated fact bundle for one finalized PBFT period.
-    struct RewardsStatsProcessFact {
-        period: u64,
-        block_author: [u8; 20],
-        blocks_per_year: u32,
-        dpos_eligible_total_vote_count: u64,
-        transactions: Vec<RewardsTransactionFact>,
-        dag_blocks: Vec<RewardsDagBlockFact>,
-        cert_votes: Vec<RewardsCertVoteFact>,
-    }
-
-    /// Result from Rust rewards-stat processing.
-    ///
-    /// Status values:
-    /// - `0` - applied
-    /// - `1` - rejected
-    struct RewardsStatsProcessResult {
-        status: u8,
-        error_code: String,
-        current_period: u64,
-        cache_current_period: bool,
-        clear_cached_stats: bool,
-        current_block_stats_rlp: Vec<u8>,
-        distribution_stats: Vec<PeriodRlp>,
-    }
-
-    /// Result from appending rewards-stat cache writes to a Rust storage batch.
-    struct RewardsStatsApplyResult {
-        status: u8,
-        current_period: u64,
-        wrote_current_period: bool,
-        cleared_cached_stats: bool,
-        error_code: String,
     }
 
     struct TxRlp {
@@ -5093,36 +5014,6 @@ pub mod rustaxa_ffi {
             identities: Vec<ProposedBlockIdentity>,
         ) -> Vec<ProposedBlockLookup>;
 
-        // Consensus rewards stats
-
-        type BridgeRewardsStatsRuntime;
-
-        pub fn create_rewards_stats_runtime(
-            storage: &BridgeStorage,
-            config: RewardsStatsConfig,
-            frequency_rules: Vec<RewardsFrequencyRule>,
-            last_block_number: u64,
-        ) -> Result<Box<BridgeRewardsStatsRuntime>>;
-        pub fn process_finalized_period_rewards_stats(
-            self: &mut BridgeRewardsStatsRuntime,
-            fact: RewardsStatsProcessFact,
-        ) -> RewardsStatsProcessResult;
-        pub fn rewards_stats_runtime_clear_committed(
-            self: &mut BridgeRewardsStatsRuntime,
-            current_period: u64,
-        );
-        pub fn rewards_stats_runtime_cached_stats(
-            self: &BridgeRewardsStatsRuntime,
-        ) -> Vec<PeriodRlp>;
-        pub fn rewards_stats_append_storage_writes_to_batch(
-            batch: &mut BridgeStorageBatch,
-            plan: &RewardsStatsProcessResult,
-        ) -> Result<RewardsStatsApplyResult>;
-        pub fn rewards_stats_runtime_clear_storage_and_state(
-            self: &mut BridgeRewardsStatsRuntime,
-            current_period: u64,
-            sync: bool,
-        ) -> Result<RewardsStatsApplyResult>;
         // Consensus slashing proof planner owned by the PBFT service
 
         pub fn pbft_service_has_slashing(self: &BridgePbftService) -> bool;

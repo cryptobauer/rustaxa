@@ -114,9 +114,7 @@ pub fn create_pillar_capable_pbft_service_for_compatibility(
 ) -> Result<Box<BridgePbftService>> {
     let mut service = crate::pbft_chain::create_pbft_chain_service_from_storage(storage)?;
     service.pillar = Some(std::sync::Mutex::new(restore_pillar_chain_state(storage)?));
-    service
-        .pillar_ready
-        .store(true, std::sync::atomic::Ordering::Release);
+    service.pillar_readiness.mark_ready();
     Ok(service)
 }
 
@@ -455,13 +453,12 @@ impl BridgePbftService {
     }
 
     pub fn pbft_service_pillar_ready(&self) -> bool {
-        self.pillar.is_some() && self.pillar_ready.load(std::sync::atomic::Ordering::Acquire)
+        self.pillar.is_some() && self.pillar_readiness.is_ready()
     }
 
     pub fn pbft_service_complete_pillar_bootstrap(&self) -> Result<()> {
         drop(self.pillar_state(false)?);
-        self.pillar_ready
-            .store(true, std::sync::atomic::Ordering::Release);
+        self.pillar_readiness.mark_ready();
         Ok(())
     }
 
@@ -850,7 +847,7 @@ mod tests {
         assert!(service.pbft_service_has_pillar());
         assert!(service.pbft_service_pillar_ready());
         assert!(service.manager.lock().unwrap().is_none());
-        assert!(service.verified_votes.lock().unwrap().is_none());
+        assert!(service.verified_votes.is_none());
         assert_eq!(
             service.pbft_service_pillar_consensus_threshold(10).unwrap(),
             6

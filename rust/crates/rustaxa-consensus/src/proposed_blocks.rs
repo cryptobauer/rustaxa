@@ -1,4 +1,4 @@
-//! Proposed PBFT block index for the Rust rewrite shim.
+//! Native proposed PBFT block index and application runtime.
 //!
 //! This module owns the deterministic period/hash cache, proposal payload bytes,
 //! and validation flags used by PBFT proposal handling. Legacy C++ behavior is
@@ -14,6 +14,7 @@ use rustaxa_types::codec::rlp::pbft::SignedPbftBlockRlp;
 use rustaxa_types::pbft::PbftBlockLink;
 use std::collections::{BTreeMap, btree_map::Entry};
 use std::convert::TryFrom;
+use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProposedBlockState {
@@ -259,6 +260,178 @@ impl ProposedBlocks {
     }
 }
 
+/// Application-owned proposed-block runtime.
+///
+/// This owner binds the deterministic proposed-block index, its native storage
+/// handle, and the sibling read/write lock used by PBFT proposal and vote
+/// selection. It is independent from CXX and may be constructed and tested by
+/// native Rust callers.
+///
+/// Persistence-changing operations commit storage before publishing the
+/// corresponding in-memory mutation. Callers composing proposed blocks with
+/// other PBFT domains may borrow the lock through [`Self::read`] and
+/// [`Self::write`]; the guard never exposes or depends on bridge types.
+pub struct ProposedBlocksService {
+    storage: Option<Arc<Storage>>,
+    blocks: RwLock<ProposedBlocks>,
+}
+
+impl ProposedBlocksService {
+    /// Restores a storage-backed application runtime before publication.
+    ///
+    /// Corrupt rows, iterator failures, and key/hash mismatches fail
+    /// construction without publishing a partially restored runtime.
+    pub fn restore(storage: Arc<Storage>) -> Result<Self> {
+        let mut blocks = ProposedBlocks::new();
+        for entry in restore_proposed_blocks_from_storage(storage.as_ref())? {
+            blocks.push(
+                entry.period,
+                entry.block_hash,
+                entry.pivot_hash,
+                entry.block_rlp,
+            );
+        }
+        Ok(Self {
+            storage: Some(storage),
+            blocks: RwLock::new(blocks),
+        })
+    }
+
+    /// Creates an application runtime from explicit native compatibility parts.
+    ///
+    /// This temporary constructor supports bridge fixtures that compose PBFT
+    /// sibling state before the complete PBFT application owner moves native.
+    /// Storage-changing methods return `PBFT_SERVICE_STORAGE_UNAVAILABLE` when
+    /// `storage` is absent.
+    pub fn from_parts(storage: Option<Arc<Storage>>, blocks: ProposedBlocks) -> Self {
+        Self {
+            storage,
+            blocks: RwLock::new(blocks),
+        }
+    }
+
+    /// Borrows the proposed-block index for a composed PBFT operation.
+    ///
+    /// This temporary escape hatch supports leader selection and combined
+    /// period cleanup until those cross-domain operations move into the native
+    /// PBFT application owner under CRW-12. It must not be used for standalone
+    /// persistence mutation.
+    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, ProposedBlocks>> {
+        self.blocks.read()
+    }
+
+    /// Mutably borrows the proposed-block index for a composed PBFT operation.
+    ///
+    /// This has the same temporary cross-domain restriction as [`Self::read`].
+    pub fn write(&self) -> LockResult<RwLockWriteGuard<'_, ProposedBlocks>> {
+        self.blocks.write()
+    }
+
+    /// Persists and then publishes one proposed PBFT block.
+    ///
+    /// Duplicate period/hash insertions still overwrite the durable row before
+    /// returning `false`, preserving legacy ordering.
+    pub fn push_with_storage(
+        &self,
+        period: u64,
+        block_hash: H256,
+        pivot_hash: H256,
+        block_rlp: Vec<u8>,
+    ) -> Result<bool> {
+        let storage = self
+            .storage
+            .as_ref()
+            .context("PBFT_SERVICE_STORAGE_UNAVAILABLE")?;
+        let mut blocks = self
+            .blocks
+            .write()
+            .map_err(|_| anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?;
+        let entry = save_proposed_block_storage(
+            storage.as_ref(),
+            period,
+            block_hash,
+            pivot_hash,
+            block_rlp.as_slice(),
+        )?;
+        Ok(blocks.push(
+            entry.period,
+            entry.block_hash,
+            entry.pivot_hash,
+            entry.block_rlp,
+        ))
+    }
+
+    /// Marks one existing proposal valid in the process-local validation cache.
+    pub fn mark_valid(&self, period: u64, block_hash: H256) -> Result<()> {
+        self.blocks
+            .write()
+            .map_err(|_| anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?
+            .mark_valid(period, block_hash)
+    }
+
+    /// Returns an owned proposal entry, including canonical block bytes.
+    pub fn get(&self, period: u64, block_hash: H256) -> Option<ProposedBlockEntry> {
+        self.blocks
+            .read()
+            .expect("proposed blocks lock poisoned")
+            .get(period, block_hash)
+    }
+
+    /// Returns compact proposal metadata without copying canonical block bytes.
+    pub fn metadata(&self, period: u64, block_hash: H256) -> Option<ProposedBlockMetadata> {
+        self.blocks
+            .read()
+            .expect("proposed blocks lock poisoned")
+            .metadata(period, block_hash)
+    }
+
+    /// Reports whether the application runtime contains `period`/`block_hash`.
+    pub fn contains(&self, period: u64, block_hash: H256) -> bool {
+        self.blocks
+            .read()
+            .expect("proposed blocks lock poisoned")
+            .contains(period, block_hash)
+    }
+
+    /// Deletes stale durable rows, then removes the same periods from memory.
+    pub fn cleanup_with_storage(&self, period: u64) -> Result<Vec<ProposedBlockPeriodHashes>> {
+        let mut blocks = self
+            .blocks
+            .write()
+            .map_err(|_| anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?;
+        let removed = blocks.cleanup_candidates(period);
+        if removed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let storage = self
+            .storage
+            .as_ref()
+            .context("PBFT_SERVICE_STORAGE_UNAVAILABLE")?;
+        cleanup_proposed_blocks_storage(storage.as_ref(), &removed)
+            .context("PROPOSED_BLOCKS_CLEANUP_STORAGE")?;
+        for period_hashes in &removed {
+            blocks.remove_period(period_hashes.period);
+        }
+        Ok(removed)
+    }
+
+    /// Returns every live proposal as an owned deterministic snapshot.
+    pub fn snapshot_entries(&self) -> Vec<ProposedBlockEntry> {
+        self.blocks
+            .read()
+            .expect("proposed blocks lock poisoned")
+            .snapshot_entries()
+    }
+
+    /// Returns all live proposals grouped by ascending period.
+    pub fn snapshot(&self) -> Vec<ProposedBlockPeriod> {
+        self.blocks
+            .read()
+            .expect("proposed blocks lock poisoned")
+            .snapshot()
+    }
+}
+
 /// Restores proposed PBFT block facts from native Rust storage.
 ///
 /// Inputs:
@@ -422,6 +595,7 @@ pub fn append_proposed_blocks_cleanup_to_batch(
 mod tests {
     use super::*;
     use rustaxa_storage::{Config, Storage};
+    use std::sync::Arc;
 
     fn hash(v: u64) -> H256 {
         H256::from_low_u64_be(v)
@@ -719,5 +893,120 @@ mod tests {
             Some(new_rlp)
         );
         cleanup_proposed_blocks_storage(&storage, &[]).unwrap();
+    }
+
+    #[test]
+    fn service_restores_and_publishes_storage_backed_state_without_cxx() {
+        let storage = Arc::new(temp_storage(
+            "rustaxa_consensus_proposed_blocks_service_restore",
+        ));
+        let (restored_rlp, restored_link) = proposed_link_and_hash(8, 51_001);
+        save_proposed_block_storage(
+            storage.as_ref(),
+            restored_link.period,
+            restored_link.block_hash,
+            restored_link.pivot_dag_block_hash,
+            &restored_rlp,
+        )
+        .unwrap();
+
+        let service = ProposedBlocksService::restore(storage.clone()).unwrap();
+        assert!(service.contains(restored_link.period, restored_link.block_hash));
+
+        let (live_rlp, live_link) = proposed_link_and_hash(9, 51_002);
+        assert!(
+            service
+                .push_with_storage(
+                    live_link.period,
+                    live_link.block_hash,
+                    live_link.pivot_dag_block_hash,
+                    live_rlp.clone(),
+                )
+                .unwrap()
+        );
+        assert!(
+            !service
+                .push_with_storage(
+                    live_link.period,
+                    live_link.block_hash,
+                    live_link.pivot_dag_block_hash,
+                    live_rlp.clone(),
+                )
+                .unwrap()
+        );
+        service
+            .mark_valid(live_link.period, live_link.block_hash)
+            .unwrap();
+
+        let entry = service.get(live_link.period, live_link.block_hash).unwrap();
+        assert_eq!(entry.block_rlp, live_rlp);
+        assert!(entry.is_valid);
+        assert_eq!(service.snapshot_entries().len(), 2);
+    }
+
+    #[test]
+    fn service_rejects_invalid_input_and_cleans_storage_before_memory() {
+        let storage = Arc::new(temp_storage(
+            "rustaxa_consensus_proposed_blocks_service_cleanup",
+        ));
+        let service = ProposedBlocksService::restore(storage.clone()).unwrap();
+        let (old_rlp, old_link) = proposed_link_and_hash(2, 52_001);
+        let (kept_rlp, kept_link) = proposed_link_and_hash(4, 52_002);
+
+        let error = service
+            .push_with_storage(
+                old_link.period,
+                old_link.block_hash,
+                hash(999),
+                old_rlp.clone(),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("PROPOSED_BLOCKS_SAVE_PIVOT_MISMATCH")
+        );
+        assert!(!service.contains(old_link.period, old_link.block_hash));
+        assert!(storage.pbft().proposed_rlp().unwrap().is_empty());
+
+        service
+            .push_with_storage(
+                old_link.period,
+                old_link.block_hash,
+                old_link.pivot_dag_block_hash,
+                old_rlp,
+            )
+            .unwrap();
+        service
+            .push_with_storage(
+                kept_link.period,
+                kept_link.block_hash,
+                kept_link.pivot_dag_block_hash,
+                kept_rlp,
+            )
+            .unwrap();
+
+        let removed = service.cleanup_with_storage(4).unwrap();
+        assert_eq!(
+            removed,
+            vec![ProposedBlockPeriodHashes {
+                period: old_link.period,
+                block_hashes: vec![old_link.block_hash],
+            }]
+        );
+        assert!(!service.contains(old_link.period, old_link.block_hash));
+        assert!(service.contains(kept_link.period, kept_link.block_hash));
+        assert!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, old_link.block_hash.as_bytes())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            storage
+                .get_raw(Column::ProposedPbftBlocks, kept_link.block_hash.as_bytes())
+                .unwrap()
+                .is_some()
+        );
     }
 }

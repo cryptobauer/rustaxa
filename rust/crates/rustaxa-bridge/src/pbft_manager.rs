@@ -74,9 +74,7 @@ use crate::ffi::rustaxa_ffi::{
     PeriodDataQueueTransactionPayload as FfiPeriodDataQueueTransactionPayload,
     TransactionManagerFinalizedStatusCommandReport as FfiTransactionManagerFinalizedStatusCommandReport,
 };
-use crate::ffi::{
-    BridgePbftChainState, BridgePbftManagerRuntimeState, BridgePbftService, BridgeStorage,
-};
+use crate::ffi::{BridgePbftManagerRuntimeState, BridgePbftService, BridgeStorage};
 
 /// Exact sortition preview retained across primary storage and live commit.
 ///
@@ -95,9 +93,9 @@ pub(crate) struct PbftFinalizationSortitionPreparation {
 }
 use anyhow::{anyhow, Context};
 use rustaxa_consensus::dag::dag_block_period_from_storage;
-use rustaxa_consensus::pbft_chain::{
-    pbft_block_exists_in_storage, restore_pbft_chain_from_storage, PbftChain,
-};
+#[cfg(test)]
+use rustaxa_consensus::pbft_chain::PbftChain;
+use rustaxa_consensus::pbft_chain::{pbft_block_exists_in_storage, PbftChainService};
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
@@ -174,9 +172,9 @@ use rustaxa_consensus::pbft_sync::{
 };
 use rustaxa_consensus::period_data_queue::PeriodDataQueue;
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
-use rustaxa_consensus::proposed_blocks::{restore_proposed_blocks_from_storage, ProposedBlocks};
+use rustaxa_consensus::proposed_blocks::ProposedBlocksService;
 use rustaxa_consensus::sortition::SortitionParamsChange;
-use rustaxa_consensus::PbftVoteAdmissionRuntime;
+use rustaxa_consensus::PbftVerifiedVotesService;
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
     for PbftFinalizationStorageWriteStage
@@ -493,21 +491,11 @@ pub fn create_pbft_service_from_storage(
         config.report_malicious_behaviour,
         config.magnolia_activation_period,
     )?;
-    let restored_chain = restore_pbft_chain_from_storage(storage.0.as_ref())?;
-    let restored_proposed_blocks = restore_proposed_blocks_from_storage(storage.0.as_ref())?;
-    let restored_verified_votes =
-        PbftVoteAdmissionRuntime::restore_from_storage(storage.0.as_ref())?;
-    let mut proposed_blocks = ProposedBlocks::new();
-    for entry in restored_proposed_blocks {
-        proposed_blocks.push(
-            entry.period,
-            entry.block_hash,
-            entry.pivot_hash,
-            entry.block_rlp,
-        );
-    }
-    let current_period = restored_chain.head.size.saturating_add(1);
-    let cacti_active_at_chain_size = restored_chain.head.size >= config.cacti_block;
+    let chain = PbftChainService::restore(storage.0.clone())?;
+    let restored_verified_votes = PbftVerifiedVotesService::restore(storage.0.clone())?;
+    let proposed_blocks = ProposedBlocksService::restore(storage.0.clone())?;
+    let current_period = chain.head().size.saturating_add(1);
+    let cacti_active_at_chain_size = chain.head().size >= config.cacti_block;
     let runtime = create_domain_pbft_manager_runtime_from_storage(
         &storage.0,
         PbftManagerStorageStartupFact {
@@ -527,10 +515,6 @@ pub fn create_pbft_service_from_storage(
         },
     )?;
 
-    let chain = std::sync::Arc::new(std::sync::RwLock::new(BridgePbftChainState {
-        state: PbftChain::new(restored_chain.head)?,
-        initialized_default: restored_chain.initialized_default,
-    }));
     Ok(Box::new(BridgePbftService {
         manager: std::sync::Mutex::new(Some(BridgePbftManagerRuntimeState {
             state: runtime,
@@ -548,15 +532,16 @@ pub fn create_pbft_service_from_storage(
             chain: chain.clone(),
         })),
         chain,
-        proposed_blocks: std::sync::RwLock::new(proposed_blocks),
-        verified_votes: std::sync::Mutex::new(Some(restored_verified_votes)),
+        proposed_blocks,
+        verified_votes: Some(restored_verified_votes),
         slashing: Some(slashing),
+        #[cfg(test)]
         storage: Some(storage.0.clone()),
-        bootstrap_complete: std::sync::atomic::AtomicBool::new(false),
+        readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
         pillar: Some(std::sync::Mutex::new(
             crate::pillar_chain::restore_pillar_chain_state(storage)?,
         )),
-        pillar_ready: std::sync::atomic::AtomicBool::new(false),
+        pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
     }))
 }
 
@@ -575,9 +560,7 @@ pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> anyhow::R
     {
         return Err(anyhow!("PBFT_SERVICE_CHAIN_ONLY"));
     }
-    service
-        .bootstrap_complete
-        .store(true, std::sync::atomic::Ordering::Release);
+    service.readiness.mark_ready();
     Ok(())
 }
 
@@ -775,7 +758,7 @@ fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQu
 ///   pass. The live `PeriodData` sidecars remain C++-owned for now, but the
 ///   planner session no longer requires a standalone CXX bridge handle.
 pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService) {
-    if !runtime.accepts_live_commands() {
+    if !runtime.readiness.is_ready() {
         return;
     }
     let mut runtime = runtime.manager_state();
@@ -801,7 +784,7 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
     queue_size: usize,
     current_period: u64,
 ) -> FfiPbftSyncQueueDrainStep {
-    if !runtime.accepts_live_commands() {
+    if !runtime.readiness.is_ready() {
         return queue_drain_bootstrap_incomplete_step();
     }
     let mut runtime = runtime.manager_state();
@@ -829,7 +812,7 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
     runtime: &BridgePbftService,
     report: FfiPbftSyncQueueDrainReport,
 ) -> FfiPbftSyncQueueDrainReportResult {
-    if !runtime.accepts_live_commands() {
+    if !runtime.readiness.is_ready() {
         return queue_drain_bootstrap_incomplete_report();
     }
     let mut runtime = runtime.manager_state();
@@ -1680,7 +1663,7 @@ pub fn pbft_manager_runtime_begin_session(
     runtime: &BridgePbftService,
     fact: FfiPbftManagerRuntimeTickFact,
 ) {
-    if !runtime.accepts_live_commands() {
+    if !runtime.readiness.is_ready() {
         return;
     }
     let mut runtime = runtime.manager_state();
@@ -1869,7 +1852,7 @@ pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
     fact: FfiPbftManagerProposalInitialFact,
     final_chain_hash: Option<[u8; 32]>,
 ) {
-    if !runtime.accepts_live_commands() {
+    if !runtime.readiness.is_ready() {
         return;
     }
     let mut runtime = runtime.manager_state();
@@ -1882,7 +1865,7 @@ pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
 pub fn pbft_manager_proposal_session_next(
     runtime: &BridgePbftService,
 ) -> FfiPbftManagerProposalSessionStep {
-    if !runtime.accepts_live_commands() {
+    if !runtime.readiness.is_ready() {
         return proposal_session_not_started_step();
     }
     let mut runtime = runtime.manager_state();

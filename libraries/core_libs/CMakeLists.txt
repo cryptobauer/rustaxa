@@ -62,7 +62,8 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
         message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE")
     endif()
 
-    # The Rust-mode FinalChain and rewards-stat overlays are fully standalone.
+    # The Rust-mode FinalChain overlay is fully standalone. Rewards-stat
+    # planning is owned by native FinalChain and has no Rust-mode C++ facade.
     # Keep the untouched legacy implementations only in pure C++ reference builds.
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/final_chain/final_chain\\.cpp$")
     list(FILTER CONSENSUS_SOURCES EXCLUDE REGEX "/consensus/src/rewards/rewards_stats\\.cpp$")
@@ -239,12 +240,9 @@ if(RUSTAXA_ENABLE_FINAL_CHAIN)
         message(FATAL_ERROR "RUSTAXA_ENABLE_FINAL_CHAIN requires RUSTAXA_ENABLE_STORAGE")
     endif()
 
-    # In Rust final-chain mode, inject the standalone FinalChain and
-    # rewards-stat shim facades.
+    # In Rust final-chain mode, inject the standalone FinalChain facade.
     target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/include)
     target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/final_chain_shim/src/final_chain_shim.cpp)
-    target_include_directories(core_libs BEFORE PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/rewards_stats_shim/include)
-    target_sources(core_libs PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/consensus/shims/rewards_stats_shim/src/rewards_stats_shim.cpp)
 endif()
 
 if(RUSTAXA_ENABLE_PBFT_CHAIN)

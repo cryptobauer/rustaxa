@@ -62,17 +62,14 @@ impl BridgePbftService {
             ));
         }
 
-        let mut verified_votes = self
-            .verified_votes
-            .lock()
-            .expect("verified votes lock poisoned");
-        let Some(runtime) = verified_votes.as_mut() else {
+        let Some(verified_votes) = self.verified_votes.as_ref() else {
             return Ok(rejected(
                 finalized_chain_size,
                 new_period,
                 "PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE",
             ));
         };
+        let mut runtime = verified_votes.lock().expect("verified votes lock poisoned");
         let mut proposed_blocks = self
             .proposed_blocks
             .write()
@@ -103,16 +100,10 @@ impl BridgePbftService {
         }
 
         if proposed_blocks_removed != 0 {
-            let Some(storage) = self.storage.as_ref() else {
-                return Ok(rejected(
-                    finalized_chain_size,
-                    new_period,
-                    "PBFT_SERVICE_STORAGE_UNAVAILABLE",
-                ));
-            };
+            let storage = verified_votes.storage();
             let mut batch = storage.create_write_batch();
             let appended = match append_proposed_blocks_cleanup_to_batch(
-                storage.as_ref(),
+                storage,
                 &mut batch,
                 &proposed_plan,
             ) {
@@ -125,7 +116,7 @@ impl BridgePbftService {
                     ));
                 }
             };
-            if commit(storage.as_ref(), batch).is_err() {
+            if commit(storage, batch).is_err() {
                 return Ok(rejected(
                     finalized_chain_size,
                     new_period,
@@ -197,18 +188,16 @@ fn rejected(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::BridgePbftChainState;
     use ethereum_types::{H160, H256};
-    use rustaxa_consensus::pbft_chain::{PbftChain, PbftChainHead};
+    use rustaxa_consensus::pbft_chain::PbftChainHead;
     use rustaxa_consensus::verified_votes::{PbftVoteType, VerifiedVote};
-    use rustaxa_consensus::PbftVoteAdmissionRuntime;
+    use rustaxa_consensus::{PbftVerifiedVotesService, PbftVoteAdmissionRuntime};
     use rustaxa_storage::{Column, Config};
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::{Arc, Mutex, RwLock};
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn storage(name: &str) -> (Arc<Storage>, PathBuf) {
+    fn test_storage(name: &str) -> (Arc<Storage>, PathBuf) {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -224,26 +213,38 @@ mod tests {
         storage: Option<Arc<Storage>>,
         runtime: Option<PbftVoteAdmissionRuntime>,
     ) -> BridgePbftService {
+        let verified_votes = runtime.map(|runtime| {
+            let owner_storage = storage
+                .clone()
+                .unwrap_or_else(|| test_storage("verified_votes_fixture").0);
+            let service = PbftVerifiedVotesService::restore(owner_storage).unwrap();
+            *service.lock().unwrap() = runtime;
+            service
+        });
         BridgePbftService {
             manager: Mutex::new(None),
-            chain: Arc::new(RwLock::new(BridgePbftChainState {
-                state: PbftChain::new(PbftChainHead {
+            chain: rustaxa_consensus::pbft_chain::PbftChainService::from_parts(
+                storage.clone(),
+                PbftChainHead {
                     head_hash: H256::zero(),
                     size: 0,
                     non_empty_size: 0,
                     last_pbft_block_hash: H256::zero(),
                     last_non_null_pbft_dag_anchor_hash: H256::zero(),
-                })
-                .unwrap(),
-                initialized_default: true,
-            })),
-            proposed_blocks: RwLock::new(Default::default()),
-            verified_votes: Mutex::new(runtime),
+                },
+                true,
+            )
+            .unwrap(),
+            proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService::from_parts(
+                storage.clone(),
+                Default::default(),
+            ),
+            verified_votes,
             slashing: None,
             storage,
-            bootstrap_complete: AtomicBool::new(true),
+            readiness: rustaxa_consensus::PbftServiceReadiness::ready(),
             pillar: None,
-            pillar_ready: AtomicBool::new(false),
+            pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
         }
     }
 
@@ -263,7 +264,7 @@ mod tests {
 
     #[test]
     fn cleanup_rejects_commit_without_mutation_then_retries_with_exact_counts() {
-        let (storage, path) = storage("rustaxa_period_cleanup_retry");
+        let (storage, path) = test_storage("rustaxa_period_cleanup_retry");
         let mut runtime = PbftVoteAdmissionRuntime::new();
         runtime
             .verified_votes_mut()
@@ -317,9 +318,9 @@ mod tests {
         assert_eq!(
             service
                 .verified_votes
-                .lock()
-                .unwrap()
                 .as_ref()
+                .unwrap()
+                .lock()
                 .unwrap()
                 .verified_votes()
                 .size(),
@@ -348,9 +349,9 @@ mod tests {
         assert_eq!(
             service
                 .verified_votes
-                .lock()
-                .unwrap()
                 .as_ref()
+                .unwrap()
+                .lock()
                 .unwrap()
                 .verified_votes()
                 .size(),

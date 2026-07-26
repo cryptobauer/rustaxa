@@ -145,15 +145,13 @@ fn threshold_fact_from_request(
 
 struct VerifiedVotesAccess<'a> {
     runtime: &'a mut PbftVoteAdmissionRuntime,
-    storage: Option<&'a Storage>,
+    storage: &'a Storage,
 }
 
 fn verified_votes_storage<'a>(
     runtime: &'a VerifiedVotesAccess<'_>,
 ) -> Result<&'a Storage, anyhow::Error> {
-    runtime
-        .storage
-        .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STORAGE_UNAVAILABLE"))
+    Ok(runtime.storage)
 }
 
 fn pbft_vote_persistence_to_ffi(
@@ -781,11 +779,7 @@ impl VerifiedVotesAccess<'_> {
             &validation,
             flags_to_domain(flags),
             context_to_domain(&context),
-            |write| {
-                let storage =
-                    storage.ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STORAGE_UNAVAILABLE"))?;
-                persist_pbft_vote_progress(storage, write)
-            },
+            |write| persist_pbft_vote_progress(storage, write),
         )?;
         Ok(runtime_outcome_to_ffi(validation, result, context))
     }
@@ -909,9 +903,7 @@ impl VerifiedVotesAccess<'_> {
             step: write_intent.reward_vote_step,
             block_hash: H256::from(write_intent.reward_vote_block_hash),
         };
-        let storage = self
-            .storage
-            .ok_or_else(|| anyhow::anyhow!("VERIFIED_VOTES_STORAGE_UNAVAILABLE"))?;
+        let storage = self.storage;
         let result = self
             .runtime
             .commit_reward_vote_cursor(storage, cursor, reset_generation)?;
@@ -1222,16 +1214,14 @@ impl BridgePbftService {
         &self,
         operation: impl FnOnce(&mut VerifiedVotesAccess<'_>) -> Result<T, anyhow::Error>,
     ) -> Result<T, anyhow::Error> {
-        let mut guard = self
+        let service = self
             .verified_votes
-            .lock()
-            .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_VERIFIED_VOTES_LOCK_POISONED"))?;
-        let runtime = guard
-            .as_mut()
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"))?;
+        let mut runtime = service.lock()?;
         operation(&mut VerifiedVotesAccess {
-            runtime,
-            storage: self.storage.as_deref(),
+            runtime: &mut runtime,
+            storage: service.storage(),
         })
     }
 
@@ -1491,13 +1481,7 @@ impl BridgePbftService {
                 .chain
                 .read()
                 .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?;
-            build_leader_selection_snapshot(
-                votes,
-                &proposed,
-                self.storage.as_deref(),
-                period,
-                round,
-            )
+            build_leader_selection_snapshot(votes, &proposed, votes.storage, period, round)
         })
     }
 
@@ -1526,7 +1510,7 @@ impl BridgePbftService {
             let snapshot = build_leader_selection_snapshot(
                 votes,
                 &proposed,
-                self.storage.as_deref(),
+                votes.storage,
                 request.period,
                 request.round,
             )?;
@@ -1634,7 +1618,7 @@ impl BridgePbftService {
 fn build_leader_selection_snapshot(
     votes: &VerifiedVotesAccess<'_>,
     proposed: &rustaxa_consensus::proposed_blocks::ProposedBlocks,
-    storage: Option<&Storage>,
+    storage: &Storage,
     period: u64,
     round: u64,
 ) -> Result<PbftLeaderSelectionSnapshot, anyhow::Error> {
@@ -1659,10 +1643,8 @@ fn build_leader_selection_snapshot(
         let proposed_block = proposed.get(period, vote.block_hash);
         let block_in_chain = if vote.block_hash == H256::zero() {
             false
-        } else if let Some(storage) = storage {
-            pbft_block_exists_in_storage(storage, vote.block_hash)?
         } else {
-            false
+            pbft_block_exists_in_storage(storage, vote.block_hash)?
         };
         let proposed_block_found = proposed_block.is_some();
         let proposed_block_is_valid = proposed_block
@@ -2426,9 +2408,9 @@ impl From<VerifiedVote> for VerifiedVotePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ffi::{rustaxa_ffi, BridgePbftChainState};
+    use crate::ffi::rustaxa_ffi;
     use crate::final_chain::create_final_chain;
-    use rustaxa_consensus::pbft_chain::{PbftChain, PbftChainHead};
+    use rustaxa_consensus::pbft_chain::PbftChainHead;
     use rustaxa_consensus::pbft_finalize::PbftFinalizedPeriodApplyStatus;
     use rustaxa_consensus::pbft_vote_admission::{
         PbftVoteAdmissionExecution, PbftVoteAdmissionPrecheck, PbftVoteAdmissionStatus,
@@ -2445,7 +2427,8 @@ mod tests {
     };
     use rustaxa_consensus::pbft_vote_validation::PbftVoteValidationStatus;
     use rustaxa_consensus::{
-        build_weighted_pbft_vote_payload, generate_pbft_vote, PbftVoteGenerationInput,
+        build_weighted_pbft_vote_payload, generate_pbft_vote, PbftVerifiedVotesService,
+        PbftVoteGenerationInput,
     };
     use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::vrf;
@@ -2457,32 +2440,34 @@ mod tests {
     fn verified_votes_service_for_test(
         storage: Option<&BridgeStorage>,
     ) -> Result<Box<BridgePbftService>, anyhow::Error> {
-        let runtime = match storage {
-            Some(storage) => PbftVoteAdmissionRuntime::restore_from_storage(storage.0.as_ref())?,
-            None => PbftVoteAdmissionRuntime::new(),
-        };
-        let chain = std::sync::Arc::new(std::sync::RwLock::new(BridgePbftChainState {
-            state: PbftChain::new(PbftChainHead {
+        let owner_storage = storage
+            .map(|storage| storage.0.clone())
+            .unwrap_or_else(|| temp_bridge_storage("native_owner_fixture").0);
+        let verified_votes = PbftVerifiedVotesService::restore(owner_storage.clone())?;
+        let chain = rustaxa_consensus::pbft_chain::PbftChainService::from_parts(
+            Some(owner_storage.clone()),
+            PbftChainHead {
                 head_hash: H256::zero(),
                 size: 0,
                 non_empty_size: 0,
                 last_pbft_block_hash: H256::zero(),
                 last_non_null_pbft_dag_anchor_hash: H256::zero(),
-            })?,
-            initialized_default: true,
-        }));
+            },
+            true,
+        )?;
         Ok(Box::new(BridgePbftService {
             manager: std::sync::Mutex::new(None),
             chain,
-            proposed_blocks: std::sync::RwLock::new(
+            proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService::from_parts(
+                Some(owner_storage.clone()),
                 rustaxa_consensus::proposed_blocks::ProposedBlocks::new(),
             ),
-            verified_votes: std::sync::Mutex::new(Some(runtime)),
+            verified_votes: Some(verified_votes),
             slashing: None,
-            storage: storage.map(|storage| storage.0.clone()),
-            bootstrap_complete: std::sync::atomic::AtomicBool::new(true),
+            storage: Some(owner_storage),
+            readiness: rustaxa_consensus::PbftServiceReadiness::ready(),
             pillar: None,
-            pillar_ready: std::sync::atomic::AtomicBool::new(false),
+            pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
         }))
     }
 
@@ -2502,35 +2487,6 @@ mod tests {
 
     fn address(id: u64) -> [u8; 20] {
         H160::from_low_u64_be(id).into()
-    }
-
-    #[test]
-    fn storage_backed_factory_restores_empty_runtime_and_cursor() {
-        let storage = temp_bridge_storage("empty_startup");
-        let votes = verified_votes_service_for_test(Some(&storage)).unwrap();
-
-        assert_eq!(votes.pbft_service_verified_votes_size().unwrap(), 0);
-        assert!(
-            !votes
-                .pbft_service_verified_votes_reward_vote_cursor()
-                .unwrap()
-                .found
-        );
-        assert!(votes.storage.is_some());
-    }
-
-    #[test]
-    fn test_helper_has_no_storage_access() {
-        let votes = verified_votes_service_for_test(None).unwrap();
-        assert!(
-            !votes
-                .pbft_service_verified_votes_reward_vote_cursor()
-                .unwrap()
-                .found
-        );
-        assert!(votes
-            .pbft_service_verified_votes_own_vote_records()
-            .is_err());
     }
 
     #[test]
@@ -2601,7 +2557,7 @@ mod tests {
     #[test]
     fn leader_prepare_preserves_missing_already_valid_and_in_chain_states() {
         let storage = temp_bridge_storage("leader_prepare_states");
-        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        let mut service = verified_votes_service_for_test(Some(&storage)).unwrap();
         let missing_vote = insert_proposal_vote(&service, [0x43; 32], NODE_SECRET, 2);
         let valid_vote = insert_proposal_vote(&service, [0x44; 32], NODE_SECRET_TWO, 2);
         insert_proposed_block(&service, [0x44; 32], [0x54; 32], vec![0x44]);
@@ -2618,6 +2574,7 @@ mod tests {
             .period()
             .write_pbft_period(H256::from([0x45; 32]), 12)
             .unwrap();
+        service.storage = Some(temp_bridge_storage("leader_prepare_unrelated_outer_storage").0);
 
         let snapshot = service
             .pbft_service_prepare_leader_selection(12, 2)
@@ -3452,33 +3409,6 @@ mod tests {
         service
             .with_verified_votes(|votes| Ok(votes.verified_votes_two_t_plus_one_threshold(fact)))
             .unwrap()
-    }
-
-    #[test]
-    fn bridge_facade_owns_replay_and_threshold_cache() {
-        let votes = verified_votes_service_for_test(None).unwrap();
-        let vote_hash = hash(99);
-
-        assert!(!votes
-            .pbft_service_verified_votes_replay_contains(&vote_hash)
-            .unwrap());
-        assert!(votes
-            .pbft_service_verified_votes_replay_insert(&vote_hash)
-            .unwrap());
-        assert!(!votes
-            .pbft_service_verified_votes_replay_insert(&vote_hash)
-            .unwrap());
-        assert!(votes
-            .pbft_service_verified_votes_replay_contains(&vote_hash)
-            .unwrap());
-
-        let plan = plan_threshold_for_test(&votes, threshold_fact(true));
-        assert!(plan.has_threshold);
-        assert!(plan.cached);
-
-        let cached = plan_threshold_for_test(&votes, threshold_fact(false));
-        assert!(cached.cache_hit);
-        assert_eq!(cached.threshold, plan.threshold);
     }
 
     #[test]

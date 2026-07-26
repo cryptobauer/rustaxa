@@ -69,7 +69,9 @@ make rewrite-validate-consensus
 
 This runs the fast Rust gate and the current `REWRITE_CONSENSUS_TESTS` inventory from the Makefile:
 `rust_consensus_tests`, `dag_test`, `dag_block_test`, `pbft_chain_test`, `pbft_chain_shim_test`,
-`proposed_blocks_shim_test`, `pbft_manager_test`, `vote_test`, `pillar_chain_test`, and `rewards_stats_test`.
+`proposed_blocks_shim_test`, `pbft_manager_test`, `vote_test`, and `pillar_chain_test`. The legacy
+`rewards_stats_test` remains available only in all-Rust-disabled pure-C++ reference builds; native FinalChain rewards
+behavior is covered by Rust consensus and FinalChain tests.
 
 The target tolerates CMake targets that are unavailable in the configured build. A skipped test that the tracker
 Validation Matrix or the changed boundary requires is a validation gap and does not satisfy Tier 2. Reconfigure the

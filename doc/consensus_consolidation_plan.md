@@ -76,6 +76,25 @@ The task owner has selected aggressive Rust cutover. These are implementation co
 Completion condition: removing CXX support from a native service would not require moving or rewriting its protocol
 logic or behavioral tests.
 
+Progress: the proposed-block and PBFT-chain sibling owners are the first bounded extractions. CXX-free
+`rustaxa-consensus::proposed_blocks::ProposedBlocksService` owns its storage lifetime, restoration, lock domain,
+durable-first mutation, snapshots, cleanup, and native behavioral coverage. `BridgePbftService` embeds it and the
+remaining proposed-block bridge methods are DTO adapters. CXX-free
+`rustaxa-consensus::pbft_chain::PbftChainService` owns storage lifetime, restoration/default initialization, its lock,
+head transitions, validation, and block lookup; the bridge chain-state struct and lock are deleted. Cross-domain PBFT
+operations still borrow both native sibling guards. CXX-free
+`rustaxa-consensus::pbft_vote_runtime::PbftVerifiedVotesService` now also owns verified-vote storage lifetime,
+atomic restoration, and the shared admission-runtime mutex. The bridge owns neither the verified-vote runtime nor its
+lock; it temporarily borrows the native guard for FinalChain, leader-selection, finalization, and DTO/effect
+composition. `BridgePbftService` also no longer retains a production duplicate `Option<Arc<Storage>>`; durable access
+comes from the native sibling owner responsible for each operation, while only legacy bridge tests retain a
+`#[cfg(test)]` fixture handle. Native `rustaxa-consensus::slashing::SlashingProofService` owns slashing planner
+configuration, duplicate-cache state, and its mutex; the slashing bridge now performs only DTO/status conversion around
+task-oriented plan/report calls. Native `rustaxa-consensus::pbft_readiness::PbftServiceReadiness` also owns the
+independent monotonic PBFT and pillar-bootstrap readiness atomics plus their acquire/release publication contracts; the
+bridge root retains only those native capabilities. The PBFT manager/pillar owner and the
+DAG/transaction/sortition owner remain in this workstream.
+
 ### 3. Collapse configuration topology
 
 - Define one Rust-enabled production feature bundle.
@@ -91,7 +110,7 @@ capability matrix.
 
 Start with surfaces whose audit already says they own no production state:
 
-1. `rewards_stats_shim` and `BridgeRewardsStatsRuntime`
+1. ~~`rewards_stats_shim` and `BridgeRewardsStatsRuntime`~~ — retired by the first `CRW-14` contraction slice
 2. `proposed_blocks_shim`
 3. `verified_votes_shim`
 4. `sortition_params_manager_shim`

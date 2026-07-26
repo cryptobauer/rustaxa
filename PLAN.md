@@ -371,11 +371,10 @@ The FinalChain shim uses a header overlay pattern and can be enabled with:
 - `RUSTAXA_ENABLE_FINAL_CHAIN`
 
 When enabled, the standalone overlay supplies `final_chain::FinalChain` and the untouched legacy implementation is
-excluded from Rust production builds. Pure-C++ reference builds continue compiling the original header and source.
-The FinalChain feature also owns the standalone Rust-backed `rewards::Stats` overlay. RewardsStats has no independent
-build mode because FinalChain publication unconditionally uses its shim-only preview/commit API; the former
-`RUSTAXA_ENABLE_REWARDS_STATS` flag and dead `StatsOld` compile scaffold are retired. FinalChain-disabled and pure-C++
-reference builds retain the untouched legacy RewardsStats header and source.
+excluded from Rust production builds. Native Rust FinalChain owns rewards-stat planning, cache persistence, restart,
+and distribution behavior directly; Rust mode has no standalone `rewards::Stats` overlay or bridge runtime. The former
+`RUSTAXA_ENABLE_REWARDS_STATS` flag, `StatsOld` scaffold, and compatibility facade are retired. FinalChain-disabled and
+pure-C++ reference builds retain the untouched legacy RewardsStats header, source, and focused test.
 
 ### Current Implementation Status
 
@@ -1054,7 +1053,9 @@ The current Rust consensus footprint is broad but still incomplete:
 7. Replace the temporary `dposIsEligible` shim behavior once the eligibility port has a real implementation.
 8. Finish the PBFT support slice by adding broader manager-level validation around the now Rust-backed primitives:
    `PbftChain` startup restore, head updates, persisted-head preview, block existence/RLP lookup, and next-block
-   validation route through the standalone Rust-backed facade under `RUSTAXA_ENABLE_PBFT_CHAIN`, and feature-on builds
+   validation route through the standalone Rust-backed facade under `RUSTAXA_ENABLE_PBFT_CHAIN`. The CXX-free native
+   `PbftChainService` now owns the storage handle, restore/default initialization, sibling lock, transitions,
+   validation, and lookup while bridge methods only adapt DTOs; feature-on builds
    no longer import or compile `PbftChainOld`; proposed-block membership, validity flags, RLP snapshots, persistence,
    restore, and cleanup route through the standalone Rust-backed facade under `RUSTAXA_ENABLE_PROPOSED_BLOCKS`, and
    feature-on builds no longer import or compile `ProposedBlocksOld`; period-data queue admission, effective size, pop
@@ -1154,7 +1155,21 @@ The current Rust consensus footprint is broad but still incomplete:
    TransactionManager C++ surfaces are now classified shell edges: EVM estimation execution, event/log dispatch
    infrastructure, public transaction object construction, final materialization, and lifecycle wiring. With transaction account-fact sourcing owned by Rust, the first PBFT
    orchestration storage slice now restores proposed-block metadata directly from Rust storage and removes stale
-   proposed-block storage keys through Rust-batched cleanup while C++ keeps daemon threads, networking, timers,
+   proposed-block storage keys through Rust-batched cleanup. The first aggressive `CRW-12` extraction moves the
+   proposed-block storage handle, restoration, sibling lock, storage-first publication/cleanup behavior, and behavioral
+   tests into the CXX-free native `ProposedBlocksService`; the bridge retains DTO conversion only for this owner while
+   the CXX-free native `PbftVerifiedVotesService` now owns verified-vote storage lifetime, restoration, the admission
+   runtime, and its shared mutex. The bridge temporarily borrows that native guard for cross-domain validation,
+   leader-selection, finalization, and typed effect conversion but owns no verified-vote runtime state or lock. The
+   production PBFT bridge root no longer retains a second optional storage `Arc`; each native sibling owner supplies
+   the exact durable handle for its operation. Native `SlashingProofService` likewise owns the configured double-vote
+   planner, bounded submitted-proof cache, and mutex; the bridge performs evidence/status conversion and C++ retains
+   account/gas lookup plus transaction signing and submission execution. The C++ slashing facade also temporarily
+   retains its live-vote overload's slot precheck and compatibility materialization until the remaining network caller
+   supplies Rust-normalized evidence directly. Native `PbftServiceReadiness` instances own the independent PBFT and
+   pillar-bootstrap atomics plus their monotonic acquire/release publication contracts; the bridge root now retains
+   those native capabilities instead of owning lifecycle control state.
+   C++ keeps daemon threads, networking, timers,
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
    sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT
    orchestration scaffolding and should be reduced over time by moving round/step/status planning into a Rust-owned PBFT
@@ -1318,16 +1333,14 @@ The current Rust consensus footprint is broad but still incomplete:
    pool-mode minimum-price flooring through Rust. Pool mode requires the Rust-backed transaction queue so
    `TransactionManager::getMinGasPriceForBlockInclusion()` reads Rust queue metadata rather than legacy queue state.
 10. Port deterministic rewards, remaining slashing-manager/runtime behavior, and pillar calculations after DPoS and final-chain query
-    ports are real. The `rewards::Stats` surface now has a Rust-mode overlay: Rust accepts finalized-period facts,
-    computes legacy-compatible `BlockStats` RLP, tracks interval cache/distribution boundaries, appends non-boundary
-    cache writes to the caller-owned Rust storage batch, and mirrors post-commit interval clears without changing the
-    legacy FinalChain ordering. The active Rust `FinalChain` native finalization path now owns a long-lived
+    ports are real. Native Rust rewards code accepts finalized-period facts, computes legacy-compatible `BlockStats`
+    RLP, and tracks interval cache/distribution boundaries. The active Rust `FinalChain` native finalization path owns a long-lived
     rewards-stats runtime, builds finalized-period facts with bridged previous-block cert votes, persists/clears
     interval cache rows in the finalized-block batch, reloads cached stats on startup, applies interval-boundary
     fee commission rewards from the Rust planner to staged Rust account/DPoS snapshots, and now handles fixed-yield plus
     Aspen part-two dynamic-yield minted block/DAG/vote distribution, total-supply migration, Rust-backed supply/yield and
     delegator reward-page reads, validator paging reads, owner metadata/commission updates, claim balance/cursor updates,
-    commission reward claims, claim-all dynamic gas plus legacy batch ABI compatibility, and header `total_reward`
+    commission reward claims, claim-all dynamic gas plus FinalChain-owned atomic publication, and header `total_reward`
     natively. Moving unsupported DPoS event receipt parity and legacy
     `BlockStats` carrier ownership fully into Rust remain future work. Double-voting proof planning, Rust FinalChain
     double-vote jailing, slashing read calls, and already-verified pillar-vote aggregation are Rust-backed; slashing
@@ -1377,9 +1390,9 @@ Use targeted validation before broad integration runs:
 - Pillar vote aggregation or PBFT sync bundle validation changes should run Rust validation plus `rust_consensus_tests`
   and `pillar_votes_shim_test` when `RUSTAXA_ENABLE_PILLAR_VOTES` is enabled; manager-path changes should also run
   targeted `pbft_manager_test`/`pillar_chain_test` coverage and any affected final-chain or full-node tests.
-- Rewards-stat planner changes should run Rust validation plus the Rust rewards-stat unit tests, `rust_consensus_tests`,
-  and `rewards_stats_test`; add final-chain/full-node coverage when the C++ rewards stats overlay or reward distribution
-  routing changes.
+- Rewards-stat planner changes should run Rust validation plus the Rust rewards-stat and FinalChain unit tests and
+  `rust_consensus_tests`; add final-chain/full-node coverage when reward distribution routing changes. The legacy
+  `rewards_stats_test` is a pure-C++ reference-build target only because Rust mode no longer has a rewards-stats facade.
 - Shim startup behavior should be validated with a Rust-enabled node smoke test when consensus shims change.
 
 ## Validation Matrix

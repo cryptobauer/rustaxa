@@ -3,11 +3,9 @@ use crate::ffi::rustaxa_ffi::{
     ProposedBlockPeriodHashes, ProposedBlockSnapshotEntry,
 };
 use crate::ffi::{BridgePbftService, BridgeStorage};
-use anyhow::Context;
 use ethereum_types::H256;
 use rustaxa_consensus::proposed_blocks::{
-    cleanup_proposed_blocks_storage, restore_proposed_blocks_from_storage,
-    save_proposed_block_storage, ProposedBlockPeriod, ProposedBlocks,
+    restore_proposed_blocks_from_storage, save_proposed_block_storage, ProposedBlocks,
 };
 
 impl BridgePbftService {
@@ -25,27 +23,12 @@ impl BridgePbftService {
         pivot_hash: &[u8; 32],
         block_rlp: Vec<u8>,
     ) -> Result<bool, anyhow::Error> {
-        let storage = self
-            .storage
-            .as_ref()
-            .context("PBFT_SERVICE_STORAGE_UNAVAILABLE")?;
-        let mut proposed_blocks = self
-            .proposed_blocks
-            .write()
-            .expect("proposed blocks lock poisoned");
-        let entry = save_proposed_block_storage(
-            storage.as_ref(),
+        self.proposed_blocks.push_with_storage(
             period,
             H256::from(*block_hash),
             H256::from(*pivot_hash),
-            block_rlp.as_slice(),
-        )?;
-        Ok(proposed_blocks.push(
-            entry.period,
-            entry.block_hash,
-            entry.pivot_hash,
-            entry.block_rlp,
-        ))
+            block_rlp,
+        )
     }
 
     /// Marks an existing proposed PBFT block as valid after external validation.
@@ -60,8 +43,6 @@ impl BridgePbftService {
         block_hash: &[u8; 32],
     ) -> Result<(), anyhow::Error> {
         self.proposed_blocks
-            .write()
-            .expect("proposed blocks lock poisoned")
             .mark_valid(period, H256::from(*block_hash))
     }
 
@@ -76,8 +57,6 @@ impl BridgePbftService {
         block_hash: &[u8; 32],
     ) -> ProposedBlockLookup {
         self.proposed_blocks
-            .read()
-            .expect("proposed blocks lock poisoned")
             .get(period, H256::from(*block_hash))
             .map(|entry| ProposedBlockLookup {
                 found: true,
@@ -104,8 +83,6 @@ impl BridgePbftService {
         block_hash: &[u8; 32],
     ) -> ProposedBlockMetadataLookup {
         self.proposed_blocks
-            .read()
-            .expect("proposed blocks lock poisoned")
             .metadata(period, H256::from(*block_hash))
             .map(|entry| ProposedBlockMetadataLookup {
                 found: true,
@@ -129,8 +106,6 @@ impl BridgePbftService {
         block_hash: &[u8; 32],
     ) -> bool {
         self.proposed_blocks
-            .read()
-            .expect("proposed blocks lock poisoned")
             .contains(period, H256::from(*block_hash))
     }
 
@@ -153,27 +128,9 @@ impl BridgePbftService {
         &self,
         period: u64,
     ) -> Result<Vec<ProposedBlockPeriodHashes>, anyhow::Error> {
-        let mut proposed_blocks = self
+        Ok(self
             .proposed_blocks
-            .write()
-            .expect("proposed blocks lock poisoned");
-        let removed = proposed_blocks.cleanup_candidates(period);
-        if removed.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let storage = self
-            .storage
-            .as_ref()
-            .context("PBFT_SERVICE_STORAGE_UNAVAILABLE")?;
-        cleanup_proposed_blocks_storage(storage.as_ref(), &removed)
-            .context("PROPOSED_BLOCKS_CLEANUP_STORAGE")?;
-
-        for period_hashes in &removed {
-            proposed_blocks.remove_period(period_hashes.period);
-        }
-
-        Ok(removed
+            .cleanup_with_storage(period)?
             .into_iter()
             .map(|value| ProposedBlockPeriodHashes {
                 period: value.period,
@@ -193,8 +150,6 @@ impl BridgePbftService {
     /// change it.
     pub fn pbft_service_proposed_blocks_snapshot_entries(&self) -> Vec<ProposedBlockSnapshotEntry> {
         self.proposed_blocks
-            .read()
-            .expect("proposed blocks lock poisoned")
             .snapshot_entries()
             .into_iter()
             .map(|entry| ProposedBlockSnapshotEntry {
@@ -204,18 +159,6 @@ impl BridgePbftService {
                 block_rlp: entry.block_rlp,
                 is_valid: entry.is_valid,
             })
-            .collect()
-    }
-
-    /// Returns all proposed PBFT block hashes grouped by period.
-    #[cfg(test)]
-    pub fn proposed_blocks_snapshot(&self) -> Vec<ProposedBlockPeriodHashes> {
-        self.proposed_blocks
-            .read()
-            .expect("proposed blocks lock poisoned")
-            .snapshot()
-            .into_iter()
-            .map(Into::into)
             .collect()
     }
 }
@@ -322,21 +265,6 @@ fn missing_lookup() -> ProposedBlockLookup {
     }
 }
 
-impl From<ProposedBlockPeriod> for ProposedBlockPeriodHashes {
-    fn from(value: ProposedBlockPeriod) -> Self {
-        Self {
-            period: value.period,
-            block_hashes: value
-                .blocks
-                .into_iter()
-                .map(|entry| DagHash {
-                    hash: entry.block_hash.into(),
-                })
-                .collect(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,109 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn restore_from_storage_decodes_pbft_links_and_inserts_candidates() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_restore");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-
-            let (rlp_0, link_0) = proposed_link_and_hash(9, 12_345);
-            let (rlp_1, link_1) = proposed_link_and_hash(10, 12_346);
-
-            persist_proposed_block(&storage, rlp_0, &link_0);
-            persist_proposed_block(&storage, rlp_1, &link_1);
-
-            let index = service(&storage);
-            let snapshot = index.proposed_blocks_snapshot();
-
-            assert_eq!(snapshot.len(), 2);
-            assert_eq!(snapshot[0].period, link_0.period);
-            assert_eq!(snapshot[0].block_hashes.len(), 1);
-            assert_eq!(snapshot[0].block_hashes[0].hash, link_0.block_hash.0);
-            assert_eq!(snapshot[1].period, link_1.period);
-            assert_eq!(snapshot[1].block_hashes.len(), 1);
-            assert_eq!(snapshot[1].block_hashes[0].hash, link_1.block_hash.0);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn push_with_storage_persists_before_live_index_insert() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_push_storage");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let (rlp, link) = proposed_link_and_hash(9, 12_345);
-            let index = service(&storage);
-
-            let inserted = index
-                .pbft_service_proposed_blocks_push_with_storage(
-                    link.period,
-                    &link.block_hash.0,
-                    &link.pivot_dag_block_hash.0,
-                    rlp.clone(),
-                )
-                .expect("push with storage should succeed");
-            let duplicate = index
-                .pbft_service_proposed_blocks_push_with_storage(
-                    link.period,
-                    &link.block_hash.0,
-                    &link.pivot_dag_block_hash.0,
-                    rlp.clone(),
-                )
-                .expect("duplicate storage put should still succeed");
-            let stored = storage
-                .0
-                .pbft()
-                .proposed_rlp()
-                .expect("proposed payload should read");
-
-            assert!(inserted);
-            assert!(!duplicate);
-            assert_eq!(stored, vec![rlp]);
-            assert!(index.pbft_service_proposed_blocks_contains(link.period, &link.block_hash.0));
-            let metadata =
-                index.pbft_service_proposed_blocks_metadata(link.period, &link.block_hash.0);
-            assert!(metadata.found);
-            assert_eq!(metadata.pivot_hash, link.pivot_dag_block_hash.0);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn rejected_persistence_input_never_publishes_storage_or_live_state() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_atomic_failure");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let (rlp, link) = proposed_link_and_hash(9, 12_345);
-            let service = service(&storage);
-            let wrong_pivot = H256::from_low_u64_be(999);
-
-            let error = service
-                .pbft_service_proposed_blocks_push_with_storage(
-                    link.period,
-                    &link.block_hash.0,
-                    &wrong_pivot.0,
-                    rlp,
-                )
-                .expect_err("pivot mismatch must fail before storage");
-
-            assert!(error
-                .to_string()
-                .contains("PROPOSED_BLOCKS_SAVE_PIVOT_MISMATCH"));
-            assert!(!service.pbft_service_proposed_blocks_contains(link.period, &link.block_hash.0));
-            assert!(storage.0.pbft().proposed_rlp().unwrap().is_empty());
-        }
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
     fn local_candidate_lookup_does_not_publish_authoritative_state() {
         let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_local_candidates");
         {
@@ -570,87 +395,6 @@ mod tests {
             assert_eq!(snapshot[0].pivot_hash, link.pivot_dag_block_hash.0);
             assert_eq!(snapshot[0].block_rlp, rlp);
             assert!(!snapshot[0].is_valid);
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn cleanup_with_storage_deletes_only_stale_periods_with_single_batch_semantics() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_cleanup_storage");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-
-            let (rlp_old, old_link) = proposed_link_and_hash(1, 42_001);
-            let (rlp_new, new_link) = proposed_link_and_hash(3, 42_002);
-
-            persist_proposed_block(&storage, rlp_old, &old_link);
-            persist_proposed_block(&storage, rlp_new, &new_link);
-
-            let index = service(&storage);
-            let removed = index
-                .pbft_service_proposed_blocks_cleanup_with_storage(2)
-                .expect("cleanup should succeed");
-
-            assert_eq!(removed.len(), 1);
-            assert_eq!(removed[0].period, old_link.period);
-            assert_eq!(removed[0].block_hashes.len(), 1);
-            assert_eq!(removed[0].block_hashes[0].hash, old_link.block_hash.0);
-
-            let remaining = index.proposed_blocks_snapshot();
-            assert_eq!(remaining.len(), 1);
-            assert_eq!(remaining[0].period, new_link.period);
-            assert_eq!(remaining[0].block_hashes.len(), 1);
-            assert_eq!(remaining[0].block_hashes[0].hash, new_link.block_hash.0);
-
-            let no_removed = index
-                .pbft_service_proposed_blocks_cleanup_with_storage(3)
-                .expect("cleanup no-op should succeed");
-            assert!(no_removed.is_empty());
-        }
-
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn restore_from_storage_rejects_hash_mismatched_storage_key() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_proposed_blocks_restore_bad_key");
-        {
-            let storage =
-                create_storage(temp_dir.to_str().expect("temp path should be valid UTF-8"))
-                    .expect("storage should initialize");
-            let (rlp, link) = proposed_link_and_hash(11, 43_001);
-            let wrong_hash = H256::from_low_u64_be(999);
-            assert_ne!(wrong_hash, link.block_hash);
-            storage
-                .0
-                .pbft()
-                .write_proposed(wrong_hash, &rlp)
-                .expect("mismatched proposed block key should save");
-
-            let err = crate::pbft_manager::create_pbft_service_from_storage(
-                &storage,
-                crate::ffi::rustaxa_ffi::PbftServiceConfig {
-                    genesis_lambda_ms: 100,
-                    cacti_lambda_max_ms: 100,
-                    cacti_lambda_default_ms: 100,
-                    cacti_block: u64::MAX,
-                    max_exponential_lambda_ms: 60_000,
-                    max_steps: 13,
-                    deadline_ms: 400,
-                    polling_interval_ms: 100,
-                    report_malicious_behaviour: false,
-                    magnolia_activation_period: 0,
-                },
-            )
-            .err()
-            .expect("restore should reject key/hash mismatch");
-
-            assert!(err
-                .to_string()
-                .contains("PROPOSED_BLOCKS_RESTORE_HASH_MISMATCH"));
         }
 
         let _ = fs::remove_dir_all(temp_dir);

@@ -9,6 +9,7 @@
 //! and validator-key caches, and payload bytes derived from admitted votes.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::H256;
@@ -369,6 +370,82 @@ pub struct PbftVoteAdmissionRuntime {
     reward_vote_cursor: Option<RewardVoteCursor>,
     reward_vote_cursor_reset_generation: u64,
     validation_vrf_keys: BTreeMap<[u8; 20], [u8; 32]>,
+}
+
+/// Native application owner for durable and in-memory PBFT verified-vote state.
+///
+/// The service restores one [`PbftVoteAdmissionRuntime`] before publication,
+/// retains the exact [`Storage`] instance used for that restoration, and shares
+/// both through cloneable Rust handles. Every clone observes one mutex-protected
+/// runtime; callers must not hold its guard across external C++, network,
+/// FinalChain/EVM, signing, or logging work. Storage failures prevent
+/// construction, so a published service is always storage-capable.
+#[derive(Clone)]
+pub struct PbftVerifiedVotesService {
+    storage: Arc<Storage>,
+    runtime: Arc<Mutex<PbftVoteAdmissionRuntime>>,
+}
+
+/// Temporary task-neutral runtime guard returned by
+/// [`PbftVerifiedVotesService::lock`].
+///
+/// This escape hatch supports adjacent PBFT workflows while their composition
+/// moves native. Dropping the guard releases the single verified-vote lock; it
+/// must not cross an external executor boundary.
+pub type PbftVerifiedVotesServiceGuard<'a> = MutexGuard<'a, PbftVoteAdmissionRuntime>;
+
+impl PbftVerifiedVotesService {
+    /// Restores the service from durable storage in one constructor path.
+    ///
+    /// Inputs:
+    /// - `storage`: shared durable handle for verified-vote columns.
+    ///
+    /// Outputs:
+    /// - A cloneable service with restored runtime state and retained storage.
+    ///
+    /// Error behavior:
+    /// - Storage and durability validation failures are returned as `anyhow::Error`.
+    pub fn restore(storage: Arc<Storage>) -> Result<Self> {
+        let runtime = PbftVoteAdmissionRuntime::restore_from_storage(storage.as_ref())?;
+        Ok(Self {
+            storage,
+            runtime: Arc::new(Mutex::new(runtime)),
+        })
+    }
+
+    /// Rebuilds a service from test-provided runtime state.
+    ///
+    /// This constructor is intentionally test-only and exists for focused,
+    /// deterministic state injection without durability reads.
+    #[cfg(test)]
+    pub fn from_runtime(storage: Arc<Storage>, runtime: PbftVoteAdmissionRuntime) -> Self {
+        Self {
+            storage,
+            runtime: Arc::new(Mutex::new(runtime)),
+        }
+    }
+
+    /// Locks the single shared verified-vote runtime for a native operation.
+    ///
+    /// The returned guard exposes the restored admission runtime and serializes
+    /// all state reads and mutations across service clones. Lock poisoning is
+    /// returned as `PBFT_VERIFIED_VOTES_SERVICE_LOCK_POISONED`; callers must
+    /// release the guard before invoking external executors.
+    pub fn lock(&self) -> Result<PbftVerifiedVotesServiceGuard<'_>> {
+        self.runtime
+            .lock()
+            .map_err(|_| anyhow!("PBFT_VERIFIED_VOTES_SERVICE_LOCK_POISONED"))
+    }
+
+    /// Borrows the durable storage retained by this service.
+    ///
+    /// The handle is the same instance used during restoration and remains
+    /// valid for the service lifetime. It is temporarily exposed so adjacent
+    /// atomic admission, cleanup, and finalization workflows can commit before
+    /// publishing guarded memory changes.
+    pub fn storage(&self) -> &Storage {
+        self.storage.as_ref()
+    }
 }
 
 impl Default for PbftVoteAdmissionRuntime {
@@ -1526,6 +1603,7 @@ mod tests {
     use rlp::RlpStream;
     use rustaxa_storage::{Config, Storage};
     use rustaxa_vdf::vrf;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tiny_keccak::{Hasher, Keccak};
 
@@ -2928,6 +3006,134 @@ mod tests {
             RewardVoteCursorCommitStatus::Applied
         );
         assert_eq!(runtime.reward_vote_cursor(), Some(second));
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn verified_votes_service_restores_from_storage_and_survives_runtime_clones() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_restore_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        let canonical = vote_rlp([20; 32], 3);
+        let weighted = build_weighted_pbft_vote_payload(&canonical, 7).unwrap();
+        storage
+            .pbft()
+            .write_own_verified_vote(weighted.hash, &weighted.vote_rlp)
+            .unwrap();
+        storage
+            .pbft()
+            .write_extra_reward_vote(weighted.hash, &weighted.vote_rlp)
+            .unwrap();
+
+        let service = PbftVerifiedVotesService::restore(storage.clone()).unwrap();
+        {
+            let runtime = service.lock().unwrap();
+            assert_eq!(runtime.verified_votes().size(), 1);
+            assert_eq!(runtime.current_reward_vote_payloads().unwrap(), Vec::new());
+        }
+
+        let clone = service.clone();
+        drop(service);
+        let runtime = clone.lock().unwrap();
+        assert_eq!(
+            runtime.weighted_payload(weighted.hash),
+            Some(&PbftVotePayloadRecord {
+                hash: weighted.hash,
+                vote_rlp: weighted.vote_rlp.clone(),
+            })
+        );
+        drop(runtime);
+        drop(storage);
+        let storage_ref = &clone;
+        assert_eq!(
+            storage_ref
+                .storage()
+                .period()
+                .by_pbft_hash(H256::zero())
+                .unwrap(),
+            None
+        );
+
+        drop(clone);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn verified_votes_service_lock_shares_state_across_clones() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_lock_{nonce}"));
+        let service = PbftVerifiedVotesService::from_runtime(
+            Arc::new(Storage::new(Config::new(path.clone())).unwrap()),
+            PbftVoteAdmissionRuntime::new(),
+        );
+        let service_a = service.clone();
+        let service_b = service.clone();
+
+        let first_vote = vote_rlp([30; 32], 3);
+        let first_validation = validation(&first_vote);
+        {
+            let mut runtime = service_a.lock().unwrap();
+            runtime
+                .admit_validated_vote(&first_vote, &first_validation, flags(), context(Some(80)))
+                .unwrap();
+            assert_eq!(runtime.verified_votes().size(), 1);
+            runtime.reward_vote_cursor = Some(RewardVoteCursor {
+                period: first_validation.period,
+                round: first_validation.round,
+                step: first_validation.step,
+                block_hash: first_validation.block_hash,
+            });
+        }
+
+        {
+            let runtime = service_b.lock().unwrap();
+            assert_eq!(runtime.verified_votes().size(), 1);
+            assert!(runtime.replay_contains(first_validation.vote_hash));
+            assert_eq!(
+                runtime.reward_vote_cursor,
+                Some(RewardVoteCursor {
+                    period: first_validation.period,
+                    round: first_validation.round,
+                    step: first_validation.step,
+                    block_hash: first_validation.block_hash,
+                })
+            );
+        }
+
+        let runtime = service.lock().unwrap();
+        assert_eq!(runtime.verified_votes().size(), 1);
+        assert!(runtime.replay_contains(first_validation.vote_hash));
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn verified_votes_service_rejects_malformed_durable_rows_before_publication() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("rustaxa_verified_votes_service_malformed_{nonce}"));
+        let storage = Arc::new(Storage::new(Config::new(path.clone())).unwrap());
+        storage
+            .pbft()
+            .write_own_verified_vote(H256::from_low_u64_be(1), &[0x01])
+            .unwrap();
+
+        let _error = PbftVerifiedVotesService::restore(storage.clone())
+            .err()
+            .expect("malformed durable vote must prevent service publication");
 
         drop(storage);
         let _ = std::fs::remove_dir_all(path);

@@ -112,9 +112,13 @@ add_executable(vote_test vote_test.cpp)
 target_link_libraries(vote_test test_util)
 add_test(vote_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/vote_test)
 
-add_executable(rewards_stats_test rewards_stats_test.cpp)
-target_link_libraries(rewards_stats_test test_util)
-add_test(rewards_stats_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rewards_stats_test)
+if(NOT RUSTAXA_ENABLE_FINAL_CHAIN)
+    # Preserve the untouched pure-C++ reference implementation and its tests.
+    # Native Rust FinalChain owns rewards-stat behavior in Rust mode.
+    add_executable(rewards_stats_test rewards_stats_test.cpp)
+    target_link_libraries(rewards_stats_test test_util)
+    add_test(rewards_stats_test ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/rewards_stats_test)
+endif()
 
 add_executable(tarcap_threadpool_test tarcap_threadpool_test.cpp)
 target_link_libraries(tarcap_threadpool_test test_util)
