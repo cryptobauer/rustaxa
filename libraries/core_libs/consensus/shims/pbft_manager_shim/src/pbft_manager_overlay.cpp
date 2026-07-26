@@ -815,9 +815,6 @@ PbftManager::PbftManager(const FullNodeConfig &conf, std::shared_ptr<DbStorage> 
   if (!dag_transaction_service_) {
     throw std::invalid_argument("PBFT manager requires a shared DAG/transaction service");
   }
-  if (!dag_transaction_service_->service().dag_transaction_service_has_sortition()) {
-    throw std::invalid_argument("PBFT manager requires a DAG/transaction service with sortition state");
-  }
   // Use first wallet as default node_addr
   const auto &node_addr = dev::toAddress(conf.getFirstWallet().node_secret);
   LOG_OBJECTS_CREATE("PBFT_MGR");

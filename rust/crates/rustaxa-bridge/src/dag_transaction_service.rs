@@ -15,7 +15,7 @@ use ethereum_types::H256;
 use rustaxa_consensus::dag::{
     dag_block_transaction_hashes, verify_dag_vdf_sortition_from_block, DagVdfSortitionBlockInput,
 };
-use rustaxa_consensus::sortition::SortitionParamsManager;
+use rustaxa_consensus::sortition::{SortitionService, SortitionServiceGuard};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard};
 
@@ -31,32 +31,7 @@ use std::sync::{Mutex, MutexGuard};
 pub struct BridgeDagTransactionService {
     transaction: Mutex<TransactionRuntimeState>,
     dag: Mutex<Option<DagRuntimeState>>,
-    sortition: Mutex<Option<SortitionParamsManager>>,
-    /// Immutable mirror used only for lock-free construction-time capability checks.
-    has_sortition: bool,
-}
-
-/// Validated guard for the sortition domain of a fully composed service.
-///
-/// Construction fails with `SORTITION_SERVICE_UNAVAILABLE` when sortition is absent.
-pub(crate) struct BridgeSortitionGuard<'a>(MutexGuard<'a, Option<SortitionParamsManager>>);
-
-impl std::ops::Deref for BridgeSortitionGuard<'_> {
-    type Target = SortitionParamsManager;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-            .as_ref()
-            .expect("sortition operation requires a production DAG service")
-    }
-}
-
-impl std::ops::DerefMut for BridgeSortitionGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
-            .as_mut()
-            .expect("sortition operation requires a production DAG service")
-    }
+    sortition: SortitionService,
 }
 
 impl BridgeDagTransactionService {
@@ -83,22 +58,13 @@ impl BridgeDagTransactionService {
         Ok(guard)
     }
 
-    pub(crate) fn sortition(&self) -> Result<BridgeSortitionGuard<'_>> {
-        let guard = self
-            .sortition
-            .lock()
-            .map_err(|_| anyhow!("DAG_TRANSACTION_SERVICE_SORTITION_LOCK_POISONED"))?;
-        if guard.is_none() {
-            return Err(anyhow!("SORTITION_SERVICE_UNAVAILABLE"));
-        }
-        Ok(BridgeSortitionGuard(guard))
-    }
-
-    /// Reports whether this service owns sortition runtime state.
+    /// Acquires the native sortition owner after any required DAG lock.
     ///
-    /// The value is immutable after construction, so callers may fail fast without acquiring a service lock.
-    pub fn dag_transaction_service_has_sortition(&self) -> bool {
-        self.has_sortition
+    /// The temporary guard preserves the canonical DAG-then-sortition lock
+    /// order for coupled cursor revalidation. It must not cross an external
+    /// executor call.
+    pub(crate) fn sortition(&self) -> Result<SortitionServiceGuard<'_>> {
+        self.sortition.lock()
     }
 
     /// Locks the DAG and transaction subset in their universal relative order.
@@ -137,13 +103,11 @@ pub fn create_dag_transaction_service_from_storage(
     let mut dag = *build_dag_state_from_storage(genesis, dag_expiry_limit, storage)?;
     dag.dag_manager_runtime_restore_from_storage()?;
     dag.dag_manager_runtime_ensure_proposal_period_mapping(max_levels_per_period, 0)?;
-    let sortition =
-        SortitionParamsManager::from_storage(sortition_config.into(), storage.0.clone())?;
+    let sortition = SortitionService::restore(sortition_config.into(), storage.0.clone())?;
     Ok(Box::new(BridgeDagTransactionService {
         transaction: Mutex::new(transaction),
         dag: Mutex::new(Some(dag)),
-        sortition: Mutex::new(Some(sortition)),
-        has_sortition: true,
+        sortition,
     }))
 }
 
@@ -2229,7 +2193,7 @@ mod tests {
     }
 
     #[test]
-    fn proposer_final_chain_lookup_failures_clean_only_the_owned_session() {
+    fn proposer_sortition_lookup_failure_cleans_only_the_owned_session() {
         let dir = unique_temp_dir("rustaxa_dag_proposer_sortition_failure_cleanup");
         let storage = create_storage(dir.to_str().unwrap()).unwrap();
         let service = create_dag_transaction_service_from_storage(
@@ -2244,42 +2208,6 @@ mod tests {
         )
         .unwrap();
         let final_chain = make_proposer_final_chain(&storage, proposer_address());
-        let first =
-            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
-                .unwrap();
-        let second =
-            service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
-                .unwrap();
-        *service.sortition.lock().unwrap() = None;
-        let unavailable = service_dag_manager_runtime_proposer_session_report_final_chain_facts(
-            &service,
-            first,
-            &final_chain,
-        )
-        .err()
-        .expect("missing capability should fail");
-        assert_eq!(unavailable.to_string(), "SORTITION_SERVICE_UNAVAILABLE");
-        let dag = service.dag().unwrap();
-        assert!(!dag.as_ref().unwrap().proposer_sessions.contains_key(&first));
-        assert!(dag
-            .as_ref()
-            .unwrap()
-            .proposer_sessions
-            .contains_key(&second));
-        drop(dag);
-
-        drop(service);
-        let service = create_dag_transaction_service_from_storage(
-            &storage,
-            &[1; 32],
-            32,
-            100,
-            sortition_config(),
-            queue_config(),
-            gas_config(),
-            u64::MAX,
-        )
-        .unwrap();
         let corrupt =
             service_dag_manager_runtime_begin_proposer_session(&service, proposer_begin_input())
                 .unwrap();
@@ -2462,7 +2390,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_bound_vdf_rejects_missing_sortition_and_wrong_action_without_advancing() {
+    fn cursor_bound_vdf_rejects_wrong_action_without_advancing() {
         let dir = unique_temp_dir("rustaxa_dag_vdf_capability_and_action");
         let storage = create_storage(dir.to_str().unwrap()).unwrap();
         let service = create_dag_transaction_service_from_storage(
@@ -2508,22 +2436,6 @@ mod tests {
                 .unwrap()
                 .action,
             1
-        );
-
-        let mut request = valid_vdf_request(1_000, [0x94; 32]);
-        let vdf = begin_vdf_action(&service, &request.block_rlp);
-        request.cursor_id = vdf.cursor_id;
-        *service.sortition.lock().unwrap() = None;
-        let unavailable =
-            service_dag_transaction_service_verify_block_session_vdf(&service, request)
-                .err()
-                .expect("missing sortition should fail");
-        assert_eq!(unavailable.to_string(), "SORTITION_SERVICE_UNAVAILABLE");
-        assert_eq!(
-            service_dag_manager_runtime_verify_block_session_next(&service)
-                .unwrap()
-                .action,
-            DAG_VERIFY_SESSION_ACTION_VDF_SORTITION
         );
 
         drop(service);
@@ -3545,7 +3457,10 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
-        assert!(full.dag_transaction_service_has_sortition());
+        assert_eq!(
+            full.sortition_current_params().unwrap().threshold_upper,
+            sortition_config().threshold_upper
+        );
         assert_eq!(full.transaction_manager_runtime_transaction_count(), 0);
         assert_eq!(full.dag_manager_runtime_vertex_count().unwrap(), 1);
         assert!(!full
@@ -3567,7 +3482,10 @@ mod tests {
             u64::MAX,
         )
         .unwrap();
-        assert!(restored.dag_transaction_service_has_sortition());
+        assert_eq!(
+            restored.sortition_current_params().unwrap().threshold_upper,
+            sortition_config().threshold_upper
+        );
         assert_eq!(restored.dag_manager_runtime_latest_period().unwrap(), 0);
         std::thread::scope(|scope| {
             scope.spawn(|| {

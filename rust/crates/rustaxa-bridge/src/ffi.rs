@@ -5310,7 +5310,6 @@ pub mod rustaxa_ffi {
 
         // Consensus sortition
 
-        pub fn dag_transaction_service_has_sortition(self: &BridgeDagTransactionService) -> bool;
         pub fn sortition_current_params(
             self: &BridgeDagTransactionService,
         ) -> Result<SortitionRuntimeParams>;

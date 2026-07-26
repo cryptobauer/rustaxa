@@ -44,9 +44,9 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 46074 |
-| `shim_lines` | 19105 |
-| `cxx_functions` | 416 |
+| `bridge_lines` | 45991 |
+| `shim_lines` | 19099 |
+| `cxx_functions` | 415 |
 | `cxx_carriers` | 359 |
 | `cxx_handles` | 20 |
 | `shim_directories` | 15 |
@@ -108,7 +108,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | Module | Surface | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `rust/crates/rustaxa-bridge/src/dag.rs` | DAG commands, sessions, conversions | DAG manager/proposer shims | Internal bridge route | Native DAG service owns behavior and shims use leaf executor effects only. |
-| `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | `BridgeDagTransactionService` | App, DAG, transaction, gas, sortition shims | Native service wrapper | Move service implementation and behavioral tests to a native application/runtime crate. |
+| `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Bridge wrapper over native sortition ownership plus bridge-owned DAG/transaction state | App, DAG, transaction, gas, sortition shims | Native service wrapper | Move the remaining DAG/transaction state and behavioral tests to a native application/runtime crate; sortition restoration, mutex, poison policy, and required-capability invariant already live in `rustaxa-consensus`. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | ingress, planning, effects | tarcap handlers | External boundary | Complete `CRW-N01`; retain transport-only execution API. |
@@ -126,7 +126,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/proposed_blocks.rs` | Thin DTO adapters over native `ProposedBlocksService`; stateless storage and temporary-candidate compatibility helpers | proposed-block/PBFT shims | Internal bridge route | Native state, storage, restoration, lock ownership, and standalone behavior moved to `rustaxa-consensus`; cross-domain leader selection and combined cleanup remain PBFT-owner debt; delete the C++ facade under `CRW-14`. |
 | `rust/crates/rustaxa-bridge/src/query.rs` | `BridgeConsensusQueryApi` | RPC, GraphQL, light plugin | External boundary | Keep a client-oriented read API; remove manager/storage construction elsewhere. |
 | `rust/crates/rustaxa-bridge/src/slashing.rs` | DTO adapters over native `SlashingProofService` | slashing/vote shims | Internal bridge route | Native service owns planner configuration, duplicate cache, and mutex; retain only the transaction-executor conversion boundary until the C++ slashing facade contracts to signing/submission effects. |
-| `rust/crates/rustaxa-bridge/src/sortition.rs` | DAG-service sortition methods | sortition/DAG/PBFT shims | Internal bridge route | Delete C++ sortition facade after callers migrate. |
+| `rust/crates/rustaxa-bridge/src/sortition.rs` | DTO adapters over native `SortitionService` | sortition/DAG/PBFT shims | Internal bridge route | Native restoration and serialization ownership live in `rustaxa-consensus`; delete the C++ sortition facade after callers migrate. |
 | `rust/crates/rustaxa-bridge/src/storage.rs` | storage facade, queries, batch | storage shim, conformance, bootstrap | Compatibility facade | Native bootstrap/query/test fixtures replace broad storage handles. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
 | `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | transaction runtime and adapters | transaction/DAG/PBFT shims | Internal bridge route | Move runtime/tests native and reduce C++ to submission/EVM leaf adapters. |

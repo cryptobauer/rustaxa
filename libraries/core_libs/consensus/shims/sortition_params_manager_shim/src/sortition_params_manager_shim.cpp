@@ -94,9 +94,6 @@ SortitionParamsManager::SortitionParamsManager([[maybe_unused]] const addr_t& no
   if (!dag_transaction_service_) {
     throw std::invalid_argument("SortitionParamsManager requires a DAG/transaction service");
   }
-  if (!dag_transaction_service_->service().dag_transaction_service_has_sortition()) {
-    throw std::invalid_argument("SortitionParamsManager requires a DAG/transaction service with sortition state");
-  }
   params_changes_ = from_rust_changes(dag_transaction_service_->service().sortition_params_changes());
   apply_rust_params(sortition_config_, dag_transaction_service_->service().sortition_current_params());
 }

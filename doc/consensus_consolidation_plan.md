@@ -112,6 +112,10 @@ DAG/transaction/sortition owner remain in this workstream.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.
+Native `rustaxa-consensus::sortition::SortitionService` now owns restored sortition state, its serialization mutex,
+and poison policy. The DAG/transaction bridge root contains this service as a required capability, so optional
+sortition state, capability probes, and unavailable-domain branches are gone. A temporary native guard preserves the
+DAG-then-sortition order for coupled cursor revalidation until the remaining DAG runtime moves native.
 
 ### 3. Collapse configuration topology
 

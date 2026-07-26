@@ -14,7 +14,8 @@ use ethereum_types::H256;
 use rlp::{Decodable, DecoderError, Encodable, Rlp, RlpStream};
 use rustaxa_storage::Storage;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::Arc;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Fixed-point unit representing `1.00%`.
 pub const ONE_PERCENT: u16 = 100;
@@ -616,6 +617,63 @@ impl SortitionParamsManager {
     }
 }
 
+/// Cloneable native owner of restored sortition runtime state.
+///
+/// Construction restores one [`SortitionParamsManager`] before publishing the
+/// service. Clones share the same mutex-protected runtime, and every lock
+/// failure maps to the stable `DAG_TRANSACTION_SERVICE_SORTITION_LOCK_POISONED`
+/// error used by existing application composition.
+#[derive(Clone)]
+pub struct SortitionService {
+    manager: Arc<Mutex<SortitionParamsManager>>,
+}
+
+impl SortitionService {
+    /// Restores the production sortition runtime from native Rust storage.
+    ///
+    /// Invalid configuration, malformed persisted state, replay failures, and
+    /// storage errors reject construction without publishing a partial owner.
+    pub fn restore(config: SortitionConfig, storage: Arc<Storage>) -> Result<Self> {
+        Ok(Self {
+            manager: Arc::new(Mutex::new(SortitionParamsManager::from_storage(
+                config, storage,
+            )?)),
+        })
+    }
+
+    /// Borrows the native sortition runtime under its serialization mutex.
+    ///
+    /// This temporary guard exists for DAG composition that must acquire locks
+    /// in DAG-then-sortition order and keep the sampled parameters stable
+    /// through cursor revalidation. It must not cross FinalChain, CXX, or other
+    /// external executor calls.
+    pub fn lock(&self) -> Result<SortitionServiceGuard<'_>> {
+        Ok(SortitionServiceGuard(self.manager.lock().map_err(
+            |_| anyhow::anyhow!("DAG_TRANSACTION_SERVICE_SORTITION_LOCK_POISONED"),
+        )?))
+    }
+}
+
+/// Temporary native guard for DAG/sortition atomic composition.
+///
+/// Callers acquire this only after the DAG mutex and before any transaction
+/// mutex. Standalone sortition tasks may acquire it directly.
+pub struct SortitionServiceGuard<'a>(MutexGuard<'a, SortitionParamsManager>);
+
+impl Deref for SortitionServiceGuard<'_> {
+    type Target = SortitionParamsManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for SortitionServiceGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Validates sortition runtime configuration before stateful use.
 fn validate_sortition_config(config: SortitionConfig) -> Result<()> {
     ensure!(
@@ -850,6 +908,58 @@ mod tests {
 
     fn storage_at(path: PathBuf) -> Arc<Storage> {
         Arc::new(Storage::new(Config::new(path)).expect("storage should initialize"))
+    }
+
+    #[test]
+    fn sortition_service_clones_share_one_restored_runtime() {
+        let path = unique_temp_dir("sortition_service_shared_owner");
+        let service =
+            SortitionService::restore(runtime_cfg(), storage_at(path.clone())).expect("restore");
+        let clone = service.clone();
+
+        let initial_change_count = service.lock().expect("service lock").params_changes().len();
+        clone
+            .lock()
+            .expect("clone lock")
+            .record_finalized_period(1, Some(50 * ONE_PERCENT), 1)
+            .expect("record finalized period");
+        assert_eq!(
+            service
+                .lock()
+                .expect("original lock")
+                .params_changes()
+                .len(),
+            initial_change_count + 1
+        );
+
+        drop(clone);
+        drop(service);
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn sortition_service_maps_poisoned_owner_lock_to_stable_error() {
+        let path = unique_temp_dir("sortition_service_poison");
+        let service =
+            SortitionService::restore(runtime_cfg(), storage_at(path.clone())).expect("restore");
+        let poisoner = service.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.manager.lock().expect("lock before poison");
+            panic!("poison native sortition owner");
+        })
+        .join();
+
+        let error = match service.lock() {
+            Ok(_) => panic!("poisoned lock must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "DAG_TRANSACTION_SERVICE_SORTITION_LOCK_POISONED"
+        );
+
+        drop(service);
+        let _ = fs::remove_dir_all(path);
     }
 
     fn pbft_block_rlp(period: u64, pivot: H256) -> Vec<u8> {

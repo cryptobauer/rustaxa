@@ -1181,6 +1181,9 @@ The current Rust consensus footprint is broad but still incomplete:
    startup bootstrap, anchor decisions, threshold and block/linkage planning, and latest-finalized lookup now enter
    through task-oriented native service APIs, leaving only FFI result conversion in the pillar-chain bridge. The
    native mutex guard, mutable state, snapshot, and decoder are crate-private rather than public compatibility APIs.
+   Native `SortitionService` owns restored sortition runtime state, its mutex, and poison policy. The production
+   DAG/transaction root requires that service structurally; optional sortition topology, availability probes, and
+   unavailable-domain branches are deleted while coupled DAG flows retain DAG-then-sortition lock ordering.
    C++ keeps daemon threads, networking, timers,
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
    sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT
