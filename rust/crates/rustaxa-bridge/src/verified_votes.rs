@@ -1214,10 +1214,7 @@ impl BridgePbftService {
         &self,
         operation: impl FnOnce(&mut VerifiedVotesAccess<'_>) -> Result<T, anyhow::Error>,
     ) -> Result<T, anyhow::Error> {
-        let service = self
-            .verified_votes
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE"))?;
+        let service = &self.verified_votes;
         let mut runtime = service.lock()?;
         operation(&mut VerifiedVotesAccess {
             runtime: &mut runtime,

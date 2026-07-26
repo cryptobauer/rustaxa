@@ -504,14 +504,12 @@ pub fn create_pbft_service_from_storage(
         manager: PbftManagerService::new(runtime, storage.0.clone(), chain.clone()),
         chain,
         proposed_blocks,
-        verified_votes: Some(restored_verified_votes),
-        slashing: Some(slashing),
+        verified_votes: restored_verified_votes,
+        slashing,
         #[cfg(test)]
         storage: Some(storage.0.clone()),
         readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
-        pillar: Some(std::sync::Mutex::new(
-            crate::pillar_chain::restore_pillar_chain_state(storage)?,
-        )),
+        pillar: std::sync::Mutex::new(crate::pillar_chain::restore_pillar_chain_state(storage)?),
         pillar_readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
     }))
 }
@@ -4516,7 +4514,6 @@ mod tests {
         let path = unique_temp_dir("rustaxa_bridge_pbft_service_pillar_readiness");
         let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
         let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
-        assert!(service.pbft_service_has_pillar());
         assert!(!service.pbft_service_pillar_ready());
         assert_eq!(
             service

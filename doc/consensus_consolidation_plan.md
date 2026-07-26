@@ -95,6 +95,9 @@ independent monotonic PBFT and pillar-bootstrap readiness atomics plus their acq
 bridge root retains only those native capabilities. Native
 `rustaxa-consensus::pbft_manager::PbftManagerService` now owns the manager mutex and complete runtime/session container;
 the bridge root retains a direct native service and exposes only a short-lived native guard to DTO/effect adapters.
+The bridge root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
+null-service and pillar-readiness checks, but no longer probe for capabilities that cannot be absent from a published
+service.
 PBFT construction/orchestration tests, the pillar owner, and the DAG/transaction/sortition owner remain in this
 workstream.
 

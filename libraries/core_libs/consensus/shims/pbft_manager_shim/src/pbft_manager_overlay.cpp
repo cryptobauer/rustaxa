@@ -207,11 +207,11 @@ constexpr uint8_t kPillarAnchorDecisionValidateCandidate = 0;
 constexpr uint8_t kPillarAnchorDecisionSelectPreviousPeriod = 1;
 constexpr uint8_t kPillarAnchorDecisionRestartPostProcessing = 2;
 
-// Returns the shared pillar-capable service only after its independent pillar
-// bootstrap has completed. Production decision paths fail explicitly instead
-// of constructing or falling back to a separate runtime.
+// Returns the shared PBFT service after pillar bootstrap has completed.
+// Production decision paths fail explicitly instead of constructing or
+// falling back to a separate runtime.
 const rustaxa::BridgePbftService &requireReadyPillarService(const SharedPbftService &service) {
-  if (!service || !service->service().pbft_service_has_pillar() || !service->service().pbft_service_pillar_ready()) {
+  if (!service || !service->service().pbft_service_pillar_ready()) {
     throw std::runtime_error("PBFT_SERVICE_PILLAR_UNAVAILABLE");
   }
   return service->service();

@@ -469,7 +469,7 @@ PillarChainManager::PillarChainManager(const FicusHardforkConfig& ficus_hf_confi
       current_pillar_block_{},
       mutex_{} {
   LOG_OBJECTS_CREATE("PILLAR_CHAIN");
-  if (!pbft_service_ || !pbft_service_->service().pbft_service_has_pillar()) {
+  if (!pbft_service_) {
     throw pillarVotesError("PBFT_SERVICE_PILLAR_UNAVAILABLE");
   }
 

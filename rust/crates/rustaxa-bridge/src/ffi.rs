@@ -187,8 +187,8 @@ pub struct BridgePbftService {
     pub(crate) manager: rustaxa_consensus::pbft_manager::PbftManagerService,
     pub(crate) chain: rustaxa_consensus::pbft_chain::PbftChainService,
     pub(crate) proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService,
-    pub(crate) verified_votes: Option<PbftVerifiedVotesService>,
-    pub(crate) slashing: Option<SlashingProofService>,
+    pub(crate) verified_votes: PbftVerifiedVotesService,
+    pub(crate) slashing: SlashingProofService,
     /// Test-only compatibility handle for legacy bridge fixtures.
     ///
     /// Production application services source storage from their native
@@ -199,7 +199,7 @@ pub struct BridgePbftService {
     /// Service-owned pillar state. The pillar mutex is never acquired while a
     /// PBFT manager guard is held and is released before returning any plan to
     /// C++ for FinalChain, network, or executor effects.
-    pub(crate) pillar: Option<Mutex<PillarChainState>>,
+    pub(crate) pillar: Mutex<PillarChainState>,
     /// Pillar replay readiness is independent from PBFT manager bootstrap.
     pub(crate) pillar_readiness: PbftServiceReadiness,
 }
@@ -222,8 +222,6 @@ impl BridgePbftService {
             anyhow::bail!("PBFT_SERVICE_PILLAR_UNAVAILABLE");
         }
         self.pillar
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_PILLAR_UNAVAILABLE"))?
             .lock()
             .map_err(|_| anyhow::anyhow!("PBFT service pillar lock poisoned"))
     }
@@ -4944,7 +4942,6 @@ pub mod rustaxa_ffi {
 
         // Consensus slashing proof planner owned by the PBFT service
 
-        pub fn pbft_service_has_slashing(self: &BridgePbftService) -> bool;
         pub fn slashing_plan_double_voting_proof(
             self: &BridgePbftService,
             input: DoubleVotingProofInput,
@@ -5318,7 +5315,6 @@ pub mod rustaxa_ffi {
         pub fn create_pillar_chain_storage(
             storage: &BridgeStorage,
         ) -> Box<BridgePillarChainStorage>;
-        pub fn pbft_service_has_pillar(self: &BridgePbftService) -> bool;
         pub fn pbft_service_pillar_ready(self: &BridgePbftService) -> bool;
         pub fn pbft_service_complete_pillar_bootstrap(self: &BridgePbftService) -> Result<()>;
         pub fn pillar_chain_storage_apply_current_block_data(

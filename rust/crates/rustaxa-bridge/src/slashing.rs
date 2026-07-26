@@ -38,32 +38,16 @@ pub(crate) fn create_slashing_state(
 }
 
 impl BridgePbftService {
-    /// Reports whether this PBFT service owns slashing planner state.
-    ///
-    /// Production services return `true` even when malicious-behavior reporting
-    /// is configured off, because the planner remains present and returns the
-    /// typed disabled status. Chain-only compatibility services return `false`,
-    /// allowing C++ facades to reject invalid wiring during construction. The
-    /// query is immutable and does not acquire any PBFT service lock.
-    pub fn pbft_service_has_slashing(&self) -> bool {
-        self.slashing.is_some()
-    }
-
     /// Builds one deterministic slashing transaction plan from C++ vote payloads.
     ///
-    /// The method locks only service-owned slashing state. Chain-only services
-    /// reject the call explicitly, and malformed evidence is represented by the
-    /// existing typed plan status rather than mutating duplicate protection.
+    /// The method locks only service-owned slashing state. Malformed evidence is
+    /// represented by the existing typed plan status rather than mutating
+    /// duplicate protection.
     pub fn slashing_plan_double_voting_proof(
         &self,
         input: DoubleVotingProofInput,
     ) -> Result<DoubleVotingProofPlan> {
-        Ok(self
-            .slashing
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_SLASHING_UNAVAILABLE"))?
-            .plan_double_voting_proof(input.into())?
-            .into())
+        Ok(self.slashing.plan_double_voting_proof(input.into())?.into())
     }
 
     /// Applies a typed transaction executor report to Rust duplicate protection.
@@ -77,8 +61,6 @@ impl BridgePbftService {
     ) -> Result<bool> {
         Ok(self
             .slashing
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("PBFT_SERVICE_SLASHING_UNAVAILABLE"))?
             .report_double_voting_proof_submission(
                 H256::from(report.proof_hash),
                 report.transaction_inserted,
@@ -262,14 +244,6 @@ mod tests {
         assert!(!plan.call_data.is_empty());
         assert_eq!(plan.value, [0u8; 32]);
         assert_eq!(plan.gas_limit, 100_000);
-        drop(service);
-        std::fs::remove_dir_all(path).unwrap();
-    }
-
-    #[test]
-    fn service_exposes_slashing_by_default() {
-        let (service, path) = service(true, 0);
-        assert!(service.pbft_service_has_slashing());
         drop(service);
         std::fs::remove_dir_all(path).unwrap();
     }

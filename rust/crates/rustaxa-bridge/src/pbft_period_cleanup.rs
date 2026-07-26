@@ -62,13 +62,7 @@ impl BridgePbftService {
             ));
         }
 
-        let Some(verified_votes) = self.verified_votes.as_ref() else {
-            return Ok(rejected(
-                finalized_chain_size,
-                new_period,
-                "PBFT_SERVICE_VERIFIED_VOTES_UNAVAILABLE",
-            ));
-        };
+        let verified_votes = &self.verified_votes;
         let mut runtime = verified_votes.lock().expect("verified votes lock poisoned");
         let mut proposed_blocks = self
             .proposed_blocks
@@ -232,7 +226,7 @@ mod tests {
             },
         )
         .unwrap();
-        *service.verified_votes.as_ref().unwrap().lock().unwrap() = runtime;
+        *service.verified_votes.lock().unwrap() = runtime;
         *service
     }
 
@@ -306,8 +300,6 @@ mod tests {
         assert_eq!(
             service
                 .verified_votes
-                .as_ref()
-                .unwrap()
                 .lock()
                 .unwrap()
                 .verified_votes()
@@ -337,8 +329,6 @@ mod tests {
         assert_eq!(
             service
                 .verified_votes
-                .as_ref()
-                .unwrap()
                 .lock()
                 .unwrap()
                 .verified_votes()

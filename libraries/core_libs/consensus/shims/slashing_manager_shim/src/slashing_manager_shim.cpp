@@ -105,9 +105,6 @@ SlashingManager::SlashingManager(const FullNodeConfig& config, SharedPbftService
   if (!pbft_service_) {
     throw std::invalid_argument("SlashingManager requires a PBFT service");
   }
-  if (!pbft_service_->service().pbft_service_has_slashing()) {
-    throw std::invalid_argument("SlashingManager requires a PBFT service with slashing state");
-  }
 }
 
 bool SlashingManager::submitDoubleVotingProof(const std::shared_ptr<PbftVote>& vote_a,

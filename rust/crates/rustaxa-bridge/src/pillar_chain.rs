@@ -464,12 +464,8 @@ impl PillarChainState {
 }
 
 impl BridgePbftService {
-    pub fn pbft_service_has_pillar(&self) -> bool {
-        self.pillar.is_some()
-    }
-
     pub fn pbft_service_pillar_ready(&self) -> bool {
-        self.pillar.is_some() && self.pillar_readiness.is_ready()
+        self.pillar_readiness.is_ready()
     }
 
     pub fn pbft_service_complete_pillar_bootstrap(&self) -> Result<()> {
@@ -837,11 +833,8 @@ mod tests {
         let temp_dir = unique_temp_dir("pillar_full_service_capability");
         let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
         let service = create_pillar_test_service_from_storage(&storage).unwrap();
-        assert!(service.pbft_service_has_pillar());
         assert!(service.pbft_service_pillar_ready());
         assert_eq!(service.manager.lock().state.snapshot().period, 1);
-        assert!(service.verified_votes.is_some());
-        assert!(service.slashing.is_some());
         assert_eq!(
             service.pbft_service_pillar_consensus_threshold(10).unwrap(),
             6

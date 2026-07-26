@@ -401,6 +401,13 @@ chain-only bootstrap rejection are deleted. Bridge tests that previously assembl
 full production composition. The bridge retains construction plus DTO/effect orchestration temporarily, but manager
 state and poison handling no longer belong to `rustaxa-bridge`. The checked bridge budget falls to 50,111 lines.
 
+The following `CRW-13` topology contraction makes every remaining PBFT sibling structurally required.
+`BridgePbftService` now contains verified-vote, slashing, and pillar owners directly; the optional fields, unavailable
+branches, and CXX `has_slashing`/`has_pillar` probes are deleted. C++ facades still reject null shared services, and
+pillar consumers still require completed pillar bootstrap, so lifecycle failures remain explicit without preserving
+an application topology that can no longer be constructed. The checked bridge budget falls to 50,058 lines and 416
+CXX functions.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.

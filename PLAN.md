@@ -1171,7 +1171,8 @@ The current Rust consensus footprint is broad but still incomplete:
    pillar-bootstrap atomics plus their monotonic acquire/release publication contracts; the bridge root now retains
    those native capabilities instead of owning lifecycle control state. Native `PbftManagerService` likewise owns the
    manager mutex, poison policy, and complete runtime/session container; bridge adapters borrow only a short-lived
-   native guard.
+   native guard. The full PBFT bridge root now structurally requires its verified-vote, slashing, and pillar siblings;
+   C++ retains null-root and pillar-readiness checks but no longer probes for optional capabilities.
    C++ keeps daemon threads, networking, timers,
    finalization side effects, and live object dispatch. A full Rust-mode `PbftManager` overlay now owns PBFT startup and
    sync-validation routing so upstream `pbft_manager.cpp` stays merge-clean; the copied overlay is deliberate PBFT
