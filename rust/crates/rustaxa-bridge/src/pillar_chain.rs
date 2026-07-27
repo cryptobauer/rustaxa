@@ -155,11 +155,11 @@ impl BridgePillarChainStorage {
 
 impl BridgePbftService {
     pub fn pbft_service_pillar_ready(&self) -> bool {
-        self.pillar.is_ready()
+        self.pillar().is_ready()
     }
 
     pub fn pbft_service_complete_pillar_bootstrap(&self) -> Result<()> {
-        self.pillar.complete_bootstrap()
+        self.pillar().complete_bootstrap()
     }
 
     /// Installs test setup data through the same generation check as production.
@@ -169,8 +169,8 @@ impl BridgePbftService {
     /// malformed payloads and persistence failures are returned unchanged.
     #[cfg(test)]
     pub fn pbft_service_pillar_apply_current_block_data(&self, data_rlp: Vec<u8>) -> Result<()> {
-        let expected_anchor_generation = self.pillar.sample_anchor_generation()?;
-        self.pillar
+        let expected_anchor_generation = self.pillar().sample_anchor_generation()?;
+        self.pillar()
             .apply_planned_current_block_data(data_rlp, expected_anchor_generation)
     }
 
@@ -180,34 +180,34 @@ impl BridgePbftService {
         data_rlp: Vec<u8>,
         expected_anchor_generation: u64,
     ) -> Result<()> {
-        self.pillar
+        self.pillar()
             .apply_planned_current_block_data(data_rlp, expected_anchor_generation)
     }
 
     pub fn pbft_service_pillar_apply_own_vote(&self, vote_rlp: Vec<u8>) -> Result<()> {
-        self.pillar.apply_own_vote(vote_rlp)
+        self.pillar().apply_own_vote(vote_rlp)
     }
 
     pub fn pbft_service_pillar_load_startup_bootstrap(
         &self,
     ) -> Result<FfiPillarChainStartupBootstrap> {
-        self.pillar.load_startup_bootstrap().map(Into::into)
+        self.pillar().load_startup_bootstrap().map(Into::into)
     }
 
     pub fn pbft_service_pillar_plan_current_anchor_decision(
         &self,
         request: FfiPillarCurrentAnchorDecisionRequest,
     ) -> Result<FfiPillarCurrentAnchorDecisionResult> {
-        self.pillar.sample_anchor_generation()?;
+        self.pillar().sample_anchor_generation()?;
         let request = ConsensusPillarCurrentAnchorDecisionRequest::try_from(request)?;
-        self.pillar
+        self.pillar()
             .plan_current_anchor_decision(request)
             .map(Into::into)
     }
 
     #[cfg(test)]
     pub fn pbft_service_pillar_consensus_threshold(&self, total_vote_count: u64) -> Result<u64> {
-        self.pillar.consensus_threshold(total_vote_count)
+        self.pillar().consensus_threshold(total_vote_count)
     }
 
     #[cfg(test)]
@@ -216,7 +216,7 @@ impl BridgePbftService {
         request: FfiPillarBlockCreationRequest,
         current_vote_counts: Vec<FfiPillarValidatorVoteCount>,
     ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
-        self.pillar
+        self.pillar()
             .plan_block_creation(
                 request.into(),
                 current_vote_counts.into_iter().map(Into::into).collect(),
@@ -238,7 +238,7 @@ impl BridgePbftService {
         final_chain: &BridgeFinalChain,
         request: FfiPillarBlockCreationRequest,
     ) -> Result<FfiPillarBlockCreationWithVoteCountsPlan> {
-        let generation = self.pillar.sample_anchor_generation()?;
+        let generation = self.pillar().sample_anchor_generation()?;
         let current_vote_counts = final_chain
             .0
             .dpos_validators_eligible_vote_counts(request.pillar_block_period.into())?
@@ -248,7 +248,7 @@ impl BridgePbftService {
                 vote_count: value.vote_count,
             })
             .collect();
-        self.pillar
+        self.pillar()
             .plan_block_creation_for_generation(request.into(), current_vote_counts, generation)
             .map(Into::into)
     }
@@ -257,13 +257,13 @@ impl BridgePbftService {
         &self,
         request: FfiPillarBlockLinkageRequest,
     ) -> Result<FfiPillarBlockLinkagePlan> {
-        self.pillar
+        self.pillar()
             .plan_block_linkage(request.into())
             .map(Into::into)
     }
 
     pub fn pbft_service_pillar_latest_finalized_block_rlp(&self) -> Result<Vec<u8>> {
-        self.pillar.latest_finalized_block_rlp()
+        self.pillar().latest_finalized_block_rlp()
     }
 }
 
@@ -513,7 +513,7 @@ mod tests {
         let storage = create_storage(temp_dir.to_str().unwrap()).unwrap();
         let service = create_pillar_test_service_from_storage(&storage).unwrap();
         assert!(service.pbft_service_pillar_ready());
-        assert_eq!(service.manager.lock().state.snapshot().period, 1);
+        assert_eq!(service.manager_state().state.snapshot().period, 1);
         assert_eq!(
             service.pbft_service_pillar_consensus_threshold(10).unwrap(),
             6

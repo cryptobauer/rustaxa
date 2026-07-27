@@ -23,7 +23,7 @@ impl BridgePbftService {
         pivot_hash: &[u8; 32],
         block_rlp: Vec<u8>,
     ) -> Result<bool, anyhow::Error> {
-        self.proposed_blocks.push_with_storage(
+        self.proposed_blocks().push_with_storage(
             period,
             H256::from(*block_hash),
             H256::from(*pivot_hash),
@@ -42,7 +42,7 @@ impl BridgePbftService {
         period: u64,
         block_hash: &[u8; 32],
     ) -> Result<(), anyhow::Error> {
-        self.proposed_blocks
+        self.proposed_blocks()
             .mark_valid(period, H256::from(*block_hash))
     }
 
@@ -56,7 +56,7 @@ impl BridgePbftService {
         period: u64,
         block_hash: &[u8; 32],
     ) -> ProposedBlockLookup {
-        self.proposed_blocks
+        self.proposed_blocks()
             .get(period, H256::from(*block_hash))
             .map(|entry| ProposedBlockLookup {
                 found: true,
@@ -78,7 +78,7 @@ impl BridgePbftService {
     /// The snapshot is point-in-time and subsequent service mutations do not
     /// change it.
     pub fn pbft_service_proposed_blocks_snapshot_entries(&self) -> Vec<ProposedBlockSnapshotEntry> {
-        self.proposed_blocks
+        self.proposed_blocks()
             .snapshot_entries()
             .into_iter()
             .map(|entry| ProposedBlockSnapshotEntry {

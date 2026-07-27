@@ -1165,16 +1165,19 @@ The current Rust consensus footprint is broad but still incomplete:
    the CXX-free native `PbftVerifiedVotesService` now owns verified-vote storage lifetime, restoration, the admission
    runtime, and its shared mutex. The bridge temporarily borrows that native guard for cross-domain validation,
    leader-selection, finalization, and typed effect conversion but owns no verified-vote runtime state or lock. The
-   production PBFT bridge root no longer retains a second optional storage `Arc`; each native sibling owner supplies
-   the exact durable handle for its operation. Native `SlashingProofService` likewise owns the configured double-vote
+   CXX-free native `PbftService` now validates slashing configuration, restores every storage-backed PBFT sibling from
+   one handle, publishes only the complete root, and owns bootstrap readiness. `BridgePbftService` is a one-field CXX
+   adapter with no sibling state, storage handle,
+   mutex, or readiness flag; each native sibling owner supplies the exact durable handle for its operation. Native
+   `SlashingProofService` likewise owns the configured double-vote
    planner, bounded submitted-proof cache, and mutex; the bridge performs evidence/status conversion and C++ retains
    account/gas lookup plus transaction signing and submission execution. The C++ slashing facade also temporarily
    retains its live-vote overload's slot precheck and compatibility materialization until the remaining network caller
    supplies Rust-normalized evidence directly. Native `PbftServiceReadiness` instances own the independent PBFT and
-   pillar-bootstrap atomics plus their monotonic acquire/release publication contracts; the bridge root now retains
-   those native capabilities instead of owning lifecycle control state. Native `PbftManagerService` likewise owns the
+   pillar-bootstrap atomics plus their monotonic acquire/release publication contracts; the native application root
+   retains those capabilities. Native `PbftManagerService` likewise owns the
    manager mutex, poison policy, and complete runtime/session container; bridge adapters borrow only a short-lived
-   native guard. The full PBFT bridge root now structurally requires its verified-vote, slashing, and pillar siblings;
+   native guard. The native PBFT root structurally requires its verified-vote, slashing, and pillar siblings;
    C++ retains null-root and pillar-readiness checks but no longer probes for optional capabilities. Native
    `PillarChainService` owns pillar storage/restoration, votes, anchor and preparation state, finalization token
    sequencing, its outer mutex, and readiness. Native pillar-vote task methods own admission, relevance, weighted

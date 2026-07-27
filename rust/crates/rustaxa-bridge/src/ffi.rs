@@ -19,7 +19,6 @@ use crate::vdf::*;
 use ethereum_types::H256;
 use rustaxa_consensus::dag::DagManagerState;
 use rustaxa_consensus::gas_pricer::GasPriceOracle;
-use rustaxa_consensus::slashing::SlashingProofService;
 use rustaxa_consensus::transaction_manager::{
     TransactionManagerSidecar, TransactionPackingPlanner,
 };
@@ -28,9 +27,7 @@ use rustaxa_consensus::ConsensusExecutionApi;
 use rustaxa_consensus::ConsensusNetworkApi;
 use rustaxa_consensus::ConsensusQueryApi;
 use rustaxa_consensus::FinalChain;
-use rustaxa_consensus::PbftServiceReadiness;
-use rustaxa_consensus::PbftVerifiedVotesService;
-use rustaxa_consensus::PillarChainService;
+use rustaxa_consensus::PbftService;
 use rustaxa_storage::Storage;
 use rustaxa_storage::StorageWriteBatch;
 use std::sync::Arc;
@@ -168,34 +165,12 @@ pub struct BridgePillarChainStorage {
     pub storage: Arc<Storage>,
 }
 
-/// Application-owned PBFT service shared by the C++ manager and chain facades.
+/// Thin CXX adapter over the CXX-free native PBFT application root.
 ///
-/// The service is the sole Rust owner of PBFT manager/session state, PBFT chain
-/// state, proposed-block state, and their common storage handle. Manager
-/// commands are serialized by the native `PbftManagerService`; the bridge does
-/// not own or reproduce that mutex domain. Chain and proposed-block reads use
-/// independent sibling lock domains, and every verified-vote operation is
-/// serialized by `verified_votes`. Slashing planning and its duplicate-proof
-/// cache use the independent `slashing` mutex. Operations that need both the
-/// manager and chain acquire the native manager guard before the chain; no
-/// guard is retained across a C++ executor call.
-pub struct BridgePbftService {
-    pub(crate) manager: rustaxa_consensus::pbft_manager::PbftManagerService,
-    pub(crate) chain: rustaxa_consensus::pbft_chain::PbftChainService,
-    pub(crate) proposed_blocks: rustaxa_consensus::proposed_blocks::ProposedBlocksService,
-    pub(crate) verified_votes: PbftVerifiedVotesService,
-    pub(crate) slashing: SlashingProofService,
-    /// Test-only compatibility handle for legacy bridge fixtures.
-    ///
-    /// Production application services source storage from their native
-    /// manager, chain, proposed-block, verified-vote, and pillar owners.
-    #[cfg(test)]
-    pub(crate) storage: Option<Arc<Storage>>,
-    pub(crate) readiness: PbftServiceReadiness,
-    /// Native pillar owner. Its storage, restoration, votes, preparation
-    /// registries, outer lock, anchor lock, and readiness never live in CXX.
-    pub(crate) pillar: PillarChainService,
-}
+/// The bridge owns no sibling protocol state, storage handle, mutex, or
+/// readiness flag. It maps stable CXX inputs and outputs around the native
+/// composition without changing the native siblings' lock domains.
+pub struct BridgePbftService(pub(crate) PbftService);
 
 impl BridgePbftService {
     /// Locks the native PBFT manager runtime for one bridge operation.
@@ -204,7 +179,39 @@ impl BridgePbftService {
     /// keeping mutex ownership and poison handling inside `rustaxa-consensus`.
     /// Callers must drop it before invoking any external C++ executor.
     pub(crate) fn manager_state(&self) -> rustaxa_consensus::pbft_manager::PbftManagerGuard<'_> {
-        self.manager.lock()
+        self.0.manager_state()
+    }
+
+    pub(crate) fn chain(&self) -> &rustaxa_consensus::pbft_chain::PbftChainService {
+        self.0.chain()
+    }
+
+    pub(crate) fn proposed_blocks(
+        &self,
+    ) -> &rustaxa_consensus::proposed_blocks::ProposedBlocksService {
+        self.0.proposed_blocks()
+    }
+
+    pub(crate) fn verified_votes(
+        &self,
+    ) -> &rustaxa_consensus::pbft_vote_runtime::PbftVerifiedVotesService {
+        self.0.verified_votes()
+    }
+
+    pub(crate) fn slashing(&self) -> &rustaxa_consensus::slashing::SlashingProofService {
+        self.0.slashing()
+    }
+
+    pub(crate) fn readiness(&self) -> &rustaxa_consensus::PbftServiceReadiness {
+        self.0.readiness()
+    }
+
+    pub(crate) fn pillar(&self) -> &rustaxa_consensus::PillarChainService {
+        self.0.pillar()
+    }
+
+    pub(crate) fn complete_bootstrap(&self) {
+        self.0.complete_bootstrap();
     }
 }
 

@@ -62,10 +62,10 @@ impl BridgePbftService {
             ));
         }
 
-        let verified_votes = &self.verified_votes;
+        let verified_votes = self.verified_votes();
         let mut runtime = verified_votes.lock().expect("verified votes lock poisoned");
         let mut proposed_blocks = self
-            .proposed_blocks
+            .proposed_blocks()
             .write()
             .expect("proposed blocks lock poisoned");
 
@@ -226,7 +226,7 @@ mod tests {
             },
         )
         .unwrap();
-        *service.verified_votes.lock().unwrap() = runtime;
+        *service.verified_votes().lock().unwrap() = runtime;
         *service
     }
 
@@ -260,12 +260,12 @@ mod tests {
         let old_hash = H256::from_low_u64_be(900);
         let kept_hash = H256::from_low_u64_be(901);
         service
-            .proposed_blocks
+            .proposed_blocks()
             .write()
             .unwrap()
             .push(11, old_hash, H256::zero(), vec![0x11]);
         service
-            .proposed_blocks
+            .proposed_blocks()
             .write()
             .unwrap()
             .push(13, kept_hash, H256::zero(), vec![0x13]);
@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(rejected.proposed_blocks_removed, 0);
         assert_eq!(
             service
-                .verified_votes
+                .verified_votes()
                 .lock()
                 .unwrap()
                 .verified_votes()
@@ -307,7 +307,7 @@ mod tests {
             2
         );
         assert!(service
-            .proposed_blocks
+            .proposed_blocks()
             .read()
             .unwrap()
             .contains(11, old_hash));
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(applied.persistence_applied_deletes, 1);
         assert_eq!(
             service
-                .verified_votes
+                .verified_votes()
                 .lock()
                 .unwrap()
                 .verified_votes()
@@ -336,12 +336,12 @@ mod tests {
             1
         );
         assert!(!service
-            .proposed_blocks
+            .proposed_blocks()
             .read()
             .unwrap()
             .contains(11, old_hash));
         assert!(service
-            .proposed_blocks
+            .proposed_blocks()
             .read()
             .unwrap()
             .contains(13, kept_hash));

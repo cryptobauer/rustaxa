@@ -10,6 +10,7 @@ pub mod pbft_finalize;
 pub mod pbft_manager;
 pub mod pbft_readiness;
 pub mod pbft_reward_votes;
+pub mod pbft_service;
 pub mod pbft_sync;
 pub mod pbft_thresholds;
 pub mod pbft_vote_admission;
@@ -210,6 +211,7 @@ pub use pbft_reward_votes::{
     PbftRewardVoteRoundCandidate, PbftRewardVoteSelectionFact, PbftRewardVoteSelectionPlan,
     PbftRewardVotesStatus, plan_pbft_reward_votes,
 };
+pub use pbft_service::{PbftService, PbftServiceConfig};
 pub use pbft_sync::{
     PbftSyncFactStatus, PbftSyncFinalChainHashStatus, PbftSyncPeriodAdmissionDecision,
     PbftSyncPeriodAdmissionFact, PbftSyncPeriodAdmissionPlan, PbftSyncPeriodAdmissionStatus,

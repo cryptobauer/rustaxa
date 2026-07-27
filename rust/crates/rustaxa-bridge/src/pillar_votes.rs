@@ -29,7 +29,7 @@ impl BridgePbftService {
         context: PillarVoteSingleAdmissionContext,
     ) -> Result<FfiPillarVoteSingleAdmissionPreparePlan> {
         let result = self
-            .pillar
+            .pillar()
             .pbft_service_pillar_validate_single_vote_with_final_chain(
                 &final_chain.0,
                 vote_rlp,
@@ -51,7 +51,7 @@ impl BridgePbftService {
         trusted_local_or_restore: bool,
     ) -> Result<PillarVoteSingleAdmissionWithFinalChainPlan> {
         let result = self
-            .pillar
+            .pillar()
             .pbft_service_pillar_apply_single_vote_with_final_chain(
                 &final_chain.0,
                 vote_rlp,
@@ -78,7 +78,7 @@ impl BridgePbftService {
         period: u64,
     ) -> Result<PillarConsensusThresholdLookup> {
         let result = self
-            .pillar
+            .pillar()
             .pbft_service_pillar_consensus_threshold_with_final_chain(&final_chain.0, period)?;
         Ok(PillarConsensusThresholdLookup {
             available: result.available,
@@ -92,7 +92,7 @@ impl BridgePbftService {
         vote_rlp: Vec<u8>,
         context: PillarVoteRuntimeRelevanceContext,
     ) -> Result<FfiPillarVoteRelevancePlan> {
-        let result = self.pillar.pbft_service_pillar_plan_vote_relevance(
+        let result = self.pillar().pbft_service_pillar_plan_vote_relevance(
             vote_rlp,
             rustaxa_consensus::pillar_vote_service::PillarVoteRuntimeRelevanceContext {
                 first_pillar_block_period: context.first_pillar_block_period,
@@ -112,7 +112,7 @@ impl BridgePbftService {
         required_votes_period: u64,
     ) -> Result<PillarVoteBundleWithFinalChainPlan> {
         let result = self
-            .pillar
+            .pillar()
             .pbft_service_pillar_apply_rlp_bundle_with_final_chain(
                 &final_chain.0,
                 vote_rlps
@@ -144,11 +144,9 @@ impl BridgePbftService {
         block_hash: &[u8; 32],
         above_threshold: bool,
     ) -> Result<PillarVotesPayloadLookup> {
-        let result = self.pillar.pbft_service_pillar_get_verified_vote_payloads(
-            period,
-            block_hash,
-            above_threshold,
-        )?;
+        let result = self
+            .pillar()
+            .pbft_service_pillar_get_verified_vote_payloads(period, block_hash, above_threshold)?;
         Ok(native_payload_lookup_to_ffi(result))
     }
 
@@ -159,7 +157,7 @@ impl BridgePbftService {
         max_votes_per_bundle: usize,
     ) -> Result<PillarVoteNetworkBundleLookup> {
         let result = self
-            .pillar
+            .pillar()
             .pbft_service_pillar_build_verified_vote_network_bundles(
                 period,
                 block_hash,
@@ -187,7 +185,7 @@ impl BridgePbftService {
         request: PillarBlockFinalizationRequest,
     ) -> Result<PillarBlockFinalizationPrepareResult> {
         let result = self
-            .pillar
+            .pillar()
             .pbft_service_pillar_prepare_finalized_block_for_pbft(
                 rustaxa_consensus::pillar_vote_service::PillarBlockFinalizationRequest {
                     requested_pillar_block_hash: request.requested_pillar_block_hash,
@@ -223,7 +221,7 @@ impl BridgePbftService {
         request: PillarBlockFinalizationAcknowledgeRequest,
     ) -> Result<PillarBlockFinalizationAcknowledgeResult> {
         let result = self
-            .pillar
+            .pillar()
             .pbft_service_pillar_ack_finalize_block_for_pbft(
                 rustaxa_consensus::pillar_vote_service::PillarBlockFinalizationAcknowledgeRequest {
                     anchor_generation: request.anchor_generation,
@@ -502,7 +500,7 @@ mod tests {
             assert_eq!(plan.vote_hash, vote.hash(true).0);
 
             let missing = runtime
-                .pillar
+                .pillar()
                 .pbft_service_pillar_apply_prepared_single_vote_admission(
                     rustaxa_consensus::pillar_vote_service::PillarVoteSingleAdmissionApplyInput {
                         vote_hash: vote.hash(true).into(),

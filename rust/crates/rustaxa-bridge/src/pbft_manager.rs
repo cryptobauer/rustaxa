@@ -77,9 +77,9 @@ use crate::ffi::rustaxa_ffi::{
 use crate::ffi::{BridgePbftService, BridgeStorage};
 use anyhow::{anyhow, Context};
 use rustaxa_consensus::dag::dag_block_period_from_storage;
+use rustaxa_consensus::pbft_chain::pbft_block_exists_in_storage;
 #[cfg(test)]
 use rustaxa_consensus::pbft_chain::PbftChain;
-use rustaxa_consensus::pbft_chain::{pbft_block_exists_in_storage, PbftChainService};
 use rustaxa_consensus::pbft_finalize::{
     apply_pbft_finalization_storage_writes as apply_domain_pbft_finalization_storage_writes,
     inspect_pbft_finalization_resume as inspect_domain_pbft_finalization_resume,
@@ -104,7 +104,6 @@ use rustaxa_consensus::pbft_manager::{
     apply_executed_block_reset_storage, apply_next_voted_status_storage,
     apply_pbft_manager_cursor_field_storage, apply_pbft_manager_transition_storage,
     create_pbft_manager_proposal_session as create_domain_pbft_manager_proposal_session,
-    create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
     create_pbft_manager_runtime_session as create_domain_pbft_manager_runtime_session,
     create_pbft_manager_state_action_effect_session as create_domain_pbft_manager_state_action_effect_session,
     load_pbft_manager_startup_replay_period as load_domain_pbft_manager_startup_replay_period,
@@ -141,13 +140,17 @@ use rustaxa_consensus::pbft_manager::{
     PbftManagerProposalWalletFact, PbftManagerRuntimeAction, PbftManagerRuntimeActionReport,
     PbftManagerRuntimeActionResultCode, PbftManagerRuntimeSessionStep, PbftManagerRuntimeSnapshot,
     PbftManagerRuntimeState, PbftManagerRuntimeStateCode, PbftManagerRuntimeStatus,
-    PbftManagerRuntimeTickFact, PbftManagerService, PbftManagerSleepPlan,
-    PbftManagerStartupReplayRangeFact, PbftManagerStartupReplayRangePlan,
-    PbftManagerStateActionEffect, PbftManagerStateActionEffectReport,
-    PbftManagerStateActionEffectResultCode, PbftManagerStateActionFact,
-    PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
-    PbftManagerStateActionSessionStep, PbftManagerStorageStartupFact, PbftManagerTransitionKind,
-    PbftManagerTransitionStatus, PbftManagerTransitionStorageStatus,
+    PbftManagerRuntimeTickFact, PbftManagerSleepPlan, PbftManagerStartupReplayRangeFact,
+    PbftManagerStartupReplayRangePlan, PbftManagerStateActionEffect,
+    PbftManagerStateActionEffectReport, PbftManagerStateActionEffectResultCode,
+    PbftManagerStateActionFact, PbftManagerStateActionIntent, PbftManagerStateActionSessionStatus,
+    PbftManagerStateActionSessionStep, PbftManagerTransitionKind, PbftManagerTransitionStatus,
+    PbftManagerTransitionStorageStatus,
+};
+#[cfg(test)]
+use rustaxa_consensus::pbft_manager::{
+    create_pbft_manager_runtime_from_storage as create_domain_pbft_manager_runtime_from_storage,
+    PbftManagerStorageStartupFact,
 };
 use rustaxa_consensus::pbft_sync::{
     create_pbft_sync_queue_drain_session as create_domain_pbft_sync_queue_drain_session,
@@ -157,9 +160,8 @@ use rustaxa_consensus::pbft_sync::{
     PbftSyncQueueDrainStatus, PbftSyncQueueDrainStep,
 };
 use rustaxa_consensus::pillar_chain::load_own_pillar_block_vote_storage;
-use rustaxa_consensus::proposed_blocks::ProposedBlocksService;
 use rustaxa_consensus::sortition::SortitionParamsChange;
-use rustaxa_consensus::PbftVerifiedVotesService;
+use rustaxa_consensus::{PbftService, PbftServiceConfig};
 
 impl From<crate::ffi::rustaxa_ffi::PbftFinalizationStorageWriteStage>
     for PbftFinalizationStorageWriteStage
@@ -472,45 +474,25 @@ pub fn create_pbft_service_from_storage(
     storage: &BridgeStorage,
     config: FfiPbftServiceConfig,
 ) -> anyhow::Result<Box<BridgePbftService>> {
-    let slashing = crate::slashing::create_slashing_state(
-        config.report_malicious_behaviour,
-        config.magnolia_activation_period,
-    )?;
-    let chain = PbftChainService::restore(storage.0.clone())?;
-    let restored_verified_votes = PbftVerifiedVotesService::restore(storage.0.clone())?;
-    let proposed_blocks = ProposedBlocksService::restore(storage.0.clone())?;
-    let current_period = chain.head().size.saturating_add(1);
-    let cacti_active_at_chain_size = chain.head().size >= config.cacti_block;
-    let runtime = create_domain_pbft_manager_runtime_from_storage(
-        &storage.0,
-        PbftManagerStorageStartupFact {
-            current_period,
-            cacti_active_at_chain_size,
-            genesis_lambda_ms: to_startup_u32(config.genesis_lambda_ms, "GENESIS_LAMBDA")?,
-            cacti_lambda_max_ms: to_startup_u32(config.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
-            cacti_lambda_default_ms: to_startup_u32(
-                config.cacti_lambda_default_ms,
-                "CACTI_LAMBDA_DEFAULT",
-            )?,
-            cacti_block: config.cacti_block,
-            max_exponential_lambda_ms: config.max_exponential_lambda_ms,
-            max_steps: config.max_steps,
-            deadline_ms: config.deadline_ms,
-            polling_interval_ms: config.polling_interval_ms,
-        },
-    )?;
-
-    Ok(Box::new(BridgePbftService {
-        manager: PbftManagerService::new(runtime, storage.0.clone(), chain.clone()),
-        chain,
-        proposed_blocks,
-        verified_votes: restored_verified_votes,
-        slashing,
-        #[cfg(test)]
-        storage: Some(storage.0.clone()),
-        readiness: rustaxa_consensus::PbftServiceReadiness::pending(),
-        pillar: rustaxa_consensus::PillarChainService::restore(storage.0.clone())?,
-    }))
+    let config = PbftServiceConfig {
+        genesis_lambda_ms: to_startup_u32(config.genesis_lambda_ms, "GENESIS_LAMBDA")?,
+        cacti_lambda_max_ms: to_startup_u32(config.cacti_lambda_max_ms, "CACTI_LAMBDA_MAX")?,
+        cacti_lambda_default_ms: to_startup_u32(
+            config.cacti_lambda_default_ms,
+            "CACTI_LAMBDA_DEFAULT",
+        )?,
+        cacti_block: config.cacti_block,
+        max_exponential_lambda_ms: config.max_exponential_lambda_ms,
+        max_steps: config.max_steps,
+        deadline_ms: config.deadline_ms,
+        polling_interval_ms: config.polling_interval_ms,
+        report_malicious_behaviour: config.report_malicious_behaviour,
+        magnolia_activation_period: config.magnolia_activation_period,
+    };
+    Ok(Box::new(BridgePbftService(PbftService::restore(
+        storage.0.clone(),
+        config,
+    )?)))
 }
 
 /// Marks the typed PBFT startup replay phase complete.
@@ -520,7 +502,7 @@ pub fn create_pbft_service_from_storage(
 /// daemon, proposal, and sync-session entry points remain fail-closed until the
 /// application completes replay and calls this function.
 pub fn pbft_service_complete_bootstrap(service: &BridgePbftService) -> anyhow::Result<()> {
-    service.readiness.mark_ready();
+    service.complete_bootstrap();
     Ok(())
 }
 
@@ -718,7 +700,7 @@ fn queue_drain_report_from_ffi(value: FfiPbftSyncQueueDrainReport) -> PbftSyncQu
 ///   pass. The live `PeriodData` sidecars remain C++-owned for now, but the
 ///   planner session no longer requires a standalone CXX bridge handle.
 pub fn pbft_manager_runtime_begin_pbft_sync_queue_drain(runtime: &BridgePbftService) {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return;
     }
     let mut runtime = runtime.manager_state();
@@ -744,7 +726,7 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_next(
     queue_size: usize,
     current_period: u64,
 ) -> FfiPbftSyncQueueDrainStep {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return queue_drain_bootstrap_incomplete_step();
     }
     let mut runtime = runtime.manager_state();
@@ -772,7 +754,7 @@ pub fn pbft_manager_runtime_pbft_sync_queue_drain_report(
     runtime: &BridgePbftService,
     report: FfiPbftSyncQueueDrainReport,
 ) -> FfiPbftSyncQueueDrainReportResult {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return queue_drain_bootstrap_incomplete_report();
     }
     let mut runtime = runtime.manager_state();
@@ -1623,7 +1605,7 @@ pub fn pbft_manager_runtime_begin_session(
     runtime: &BridgePbftService,
     fact: FfiPbftManagerRuntimeTickFact,
 ) {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return;
     }
     let mut runtime = runtime.manager_state();
@@ -1812,7 +1794,7 @@ pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
     fact: FfiPbftManagerProposalInitialFact,
     final_chain_hash: Option<[u8; 32]>,
 ) {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return;
     }
     let mut runtime = runtime.manager_state();
@@ -1825,7 +1807,7 @@ pub(crate) fn pbft_manager_runtime_begin_proposal_session_with_hash(
 pub fn pbft_manager_proposal_session_next(
     runtime: &BridgePbftService,
 ) -> FfiPbftManagerProposalSessionStep {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return proposal_session_not_started_step();
     }
     let mut runtime = runtime.manager_state();
@@ -4035,17 +4017,25 @@ mod tests {
         create_metadata_storage_queries, create_pbft_storage_queries,
         create_pbft_vote_storage_queries, create_storage,
     };
-    use ethereum_types::{H160, H256};
+    use ethereum_types::H256;
     use rustaxa_consensus::pbft_finalize::{PbftFinalizationResumeStatus, PbftFinalizationStatus};
     use rustaxa_consensus::pbft_manager::save_cert_voted_block_in_round_storage;
     use rustaxa_consensus::{
         persist_pbft_vote_progress, save_own_verified_vote, PbftVoteProgressPersistenceWrite,
         PbftVoteStorageRecord,
     };
-    use rustaxa_types::pillar::{CurrentPillarBlockDataDb, PillarBlock};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Clones the storage handle from the native manager owner for bridge
+    /// boundary fixtures. This deliberately avoids recreating the removed
+    /// bridge-root storage sidecar.
+    fn native_service_storage(
+        service: &BridgePbftService,
+    ) -> std::sync::Arc<rustaxa_storage::Storage> {
+        service.manager_state().storage.clone()
+    }
 
     const STATE_VALUE_PROPOSAL: u8 = 0;
     const STATE_CERTIFY: u8 = 2;
@@ -4493,104 +4483,6 @@ mod tests {
     }
 
     #[test]
-    fn pbft_service_derives_period_and_cacti_activation_from_restored_chain() {
-        let path = unique_temp_dir("rustaxa_bridge_pbft_service_bootstrap_derivation");
-        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
-
-        let active = create_pbft_service_from_storage(&storage, service_config(0)).unwrap();
-        let active_snapshot = pbft_manager_runtime_snapshot(&active);
-        assert_eq!(active_snapshot.period, 1);
-        assert_eq!(active_snapshot.current_round_lambda_ms, 1_500);
-
-        let inactive = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
-        let inactive_snapshot = pbft_manager_runtime_snapshot(&inactive);
-        assert_eq!(inactive_snapshot.period, 1);
-        assert_eq!(inactive_snapshot.current_round_lambda_ms, 100);
-    }
-
-    #[test]
-    fn full_pbft_service_publishes_pillar_readiness_without_changing_public_tasks() {
-        let path = unique_temp_dir("rustaxa_bridge_pbft_service_pillar_readiness");
-        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
-        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
-        assert!(!service.pbft_service_pillar_ready());
-        assert_eq!(
-            service
-                .pbft_service_pillar_consensus_threshold(10)
-                .unwrap_err()
-                .to_string(),
-            "PBFT_SERVICE_PILLAR_UNAVAILABLE"
-        );
-        let pending_bootstrap = service
-            .pbft_service_pillar_load_startup_bootstrap()
-            .unwrap();
-        assert!(pending_bootstrap.own_vote_rlp.is_empty());
-        assert!(pending_bootstrap.current_block_data_rlp.is_empty());
-        assert!(pending_bootstrap
-            .latest_pillar_votes_period_data_rlp
-            .is_empty());
-        service.pbft_service_complete_pillar_bootstrap().unwrap();
-        assert!(service.pbft_service_pillar_ready());
-        assert_eq!(
-            service.pbft_service_pillar_consensus_threshold(10).unwrap(),
-            6
-        );
-        let ready_bootstrap = service
-            .pbft_service_pillar_load_startup_bootstrap()
-            .unwrap();
-        assert_eq!(ready_bootstrap.own_vote_rlp, pending_bootstrap.own_vote_rlp);
-        assert_eq!(
-            ready_bootstrap.current_block_data_rlp,
-            pending_bootstrap.current_block_data_rlp
-        );
-        assert_eq!(
-            ready_bootstrap.latest_pillar_votes_period_data_rlp,
-            pending_bootstrap.latest_pillar_votes_period_data_rlp
-        );
-        let _ = fs::remove_dir_all(path);
-    }
-
-    #[test]
-    fn full_pbft_service_pillar_persistence_restarts_through_same_owner() {
-        let path = unique_temp_dir("rustaxa_bridge_pbft_service_pillar_restart");
-        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
-        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
-        service.pbft_service_complete_pillar_bootstrap().unwrap();
-        let data = CurrentPillarBlockDataDb {
-            pillar_block: PillarBlock {
-                period: 1,
-                state_root: H256::from_low_u64_be(1),
-                previous_pillar_block_hash: H256::zero(),
-                bridge_root: H256::from_low_u64_be(2),
-                epoch: 3,
-                validator_vote_count_changes: Vec::new(),
-            },
-            vote_counts: vec![rustaxa_types::pillar::ValidatorVoteCount {
-                address: H160::from_low_u64_be(4),
-                vote_count: 5,
-            }],
-        }
-        .encode_rlp();
-        service
-            .pbft_service_pillar_apply_current_block_data(data.clone())
-            .unwrap();
-        drop(service);
-
-        let restarted = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
-        assert!(!restarted.pbft_service_pillar_ready());
-        assert_eq!(
-            restarted
-                .pbft_service_pillar_load_startup_bootstrap()
-                .unwrap()
-                .current_block_data_rlp,
-            data
-        );
-        restarted.pbft_service_complete_pillar_bootstrap().unwrap();
-        assert!(restarted.pbft_service_pillar_ready());
-        let _ = fs::remove_dir_all(path);
-    }
-
-    #[test]
     fn pbft_service_rejects_live_sessions_until_bootstrap_completes() {
         let path = unique_temp_dir("rustaxa_bridge_pbft_service_bootstrap_phase");
         let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
@@ -4680,44 +4572,6 @@ mod tests {
         assert_ne!(ready_drain.error_code, "PBFT_SERVICE_BOOTSTRAP_INCOMPLETE");
     }
 
-    #[test]
-    fn pbft_service_shares_chain_visibility_with_manager_owned_state() {
-        let path = unique_temp_dir("rustaxa_bridge_pbft_service_shared_chain");
-        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
-        let service = create_pbft_service_from_storage(&storage, service_config(1)).unwrap();
-
-        service.pbft_chain_update(&[7; 32], &[4; 32]).unwrap();
-        let public_head = service.pbft_chain_head();
-        let manager_chain_head = service
-            .manager_state()
-            .chain
-            .read()
-            .expect("PBFT chain lock should remain healthy")
-            .state
-            .head();
-
-        assert_eq!(public_head.size, manager_chain_head.size);
-        assert_eq!(
-            public_head.last_pbft_block_hash,
-            <[u8; 32]>::from(manager_chain_head.last_pbft_block_hash)
-        );
-    }
-
-    #[test]
-    fn pbft_service_constructor_fails_without_publishing_partial_state() {
-        let path = unique_temp_dir("rustaxa_bridge_pbft_service_failure");
-        let storage = create_storage(path.to_str().expect("UTF-8 path")).unwrap();
-        let mut config = service_config(1);
-        config.genesis_lambda_ms = 0;
-
-        let error = create_pbft_service_from_storage(&storage, config)
-            .err()
-            .expect("invalid immutable configuration must reject construction");
-        assert!(error
-            .to_string()
-            .contains("PBFT_MANAGER_STARTUP_INVALID_LAMBDA_CONFIG"));
-    }
-
     fn finalization_fact() -> FfiPbftFinalizationIntentFact {
         FfiPbftFinalizationIntentFact {
             block_hash: [7; 32],
@@ -4783,7 +4637,7 @@ mod tests {
         let runtime = create_pbft_manager_runtime_from_storage(&storage, startup)
             .expect("runtime should initialize");
         runtime
-            .chain
+            .chain()
             .write()
             .expect("PBFT chain lock should remain healthy")
             .state = PbftChain::new(rustaxa_consensus::pbft_chain::PbftChainHead {
@@ -4817,7 +4671,7 @@ mod tests {
         changing_interval: u16,
     ) -> Box<BridgeDagTransactionService> {
         create_dag_transaction_service_from_storage(
-            &BridgeStorage(runtime.storage.as_ref().unwrap().clone()),
+            &BridgeStorage(native_service_storage(runtime)),
             &[1; 32],
             32,
             100,
@@ -5351,7 +5205,7 @@ mod tests {
         let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_head_mismatch");
         runtime
-            .chain
+            .chain()
             .write()
             .expect("PBFT chain lock should remain healthy")
             .state = PbftChain::new(rustaxa_consensus::pbft_chain::PbftChainHead {
@@ -5397,7 +5251,7 @@ mod tests {
         let (_temp_dir, runtime) =
             runtime_for_finalization_test("rustaxa_bridge_pbft_manager_sortition_head_overflow");
         runtime
-            .chain
+            .chain()
             .write()
             .expect("PBFT chain lock should remain healthy")
             .state = PbftChain::new(rustaxa_consensus::pbft_chain::PbftChainHead {
@@ -5676,17 +5530,10 @@ mod tests {
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
         let reset_generation = {
-            let guard = runtime
-                .storage
-                .as_ref()
-                .unwrap()
-                .lock_extra_reward_votes()
-                .unwrap();
+            let storage = native_service_storage(&runtime);
+            let guard = storage.lock_extra_reward_votes().unwrap();
             guard
-                .commit_reset_batch(
-                    runtime.storage.as_ref().unwrap().create_write_batch(),
-                    false,
-                )
+                .commit_reset_batch(storage.create_write_batch(), false)
                 .unwrap()
         };
         runtime
@@ -5724,17 +5571,10 @@ mod tests {
             PbftFinalizationRuntimeAction::CommitRewardVotesResetRuntime,
         );
         let reset_generation = {
-            let guard = runtime
-                .storage
-                .as_ref()
-                .unwrap()
-                .lock_extra_reward_votes()
-                .unwrap();
+            let storage = native_service_storage(&runtime);
+            let guard = storage.lock_extra_reward_votes().unwrap();
             guard
-                .commit_reset_batch(
-                    runtime.storage.as_ref().unwrap().create_write_batch(),
-                    false,
-                )
+                .commit_reset_batch(storage.create_write_batch(), false)
                 .unwrap()
         };
 
@@ -5768,23 +5608,13 @@ mod tests {
             "rustaxa_bridge_pbft_manager_reward_votes_reset_storage_check",
         );
         let old_generation = {
-            let guard = runtime
-                .storage
-                .as_ref()
-                .unwrap()
-                .lock_extra_reward_votes()
-                .unwrap();
+            let storage = native_service_storage(&runtime);
+            let guard = storage.lock_extra_reward_votes().unwrap();
             guard
-                .commit_reset_batch(
-                    runtime.storage.as_ref().unwrap().create_write_batch(),
-                    false,
-                )
+                .commit_reset_batch(storage.create_write_batch(), false)
                 .unwrap()
         };
-        runtime
-            .storage
-            .as_ref()
-            .unwrap()
+        native_service_storage(&runtime)
             .pbft()
             .write_extra_reward_vote(H256::from_low_u64_be(77), &[0x01])
             .unwrap();
@@ -5801,11 +5631,7 @@ mod tests {
             0
         );
         assert_eq!(
-            runtime
-                .storage
-                .as_ref()
-                .unwrap()
-                .extra_reward_votes_reset_generation(),
+            native_service_storage(&runtime).extra_reward_votes_reset_generation(),
             old_generation
         );
 
@@ -5845,24 +5671,17 @@ mod tests {
         );
 
         let reset_generation = {
-            let guard = runtime
-                .storage
-                .as_ref()
-                .unwrap()
-                .lock_extra_reward_votes()
-                .unwrap();
+            let storage = native_service_storage(&runtime);
+            let guard = storage.lock_extra_reward_votes().unwrap();
             guard
-                .commit_reset_batch(
-                    runtime.storage.as_ref().unwrap().create_write_batch(),
-                    false,
-                )
+                .commit_reset_batch(storage.create_write_batch(), false)
                 .unwrap()
         };
         runtime
             .manager_state()
             .finalization_reward_votes_reset_generation = reset_generation;
         let admission = persist_pbft_vote_progress(
-            &runtime.storage.as_ref().unwrap(),
+            &native_service_storage(&runtime),
             PbftVoteProgressPersistenceWrite {
                 extra_reward_vote: Some(PbftVoteStorageRecord {
                     hash: H256::from_low_u64_be(88),
@@ -5874,11 +5693,7 @@ mod tests {
         .unwrap();
         assert_eq!(admission.applied_writes, 1);
         assert_eq!(
-            runtime
-                .storage
-                .as_ref()
-                .unwrap()
-                .extra_reward_votes_reset_generation(),
+            native_service_storage(&runtime).extra_reward_votes_reset_generation(),
             reset_generation
         );
 
@@ -5897,10 +5712,7 @@ mod tests {
 
         assert_eq!(state.status, PbftFinalizationRuntimeStatus::Active.as_u8());
         assert_eq!(
-            runtime
-                .storage
-                .as_ref()
-                .unwrap()
+            native_service_storage(&runtime)
                 .pbft()
                 .extra_reward_vote_hashes()
                 .unwrap(),
@@ -6290,7 +6102,7 @@ mod tests {
         dynamic.rounds_count_dynamic_lambda = plan.storage_write_intent.rounds_count_dynamic_lambda;
         dynamic.dynamic_lambda = plan.storage_write_intent.dynamic_lambda;
         apply_domain_pbft_finalization_storage_writes(
-            runtime.storage.as_ref().unwrap().as_ref(),
+            native_service_storage(&runtime).as_ref(),
             &write_set,
             vec![
                 empty_finalization_stage(0),
@@ -6414,11 +6226,7 @@ mod tests {
         );
         assert_eq!(
             resumed.reward_votes_reset_generation,
-            runtime
-                .storage
-                .as_ref()
-                .unwrap()
-                .extra_reward_votes_reset_generation()
+            native_service_storage(&runtime).extra_reward_votes_reset_generation()
         );
     }
 
@@ -6881,10 +6689,7 @@ mod tests {
     #[test]
     fn bridge_runtime_reset_clears_native_own_votes_without_sidecar_command() {
         let mut runtime = runtime_for_startup("rustaxa_bridge_lifecycle_clear_own_votes");
-        runtime
-            .storage
-            .as_ref()
-            .unwrap()
+        native_service_storage(&runtime)
             .pbft()
             .write_own_verified_vote(H256::from_low_u64_be(71), &[0xC1])
             .unwrap();
@@ -6896,10 +6701,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.status, TRANSITION_STORAGE_STATUS_APPLIED);
-        assert!(runtime
-            .storage
-            .as_ref()
-            .unwrap()
+        assert!(native_service_storage(&runtime)
             .pbft()
             .own_verified_vote_hashes()
             .unwrap()

@@ -78,7 +78,7 @@ logic or behavioral tests.
 
 Progress: the proposed-block and PBFT-chain sibling owners are the first bounded extractions. CXX-free
 `rustaxa-consensus::proposed_blocks::ProposedBlocksService` owns its storage lifetime, restoration, lock domain,
-durable-first mutation, snapshots, cleanup, and native behavioral coverage. `BridgePbftService` embeds it and the
+durable-first mutation, snapshots, cleanup, and native behavioral coverage. Native `PbftService` embeds it and the
 remaining proposed-block bridge methods are DTO adapters. CXX-free
 `rustaxa-consensus::pbft_chain::PbftChainService` owns storage lifetime, restoration/default initialization, its lock,
 head transitions, validation, and block lookup; the bridge chain-state struct and lock are deleted. Cross-domain PBFT
@@ -86,16 +86,18 @@ operations still borrow both native sibling guards. CXX-free
 `rustaxa-consensus::pbft_vote_runtime::PbftVerifiedVotesService` now also owns verified-vote storage lifetime,
 atomic restoration, and the shared admission-runtime mutex. The bridge owns neither the verified-vote runtime nor its
 lock; it temporarily borrows the native guard for FinalChain, leader-selection, finalization, and DTO/effect
-composition. `BridgePbftService` also no longer retains a production duplicate `Option<Arc<Storage>>`; durable access
-comes from the native sibling owner responsible for each operation, while only legacy bridge tests retain a
-`#[cfg(test)]` fixture handle. Native `rustaxa-consensus::slashing::SlashingProofService` owns slashing planner
+composition. Native `rustaxa-consensus::pbft_service::PbftService` now owns slashing configuration validation, coherent
+restoration of every storage-backed PBFT sibling from one handle, complete root publication, and bootstrap readiness.
+`BridgePbftService` is a one-field
+CXX adapter and retains no sibling state, storage handle, mutex, or readiness flag; durable access comes from the native
+sibling owner responsible for each operation. Native `rustaxa-consensus::slashing::SlashingProofService` owns slashing planner
 configuration, duplicate-cache state, and its mutex; the slashing bridge now performs only DTO/status conversion around
 task-oriented plan/report calls. Native `rustaxa-consensus::pbft_readiness::PbftServiceReadiness` also owns the
 independent monotonic PBFT and pillar-bootstrap readiness atomics plus their acquire/release publication contracts; the
-bridge root retains only those native capabilities. Native
+native application root retains those capabilities. Native
 `rustaxa-consensus::pbft_manager::PbftManagerService` now owns the manager mutex and complete runtime/session container;
-the bridge root retains a direct native service and exposes only a short-lived native guard to DTO/effect adapters.
-The bridge root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
+the native root retains the service and the bridge exposes only a short-lived native guard to DTO/effect adapters.
+The native root also requires verified-vote, slashing, and pillar siblings by construction. C++ clients retain
 null-service and pillar-readiness checks, but no longer probe for capabilities that cannot be absent from a published
 service.
 Native `rustaxa-consensus::pillar_chain_service::PillarChainService` now owns pillar storage and restoration,
@@ -107,8 +109,8 @@ without a guard, and enters a generation-bound native apply.
 The service also exposes native task APIs for current-data publication, own-vote persistence, startup bootstrap,
 current-anchor decisions, consensus threshold, block creation/linkage planning, and latest-finalized lookup; the bridge
 only maps those results to CXX carriers. Pillar protocol/state tests are native, while the bridge retains only FFI
-conversion and FinalChain-unwrapping coverage. PBFT construction/orchestration tests and the
-DAG/transaction/sortition owner remain in this workstream.
+conversion and FinalChain-unwrapping coverage. PBFT root restoration, shared-owner, failure, and readiness behavior is
+native; remaining bridge orchestration/conversion tests and the DAG/transaction owner remain in this workstream.
 The native pillar mutex guard, mutable state, state snapshot, and snapshot decoder are crate-private and no longer
 re-exported. Bridge tests use public task behavior rather than pointer, generation, or token introspection; snapshot
 relationship characterization now lives beside the native decoder.

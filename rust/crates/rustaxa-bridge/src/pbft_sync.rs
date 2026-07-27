@@ -41,7 +41,7 @@ pub fn pbft_manager_runtime_begin_pbft_sync_admission(
     runtime: &BridgePbftService,
     fact: FfiPbftSyncAdmissionInitialFact,
 ) {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return;
     }
     let mut runtime = runtime.manager_state();
@@ -53,7 +53,7 @@ pub fn pbft_manager_runtime_begin_pbft_sync_admission(
 pub fn pbft_manager_runtime_pbft_sync_admission_next(
     runtime: &BridgePbftService,
 ) -> FfiPbftSyncAdmissionSessionStep {
-    if !runtime.readiness.is_ready() {
+    if !runtime.readiness().is_ready() {
         return sync_admission_not_started_step();
     }
     let mut runtime = runtime.manager_state();

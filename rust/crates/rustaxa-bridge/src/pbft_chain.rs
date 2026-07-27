@@ -18,12 +18,12 @@ const PBFT_VALIDATION_PREVIOUS_HASH_MISMATCH: u8 = 2;
 impl BridgePbftService {
     /// Returns whether storage recovery initialized the default PBFT chain head.
     pub fn pbft_chain_initialized_default(&self) -> bool {
-        self.chain.initialized_default()
+        self.chain().initialized_default()
     }
 
     /// Returns the current PBFT chain head payload for C++ JSON formatting and public accessors.
     pub fn pbft_chain_head(&self) -> PbftChainHeadPayload {
-        self.chain.head().into()
+        self.chain().head().into()
     }
 
     /// Returns a non-mutating preview for the legacy persisted-head JSON path.
@@ -33,7 +33,7 @@ impl BridgePbftService {
         increments_non_empty_size: bool,
     ) -> Result<PbftChainHeadPayload, anyhow::Error> {
         Ok(self
-            .chain
+            .chain()
             .project_legacy_json_head(H256::from(*block_hash), increments_non_empty_size)?
             .into())
     }
@@ -45,7 +45,7 @@ impl BridgePbftService {
         anchor_hash: &[u8; 32],
     ) -> Result<PbftChainHeadPayload, anyhow::Error> {
         Ok(self
-            .chain
+            .chain()
             .update(H256::from(*block_hash), H256::from(*anchor_hash))?
             .into())
     }
@@ -53,7 +53,7 @@ impl BridgePbftService {
     /// Returns whether this storage-backed PBFT chain runtime has a finalized
     /// PBFT block hash in Rust storage.
     pub fn pbft_chain_block_exists(&self, block_hash: &[u8; 32]) -> Result<bool, anyhow::Error> {
-        self.chain.block_exists(H256::from(*block_hash))
+        self.chain().block_exists(H256::from(*block_hash))
     }
 
     /// Loads canonical signed PBFT block RLP from this runtime's owned Rust
@@ -62,7 +62,7 @@ impl BridgePbftService {
         &self,
         block_hash: &[u8; 32],
     ) -> Result<FfiPbftBlockStorageLookup, anyhow::Error> {
-        Ok(self.chain.block_rlp(H256::from(*block_hash))?.into())
+        Ok(self.chain().block_rlp(H256::from(*block_hash))?.into())
     }
 
     /// Checks whether the supplied candidate block extends the current PBFT head.
@@ -71,7 +71,7 @@ impl BridgePbftService {
         period: u64,
         prev_hash: &[u8; 32],
     ) -> PbftBlockValidationResult {
-        match self.chain.validate_block(period, H256::from(*prev_hash)) {
+        match self.chain().validate_block(period, H256::from(*prev_hash)) {
             PbftBlockValidation::Valid => PbftBlockValidationResult {
                 ok: true,
                 code: PBFT_VALIDATION_VALID,

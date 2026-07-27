@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 45383 |
+| `bridge_lines` | 45169 |
 | `shim_lines` | 17629 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |
@@ -113,7 +113,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | ingress, planning, effects | tarcap handlers | External boundary | Complete `CRW-N01`; retain transport-only execution API. |
 | `rust/crates/rustaxa-bridge/src/pbft_chain.rs` | Thin DTO adapters over native `PbftChainService` | PBFT chain/manager shims | Internal bridge route | Native storage, restoration, lock ownership, transitions, validation, and lookup live in `rustaxa-consensus`; migrate named C++ readers and delete the facade. |
-| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | `BridgePbftService`, manager DTO/effect adapters | App, PBFT/vote/pillar shims | Native service wrapper | Move remaining construction, orchestration, and behavioral tests out of bridge. Native manager and pillar services own their mutexes, storage, restoration, state, and readiness; every published bridge root structurally contains all sibling capabilities. |
+| `rust/crates/rustaxa-bridge/src/pbft_manager.rs` | Thin `BridgePbftService` adapter plus manager DTO/effect adapters | App, PBFT/vote/pillar shims | Native service wrapper | Native `PbftService` owns coherent sibling restoration, composition, and bootstrap readiness; move the remaining cross-domain executor orchestration and conversion-only tests out of the bridge. |
 | `rust/crates/rustaxa-bridge/src/pbft_period_cleanup.rs` | combined cleanup operation | PBFT manager shim | Internal bridge route | Native PBFT service owns operation without CXX-shaped API. |
 | `rust/crates/rustaxa-bridge/src/pbft_sync.rs` | sync admission/runtime methods | PBFT manager and tarcap | Internal bridge route | Fold into native PBFT/network pipeline APIs. |
 | `rust/crates/rustaxa-bridge/src/pbft_vote_generation.rs` | vote generation adapters | Vote/PBFT shims | Internal bridge route | Signing becomes a leaf port and vote behavior remains native. |
@@ -140,7 +140,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `BridgeConsensusQueryApi` | `query.rs` | RPC, GraphQL, light plugin | External boundary | Keep only client-oriented public reads. |
 | `BridgeConsensusNetworkApi` | `network.rs` | tarcap handlers | External boundary | `CRW-N01` leaves a transport-only API. |
 | `BridgeDagTransactionService` | `dag_transaction_service.rs` | App and DAG/transaction/sortition/gas shims | Native service wrapper | Native application owner replaces bridge-owned implementation. |
-| `BridgePbftService` | `pbft_manager.rs` | App and PBFT/vote/pillar shims | Native service wrapper | Native application root replaces bridge construction and remaining adapter composition; manager and pillar ownership already belong to native services, and no optional sibling-capability probes remain. |
+| `BridgePbftService` | `pbft_manager.rs` | App and PBFT/vote/pillar shims | Native service wrapper | This one-field CXX adapter wraps native `PbftService`; delete it when named C++ clients use narrower lifecycle, transport, execution, and query APIs. |
 | `BridgePillarChainStorage` | `pillar_chain.rs` | storage shim | Compatibility facade | Replace remaining pillar storage compatibility calls. |
 | `BridgeStorage` | `storage.rs` | storage shim, bootstrap, tests | Compatibility facade | Native construction and narrow query/admin APIs replace it. |
 | `BridgeDagStorageQueries` | `storage.rs` | storage shim/tests | Compatibility facade | Native DAG/query fixtures replace it. |

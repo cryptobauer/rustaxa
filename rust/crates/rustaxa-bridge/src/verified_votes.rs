@@ -1212,7 +1212,7 @@ impl BridgePbftService {
         &self,
         operation: impl FnOnce(&mut VerifiedVotesAccess<'_>) -> Result<T, anyhow::Error>,
     ) -> Result<T, anyhow::Error> {
-        let service = &self.verified_votes;
+        let service = self.verified_votes();
         let mut runtime = service.lock()?;
         operation(&mut VerifiedVotesAccess {
             runtime: &mut runtime,
@@ -1411,7 +1411,7 @@ impl BridgePbftService {
         fact: FfiPbftTwoTPlusOneThresholdFact,
     ) -> Result<FfiPbftTwoTPlusOneThresholdPlan, anyhow::Error> {
         let current_pbft_chain_size = self
-            .chain
+            .chain()
             .read()
             .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?
             .state
@@ -1442,7 +1442,7 @@ impl BridgePbftService {
         }
 
         enriched.current_pbft_chain_size = self
-            .chain
+            .chain()
             .read()
             .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?
             .state
@@ -1469,11 +1469,11 @@ impl BridgePbftService {
     ) -> Result<PbftLeaderSelectionSnapshot, anyhow::Error> {
         self.with_verified_votes(|votes| {
             let proposed = self
-                .proposed_blocks
+                .proposed_blocks()
                 .read()
                 .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?;
             let _chain = self
-                .chain
+                .chain()
                 .read()
                 .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?;
             build_leader_selection_snapshot(votes, &proposed, votes.storage, period, round)
@@ -1495,11 +1495,11 @@ impl BridgePbftService {
     ) -> Result<PbftLeaderSelectionResult, anyhow::Error> {
         self.with_verified_votes(|votes| {
             let mut proposed = self
-                .proposed_blocks
+                .proposed_blocks()
                 .write()
                 .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_PROPOSED_BLOCKS_LOCK_POISONED"))?;
             let _chain = self
-                .chain
+                .chain()
                 .read()
                 .map_err(|_| anyhow::anyhow!("PBFT_SERVICE_CHAIN_LOCK_POISONED"))?;
             let snapshot = build_leader_selection_snapshot(
@@ -2525,12 +2525,12 @@ mod tests {
     #[test]
     fn leader_prepare_preserves_missing_already_valid_and_in_chain_states() {
         let storage = temp_bridge_storage("leader_prepare_states");
-        let mut service = verified_votes_service_for_test(Some(&storage)).unwrap();
+        let service = verified_votes_service_for_test(Some(&storage)).unwrap();
         let missing_vote = insert_proposal_vote(&service, [0x43; 32], NODE_SECRET, 2);
         let valid_vote = insert_proposal_vote(&service, [0x44; 32], NODE_SECRET_TWO, 2);
         insert_proposed_block(&service, [0x44; 32], [0x54; 32], vec![0x44]);
         service
-            .proposed_blocks
+            .proposed_blocks()
             .write()
             .unwrap()
             .mark_valid(12, H256::from([0x44; 32]))
@@ -2542,8 +2542,6 @@ mod tests {
             .period()
             .write_pbft_period(H256::from([0x45; 32]), 12)
             .unwrap();
-        service.storage = Some(temp_bridge_storage("leader_prepare_unrelated_outer_storage").0);
-
         let snapshot = service
             .pbft_service_prepare_leader_selection(12, 2)
             .unwrap();
@@ -2599,7 +2597,7 @@ mod tests {
         assert_eq!(result.selected_block_rlp, vec![0x46, 0x99]);
         assert!(
             accepted_service
-                .proposed_blocks
+                .proposed_blocks()
                 .read()
                 .unwrap()
                 .get(12, H256::from([0x46; 32]))
@@ -2627,7 +2625,7 @@ mod tests {
         assert!(!result.selected);
         assert!(
             !rejected_service
-                .proposed_blocks
+                .proposed_blocks()
                 .read()
                 .unwrap()
                 .get(12, H256::from([0x47; 32]))
@@ -2670,7 +2668,7 @@ mod tests {
             assert_eq!(result.status, PBFT_LEADER_INVALID_VALIDATION_REPORT);
             assert!(
                 !service
-                    .proposed_blocks
+                    .proposed_blocks()
                     .read()
                     .unwrap()
                     .get(12, H256::from([0x48; 32]))
@@ -2696,7 +2694,7 @@ mod tests {
                     insert_proposal_vote(&service, [0x4A; 32], NODE_SECRET_TWO, 2);
                 }
                 "proposed" => {
-                    let mut proposed = service.proposed_blocks.write().unwrap();
+                    let mut proposed = service.proposed_blocks().write().unwrap();
                     proposed.cleanup_before(13);
                     assert!(proposed.push(
                         12,
@@ -2724,7 +2722,7 @@ mod tests {
             assert_eq!(result.status, PBFT_LEADER_STALE_SNAPSHOT);
             assert!(
                 !service
-                    .proposed_blocks
+                    .proposed_blocks()
                     .read()
                     .unwrap()
                     .get(12, H256::from([0x49; 32]))
@@ -3102,7 +3100,7 @@ mod tests {
         pivot_hash: [u8; 32],
         block_rlp: Vec<u8>,
     ) {
-        assert!(service.proposed_blocks.write().unwrap().push(
+        assert!(service.proposed_blocks().write().unwrap().push(
             12,
             H256::from(block_hash),
             H256::from(pivot_hash),

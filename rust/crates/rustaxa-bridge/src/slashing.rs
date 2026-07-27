@@ -12,30 +12,8 @@ use crate::ffi::BridgePbftService;
 use anyhow::Result;
 use ethereum_types::{H256, U256};
 use rustaxa_consensus::slashing::{
-    DoubleVotingProofPlanStatus, SlashingProofService,
-    SlashingSubmitterFact as ConsensusSubmitterFact,
+    DoubleVotingProofPlanStatus, SlashingSubmitterFact as ConsensusSubmitterFact,
 };
-
-const SLASHING_PROOF_CACHE_MAX_SIZE: usize = 1000;
-const SLASHING_PROOF_CACHE_DELETE_STEP: usize = 100;
-
-/// Creates PBFT-service-owned slashing state with legacy-compatible cache limits.
-///
-/// `report_malicious_behaviour` and `magnolia_activation_period` are immutable
-/// service bootstrap configuration. Vote A must be at or after the activation
-/// period; zero activates reporting from genesis. Invalid cache configuration
-/// is returned as a construction error before the service is published.
-pub(crate) fn create_slashing_state(
-    report_malicious_behaviour: bool,
-    magnolia_activation_period: u64,
-) -> Result<SlashingProofService> {
-    SlashingProofService::new(
-        report_malicious_behaviour,
-        magnolia_activation_period,
-        SLASHING_PROOF_CACHE_MAX_SIZE,
-        SLASHING_PROOF_CACHE_DELETE_STEP,
-    )
-}
 
 impl BridgePbftService {
     /// Builds one deterministic slashing transaction plan from C++ vote payloads.
@@ -47,7 +25,10 @@ impl BridgePbftService {
         &self,
         input: DoubleVotingProofInput,
     ) -> Result<DoubleVotingProofPlan> {
-        Ok(self.slashing.plan_double_voting_proof(input.into())?.into())
+        Ok(self
+            .slashing()
+            .plan_double_voting_proof(input.into())?
+            .into())
     }
 
     /// Applies a typed transaction executor report to Rust duplicate protection.
@@ -60,7 +41,7 @@ impl BridgePbftService {
         report: DoubleVotingProofSubmissionReport,
     ) -> Result<bool> {
         Ok(self
-            .slashing
+            .slashing()
             .report_double_voting_proof_submission(
                 H256::from(report.proof_hash),
                 report.transaction_inserted,
