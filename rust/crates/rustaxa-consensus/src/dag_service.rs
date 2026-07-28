@@ -1226,8 +1226,10 @@ impl DagServiceState {
     }
 
     /// Opens a verification cursor for one [`DagManager::verifyBlock`] call.
-    #[doc(hidden)]
-    pub fn begin_verify_block_session(&mut self, input: DagVerifyBlockSessionInput) -> Result<()> {
+    pub(crate) fn begin_verify_block_session(
+        &mut self,
+        input: DagVerifyBlockSessionInput,
+    ) -> Result<()> {
         let fingerprint = input.block_hash;
         let cursor_id = self.next_verify_block_session_id;
         self.next_verify_block_session_id =
@@ -1276,8 +1278,7 @@ impl DagServiceState {
     }
 
     /// Returns the current requested action for the verification cursor.
-    #[doc(hidden)]
-    pub fn verify_block_session_next(&self) -> DagVerifyBlockSessionStep {
+    pub(crate) fn verify_block_session_next(&self) -> DagVerifyBlockSessionStep {
         let Some(session) = self.verify_block_session.as_ref() else {
             return verify_block_session_not_started_step();
         };
@@ -1285,8 +1286,7 @@ impl DagServiceState {
     }
 
     /// Applies resolved transaction availability and advances authorization planning.
-    #[doc(hidden)]
-    pub fn verify_block_session_apply_transaction_resolution(
+    pub(crate) fn verify_block_session_apply_transaction_resolution(
         &mut self,
         resolved_transactions: u64,
     ) -> DagVerifyBlockSessionStep {
@@ -1318,8 +1318,7 @@ impl DagServiceState {
     }
 
     /// Returns the active transaction query without advancing its cursor.
-    #[doc(hidden)]
-    pub fn verify_block_transaction_query(&self) -> Result<DagVerifyBlockTransactionQuery> {
+    pub(crate) fn verify_block_transaction_query(&self) -> Result<DagVerifyBlockTransactionQuery> {
         let Some(session) = self.verify_block_session.as_ref() else {
             anyhow::bail!("DAG_VERIFY_SESSION_NOT_STARTED");
         };
@@ -1335,8 +1334,7 @@ impl DagServiceState {
     }
 
     /// Revalidates that a transaction completion still targets the active cursor.
-    #[doc(hidden)]
-    pub fn verify_block_session_validate_transaction_completion(
+    pub(crate) fn verify_block_session_validate_transaction_completion(
         &self,
         cursor_id: u64,
         proposal_period: u64,
@@ -1354,8 +1352,9 @@ impl DagServiceState {
     }
 
     /// Snapshots authorization facts for the exact active verify cursor.
-    #[doc(hidden)]
-    pub fn prepare_verify_block_authorization(&mut self) -> DagVerifyBlockAuthorizationPreparation {
+    pub(crate) fn prepare_verify_block_authorization(
+        &mut self,
+    ) -> DagVerifyBlockAuthorizationPreparation {
         let Some(session) = self.verify_block_session.as_mut() else {
             return DagVerifyBlockAuthorizationPreparation::Step(
                 verify_block_session_not_started_step(),
@@ -1381,8 +1380,7 @@ impl DagServiceState {
     }
 
     /// Removes only the exact authorization cursor that requested facts.
-    #[doc(hidden)]
-    pub fn cleanup_verify_block_authorization(
+    pub(crate) fn cleanup_verify_block_authorization(
         &mut self,
         snapshot: &DagVerifyBlockAuthorizationSnapshot,
     ) -> bool {
@@ -1397,8 +1395,7 @@ impl DagServiceState {
     }
 
     /// Revalidates and applies FinalChain DPoS authorization facts.
-    #[doc(hidden)]
-    pub fn apply_verify_block_authorization(
+    pub(crate) fn apply_verify_block_authorization(
         &mut self,
         snapshot: &DagVerifyBlockAuthorizationSnapshot,
         facts: DagDposAuthorizationFacts,
@@ -1445,8 +1442,10 @@ impl DagServiceState {
     }
 
     /// Takes a snapshot of the active VDF authorization cursor.
-    #[doc(hidden)]
-    pub fn snapshot_verify_block_vdf(&self, cursor_id: u64) -> Result<DagVerifyBlockVdfSnapshot> {
+    pub(crate) fn snapshot_verify_block_vdf(
+        &self,
+        cursor_id: u64,
+    ) -> Result<DagVerifyBlockVdfSnapshot> {
         let session = self
             .verify_block_session
             .as_ref()
@@ -1475,8 +1474,7 @@ impl DagServiceState {
     }
 
     /// Revalidates a VDF snapshot and applies the completion result.
-    #[doc(hidden)]
-    pub fn complete_verify_block_vdf(
+    pub(crate) fn complete_verify_block_vdf(
         &mut self,
         snapshot: &DagVerifyBlockVdfSnapshot,
         vdf_status: u8,
@@ -1567,8 +1565,7 @@ impl DagServiceState {
     }
 
     /// Reports block and tip-gas facts from public EVM estimation into the verify cursor.
-    #[doc(hidden)]
-    pub fn verify_block_session_report_gas(
+    pub(crate) fn verify_block_session_report_gas(
         &mut self,
         report: DagVerifyBlockGasReport,
     ) -> Result<DagVerifyBlockSessionStep> {
@@ -2234,6 +2231,80 @@ mod tests {
         block.out().to_vec()
     }
 
+    fn signed_dag_block_rlp(level: u64, tip_gas: u64) -> Vec<u8> {
+        let mut vdf = RlpStream::new_list(4);
+        vdf.append(&vec![0x11u8; 80]);
+        vdf.append(&vec![0x22u8]);
+        vdf.append(&vec![0x33u8]);
+        vdf.append(&1u16);
+
+        let mut block = RlpStream::new_list(8);
+        block.append(&H256::zero());
+        block.append(&level);
+        block.append(&123u64);
+        block.append(&vdf.out().to_vec());
+        block.begin_list(0);
+        block.begin_list(0);
+        block.append(&&[0u8; 65][..]);
+        block.append(&tip_gas);
+        block.out().to_vec()
+    }
+
+    fn begin_verify_block_session_with_mapping(
+        dag: &mut DagServiceGuard<'_>,
+        proposal_period: u64,
+        block_level: u64,
+        tips: Vec<H256>,
+        block_transaction_hashes: Vec<H256>,
+        supplied_transaction_hashes: Vec<H256>,
+    ) -> Result<()> {
+        ensure_proposal_period_mapping(&dag.storage, block_level, proposal_period)?;
+        dag.begin_verify_block_session(DagVerifyBlockSessionInput {
+            block_hash: [0u8; 32],
+            block_level,
+            pivot: [1u8; 32],
+            tips,
+            block_transaction_hashes,
+            supplied_transaction_hashes,
+            block_rlp: Vec::new(),
+        })?;
+        Ok(())
+    }
+
+    fn begin_verify_session_for_gas(runtime: &mut DagServiceGuard<'_>, tip: H256) -> Result<()> {
+        begin_verify_block_session_with_mapping(runtime, 7, 5, vec![tip], Vec::new(), Vec::new())?;
+        let auth = runtime.verify_block_session_apply_transaction_resolution(0);
+        assert_eq!(
+            auth.action, DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS,
+            "initial verification query must advance to authorization"
+        );
+        let snapshot = match runtime.prepare_verify_block_authorization() {
+            DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
+            DagVerifyBlockAuthorizationPreparation::Step(_) => {
+                anyhow::bail!("verification cursor must await authorization")
+            }
+        };
+        let step = runtime.apply_verify_block_authorization(
+            &snapshot,
+            DagDposAuthorizationFacts {
+                vrf_key: Some([0x44; 32]),
+                vrf_key_found: true,
+                sender_eligible_vote_count: 11,
+                vdf_sortition_max_vote_count: 33,
+                eligibility_status: crate::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+            },
+        )?;
+        assert_eq!(step.action, DAG_VERIFY_SESSION_ACTION_VDF_SORTITION);
+        let vdf_snapshot = runtime.snapshot_verify_block_vdf(step.cursor_id)?;
+        let gas_step = runtime
+            .complete_verify_block_vdf(&vdf_snapshot, crate::dag::DAG_VERIFY_VDF_STATUS_VALID)?;
+        assert_eq!(
+            gas_step.action, DAG_VERIFY_SESSION_ACTION_GAS,
+            "verification cursor should advance to gas check"
+        );
+        Ok(())
+    }
+
     #[test]
     fn fresh_restore_publishes_complete_empty_session_owner() -> Result<()> {
         let path = temp_path("rustaxa_consensus_dag_service_fresh");
@@ -2388,6 +2459,304 @@ mod tests {
                 .contains("DAG_RUNTIME_RESTORE_NON_FINALIZED_BLOCKS"),
             "{error:#}"
         );
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_session_orders_live_queries_then_gas() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_verify_session");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            begin_verify_block_session_with_mapping(
+                &mut runtime,
+                7,
+                5,
+                Vec::new(),
+                vec![H256::from([2u8; 32]), H256::from([3u8; 32])],
+                vec![H256::from([3u8; 32])],
+            )?;
+            let initial = runtime.verify_block_session_next();
+            assert_eq!(initial.status, DAG_VERIFY_SESSION_STATUS_ACTIVE);
+            assert_eq!(initial.action, DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY);
+            assert_eq!(initial.proposal_period, 7);
+
+            let query = runtime.verify_block_transaction_query()?;
+            assert_eq!(query.hashes, vec![H256::from([2u8; 32])]);
+
+            let authorization = runtime.verify_block_session_apply_transaction_resolution(2);
+            assert_eq!(
+                authorization.action,
+                DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+            );
+            let snapshot = match runtime.prepare_verify_block_authorization() {
+                DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
+                DagVerifyBlockAuthorizationPreparation::Step(_) => {
+                    anyhow::bail!("authorization step must be requested after tx resolution")
+                }
+            };
+            let vdf_step = runtime.apply_verify_block_authorization(
+                &snapshot,
+                DagDposAuthorizationFacts {
+                    vrf_key: Some([0x44; 32]),
+                    vrf_key_found: true,
+                    sender_eligible_vote_count: 11,
+                    vdf_sortition_max_vote_count: 33,
+                    eligibility_status: crate::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+                },
+            )?;
+            assert_eq!(vdf_step.action, DAG_VERIFY_SESSION_ACTION_VDF_SORTITION);
+            let vdf_snapshot = runtime.snapshot_verify_block_vdf(vdf_step.cursor_id)?;
+            let gas_step = runtime.complete_verify_block_vdf(
+                &vdf_snapshot,
+                crate::dag::DAG_VERIFY_VDF_STATUS_VALID,
+            )?;
+            assert_eq!(gas_step.action, DAG_VERIFY_SESSION_ACTION_GAS);
+
+            let complete = runtime.verify_block_session_report_gas(DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 100,
+            })?;
+            assert!(complete.complete);
+            assert_eq!(complete.status, DAG_VERIFY_SESSION_STATUS_COMPLETE);
+            assert_eq!(complete.reject_code, 0);
+
+            begin_verify_block_session_with_mapping(
+                &mut runtime,
+                7,
+                5,
+                Vec::new(),
+                vec![H256::from([4u8; 32])],
+                Vec::new(),
+            )?;
+            let missing = runtime.verify_block_session_apply_transaction_resolution(0);
+            assert!(missing.complete);
+            assert_eq!(
+                missing.reject_code,
+                crate::dag::DAG_VERIFY_REJECT_MISSING_TRANSACTION
+            );
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_block_vdf_stale_snapshot_preserves_replacement_cursor() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_verify_vdf_stale_snapshot");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            begin_verify_block_session_with_mapping(
+                &mut runtime,
+                7,
+                5,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )?;
+            let authorization = runtime.verify_block_session_apply_transaction_resolution(0);
+            assert_eq!(
+                authorization.action,
+                DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
+            );
+            let authorization_snapshot = match runtime.prepare_verify_block_authorization() {
+                DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
+                DagVerifyBlockAuthorizationPreparation::Step(_) => {
+                    anyhow::bail!("verification cursor must await authorization")
+                }
+            };
+            let vdf = runtime.apply_verify_block_authorization(
+                &authorization_snapshot,
+                DagDposAuthorizationFacts {
+                    vrf_key: Some([0x44; 32]),
+                    vrf_key_found: true,
+                    sender_eligible_vote_count: 1,
+                    vdf_sortition_max_vote_count: 1,
+                    eligibility_status: crate::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
+                },
+            )?;
+            let stale_snapshot = runtime.snapshot_verify_block_vdf(vdf.cursor_id)?;
+
+            begin_verify_block_session_with_mapping(
+                &mut runtime,
+                7,
+                5,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )?;
+            let error = runtime
+                .complete_verify_block_vdf(&stale_snapshot, crate::dag::DAG_VERIFY_VDF_STATUS_VALID)
+                .expect_err("a replacement cursor must reject the stale VDF completion");
+            assert!(
+                error
+                    .to_string()
+                    .contains("DAG_VERIFY_SESSION_VDF_CURSOR_MISMATCH")
+            );
+            let replacement = runtime.verify_block_session_next();
+            assert_eq!(replacement.status, DAG_VERIFY_SESSION_STATUS_ACTIVE);
+            assert_eq!(
+                replacement.action,
+                DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY
+            );
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_gas_skips_tip_lookup_when_count_policy_does_not_require_it() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_verify_gas_no_tip_lookup");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let tip = H256::from([0x71u8; 32]);
+        storage
+            .dag()
+            .write(tip, 4, 0, &signed_dag_block_rlp(4, 25))?;
+
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            begin_verify_session_for_gas(&mut runtime, tip)?;
+            storage.dag().remove(tip)?;
+            let complete = runtime.verify_block_session_report_gas(DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 100,
+            })?;
+            assert!(complete.complete);
+            assert_eq!(complete.reject_code, 0);
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_gas_loads_retained_tips_only_when_count_policy_requires_it() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_verify_gas_required_tip_lookup");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let tip = H256::from([0x72u8; 32]);
+        storage
+            .dag()
+            .write(tip, 4, 0, &signed_dag_block_rlp(4, 25))?;
+
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            begin_verify_session_for_gas(&mut runtime, tip)?;
+            let complete = runtime.verify_block_session_report_gas(DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 30,
+            })?;
+            assert!(complete.complete);
+            assert_eq!(
+                complete.reject_code,
+                crate::dag::DAG_VERIFY_REJECT_BLOCK_TOO_BIG
+            );
+
+            begin_verify_session_for_gas(&mut runtime, tip)?;
+            storage.dag().remove(tip)?;
+            let missing = runtime.verify_block_session_report_gas(DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 30,
+            })?;
+            assert_eq!(
+                missing.reject_code,
+                crate::dag::DAG_VERIFY_REJECT_MISSING_TIP
+            );
+        }
+        drop(service);
+        drop(storage);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verify_gas_wrong_stage_rejects_before_retained_tip_lookup() -> Result<()> {
+        let path = temp_path("rustaxa_consensus_dag_service_verify_gas_wrong_stage");
+        let storage = Arc::new(Storage::new(Config::new(path.clone()))?);
+        let tip = H256::from([0x73u8; 32]);
+        storage
+            .dag()
+            .write(tip, 4, 0, &signed_dag_block_rlp(4, 25))?;
+
+        let service = DagService::restore(
+            storage.clone(),
+            DagServiceConfig {
+                genesis_hash: H256::repeat_byte(1),
+                dag_expiry_limit: 32,
+                max_levels_per_period: 100,
+            },
+        )?;
+        {
+            let mut runtime = service.lock()?;
+            begin_verify_session_for_gas(&mut runtime, tip)?;
+            begin_verify_block_session_with_mapping(
+                &mut runtime,
+                7,
+                5,
+                vec![tip],
+                Vec::new(),
+                Vec::new(),
+            )?;
+            storage.dag().remove(tip)?;
+            let invalid = runtime.verify_block_session_report_gas(DagVerifyBlockGasReport {
+                block_gas_estimation: 10,
+                estimated_transactions_weight: 10,
+                dag_gas_limit: 20,
+                pbft_gas_limit: 30,
+            })?;
+            assert_eq!(invalid.status, DAG_VERIFY_SESSION_STATUS_INVALID_REPORT);
+            assert_eq!(
+                invalid.error_code,
+                "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT"
+            );
+        }
+        drop(service);
         drop(storage);
         std::fs::remove_dir_all(path)?;
         Ok(())

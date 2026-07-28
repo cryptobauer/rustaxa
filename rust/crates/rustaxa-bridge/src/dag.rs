@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::ffi::rustaxa_ffi::DagTransactionHash;
 use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
     DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload, DagOrder,
@@ -5,9 +7,7 @@ use crate::ffi::rustaxa_ffi::{
     DagProposerSessionBeginInput, DagProposerSessionStep, DagProposerSignedBlockIntent,
     DagProposerSigningReport, DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
     DagProposerVdfProofReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
-    DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup, DagVerifyBlockGasReport,
-    DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, HashLookup,
-    TransactionPackSelectedTransaction,
+    DagSyncBlockRlp, DagTransactionRlpLookup, HashLookup, TransactionPackSelectedTransaction,
 };
 #[cfg(test)]
 use crate::ffi::BridgeStorage;
@@ -18,14 +18,12 @@ use rustaxa_consensus::dag::plan_dag_proposer_post_pack;
 use rustaxa_consensus::dag::{
     collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
     dag_block_exists_in_storage, dag_manager_block_from_rlp as domain_dag_manager_block_from_rlp,
-    dag_persistence_counters_from_storage, decide_dag_verify_vdf_dpos_authorization,
-    finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
-    period_block_hash_from_storage, plan_dag_proposer_attempt,
+    dag_persistence_counters_from_storage, finalize_dag_proposer_signed_block_intent,
+    load_dag_block_from_storage, period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
     plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
     plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
-    plan_dag_proposer_worker_command, plan_dag_verify_transaction_query, save_dag_block_to_storage,
-    validate_pivot_tips_metadata, verify_precheck_from_storage,
+    plan_dag_proposer_worker_command, save_dag_block_to_storage, validate_pivot_tips_metadata,
     DagManagerBlock as DomainDagManagerBlock, DagManagerState,
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
     DagProposerAttemptPlan as DomainDagProposerAttemptPlan,
@@ -36,15 +34,12 @@ use rustaxa_consensus::dag::{
     DagProposerStorageTipSelectionInput as DomainDagProposerStorageTipSelectionInput,
     DagProposerUnsignedBlockIntent as DomainDagProposerUnsignedBlockIntent,
     DagProposerWorkerCommandInput as DomainDagProposerWorkerCommandInput,
-    DagReferenceMetadata as ReferenceMetadata, DagTipGas,
-    DagVerifyPrecheckStorageInput as DomainDagVerifyPrecheckStorageInput,
-    DagVerifyVdfDposFacts as DomainDagVerifyVdfDposFacts,
+    DagReferenceMetadata as ReferenceMetadata,
 };
 use rustaxa_consensus::dag_service::{
     DagProposerObservation, DagProposerRetryState, DagProposerSession, DagProposerSessionAction,
     DagProposerSessionBeginInput as DomainDagProposerSessionBeginInput,
     DagProposerTransactionObservation, DagServiceGuard, DagServiceState as DagRuntimeState,
-    DagVerifyBlockSession, DagVerifyBlockSessionAction,
 };
 use rustaxa_consensus::sortition::{SortitionParams, VdfParams, VrfParams};
 #[cfg(test)]
@@ -96,15 +91,6 @@ struct DagManagerFinalizationPlan {
     remaining_hashes: Vec<DagHash>,
 }
 
-const DAG_VERIFY_SESSION_STATUS_ACTIVE: u8 = 0;
-const DAG_VERIFY_SESSION_STATUS_COMPLETE: u8 = 1;
-const DAG_VERIFY_SESSION_STATUS_INVALID_REPORT: u8 = 2;
-const DAG_VERIFY_SESSION_ACTION_NONE: u8 = 0;
-pub(crate) const DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY: u8 = 1;
-pub(crate) const DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS: u8 = 2;
-pub(crate) const DAG_VERIFY_SESSION_ACTION_VDF_SORTITION: u8 = 3;
-pub(crate) const DAG_VERIFY_SESSION_ACTION_GAS: u8 = 4;
-
 /// Private bridge-shaped DAG block used by the retained internal runtime helpers and their tests.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct DagManagerBlock {
@@ -126,14 +112,6 @@ pub(crate) const DAG_PROPOSER_SESSION_ACTION_STALE_PROOF_SLEEP: u8 = 4;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_SIGN_BLOCK: u8 = 5;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_ADD_BLOCK: u8 = 6;
 pub(crate) const DAG_PROPOSER_SESSION_ACTION_COLLECT_EXTERNAL_PROPOSAL_FACTS: u8 = 7;
-
-/// Private identity and verifier inputs captured from one active VDF action.
-///
-/// No runtime guard survives the snapshot. Cursor identity, immutable candidate
-/// fingerprint, action generation, and normalized counts must match again
-/// before the verifier result may advance the session.
-pub(crate) type DagVerifyBlockVdfSnapshot =
-    rustaxa_consensus::dag_service::DagVerifyBlockVdfSnapshot;
 
 /// Exact proposer identity retained across historical sortition lookups.
 ///
@@ -482,50 +460,6 @@ where
         )
     }
 
-    /// Loads retained per-tip gas facts directly from Rust storage for DAG block verification.
-    ///
-    /// Inputs:
-    /// - `tips`: candidate tip hashes retained in canonical block order.
-    ///
-    /// Outputs:
-    /// - one domain `DagTipGas` per input hash. Missing tips are returned as
-    ///   `found = false` so the Rust verification session can select the
-    ///   legacy `MissingTip` status without C++ materializing `DagBlock`
-    ///   objects or deriving gas facts from compatibility caches.
-    ///
-    /// Edge behavior:
-    /// - storage backend and decode failures are bridge errors because they
-    ///   indicate corrupt or unavailable canonical DAG payloads rather than a
-    ///   consensus-invalid missing tip.
-    fn dag_manager_runtime_tip_gas_estimations(&self, tips: &[H256]) -> Result<Vec<DagTipGas>> {
-        tips.iter()
-            .map(|hash| {
-                if self
-                    .storage
-                    .dag()
-                    .by_hash_rlp_optional(*hash)
-                    .context("DAG_RUNTIME_TIP_GAS_LOOKUP")?
-                    .is_none()
-                {
-                    return Ok(DagTipGas {
-                        found: false,
-                        gas_estimation: 0,
-                    });
-                }
-
-                let block = self
-                    .storage
-                    .dag()
-                    .by_hash(*hash)
-                    .context("DAG_RUNTIME_TIP_GAS_DECODE")?;
-                Ok(DagTipGas {
-                    found: true,
-                    gas_estimation: block.gas_estimation,
-                })
-            })
-            .collect()
-    }
-
     /// Loads canonical DAG block RLP from Rust storage.
     pub fn dag_manager_runtime_load_block(&self, hash: &[u8; 32]) -> Result<DagBlockLookup> {
         let lookup = load_dag_block_from_storage(self.storage.as_ref(), to_h256(hash))?;
@@ -626,298 +560,6 @@ where
             dag_blocks: counters.dag_blocks,
             dag_edges: counters.dag_edges,
         })
-    }
-
-    /// Opens a runtime-owned ordered `DagManager::verifyBlock` session.
-    ///
-    /// The runtime performs storage-backed prechecks immediately, then returns
-    /// either a terminal reject/complete step or a transaction-query request.
-    /// Later advancement happens only through explicit live-fact reports from
-    /// the C++ executor boundary.
-    pub fn begin_verify_block_session(&mut self, input: DagVerifyBlockSessionInput) -> Result<()> {
-        let fingerprint = input.block_hash;
-        let cursor_id = self.next_verify_block_session_id;
-        self.next_verify_block_session_id =
-            self.next_verify_block_session_id.wrapping_add(1).max(1);
-        let tips = input
-            .tips
-            .into_iter()
-            .map(|tip| H256::from(tip.hash))
-            .collect::<Vec<_>>();
-        let precheck = verify_precheck_from_storage(
-            self.storage.as_ref(),
-            DomainDagVerifyPrecheckStorageInput {
-                block_level: input.block_level,
-                pivot: H256::from(input.pivot),
-                tips: tips.clone(),
-                dag_expiry_level: self.state.dag_expiry_level(),
-            },
-        )
-        .context("DAG_RUNTIME_VERIFY_SESSION_PRECHECK")?;
-
-        let expected_transactions = input.block_transaction_hashes.len() as u64;
-        let action = if precheck.continue_validation {
-            let block_transaction_hashes = to_transaction_hashes(input.block_transaction_hashes);
-            let supplied_transaction_hashes =
-                to_transaction_hashes(input.supplied_transaction_hashes);
-            let query_plan = plan_dag_verify_transaction_query(
-                &block_transaction_hashes,
-                &supplied_transaction_hashes,
-            );
-            DagVerifyBlockSessionAction::TransactionQuery(query_plan.query_hashes)
-        } else {
-            DagVerifyBlockSessionAction::Complete
-        };
-
-        self.verify_block_session = Some(DagVerifyBlockSession {
-            cursor_id,
-            fingerprint,
-            generation: 1,
-            action,
-            tips,
-            proposal_period: precheck.proposal_period,
-            block_rlp: input.block_rlp,
-            expected_transactions,
-            reject_code: precheck.reject_code,
-            sender_eligible_vote_count: 0,
-            vdf_sortition_max_vote_count: 0,
-            eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED,
-            error_code: String::new(),
-        });
-
-        Ok(())
-    }
-}
-
-/// Opens a DAG block verification cursor inside the long-lived DAG manager runtime.
-///
-/// Inputs:
-/// - `runtime`: the DAG manager runtime that owns graph state, storage, and the temporary verification cursor.
-/// - `input`: compact block facts and supplied transaction hashes for one `DagManager::verifyBlock` call.
-///
-/// Outputs:
-/// - Replaces any previous runtime verification cursor and assigns a new cursor
-///   identity. C++ drives it with the composed transaction prepare/completion
-///   boundary, `dag_manager_runtime_verify_block_session_next`, and later reports.
-///
-/// Invariants and edge behavior:
-/// - The verification cursor is DAG-manager implementation state and is not exported as a standalone CXX handle.
-/// - Starting a new verification replaces any incomplete previous cursor, matching the legacy per-call allocation
-///   behavior.
-pub fn dag_manager_runtime_begin_verify_block_session(
-    runtime: &mut DagRuntimeState,
-    input: DagVerifyBlockSessionInput,
-) -> Result<()> {
-    DagRuntimeAccess(runtime).begin_verify_block_session(input)
-}
-
-/// Returns the next requested action for the runtime-owned DAG verification cursor.
-pub fn dag_manager_runtime_verify_block_session_next(
-    runtime: &mut DagRuntimeState,
-) -> DagVerifyBlockSessionStep {
-    native_verify_block_step_to_bridge(DagRuntimeAccess(runtime).verify_block_session_next())
-}
-
-/// Applies resolved transaction availability to the runtime-owned DAG verification cursor.
-pub(crate) fn dag_manager_runtime_verify_block_session_apply_transaction_resolution(
-    runtime: &mut DagRuntimeState,
-    resolved_transactions: u64,
-) -> DagVerifyBlockSessionStep {
-    native_verify_block_step_to_bridge(
-        DagRuntimeAccess(runtime)
-            .verify_block_session_apply_transaction_resolution(resolved_transactions),
-    )
-}
-
-/// Private transaction query owned by an active DAG verification session.
-///
-/// The composed DAG/transaction service consumes this value while holding both
-/// runtime locks; hashes are never exposed through CXX.
-pub(crate) type DagVerifyBlockTransactionQuery =
-    rustaxa_consensus::dag_service::DagVerifyBlockTransactionQuery;
-
-/// Takes a snapshot of the active transaction query without advancing it.
-///
-/// Missing sessions and calls during another action return stable errors without
-/// advancing or invalidating the current session.
-pub(crate) fn dag_manager_runtime_verify_block_transaction_query(
-    runtime: &DagRuntimeState,
-) -> Result<DagVerifyBlockTransactionQuery> {
-    DagRuntimeAccess(runtime).verify_block_transaction_query()
-}
-
-/// Verifies that a completion targets the still-active prepared query.
-///
-/// Stale cursor or proposal-period identities and wrong actions return errors
-/// without changing the active verification session.
-pub(crate) fn dag_manager_runtime_validate_verify_block_transaction_completion(
-    runtime: &DagRuntimeState,
-    cursor_id: u64,
-    proposal_period: u64,
-) -> Result<DagVerifyBlockTransactionQuery> {
-    DagRuntimeAccess(runtime)
-        .verify_block_session_validate_transaction_completion(cursor_id, proposal_period)
-}
-
-/// Exact private identity of a DAG verification cursor awaiting FinalChain authorization.
-pub(crate) type DagVerifyBlockAuthorizationSnapshot =
-    rustaxa_consensus::dag_service::DagVerifyBlockAuthorizationSnapshot;
-
-/// Preparation result preserving the stable missing-session and wrong-action step semantics.
-pub(crate) type DagVerifyBlockAuthorizationPreparation =
-    rustaxa_consensus::dag_service::DagVerifyBlockAuthorizationPreparation;
-
-/// Snapshots the exact authorization cursor before the lock-free FinalChain query.
-pub(crate) fn dag_manager_runtime_prepare_verify_block_authorization(
-    runtime: &mut DagRuntimeState,
-) -> DagVerifyBlockAuthorizationPreparation {
-    DagRuntimeAccess(runtime).prepare_verify_block_authorization()
-}
-
-fn verify_block_authorization_snapshot_matches(
-    session: &DagVerifyBlockSession,
-    snapshot: &DagVerifyBlockAuthorizationSnapshot,
-) -> bool {
-    session.cursor_id == snapshot.cursor_id
-        && session.fingerprint == snapshot.fingerprint
-        && session.generation == snapshot.generation
-        && session.proposal_period == snapshot.proposal_period
-        && session.block_rlp == snapshot.block_rlp
-        && matches!(
-            session.action,
-            DagVerifyBlockSessionAction::AuthorizationFacts
-        )
-}
-
-/// Removes only the unchanged verification cursor that owned a failed FinalChain query.
-pub(crate) fn dag_manager_runtime_cleanup_verify_block_authorization(
-    runtime: &mut DagRuntimeState,
-    snapshot: &DagVerifyBlockAuthorizationSnapshot,
-) -> bool {
-    DagRuntimeAccess(runtime).cleanup_verify_block_authorization(snapshot)
-}
-
-/// Revalidates and applies Rust FinalChain authorization facts to the exact cursor.
-pub(crate) fn dag_manager_runtime_apply_verify_block_authorization(
-    runtime: &mut DagRuntimeState,
-    snapshot: &DagVerifyBlockAuthorizationSnapshot,
-    facts: rustaxa_consensus::dag::DagDposAuthorizationFacts,
-) -> Result<DagVerifyBlockSessionStep> {
-    DagRuntimeAccess(runtime)
-        .apply_verify_block_authorization(snapshot, facts)
-        .map(native_verify_block_step_to_bridge)
-}
-
-/// Snapshots the active VDF action before historical lookup and proof work.
-///
-/// Missing sessions and wrong actions are operational errors and leave the
-/// cursor unchanged. The returned identity must be revalidated after the
-/// lock-free interval.
-pub(crate) fn dag_manager_runtime_snapshot_verify_block_vdf(
-    runtime: &DagRuntimeState,
-    cursor_id: u64,
-) -> Result<DagVerifyBlockVdfSnapshot> {
-    DagRuntimeAccess(runtime).snapshot_verify_block_vdf(cursor_id)
-}
-
-/// Revalidates an unlocked VDF snapshot and advances it exactly once.
-///
-/// A replacement cursor, changed candidate, advanced action, or changed
-/// generation returns an error without mutating the live session.
-pub(crate) fn dag_manager_runtime_complete_verify_block_vdf(
-    runtime: &mut DagRuntimeState,
-    snapshot: &DagVerifyBlockVdfSnapshot,
-    vdf_status: u8,
-) -> Result<DagVerifyBlockSessionStep> {
-    DagRuntimeAccess(runtime)
-        .complete_verify_block_vdf(snapshot, vdf_status)
-        .map(native_verify_block_step_to_bridge)
-}
-
-/// Applies a verified status to the currently validated VDF cursor.
-fn apply_verify_block_vdf_status(
-    runtime: &mut DagRuntimeState,
-    vdf_status: u8,
-) -> DagVerifyBlockSessionStep {
-    let Some(session) = runtime.verify_block_session.as_mut() else {
-        return verify_block_session_not_started_step();
-    };
-    if !matches!(
-        session.action,
-        DagVerifyBlockSessionAction::VdfSortition { .. }
-    ) {
-        return invalid_verify_block_report(session, "DAG_VERIFY_SESSION_UNEXPECTED_VDF_REPORT");
-    }
-
-    let dpos_status = if session.eligibility_status
-        == rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-    {
-        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_SNAPSHOT_UNAVAILABLE
-    } else {
-        rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_NOT_CHECKED
-    };
-    let vdf_decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
-        vrf_key_found: true,
-        sender_eligible_vote_count: session.sender_eligible_vote_count,
-        vdf_sortition_max_vote_count: session.vdf_sortition_max_vote_count,
-        vdf_status,
-        dpos_status,
-    });
-    if !vdf_decision.continue_validation {
-        return complete_verify_block_session(session, vdf_decision.reject_code);
-    }
-
-    let dpos_decision = decide_dag_verify_vdf_dpos_authorization(DomainDagVerifyVdfDposFacts {
-        vrf_key_found: true,
-        sender_eligible_vote_count: session.sender_eligible_vote_count,
-        vdf_sortition_max_vote_count: session.vdf_sortition_max_vote_count,
-        vdf_status: rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
-        dpos_status: session.eligibility_status,
-    });
-    if !dpos_decision.continue_validation {
-        return complete_verify_block_session(session, dpos_decision.reject_code);
-    }
-
-    session.action = DagVerifyBlockSessionAction::Gas;
-    session.generation = session.generation.wrapping_add(1).max(1);
-    verify_block_session_step(session)
-}
-
-/// Reports external block/limit gas facts to the runtime-owned DAG verification cursor.
-///
-/// The active cursor owns canonical tip order. Rust reads tip gas from its
-/// private storage only when the legacy block-count condition requires the
-/// aggregate check. Missing tips remain typed consensus rejection; storage or
-/// decode failures return without advancing the cursor. Calls with no session
-/// or the wrong action preserve the existing status-coded report semantics and
-/// never perform a tip lookup.
-pub fn dag_manager_runtime_verify_block_session_report_gas(
-    runtime: &mut DagRuntimeState,
-    report: DagVerifyBlockGasReport,
-) -> Result<DagVerifyBlockSessionStep> {
-    DagRuntimeAccess(runtime)
-        .verify_block_session_report_gas(rustaxa_consensus::dag_service::DagVerifyBlockGasReport {
-            block_gas_estimation: report.block_gas_estimation,
-            estimated_transactions_weight: report.estimated_transactions_weight,
-            dag_gas_limit: report.dag_gas_limit,
-            pbft_gas_limit: report.pbft_gas_limit,
-        })
-        .map(native_verify_block_step_to_bridge)
-}
-
-fn native_verify_block_step_to_bridge(
-    step: rustaxa_consensus::dag_service::DagVerifyBlockSessionStep,
-) -> DagVerifyBlockSessionStep {
-    DagVerifyBlockSessionStep {
-        cursor_id: step.cursor_id,
-        status: step.status,
-        action: step.action,
-        complete: step.complete,
-        reject_code: step.reject_code,
-        proposal_period: step.proposal_period,
-        vote_count: step.vote_count,
-        max_vote_count: step.max_vote_count,
-        error_code: step.error_code,
     }
 }
 
@@ -1768,10 +1410,6 @@ fn to_dag_hashes(hashes: Vec<H256>) -> Vec<DagHash> {
         .collect()
 }
 
-fn to_transaction_hashes(hashes: Vec<DagTransactionHash>) -> Vec<H256> {
-    hashes.into_iter().map(|hash| hash.hash.into()).collect()
-}
-
 fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSessionStep {
     let action = match session.action {
         DagProposerSessionAction::CollectFinalChainFacts => {
@@ -1915,114 +1553,6 @@ fn dag_proposer_session_not_started_step() -> DagProposerSessionStep {
         stale_proof_sleep_ms: rustaxa_consensus::dag::DAG_PROPOSER_STALE_PROOF_SLEEP_MS,
         error_code: "DAG_PROPOSER_SESSION_NOT_STARTED".to_string(),
     }
-}
-
-fn verify_block_session_step(session: &DagVerifyBlockSession) -> DagVerifyBlockSessionStep {
-    match &session.action {
-        DagVerifyBlockSessionAction::TransactionQuery(_) => DagVerifyBlockSessionStep {
-            cursor_id: session.cursor_id,
-            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
-            action: DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY,
-            complete: false,
-            reject_code: session.reject_code,
-            proposal_period: session.proposal_period,
-            vote_count: 0,
-            max_vote_count: 0,
-            error_code: session.error_code.clone(),
-        },
-        DagVerifyBlockSessionAction::AuthorizationFacts => DagVerifyBlockSessionStep {
-            cursor_id: session.cursor_id,
-            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
-            action: DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS,
-            complete: false,
-            reject_code: session.reject_code,
-            proposal_period: session.proposal_period,
-            vote_count: 0,
-            max_vote_count: 0,
-            error_code: session.error_code.clone(),
-        },
-        DagVerifyBlockSessionAction::VdfSortition {
-            vote_count,
-            max_vote_count,
-            ..
-        } => DagVerifyBlockSessionStep {
-            cursor_id: session.cursor_id,
-            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
-            action: DAG_VERIFY_SESSION_ACTION_VDF_SORTITION,
-            complete: false,
-            reject_code: session.reject_code,
-            proposal_period: session.proposal_period,
-            vote_count: *vote_count,
-            max_vote_count: *max_vote_count,
-            error_code: session.error_code.clone(),
-        },
-        DagVerifyBlockSessionAction::Gas => DagVerifyBlockSessionStep {
-            cursor_id: session.cursor_id,
-            status: DAG_VERIFY_SESSION_STATUS_ACTIVE,
-            action: DAG_VERIFY_SESSION_ACTION_GAS,
-            complete: false,
-            reject_code: session.reject_code,
-            proposal_period: session.proposal_period,
-            vote_count: 0,
-            max_vote_count: 0,
-            error_code: session.error_code.clone(),
-        },
-        DagVerifyBlockSessionAction::Complete => DagVerifyBlockSessionStep {
-            cursor_id: session.cursor_id,
-            status: DAG_VERIFY_SESSION_STATUS_COMPLETE,
-            action: DAG_VERIFY_SESSION_ACTION_NONE,
-            complete: true,
-            reject_code: session.reject_code,
-            proposal_period: session.proposal_period,
-            vote_count: 0,
-            max_vote_count: 0,
-            error_code: session.error_code.clone(),
-        },
-    }
-}
-
-fn invalid_verify_block_report(
-    session: &mut DagVerifyBlockSession,
-    error_code: &str,
-) -> DagVerifyBlockSessionStep {
-    session.action = DagVerifyBlockSessionAction::Complete;
-    session.generation = session.generation.wrapping_add(1).max(1);
-    session.error_code = error_code.to_string();
-    DagVerifyBlockSessionStep {
-        cursor_id: session.cursor_id,
-        status: DAG_VERIFY_SESSION_STATUS_INVALID_REPORT,
-        action: DAG_VERIFY_SESSION_ACTION_NONE,
-        complete: true,
-        reject_code: session.reject_code,
-        proposal_period: session.proposal_period,
-        vote_count: 0,
-        max_vote_count: 0,
-        error_code: session.error_code.clone(),
-    }
-}
-
-fn verify_block_session_not_started_step() -> DagVerifyBlockSessionStep {
-    DagVerifyBlockSessionStep {
-        cursor_id: 0,
-        status: DAG_VERIFY_SESSION_STATUS_INVALID_REPORT,
-        action: DAG_VERIFY_SESSION_ACTION_NONE,
-        complete: true,
-        reject_code: 0,
-        proposal_period: 0,
-        vote_count: 0,
-        max_vote_count: 0,
-        error_code: "DAG_VERIFY_SESSION_NOT_STARTED".to_string(),
-    }
-}
-
-fn complete_verify_block_session(
-    session: &mut DagVerifyBlockSession,
-    reject_code: u32,
-) -> DagVerifyBlockSessionStep {
-    session.reject_code = reject_code;
-    session.action = DagVerifyBlockSessionAction::Complete;
-    session.generation = session.generation.wrapping_add(1).max(1);
-    verify_block_session_step(session)
 }
 
 fn to_bridge_sync_blocks(
@@ -2174,56 +1704,6 @@ mod tests {
         stream.append(&block.signature.as_ref());
         stream.append(&block.gas_estimation);
         stream.out().to_vec()
-    }
-
-    fn advance_verify_session_to_gas(runtime: &mut DagRuntimeState, tip: H256) {
-        dag_manager_runtime_begin_verify_block_session(
-            runtime,
-            DagVerifyBlockSessionInput {
-                block_hash: [0u8; 32],
-                block_level: 5,
-                pivot: [1u8; 32],
-                tips: vec![DagHash { hash: tip.0 }],
-                block_transaction_hashes: vec![],
-                supplied_transaction_hashes: vec![],
-                block_rlp: Vec::new(),
-            },
-        )
-        .expect("verify session should initialize");
-        let authorization =
-            dag_manager_runtime_verify_block_session_apply_transaction_resolution(runtime, 0);
-        assert_eq!(
-            authorization.action,
-            DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS
-        );
-        let vdf = apply_test_verify_authorization(runtime);
-        assert_eq!(vdf.action, DAG_VERIFY_SESSION_ACTION_VDF_SORTITION);
-        let gas = apply_verify_block_vdf_status(
-            runtime,
-            rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
-        );
-        assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
-    }
-
-    fn apply_test_verify_authorization(runtime: &mut DagRuntimeState) -> DagVerifyBlockSessionStep {
-        let snapshot = match dag_manager_runtime_prepare_verify_block_authorization(runtime) {
-            DagVerifyBlockAuthorizationPreparation::Snapshot(snapshot) => snapshot,
-            DagVerifyBlockAuthorizationPreparation::Step(_) => {
-                panic!("verification cursor should await authorization")
-            }
-        };
-        dag_manager_runtime_apply_verify_block_authorization(
-            runtime,
-            &snapshot,
-            rustaxa_consensus::dag::DagDposAuthorizationFacts {
-                vrf_key: Some([0x44; 32]),
-                vrf_key_found: true,
-                sender_eligible_vote_count: 11,
-                vdf_sortition_max_vote_count: 33,
-                eligibility_status: rustaxa_consensus::dag::DAG_VERIFY_DPOS_STATUS_ELIGIBLE,
-            },
-        )
-        .expect("authorization should apply")
     }
 
     fn dag_block_with_vdf_payload_and_transaction_hashes(
@@ -3595,263 +3075,6 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_manager_runtime_verify_block_session_orders_live_reports() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_verify_session");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-                .expect("runtime should initialize");
-            runtime
-                .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
-                .expect("mapping write should succeed");
-
-            dag_manager_runtime_begin_verify_block_session(
-                &mut runtime,
-                DagVerifyBlockSessionInput {
-                    block_hash: [0u8; 32],
-                    block_level: 5,
-                    pivot: [1u8; 32],
-                    tips: vec![],
-                    block_transaction_hashes: vec![
-                        DagTransactionHash { hash: [2u8; 32] },
-                        DagTransactionHash { hash: [3u8; 32] },
-                    ],
-                    supplied_transaction_hashes: vec![DagTransactionHash { hash: [3u8; 32] }],
-                    block_rlp: Vec::new(),
-                },
-            )
-            .expect("session should initialize");
-
-            let first = dag_manager_runtime_verify_block_session_next(&mut runtime);
-            assert_eq!(first.status, DAG_VERIFY_SESSION_STATUS_ACTIVE);
-            assert_eq!(first.action, DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY);
-            assert_eq!(first.proposal_period, 7);
-            let query = match dag_manager_runtime_verify_block_transaction_query(&mut runtime) {
-                Ok(query) => query,
-                Err(_) => panic!("transaction query should remain Rust-private"),
-            };
-            assert_eq!(query.hashes, vec![H256::from([2u8; 32])]);
-
-            let auth = dag_manager_runtime_verify_block_session_apply_transaction_resolution(
-                &mut runtime,
-                2,
-            );
-            assert_eq!(auth.action, DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS);
-
-            let vdf = apply_test_verify_authorization(&mut runtime);
-            assert_eq!(vdf.action, DAG_VERIFY_SESSION_ACTION_VDF_SORTITION);
-            assert_eq!(vdf.vote_count, 11);
-            assert_eq!(vdf.max_vote_count, 33);
-
-            let gas = apply_verify_block_vdf_status(
-                &mut runtime,
-                rustaxa_consensus::dag::DAG_VERIFY_VDF_STATUS_VALID,
-            );
-            assert_eq!(gas.action, DAG_VERIFY_SESSION_ACTION_GAS);
-
-            let complete = dag_manager_runtime_verify_block_session_report_gas(
-                &mut runtime,
-                DagVerifyBlockGasReport {
-                    block_gas_estimation: 10,
-                    estimated_transactions_weight: 10,
-                    dag_gas_limit: 20,
-                    pbft_gas_limit: 100,
-                },
-            )
-            .expect("gas report should resolve without tip lookup");
-            assert!(complete.complete);
-            assert_eq!(complete.status, DAG_VERIFY_SESSION_STATUS_COMPLETE);
-            assert_eq!(complete.reject_code, 0);
-
-            dag_manager_runtime_begin_verify_block_session(
-                &mut runtime,
-                DagVerifyBlockSessionInput {
-                    block_hash: [0u8; 32],
-                    block_level: 5,
-                    pivot: [1u8; 32],
-                    tips: vec![],
-                    block_transaction_hashes: vec![DagTransactionHash { hash: [4u8; 32] }],
-                    supplied_transaction_hashes: vec![],
-                    block_rlp: Vec::new(),
-                },
-            )
-            .expect("missing session should initialize");
-            let _ = dag_manager_runtime_verify_block_session_next(&mut runtime);
-            let missing = dag_manager_runtime_verify_block_session_apply_transaction_resolution(
-                &mut runtime,
-                0,
-            );
-            assert!(missing.complete);
-            assert_eq!(
-                missing.reject_code,
-                rustaxa_consensus::dag::DAG_VERIFY_REJECT_MISSING_TRANSACTION
-            );
-        }
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn verify_gas_skips_stale_tip_lookup_when_count_policy_does_not_require_it() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_verify_gas_no_tip_lookup");
-        let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-            .expect("storage should initialize");
-        let tip = H256::from([0x71; 32]);
-        storage
-            .0
-            .dag()
-            .write(tip, 4, 0, &signed_dag_block_rlp(0x71, 4, 25))
-            .expect("tip should persist for verify precheck");
-        let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-            .expect("runtime should initialize");
-        runtime
-            .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
-            .expect("mapping write should succeed");
-        advance_verify_session_to_gas(&mut runtime, tip);
-        storage
-            .0
-            .dag()
-            .remove(tip)
-            .expect("tip removal should simulate a stale storage view");
-
-        let complete = dag_manager_runtime_verify_block_session_report_gas(
-            &mut runtime,
-            DagVerifyBlockGasReport {
-                block_gas_estimation: 10,
-                estimated_transactions_weight: 10,
-                dag_gas_limit: 20,
-                pbft_gas_limit: 100,
-            },
-        )
-        .expect("non-required tip gas must not touch stale storage");
-        assert!(complete.complete);
-        assert_eq!(complete.reject_code, 0);
-
-        drop(runtime);
-        drop(storage);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn verify_gas_loads_retained_tips_only_when_count_policy_requires_it() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_verify_gas_required_tip_lookup");
-        let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-            .expect("storage should initialize");
-        let tip = H256::from([0x72; 32]);
-        storage
-            .0
-            .dag()
-            .write(tip, 4, 0, &signed_dag_block_rlp(0x72, 4, 25))
-            .expect("tip should persist for aggregate gas lookup");
-        let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-            .expect("runtime should initialize");
-        runtime
-            .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
-            .expect("mapping write should succeed");
-        advance_verify_session_to_gas(&mut runtime, tip);
-
-        let complete = dag_manager_runtime_verify_block_session_report_gas(
-            &mut runtime,
-            DagVerifyBlockGasReport {
-                block_gas_estimation: 10,
-                estimated_transactions_weight: 10,
-                dag_gas_limit: 20,
-                pbft_gas_limit: 30,
-            },
-        )
-        .expect("required tip gas should load from private Rust storage");
-        assert!(complete.complete);
-        assert_eq!(
-            complete.reject_code,
-            rustaxa_consensus::dag::DAG_VERIFY_REJECT_BLOCK_TOO_BIG
-        );
-
-        advance_verify_session_to_gas(&mut runtime, tip);
-        storage
-            .0
-            .dag()
-            .remove(tip)
-            .expect("tip removal should simulate stale required metadata");
-        let missing = dag_manager_runtime_verify_block_session_report_gas(
-            &mut runtime,
-            DagVerifyBlockGasReport {
-                block_gas_estimation: 10,
-                estimated_transactions_weight: 10,
-                dag_gas_limit: 20,
-                pbft_gas_limit: 30,
-            },
-        )
-        .expect("a missing retained tip is a typed consensus rejection");
-        assert_eq!(
-            missing.reject_code,
-            rustaxa_consensus::dag::DAG_VERIFY_REJECT_MISSING_TIP
-        );
-
-        drop(runtime);
-        drop(storage);
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn verify_gas_wrong_action_rejects_before_retained_tip_lookup() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_verify_gas_wrong_action");
-        let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-            .expect("storage should initialize");
-        let tip = H256::from([0x73; 32]);
-        storage
-            .0
-            .dag()
-            .write(tip, 4, 0, &signed_dag_block_rlp(0x73, 4, 25))
-            .expect("tip should persist for verify precheck");
-        let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-            .expect("runtime should initialize");
-        runtime
-            .dag_manager_runtime_ensure_proposal_period_mapping(5, 7)
-            .expect("mapping write should succeed");
-        advance_verify_session_to_gas(&mut runtime, tip);
-        dag_manager_runtime_begin_verify_block_session(
-            &mut runtime,
-            DagVerifyBlockSessionInput {
-                block_hash: [0u8; 32],
-                block_level: 5,
-                pivot: [1u8; 32],
-                tips: vec![DagHash { hash: tip.0 }],
-                block_transaction_hashes: vec![],
-                supplied_transaction_hashes: vec![],
-                block_rlp: Vec::new(),
-            },
-        )
-        .expect("replacement session should initialize");
-        storage
-            .0
-            .dag()
-            .remove(tip)
-            .expect("tip removal should expose an accidental lookup");
-
-        let invalid = dag_manager_runtime_verify_block_session_report_gas(
-            &mut runtime,
-            DagVerifyBlockGasReport {
-                block_gas_estimation: 10,
-                estimated_transactions_weight: 10,
-                dag_gas_limit: 20,
-                pbft_gas_limit: 30,
-            },
-        )
-        .expect("wrong-action report should remain status coded");
-        assert_eq!(invalid.status, DAG_VERIFY_SESSION_STATUS_INVALID_REPORT);
-        assert_eq!(
-            invalid.error_code,
-            "DAG_VERIFY_SESSION_UNEXPECTED_GAS_REPORT"
-        );
-
-        drop(runtime);
-        drop(storage);
-        let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]

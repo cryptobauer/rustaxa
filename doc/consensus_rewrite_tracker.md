@@ -614,6 +614,25 @@ runtime adapters remains explicit `CRW-12` cleanup debt. The checked bridge
 budget falls by 59 lines to 43,154; all other checked surface budgets are
 unchanged.
 
+The next bounded `CRW-12` deletion removes the complete superseded direct DAG
+verifier adapter family from `rustaxa-bridge/src/dag.rs`. Production already
+routes verification through native `DagTransactionService`; the deleted bridge
+surface duplicated cursor construction, transaction and authorization
+advancement, VDF snapshot/application, conditional tip-gas loading, step
+encoding, and terminal/error selection solely for bridge-local behavioral
+tests. Five focused tests now exercise those contracts directly on native
+`DagServiceState`, including ordered live reports and missing transactions,
+stale VDF snapshot rejection with replacement preservation, conditional
+retained-tip loading, missing-tip rejection, and wrong-stage short-circuiting.
+The native verifier application methods are narrowed from
+hidden public escape hatches to crate-private APIs. The production CXX ABI and
+the retained FinalChain, VDF, transaction materialization, and EVM leaves are
+unchanged. Direct proposer behavioral adapters remain the corresponding
+`CRW-12` cleanup debt. The checked bridge budget falls by 812 lines to 42,342;
+shim lines, CXX functions, carriers, handles, shim directories, granular flags,
+partial factories, compatibility constructors, production callers, and
+non-test C++ consumers are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
@@ -2049,15 +2068,18 @@ Rust design sketch:
 Required tests:
 
 - Rust unit tests for graph insertion, leaves, reachability, ghost path, and deterministic order. Landed.
-- Rust bridge tests for the production DAG manager/proposer runtime. Landed in `rustaxa-bridge`.
+- Native Rust tests for DAG verifier behavior plus bridge boundary tests for
+  production DAG manager/proposer conversion and external-leaf wiring. Landed
+  in `rustaxa-consensus` and `rustaxa-bridge`.
 - Proposer-session tests cover runtime-derived observations, stale external-fact rejection, missing periods,
   out-of-order reports, runtime-derived VDF cancellation/resume, and independent wallet sessions.
 - Rust-mode C++ production coverage through all `DagManager` cases in `dag_test` and through `dag_block_test`.
 - Direct `Dag`/`PivotTree` regression cases remain pure-C++ reference coverage; Rust mode intentionally has no
   standalone C++ graph facade.
 - Rust `verifyBlock` coverage for tip count/uniqueness, missing proposal-period mapping, expired block, transaction
-  availability, VDF/DPoS authorization decision ordering, and gas-policy decisions. Landed in `rustaxa-consensus` and
-  `rustaxa-bridge`; the shim now passes an explicit status-coded Rust VDF/DPoS fact envelope instead of encoding separate
+  availability, VDF/DPoS authorization decision ordering, and gas-policy decisions. Behavioral coverage lives in
+  `rustaxa-consensus`; `rustaxa-bridge` retains boundary conversion and external-leaf wiring coverage. The shim now
+  passes an explicit status-coded Rust VDF/DPoS fact envelope instead of encoding separate
   authorization branches in C++. DPoS/VRF facts are collected through a Rust FinalChain bridge bundle. Rust now decodes
   the DAG VDF payload, verifies the embedded VRF proof, calculates sortition difficulty, and verifies the Wesolowski
   proof against the exact legacy ASCII-hex modulus bytes used by C++ `VdfSortition`. Rust also builds the legacy

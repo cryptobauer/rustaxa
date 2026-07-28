@@ -144,7 +144,9 @@ transaction-source resolution, authorization/VDF cursor revalidation, native
 VDF proof verification, and gas decisions, while C++ retains transaction
 materialization, FinalChain lookup, and EVM estimation as unlocked leaves. The
 bridge temporarily supplies the remaining FFI-shaped proposer, query, and
-compatibility task methods over short native guards. The temporarily public
+compatibility task methods over short native guards. Superseded direct
+verifier adapters and their bridge behavioral tests are deleted; verifier
+behavior now runs directly against the native owner. The temporarily public
 native DAG and transaction state/guards are explicit bridge escape-hatch debt
 and may not cross CXX or external callbacks.
 

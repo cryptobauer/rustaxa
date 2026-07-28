@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 43154 |
+| `bridge_lines` | 42342 |
 | `shim_lines` | 17629 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |
@@ -107,7 +107,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 
 | Module | Surface | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
-| `rust/crates/rustaxa-bridge/src/dag.rs` | Superseded test/compatibility adapters over native `DagService` state | DAG manager/proposer shims | Internal bridge route | Delete the remaining verifier/proposer behavioral adapters after equivalent native tests cover every edge. |
+| `rust/crates/rustaxa-bridge/src/dag.rs` | Superseded test/compatibility adapters over native `DagService` state | DAG manager/proposer shims | Internal bridge route | Delete the remaining proposer behavioral adapters after equivalent native tests cover every edge. |
 | `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | CXX conversion and unlocked leaf adapters over native `DagTransactionService` | App, DAG, transaction, gas, sortition shims | Native service wrapper | Move remaining query and compatibility tasks native; retain only CXX conversion plus FinalChain, EVM, signing, VDF-generation, and transport leaf execution. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
