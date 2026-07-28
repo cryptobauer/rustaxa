@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 36531 |
+| `bridge_lines` | 36262 |
 | `shim_lines` | 17629 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |
@@ -129,7 +129,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | `rust/crates/rustaxa-bridge/src/sortition.rs` | PBFT finalization preview/commit conversion over native `SortitionService` | PBFT bridge runtime | Internal bridge route | Move the remaining finalization composition into the native PBFT/DAG owner; the C++ sortition facade and its direct CXX operations are deleted. |
 | `rust/crates/rustaxa-bridge/src/storage.rs` | storage facade, queries, batch | storage shim, conformance, bootstrap | Compatibility facade | Native bootstrap/query/test fixtures replace broad storage handles. |
 | `rust/crates/rustaxa-bridge/src/transaction.rs` | legacy transaction inspection | PBFT/transaction materializers | Internal bridge route | Use native codec internally; retain only if a named C++ client remains. |
-| `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | DTO conversion plus short-lived DAG-save/finalized-status adapters over native transaction ownership; admission, read, packing, finalized filtering/verification, recovery, cache, sidecar-removal, and queue-finalization tasks call lock-owning native services directly | transaction/DAG/PBFT shims | Internal bridge route | Move the remaining persistence/status FFI task methods into native service APIs; retain only submission/materialization conversion and unlocked EVM leaf adapters. |
+| `rust/crates/rustaxa-bridge/src/transaction_manager.rs` | DTO conversion plus a short-lived DAG-save adapter over native transaction ownership; finalized-status, admission, read, packing, finalized filtering/verification, recovery, cache, sidecar-removal, and queue-finalization tasks call lock-owning native services directly | transaction/DAG/PBFT shims | Internal bridge route | Move the remaining DAG-save FFI task into native service APIs; retain only submission/materialization conversion and unlocked EVM leaf adapters. |
 | `rust/crates/rustaxa-bridge/src/vdf.rs` | VDF operations/cancellation | VDF and proposer C++ | External boundary | Keep until VDF execution is a native or dedicated external API. |
 | `rust/crates/rustaxa-bridge/src/verified_votes.rs` | DTO/effect adapters over native `PbftVerifiedVotesService`, plus cross-domain FinalChain and leader/finalization composition | vote and PBFT adapters | Internal bridge route | Native storage lifetime, restoration, vote-runtime lock ownership, and all former facade operations live in `rustaxa-consensus`; move the remaining cross-domain workflows into the native PBFT owner and keep only carrier conversion at retained executor boundaries. |
 

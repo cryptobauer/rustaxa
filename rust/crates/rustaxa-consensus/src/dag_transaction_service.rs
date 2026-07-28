@@ -32,6 +32,7 @@ use crate::transaction_service::{
     TransactionServiceCompatibilityPackPrepared, TransactionServiceCompatibilityPackRequest,
     TransactionServiceConfig, TransactionServiceEstimateRequest,
     TransactionServiceFinalChainAdmissionFact, TransactionServiceFinalizedFilterRequest,
+    TransactionServiceFinalizedStatusFact, TransactionServiceFinalizedStatusReport,
     TransactionServiceGasEstimationPlan, TransactionServiceGasEstimationRequest,
     TransactionServiceGasEstimationResult, TransactionServiceGuard, TransactionServicePackEstimate,
     TransactionServicePayload, TransactionServiceProposerPackFinalized,
@@ -498,6 +499,22 @@ impl DagTransactionService {
             admission_fact,
             final_chain_fact,
             entry,
+        )
+    }
+
+    /// Applies finalized status and periodic account purge in the native owner.
+    pub fn transaction_update_finalized_status(
+        &self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        facts: Vec<TransactionServiceFinalizedStatusFact>,
+    ) -> Result<TransactionServiceFinalizedStatusReport> {
+        self.transaction.update_finalized_status(
+            period,
+            retention_window,
+            account_nonce_facts,
+            facts,
         )
     }
 

@@ -1,12 +1,14 @@
 use crate::gas_pricer::{GasPriceOracle, GasPricerConfig};
 use crate::transaction_manager::{
     DagTransactionSaveFact, FinalizedTransactionFilterFact, FinalizedTransactionFilterPlan,
+    FinalizedTransactionStatusFact, FinalizedTransactionStatusPlan,
     TransactionManagerInsertTransactionFact, TransactionManagerInsertTransactionStatus,
     TransactionManagerKnownFact, TransactionManagerSidecar, TransactionManagerSidecarRecoveryEntry,
     TransactionManagerValidatedInsertFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionStatus, VerifyNotFinalizedTransactionFact,
-    plan_exclude_finalized_transactions, plan_insert_transaction, plan_transactions_from_dag_block,
-    plan_validated_insert, plan_verify_not_finalized_transactions, plan_verify_transaction,
+    plan_exclude_finalized_transactions, plan_finalized_transactions_status,
+    plan_insert_transaction, plan_transactions_from_dag_block, plan_validated_insert,
+    plan_verify_not_finalized_transactions, plan_verify_transaction,
 };
 use crate::transaction_packing_service::{
     TransactionPackingCandidate, TransactionPackingEffect, TransactionPackingEstimate,
@@ -22,7 +24,8 @@ use crate::transaction_storage::{
     STORED_TRANSACTION_SOURCE_FINALIZED_SYSTEM, STORED_TRANSACTION_SOURCE_MISSING,
     STORED_TRANSACTION_SOURCE_PENDING, StoredTransactionLookupRequest,
     append_non_finalized_transactions_to_batch, load_non_finalized_recovery_entries,
-    load_stored_transactions, remove_non_finalized_transactions, transaction_finalized,
+    load_stored_transactions, remove_non_finalized_transactions, save_transaction_count,
+    transaction_finalized,
 };
 use anyhow::{Context, Result, anyhow, ensure};
 use ethereum_types::{H160, H256, U256};
@@ -222,6 +225,30 @@ pub struct TransactionServicePublicAdmissionReport {
     pub public_result: TransactionServicePublicInsertResult,
     /// Admission result; absent when verification rejected the transaction.
     pub admission: Option<TransactionServiceAdmissionReport>,
+}
+
+/// Canonical payload fact for finalized-status publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceFinalizedStatusFact {
+    /// Caller-owned position used to preserve payload/action identity.
+    pub input_index: u64,
+    /// Canonical transaction hash.
+    pub hash: H256,
+    /// Canonical transaction RLP retained in the recently-finalized sidecar.
+    pub tx_rlp: Vec<u8>,
+}
+
+/// Native effects produced after finalized-status persistence and publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransactionServiceFinalizedStatusReport {
+    /// Hashes removed from the non-finalized sidecar.
+    pub removed_non_finalized: Vec<H256>,
+    /// Hashes erased directly from the live queue.
+    pub queue_erased: Vec<H256>,
+    /// Hashes purged because their account nonce finalized.
+    pub finalized_account_purged: Vec<H256>,
+    /// Number of accepted finalized payloads.
+    pub accepted_count: u64,
 }
 
 fn public_verification_result(
@@ -847,6 +874,22 @@ impl TransactionService {
         self.lock()?
             .execute_public_admission(verify_fact, admission_fact, final_chain_fact, entry)
     }
+
+    /// Persists and publishes finalized transaction status plus periodic queue purge.
+    ///
+    /// Count persistence precedes all live publication. The complete status
+    /// transition and account-nonce purge occur under one native transaction
+    /// lock, and the returned owned hashes are logging/effect facts only.
+    pub fn update_finalized_status(
+        &self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        facts: Vec<TransactionServiceFinalizedStatusFact>,
+    ) -> Result<TransactionServiceFinalizedStatusReport> {
+        self.lock()?
+            .update_finalized_status(period, retention_window, account_nonce_facts, facts)
+    }
 }
 
 /// Exclusive native transaction runtime guard.
@@ -1125,6 +1168,106 @@ impl TransactionServiceState {
             verification_expected_chain_id: expected_chain_id,
             public_result: public_insert_result(&admission),
             admission: Some(admission),
+        })
+    }
+
+    fn update_finalized_status(
+        &mut self,
+        period: u64,
+        retention_window: u64,
+        account_nonce_facts: Vec<TransactionServiceAccountNonceFact>,
+        facts: Vec<TransactionServiceFinalizedStatusFact>,
+    ) -> Result<TransactionServiceFinalizedStatusReport> {
+        let plan: FinalizedTransactionStatusPlan = plan_finalized_transactions_status(
+            facts
+                .iter()
+                .map(|fact| FinalizedTransactionStatusFact {
+                    input_index: fact.input_index,
+                    hash: fact.hash,
+                    in_non_finalized_cache: self.sidecar.contains_non_finalized(fact.hash),
+                })
+                .collect(),
+            self.sidecar.transaction_count(),
+            period,
+            retention_window,
+        )?;
+        let validated_facts = plan
+            .accepted_transactions
+            .iter()
+            .map(|action| {
+                let fact = facts
+                    .get(action.input_index as usize)
+                    .context("TM_RUNTIME_FINALIZED_STATUS_INPUT_INDEX")?;
+                ensure!(
+                    fact.hash == action.hash,
+                    "TM_RUNTIME_FINALIZED_STATUS_HASH_MISMATCH"
+                );
+                Ok(fact)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if !plan.accepted_transactions.is_empty() {
+            save_transaction_count(self.storage.as_ref(), plan.target_transaction_count)
+                .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
+        }
+        if let Some(stale_period) = plan.stale_period {
+            self.sidecar
+                .evict_recently_finalized_stale_period(stale_period);
+        }
+
+        let mut removed_non_finalized = Vec::new();
+        let mut queue_erased = Vec::new();
+        for (action, fact) in plan.accepted_transactions.iter().zip(validated_facts) {
+            self.sidecar
+                .insert_recently_finalized(period, fact.hash, fact.tx_rlp.clone())
+                .context("TM_RUNTIME_FINALIZED_STATUS_INSERT")?;
+            self.queue.mark_transaction_known(fact.hash);
+            if self.queue.erase(fact.hash) {
+                queue_erased.push(fact.hash);
+            }
+            if action.removed_non_finalized {
+                removed_non_finalized.push(fact.hash);
+            }
+        }
+        self.sidecar
+            .set_transaction_count(plan.target_transaction_count);
+
+        let supplied: HashMap<H160, (bool, U256)> = account_nonce_facts
+            .into_iter()
+            .map(|fact| {
+                (
+                    H160::from(fact.sender),
+                    (
+                        fact.account_found,
+                        U256::from_big_endian(&fact.account_nonce),
+                    ),
+                )
+            })
+            .collect();
+        let purge_facts = self
+            .queue
+            .proposable_accounts()
+            .into_iter()
+            .map(|sender| {
+                let (account_found, account_nonce) =
+                    supplied.get(&sender).copied().unwrap_or_default();
+                crate::transaction_queue::TransactionQueueAccountNonceFact {
+                    sender,
+                    account_found,
+                    account_nonce,
+                }
+            })
+            .collect::<Vec<_>>();
+        let finalized_account_purged = if plan.purge_transactions {
+            self.queue.purge_accounts_plan(&purge_facts).removed_hashes
+        } else {
+            Vec::new()
+        };
+
+        Ok(TransactionServiceFinalizedStatusReport {
+            removed_non_finalized,
+            queue_erased,
+            finalized_account_purged,
+            accepted_count: plan.accepted_transactions.len() as u64,
         })
     }
 
@@ -3314,6 +3457,113 @@ mod tests {
         assert_eq!(report.public_result.message, "chain_id mismatch 1 2");
         assert!(!service.is_transaction_known(hash.0)?);
 
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn finalized_status_persists_before_native_sidecar_and_queue_publication() -> Result<()> {
+        let (service, path) = build_service_with_defaults(
+            Some(7),
+            8,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let hash = H256::from_low_u64_be(0xf1);
+        {
+            let mut state = service.lock()?;
+            state.sidecar.insert_non_finalized(hash, vec![0x11])?;
+            state.queue.insert(
+                TransactionQueueEntry {
+                    hash,
+                    sender: H160::from_low_u64_be(9),
+                    nonce: U256::one(),
+                    gas_price: U256::one(),
+                    gas: 21_000,
+                    data_size: 0,
+                    rlp: vec![0x11],
+                    last_block_number: 0,
+                },
+                true,
+            )?;
+        }
+
+        let report = service.update_finalized_status(
+            11,
+            10,
+            Vec::new(),
+            vec![TransactionServiceFinalizedStatusFact {
+                input_index: 0,
+                hash,
+                tx_rlp: vec![0x11],
+            }],
+        )?;
+        assert_eq!(report.removed_non_finalized, vec![hash]);
+        assert_eq!(report.queue_erased, vec![hash]);
+        assert!(report.finalized_account_purged.is_empty());
+        assert_eq!(report.accepted_count, 1);
+        let state = service.lock()?;
+        assert!(state.sidecar.contains_recently_finalized(hash));
+        assert!(!state.queue.contains(hash));
+        assert_eq!(state.sidecar.transaction_count(), 7);
+        assert_eq!(
+            state
+                .storage
+                .metadata()
+                .status_field(StatusField::TrxCount as u8)?,
+            7
+        );
+        drop(state);
+
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn finalized_status_rejects_bad_input_index_before_count_persistence() -> Result<()> {
+        let (service, path) = build_service_with_defaults(
+            Some(7),
+            8,
+            GasPricerConfig {
+                percentile: 50,
+                minimum_price: U256::one(),
+                history_blocks: 0,
+                is_light_node: false,
+                blocks_gas_pricer: false,
+            },
+        )?;
+        let error = service
+            .update_finalized_status(
+                11,
+                10,
+                Vec::new(),
+                vec![TransactionServiceFinalizedStatusFact {
+                    input_index: 9,
+                    hash: H256::from_low_u64_be(0xf2),
+                    tx_rlp: vec![0x12],
+                }],
+            )
+            .expect_err("bad input index must fail before persistence");
+        assert!(
+            error
+                .to_string()
+                .contains("TM_RUNTIME_FINALIZED_STATUS_INPUT_INDEX")
+        );
+        let state = service.lock()?;
+        assert_eq!(state.sidecar.transaction_count(), 7);
+        assert_eq!(
+            state
+                .storage
+                .metadata()
+                .status_field(StatusField::TrxCount as u8)?,
+            7
+        );
+        drop(state);
         std::fs::remove_dir_all(path)?;
         Ok(())
     }

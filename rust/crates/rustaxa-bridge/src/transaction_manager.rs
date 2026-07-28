@@ -15,11 +15,12 @@
 use crate::ffi::rustaxa_ffi::TransactionManagerSidecarInsertInput;
 #[cfg(test)]
 use crate::ffi::rustaxa_ffi::TransactionQueueConfig;
+#[cfg(test)]
+use crate::ffi::rustaxa_ffi::TransactionQueueHash;
 use crate::ffi::rustaxa_ffi::{
-    DagTransactionSaveSidecarFact, FinalizedTransactionStatusSidecarFact, GasPricerConfig,
-    TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
-    TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
-    TransactionManagerFinalChainAdmissionFact, TransactionManagerFinalizedStatusCommandReport,
+    DagTransactionSaveSidecarFact, GasPricerConfig, TransactionManagerAdmissionCommandReport,
+    TransactionManagerAdmissionResult, TransactionManagerAdmissionShellIntent,
+    TransactionManagerDagSaveCommandReport, TransactionManagerFinalChainAdmissionFact,
     TransactionManagerGasEstimationFact, TransactionManagerGasEstimationPlan,
     TransactionManagerHashCommand, TransactionManagerPublicAdmissionCommandReport,
     TransactionManagerPublicInsertResult, TransactionManagerTransactionView,
@@ -27,24 +28,25 @@ use crate::ffi::rustaxa_ffi::{
     TransactionManagerValidatedInsertRuntimeFact, TransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionOutcome,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
-    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueStoredTransaction,
+    TransactionQueueInsertInput, TransactionQueueStoredTransaction,
     TransactionQueueTransactionGroup,
 };
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result};
 use ethereum_types::{H160, H256, U256};
 use rustaxa_consensus::gas_pricer::GasPricerConfig as DomainGasPricerConfig;
 use rustaxa_consensus::transaction_manager::{
-    plan_finalized_transactions_status, plan_transactions_from_dag_block, plan_verify_transaction,
+    plan_transactions_from_dag_block, plan_verify_transaction,
     DagTransactionSaveFact as ConsensusDagTransactionSaveFact,
-    FinalizedTransactionStatusFact as ConsensusFinalizedTransactionStatusFact,
-    FinalizedTransactionStatusPlan as ConsensusFinalizedTransactionStatusPlan,
     TransactionManagerInsertTransactionStatus,
     TransactionManagerVerifyTransactionFact as ConsensusTransactionManagerVerifyTransactionFact,
     TransactionManagerVerifyTransactionStatus,
 };
 use rustaxa_consensus::transaction_queue::{
-    TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueEntry,
-    TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
+    TransactionQueue, TransactionQueueEntry, TransactionQueueInsertStatus,
+};
+#[cfg(test)]
+use rustaxa_consensus::transaction_queue::{
+    TransactionQueueAccountNonceFact, TransactionQueuePurgeOutcome,
 };
 #[cfg(test)]
 use rustaxa_consensus::transaction_service::TransactionServiceConfig;
@@ -57,20 +59,27 @@ use rustaxa_consensus::transaction_service::{
     TransactionServiceTransactionViewRequest, TransactionServiceValidatedAdmissionFact,
 };
 use rustaxa_consensus::transaction_storage::{
-    append_non_finalized_transactions_to_batch, save_transaction_count, transaction_finalized,
+    append_non_finalized_transactions_to_batch, transaction_finalized,
     NonFinalizedTransactionStoragePayload,
 };
 #[cfg(test)]
 use rustaxa_storage::StatusField;
 use rustaxa_storage::{Storage, StorageWriteBatch};
+#[cfg(test)]
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 #[cfg(test)]
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 struct TransactionManagerRuntimeQueueCleanupPlan {
     non_proposable_expired: TransactionManagerRuntimeQueuePurgePlan,
     finalized_account_purged: TransactionManagerRuntimeQueuePurgePlan,
+}
+
+#[cfg(test)]
+struct TransactionManagerRuntimeQueuePurgePlan {
+    removed_hashes: Vec<TransactionQueueHash>,
 }
 
 /// Prepared DAG transaction persistence held until a shared DAG/transaction
@@ -172,10 +181,6 @@ pub(crate) struct TransactionManagerRuntimeQueueInsertOutcome {
     inserted_hash: [u8; 32],
     demoted_hashes: Vec<TransactionQueueHash>,
     overflow_removed_hashes: Vec<TransactionQueueHash>,
-}
-
-struct TransactionManagerRuntimeQueuePurgePlan {
-    removed_hashes: Vec<TransactionQueueHash>,
 }
 
 struct DagTransactionSaveAccepted {
@@ -386,18 +391,6 @@ pub(crate) struct DagTransactionSaveOutcome {
     accepted: Vec<DagTransactionSaveAccepted>,
 }
 
-struct FinalizedTransactionStatusAction {
-    hash: [u8; 32],
-    removed_non_finalized: bool,
-    erase_from_queue: bool,
-    erased_from_queue: bool,
-}
-
-struct FinalizedTransactionStatusPlan {
-    accepted: Vec<FinalizedTransactionStatusAction>,
-    purge_transaction_queue: bool,
-}
-
 const TM_VERIFY_TRANSACTION_STATUS_ACCEPTED: u8 =
     TransactionManagerVerifyTransactionStatus::Accepted as u8;
 const TM_VERIFY_TRANSACTION_STATUS_CHAIN_ID_MISMATCH: u8 =
@@ -432,48 +425,6 @@ pub(crate) fn dag_save_command_report(
         }
     }
     TransactionManagerDagSaveCommandReport { queue_erased }
-}
-
-fn finalized_status_command_report(
-    outcome: &FinalizedTransactionStatusPlan,
-) -> TransactionManagerFinalizedStatusCommandReport {
-    let mut removed_non_finalized = Vec::new();
-    let mut queue_erased = Vec::new();
-    for action in &outcome.accepted {
-        if action.removed_non_finalized {
-            removed_non_finalized.push(hash_command(action.hash));
-        }
-        if action.erase_from_queue && action.erased_from_queue {
-            queue_erased.push(hash_command(action.hash));
-        }
-    }
-    TransactionManagerFinalizedStatusCommandReport {
-        removed_non_finalized,
-        queue_erased,
-        finalized_account_purged: Vec::new(),
-        accepted_count: outcome.accepted.len() as u64,
-        purge_transaction_queue: outcome.purge_transaction_queue,
-    }
-}
-
-fn append_queue_cleanup_to_finalized_status_command_report(
-    report: &mut TransactionManagerFinalizedStatusCommandReport,
-    cleanup: TransactionManagerRuntimeQueueCleanupPlan,
-) {
-    report.queue_erased.extend(
-        cleanup
-            .non_proposable_expired
-            .removed_hashes
-            .into_iter()
-            .map(|entry| hash_command(entry.hash)),
-    );
-    report.finalized_account_purged.extend(
-        cleanup
-            .finalized_account_purged
-            .removed_hashes
-            .into_iter()
-            .map(|entry| hash_command(entry.hash)),
-    );
 }
 
 fn runtime_queue_entry_from_insert_input(
@@ -524,6 +475,7 @@ pub(crate) fn service_transaction_groups_to_bridge(
         .collect()
 }
 
+#[cfg(test)]
 fn runtime_hashes_to_bridge(hashes: Vec<H256>) -> Vec<TransactionQueueHash> {
     hashes
         .into_iter()
@@ -531,6 +483,7 @@ fn runtime_hashes_to_bridge(hashes: Vec<H256>) -> Vec<TransactionQueueHash> {
         .collect()
 }
 
+#[cfg(test)]
 fn runtime_queue_purge_plan_from_consensus(
     outcome: TransactionQueuePurgeOutcome,
 ) -> TransactionManagerRuntimeQueuePurgePlan {
@@ -539,6 +492,7 @@ fn runtime_queue_purge_plan_from_consensus(
     }
 }
 
+#[cfg(test)]
 fn runtime_queue_account_nonce_facts_from_bridge(
     proposable_accounts: Vec<H160>,
     account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
@@ -555,14 +509,13 @@ fn runtime_queue_account_nonce_facts_from_bridge(
             )
         })
         .collect();
-
     proposable_accounts
         .into_iter()
         .map(|sender| {
             let (account_found, account_nonce) = account_nonce_facts
                 .get(&sender)
                 .copied()
-                .unwrap_or((false, U256::zero()));
+                .unwrap_or_default();
             TransactionQueueAccountNonceFact {
                 sender,
                 account_found,
@@ -703,129 +656,6 @@ pub fn save_transactions_from_dag_block_command_report_with_runtime(
 ) -> Result<TransactionManagerDagSaveCommandReport> {
     let outcome = save_transactions_from_dag_block_with_runtime(runtime, facts)?;
     Ok(dag_save_command_report(&outcome))
-}
-
-/// Plans and applies finalized transaction status updates through the Rust manager runtime.
-///
-/// Rust persists count changes before mutating live runtime state. Once storage
-/// succeeds, the runtime evicts stale recent-finalized sidecars, inserts current
-/// finalized payloads, marks queue-known membership, erases matching queued
-/// payloads, and advances the authoritative transaction count.
-fn update_finalized_transactions_status_with_runtime(
-    runtime: &mut TransactionServiceState,
-    period: u64,
-    retention_window: u64,
-    facts: Vec<FinalizedTransactionStatusSidecarFact>,
-) -> Result<FinalizedTransactionStatusPlan> {
-    let consensus_facts = facts
-        .iter()
-        .map(|fact| {
-            let hash = H256::from(fact.hash);
-            ConsensusFinalizedTransactionStatusFact {
-                input_index: fact.input_index,
-                hash,
-                in_non_finalized_cache: runtime.sidecar.contains_non_finalized(hash),
-            }
-        })
-        .collect();
-
-    let plan: ConsensusFinalizedTransactionStatusPlan = plan_finalized_transactions_status(
-        consensus_facts,
-        runtime.sidecar.transaction_count(),
-        period,
-        retention_window,
-    )?;
-
-    if !plan.accepted_transactions.is_empty() {
-        save_transaction_count(
-            transaction_manager_runtime_storage(runtime)?,
-            plan.target_transaction_count,
-        )
-        .context("TM_FINALIZED_STATUS_TRXCOUNT_WRITE")?;
-    }
-
-    if let Some(stale_period) = plan.stale_period {
-        runtime
-            .sidecar
-            .evict_recently_finalized_stale_period(stale_period);
-    }
-
-    let mut accepted = Vec::with_capacity(plan.accepted_transactions.len());
-    for action in &plan.accepted_transactions {
-        let fact = facts
-            .get(action.input_index as usize)
-            .context("TM_RUNTIME_FINALIZED_STATUS_INPUT_INDEX")?;
-        let hash = H256::from(fact.hash);
-        ensure!(
-            hash == action.hash,
-            "TM_RUNTIME_FINALIZED_STATUS_HASH_MISMATCH"
-        );
-        runtime
-            .sidecar
-            .insert_recently_finalized(period, hash, fact.trx_rlp.clone())
-            .context("TM_RUNTIME_FINALIZED_STATUS_INSERT")?;
-        runtime.queue.mark_transaction_known(hash);
-        let erased_from_queue = runtime.queue.erase(hash);
-        accepted.push(FinalizedTransactionStatusAction {
-            hash: action.hash.0,
-            removed_non_finalized: action.removed_non_finalized,
-            erase_from_queue: true,
-            erased_from_queue,
-        });
-    }
-    runtime
-        .sidecar
-        .set_transaction_count(plan.target_transaction_count);
-
-    Ok(FinalizedTransactionStatusPlan {
-        accepted,
-        purge_transaction_queue: plan.purge_transactions,
-    })
-}
-
-/// Applies finalized-transaction status changes and returns typed command actions.
-#[cfg(test)]
-pub fn update_finalized_transactions_status_command_report_with_runtime(
-    runtime: &mut TransactionServiceState,
-    period: u64,
-    retention_window: u64,
-    facts: Vec<FinalizedTransactionStatusSidecarFact>,
-) -> Result<TransactionManagerFinalizedStatusCommandReport> {
-    let outcome = update_finalized_transactions_status_with_runtime(
-        runtime,
-        period,
-        retention_window,
-        facts,
-    )?;
-    Ok(finalized_status_command_report(&outcome))
-}
-
-/// Applies finalized status changes plus queue purge and returns typed command actions.
-pub fn update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
-    runtime: &mut TransactionServiceState,
-    period: u64,
-    retention_window: u64,
-    account_nonce_facts: Vec<BridgeTransactionQueueAccountNonceFact>,
-    facts: Vec<FinalizedTransactionStatusSidecarFact>,
-) -> Result<TransactionManagerFinalizedStatusCommandReport> {
-    let outcome = update_finalized_transactions_status_with_runtime(
-        runtime,
-        period,
-        retention_window,
-        facts,
-    )?;
-    let mut report = finalized_status_command_report(&outcome);
-    if report.purge_transaction_queue {
-        let mut runtime = TransactionRuntimeAccess(runtime);
-        let cleanup = runtime.transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
-            false,
-            0,
-            account_nonce_facts,
-        )?;
-        append_queue_cleanup_to_finalized_status_command_report(&mut report, cleanup);
-        report.purge_transaction_queue = false;
-    }
-    Ok(report)
 }
 
 /// Builds a deterministic admission plan for C++ pre-admission verification.
@@ -983,7 +813,7 @@ where
         self.queue.contains(H256::from(*hash))
     }
 
-    /// Applies Rust-owned queue cleanup using proposal-account nonce facts.
+    #[cfg(test)]
     fn transaction_manager_runtime_queue_cleanup_with_account_nonce_facts(
         &mut self,
         apply_block_finalized: bool,
@@ -1286,134 +1116,6 @@ mod tests {
             8
         );
 
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_update_finalized_transactions_status_command_report_with_runtime_maps_actions() {
-        let temp_dir = unique_temp_dir(
-            "rustaxa_bridge_tm_update_finalized_status_report_runtime_command_report",
-        );
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 7)
-            .expect("status field seed should persist");
-
-        let mut runtime =
-            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
-                .expect("runtime should restore from storage");
-        runtime
-            .transaction_manager_runtime_insert_non_finalized(
-                TransactionManagerSidecarInsertInput {
-                    hash: [1; 32],
-                    trx_rlp: vec![0x11],
-                },
-            )
-            .expect("sidecar seed should succeed");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input(1, true))
-            .expect("queue seed should succeed");
-
-        let report = update_finalized_transactions_status_command_report_with_runtime(
-            &mut runtime,
-            11,
-            10,
-            vec![FinalizedTransactionStatusSidecarFact {
-                input_index: 0,
-                hash: [1; 32],
-                trx_rlp: vec![0x11],
-            }],
-        )
-        .expect("runtime finalized status command report should execute");
-
-        assert!(!report.purge_transaction_queue);
-        assert_eq!(report.removed_non_finalized.len(), 1);
-        assert_eq!(report.removed_non_finalized[0].hash, [1; 32]);
-        assert_eq!(report.queue_erased.len(), 1);
-        assert_eq!(report.queue_erased[0].hash, [1; 32]);
-        assert!(report.finalized_account_purged.is_empty());
-        assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 7);
-        assert_eq!(
-            metadata_queries(&storage)
-                .get_status_field(StatusField::TrxCount as u8)
-                .expect("status field should persist"),
-            7
-        );
-        assert!(!runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
-        assert!(runtime.transaction_manager_runtime_contains_recently_finalized(&[1; 32]));
-        let _ = fs::remove_dir_all(temp_dir);
-    }
-
-    #[test]
-    fn bridge_update_finalized_transactions_status_command_report_with_runtime_account_nonce_facts_executes_boundary(
-    ) {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_tm_update_finalized_status_report_fc_purge");
-        let storage = crate::storage::create_storage(
-            temp_dir.to_str().expect("temp path should be valid UTF-8"),
-        )
-        .expect("storage should initialize");
-        let sender = [9; 20];
-        let _final_chain = crate::final_chain::create_final_chain(
-            &storage,
-            1_000_000,
-            1,
-            vec![crate::ffi::rustaxa_ffi::GenesisAccount {
-                address: sender,
-                balance: ethereum_types::U256::one().to_big_endian().to_vec(),
-            }],
-            Vec::new(),
-            crate::ffi::rustaxa_ffi::GenesisDposConfig {
-                eligibility_balance_threshold: vec![1],
-                vote_eligibility_balance_step: vec![1],
-                validator_maximum_stake: vec![1],
-                minimum_deposit: vec![],
-                commission_change_delta: 0,
-                commission_change_frequency: 0,
-                delegation_delay: 0,
-                dag_vdf_sortition_total_vote_count_until_period: 0,
-            },
-        )
-        .expect("final chain should initialize");
-        storage
-            .0
-            .metadata()
-            .write_status_field(StatusField::TrxCount as u8, 7)
-            .expect("status field seed should persist");
-
-        let mut runtime =
-            build_transaction_state_from_storage(&storage, TransactionQueueConfig { max_size: 16 })
-                .expect("runtime should restore from storage");
-        runtime
-            .transaction_manager_runtime_queue_insert(runtime_queue_input_for_sender(
-                1, sender, 1, true,
-            ))
-            .expect("queue seed should succeed");
-
-        let report = update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
-                &mut runtime,
-                100,
-                10,
-                vec![crate::ffi::rustaxa_ffi::TransactionQueueAccountNonceFact {
-                    sender,
-                    account_found: true,
-                    account_nonce: U256::from(0u64).to_big_endian(),
-                }],
-                Vec::new(),
-        )
-            .expect("runtime finalized status report with final chain should execute purge");
-
-        assert!(!report.purge_transaction_queue);
-        assert!(report.removed_non_finalized.is_empty());
-        assert!(report.queue_erased.is_empty());
-        assert!(report.finalized_account_purged.is_empty());
-        assert_eq!(runtime.transaction_manager_runtime_transaction_count(), 7);
-        assert!(runtime.transaction_manager_runtime_queue_contains(&[1; 32]));
         let _ = fs::remove_dir_all(temp_dir);
     }
 

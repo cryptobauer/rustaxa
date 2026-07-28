@@ -43,8 +43,9 @@ use rustaxa_consensus::transaction_service::{
     TransactionServiceAccountNonceFact, TransactionServiceCompatibilityPackFinalized,
     TransactionServiceCompatibilityPackPrepared, TransactionServiceCompatibilityPackRequest,
     TransactionServiceConfig, TransactionServiceEstimateRequest,
-    TransactionServiceFinalizedFilterRequest, TransactionServiceGasEstimationResult,
-    TransactionServicePackEstimate, TransactionServicePayload, TransactionServiceTransactionView,
+    TransactionServiceFinalizedFilterRequest, TransactionServiceFinalizedStatusFact,
+    TransactionServiceGasEstimationResult, TransactionServicePackEstimate,
+    TransactionServicePayload, TransactionServiceTransactionView,
     TransactionServiceVerifyNotFinalizedFact,
 };
 
@@ -792,10 +793,38 @@ pub fn service_update_finalized_transactions_status_command_report_with_runtime_
     account_nonce_facts: Vec<TransactionQueueAccountNonceFact>,
     facts: Vec<FinalizedTransactionStatusSidecarFact>,
 ) -> Result<TransactionManagerFinalizedStatusCommandReport> {
-    let mut transaction = service.try_transaction()?;
-    crate::transaction_manager::update_finalized_transactions_status_command_report_with_runtime_and_account_nonce_facts(
-        &mut transaction, period, retention_window, account_nonce_facts, facts,
-    )
+    let report = service.root.transaction_update_finalized_status(
+        period,
+        retention_window,
+        bridge_to_service_account_nonce_facts(account_nonce_facts),
+        facts
+            .into_iter()
+            .map(|fact| TransactionServiceFinalizedStatusFact {
+                input_index: fact.input_index,
+                hash: H256::from(fact.hash),
+                tx_rlp: fact.trx_rlp,
+            })
+            .collect(),
+    )?;
+    Ok(TransactionManagerFinalizedStatusCommandReport {
+        removed_non_finalized: report
+            .removed_non_finalized
+            .into_iter()
+            .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
+            .collect(),
+        queue_erased: report
+            .queue_erased
+            .into_iter()
+            .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
+            .collect(),
+        finalized_account_purged: report
+            .finalized_account_purged
+            .into_iter()
+            .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
+            .collect(),
+        accepted_count: report.accepted_count,
+        purge_transaction_queue: false,
+    })
 }
 
 pub fn service_transaction_manager_filter_non_finalized_with_runtime(

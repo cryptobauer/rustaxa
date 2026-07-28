@@ -745,6 +745,19 @@ escape hatch is DAG-save/finalized-status. The checked bridge budget falls by
 directories, granular flags, partial factories, compatibility constructors,
 production C++ consumers, and public signatures are unchanged.
 
+The following bounded `CRW-12` transaction contraction moves finalized-status
+persistence, recently-finalized sidecar publication, queue-known/erasure
+mutation, and periodic account-nonce purge behind one lock-owning native task.
+Count persistence retains storage-before-memory ordering; the bridge now only
+converts finalized payload/account facts and returned logging hashes into the
+unchanged CXX report. The bridge status state machine, purge composition, and
+two duplicated behavioral tests are deleted; native coverage proves durable
+count, sidecar, queue, and report publication. DAG-save is now the sole
+transaction guard escape hatch. The checked bridge budget falls by 269 lines to
+36,262; CXX functions, carriers, handles, shim lines and directories, granular
+flags, partial factories, compatibility constructors, production C++ consumers,
+and public signatures are unchanged.
+
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard
 now compares all declared Rust bridge modules and all live consensus shim directories against their dedicated audit
 tables in addition to exported `Bridge*` handles, rejects missing and stale rows, and self-tests every inventory family.
