@@ -44,7 +44,7 @@ ceiling is the minimum value previously reached and a multi-commit change cannot
 
 | Metric | Exact budget |
 | --- | ---: |
-| `bridge_lines` | 44559 |
+| `bridge_lines` | 43565 |
 | `shim_lines` | 17629 |
 | `cxx_functions` | 398 |
 | `cxx_carriers` | 350 |
@@ -108,7 +108,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | Module | Surface | Named consumers | Classification | Removal or narrowing condition |
 | --- | --- | --- | --- | --- |
 | `rust/crates/rustaxa-bridge/src/dag.rs` | Short-lived FFI-shaped task adapters over native `DagService` state | DAG manager/proposer shims | Internal bridge route | Move the remaining task methods behind native service APIs; retain only CXX conversion and unlocked leaf-executor adapters. |
-| `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | Bridge wrapper composing native DAG, sortition, and transaction owners | App, DAG, transaction, gas, sortition shims | Native service wrapper | Move shared DAG/transaction batch composition and three-service construction into a native application root; retain only CXX conversion and unlocked leaf-executor adapters. |
+| `rust/crates/rustaxa-bridge/src/dag_transaction_service.rs` | CXX wrapper and FFI-shaped task adapters over native `DagTransactionService` | App, DAG, transaction, gas, sortition shims | Native service wrapper | Move remaining proposer, verifier, packing, query, and compatibility task methods native; retain only CXX conversion and unlocked leaf-executor adapters. |
 | `rust/crates/rustaxa-bridge/src/ffi.rs` | CXX declarations and carriers | All C++ bridge clients | External boundary | Keep declarations and plain carriers only; delete each item with its last caller. |
 | `rust/crates/rustaxa-bridge/src/final_chain.rs` | FinalChain and execution APIs | FinalChain shim, execution adapters | External boundary | Split native ownership, public query, and a narrow external-EVM executor API. |
 | `rust/crates/rustaxa-bridge/src/network.rs` | ingress, planning, effects | tarcap handlers | External boundary | Complete `CRW-N01`; retain transport-only execution API. |
@@ -139,7 +139,7 @@ fails. An export used only from tests also fails unless it appears exactly once 
 | --- | --- | --- | --- | --- |
 | `BridgeConsensusQueryApi` | `query.rs` | RPC, GraphQL, light plugin | External boundary | Keep only client-oriented public reads. |
 | `BridgeConsensusNetworkApi` | `network.rs` | tarcap handlers | External boundary | `CRW-N01` leaves a transport-only API. |
-| `BridgeDagTransactionService` | `dag_transaction_service.rs` | App and DAG/transaction/sortition/gas shims | Native service wrapper | Native application owner replaces bridge-owned implementation. |
+| `BridgeDagTransactionService` | `dag_transaction_service.rs` | App and DAG/transaction/sortition/gas shims | Native service wrapper | Delete after named C++ clients use narrow lifecycle, query, EVM, VDF, signing, and transport adapters over native `DagTransactionService`. |
 | `BridgePbftService` | `pbft_manager.rs` | App and PBFT/vote/pillar shims | Native service wrapper | This one-field CXX adapter wraps native `PbftService`; delete it when named C++ clients use narrower lifecycle, transport, execution, and query APIs. |
 | `BridgePillarChainStorage` | `pillar_chain.rs` | storage shim | Compatibility facade | Replace remaining pillar storage compatibility calls. |
 | `BridgeStorage` | `storage.rs` | storage shim, bootstrap, tests | Compatibility facade | Native construction and narrow query/admin APIs replace it. |

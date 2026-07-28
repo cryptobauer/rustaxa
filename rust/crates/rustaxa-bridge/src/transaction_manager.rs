@@ -11,8 +11,10 @@
 //! status mapping, and sidecar membership/RLP bytes, but not C++ `Transaction`
 //! pointers or gas estimation.
 
+#[cfg(test)]
+use crate::ffi::rustaxa_ffi::TransactionQueueConfig;
 use crate::ffi::rustaxa_ffi::{
-    DagTransactionHash, DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
+    DagTransactionSaveSidecarFact, FinalizedTransactionFilterPlan,
     FinalizedTransactionStatusSidecarFact, GasPricerConfig, GasPricerGasPrice,
     TransactionManagerAdmissionCommandReport, TransactionManagerAdmissionResult,
     TransactionManagerAdmissionShellIntent, TransactionManagerDagSaveCommandReport,
@@ -29,11 +31,9 @@ use crate::ffi::rustaxa_ffi::{
     TransactionPackSelectedTransaction, TransactionPackSessionCandidate,
     TransactionPackSessionEstimateInput, TransactionPackSessionStep,
     TransactionQueueAccountNonceFact as BridgeTransactionQueueAccountNonceFact,
-    TransactionQueueConfig, TransactionQueueHash, TransactionQueueInsertInput,
-    TransactionQueueProposableAccountFact, TransactionQueueStoredTransaction,
-    TransactionQueueTransactionGroup,
+    TransactionQueueHash, TransactionQueueInsertInput, TransactionQueueProposableAccountFact,
+    TransactionQueueStoredTransaction, TransactionQueueTransactionGroup,
 };
-use crate::ffi::BridgeStorage;
 use crate::transaction::legacy_transaction_inspection_from_bytes;
 use anyhow::{anyhow, ensure, Context, Result};
 use ethereum_types::{H160, H256, U256};
@@ -63,9 +63,9 @@ use rustaxa_consensus::transaction_queue::{
     TransactionQueue, TransactionQueueAccountNonceFact, TransactionQueueDemoteStatus,
     TransactionQueueEntry, TransactionQueueInsertStatus, TransactionQueuePurgeOutcome,
 };
-use rustaxa_consensus::transaction_service::{
-    TransactionService, TransactionServiceConfig, TransactionServiceGuard, TransactionServiceState,
-};
+#[cfg(test)]
+use rustaxa_consensus::transaction_service::TransactionServiceConfig;
+use rustaxa_consensus::transaction_service::{TransactionServiceGuard, TransactionServiceState};
 use rustaxa_consensus::transaction_storage::{
     append_non_finalized_transactions_to_batch, load_non_finalized_recovery_entries,
     load_stored_transactions, remove_non_finalized_transactions, save_transaction_count,
@@ -1469,34 +1469,11 @@ fn build_transaction_state_for_test(
     }))
 }
 
-/// Builds the production transaction state with durable storage attached.
+/// Converts the flat CXX gas-pricer configuration into the native policy type.
 ///
-/// The runtime clones the underlying `Arc<rustaxa_storage::Storage>` from the
-/// generic constructor facade and becomes the storage authority for migrated
-/// transaction-manager persistence, recovery, lookup, and finalized-status
-/// routes. Its initial live transaction count is restored directly from the
-/// durable `StatusField::TrxCount` value; a missing field has the storage
-/// layer's canonical zero value. Storage read failures abort construction so
-/// C++ cannot start with a divergent count mirror. The caller installs the
-/// returned state privately inside `BridgeDagTransactionService`; no standalone
-/// transaction runtime handle is published to C++.
-pub(crate) fn build_transaction_state_from_storage(
-    storage: &BridgeStorage,
-    config: TransactionQueueConfig,
-    gas_pricer_config: GasPricerConfig,
-    proposal_dag_gas_limit: u64,
-) -> Result<TransactionService> {
-    TransactionService::restore(
-        storage.0.clone(),
-        TransactionServiceConfig {
-            queue_max_size: config.max_size,
-            gas_pricer_config: domain_gas_pricer_config(gas_pricer_config),
-            proposal_dag_gas_limit,
-        },
-    )
-}
-
-fn domain_gas_pricer_config(config: GasPricerConfig) -> DomainGasPricerConfig {
+/// The conversion is infallible and preserves all scalar values; validation is
+/// performed by the native transaction application root before publication.
+pub(crate) fn domain_gas_pricer_config(config: GasPricerConfig) -> DomainGasPricerConfig {
     DomainGasPricerConfig {
         percentile: config.percentile,
         minimum_price: U256::from_big_endian(&config.minimum_price),
@@ -2049,16 +2026,6 @@ where
             }
         }
         Ok(removed)
-    }
-
-    /// Clears private non-finalized sidecars after DAG finalization has already deleted storage.
-    pub(crate) fn remove_non_finalized_sidecars_after_dag_commit(
-        &mut self,
-        hashes: &[DagTransactionHash],
-    ) -> u64 {
-        hashes.iter().fold(0, |removed, hash| {
-            removed + u64::from(self.sidecar.remove_non_finalized(H256::from(hash.hash)))
-        })
     }
 
     /// Moves finalized hashes from non-finalized to recently-finalized sidecar state.

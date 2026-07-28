@@ -1,59 +1,51 @@
-use crate::dag::{
-    DagAddBlockEffectPlan, DagAddBlockRuntimeInput, DagRuntimeAccess, DagRuntimeGuard,
-};
+use crate::dag::{DagRuntimeAccess, DagRuntimeGuard};
 use crate::ffi::rustaxa_ffi::*;
 use crate::ffi::{BridgeFinalChain, BridgeStorage};
-use crate::transaction::legacy_transaction_inspection_from_bytes;
 use crate::transaction_manager::{
-    append_prepared_dag_transactions_to_batch, build_transaction_state_from_storage,
-    dag_save_command_report, prepare_dag_transaction_publication,
-    prepare_transactions_from_dag_block_with_runtime, publish_prepared_dag_transactions,
-    TransactionRuntimeAccess, TransactionRuntimeGuard,
+    domain_gas_pricer_config, TransactionRuntimeAccess, TransactionRuntimeGuard,
 };
 use anyhow::{ensure, Context, Result};
-use ethereum_types::H256;
-use rustaxa_consensus::dag::{
-    dag_block_transaction_hashes, verify_dag_vdf_sortition_from_block, DagVdfSortitionBlockInput,
+use ethereum_types::{H256, U256};
+use rustaxa_consensus::dag::{verify_dag_vdf_sortition_from_block, DagVdfSortitionBlockInput};
+use rustaxa_consensus::dag_service::{DagProposerTransactionObservation, DagServiceConfig};
+use rustaxa_consensus::dag_transaction_service::{
+    DagAddBlockAccountNonceFact as NativeDagAddBlockAccountNonceFact,
+    DagAddBlockCompletion as NativeDagAddBlockCompletion,
+    DagAddBlockPrepareRequest as NativeDagAddBlockPrepareRequest,
+    DagAddBlockTransactionPayload as NativeDagAddBlockTransactionPayload, DagTransactionService,
+    DagTransactionServiceConfig,
 };
-use rustaxa_consensus::dag_service::{
-    DagAddBlockPreparedTransaction, DagAddBlockSession, DagAddBlockStoredPlan,
-    DagProposerTransactionObservation, DagService, DagServiceConfig,
-};
-use rustaxa_consensus::sortition::{SortitionService, SortitionServiceGuard};
+use rustaxa_consensus::sortition::SortitionServiceGuard;
 use rustaxa_consensus::transaction_packing_service::TransactionPackingOwner;
-use rustaxa_consensus::transaction_service::TransactionService;
-use std::collections::BTreeMap;
+use rustaxa_consensus::transaction_service::TransactionServiceConfig;
 
-/// Application-owned consensus service containing sibling DAG, sortition, and transaction runtimes.
+/// CXX wrapper over the native DAG application root.
 ///
-/// Production construction initializes all three domains from one shared Rust storage handle before
-/// publishing the service. Calls hold one domain mutex unless they explicitly compose sibling state,
-/// in which case they acquire locks only in the universal DAG-then-sortition-then-transaction order.
-/// Proposer and verification FinalChain-fact collection snapshot under DAG and release every service lock
-/// for the FinalChain query. Proposer collection then reacquires DAG followed by sortition; verification
-/// reacquires only DAG. Both revalidate the exact cursor before applying, and matching infrastructure
-/// failures clean only their owning cursor. No guard crosses an external executor callback.
+/// [`DagTransactionService`] owns sibling construction, restoration, lifetime,
+/// and lock order. This bridge type retains only CXX conversion and temporary
+/// FFI-shaped task adapters. Proposer and verification fact collection releases
+/// every native guard for external FinalChain, EVM, VDF, signing, network, and
+/// callback work, then reacquires through the native root and revalidates the
+/// exact cursor before applying results.
 pub struct BridgeDagTransactionService {
-    transaction: TransactionService,
-    dag: DagService,
-    sortition: SortitionService,
+    root: DagTransactionService,
 }
 
 impl BridgeDagTransactionService {
     pub(crate) fn transaction(&self) -> TransactionRuntimeGuard<'_> {
         TransactionRuntimeAccess(
-            self.transaction
-                .lock()
+            self.root
+                .lock_transaction()
                 .expect("DAG_TRANSACTION_SERVICE_TRANSACTION_LOCK_POISONED"),
         )
     }
 
     fn try_transaction(&self) -> Result<TransactionRuntimeGuard<'_>> {
-        self.transaction.lock().map(TransactionRuntimeAccess)
+        self.root.lock_transaction().map(TransactionRuntimeAccess)
     }
 
     pub(crate) fn dag(&self) -> Result<DagRuntimeGuard<'_>> {
-        self.dag.lock().map(DagRuntimeAccess)
+        self.root.lock_dag().map(DagRuntimeAccess)
     }
 
     /// Acquires the native sortition owner after any required DAG lock.
@@ -62,7 +54,7 @@ impl BridgeDagTransactionService {
     /// order for coupled cursor revalidation. It must not cross an external
     /// executor call.
     pub(crate) fn sortition(&self) -> Result<SortitionServiceGuard<'_>> {
-        self.sortition.lock()
+        self.root.lock_sortition()
     }
 
     /// Locks the DAG and transaction subset in their universal relative order.
@@ -70,13 +62,16 @@ impl BridgeDagTransactionService {
     /// Sortition is not needed by this operation. A future three-domain
     /// operation must insert its sortition guard between these two guards.
     fn dag_and_transaction(&self) -> Result<(DagRuntimeGuard<'_>, TransactionRuntimeGuard<'_>)> {
-        let dag = self.dag()?;
-        let transaction = self.try_transaction()?;
-        Ok((dag, transaction))
+        let (dag, transaction) = self.root.lock_dag_and_transaction()?;
+        Ok((DagRuntimeAccess(dag), TransactionRuntimeAccess(transaction)))
     }
 }
 
-/// Constructs the production application service and restores all three runtimes before publication.
+/// Converts CXX configuration and constructs the native application root.
+///
+/// All restoration, shared storage ownership, error ordering, and publication
+/// are owned by [`DagTransactionService`]. This wrapper is returned only for the
+/// remaining named C++ DAG, transaction, sortition, gas, and PBFT clients.
 pub fn create_dag_transaction_service_from_storage(
     storage: &BridgeStorage,
     genesis: &[u8; 32],
@@ -87,26 +82,23 @@ pub fn create_dag_transaction_service_from_storage(
     gas_pricer_config: GasPricerConfig,
     proposal_dag_gas_limit: u64,
 ) -> Result<Box<BridgeDagTransactionService>> {
-    let transaction = build_transaction_state_from_storage(
-        storage,
-        transaction_queue_config,
-        gas_pricer_config,
-        proposal_dag_gas_limit,
-    )?;
-    let dag = DagService::restore(
+    let root = DagTransactionService::restore(
         storage.0.clone(),
-        DagServiceConfig {
-            genesis_hash: H256::from(*genesis),
-            dag_expiry_limit,
-            max_levels_per_period,
+        DagTransactionServiceConfig {
+            transaction: TransactionServiceConfig {
+                queue_max_size: transaction_queue_config.max_size,
+                gas_pricer_config: domain_gas_pricer_config(gas_pricer_config),
+                proposal_dag_gas_limit,
+            },
+            dag: DagServiceConfig {
+                genesis_hash: H256::from(*genesis),
+                dag_expiry_limit,
+                max_levels_per_period,
+            },
+            sortition: sortition_config.into(),
         },
     )?;
-    let sortition = SortitionService::restore(sortition_config.into(), storage.0.clone())?;
-    Ok(Box::new(BridgeDagTransactionService {
-        transaction,
-        dag,
-        sortition,
-    }))
+    Ok(Box::new(BridgeDagTransactionService { root }))
 }
 
 macro_rules! transaction_shared {
@@ -227,13 +219,23 @@ impl BridgeDagTransactionService {
         new_period: u64,
         finalized_order: Vec<DagHash>,
     ) -> Result<DagManagerFinalizationApplyPayload> {
-        let (mut dag_guard, mut transaction) = self.dag_and_transaction()?;
-        let dag = &mut dag_guard;
-        let committed =
-            dag.dag_manager_runtime_apply_finalized_order(new_anchor, new_period, finalized_order)?;
-        transaction
-            .remove_non_finalized_sidecars_after_dag_commit(&committed.remove_transaction_hashes);
-        Ok(committed.payload)
+        let report = self.root.apply_finalized_order(
+            H256::from(new_anchor),
+            new_period,
+            finalized_order
+                .into_iter()
+                .map(|hash| H256::from(hash.hash))
+                .collect(),
+        )?;
+        Ok(DagManagerFinalizationApplyPayload {
+            finalized_count: u64::try_from(report.finalized_count)
+                .context("DAG_RUNTIME_FINALIZATION_COUNT_OVERFLOW")?,
+            expired_hashes: report
+                .expired_hashes
+                .into_iter()
+                .map(|hash| DagHash { hash: hash.0 })
+                .collect(),
+        })
     }
 
     dag_shared_result!(dag_manager_runtime_validate_pivot_tips(block_level: u64, pivot: &[u8; 32], tips: Vec<DagHash>) -> DagPivotTipsValidation);
@@ -265,107 +267,42 @@ impl BridgeDagTransactionService {
         &self,
         input: DagAddBlockPrepareInput,
     ) -> Result<DagAddBlockPreparation> {
-        let (mut dag_guard, _transaction) = self.dag_and_transaction()?;
-        let dag = &mut dag_guard;
-        ensure!(
-            dag.pending_add_block.is_none(),
-            "DAG_ADD_BLOCK_SESSION_ALREADY_ACTIVE"
-        );
-        let mut block = rustaxa_consensus::dag::dag_manager_block_from_rlp(&input.block_rlp)
-            .context("DAG_ADD_BLOCK_PREPARE_DECODE")?;
-        if input.validate_block_hash {
-            ensure!(
-                block.hash == H256::from(input.expected_block_hash),
-                "DAG_ADD_BLOCK_PREPARE_HASH_MISMATCH"
-            );
-        } else {
-            block.hash = H256::from(input.expected_block_hash);
-        }
-        let runtime_input = add_block_runtime_input(&block, input.save, input.proposed);
-        let plan = dag.dag_manager_runtime_plan_add_block(runtime_input)?;
-        if !plan.accepted || plan.duplicate || plan.expired {
-            return Ok(DagAddBlockPreparation {
-                cursor_id: 0,
-                block_level: block.level,
-                accepted: plan.accepted,
-                duplicate: plan.duplicate,
-                expired: plan.expired,
-                missing_references: plan.missing_references,
-                account_requests: Vec::new(),
-            });
-        }
-
-        let mut transactions = Vec::new();
-        let mut account_requests = Vec::new();
-        if plan.persist_transactions {
-            let expected_hashes = if input.validate_block_hash {
-                let block_transaction_hashes = dag_block_transaction_hashes(&input.block_rlp)
-                    .context("DAG_ADD_BLOCK_PREPARE_TRANSACTION_HASHES")?;
-                ensure!(
-                    block_transaction_hashes.len() == input.transactions.len(),
-                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_COUNT_MISMATCH"
-                );
-                block_transaction_hashes
-            } else {
-                input
+        let preparation = self
+            .root
+            .prepare_add_block(NativeDagAddBlockPrepareRequest {
+                expected_hash: H256::from(input.expected_block_hash),
+                block_rlp: input.block_rlp,
+                validate_hash: input.validate_block_hash,
+                save: input.save,
+                proposed: input.proposed,
+                transactions: input
                     .transactions
-                    .iter()
-                    .map(|payload| H256::from(payload.hash))
-                    .collect()
-            };
-            for (input_index, (expected_hash, payload)) in expected_hashes
-                .into_iter()
-                .zip(input.transactions)
-                .enumerate()
-            {
-                ensure!(
-                    expected_hash == H256::from(payload.hash),
-                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_ORDER_MISMATCH"
-                );
-                let inspection = legacy_transaction_inspection_from_bytes(&payload.trx_rlp, 0)
-                    .context("DAG_ADD_BLOCK_PREPARE_TRANSACTION_DECODE")?;
-                ensure!(
-                    inspection.hash == payload.hash,
-                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_HASH_MISMATCH"
-                );
-                ensure!(
-                    inspection.sender_found,
-                    "DAG_ADD_BLOCK_PREPARE_TRANSACTION_SENDER_MISSING"
-                );
-                transactions.push(DagAddBlockPreparedTransaction {
-                    input_index: input_index as u64,
-                    hash: expected_hash,
-                    trx_rlp: payload.trx_rlp,
-                    transaction_nonce: inspection.nonce,
-                });
-                account_requests.push(DagAddBlockAccountRequest {
-                    input_index: input_index as u64,
-                    sender: inspection.sender,
-                });
-            }
-        }
-
-        let cursor_id = dag.next_add_block_session_id;
-        dag.next_add_block_session_id = cursor_id.wrapping_add(1).max(1);
-        let stored_plan = stored_add_block_plan(&plan);
-        let block_level = block.level;
-        dag.pending_add_block = Some(DagAddBlockSession {
-            cursor_id,
-            block,
-            block_rlp: input.block_rlp,
-            save: input.save,
-            proposed: input.proposed,
-            transactions,
-            plan: stored_plan,
-        });
+                    .into_iter()
+                    .map(|payload| NativeDagAddBlockTransactionPayload {
+                        hash: H256::from(payload.hash),
+                        transaction_rlp: payload.trx_rlp,
+                    })
+                    .collect(),
+            })?;
         Ok(DagAddBlockPreparation {
-            cursor_id,
-            block_level,
-            accepted: true,
-            duplicate: false,
-            expired: false,
-            missing_references: Vec::new(),
-            account_requests,
+            cursor_id: preparation.cursor_id,
+            block_level: preparation.block_level,
+            accepted: preparation.accepted,
+            duplicate: preparation.duplicate,
+            expired: preparation.expired,
+            missing_references: preparation
+                .missing_references
+                .into_iter()
+                .map(|hash| DagHash { hash: hash.0 })
+                .collect(),
+            account_requests: preparation
+                .account_requests
+                .into_iter()
+                .map(|request| DagAddBlockAccountRequest {
+                    input_index: request.input_index,
+                    sender: request.sender.0,
+                })
+                .collect(),
         })
     }
 
@@ -375,187 +312,38 @@ impl BridgeDagTransactionService {
         &self,
         input: DagAddBlockCompletionInput,
     ) -> Result<DagAddBlockCommitReport> {
-        let (mut dag_guard, mut transaction) = self.dag_and_transaction()?;
-        let dag = &mut dag_guard;
-        let session = dag
-            .pending_add_block
-            .as_ref()
-            .context("DAG_ADD_BLOCK_SESSION_NOT_STARTED")?
-            .clone();
-        ensure!(
-            session.cursor_id == input.cursor_id,
-            "DAG_ADD_BLOCK_SESSION_CURSOR_MISMATCH"
-        );
-        let current_plan = dag.dag_manager_runtime_plan_add_block(add_block_runtime_input(
-            &session.block,
-            session.save,
-            session.proposed,
-        ))?;
-        ensure!(
-            stored_add_block_plan(&current_plan) == session.plan
-                && current_plan.accepted
-                && !current_plan.duplicate
-                && !current_plan.expired,
-            "DAG_ADD_BLOCK_SESSION_STALE_PLAN"
-        );
-
-        let mut nonce_facts = BTreeMap::new();
-        for fact in input.account_nonce_facts {
-            ensure!(
-                nonce_facts
-                    .insert(fact.input_index, fact.account_nonce)
-                    .is_none(),
-                "DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_DUPLICATE"
-            );
-        }
-        ensure!(
-            nonce_facts.len() == session.transactions.len(),
-            "DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_COUNT_MISMATCH"
-        );
-        let transaction_facts = session
-            .transactions
-            .iter()
-            .map(|transaction| {
-                Ok(DagTransactionSaveSidecarFact {
-                    input_index: transaction.input_index,
-                    hash: transaction.hash.0,
-                    trx_rlp: transaction.trx_rlp.clone(),
-                    transaction_nonce: transaction.transaction_nonce,
-                    sender_account_nonce: *nonce_facts
-                        .get(&transaction.input_index)
-                        .context("DAG_ADD_BLOCK_ACCOUNT_NONCE_FACT_MISSING")?,
+        let report = self.root.complete_add_block(NativeDagAddBlockCompletion {
+            cursor_id: input.cursor_id,
+            account_nonce_facts: input
+                .account_nonce_facts
+                .into_iter()
+                .map(|fact| NativeDagAddBlockAccountNonceFact {
+                    input_index: fact.input_index,
+                    account_nonce: U256::from_big_endian(&fact.account_nonce),
                 })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let prepared_transactions = if session.plan.persist_transactions {
-            Some(prepare_transactions_from_dag_block_with_runtime(
-                &transaction,
-                transaction_facts,
-            )?)
-        } else {
-            None
-        };
-        let prepared_transaction_publication = prepared_transactions
-            .as_ref()
-            .map(|prepared| prepare_dag_transaction_publication(&transaction, prepared))
-            .transpose()?;
-        let mut next_state = dag.state.clone();
-        if session.plan.add_to_graph {
-            next_state
-                .add_block(session.block.clone())
-                .context("DAG_ADD_BLOCK_GRAPH_PREVALIDATE")?;
-        }
-
-        let transaction_report = prepared_transaction_publication
-            .as_ref()
-            .map(|publication| dag_save_command_report(&publication.outcome))
-            .unwrap_or(TransactionManagerDagSaveCommandReport {
-                queue_erased: Vec::new(),
-            });
-        let counters;
-        let mut pending_batch = None;
-        if session.plan.persist_block {
-            let transaction_storage = &transaction.storage;
-            ensure!(
-                std::sync::Arc::ptr_eq(&dag.storage, transaction_storage),
-                "DAG_ADD_BLOCK_STORAGE_OWNER_MISMATCH"
-            );
-            let mut batch = dag.storage.create_write_batch();
-            if let Some(prepared) = prepared_transactions.as_ref() {
-                if !session.transactions.is_empty() {
-                    append_prepared_dag_transactions_to_batch(
-                        dag.storage.as_ref(),
-                        &mut batch,
-                        prepared,
-                    )?;
-                }
-            }
-            let (dag_blocks, dag_edges) = dag.storage.dag().append_write_to_batch(
-                &mut batch,
-                session.block.hash,
-                session.block.level,
-                session.block.tips.len() as u64,
-                &session.block_rlp,
-            )?;
-            counters = DagPersistenceCounters {
-                dag_blocks,
-                dag_edges,
-            };
-            pending_batch = Some(batch);
-        } else {
-            counters = dag.dag_manager_runtime_persistence_counters()?;
-        }
-
-        let removed_session = dag
-            .pending_add_block
-            .take()
-            .context("DAG_ADD_BLOCK_SESSION_DISAPPEARED_BEFORE_COMMIT")?;
-        if let Some(batch) = pending_batch {
-            if let Err(error) = dag.storage.commit_write_batch_with_sync(batch, false) {
-                dag.pending_add_block = Some(removed_session);
-                return Err(error).context("DAG_ADD_BLOCK_BATCH_COMMIT");
-            }
-        }
-        dag.state = next_state;
-        if let Some(publication) = prepared_transaction_publication {
-            let _ = publish_prepared_dag_transactions(&mut transaction, publication);
-        }
+                .collect(),
+        })?;
         Ok(DagAddBlockCommitReport {
-            accepted: true,
-            emit_verified: session.plan.emit_verified,
-            gossip: session.plan.gossip,
-            proposed: session.plan.proposed,
-            queue_erased: transaction_report.queue_erased,
-            counters,
+            accepted: report.accepted,
+            emit_verified: report.emit_verified,
+            gossip: report.gossip,
+            proposed: report.proposed,
+            queue_erased: report
+                .queue_erased
+                .into_iter()
+                .map(|hash| TransactionManagerHashCommand { hash: hash.0 })
+                .collect(),
+            counters: DagPersistenceCounters {
+                dag_blocks: report.counters.dag_blocks,
+                dag_edges: report.counters.dag_edges,
+            },
         })
     }
 
     /// Idempotently aborts the matching add-block cursor without affecting a
     /// newer or unrelated preparation.
     pub fn dag_transaction_service_abort_add_block(&self, cursor_id: u64) -> Result<bool> {
-        let mut dag_guard = self.dag()?;
-        let dag = &mut dag_guard;
-        if dag
-            .pending_add_block
-            .as_ref()
-            .is_some_and(|session| session.cursor_id == cursor_id)
-        {
-            dag.pending_add_block = None;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-}
-
-fn add_block_runtime_input(
-    block: &rustaxa_consensus::dag::DagManagerBlock,
-    save: bool,
-    proposed: bool,
-) -> DagAddBlockRuntimeInput {
-    DagAddBlockRuntimeInput {
-        save,
-        proposed,
-        block_hash: block.hash.0,
-        pivot: block.pivot.0,
-        tips: block
-            .tips
-            .iter()
-            .map(|tip| DagHash { hash: tip.0 })
-            .collect(),
-        block_level: block.level,
-    }
-}
-
-fn stored_add_block_plan(plan: &DagAddBlockEffectPlan) -> DagAddBlockStoredPlan {
-    DagAddBlockStoredPlan {
-        accepted: plan.accepted,
-        persist_transactions: plan.persist_transactions,
-        persist_block: plan.persist_block,
-        add_to_graph: plan.add_to_graph,
-        emit_verified: plan.emit_verified,
-        gossip: plan.gossip,
-        proposed: plan.proposed,
+        self.root.abort_add_block(cursor_id)
     }
 }
 
@@ -3390,72 +3178,6 @@ mod tests {
             .contains("DAG_VERIFY_SESSION_UNEXPECTED_TRANSACTION_COMPLETION"));
 
         drop(service);
-        drop(storage);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn full_service_restores_all_domains() {
-        let dir = unique_temp_dir("rustaxa_dag_transaction_service");
-        let storage = create_storage(dir.to_str().unwrap()).unwrap();
-        let full = create_dag_transaction_service_from_storage(
-            &storage,
-            &[1; 32],
-            32,
-            100,
-            sortition_config(),
-            queue_config(),
-            gas_config(),
-            u64::MAX,
-        )
-        .unwrap();
-        assert_eq!(
-            full.sortition()
-                .unwrap()
-                .current_params()
-                .vrf
-                .threshold_upper,
-            sortition_config().threshold_upper
-        );
-        assert_eq!(full.transaction_manager_runtime_transaction_count(), 0);
-        assert_eq!(full.dag_manager_runtime_vertex_count().unwrap(), 1);
-        assert!(!full
-            .dag()
-            .unwrap()
-            .dag_manager_runtime_ensure_proposal_period_mapping(100, 0)
-            .unwrap());
-
-        let restored = create_dag_transaction_service_from_storage(
-            &storage,
-            &[1; 32],
-            32,
-            100,
-            sortition_config(),
-            queue_config(),
-            gas_config(),
-            u64::MAX,
-        )
-        .unwrap();
-        assert_eq!(
-            restored
-                .sortition()
-                .unwrap()
-                .current_params()
-                .vrf
-                .threshold_upper,
-            sortition_config().threshold_upper
-        );
-        assert_eq!(restored.dag_manager_runtime_latest_period().unwrap(), 0);
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                assert!(!full.transaction_manager_runtime_pack_abort());
-            });
-            scope.spawn(|| {
-                assert_eq!(full.dag().unwrap().dag_manager_runtime_vertex_count(), 1);
-            });
-        });
-        drop(restored);
-        drop(full);
         drop(storage);
         let _ = fs::remove_dir_all(dir);
     }

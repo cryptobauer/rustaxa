@@ -3,6 +3,7 @@ pub mod consensus_pipeline;
 pub mod consensus_query_api;
 pub mod dag;
 pub mod dag_service;
+pub mod dag_transaction_service;
 pub(crate) mod dpos_reward_graph;
 pub mod gas_pricer;
 pub mod network_api;

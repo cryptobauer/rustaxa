@@ -297,7 +297,7 @@ Activating an item still requires a bounded implementation slice with the valida
 | `CRW-09I` | `complete` | Finish non-EVM FinalChain adapter contraction and reconcile retained CXX carriers. | `CRW-09C` through `CRW-09H` | C++ supplies only accepted external executor/state-lifecycle operations; obsolete non-EVM fact DTOs/conversions are removed; retained carriers are classified; and `CRW-07`, the audit, and `PLAN.md` agree. |
 | `CRW-10` | `complete` | Perform final consensus consolidation closeout: delete newly obsolete code/docs, reconcile the audit, run required Rust/C++ validation, and synchronize applicable upstream-owned C++ intersections to `cpp-reference`. | `CRW-02` through `CRW-08`; `CRW-09I`, excluding work explicitly scope-gated below | No actionable unclassified consensus ownership or compatibility-deletion item remains; retained C++ surfaces match the declared network, EVM, lifecycle, signing/VDF, and public-materialization boundaries, and the tracker/audit/plan agree. |
 | `CRW-11` | `complete` | Establish the aggressive bridge/shim deletion contract: name supported Rust-mode C++ clients, collapse compatibility policy, record measured surface budgets, and make the inventory distinguish production from test-only callers. | None | Task-owner decisions are recorded; every retained facade has a named client and deletion condition; checked metrics cover lines, exports, carriers, handles, shims, flags, partial factories, and callers; test-only exports fail the guard unless explicitly allowlisted. |
-| `CRW-12` | `ready` | Move PBFT and DAG/transaction application-service ownership, construction, restoration, lock domains, and behavioral tests out of `rustaxa-bridge`; leave thin CXX wrappers. | `CRW-11` | Native Rust application/runtime owners compile and test without CXX support; `rustaxa-bridge` owns no protocol runtime state or behavioral test suite. |
+| `CRW-12` | `active` | Move PBFT and DAG/transaction application-service ownership, construction, restoration, lock domains, and behavioral tests out of `rustaxa-bridge`; leave thin CXX wrappers. | `CRW-11` | Native Rust application/runtime owners compile and test without CXX support; `rustaxa-bridge` owns no protocol runtime state or behavioral test suite. |
 | `CRW-13` | `ready` | Collapse granular Rust production feature topology and delete partial-service factories and compatibility-only constructors. | `CRW-11`; coordinate with `CRW-12` | One supported Rust production composition path remains; partial capability services and redundant module flags are deleted; all-Rust-disabled builds still select untouched C++. |
 | `CRW-14` | `blocked` | Retire state-free or non-production facades, starting with rewards stats, proposed blocks, verified votes, sortition params, gas pricer, then PBFT chain after client migration. | `CRW-11`; `CRW-12` where the facade calls an application service | Rewards stats is retired. Remaining facades call bridge-owned PBFT or DAG/transaction application services and resume after the corresponding `CRW-12` native owner lands; each selected family deletes its shim, bridge declarations, carriers, constructors, flag, and compatibility-only tests together. |
 | `CRW-15` | `blocked` | Replace internal legacy consensus object materialization with canonical bytes, opaque identities, borrowed native views, or client-specific DTOs. | `CRW-11`; native owners from `CRW-12` | Internal C++ code cannot obtain mutable Rust-owned consensus object graphs; associated sidecars, mirrors, compatibility mutexes, and revalidation protocols are deleted. |
@@ -538,6 +538,23 @@ DAG/transaction publication. Injected batch-commit failure coverage remains foll
 three-service construction, DAG/transaction batch composition, and temporary
 FFI-shaped methods over the public native state/guard remain explicit `CRW-12` debt. The checked bridge budget falls by
 298 lines to 44,559; shim lines, CXX functions, carriers, handles, shim directories, granular flags, partial factories,
+compatibility constructors, production callers, and non-test C++ consumers are unchanged.
+
+The next bounded `CRW-12` root-ownership contraction introduces CXX-free
+`rustaxa-consensus::dag_transaction_service::DagTransactionService` as the sole DAG-cluster application root. It owns
+the native transaction, DAG, and sortition siblings, restores them in the existing transaction-then-DAG-then-sortition
+error order from one shared storage owner, publishes only after all three succeed, and owns access to the canonical
+DAG-then-sortition-then-transaction lock domains plus composed DAG-then-transaction acquisition.
+`BridgeDagTransactionService` now contains only that native root
+and FFI-shaped task adapters; it no longer owns sibling state, restore sequencing, lock policy, the add-block cursor,
+add-block planning, transaction inspection, the shared DAG/transaction batch, finalized-order storage application, or
+post-finalization transaction-sidecar cleanup. Nine native tests cover shared ownership, restart and failure ordering,
+atomic add-block success/restart, injected commit failure with cursor retention and no premature publication, cursor
+overlap/abort behavior, terminal/save-false behavior, concurrent preparation, and finalized cleanup publication ordering. They replace five bridge-owned restoration,
+add-block-planner, and finalization semantic tests; retained bridge add-block/finalization tests exercise carrier
+conversion and the full CXX boundary. Temporary FFI-shaped proposer, verifier, packing, query, and compatibility methods
+over hidden native guard accessors remain explicit `CRW-12` debt. The checked bridge budget falls by 994 lines to
+43,565; shim lines, CXX functions, carriers, handles, shim directories, granular flags, partial factories,
 compatibility constructors, production callers, and non-test C++ consumers are unchanged.
 
 The first `CRW-10` closeout slice makes the bridge inventory mechanically complete before further deletion. The guard

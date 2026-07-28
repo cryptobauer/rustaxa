@@ -7,9 +7,12 @@
 //! poison policy never leave the native owner.
 
 use crate::dag::{
-    DagManagerBlock, DagManagerSnapshot, DagManagerState, DagProposerAttemptPlan,
+    DagAddBlockEffectInput, DagAddBlockEffectPlan, DagManagerBlock, DagManagerFinalizationPlan,
+    DagManagerSnapshot, DagManagerState, DagPersistenceCounters, DagProposerAttemptPlan,
     DagProposerFrontierFacts, DagProposerSignedBlockIntent, DagProposerUnsignedBlockIntent,
-    dag_manager_block_from_rlp, ensure_proposal_period_mapping,
+    DagReferenceMetadata, apply_finalization_cleanup_from_storage, dag_block_exists_in_storage,
+    dag_manager_block_from_rlp, dag_persistence_counters_from_storage,
+    ensure_proposal_period_mapping, plan_dag_add_block_effects, validate_pivot_tips_metadata,
 };
 use crate::pbft_chain::restore_pbft_chain_from_storage;
 use crate::sortition::SortitionParams;
@@ -203,6 +206,13 @@ pub struct DagServiceState {
     pub pending_add_block: Option<DagAddBlockSession>,
 }
 
+/// Committed native DAG finalization facts consumed by the application root.
+pub(crate) struct DagFinalizationCommit {
+    pub finalized_count: usize,
+    pub expired_hashes: Vec<H256>,
+    pub remove_transaction_hashes: Vec<H256>,
+}
+
 impl DagServiceState {
     fn restore(storage: Arc<Storage>, config: DagServiceConfig) -> Result<Self> {
         let mut state = Self {
@@ -280,6 +290,147 @@ impl DagServiceState {
                 non_finalized_blocks,
             })
             .context("DAG_RUNTIME_RESTORE_REBUILD")
+    }
+
+    /// Plans one add-block transition from live graph and native storage facts.
+    pub(crate) fn plan_add_block(
+        &self,
+        block: &DagManagerBlock,
+        save: bool,
+        proposed: bool,
+    ) -> Result<DagAddBlockEffectPlan> {
+        let block_in_state = self.state.has_vertex(block.hash);
+        let block_in_storage = dag_block_exists_in_storage(self.storage.as_ref(), block.hash)
+            .context("DAG_RUNTIME_ADD_BLOCK_EXISTS")?;
+        let block_exists = if save {
+            block_in_storage
+        } else {
+            block_in_state || block_in_storage
+        };
+        let pivot_tips = if save
+            && !block_in_state
+            && !block_exists
+            && block.level >= self.state.dag_expiry_level()
+        {
+            let pivot = self.reference_metadata(block.pivot)?;
+            let tips = block
+                .tips
+                .iter()
+                .map(|tip| self.reference_metadata(*tip))
+                .collect::<Result<Vec<_>>>()?;
+            validate_pivot_tips_metadata(block.level, pivot, &tips)
+        } else {
+            crate::dag::DagPivotTipsValidation {
+                ok: true,
+                expected_level: block.level,
+                level_matches: true,
+                missing_references: Vec::new(),
+            }
+        };
+        let mut plan = plan_dag_add_block_effects(DagAddBlockEffectInput {
+            save,
+            proposed,
+            block_exists,
+            block_level: block.level,
+            dag_expiry_level: self.state.dag_expiry_level(),
+            references_available: pivot_tips.ok,
+            missing_references: pivot_tips.missing_references,
+        });
+        if save && block_in_state && !block_in_storage && plan.accepted && !plan.duplicate {
+            plan.add_to_graph = false;
+            plan.emit_verified = false;
+            plan.gossip = false;
+        }
+        Ok(plan)
+    }
+
+    /// Reads canonical persisted DAG counters from the shared storage owner.
+    pub(crate) fn persistence_counters(&self) -> Result<DagPersistenceCounters> {
+        dag_persistence_counters_from_storage(self.storage.as_ref())
+    }
+
+    /// Applies a finalized order through candidate state and one Rust storage batch.
+    ///
+    /// The candidate DAG state is published only after all cleanup facts are
+    /// preflighted and the durable counter, DAG-row, and transaction-row batch
+    /// commits. Empty-anchor periods advance without requiring a stored block.
+    pub(crate) fn apply_finalized_order(
+        &mut self,
+        new_anchor: H256,
+        new_period: u64,
+        finalized_order: Vec<H256>,
+    ) -> Result<DagFinalizationCommit> {
+        let mut candidate_state = self.state.clone();
+        let plan = if new_anchor == H256::zero() {
+            candidate_state
+                .advance_empty_period(new_period)
+                .context("DAG_RUNTIME_ADVANCE_EMPTY_PERIOD")?;
+            DagManagerFinalizationPlan {
+                previous_period: self.state.period(),
+                new_period,
+                previous_anchor: self.state.anchor(),
+                current_anchor: self.state.anchor(),
+                finalized_count: 0,
+                dag_expiry_level: candidate_state.dag_expiry_level(),
+                counter_update_hashes: Vec::new(),
+                expired_hashes: Vec::new(),
+                remaining_hashes: candidate_state
+                    .non_finalized_blocks()
+                    .values()
+                    .flatten()
+                    .copied()
+                    .collect(),
+            }
+        } else {
+            let anchor_level = self
+                .storage
+                .dag()
+                .by_hash(new_anchor)
+                .with_context(|| format!("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK: {new_anchor:?}"))?
+                .level;
+            candidate_state
+                .set_finalized_order(new_anchor, new_period, &finalized_order, anchor_level)
+                .context("DAG_RUNTIME_SET_FINALIZED_ORDER")?
+        };
+        let cleanup = apply_finalization_cleanup_from_storage(
+            self.storage.as_ref(),
+            &plan.counter_update_hashes,
+            &plan.expired_hashes,
+            &plan.remaining_hashes,
+        )
+        .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
+        self.state = candidate_state;
+        Ok(DagFinalizationCommit {
+            finalized_count: plan.finalized_count,
+            expired_hashes: cleanup.expired_hashes,
+            remove_transaction_hashes: cleanup.remove_transaction_hashes,
+        })
+    }
+
+    fn reference_metadata(&self, hash: H256) -> Result<DagReferenceMetadata> {
+        let metadata = self.state.reference_metadata(hash);
+        if metadata.found {
+            return Ok(metadata);
+        }
+        if self
+            .storage
+            .dag()
+            .by_hash_rlp_optional(hash)
+            .context("DAG_RUNTIME_REFERENCE_STORAGE_LOOKUP")?
+            .is_none()
+        {
+            return Ok(metadata);
+        }
+        let block = self
+            .storage
+            .dag()
+            .by_hash(hash)
+            .context("DAG_RUNTIME_REFERENCE_STORAGE_DECODE")?;
+        Ok(DagReferenceMetadata {
+            hash,
+            found: true,
+            level: block.level,
+        })
     }
 }
 

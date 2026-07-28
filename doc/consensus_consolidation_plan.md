@@ -129,9 +129,15 @@ The bridge snapshots queue/cache facts under the native transaction lock, releas
 then applies typed demotion/cache effects and transfers selected payloads under the established DAG-then-transaction
 order. Native `rustaxa-consensus::dag_service::DagService` owns DAG graph/storage state,
 proposer/verifier/add-block cursors, retry state, restoration, initial proposal-period mapping, serialization mutex,
-and poison policy. The bridge temporarily supplies FFI-shaped task methods over a short native guard and retains
-shared DAG/transaction batch composition until the wider application root moves native. The temporarily public native
-DAG and transaction state/guards are explicit bridge escape-hatch debt and may not cross CXX or external callbacks.
+and poison policy. Native `rustaxa-consensus::dag_transaction_service::DagTransactionService` is the complete
+three-service application root: it constructs and restores transaction, DAG, and sortition siblings from one storage
+owner, publishes only after all three succeed, and owns access to the canonical lock domains plus composed
+DAG-then-transaction acquisition. It also owns the complete add-block cursor, canonical transaction validation,
+single shared DAG/transaction persistence batch, post-commit live publication, finalized-order storage application,
+and sibling transaction-sidecar cleanup.
+The bridge temporarily supplies remaining FFI-shaped proposer, verifier, packing, query, and compatibility task methods
+over short native guards. The temporarily public native DAG and transaction state/guards are explicit bridge
+escape-hatch debt and may not cross CXX or external callbacks.
 
 ### 3. Collapse configuration topology
 

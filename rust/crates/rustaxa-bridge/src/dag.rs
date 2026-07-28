@@ -1,36 +1,31 @@
 use crate::ffi::rustaxa_ffi::{
     DagBlockLookup, DagFrontier, DagHash, DagLevelHashes, DagManagerAnchors,
-    DagManagerFinalizationApplyPayload, DagManagerNonFinalizedSize,
-    DagManagerNonFinalizedSyncPayload, DagOrder, DagPersistenceCounters, DagPivotTipsValidation,
-    DagProposerAddBlockReport, DagProposerSessionBeginInput, DagProposerSessionStep,
-    DagProposerSignedBlockIntent, DagProposerSigningReport, DagProposerStorageTipSelectionInput,
-    DagProposerTipSelectionPlan, DagProposerVdfProofReport, DagProposerWorkerCommand,
-    DagProposerWorkerCommandInput, DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup,
-    DagVerifyBlockGasReport, DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, HashLookup,
+    DagManagerNonFinalizedSize, DagManagerNonFinalizedSyncPayload, DagOrder,
+    DagPersistenceCounters, DagPivotTipsValidation, DagProposerAddBlockReport,
+    DagProposerSessionBeginInput, DagProposerSessionStep, DagProposerSignedBlockIntent,
+    DagProposerSigningReport, DagProposerStorageTipSelectionInput, DagProposerTipSelectionPlan,
+    DagProposerVdfProofReport, DagProposerWorkerCommand, DagProposerWorkerCommandInput,
+    DagSyncBlockRlp, DagTransactionHash, DagTransactionRlpLookup, DagVerifyBlockGasReport,
+    DagVerifyBlockSessionInput, DagVerifyBlockSessionStep, HashLookup,
     TransactionPackSelectedTransaction,
 };
 #[cfg(test)]
 use crate::ffi::BridgeStorage;
 use anyhow::{ensure, Context, Result};
 use ethereum_types::H256;
-#[cfg(test)]
-use rustaxa_consensus::dag::collect_finalization_cleanup_from_storage;
 use rustaxa_consensus::dag::{
-    apply_finalization_cleanup_from_storage, collect_non_finalized_sync_payload_from_storage,
-    construct_dag_vdf_message, dag_block_exists_in_storage,
-    dag_manager_block_from_rlp as domain_dag_manager_block_from_rlp,
+    collect_non_finalized_sync_payload_from_storage, construct_dag_vdf_message,
+    dag_block_exists_in_storage, dag_manager_block_from_rlp as domain_dag_manager_block_from_rlp,
     dag_persistence_counters_from_storage, decide_dag_verify_vdf_dpos_authorization,
     finalize_dag_proposer_signed_block_intent, load_dag_block_from_storage,
-    period_block_hash_from_storage, plan_dag_add_block_effects, plan_dag_proposer_attempt,
+    period_block_hash_from_storage, plan_dag_proposer_attempt,
     plan_dag_proposer_block_construction_from_storage, plan_dag_proposer_block_intent,
     plan_dag_proposer_post_pack, plan_dag_proposer_retry_reset, plan_dag_proposer_stale_proof,
     plan_dag_proposer_tip_selection_from_storage, plan_dag_proposer_vdf_wait,
     plan_dag_proposer_worker_command, plan_dag_verify_transaction_query,
     proposal_period_for_level_from_storage, save_dag_block_to_storage, validate_dag_verify_gas,
     validate_dag_verify_transaction_availability, validate_pivot_tips_metadata,
-    verify_precheck_from_storage, DagManagerBlock as DomainDagManagerBlock,
-    DagManagerFinalizationCleanupStoragePayload as DomainDagManagerFinalizationCleanupStoragePayload,
-    DagManagerFinalizationPlan as DomainDagManagerFinalizationPlan, DagManagerState,
+    verify_precheck_from_storage, DagManagerBlock as DomainDagManagerBlock, DagManagerState,
     DagProposerAttemptInput as DomainDagProposerAttemptInput,
     DagProposerAttemptPlan as DomainDagProposerAttemptPlan,
     DagProposerBlockIntentInput as DomainDagProposerBlockIntentInput,
@@ -93,44 +88,12 @@ pub(crate) type DagRuntimeGuard<'a> = DagRuntimeAccess<DagServiceGuard<'a>>;
 /// updates and cleanup. Hash vectors retain domain ordering and may be empty for
 /// an empty period. The plan performs no I/O, never crosses CXX, and is returned
 /// only after state-transition validation succeeds.
+#[cfg(test)]
 struct DagManagerFinalizationPlan {
     finalized_count: u64,
     counter_update_hashes: Vec<DagHash>,
     expired_hashes: Vec<DagHash>,
     remaining_hashes: Vec<DagHash>,
-}
-
-/// Module-private storage-derived counter update for one finalized DAG block.
-///
-/// `hash` identifies the finalized block, while `level` and `tips_count` are
-/// authoritative values read from Rust storage. The value is an intermediate
-/// cleanup fact, owns no storage state, and is created only after the referenced
-/// block resolves successfully.
-#[cfg_attr(not(test), allow(dead_code))]
-struct DagFinalizedCounterUpdate {
-    hash: [u8; 32],
-    level: u64,
-    tips_count: u64,
-}
-
-/// Module-private cleanup result for a finalized DAG order.
-///
-/// The carrier combines storage-derived counter updates, expired DAG hashes,
-/// and expired transaction hashes selected for Rust-owned deletion. Ordering is
-/// preserved for deterministic application and live sidecar reporting. It never
-/// crosses CXX directly; storage/decode failures are propagated before it is
-/// constructed, and every vector may be empty for an empty transition.
-#[cfg_attr(not(test), allow(dead_code))]
-struct DagManagerFinalizationCleanupPayload {
-    counter_updates: Vec<DagFinalizedCounterUpdate>,
-    expired_hashes: Vec<DagHash>,
-    remove_transaction_hashes: Vec<DagTransactionHash>,
-}
-
-/// Internal result transferred from committed DAG cleanup to the sibling transaction runtime.
-pub(crate) struct DagManagerFinalizationCommit {
-    pub payload: DagManagerFinalizationApplyPayload,
-    pub remove_transaction_hashes: Vec<DagTransactionHash>,
 }
 
 const DAG_VERIFY_SESSION_STATUS_ACTIVE: u8 = 0;
@@ -141,30 +104,6 @@ pub(crate) const DAG_VERIFY_SESSION_ACTION_TRANSACTION_QUERY: u8 = 1;
 pub(crate) const DAG_VERIFY_SESSION_ACTION_AUTHORIZATION_FACTS: u8 = 2;
 pub(crate) const DAG_VERIFY_SESSION_ACTION_VDF_SORTITION: u8 = 3;
 pub(crate) const DAG_VERIFY_SESSION_ACTION_GAS: u8 = 4;
-
-/// Private compact input for one runtime-owned add-block plan.
-pub(crate) struct DagAddBlockRuntimeInput {
-    pub save: bool,
-    pub proposed: bool,
-    pub block_hash: [u8; 32],
-    pub pivot: [u8; 32],
-    pub tips: Vec<DagHash>,
-    pub block_level: u64,
-}
-
-/// Private deterministic effects for one add-block attempt.
-pub(crate) struct DagAddBlockEffectPlan {
-    pub accepted: bool,
-    pub duplicate: bool,
-    pub expired: bool,
-    pub persist_transactions: bool,
-    pub persist_block: bool,
-    pub add_to_graph: bool,
-    pub emit_verified: bool,
-    pub gossip: bool,
-    pub proposed: bool,
-    pub missing_references: Vec<DagHash>,
-}
 
 /// Private bridge-shaped DAG block used by the retained internal runtime helpers and their tests.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -271,80 +210,6 @@ where
         self.state.add_block(to_domain_block(block))
     }
 
-    /// Plans one add-block execution from Rust-owned runtime graph state.
-    ///
-    /// Inputs are compact block facts plus public add-block flags. The runtime
-    /// derives duplicate, expiry, and pivot/tip availability facts from its
-    /// in-memory DAG state before delegating to the pure add-block planner. C++
-    /// remains the executor for storage writes, transaction sidecars, events,
-    /// gossip, and temporary compatibility-object materialization.
-    pub fn dag_manager_runtime_plan_add_block(
-        &self,
-        input: DagAddBlockRuntimeInput,
-    ) -> Result<DagAddBlockEffectPlan> {
-        let block_in_state = self.state.has_vertex(H256::from(input.block_hash));
-        let block_in_storage =
-            dag_block_exists_in_storage(self.storage.as_ref(), H256::from(input.block_hash))
-                .context("DAG_RUNTIME_ADD_BLOCK_EXISTS")?;
-        let block_exists = if input.save {
-            block_in_storage
-        } else {
-            block_in_state || block_in_storage
-        };
-
-        let tips = input
-            .tips
-            .into_iter()
-            .map(|tip| H256::from(tip.hash))
-            .collect::<Vec<_>>();
-        let pivot_tips = if input.save
-            && !block_in_state
-            && !block_exists
-            && input.block_level >= self.state.dag_expiry_level()
-        {
-            let pivot = dag_reference_metadata_from_runtime_or_storage(
-                &self.state,
-                self.storage.as_ref(),
-                H256::from(input.pivot),
-            )?;
-            let tips = tips
-                .iter()
-                .map(|tip| {
-                    dag_reference_metadata_from_runtime_or_storage(
-                        &self.state,
-                        self.storage.as_ref(),
-                        *tip,
-                    )
-                })
-                .collect::<Result<Vec<_>>>()?;
-            validate_pivot_tips_metadata(input.block_level, pivot, &tips)
-        } else {
-            rustaxa_consensus::dag::DagPivotTipsValidation {
-                ok: true,
-                expected_level: input.block_level,
-                level_matches: true,
-                missing_references: Vec::new(),
-            }
-        };
-
-        let plan = plan_dag_add_block_effects(rustaxa_consensus::dag::DagAddBlockEffectInput {
-            save: input.save,
-            proposed: input.proposed,
-            block_exists,
-            block_level: input.block_level,
-            dag_expiry_level: self.state.dag_expiry_level(),
-            references_available: pivot_tips.ok,
-            missing_references: pivot_tips.missing_references,
-        });
-        let mut plan = to_bridge_add_block_effect_plan(plan);
-        if input.save && block_in_state && !block_in_storage && plan.accepted && !plan.duplicate {
-            plan.add_to_graph = false;
-            plan.emit_verified = false;
-            plan.gossip = false;
-        }
-        Ok(plan)
-    }
-
     /// Validates pivot/tip availability from Rust runtime state and storage.
     ///
     /// Inputs:
@@ -439,146 +304,6 @@ where
             .set_finalized_order(new_anchor, new_period, &finalized_order, new_anchor_level)
             .context("DAG_RUNTIME_SET_FINALIZED_ORDER")
             .map(to_bridge_finalization_plan)
-    }
-
-    /// Builds storage-backed cleanup facts for a finalized DAG order plan.
-    ///
-    /// This method is a test-only convenience wrapper for callers that already
-    /// have a full `DagManagerFinalizationPlan`.
-    #[cfg(test)]
-    fn dag_manager_runtime_finalization_cleanup_payload(
-        &self,
-        plan: DagManagerFinalizationPlan,
-    ) -> Result<DagManagerFinalizationCleanupPayload> {
-        let DagManagerFinalizationPlan {
-            finalized_count: _,
-            counter_update_hashes,
-            expired_hashes,
-            remaining_hashes,
-        } = plan;
-
-        let counter_update_hashes = counter_update_hashes
-            .into_iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect::<Vec<_>>();
-        let expired_hashes = expired_hashes
-            .into_iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect::<Vec<_>>();
-        let remaining_hashes = remaining_hashes
-            .into_iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect::<Vec<_>>();
-        let payload = collect_finalization_cleanup_from_storage(
-            self.storage.as_ref(),
-            &counter_update_hashes,
-            &expired_hashes,
-            &remaining_hashes,
-        )
-        .context("DAG_RUNTIME_FINALIZATION_CLEANUP_BUILD_FAILED")?;
-
-        Ok(to_bridge_finalization_cleanup_payload(payload))
-    }
-
-    /// Applies one finalized DAG order through Rust state and Rust storage.
-    ///
-    /// Inputs:
-    /// - `new_anchor`: the new finalized DAG anchor, or zero for an empty PBFT
-    ///   period without a DAG anchor transition.
-    /// - `new_period`: expected to be the next runtime period.
-    /// - `finalized_order`: finalized DAG block hashes in legacy order.
-    ///
-    /// Output:
-    /// - finalized block count plus the live C++ side-effect facts that cannot
-    ///   move yet: expired block hashes for `seen_blocks_` cleanup and expired
-    ///   transaction hashes for transaction-manager sidecar cleanup. Returned
-    ///   transaction hashes have already been removed from Rust-owned storage.
-    ///
-    /// Behavior:
-    /// - resolves the anchor level from Rust storage when the anchor is nonzero
-    /// - computes finalization on a candidate state before mutating this runtime
-    /// - preflights storage-backed cleanup facts before persistent writes
-    /// - updates Rust DAG counters, removes expired DAG blocks, and removes
-    ///   expired non-finalized transaction payloads through `rustaxa-storage`
-    /// - commits the candidate state only after the Rust-owned storage writes
-    ///   complete
-    pub(crate) fn dag_manager_runtime_apply_finalized_order(
-        &mut self,
-        new_anchor: [u8; 32],
-        new_period: u64,
-        finalized_order: Vec<DagHash>,
-    ) -> Result<DagManagerFinalizationCommit> {
-        let new_anchor = H256::from(new_anchor);
-        let mut candidate_state = self.state.clone();
-
-        let plan = if new_anchor == H256::zero() {
-            candidate_state
-                .advance_empty_period(new_period)
-                .context("DAG_RUNTIME_ADVANCE_EMPTY_PERIOD")?;
-            DagManagerFinalizationPlan {
-                finalized_count: 0,
-                counter_update_hashes: Vec::new(),
-                expired_hashes: Vec::new(),
-                remaining_hashes: to_dag_hashes(
-                    candidate_state
-                        .non_finalized_blocks()
-                        .values()
-                        .flatten()
-                        .copied()
-                        .collect(),
-                ),
-            }
-        } else {
-            let anchor_level = self
-                .storage
-                .dag()
-                .by_hash(new_anchor)
-                .with_context(|| format!("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK: {new_anchor:?}"))?
-                .level;
-            let finalized_order = finalized_order
-                .into_iter()
-                .map(|hash| H256::from(hash.hash))
-                .collect::<Vec<_>>();
-            candidate_state
-                .set_finalized_order(new_anchor, new_period, &finalized_order, anchor_level)
-                .context("DAG_RUNTIME_SET_FINALIZED_ORDER")
-                .map(to_bridge_finalization_plan)?
-        };
-
-        let finalized_count = plan.finalized_count;
-        let counter_update_hashes = plan
-            .counter_update_hashes
-            .iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect::<Vec<_>>();
-        let expired_hashes = plan
-            .expired_hashes
-            .iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect::<Vec<_>>();
-        let remaining_hashes = plan
-            .remaining_hashes
-            .iter()
-            .map(|hash| H256::from(hash.hash))
-            .collect::<Vec<_>>();
-        let cleanup = apply_finalization_cleanup_from_storage(
-            self.storage.as_ref(),
-            &counter_update_hashes,
-            &expired_hashes,
-            &remaining_hashes,
-        )
-        .context("DAG_RUNTIME_FINALIZATION_STORAGE_APPLY")?;
-
-        self.state = candidate_state;
-        let cleanup = to_bridge_finalization_cleanup_payload(cleanup);
-
-        Ok(DagManagerFinalizationCommit {
-            payload: DagManagerFinalizationApplyPayload {
-                finalized_count,
-                expired_hashes: cleanup.expired_hashes,
-            },
-            remove_transaction_hashes: cleanup.remove_transaction_hashes,
-        })
     }
 
     /// Returns a one-shot sync snapshot containing the current period and the
@@ -2174,27 +1899,6 @@ pub fn dag_manager_block_from_rlp(block_rlp: Vec<u8>) -> Result<DagManagerBlock>
     })
 }
 
-fn to_bridge_add_block_effect_plan(
-    plan: rustaxa_consensus::dag::DagAddBlockEffectPlan,
-) -> DagAddBlockEffectPlan {
-    DagAddBlockEffectPlan {
-        accepted: plan.accepted,
-        duplicate: plan.duplicate,
-        expired: plan.expired,
-        persist_transactions: plan.persist_transactions,
-        persist_block: plan.persist_block,
-        add_to_graph: plan.add_to_graph,
-        emit_verified: plan.emit_verified,
-        gossip: plan.gossip,
-        proposed: plan.proposed,
-        missing_references: plan
-            .missing_references
-            .into_iter()
-            .map(|hash| DagHash { hash: hash.0 })
-            .collect(),
-    }
-}
-
 fn to_h256(hash: &[u8; 32]) -> H256 {
     H256::from(*hash)
 }
@@ -2355,13 +2059,6 @@ fn to_dag_hashes(hashes: Vec<H256>) -> Vec<DagHash> {
 
 fn to_transaction_hashes(hashes: Vec<DagTransactionHash>) -> Vec<H256> {
     hashes.into_iter().map(|hash| hash.hash.into()).collect()
-}
-
-fn to_bridge_transaction_hashes(hashes: Vec<H256>) -> Vec<DagTransactionHash> {
-    hashes
-        .into_iter()
-        .map(|hash| DagTransactionHash { hash: hash.0 })
-        .collect()
 }
 
 fn dag_proposer_session_step(session: &DagProposerSession) -> DagProposerSessionStep {
@@ -2649,32 +2346,15 @@ fn to_bridge_frontier(frontier: &rustaxa_consensus::dag::DagFrontier) -> DagFron
     }
 }
 
+#[cfg(test)]
 fn to_bridge_finalization_plan(
-    plan: DomainDagManagerFinalizationPlan,
+    plan: rustaxa_consensus::dag::DagManagerFinalizationPlan,
 ) -> DagManagerFinalizationPlan {
     DagManagerFinalizationPlan {
         finalized_count: plan.finalized_count as u64,
         counter_update_hashes: to_dag_hashes(plan.counter_update_hashes),
         expired_hashes: to_dag_hashes(plan.expired_hashes),
         remaining_hashes: to_dag_hashes(plan.remaining_hashes),
-    }
-}
-
-fn to_bridge_finalization_cleanup_payload(
-    payload: DomainDagManagerFinalizationCleanupStoragePayload,
-) -> DagManagerFinalizationCleanupPayload {
-    DagManagerFinalizationCleanupPayload {
-        counter_updates: payload
-            .counter_updates
-            .into_iter()
-            .map(|update| DagFinalizedCounterUpdate {
-                hash: update.hash.into(),
-                level: update.level,
-                tips_count: update.tips_count,
-            })
-            .collect(),
-        expired_hashes: to_dag_hashes(payload.expired_hashes),
-        remove_transaction_hashes: to_bridge_transaction_hashes(payload.remove_transaction_hashes),
     }
 }
 
@@ -2727,10 +2407,8 @@ fn dag_reference_metadata_from_runtime_or_storage(
 mod tests {
     use super::*;
     use crate::ffi::rustaxa_ffi::DagProposerSessionBeginInput;
-    use crate::ffi::{BridgeDagStorageQueries, BridgeStorage, BridgeTransactionStorageQueries};
-    use crate::storage::{
-        create_dag_storage_queries, create_storage, create_transaction_storage_queries,
-    };
+    use crate::ffi::{BridgeDagStorageQueries, BridgeStorage};
+    use crate::storage::{create_dag_storage_queries, create_storage};
     use k256::ecdsa::SigningKey;
     use rlp::RlpStream;
     use rustaxa_consensus::dag;
@@ -2752,25 +2430,8 @@ mod tests {
         std::env::temp_dir().join(format!("{}_{}_{}", prefix, now_ns, id))
     }
 
-    fn transaction_queries(storage: &BridgeStorage) -> Box<BridgeTransactionStorageQueries> {
-        create_transaction_storage_queries(storage)
-    }
-
     fn dag_queries(storage: &BridgeStorage) -> Box<BridgeDagStorageQueries> {
         create_dag_storage_queries(storage)
-    }
-
-    fn dag_block_with_vdf_payload(vdf_payload: Vec<u8>) -> Vec<u8> {
-        let mut block = RlpStream::new_list(8);
-        block.append(&&[0u8; 32][..]);
-        block.append(&1u64);
-        block.append(&0u64);
-        block.append(&vdf_payload);
-        block.begin_list(0);
-        block.begin_list(0);
-        block.append(&&[0u8; 65][..]);
-        block.append(&123u64);
-        block.out().to_vec()
     }
 
     fn signed_dag_block_rlp(seed: u8, level: u64, gas_estimation: u64) -> Vec<u8> {
@@ -2950,84 +2611,6 @@ mod tests {
                 .expect("counter lookup should succeed");
             assert_eq!(counters.dag_blocks, 1);
             assert_eq!(counters.dag_edges, 3);
-        }
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_manager_runtime_plans_add_block_from_runtime_state() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_add_block_plan");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-                .expect("runtime should initialize");
-
-            runtime
-                .dag_manager_runtime_add_block(DagManagerBlock {
-                    hash: [2u8; 32],
-                    pivot: [1u8; 32],
-                    tips: vec![],
-                    level: 2,
-                    difficulty: 100,
-                })
-                .expect("add block");
-
-            let live_only = runtime
-                .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {
-                    save: true,
-                    proposed: true,
-                    block_hash: [2u8; 32],
-                    pivot: [1u8; 32],
-                    tips: vec![],
-                    block_level: 2,
-                })
-                .expect("live-only persistence plan");
-            assert!(live_only.accepted);
-            assert!(!live_only.duplicate);
-            assert!(live_only.persist_block);
-            assert!(!live_only.add_to_graph);
-            assert!(!live_only.emit_verified);
-            assert!(!live_only.gossip);
-
-            let missing = runtime
-                .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {
-                    save: true,
-                    proposed: false,
-                    block_hash: [3u8; 32],
-                    pivot: [9u8; 32],
-                    tips: vec![DagHash { hash: [8u8; 32] }],
-                    block_level: 3,
-                })
-                .expect("missing-reference plan");
-            assert!(!missing.accepted);
-            assert_eq!(
-                missing
-                    .missing_references
-                    .iter()
-                    .map(|hash| hash.hash)
-                    .collect::<Vec<_>>(),
-                vec![[9u8; 32], [8u8; 32]]
-            );
-
-            let accepted = runtime
-                .dag_manager_runtime_plan_add_block(DagAddBlockRuntimeInput {
-                    save: true,
-                    proposed: false,
-                    block_hash: [3u8; 32],
-                    pivot: [2u8; 32],
-                    tips: vec![],
-                    block_level: 3,
-                })
-                .expect("accepted plan");
-            assert!(accepted.accepted);
-            assert!(accepted.persist_transactions);
-            assert!(accepted.persist_block);
-            assert!(accepted.add_to_graph);
-            assert!(accepted.emit_verified);
-            assert!(accepted.gossip);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -4965,272 +4548,6 @@ mod tests {
             assert!(!payload.transactions[2].found);
             assert!(payload.transactions[2].tx_rlp.is_empty());
             assert!(!payload.transactions[2].finalized);
-        }
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_manager_runtime_finalization_cleanup_payload_returns_storage_backed_side_effects() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_finalization_payload");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let runtime = build_dag_state_from_storage(&[1u8; 32], 32, &storage)
-                .expect("runtime should initialize");
-
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[8u8; 32],
-                    1,
-                    0,
-                    dag_block_with_vdf_payload(vec![0x88]),
-                )
-                .expect("persist finalized block needing counter update");
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[3u8; 32],
-                    3,
-                    3,
-                    dag_block_with_vdf_payload_and_transaction_hashes(
-                        vec![0x11],
-                        &[tx_hash(1), tx_hash(2), tx_hash(1)],
-                    ),
-                )
-                .expect("persist expired block a");
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[4u8; 32],
-                    4,
-                    1,
-                    dag_block_with_vdf_payload_and_transaction_hashes(vec![0x22], &[tx_hash(3)]),
-                )
-                .expect("persist expired block b");
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[6u8; 32],
-                    6,
-                    1,
-                    dag_block_with_vdf_payload_and_transaction_hashes(vec![0x33], &[tx_hash(3)]),
-                )
-                .expect("persist remaining block");
-
-            storage
-                .0
-                .transaction()
-                .write_location(H256::from([2u8; 32]), 7, 0, false)
-                .expect("mark tx2 as finalized");
-
-            let payload = runtime
-                .dag_manager_runtime_finalization_cleanup_payload(DagManagerFinalizationPlan {
-                    finalized_count: 2,
-                    counter_update_hashes: vec![DagHash { hash: [8u8; 32] }],
-                    expired_hashes: vec![DagHash { hash: [3u8; 32] }, DagHash { hash: [4u8; 32] }],
-                    remaining_hashes: vec![DagHash { hash: [6u8; 32] }],
-                })
-                .expect("finalization cleanup payload should compute");
-
-            assert_eq!(payload.counter_updates.len(), 1);
-            assert_eq!(payload.counter_updates[0].hash, [8u8; 32]);
-            assert_eq!(payload.counter_updates[0].level, 1);
-            assert_eq!(payload.counter_updates[0].tips_count, 0);
-
-            assert_eq!(payload.expired_hashes.len(), 2);
-            assert_eq!(payload.expired_hashes[0].hash, [3u8; 32]);
-            assert_eq!(payload.expired_hashes[1].hash, [4u8; 32]);
-
-            assert_eq!(payload.remove_transaction_hashes.len(), 1);
-            assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
-        }
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_manager_runtime_apply_finalized_order_writes_storage_and_commits_state() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_apply_finalized_order");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 1, &storage)
-                .expect("runtime should initialize");
-
-            for block in [
-                DagManagerBlock {
-                    hash: [3u8; 32],
-                    pivot: [1u8; 32],
-                    tips: vec![],
-                    level: 3,
-                    difficulty: 90,
-                },
-                DagManagerBlock {
-                    hash: [4u8; 32],
-                    pivot: [3u8; 32],
-                    tips: vec![],
-                    level: 4,
-                    difficulty: 80,
-                },
-                DagManagerBlock {
-                    hash: [6u8; 32],
-                    pivot: [1u8; 32],
-                    tips: vec![],
-                    level: 6,
-                    difficulty: 70,
-                },
-            ] {
-                runtime
-                    .dag_manager_runtime_add_block(block)
-                    .expect("add non-finalized block");
-            }
-
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[8u8; 32],
-                    5,
-                    0,
-                    dag_block_with_level_and_transaction_hashes(5, vec![0x88], &[]),
-                )
-                .expect("persist finalized anchor block");
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[3u8; 32],
-                    3,
-                    0,
-                    dag_block_with_level_and_transaction_hashes(
-                        3,
-                        vec![0x11],
-                        &[tx_hash(1), tx_hash(2)],
-                    ),
-                )
-                .expect("persist expired block a");
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[4u8; 32],
-                    4,
-                    0,
-                    dag_block_with_level_and_transaction_hashes(4, vec![0x22], &[tx_hash(3)]),
-                )
-                .expect("persist expired dependent block");
-            runtime
-                .dag_manager_runtime_save_block(
-                    &[6u8; 32],
-                    6,
-                    0,
-                    dag_block_with_level_and_transaction_hashes(6, vec![0x33], &[tx_hash(3)]),
-                )
-                .expect("persist remaining block");
-
-            storage
-                .0
-                .transaction()
-                .write_location(H256::from([2u8; 32]), 7, 0, false)
-                .expect("mark tx2 as finalized");
-            storage
-                .0
-                .transaction()
-                .write(H256::from([1u8; 32]), &[0xA1])
-                .expect("persist expired pending tx1");
-            storage
-                .0
-                .transaction()
-                .write(H256::from([2u8; 32]), &[0xA2])
-                .expect("persist finalized pending tx2");
-            storage
-                .0
-                .transaction()
-                .write(H256::from([3u8; 32]), &[0xA3])
-                .expect("persist retained pending tx3");
-
-            let payload = runtime
-                .dag_manager_runtime_apply_finalized_order(
-                    [8u8; 32],
-                    1,
-                    vec![DagHash { hash: [8u8; 32] }],
-                )
-                .expect("apply finalized order");
-
-            assert_eq!(payload.payload.finalized_count, 1);
-            assert_eq!(payload.payload.expired_hashes.len(), 2);
-            assert_eq!(payload.payload.expired_hashes[0].hash, [3u8; 32]);
-            assert_eq!(payload.payload.expired_hashes[1].hash, [4u8; 32]);
-            assert_eq!(payload.remove_transaction_hashes.len(), 1);
-            assert_eq!(payload.remove_transaction_hashes[0].hash, [1u8; 32]);
-            assert_eq!(
-                transaction_queries(&storage)
-                    .get_transaction(&[1u8; 32])
-                    .expect("load removed pending tx1"),
-                Vec::<u8>::new()
-            );
-            assert_eq!(
-                transaction_queries(&storage)
-                    .get_transaction(&[2u8; 32])
-                    .expect("load finalized pending tx2"),
-                vec![0xA2]
-            );
-            assert_eq!(
-                transaction_queries(&storage)
-                    .get_transaction(&[3u8; 32])
-                    .expect("load retained pending tx3"),
-                vec![0xA3]
-            );
-
-            assert_eq!(runtime.dag_manager_runtime_latest_period(), 1);
-            assert_eq!(runtime.dag_manager_runtime_anchors().anchor, [8u8; 32]);
-            assert!(
-                !runtime
-                    .dag_manager_runtime_load_block(&[3u8; 32])
-                    .expect("load removed block")
-                    .found
-            );
-            assert!(
-                !runtime
-                    .dag_manager_runtime_load_block(&[4u8; 32])
-                    .expect("load removed dependent block")
-                    .found
-            );
-            assert!(
-                runtime
-                    .dag_manager_runtime_load_block(&[6u8; 32])
-                    .expect("load remaining block")
-                    .found
-            );
-
-            let counters = runtime
-                .dag_manager_runtime_persistence_counters()
-                .expect("load counters");
-            assert_eq!(counters.dag_blocks, 5);
-            assert_eq!(counters.dag_edges, 5);
-        }
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn dag_manager_runtime_apply_finalized_order_requires_anchor_in_storage_before_state_commit() {
-        let temp_dir = unique_temp_dir("rustaxa_bridge_dag_runtime_apply_missing_anchor");
-
-        {
-            let storage = create_storage(temp_dir.to_str().expect("utf-8 path"))
-                .expect("storage should initialize");
-            let mut runtime = build_dag_state_from_storage(&[1u8; 32], 1, &storage)
-                .expect("runtime should initialize");
-
-            let err = match runtime.dag_manager_runtime_apply_finalized_order(
-                [8u8; 32],
-                1,
-                vec![DagHash { hash: [8u8; 32] }],
-            ) {
-                Ok(_) => panic!("missing anchor should fail"),
-                Err(err) => err,
-            };
-
-            assert!(err
-                .to_string()
-                .contains("DAG_RUNTIME_FINALIZATION_ANCHOR_BLOCK"));
-            assert_eq!(runtime.dag_manager_runtime_latest_period(), 0);
-            assert_eq!(runtime.dag_manager_runtime_anchors().anchor, [1u8; 32]);
         }
 
         let _ = fs::remove_dir_all(&temp_dir);

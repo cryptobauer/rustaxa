@@ -1,8 +1,15 @@
 use crate::gas_pricer::{GasPriceOracle, GasPricerConfig};
 use crate::transaction_manager::TransactionManagerSidecar;
+use crate::transaction_manager::{DagTransactionSaveFact, plan_transactions_from_dag_block};
 use crate::transaction_packing_service::TransactionPackingService;
 use crate::transaction_queue::TransactionQueue;
+use crate::transaction_storage::{
+    NonFinalizedTransactionStoragePayload, append_non_finalized_transactions_to_batch,
+    transaction_finalized,
+};
 use anyhow::{Context, Result, anyhow};
+use ethereum_types::{H256, U256};
+use rustaxa_storage::StorageWriteBatch;
 use rustaxa_storage::{StatusField, Storage};
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -50,6 +57,45 @@ pub struct TransactionServiceState {
     pub last_drop_observed: Option<Instant>,
     /// Native owner of the current proposal-packing session.
     pub transaction_packing: TransactionPackingService,
+}
+
+/// Native fact for one transaction considered during DAG-block persistence.
+#[derive(Clone)]
+pub(crate) struct DagTransactionSaveInput {
+    pub input_index: u64,
+    pub hash: H256,
+    pub transaction_rlp: Vec<u8>,
+    pub transaction_nonce: U256,
+    pub sender_account_nonce: U256,
+}
+
+/// Native accepted-transaction publication result.
+#[derive(Clone, Copy)]
+pub struct DagTransactionSaveAccepted {
+    /// Canonical transaction identity.
+    pub hash: H256,
+    /// Whether publication erased the transaction from the live queue.
+    pub erased_from_queue: bool,
+}
+
+/// Native live-state result for a committed DAG transaction save.
+pub struct DagTransactionSaveOutcome {
+    /// Accepted transactions in canonical input order.
+    pub accepted: Vec<DagTransactionSaveAccepted>,
+}
+
+/// Prepared persistence retained until a shared DAG/transaction batch commits.
+pub(crate) struct PreparedDagTransactionSave {
+    accepted: Vec<DagTransactionSaveAccepted>,
+    accepted_payloads: Vec<NonFinalizedTransactionStoragePayload>,
+    target_transaction_count: u64,
+}
+
+/// Fully prevalidated transaction live-state publication.
+pub(crate) struct PreparedDagTransactionPublication {
+    queue: TransactionQueue,
+    sidecar: TransactionManagerSidecar,
+    outcome: DagTransactionSaveOutcome,
 }
 
 /// Native owner of transaction construction, restoration, and serialization.
@@ -142,6 +188,114 @@ impl TransactionServiceState {
             transaction_packing: TransactionPackingService::new(),
         })
     }
+}
+
+/// Plans accepted DAG transactions without mutating storage or live state.
+pub(crate) fn prepare_dag_transactions(
+    runtime: &TransactionServiceState,
+    facts: Vec<DagTransactionSaveInput>,
+) -> Result<PreparedDagTransactionSave> {
+    let plan = plan_transactions_from_dag_block(
+        facts
+            .into_iter()
+            .map(|fact| DagTransactionSaveFact {
+                input_index: fact.input_index,
+                hash: fact.hash,
+                trx_rlp: fact.transaction_rlp,
+                transaction_nonce: fact.transaction_nonce,
+                sender_account_nonce: fact.sender_account_nonce,
+                in_non_finalized_cache: runtime.sidecar.contains_non_finalized(fact.hash),
+                in_recently_finalized_cache: runtime.sidecar.contains_recently_finalized(fact.hash),
+            })
+            .collect(),
+        runtime.sidecar.transaction_count(),
+        |hash| {
+            transaction_finalized(runtime.storage.as_ref(), hash)
+                .context("TM_DAG_TX_FINALIZED_LOOKUP_FAILED")
+        },
+    )?;
+
+    let accepted = plan
+        .accepted_transactions
+        .iter()
+        .map(|payload| DagTransactionSaveAccepted {
+            hash: payload.hash,
+            erased_from_queue: false,
+        })
+        .collect();
+    let accepted_payloads = plan
+        .accepted_transactions
+        .into_iter()
+        .map(|payload| NonFinalizedTransactionStoragePayload {
+            hash: payload.hash,
+            trx_rlp: payload.trx_rlp,
+        })
+        .collect();
+    Ok(PreparedDagTransactionSave {
+        accepted,
+        accepted_payloads,
+        target_transaction_count: plan.target_transaction_count,
+    })
+}
+
+/// Appends prepared DAG transaction writes to a caller-owned atomic batch.
+pub(crate) fn append_prepared_dag_transactions(
+    storage: &Storage,
+    batch: &mut StorageWriteBatch,
+    prepared: &PreparedDagTransactionSave,
+) -> Result<()> {
+    if prepared.accepted_payloads.is_empty() {
+        return Ok(());
+    }
+    append_non_finalized_transactions_to_batch(
+        storage,
+        batch,
+        prepared.accepted_payloads.clone(),
+        prepared.target_transaction_count,
+    )
+}
+
+/// Precomputes queue and sidecar state for post-commit publication.
+pub(crate) fn prepare_dag_transaction_publication(
+    runtime: &TransactionServiceState,
+    prepared: &PreparedDagTransactionSave,
+) -> Result<PreparedDagTransactionPublication> {
+    let mut queue = runtime.queue.clone();
+    let mut sidecar = runtime.sidecar.clone();
+    let mut accepted = prepared.accepted.clone();
+    for (accepted_entry, payload) in accepted.iter_mut().zip(prepared.accepted_payloads.iter()) {
+        accepted_entry.erased_from_queue = queue.erase(payload.hash);
+        sidecar.insert_non_finalized(payload.hash, payload.trx_rlp.clone())?;
+    }
+    sidecar.set_transaction_count(prepared.target_transaction_count);
+    Ok(PreparedDagTransactionPublication {
+        queue,
+        sidecar,
+        outcome: DagTransactionSaveOutcome { accepted },
+    })
+}
+
+/// Publishes a prevalidated transaction transition after shared-batch commit.
+pub(crate) fn publish_dag_transactions(
+    runtime: &mut TransactionServiceState,
+    publication: PreparedDagTransactionPublication,
+) -> DagTransactionSaveOutcome {
+    runtime.queue = publication.queue;
+    runtime.sidecar = publication.sidecar;
+    publication.outcome
+}
+
+/// Removes live non-finalized sidecars after native DAG cleanup committed storage.
+///
+/// The operation is infallible and performs no storage writes. Hashes absent
+/// from the sidecar are ignored so restart and duplicate cleanup remain safe.
+pub(crate) fn remove_non_finalized_sidecars_after_dag_commit(
+    runtime: &mut TransactionServiceState,
+    hashes: &[H256],
+) -> u64 {
+    hashes.iter().fold(0, |removed, hash| {
+        removed + u64::from(runtime.sidecar.remove_non_finalized(*hash))
+    })
 }
 
 #[cfg(test)]
